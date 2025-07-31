@@ -8,7 +8,7 @@ use helix_term::config::{Config, ConfigLoadError};
 
 use gpui::{
     actions, App, AppContext, Context as _, Menu, MenuItem, TitlebarOptions, VisualContext as _,
-    WindowBackgroundAppearance, WindowKind, WindowOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
 
 pub use application::Input;
@@ -74,7 +74,10 @@ fn window_options(_cx: &mut AppContext) -> gpui::WindowOptions {
             appears_transparent: true,
             traffic_light_position: None, //Some(point(px(9.0), px(9.0))),
         }),
-        window_bounds: None,
+        window_bounds: Some(WindowBounds::Windowed(gpui::Bounds {
+            origin: gpui::point(gpui::DevicePixels::from(100), gpui::DevicePixels::from(100)),
+            size: gpui::size(gpui::DevicePixels::from(1200), gpui::DevicePixels::from(800)),
+        })),
         focus: true,
         show: true,
         kind: WindowKind::Normal,
