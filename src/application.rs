@@ -96,8 +96,6 @@ impl Application {
     ) {
         let _guard = handle.enter();
         use helix_term::compositor::{Component, EventResult};
-        // println!("INPUT EVENT {:?}", event);
-
         let mut comp_ctx = helix_term::compositor::Context {
             editor: &mut self.editor,
             scroll: None,
@@ -116,8 +114,6 @@ impl Application {
                         cb(&mut self.compositor, &mut comp_ctx);
                     }
                 }
-                let _is_handled = is_handled;
-                // println!("KEY IS HANDLED ? {:?}", is_handled);
                 self.emit_overlays(cx);
                 cx.emit(crate::Update::Redraw);
             }

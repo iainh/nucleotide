@@ -190,7 +190,7 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
                 mc.spawn(|crank, mut cx| async move {
                     loop {
                         cx.background_executor()
-                            .timer(Duration::from_millis(50))
+                            .timer(Duration::from_millis(200))  // 5fps instead of 20fps
                             .await;
                         let _ = crank.update(&mut cx, |_crank, cx| {
                             cx.emit(());

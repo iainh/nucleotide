@@ -153,8 +153,6 @@ impl Workspace {
     }
 
     fn handle_key(&mut self, ev: &KeyDownEvent, cx: &mut ViewContext<Self>) {
-        println!("WORKSPACE KEY DOWN: {:?}", ev.keystroke);
-
         let key = utils::translate_key(&ev.keystroke);
         self.input.update(cx, |_, cx| {
             cx.emit(InputEvent::Key(key));
@@ -316,7 +314,6 @@ impl Render for Workspace {
             .items_center()
             .child(label);
 
-        println!("rendering workspace");
 
         self.core.update(cx, |core, _cx| {
             core.compositor.resize(editor_rect);
@@ -380,14 +377,15 @@ impl Render for Workspace {
                 cx.focus_view(&view);
                 this.child(view.clone())
             })
-            .when(
-                !self.info_hidden && !self.info.read(cx).is_empty(),
-                |this| {
-                    let info = &self.info;
-                    cx.focus_view(&info);
-                    this.child(info.clone())
-                },
-            )
+            // Temporarily disable info box until we fix focus issues
+            // .when(
+            //     !self.info_hidden && !self.info.read(cx).is_empty(),
+            //     |this| {
+            //         let info = &self.info;
+            //         cx.focus_view(&info);
+            //         this.child(info.clone())
+            //     },
+            // )
     }
 }
 

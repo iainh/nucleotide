@@ -57,9 +57,11 @@ impl Render for InfoBoxView {
 
         div()
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|_v, _e, cx| {
-                println!("INFO BOX received key");
-                cx.emit(DismissEvent)
+            .on_key_down(cx.listener(|_v, e: &KeyDownEvent, cx| {
+                // Only dismiss on Escape, let other keys pass through
+                if e.keystroke.key == "escape" {
+                    cx.emit(DismissEvent);
+                }
             }))
             .absolute()
             .bottom_7()
