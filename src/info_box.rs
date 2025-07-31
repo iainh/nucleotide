@@ -7,16 +7,14 @@ pub struct InfoBoxView {
     title: Option<SharedString>,
     text: Option<SharedString>,
     style: Style,
-    focus: FocusHandle,
 }
 
 impl InfoBoxView {
-    pub fn new(style: Style, focus: &FocusHandle) -> Self {
+    pub fn new(style: Style) -> Self {
         InfoBoxView {
             title: None,
             text: None,
             style,
-            focus: focus.clone(),
         }
     }
 
@@ -44,11 +42,6 @@ impl InfoBoxView {
     }
 }
 
-impl FocusableView for InfoBoxView {
-    fn focus_handle(&self, _cx: &AppContext) -> FocusHandle {
-        self.focus.clone()
-    }
-}
 impl EventEmitter<DismissEvent> for InfoBoxView {}
 
 impl Render for InfoBoxView {
@@ -56,13 +49,6 @@ impl Render for InfoBoxView {
         let font = cx.global::<crate::FontSettings>().fixed_font.clone();
 
         div()
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(|_v, e: &KeyDownEvent, cx| {
-                // Only dismiss on Escape, let other keys pass through
-                if e.keystroke.key == "escape" {
-                    cx.emit(DismissEvent);
-                }
-            }))
             .absolute()
             .bottom_7()
             .right_1()

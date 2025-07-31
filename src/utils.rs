@@ -46,13 +46,30 @@ pub fn translate_key(ks: &Keystroke) -> helix_view::input::KeyEvent {
         "tab" => KeyCode::Tab,
         "escape" => KeyCode::Esc,
         "space" => KeyCode::Char(' '),
-        /* TODO */
+        "delete" => KeyCode::Delete,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" => KeyCode::PageUp,
+        "pagedown" => KeyCode::PageDown,
+        "f1" => KeyCode::F(1),
+        "f2" => KeyCode::F(2),
+        "f3" => KeyCode::F(3),
+        "f4" => KeyCode::F(4),
+        "f5" => KeyCode::F(5),
+        "f6" => KeyCode::F(6),
+        "f7" => KeyCode::F(7),
+        "f8" => KeyCode::F(8),
+        "f9" => KeyCode::F(9),
+        "f10" => KeyCode::F(10),
+        "f11" => KeyCode::F(11),
+        "f12" => KeyCode::F(12),
         any => {
             let chars: Vec<char> = key.chars().collect();
             if chars.len() == 1 {
                 KeyCode::Char(chars[0])
             } else {
-                todo!("{:?} key not implemented yet", any)
+                // Fallback for unhandled keys, might need further refinement
+                KeyCode::Null
             }
         }
     };

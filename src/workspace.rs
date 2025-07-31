@@ -86,7 +86,7 @@ impl Workspace {
         style.background = Some(bg.into());
 
         let info = cx.new_view(|cx| {
-            let view = InfoBoxView::new(style, &cx.focus_handle());
+            let view = InfoBoxView::new(style);
             view.subscribe(&editor, cx);
             view
         });
@@ -125,6 +125,8 @@ impl Workspace {
                 cx.notify();
             }
             crate::Update::Prompt(_) | crate::Update::Picker(_) => {
+                // When a picker or prompt appears, auto-dismiss the info box
+                self.info_hidden = true;
                 // handled by overlay
                 cx.notify();
             }
@@ -153,6 +155,13 @@ impl Workspace {
     }
 
     fn handle_key(&mut self, ev: &KeyDownEvent, cx: &mut ViewContext<Self>) {
+        // Check if we should dismiss the info box first
+        if ev.keystroke.key == "escape" && !self.info_hidden {
+            self.info_hidden = true;
+            cx.notify();
+            return; // Don't pass escape to editor when dismissing info box
+        }
+        
         let key = utils::translate_key(&ev.keystroke);
         self.input.update(cx, |_, cx| {
             cx.emit(InputEvent::Key(key));
@@ -377,15 +386,10 @@ impl Render for Workspace {
                 cx.focus_view(&view);
                 this.child(view.clone())
             })
-            // Temporarily disable info box until we fix focus issues
-            // .when(
-            //     !self.info_hidden && !self.info.read(cx).is_empty(),
-            //     |this| {
-            //         let info = &self.info;
-            //         cx.focus_view(&info);
-            //         this.child(info.clone())
-            //     },
-            // )
+            .when(
+                !self.info_hidden && !self.info.read(cx).is_empty(),
+                |this| this.child(self.info.clone()),
+            )
     }
 }
 

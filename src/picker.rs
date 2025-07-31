@@ -3,13 +3,82 @@ use gpui::*;
 use crate::utils::TextWithStyle;
 
 #[derive(Debug, Clone)]
-pub struct Picker(TextWithStyle);
+pub struct Picker(pub TextWithStyle);
 
 // TODO: this is copy-paste from Prompt, refactor it later
 impl Picker {
-    pub fn make<T: helix_term::ui::menu::Item + Send + Sync + 'static, D: Send + Sync + 'static>(
+    pub fn make<T: Send + Sync + 'static, D: Send + Sync + 'static>(
         editor: &mut helix_view::Editor,
         prompt: &mut helix_term::ui::Picker<T, D>,
+    ) -> Self {
+        use helix_term::compositor::Component;
+        let area = editor.tree.area();
+        let compositor_rect = helix_view::graphics::Rect {
+            x: 0,
+            y: 0,
+            width: area.width * 2 / 3,
+            height: area.height,
+        };
+
+        let mut comp_ctx = helix_term::compositor::Context {
+            editor,
+            scroll: None,
+            jobs: &mut helix_term::job::Jobs::new(),
+        };
+        let mut buf = tui::buffer::Buffer::empty(compositor_rect);
+        prompt.render(compositor_rect, &mut buf, &mut comp_ctx);
+        Self(TextWithStyle::from_buffer(buf))
+    }
+
+    pub fn make_jump_picker(
+        editor: &mut helix_view::Editor,
+        prompt: &mut helix_term::ui::Picker<crate::application::JumpMeta, ()>,
+    ) -> Self {
+        use helix_term::compositor::Component;
+        let area = editor.tree.area();
+        let compositor_rect = helix_view::graphics::Rect {
+            x: 0,
+            y: 0,
+            width: area.width * 2 / 3,
+            height: area.height,
+        };
+
+        let mut comp_ctx = helix_term::compositor::Context {
+            editor,
+            scroll: None,
+            jobs: &mut helix_term::job::Jobs::new(),
+        };
+        let mut buf = tui::buffer::Buffer::empty(compositor_rect);
+        prompt.render(compositor_rect, &mut buf, &mut comp_ctx);
+        Self(TextWithStyle::from_buffer(buf))
+    }
+
+    pub fn make_diagnostic_picker(
+        editor: &mut helix_view::Editor,
+        prompt: &mut helix_term::ui::Picker<crate::application::PickerDiagnostic, ()>,
+    ) -> Self {
+        use helix_term::compositor::Component;
+        let area = editor.tree.area();
+        let compositor_rect = helix_view::graphics::Rect {
+            x: 0,
+            y: 0,
+            width: area.width * 2 / 3,
+            height: area.height,
+        };
+
+        let mut comp_ctx = helix_term::compositor::Context {
+            editor,
+            scroll: None,
+            jobs: &mut helix_term::job::Jobs::new(),
+        };
+        let mut buf = tui::buffer::Buffer::empty(compositor_rect);
+        prompt.render(compositor_rect, &mut buf, &mut comp_ctx);
+        Self(TextWithStyle::from_buffer(buf))
+    }
+
+    pub fn make_symbol_picker(
+        editor: &mut helix_view::Editor,
+        prompt: &mut helix_term::ui::Picker<crate::application::SymbolInformationItem, ()>,
     ) -> Self {
         use helix_term::compositor::Component;
         let area = editor.tree.area();

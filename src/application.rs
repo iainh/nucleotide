@@ -1,21 +1,109 @@
-use std::{collections::btree_map::Entry, path::Path, sync::Arc};
+use std::{
+    collections::btree_map::Entry,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use arc_swap::{access::Map, ArcSwap};
 use futures_util::FutureExt;
-use helix_core::diagnostic::{DiagnosticProvider, Severity};
-use helix_core::{pos_at_coords, syntax, Position, Selection};
-
+use helix_core::{
+    diagnostic::{DiagnosticProvider, Severity},
+    pos_at_coords, syntax, Position, Selection,
+};
 use helix_lsp::{
-    lsp::{self, notification::Notification},
+    lsp::{self, notification::Notification, Location},
     LanguageServerId, LspProgressMap,
 };
 use helix_stdx::path::get_relative_path;
-use helix_term::job::Jobs;
+use helix_term::ui::FilePickerData;
+
+use helix_core::Uri;
+use helix_view::DocumentId;
 use helix_term::{
-    args::Args, compositor::Compositor, config::Config, keymap::Keymaps, ui::EditorView,
+    args::Args,
+    commands::MappableCommand as Command,
+    compositor::{self, Compositor},
+    config::Config,
+    job::Jobs,
+    keymap::Keymaps,
+    ui::EditorView,
 };
 use helix_view::document::DocumentSavedEventResult;
-use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, theme, Editor};
+use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, theme::Theme, Editor};
+
+#[derive(Debug, Clone)]
+pub struct JumpMeta {
+    pub id: helix_view::DocumentId,
+    pub path: Option<PathBuf>,
+    pub selection: helix_core::Selection,
+    pub text: String,
+    pub is_current: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PickerDiagnostic {
+    pub location: Location,
+    pub diag: helix_lsp::lsp::Diagnostic,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolInformationItem {
+    pub location: Location,
+    pub symbol: helix_lsp::lsp::SymbolInformation,
+}
+
+#[derive(Debug, Clone)]
+pub struct BufferMeta {
+    pub id: helix_view::DocumentId,
+    pub path: Option<PathBuf>,
+    pub is_modified: bool,
+    pub is_current: bool,
+    pub focused_at: std::time::Instant,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileChangeData {
+    pub cwd: PathBuf,
+    pub style_untracked: helix_view::graphics::Style,
+    pub style_modified: helix_view::graphics::Style,
+    pub style_conflict: helix_view::graphics::Style,
+    pub style_deleted: helix_view::graphics::Style,
+    pub style_renamed: helix_view::graphics::Style,
+}
+
+#[derive(Debug)]
+pub struct SearchState {
+    pub search_root: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagKind {
+    Class,
+    Constant,
+    Function,
+    Interface,
+    Macro,
+    Module,
+    Struct,
+    Type,
+}
+
+#[derive(Debug, Clone)]
+pub enum UriOrDocumentId {
+    Uri(Uri),
+    Id(DocumentId),
+}
+
+#[derive(Debug, Clone)]
+pub struct Tag {
+    pub kind: TagKind,
+    pub name: String,
+    pub start: usize,
+    pub end: usize,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub doc: UriOrDocumentId,
+}
 
 use anyhow::Error;
 use log::{debug, error, info, warn};
@@ -49,24 +137,116 @@ pub struct Crank;
 impl gpui::EventEmitter<()> for Crank {}
 
 impl Application {
+    fn try_create_picker_component(&mut self) -> Option<crate::picker::Picker> {
+        use crate::picker::Picker as PickerComponent;
+        use helix_term::ui::{overlay::Overlay, Picker};
+        
+        // Try to find any picker overlay and render it generically
+        // We'll try the known working types first, then fall back to a generic approach
+        
+        // Known working types
+        if let Some(p) = self
+            .compositor
+            .find_id::<Overlay<Picker<PathBuf, FilePickerData>>>(helix_term::ui::picker::ID)
+        {
+            return Some(PickerComponent::make(&mut self.editor, &mut p.content));
+        }
+        
+        if let Some(p) = self
+            .compositor
+            .find_id::<Overlay<Picker<Theme, ()>>>(helix_term::ui::picker::ID)
+        {
+            return Some(PickerComponent::make(&mut self.editor, &mut p.content));
+        }
+        
+        if let Some(p) = self
+            .compositor
+            .find_id::<Overlay<Picker<Command, ()>>>(helix_term::ui::picker::ID)
+        {
+            return Some(PickerComponent::make(&mut self.editor, &mut p.content));
+        }
+        
+        if let Some(p) = self
+            .compositor
+            .find_id::<Overlay<Picker<SymbolInformationItem, ()>>>(helix_term::ui::picker::ID)
+        {
+            return Some(PickerComponent::make_symbol_picker(&mut self.editor, &mut p.content));
+        }
+        
+        if let Some(p) = self
+            .compositor
+            .find_id::<Overlay<Picker<(usize, usize), ()>>>(helix_term::ui::picker::ID)
+        {
+            return Some(PickerComponent::make(&mut self.editor, &mut p.content));
+        }
+        
+        if let Some(p) = self
+            .compositor
+            .find_id::<Overlay<Picker<PickerDiagnostic, ()>>>(helix_term::ui::picker::ID)
+        {
+            return Some(PickerComponent::make_diagnostic_picker(&mut self.editor, &mut p.content));
+        }
+        
+        if let Some(p) = self
+            .compositor
+            .find_id::<Overlay<Picker<JumpMeta, ()>>>(helix_term::ui::picker::ID)
+        {
+            return Some(PickerComponent::make_jump_picker(&mut self.editor, &mut p.content));
+        }
+        
+        if let Some(p) = self
+            .compositor
+            .find_id::<Overlay<Picker<(std::path::PathBuf, bool), (std::path::PathBuf, helix_view::graphics::Style)>>>(helix_term::ui::picker::ID)
+        {
+            return Some(PickerComponent::make(&mut self.editor, &mut p.content));
+        }
+        
+        // Fallback: Try to render any picker generically using the Component trait
+        // This handles picker types we don't explicitly match above
+        self.try_render_any_picker()
+    }
+    
+    fn try_render_any_picker(&mut self) -> Option<crate::picker::Picker> {
+        // Alternative approach: Always try to render the compositor and see if there's any picker content
+        // This will work for any picker type, regardless of its generic parameters
+        self.render_compositor_picker()
+    }
+    
+    fn render_compositor_picker(&mut self) -> Option<crate::picker::Picker> {
+        use helix_term::compositor::Component;
+        use crate::utils::TextWithStyle;
+        
+        let area = self.editor.tree.area();
+        let compositor_rect = helix_view::graphics::Rect {
+            x: 0,
+            y: 0,
+            width: area.width * 2 / 3,
+            height: area.height,
+        };
+
+        let mut comp_ctx = helix_term::compositor::Context {
+            editor: &mut self.editor,
+            scroll: None,
+            jobs: &mut self.jobs,
+        };
+        
+        // Render the entire compositor to capture any picker
+        let mut buf = tui::buffer::Buffer::empty(compositor_rect);
+        self.compositor.render(compositor_rect, &mut buf, &mut comp_ctx);
+        
+        // Return the rendered buffer as a picker component
+        Some(crate::picker::Picker(TextWithStyle::from_buffer(buf)))
+    }
+
     fn emit_overlays(&mut self, cx: &mut gpui::ModelContext<'_, crate::Core>) {
         use crate::picker::Picker as PickerComponent;
         use crate::prompt::Prompt;
-        use helix_term::ui::{overlay::Overlay, Picker};
-        use std::path::PathBuf;
 
-        let picker = {
-            // TODO: Fix PathBuf Item trait implementation
-            // Temporarily disabled until PathBuf implements the Item trait properly
-            /*
-        if let Some(p) = self
-            .compositor
-            .find_id::<Overlay<Picker<PathBuf, ()>>>(helix_term::ui::picker::ID)
-        {
-            println!("found file picker");
-            Some(PickerComponent::make(&mut self.editor, &mut p.content))
+        let picker = self.try_create_picker_component();
+        
+        let prompt = if let Some(p) = self.compositor.find::<helix_term::ui::Prompt>() {
+            Some(Prompt::make(&mut self.editor, p))
         } else {
-            */
             None
         };
         let prompt = if let Some(p) = self.compositor.find::<helix_term::ui::Prompt>() {
@@ -87,7 +267,6 @@ impl Application {
             cx.emit(crate::Update::Info(info));
         }
     }
-
     pub fn handle_input_event(
         &mut self,
         event: InputEvent,
@@ -96,7 +275,7 @@ impl Application {
     ) {
         let _guard = handle.enter();
         use helix_term::compositor::{Component, EventResult};
-        let mut comp_ctx = helix_term::compositor::Context {
+        let mut comp_ctx = compositor::Context {
             editor: &mut self.editor,
             scroll: None,
             jobs: &mut self.jobs,
@@ -392,8 +571,14 @@ impl Application {
                             }
                         }
 
-                        let provider = DiagnosticProvider::Lsp { server_id, identifier: None };
-                        let diagnostics = params.diagnostics.into_iter().map(|d| (d, provider.clone()));
+                        let provider = DiagnosticProvider::Lsp {
+                            server_id,
+                            identifier: None,
+                        };
+                        let diagnostics = params
+                            .diagnostics
+                            .into_iter()
+                            .map(|d| (d, provider.clone()));
 
                         // Insert the original lsp::Diagnostics here because we may have no open document
                         // for diagnosic message and so we can't calculate the exact position.
@@ -436,7 +621,10 @@ impl Application {
                             doc.replace_diagnostics(
                                 diagnostics,
                                 &unchanged_diag_sources,
-                                Some(&DiagnosticProvider::Lsp { server_id, identifier: None }),
+                                Some(&DiagnosticProvider::Lsp {
+                                    server_id,
+                                    identifier: None,
+                                }),
                             );
                         }
                     }
@@ -445,89 +633,6 @@ impl Application {
                     }
                     Notification::LogMessage(params) => {
                         log::info!("window/logMessage: {:?}", params);
-                    }
-                    Notification::ProgressMessage(_params) => {
-                        //     if !self
-                        //         .compositor
-                        //         .has_component(std::any::type_name::<ui::Prompt>()) =>
-                        // {
-                        // let editor_view = self
-                        //     .compositor
-                        //     .find::<ui::EditorView>()
-                        //     .expect("expected at least one EditorView");
-                        // let lsp::ProgressParams { token, value } = params;
-
-                        // let lsp::ProgressParamsValue::WorkDone(work) = value;
-                        // let parts = match &work {
-                        //     lsp::WorkDoneProgress::Begin(lsp::WorkDoneProgressBegin {
-                        //         title,
-                        //         message,
-                        //         percentage,
-                        //         ..
-                        //     }) => (Some(title), message, percentage),
-                        //     lsp::WorkDoneProgress::Report(lsp::WorkDoneProgressReport {
-                        //         message,
-                        //         percentage,
-                        //         ..
-                        //     }) => (None, message, percentage),
-                        //     lsp::WorkDoneProgress::End(lsp::WorkDoneProgressEnd { message }) => {
-                        //         if message.is_some() {
-                        //             (None, message, &None)
-                        //         } else {
-                        //             self.lsp_progress.end_progress(server_id, &token);
-                        //             if !self.lsp_progress.is_progressing(server_id) {
-                        //                 editor_view.spinners_mut().get_or_create(server_id).stop();
-                        //             }
-                        //             self.editor.clear_status();
-
-                        //             // we want to render to clear any leftover spinners or messages
-                        //             return;
-                        //         }
-                        //     }
-                        // };
-
-                        // let token_d: &dyn std::fmt::Display = match &token {
-                        //     lsp::NumberOrString::Number(n) => n,
-                        //     lsp::NumberOrString::String(s) => s,
-                        // };
-
-                        // let status = match parts {
-                        //     (Some(title), Some(message), Some(percentage)) => {
-                        //         format!("[{}] {}% {} - {}", token_d, percentage, title, message)
-                        //     }
-                        //     (Some(title), None, Some(percentage)) => {
-                        //         format!("[{}] {}% {}", token_d, percentage, title)
-                        //     }
-                        //     (Some(title), Some(message), None) => {
-                        //         format!("[{}] {} - {}", token_d, title, message)
-                        //     }
-                        //     (None, Some(message), Some(percentage)) => {
-                        //         format!("[{}] {}% {}", token_d, percentage, message)
-                        //     }
-                        //     (Some(title), None, None) => {
-                        //         format!("[{}] {}", token_d, title)
-                        //     }
-                        //     (None, Some(message), None) => {
-                        //         format!("[{}] {}", token_d, message)
-                        //     }
-                        //     (None, None, Some(percentage)) => {
-                        //         format!("[{}] {}%", token_d, percentage)
-                        //     }
-                        //     (None, None, None) => format!("[{}]", token_d),
-                        // };
-
-                        // if let lsp::WorkDoneProgress::End(_) = work {
-                        //     self.lsp_progress.end_progress(server_id, &token);
-                        //     if !self.lsp_progress.is_progressing(server_id) {
-                        //         editor_view.spinners_mut().get_or_create(server_id).stop();
-                        //     }
-                        // } else {
-                        //     self.lsp_progress.update(server_id, token, work);
-                        // }
-
-                        // if self.config.load().editor.lsp.display_messages {
-                        //     self.editor.set_status(status);
-                        // }
                     }
                     Notification::ProgressMessage(_params) => {
                         // do nothing
@@ -539,7 +644,9 @@ impl Application {
                         // we need to clear those and remove the entries from the list if this leads to
                         // an empty diagnostic list for said files
                         for diags in self.editor.diagnostics.values_mut() {
-                            diags.retain(|(_, provider)| provider.language_server_id() != Some(server_id));
+                            diags.retain(|(_, provider)| {
+                                provider.language_server_id() != Some(server_id)
+                            });
                         }
 
                         self.editor.diagnostics.retain(|_, diags| !diags.is_empty());
@@ -724,7 +831,7 @@ pub fn init_editor(
 
     let mut theme_parent_dirs = vec![helix_loader::config_dir()];
     theme_parent_dirs.extend(helix_loader::runtime_dirs().iter().cloned());
-    let theme_loader = std::sync::Arc::new(theme::Loader::new(&theme_parent_dirs));
+    let theme_loader = std::sync::Arc::new(helix_view::theme::Loader::new(&theme_parent_dirs));
 
     let true_color = true;
     let theme = config
