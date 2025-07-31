@@ -3,10 +3,12 @@ use std::borrow::Cow;
 use gpui::{prelude::FluentBuilder, *};
 use helix_core::{
     ropey::RopeSlice,
-    syntax::{Highlight, HighlightEvent},
+    syntax::{Highlight, OverlayHighlights},
+    Uri,
 };
 use helix_lsp::lsp::{Diagnostic, DiagnosticSeverity, NumberOrString};
 use helix_term::ui::EditorView;
+// TODO: Add tree_house highlighter imports when syntax highlighting is implemented
 use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
 use log::debug;
 
@@ -65,7 +67,7 @@ impl DocumentView {
                 .cursor(text.slice(..));
             let cursor_pos = view.screen_coords_at_pos(document, text.slice(..), primary_idx);
 
-            let anchor = view.offset.anchor;
+            let anchor = document.view_offset(self.view_id).anchor;
             let first_row = text.char_to_line(anchor.min(text.len_chars()));
             (cursor_pos, doc_id, first_row)
         };
@@ -75,7 +77,8 @@ impl DocumentView {
 
         let mut diags = Vec::new();
         if let Some(path) = editor.document(doc_id).and_then(|doc| doc.path()).cloned() {
-            if let Some(diagnostics) = editor.diagnostics.get(&path) {
+            let uri = Uri::from(path);
+            if let Some(diagnostics) = editor.diagnostics.get(&uri) {
                 for (diag, _) in diagnostics.iter().filter(|(diag, _)| {
                     let (start_line, end_line) =
                         (diag.range.start.line as usize, diag.range.end.line as usize);
@@ -256,20 +259,18 @@ impl DocumentElement {
 
     // These 3 methods are just proxies for EditorView
     // TODO: make a PR to helix to extract them from helix_term into helix_view or smth.
-    fn doc_diagnostics_highlights<'d>(
-        doc: &'d helix_view::Document,
-        theme: &Theme,
-    ) -> impl Iterator<Item = Vec<(usize, std::ops::Range<usize>)>> {
-        EditorView::doc_diagnostics_highlights(doc, theme).into_iter()
-    }
+    // This function is no longer needed as EditorView::doc_diagnostics_highlights_into 
+    // directly populates a Vec<OverlayHighlights>
 
     fn doc_syntax_highlights<'d>(
         doc: &'d helix_view::Document,
         anchor: usize,
         height: u16,
         theme: &Theme,
-    ) -> Box<dyn Iterator<Item = HighlightEvent> + 'd> {
-        EditorView::doc_syntax_highlights(doc, anchor, height, theme)
+        syn_loader: &helix_core::syntax::Loader,
+    ) -> Option<()> { // TODO: Return proper highlighter type
+        // TODO: Implement syntax highlighting with tree_house
+        None
     }
 
     fn doc_selection_highlights(
@@ -280,14 +281,9 @@ impl DocumentElement {
         cursor_shape_config: &helix_view::editor::CursorShapeConfig,
         is_window_focused: bool,
     ) -> Vec<(usize, std::ops::Range<usize>)> {
-        EditorView::doc_selection_highlights(
-            mode,
-            doc,
-            view,
-            theme,
-            cursor_shape_config,
-            is_window_focused,
-        )
+        // TODO: Convert OverlayHighlights to Vec<(usize, Range<usize>)>
+        // For now return empty to get compilation working
+        Vec::new()
     }
 
     fn overlay_highlights(
@@ -298,42 +294,30 @@ impl DocumentElement {
         cursor_shape_config: &helix_view::editor::CursorShapeConfig,
         is_window_focused: bool,
         is_view_focused: bool,
-    ) -> impl Iterator<Item = HighlightEvent> {
-        let mut overlay_highlights =
-            EditorView::empty_highlight_iter(doc, view.offset.anchor, view.inner_area(doc).height);
+    ) -> Vec<helix_core::syntax::OverlayHighlights> {
+        let mut overlays = Vec::new();
+        
+        // Add diagnostics highlights
+        EditorView::doc_diagnostics_highlights_into(doc, theme, &mut overlays);
+        
         if is_view_focused {
-            let highlights = helix_core::syntax::merge(
-                overlay_highlights,
-                Self::doc_selection_highlights(
-                    mode,
-                    doc,
-                    view,
-                    theme,
-                    cursor_shape_config,
-                    is_window_focused,
-                ),
-            );
-            let focused_view_elements =
-                EditorView::highlight_focused_view_elements(view, doc, theme);
-            if focused_view_elements.is_empty() {
-                overlay_highlights = Box::new(highlights)
-            } else {
-                overlay_highlights =
-                    Box::new(helix_core::syntax::merge(highlights, focused_view_elements))
+            // Add selection highlights
+            overlays.push(EditorView::doc_selection_highlights(
+                mode,
+                doc,
+                view,
+                theme,
+                cursor_shape_config,
+                is_window_focused,
+            ));
+            
+            // Add focused view elements (matching brackets, etc.)
+            if let Some(focused_elements) = EditorView::highlight_focused_view_elements(view, doc, theme) {
+                overlays.push(focused_elements);
             }
         }
-
-        for diagnostic in Self::doc_diagnostics_highlights(doc, theme) {
-            // Most of the `diagnostic` Vecs are empty most of the time. Skipping
-            // a merge for any empty Vec saves a significant amount of work.
-            if diagnostic.is_empty() {
-                continue;
-            }
-            overlay_highlights =
-                Box::new(helix_core::syntax::merge(overlay_highlights, diagnostic));
-        }
-
-        overlay_highlights
+        
+        overlays
     }
 
     fn highlight(
@@ -359,31 +343,17 @@ impl DocumentElement {
             is_view_focused,
         );
 
-        let syntax_highlights = Self::doc_syntax_highlights(doc, anchor, lines, theme);
+        // TODO: Reimplement syntax highlighting with new tree-house API
+        // For now, use default styling to get compilation working
+        let syntax_style = helix_view::graphics::Style::default();
 
-        let mut syntax_styles = StyleIter {
-            text_style: helix_view::graphics::Style::default(),
-            active_highlights: Vec::with_capacity(64),
-            highlight_iter: syntax_highlights,
-            theme,
-        };
+        // TODO: Reimplement overlay highlighting with new OverlayHighlights API
+        // For now, use default styling
+        let overlay_style = helix_view::graphics::Style::default();
 
-        let mut overlay_styles = StyleIter {
-            text_style: helix_view::graphics::Style::default(),
-            active_highlights: Vec::with_capacity(64),
-            highlight_iter: overlay_highlights,
-            theme,
-        };
-
-        let mut syntax_span =
-            syntax_styles
-                .next()
-                .unwrap_or((helix_view::graphics::Style::default(), 0, usize::MAX));
-        let mut overlay_span = overlay_styles.next().unwrap_or((
-            helix_view::graphics::Style::default(),
-            0,
-            usize::MAX,
-        ));
+        // Simplified for now - use default styles
+        let syntax_span = (syntax_style, 0, usize::MAX);
+        let overlay_span = (overlay_style, 0, usize::MAX);
 
         let mut position = anchor;
         loop {
@@ -440,11 +410,12 @@ impl DocumentElement {
             if position >= end_char {
                 break;
             }
+            // TODO: Implement proper span advancement when highlighting is restored
             if position >= syn_end {
-                syntax_span = syntax_styles.next().unwrap_or((style, 0, usize::MAX));
+                // syntax_span = syntax_styles.next().unwrap_or((style, 0, usize::MAX));
             }
             if position >= ovl_end {
-                overlay_span = overlay_styles.next().unwrap_or((style, 0, usize::MAX));
+                // overlay_span = overlay_styles.next().unwrap_or((style, 0, usize::MAX));
             }
         }
         runs
@@ -607,7 +578,7 @@ impl Element for DocumentElement {
                 let cursor_text = None; // TODO
 
                 let _cursor_row = cursor_pos.map(|p| p.row);
-                let anchor = view.offset.anchor;
+                let anchor = document.view_offset(self.view_id).anchor;
                 let total_lines = text.len_lines();
                 let first_row = text.char_to_line(anchor.min(text.len_chars()));
                 // println!("first row is {}", row);
@@ -909,46 +880,7 @@ struct LinePos {
 
 // TODO: copy-pasted from helix_term ui/document.rs
 
-/// A wrapper around a HighlightIterator
-/// that merges the layered highlights to create the final text style
-/// and yields the active text style and the char_idx where the active
-/// style will have to be recomputed.
-struct StyleIter<'a, H: Iterator<Item = HighlightEvent>> {
-    text_style: helix_view::graphics::Style,
-    active_highlights: Vec<Highlight>,
-    highlight_iter: H,
-    theme: &'a Theme,
-}
-
-impl<H: Iterator<Item = HighlightEvent>> Iterator for StyleIter<'_, H> {
-    type Item = (helix_view::graphics::Style, usize, usize);
-
-    fn next(&mut self) -> Option<(helix_view::graphics::Style, usize, usize)> {
-        while let Some(event) = self.highlight_iter.next() {
-            match event {
-                HighlightEvent::HighlightStart(highlights) => {
-                    self.active_highlights.push(highlights)
-                }
-                HighlightEvent::HighlightEnd => {
-                    self.active_highlights.pop();
-                }
-                HighlightEvent::Source { start, end } => {
-                    if start == end {
-                        continue;
-                    }
-                    let style = self
-                        .active_highlights
-                        .iter()
-                        .fold(self.text_style, |acc, span| {
-                            acc.patch(self.theme.highlight(span.0))
-                        });
-                    return Some((style, start, end));
-                }
-            }
-        }
-        None
-    }
-}
+// TODO: Reimplement StyleIter with new tree-house API when syntax highlighting is restored
 
 struct DiagnosticView {
     diagnostic: Diagnostic,

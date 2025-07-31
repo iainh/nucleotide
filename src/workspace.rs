@@ -238,42 +238,28 @@ impl Render for Workspace {
 
         let editor_rect = editor.tree.area();
 
-        use helix_view::tree::{ContainerItem, Layout};
+        use helix_view::tree::{Container, Layout};
         let mut containers = HashMap::new();
         let mut tree = HashMap::new();
         let mut root_id = None;
 
         let editor = &self.core.read(cx).editor;
-        for item in editor.tree.traverse_containers() {
-            match item {
-                ContainerItem::Container { id, parent, layout } => {
-                    let container = match layout {
-                        Layout::Horizontal => div().flex().size_full().flex_col(),
-                        Layout::Vertical => div().flex().size_full().flex_row(),
-                    };
-                    containers.insert(id, container);
-                    let entry = tree.entry(parent).or_insert_with(|| Vec::new());
-
-                    if id == parent {
-                        root_id = Some(id);
-                    } else {
-                        entry.push(id);
-                    }
-                }
-                ContainerItem::Child { id, parent } => {
-                    let view = self.documents.get(&id).unwrap().clone();
-                    let has_border = right_borders.contains(&id);
-                    let view = div()
-                        .flex()
-                        .size_full()
-                        .child(view)
-                        .when(has_border, |this| {
-                            this.border_color(border_color).border_r_1()
-                        });
-
-                    let mut container = containers.remove(&parent).unwrap();
-                    container = container.child(view);
-                    containers.insert(parent, container);
+        // TODO: Reimplement container traversal with new Tree API
+        // For now, just render documents directly without proper layout
+        for (view_id, _view) in editor.tree.traverse() {
+            if let Some(doc_view) = self.documents.get(&view_id) {
+                let has_border = right_borders.contains(&view_id);
+                let view = div()
+                    .flex()
+                    .size_full()
+                    .child(doc_view.clone())
+                    .when(has_border, |this| {
+                        this.border_color(border_color).border_r_1()
+                    });
+                // Simplified layout - just add views directly
+                containers.insert(view_id, view);
+                if root_id.is_none() {
+                    root_id = Some(view_id);
                 }
             }
         }

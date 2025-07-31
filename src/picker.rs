@@ -7,9 +7,9 @@ pub struct Picker(TextWithStyle);
 
 // TODO: this is copy-paste from Prompt, refactor it later
 impl Picker {
-    pub fn make<T: helix_term::ui::menu::Item>(
+    pub fn make<T: helix_term::ui::menu::Item + Send + Sync + 'static, D: Send + Sync + 'static>(
         editor: &mut helix_view::Editor,
-        prompt: &mut helix_term::ui::Picker<T>,
+        prompt: &mut helix_term::ui::Picker<T, D>,
     ) -> Self {
         use helix_term::compositor::Component;
         let area = editor.tree.area();

@@ -318,9 +318,9 @@ FLAGS:
     setup_logging(args.verbosity).context("failed to initialize logging")?;
 
     // Before setting the working directory, resolve all the paths in args.files
-    for (path, _) in args.files.iter_mut() {
-        *path = helix_stdx::path::canonicalize(&path);
-    }
+    args.files = args.files.into_iter().map(|(path, pos)| {
+        (helix_stdx::path::canonicalize(&path), pos)
+    }).collect();
 
     // NOTE: Set the working directory early so the correct configuration is loaded. Be aware that
     // Application::new() depends on this logic so it must be updated if this changes.

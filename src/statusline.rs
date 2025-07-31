@@ -217,6 +217,7 @@ mod copy_pasta {
             helix_view::editor::StatusLineElement::Spacer => render_spacer,
             helix_view::editor::StatusLineElement::VersionControl => render_version_control,
             helix_view::editor::StatusLineElement::Register => render_register,
+            helix_view::editor::StatusLineElement::FileIndentStyle => render_spacer, // TODO: implement proper indent style rendering
         }
     }
 

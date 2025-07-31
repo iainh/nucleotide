@@ -6,7 +6,7 @@ use crate::utils::TextWithStyle;
 pub struct Prompt(TextWithStyle);
 
 impl Prompt {
-    pub fn make(editor: &mut helix_view::Editor, prompt: &helix_term::ui::Prompt) -> Prompt {
+    pub fn make(editor: &mut helix_view::Editor, prompt: &mut helix_term::ui::Prompt) -> Prompt {
         let area = editor.tree.area();
         let compositor_rect = helix_view::graphics::Rect {
             x: 0,

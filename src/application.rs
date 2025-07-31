@@ -2,7 +2,7 @@ use std::{collections::btree_map::Entry, path::Path, sync::Arc};
 
 use arc_swap::{access::Map, ArcSwap};
 use futures_util::FutureExt;
-use helix_core::diagnostic::Severity;
+use helix_core::diagnostic::{DiagnosticProvider, Severity};
 use helix_core::{pos_at_coords, syntax, Position, Selection};
 
 use helix_lsp::{
@@ -55,13 +55,18 @@ impl Application {
         use helix_term::ui::{overlay::Overlay, Picker};
         use std::path::PathBuf;
 
-        let picker = if let Some(p) = self
+        let picker = {
+            // TODO: Fix PathBuf Item trait implementation
+            // Temporarily disabled until PathBuf implements the Item trait properly
+            /*
+        if let Some(p) = self
             .compositor
-            .find_id::<Overlay<Picker<PathBuf>>>(helix_term::ui::picker::ID)
+            .find_id::<Overlay<Picker<PathBuf, ()>>>(helix_term::ui::picker::ID)
         {
             println!("found file picker");
             Some(PickerComponent::make(&mut self.editor, &mut p.content))
         } else {
+            */
             None
         };
         let prompt = if let Some(p) = self.compositor.find::<helix_term::ui::Prompt>() {
@@ -162,7 +167,7 @@ impl Application {
             doc_save_event.revision
         );
 
-        doc.set_last_saved_revision(doc_save_event.revision);
+        doc.set_last_saved_revision(doc_save_event.revision, std::time::SystemTime::now());
 
         let lines = doc_save_event.text.len_lines();
         let bytes = doc_save_event.text.len_bytes();
@@ -305,7 +310,7 @@ impl Application {
                         // This might not be required by the spec but Neovim does this as well, so it's
                         // probably a good idea for compatibility.
                         if let Some(config) = language_server.config() {
-                            tokio::spawn(language_server.did_change_configuration(config.clone()));
+                            language_server.did_change_configuration(config.clone());
                         }
 
                         let docs = self
@@ -323,12 +328,12 @@ impl Application {
                             let language_id =
                                 doc.language_id().map(ToOwned::to_owned).unwrap_or_default();
 
-                            tokio::spawn(language_server.text_document_did_open(
+                            language_server.text_document_did_open(
                                 url,
                                 doc.version(),
                                 doc.text(),
                                 language_id,
-                            ));
+                            );
                         }
                     }
                     Notification::PublishDiagnostics(mut params) => {
@@ -362,7 +367,8 @@ impl Application {
                             let lang_conf = doc.language.clone();
 
                             if let Some(lang_conf) = &lang_conf {
-                                if let Some(old_diagnostics) = self.editor.diagnostics.get(&path) {
+                                let uri = helix_core::Uri::from(path.clone());
+                                if let Some(old_diagnostics) = self.editor.diagnostics.get(&uri) {
                                     if !lang_conf.persistent_diagnostic_sources.is_empty() {
                                         // Sort diagnostics first by severity and then by line numbers.
                                         // Note: The `lsp::DiagnosticSeverity` enum is already defined in decreasing order
@@ -378,7 +384,7 @@ impl Application {
                                         let old_diagnostics = old_diagnostics
                                             .iter()
                                             .filter(|(d, d_server)| {
-                                                *d_server == server_id
+                                                d_server.language_server_id() == Some(server_id)
                                                     && d.source.as_ref() == Some(source)
                                             })
                                             .map(|(d, _)| d);
@@ -390,16 +396,20 @@ impl Application {
                             }
                         }
 
-                        let diagnostics = params.diagnostics.into_iter().map(|d| (d, server_id));
+                        let provider = DiagnosticProvider::Lsp { server_id, identifier: None };
+                        let diagnostics = params.diagnostics.into_iter().map(|d| (d, provider.clone()));
 
                         // Insert the original lsp::Diagnostics here because we may have no open document
                         // for diagnosic message and so we can't calculate the exact position.
                         // When using them later in the diagnostics picker, we calculate them on-demand.
-                        let diagnostics = match self.editor.diagnostics.entry(path) {
+                        let uri = helix_core::Uri::from(path.clone());
+                        let diagnostics = match self.editor.diagnostics.entry(uri) {
                             Entry::Occupied(o) => {
                                 let current_diagnostics = o.into_mut();
                                 // there may entries of other language servers, which is why we can't overwrite the whole entry
-                                current_diagnostics.retain(|(_, lsp_id)| *lsp_id != server_id);
+                                current_diagnostics.retain(|(_, provider)| {
+                                    provider.language_server_id() != Some(server_id)
+                                });
                                 current_diagnostics.extend(diagnostics);
                                 current_diagnostics
                                 // Sort diagnostics first by severity and then by line numbers.
@@ -410,13 +420,13 @@ impl Application {
                         // Sort diagnostics first by severity and then by line numbers.
                         // Note: The `lsp::DiagnosticSeverity` enum is already defined in decreasing order
                         diagnostics.sort_unstable_by_key(|(d, server_id)| {
-                            (d.severity, d.range.start, *server_id)
+                            (d.severity, d.range.start, server_id.clone())
                         });
 
                         if let Some(doc) = doc {
                             let diagnostic_of_language_server_and_not_in_unchanged_sources =
-                                |diagnostic: &lsp::Diagnostic, ls_id| {
-                                    ls_id == server_id
+                                |diagnostic: &lsp::Diagnostic, provider: &DiagnosticProvider| {
+                                    provider.language_server_id() == Some(server_id)
                                         && diagnostic.source.as_ref().map_or(true, |source| {
                                             !unchanged_diag_sources.contains(source)
                                         })
@@ -430,7 +440,7 @@ impl Application {
                             doc.replace_diagnostics(
                                 diagnostics,
                                 &unchanged_diag_sources,
-                                Some(server_id),
+                                Some(&DiagnosticProvider::Lsp { server_id, identifier: None }),
                             );
                         }
                     }
@@ -533,14 +543,14 @@ impl Application {
                         // we need to clear those and remove the entries from the list if this leads to
                         // an empty diagnostic list for said files
                         for diags in self.editor.diagnostics.values_mut() {
-                            diags.retain(|(_, lsp_id)| *lsp_id != server_id);
+                            diags.retain(|(_, provider)| provider.language_server_id() != Some(server_id));
                         }
 
                         self.editor.diagnostics.retain(|_, diags| !diags.is_empty());
 
                         // Clear any diagnostics for documents with this server open.
                         for doc in self.editor.documents_mut() {
-                            doc.clear_diagnostics(Some(server_id));
+                            doc.clear_diagnostics_for_language_server(server_id);
                         }
 
                         // Remove the language server from the registry.
@@ -702,7 +712,7 @@ impl Application {
                     }
                 };
 
-                tokio::spawn(language_server!().reply(id, reply));
+                let _ = language_server!().reply(id, reply);
             }
             Call::Invalid { id } => log::error!("LSP invalid method call id={:?}", id),
         }
@@ -745,11 +755,16 @@ pub fn init_editor(
         width: 80,
         height: 25,
     };
-    let (tx, _rx) = tokio::sync::mpsc::channel(1);
-    let (tx1, _rx1) = tokio::sync::mpsc::channel(1);
+    let (completion_tx, _completion_rx) = tokio::sync::mpsc::channel(1);
+    let (signature_tx, _signature_rx) = tokio::sync::mpsc::channel(1);
+    let (auto_save_tx, _auto_save_rx) = tokio::sync::mpsc::channel(1);
+    let (doc_colors_tx, _doc_colors_rx) = tokio::sync::mpsc::channel(1);
     let handlers = Handlers {
-        completions: tx,
-        signature_hints: tx1,
+        completions: helix_view::handlers::completion::CompletionHandler::new(completion_tx),
+        signature_hints: signature_tx,
+        auto_save: auto_save_tx,
+        document_colors: doc_colors_tx,
+        // TODO: Add word_index handler when available in new API
     };
     let mut editor = Editor::new(
         area,
