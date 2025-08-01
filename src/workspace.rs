@@ -141,8 +141,6 @@ impl Workspace {
         }
     }
 
-    
-
     fn handle_key(&mut self, ev: &KeyDownEvent, cx: &mut ViewContext<Self>) {
         // Check if we should dismiss the info box first
         if ev.keystroke.key == "escape" && !self.info_hidden {
@@ -150,14 +148,23 @@ impl Workspace {
             cx.notify();
             return; // Don't pass escape to editor when dismissing info box
         }
-        
+
+        // Check if overlay has a native picker - if so, don't consume key events
+        // Let GPUI actions bubble up to the picker instead
+        let overlay_view = &self.overlay.read(cx);
+        if !overlay_view.is_empty() {
+            // Check if it has a native picker by checking if it would render one
+            // For now, just skip helix key processing when overlay is not empty
+            // The picker will handle its own key events via GPUI actions
+            println!("🚫 Skipping helix key processing - overlay active");
+            return;
+        }
+
         let key = utils::translate_key(&ev.keystroke);
         self.input.update(cx, |_, cx| {
             cx.emit(InputEvent::Key(key));
         })
     }
-
-    
 
     fn make_views(
         &mut self,
@@ -293,7 +300,6 @@ impl Render for Workspace {
             .items_center()
             .child(label);
 
-
         self.core.update(cx, |core, _cx| {
             core.compositor.resize(editor_rect);
         });
@@ -372,27 +378,16 @@ fn load_tutor(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut ViewCo
 }
 
 fn open(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
-    let path = cx.prompt_for_paths(PathPromptOptions {
-        files: true,
-        directories: false,
-        multiple: false,
+    // Create and emit a native file picker instead of using system dialog
+    core.update(cx, move |core, cx| {
+        let _guard = handle.enter();
+        
+        // Create a native file picker directly
+        let native_picker = core.create_sample_native_file_picker();
+        
+        // Emit the picker to show it in the overlay
+        cx.emit(crate::Update::Picker(native_picker));
     });
-    cx.spawn(move |mut cx| async move {
-        if let Ok(Some(path)) = path.await {
-            use helix_view::editor::Action;
-            // TODO: handle errors
-            cx.update(move |cx| {
-                core.update(cx, move |core, _cx| {
-                    let path = &path[0];
-                    let _guard = handle.enter();
-                    let editor = &mut core.editor;
-                    editor.open(path, Action::Replace).unwrap();
-                })
-            })
-            .unwrap();
-        }
-    })
-    .detach();
 }
 
 fn quit(core: Model<Core>, rt: tokio::runtime::Handle, cx: &mut WindowContext) {

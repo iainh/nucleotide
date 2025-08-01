@@ -20,6 +20,7 @@ mod info_box;
 mod notification;
 mod overlay;
 mod picker;
+mod picker_view;
 mod prompt;
 mod statusline;
 mod utils;
@@ -76,7 +77,10 @@ fn window_options(_cx: &mut AppContext) -> gpui::WindowOptions {
         }),
         window_bounds: Some(WindowBounds::Windowed(gpui::Bounds {
             origin: gpui::point(gpui::DevicePixels::from(100), gpui::DevicePixels::from(100)),
-            size: gpui::size(gpui::DevicePixels::from(1200), gpui::DevicePixels::from(800)),
+            size: gpui::size(
+                gpui::DevicePixels::from(1200),
+                gpui::DevicePixels::from(800),
+            ),
         })),
         focus: true,
         show: true,
@@ -104,7 +108,13 @@ actions!(
         Minimize,
         MinimizeAll,
         Zoom,
-        Tutor
+        Tutor,
+        Cancel,
+        Confirm,
+        SelectPrev,
+        SelectNext,
+        MoveUp,
+        MoveDown
     ]
 );
 
@@ -191,7 +201,7 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
                 mc.spawn(|crank, mut cx| async move {
                     loop {
                         cx.background_executor()
-                            .timer(Duration::from_millis(200))  // 5fps instead of 20fps
+                            .timer(Duration::from_millis(200)) // 5fps instead of 20fps
                             .await;
                         let _ = crank.update(&mut cx, |_crank, cx| {
                             cx.emit(());
@@ -225,6 +235,14 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
 
             cx.activate(true);
             cx.set_menus(app_menus());
+            
+            // Set up keybindings for picker actions
+            cx.bind_keys([
+                gpui::KeyBinding::new("up", MoveUp, None),
+                gpui::KeyBinding::new("down", MoveDown, None),
+                gpui::KeyBinding::new("enter", Confirm, None),
+                gpui::KeyBinding::new("escape", Cancel, None),
+            ]);
 
             let font_settings = FontSettings {
                 fixed_font: gpui::font("JetBrains Mono"),
@@ -322,9 +340,11 @@ FLAGS:
     setup_logging(args.verbosity).context("failed to initialize logging")?;
 
     // Before setting the working directory, resolve all the paths in args.files
-    args.files = args.files.into_iter().map(|(path, pos)| {
-        (helix_stdx::path::canonicalize(&path), pos)
-    }).collect();
+    args.files = args
+        .files
+        .into_iter()
+        .map(|(path, pos)| (helix_stdx::path::canonicalize(&path), pos))
+        .collect();
 
     // NOTE: Set the working directory early so the correct configuration is loaded. Be aware that
     // Application::new() depends on this logic so it must be updated if this changes.

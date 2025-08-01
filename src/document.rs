@@ -260,7 +260,7 @@ impl DocumentElement {
 
     // These 3 methods are just proxies for EditorView
     // TODO: make a PR to helix to extract them from helix_term into helix_view or smth.
-    // This function is no longer needed as EditorView::doc_diagnostics_highlights_into 
+    // This function is no longer needed as EditorView::doc_diagnostics_highlights_into
     // directly populates a Vec<OverlayHighlights>
 
     fn doc_syntax_highlights<'d>(
@@ -272,7 +272,7 @@ impl DocumentElement {
     ) -> Option<syntax::Highlighter<'d>> {
         let syntax = doc.syntax()?;
         debug!("Document has syntax support for: {:?}", doc.language_name());
-        
+
         let text = doc.text().slice(..);
         let row = text.char_to_line(anchor.min(text.len_chars()));
         let range = Self::viewport_byte_range(text, row, height);
@@ -283,11 +283,7 @@ impl DocumentElement {
         Some(highlighter)
     }
 
-    fn viewport_byte_range(
-        text: RopeSlice,
-        row: usize,
-        height: u16,
-    ) -> std::ops::Range<usize> {
+    fn viewport_byte_range(text: RopeSlice, row: usize, height: u16) -> std::ops::Range<usize> {
         let start = text.line_to_byte(row);
         let end_row = (row + height as usize).min(text.len_lines());
         let end = text.line_to_byte(end_row);
@@ -341,18 +337,15 @@ impl DocumentElement {
     ) -> Vec<TextRun> {
         let mut runs = vec![];
         let loader = editor.syn_loader.load();
-        
+
         // Get syntax highlighter
-        let syntax_highlighter = Self::doc_syntax_highlights(
-            doc,
-            anchor,
-            lines,
-            theme,
-            &loader,
+        let syntax_highlighter = Self::doc_syntax_highlights(doc, anchor, lines, theme, &loader);
+
+        debug!(
+            "Syntax highlighter created: {}",
+            syntax_highlighter.is_some()
         );
-        
-        debug!("Syntax highlighter created: {}", syntax_highlighter.is_some());
-        
+
         // Get overlay highlights
         let overlay_highlights = Self::overlay_highlights(
             editor.mode(),
@@ -363,7 +356,7 @@ impl DocumentElement {
             true,
             is_view_focused,
         );
-        
+
         let text = doc.text().slice(..);
         let default_style = theme.get("ui.text");
         let text_style = helix_view::graphics::Style {
@@ -371,11 +364,11 @@ impl DocumentElement {
             bg: default_style.bg,
             ..Default::default()
         };
-        
+
         // Create syntax and overlay highlighters
         let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
         let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, theme);
-        
+
         let mut position = anchor;
         while position < end_char {
             // Advance highlighters to current position
@@ -385,26 +378,26 @@ impl DocumentElement {
             while position >= overlay_hl.pos {
                 overlay_hl.advance();
             }
-            
+
             // Calculate next position where style might change
-            let next_pos = std::cmp::min(
-                std::cmp::min(syntax_hl.pos, overlay_hl.pos),
-                end_char
-            );
-            
+            let next_pos = std::cmp::min(std::cmp::min(syntax_hl.pos, overlay_hl.pos), end_char);
+
             let len = next_pos - position;
             if len == 0 {
                 break;
             }
-            
+
             // Combine syntax and overlay styles
             let style = syntax_hl.style.patch(overlay_hl.style);
-            
+
             // Debug log style changes
             if style.fg != text_style.fg {
-                debug!("Style change at pos {}: {:?} -> {:?}", position, text_style.fg, style.fg);
+                debug!(
+                    "Style change at pos {}: {:?} -> {:?}",
+                    position, text_style.fg, style.fg
+                );
             }
-            
+
             let fg = style
                 .fg
                 .and_then(|fg| color_to_hsla(fg))
@@ -416,7 +409,7 @@ impl DocumentElement {
                 color: Some(color),
                 wavy: true,
             });
-            
+
             let run = TextRun {
                 len,
                 font: font.clone(),
@@ -428,7 +421,7 @@ impl DocumentElement {
             runs.push(run);
             position = next_pos;
         }
-        
+
         runs
     }
 }
@@ -951,7 +944,10 @@ impl<'h, 'r, 't> SyntaxHighlighter<'h, 'r, 't> {
         self.style = highlights.fold(base, |acc, highlight| {
             let patched = acc.patch(self.theme.highlight(highlight));
             if patched != acc {
-                debug!("Applying highlight: {:?} -> style: {:?}", highlight, patched.fg);
+                debug!(
+                    "Applying highlight: {:?} -> style: {:?}",
+                    highlight, patched.fg
+                );
             }
             patched
         });

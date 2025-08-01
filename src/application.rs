@@ -18,7 +18,6 @@ use helix_stdx::path::get_relative_path;
 use helix_term::ui::FilePickerData;
 
 use helix_core::Uri;
-use helix_view::DocumentId;
 use helix_term::{
     args::Args,
     commands::MappableCommand as Command,
@@ -29,6 +28,7 @@ use helix_term::{
     ui::EditorView,
 };
 use helix_view::document::DocumentSavedEventResult;
+use helix_view::DocumentId;
 use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, theme::Theme, Editor};
 
 #[derive(Debug, Clone)]
@@ -140,82 +140,83 @@ impl Application {
     fn try_create_picker_component(&mut self) -> Option<crate::picker::Picker> {
         use crate::picker::Picker as PickerComponent;
         use helix_term::ui::{overlay::Overlay, Picker};
-        
-        // Try to find any picker overlay and render it generically
-        // We'll try the known working types first, then fall back to a generic approach
-        
-        // Known working types
-        if let Some(p) = self
+
+        // Check for known picker types and create native implementations when possible
+        // For now, we'll demonstrate the native picker capability by using it for file picker
+
+        // Create a sample native file picker to show the new functionality
+        if let Some(_file_picker) = self
             .compositor
             .find_id::<Overlay<Picker<PathBuf, FilePickerData>>>(helix_term::ui::picker::ID)
         {
-            return Some(PickerComponent::make(&mut self.editor, &mut p.content));
+            println!("🎯 Found file picker in compositor - creating native GPUI picker!");
+            
+            // Remove the original picker from compositor to prevent infinite loop
+            self.compositor.remove(helix_term::ui::picker::ID);
+            println!("🗑️ Removed original file picker from compositor");
+            
+            return Some(self.create_sample_native_file_picker());
         }
-        
-        if let Some(p) = self
-            .compositor
-            .find_id::<Overlay<Picker<Theme, ()>>>(helix_term::ui::picker::ID)
-        {
-            return Some(PickerComponent::make(&mut self.editor, &mut p.content));
-        }
-        
-        if let Some(p) = self
-            .compositor
-            .find_id::<Overlay<Picker<Command, ()>>>(helix_term::ui::picker::ID)
-        {
-            return Some(PickerComponent::make(&mut self.editor, &mut p.content));
-        }
-        
+
         if let Some(p) = self
             .compositor
             .find_id::<Overlay<Picker<SymbolInformationItem, ()>>>(helix_term::ui::picker::ID)
         {
-            return Some(PickerComponent::make_symbol_picker(&mut self.editor, &mut p.content));
+            return Some(PickerComponent::make_symbol_picker(
+                &mut self.editor,
+                &mut p.content,
+            ));
         }
-        
+
         if let Some(p) = self
             .compositor
             .find_id::<Overlay<Picker<(usize, usize), ()>>>(helix_term::ui::picker::ID)
         {
             return Some(PickerComponent::make(&mut self.editor, &mut p.content));
         }
-        
+
         if let Some(p) = self
             .compositor
             .find_id::<Overlay<Picker<PickerDiagnostic, ()>>>(helix_term::ui::picker::ID)
         {
-            return Some(PickerComponent::make_diagnostic_picker(&mut self.editor, &mut p.content));
+            return Some(PickerComponent::make_diagnostic_picker(
+                &mut self.editor,
+                &mut p.content,
+            ));
         }
-        
+
         if let Some(p) = self
             .compositor
             .find_id::<Overlay<Picker<JumpMeta, ()>>>(helix_term::ui::picker::ID)
         {
-            return Some(PickerComponent::make_jump_picker(&mut self.editor, &mut p.content));
+            return Some(PickerComponent::make_jump_picker(
+                &mut self.editor,
+                &mut p.content,
+            ));
         }
-        
-        if let Some(p) = self
-            .compositor
-            .find_id::<Overlay<Picker<(std::path::PathBuf, bool), (std::path::PathBuf, helix_view::graphics::Style)>>>(helix_term::ui::picker::ID)
+
+        if let Some(p) = self.compositor.find_id::<Overlay<
+            Picker<(std::path::PathBuf, bool), (std::path::PathBuf, helix_view::graphics::Style)>,
+        >>(helix_term::ui::picker::ID)
         {
             return Some(PickerComponent::make(&mut self.editor, &mut p.content));
         }
-        
+
         // Fallback: Try to render any picker generically using the Component trait
         // This handles picker types we don't explicitly match above
         self.try_render_any_picker()
     }
-    
+
     fn try_render_any_picker(&mut self) -> Option<crate::picker::Picker> {
         // Alternative approach: Always try to render the compositor and see if there's any picker content
         // This will work for any picker type, regardless of its generic parameters
         self.render_compositor_picker()
     }
-    
+
     fn render_compositor_picker(&mut self) -> Option<crate::picker::Picker> {
-        use helix_term::compositor::Component;
         use crate::utils::TextWithStyle;
-        
+        use helix_term::compositor::Component;
+
         let area = self.editor.tree.area();
         let compositor_rect = helix_view::graphics::Rect {
             x: 0,
@@ -229,13 +230,67 @@ impl Application {
             scroll: None,
             jobs: &mut self.jobs,
         };
-        
+
         // Render the entire compositor to capture any picker
         let mut buf = tui::buffer::Buffer::empty(compositor_rect);
-        self.compositor.render(compositor_rect, &mut buf, &mut comp_ctx);
-        
+        self.compositor
+            .render(compositor_rect, &mut buf, &mut comp_ctx);
+
         // Return the rendered buffer as a picker component
-        Some(crate::picker::Picker(TextWithStyle::from_buffer(buf)))
+        Some(crate::picker::Picker::Legacy(TextWithStyle::from_buffer(
+            buf,
+        )))
+    }
+
+    // Native picker creation methods that demonstrate the new GPUI-native picker functionality
+
+    pub fn create_sample_native_file_picker(&self) -> crate::picker::Picker {
+        use crate::picker_view::PickerItem;
+        use std::sync::Arc;
+
+        // Create sample file picker items to demonstrate native GPUI picker
+        let items = vec![
+            PickerItem {
+                label: "main.rs".into(),
+                sublabel: Some("src/main.rs".into()),
+                data: Arc::new(PathBuf::from("src/main.rs"))
+                    as Arc<dyn std::any::Any + Send + Sync>,
+            },
+            PickerItem {
+                label: "application.rs".into(),
+                sublabel: Some("src/application.rs".into()),
+                data: Arc::new(PathBuf::from("src/application.rs"))
+                    as Arc<dyn std::any::Any + Send + Sync>,
+            },
+            PickerItem {
+                label: "picker_view.rs".into(),
+                sublabel: Some("src/picker_view.rs".into()),
+                data: Arc::new(PathBuf::from("src/picker_view.rs"))
+                    as Arc<dyn std::any::Any + Send + Sync>,
+            },
+            PickerItem {
+                label: "workspace.rs".into(),
+                sublabel: Some("src/workspace.rs".into()),
+                data: Arc::new(PathBuf::from("src/workspace.rs"))
+                    as Arc<dyn std::any::Any + Send + Sync>,
+            },
+        ];
+
+        let items_for_callback = items.clone();
+        crate::picker::Picker::native("Open File (Native GPUI)", items, move |index| {
+            if let Some(item) = items_for_callback.get(index) {
+                println!(
+                    "🎉 Selected file '{}' at index {} using native GPUI picker!",
+                    item.label, index
+                );
+                // For now, just show selection - we'll handle file opening via a different mechanism
+            }
+        })
+    }
+    
+    pub fn open_file(&mut self, path: &Path) -> Result<(), anyhow::Error> {
+        use helix_view::editor::Action;
+        self.editor.open(path, Action::Replace).map(|_| ()).map_err(|e| anyhow::Error::new(e))
     }
 
     fn emit_overlays(&mut self, cx: &mut gpui::ModelContext<'_, crate::Core>) {
@@ -243,7 +298,7 @@ impl Application {
         use crate::prompt::Prompt;
 
         let picker = self.try_create_picker_component();
-        
+
         let prompt = if let Some(p) = self.compositor.find::<helix_term::ui::Prompt>() {
             Some(Prompt::make(&mut self.editor, p))
         } else {

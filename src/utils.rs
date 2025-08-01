@@ -143,6 +143,10 @@ pub struct TextWithStyle {
 }
 
 impl TextWithStyle {
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+    
     pub fn from_buffer(buf: Buffer) -> Self {
         let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
 
