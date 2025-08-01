@@ -22,6 +22,7 @@ mod overlay;
 mod picker;
 mod picker_view;
 mod prompt;
+mod prompt_view;
 mod statusline;
 mod utils;
 mod workspace;
@@ -114,7 +115,8 @@ actions!(
         SelectPrev,
         SelectNext,
         MoveUp,
-        MoveDown
+        MoveDown,
+        TestPrompt
     ]
 );
 
@@ -160,7 +162,10 @@ fn app_menus() -> Vec<Menu<'static>> {
         },
         Menu {
             name: "Help",
-            items: vec![MenuItem::action("Tutorial", Tutor)],
+            items: vec![
+                MenuItem::action("Tutorial", Tutor),
+                MenuItem::action("Test Prompt", TestPrompt),
+            ],
         },
     ]
 }

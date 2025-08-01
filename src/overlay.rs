@@ -4,11 +4,13 @@ use gpui::*;
 use crate::picker::{Picker, PickerElement};
 use crate::picker_view::{PickerItem, PickerView};
 use crate::prompt::{Prompt, PromptElement};
+use crate::prompt_view::PromptView;
 
 pub struct OverlayView {
     prompt: Option<Prompt>,
     picker: Option<Picker>,
     native_picker_view: Option<View<PickerView<PickerItem>>>,
+    native_prompt_view: Option<View<PromptView>>,
     focus: FocusHandle,
 }
 
@@ -18,12 +20,13 @@ impl OverlayView {
             prompt: None,
             picker: None,
             native_picker_view: None,
+            native_prompt_view: None,
             focus: focus.clone(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.prompt.is_none() && self.picker.is_none() && self.native_picker_view.is_none()
+        self.prompt.is_none() && self.picker.is_none() && self.native_picker_view.is_none() && self.native_prompt_view.is_none()
     }
 
     pub fn subscribe(&self, editor: &Model<crate::Core>, cx: &mut ViewContext<Self>) {
@@ -36,8 +39,59 @@ impl OverlayView {
     fn handle_event(&mut self, ev: &crate::Update, cx: &mut ViewContext<Self>) {
         match ev {
             crate::Update::Prompt(prompt) => {
-                println!("📝 OverlayView received prompt");
-                self.prompt = Some(prompt.clone());
+                println!("📝 OverlayView received prompt: {:?}", prompt);
+                match prompt {
+                    Prompt::Native { prompt: prompt_text, initial_input: _, on_submit, on_cancel } => {
+                        println!("🎯 Creating native PromptView");
+                        
+                        // Create a proper PromptView for native prompts
+                        let prompt_view = cx.new_view(|cx| {
+                            let mut view = PromptView::new(prompt_text.clone(), cx);
+                            
+                            // Set up the submit callback
+                            let on_submit = on_submit.clone();
+                            view = view.on_submit(move |input: &str, _cx| {
+                                println!("📝 Prompt submitted: '{}'", input);
+                                (on_submit)(input);
+                            });
+                            
+                            // Set up the cancel callback if provided
+                            if let Some(cancel_fn) = on_cancel {
+                                let cancel_fn = cancel_fn.clone();
+                                view = view.on_cancel(move |cx| {
+                                    println!("📝 Prompt cancelled");
+                                    (cancel_fn)();
+                                    cx.emit(DismissEvent);
+                                });
+                            } else {
+                                view = view.on_cancel(move |cx| {
+                                    println!("📝 Prompt cancelled (default)");
+                                    cx.emit(DismissEvent);
+                                });
+                            }
+                            
+                            view
+                        });
+                        
+                        // Subscribe to dismiss events from the prompt view
+                        cx.subscribe(&prompt_view, |this, _prompt_view, _event: &DismissEvent, cx| {
+                            println!("🚨 DismissEvent received - clearing native_prompt_view");
+                            this.native_prompt_view = None;
+                            cx.notify();
+                        }).detach();
+                        
+                        self.native_prompt_view = Some(prompt_view);
+                        self.prompt = None; // Clear legacy prompt
+                        println!("✅ Set native_prompt_view to Some()");
+                    }
+                    _ => {
+                        // For legacy prompts
+                        println!("📄 Setting legacy prompt and clearing native prompt");
+                        self.prompt = Some(prompt.clone());
+                        self.native_prompt_view = None;
+                    }
+                }
+                
                 cx.notify();
             }
             crate::Update::Picker(picker) => {
@@ -122,9 +176,11 @@ impl OverlayView {
 
 impl FocusableView for OverlayView {
     fn focus_handle(&self, cx: &AppContext) -> FocusHandle {
-        // If we have a native picker, delegate focus to it
+        // Delegate focus to the active native component
         if let Some(picker_view) = &self.native_picker_view {
             picker_view.focus_handle(cx)
+        } else if let Some(prompt_view) = &self.native_prompt_view {
+            prompt_view.focus_handle(cx)
         } else {
             self.focus.clone()
         }
@@ -135,8 +191,9 @@ impl EventEmitter<DismissEvent> for OverlayView {}
 impl Render for OverlayView {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
         println!(
-            "🎨 rendering overlay - prompt: {}, native_picker: {}, legacy_picker: {}", 
+            "🎨 rendering overlay - prompt: {}, native_prompt: {}, native_picker: {}, legacy_picker: {}", 
             self.prompt.is_some(),
+            self.native_prompt_view.is_some(),
             self.native_picker_view.is_some(),
             self.picker.is_some()
         );
@@ -148,8 +205,14 @@ impl Render for OverlayView {
                     .h_full()
                     .justify_center()
                     .items_center()
+                    .when_some(self.native_prompt_view.clone(), |this, prompt_view| {
+                        println!("🎨 Rendering native prompt view");
+                        // Use the actual PromptView component with full keyboard support
+                        this.child(prompt_view)
+                    })
                     .when_some(self.prompt.take(), |this, prompt| {
-                        println!("🎨 Rendering prompt");
+                        println!("🎨 Rendering legacy prompt");
+                        // Fallback for legacy prompts
                         let handle = cx.focus_handle();
                         let prompt = PromptElement {
                             prompt,

@@ -347,6 +347,13 @@ impl Render for Workspace {
                     load_tutor(core.clone(), handle.clone(), cx)
                 })
             })
+            .on_action({
+                let handle = self.handle.clone();
+                let core = self.core.clone();
+                cx.listener(move |_, &crate::TestPrompt, cx| {
+                    test_prompt(core.clone(), handle.clone(), cx)
+                })
+            })
             .id("workspace")
             .bg(bg_color)
             .flex()
@@ -387,6 +394,19 @@ fn open(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut WindowContex
         
         // Emit the picker to show it in the overlay
         cx.emit(crate::Update::Picker(native_picker));
+    });
+}
+
+fn test_prompt(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
+    // Create and emit a native prompt for testing
+    core.update(cx, move |core, cx| {
+        let _guard = handle.enter();
+        
+        // Create a native prompt directly
+        let native_prompt = core.create_sample_native_prompt();
+        
+        // Emit the prompt to show it in the overlay
+        cx.emit(crate::Update::Prompt(native_prompt));
     });
 }
 

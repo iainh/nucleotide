@@ -287,6 +287,19 @@ impl Application {
             }
         })
     }
+
+    pub fn create_sample_native_prompt(&self) -> crate::prompt::Prompt {
+        crate::prompt::Prompt::native(
+            "Search:",
+            "",
+            |input| {
+                println!("🎉 Prompt submitted with input: '{}'", input);
+                // For now, just show the input - we'll handle the actual search via a different mechanism
+            }
+        ).with_cancel(|| {
+            println!("🚫 Prompt cancelled");
+        })
+    }
     
     pub fn open_file(&mut self, path: &Path) -> Result<(), anyhow::Error> {
         use helix_view::editor::Action;
