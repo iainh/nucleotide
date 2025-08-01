@@ -380,6 +380,12 @@ impl Application {
 
     pub async fn step(&mut self, cx: &mut gpui::ModelContext<'_, crate::Core>) {
         loop {
+            // Check if all views are closed and we should quit
+            if self.editor.tree.views().count() == 0 {
+                cx.emit(crate::Update::ShouldQuit);
+                break;
+            }
+
             tokio::select! {
                 biased;
 
@@ -420,6 +426,11 @@ impl Application {
                             /* dont send */
                         }
                         EditorEvent::Redraw => {
+                            // Check if all views are closed after redraw
+                            if self.editor.tree.views().count() == 0 {
+                                cx.emit(crate::Update::ShouldQuit);
+                                break;
+                            }
                              cx.emit(crate::Update::EditorEvent(EditorEvent::Redraw));
                         }
                         EditorEvent::ConfigEvent(_) => {

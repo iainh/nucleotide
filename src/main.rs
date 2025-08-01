@@ -169,6 +169,7 @@ pub enum Update {
     Info(helix_view::info::Info),
     EditorEvent(helix_view::editor::EditorEvent),
     EditorStatus(EditorStatus),
+    ShouldQuit,
 }
 
 impl gpui::EventEmitter<Update> for Application {}

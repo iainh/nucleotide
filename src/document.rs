@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use gpui::{prelude::FluentBuilder, *};
 use helix_core::{
     ropey::RopeSlice,
-    syntax::{Highlight, OverlayHighlights},
+    syntax::Highlight,
     Uri,
 };
 use helix_lsp::lsp::{Diagnostic, DiagnosticSeverity, NumberOrString};
