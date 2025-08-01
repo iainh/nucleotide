@@ -34,7 +34,7 @@ impl Workspace {
         let notifications = Self::init_notifications(&core, cx);
         let info = Self::init_info_box(&core, cx);
         let overlay = cx.new_view(|cx| {
-            let view = OverlayView::new(&cx.focus_handle());
+            let view = OverlayView::new(&cx.focus_handle(), &core);
             view.subscribe(&core, cx);
             view
         });
@@ -124,10 +124,27 @@ impl Workspace {
                 }
                 cx.notify();
             }
-            crate::Update::Prompt(_) | crate::Update::Picker(_) => {
-                // When a picker or prompt appears, auto-dismiss the info box
+            crate::Update::Prompt(_) | crate::Update::Picker(_) | crate::Update::Completion(_) => {
+                // When a picker, prompt, or completion appears, auto-dismiss the info box
                 self.info_hidden = true;
                 // handled by overlay
+                cx.notify();
+            }
+            crate::Update::OpenFile(path) => {
+                // Open the specified file in the editor
+                info!("Opening file: {:?}", path);
+                self.core.update(cx, |core, cx| {
+                    let _guard = self.handle.enter();
+                    let editor = &mut core.editor;
+                    
+                    // Open the file in the editor
+                    if let Err(e) = editor.open(&path, helix_view::editor::Action::Replace) {
+                        eprintln!("Failed to open file {:?}: {}", path, e);
+                    } else {
+                        info!("Successfully opened file: {:?}", path);
+                    }
+                    cx.notify();
+                });
                 cx.notify();
             }
             crate::Update::Info(_) => {
@@ -149,14 +166,12 @@ impl Workspace {
             return; // Don't pass escape to editor when dismissing info box
         }
 
-        // Check if overlay has a native picker - if so, don't consume key events
-        // Let GPUI actions bubble up to the picker instead
+        // Check if overlay has a native component (picker, prompt, completion) - if so, don't consume key events
+        // Let GPUI actions bubble up to the native components instead
         let overlay_view = &self.overlay.read(cx);
         if !overlay_view.is_empty() {
-            // Check if it has a native picker by checking if it would render one
-            // For now, just skip helix key processing when overlay is not empty
-            // The picker will handle its own key events via GPUI actions
-            println!("🚫 Skipping helix key processing - overlay active");
+            // Skip helix key processing when overlay is not empty
+            // The native components (picker, prompt, completion) will handle their own key events via GPUI actions
             return;
         }
 
@@ -354,6 +369,13 @@ impl Render for Workspace {
                     test_prompt(core.clone(), handle.clone(), cx)
                 })
             })
+            .on_action({
+                let handle = self.handle.clone();
+                let core = self.core.clone();
+                cx.listener(move |_, &crate::TestCompletion, cx| {
+                    test_completion(core.clone(), handle.clone(), cx)
+                })
+            })
             .id("workspace")
             .bg(bg_color)
             .flex()
@@ -384,16 +406,51 @@ fn load_tutor(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut ViewCo
     })
 }
 
-fn open(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
-    // Create and emit a native file picker instead of using system dialog
-    core.update(cx, move |core, cx| {
-        let _guard = handle.enter();
-        
-        // Create a native file picker directly
-        let native_picker = core.create_sample_native_file_picker();
-        
-        // Emit the picker to show it in the overlay
-        cx.emit(crate::Update::Picker(native_picker));
+fn open(core: Model<Core>, _handle: tokio::runtime::Handle, cx: &mut WindowContext) {
+    use crate::picker_view::PickerItem;
+    use std::sync::Arc;
+    
+    // Create sample file picker items
+    let items = vec![
+        PickerItem {
+            label: "main.rs".into(),
+            sublabel: Some("src/main.rs".into()),
+            data: Arc::new(std::path::PathBuf::from("src/main.rs"))
+                as Arc<dyn std::any::Any + Send + Sync>,
+        },
+        PickerItem {
+            label: "application.rs".into(),
+            sublabel: Some("src/application.rs".into()),
+            data: Arc::new(std::path::PathBuf::from("src/application.rs"))
+                as Arc<dyn std::any::Any + Send + Sync>,
+        },
+        PickerItem {
+            label: "picker_view.rs".into(),
+            sublabel: Some("src/picker_view.rs".into()),
+            data: Arc::new(std::path::PathBuf::from("src/picker_view.rs"))
+                as Arc<dyn std::any::Any + Send + Sync>,
+        },
+        PickerItem {
+            label: "workspace.rs".into(),
+            sublabel: Some("src/workspace.rs".into()),
+            data: Arc::new(std::path::PathBuf::from("src/workspace.rs"))
+                as Arc<dyn std::any::Any + Send + Sync>,
+        },
+    ];
+    
+    // Create a simple native picker without callback - the overlay will handle file opening via events
+    let file_picker = crate::picker::Picker::native(
+        "Open File",
+        items,
+        |_index| {
+            // This callback is no longer used - file opening is handled via OpenFile events
+            // The overlay will emit OpenFile events when files are selected
+        }
+    );
+    
+    // Emit the picker to show it in the overlay
+    core.update(cx, |_core, cx| {
+        cx.emit(crate::Update::Picker(file_picker));
     });
 }
 
@@ -407,6 +464,31 @@ fn test_prompt(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut Windo
         
         // Emit the prompt to show it in the overlay
         cx.emit(crate::Update::Prompt(native_prompt));
+    });
+}
+
+fn test_completion(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
+    // Create sample completion items
+    let items = core.read(cx).create_sample_completion_items();
+    
+    // Position the completion near the top-left (simulating cursor position)  
+    let anchor_position = gpui::point(gpui::px(200.0), gpui::px(300.0));
+    
+    // Create the completion view within the proper context
+    let completion_view = cx.new_view(|cx| {
+        crate::completion::CompletionView::new(items, anchor_position, cx)
+            .on_select(move |item, _cx| {
+                println!("🎯 Selected completion: '{}'", item.label);
+            })
+            .on_dismiss(move |cx| {
+                println!("🚫 Completion dismissed");
+                cx.emit(gpui::DismissEvent);
+            })
+    });
+    
+    // Emit the completion to show it in the overlay
+    core.update(cx, |_core, cx| {
+        cx.emit(crate::Update::Completion(completion_view.clone()));
     });
 }
 

@@ -149,13 +149,47 @@ impl Application {
             .compositor
             .find_id::<Overlay<Picker<PathBuf, FilePickerData>>>(helix_term::ui::picker::ID)
         {
-            println!("🎯 Found file picker in compositor - creating native GPUI picker!");
-            
             // Remove the original picker from compositor to prevent infinite loop
             self.compositor.remove(helix_term::ui::picker::ID);
-            println!("🗑️ Removed original file picker from compositor");
             
-            return Some(self.create_sample_native_file_picker());
+            // Create a native file picker with sample files
+            use crate::picker_view::PickerItem;
+            use std::sync::Arc;
+            
+            let items = vec![
+                PickerItem {
+                    label: "main.rs".into(),
+                    sublabel: Some("src/main.rs".into()),
+                    data: Arc::new(std::path::PathBuf::from("src/main.rs"))
+                        as Arc<dyn std::any::Any + Send + Sync>,
+                },
+                PickerItem {
+                    label: "application.rs".into(),
+                    sublabel: Some("src/application.rs".into()),
+                    data: Arc::new(std::path::PathBuf::from("src/application.rs"))
+                        as Arc<dyn std::any::Any + Send + Sync>,
+                },
+                PickerItem {
+                    label: "picker_view.rs".into(),
+                    sublabel: Some("src/picker_view.rs".into()),
+                    data: Arc::new(std::path::PathBuf::from("src/picker_view.rs"))
+                        as Arc<dyn std::any::Any + Send + Sync>,
+                },
+                PickerItem {
+                    label: "workspace.rs".into(),
+                    sublabel: Some("src/workspace.rs".into()),
+                    data: Arc::new(std::path::PathBuf::from("src/workspace.rs"))
+                        as Arc<dyn std::any::Any + Send + Sync>,
+                },
+            ];
+            
+            return Some(PickerComponent::native(
+                "Open File",
+                items,
+                |_index| {
+                    // File opening is handled via OpenFile events in the overlay
+                }
+            ));
         }
 
         if let Some(p) = self
@@ -244,50 +278,6 @@ impl Application {
 
     // Native picker creation methods that demonstrate the new GPUI-native picker functionality
 
-    pub fn create_sample_native_file_picker(&self) -> crate::picker::Picker {
-        use crate::picker_view::PickerItem;
-        use std::sync::Arc;
-
-        // Create sample file picker items to demonstrate native GPUI picker
-        let items = vec![
-            PickerItem {
-                label: "main.rs".into(),
-                sublabel: Some("src/main.rs".into()),
-                data: Arc::new(PathBuf::from("src/main.rs"))
-                    as Arc<dyn std::any::Any + Send + Sync>,
-            },
-            PickerItem {
-                label: "application.rs".into(),
-                sublabel: Some("src/application.rs".into()),
-                data: Arc::new(PathBuf::from("src/application.rs"))
-                    as Arc<dyn std::any::Any + Send + Sync>,
-            },
-            PickerItem {
-                label: "picker_view.rs".into(),
-                sublabel: Some("src/picker_view.rs".into()),
-                data: Arc::new(PathBuf::from("src/picker_view.rs"))
-                    as Arc<dyn std::any::Any + Send + Sync>,
-            },
-            PickerItem {
-                label: "workspace.rs".into(),
-                sublabel: Some("src/workspace.rs".into()),
-                data: Arc::new(PathBuf::from("src/workspace.rs"))
-                    as Arc<dyn std::any::Any + Send + Sync>,
-            },
-        ];
-
-        let items_for_callback = items.clone();
-        crate::picker::Picker::native("Open File (Native GPUI)", items, move |index| {
-            if let Some(item) = items_for_callback.get(index) {
-                println!(
-                    "🎉 Selected file '{}' at index {} using native GPUI picker!",
-                    item.label, index
-                );
-                // For now, just show selection - we'll handle file opening via a different mechanism
-            }
-        })
-    }
-
     pub fn create_sample_native_prompt(&self) -> crate::prompt::Prompt {
         crate::prompt::Prompt::native(
             "Search:",
@@ -299,6 +289,35 @@ impl Application {
         ).with_cancel(|| {
             println!("🚫 Prompt cancelled");
         })
+    }
+
+    pub fn create_sample_completion_items(&self) -> Vec<crate::completion::CompletionItem> {
+        use crate::completion::{CompletionItem, CompletionItemKind};
+        
+        // Create sample completion items
+        vec![
+            CompletionItem::new("println!", CompletionItemKind::Snippet)
+                .with_detail("macro")
+                .with_documentation("Prints to the standard output, with a newline."),
+            CompletionItem::new("String", CompletionItemKind::Struct)
+                .with_detail("std::string::String")
+                .with_documentation("A UTF-8 encoded, growable string."),
+            CompletionItem::new("Vec", CompletionItemKind::Struct)
+                .with_detail("std::vec::Vec<T>")
+                .with_documentation("A contiguous growable array type."),
+            CompletionItem::new("HashMap", CompletionItemKind::Struct)
+                .with_detail("std::collections::HashMap<K, V>")
+                .with_documentation("A hash map implementation."),
+            CompletionItem::new("println", CompletionItemKind::Function)
+                .with_detail("fn println(&str)")
+                .with_documentation("Print to stdout with newline"),
+            CompletionItem::new("print", CompletionItemKind::Function)
+                .with_detail("fn print(&str)")
+                .with_documentation("Print to stdout without newline"),
+            CompletionItem::new("format", CompletionItemKind::Function)
+                .with_detail("fn format(&str, ...) -> String")
+                .with_documentation("Create a formatted string"),
+        ]
     }
     
     pub fn open_file(&mut self, path: &Path) -> Result<(), anyhow::Error> {

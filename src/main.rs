@@ -15,6 +15,7 @@ pub use application::Input;
 use application::{Application, InputEvent};
 
 mod application;
+mod completion;
 mod document;
 mod info_box;
 mod notification;
@@ -116,7 +117,14 @@ actions!(
         SelectNext,
         MoveUp,
         MoveDown,
-        TestPrompt
+        TestPrompt,
+        TestCompletion,
+        CompletionUp,
+        CompletionDown,
+        CompletionSelect,
+        CompletionCancel,
+        CompletionFirst,
+        CompletionLast
     ]
 );
 
@@ -165,6 +173,7 @@ fn app_menus() -> Vec<Menu<'static>> {
             items: vec![
                 MenuItem::action("Tutorial", Tutor),
                 MenuItem::action("Test Prompt", TestPrompt),
+                MenuItem::action("Test Completion", TestCompletion),
             ],
         },
     ]
@@ -181,9 +190,11 @@ pub enum Update {
     Redraw,
     Prompt(prompt::Prompt),
     Picker(picker::Picker),
+    Completion(gpui::View<completion::CompletionView>),
     Info(helix_view::info::Info),
     EditorEvent(helix_view::editor::EditorEvent),
     EditorStatus(EditorStatus),
+    OpenFile(std::path::PathBuf),
     ShouldQuit,
 }
 
@@ -241,12 +252,26 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
             cx.activate(true);
             cx.set_menus(app_menus());
             
-            // Set up keybindings for picker actions
+            // Set up keybindings for picker and general actions
             cx.bind_keys([
                 gpui::KeyBinding::new("up", MoveUp, None),
                 gpui::KeyBinding::new("down", MoveDown, None),
                 gpui::KeyBinding::new("enter", Confirm, None),
                 gpui::KeyBinding::new("escape", Cancel, None),
+            ]);
+            
+            // Completion-specific keybindings with proper context
+            cx.bind_keys([
+                gpui::KeyBinding::new("up", CompletionUp, Some("completion")),
+                gpui::KeyBinding::new("down", CompletionDown, Some("completion")),
+                gpui::KeyBinding::new("ctrl-p", CompletionUp, Some("completion")),
+                gpui::KeyBinding::new("ctrl-n", CompletionDown, Some("completion")),
+                gpui::KeyBinding::new("enter", CompletionSelect, Some("completion")),
+                gpui::KeyBinding::new("tab", CompletionSelect, Some("completion")),
+                gpui::KeyBinding::new("escape", CompletionCancel, Some("completion")),
+                gpui::KeyBinding::new("ctrl-g", CompletionCancel, Some("completion")),
+                gpui::KeyBinding::new("home", CompletionFirst, Some("completion")),
+                gpui::KeyBinding::new("end", CompletionLast, Some("completion")),
             ]);
 
             let font_settings = FontSettings {

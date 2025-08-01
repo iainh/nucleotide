@@ -13,7 +13,7 @@ pub struct PickerItem {
     pub data: Arc<dyn std::any::Any + Send + Sync>,
 }
 
-pub struct PickerView<T: 'static + Send + Sync> {
+pub struct PickerView {
     // Core picker state
     title: SharedString,
     query: SharedString,
@@ -30,13 +30,12 @@ pub struct PickerView<T: 'static + Send + Sync> {
     scroll_offset: usize,
 
     // Callbacks
-    on_select: Option<Box<dyn FnMut(&T, &mut ViewContext<Self>) + 'static>>,
+    on_select: Option<Box<dyn FnMut(&PickerItem, &mut ViewContext<Self>) + 'static>>,
     on_cancel: Option<Box<dyn FnMut(&mut ViewContext<Self>) + 'static>>,
 
     // Styling
     style: PickerStyle,
 
-    _phantom: std::marker::PhantomData<T>,
 }
 
 #[derive(Clone)]
@@ -62,7 +61,7 @@ impl Default for PickerStyle {
     }
 }
 
-impl<T: 'static + Send + Sync> PickerView<T> {
+impl PickerView {
     pub fn new(cx: &mut ViewContext<Self>) -> Self {
         Self {
             title: "Picker".into(),
@@ -77,7 +76,6 @@ impl<T: 'static + Send + Sync> PickerView<T> {
             on_select: None,
             on_cancel: None,
             style: PickerStyle::default(),
-            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -97,7 +95,7 @@ impl<T: 'static + Send + Sync> PickerView<T> {
         self
     }
 
-    pub fn on_select(mut self, callback: impl FnMut(&T, &mut ViewContext<Self>) + 'static) -> Self {
+    pub fn on_select(mut self, callback: impl FnMut(&PickerItem, &mut ViewContext<Self>) + 'static) -> Self {
         self.on_select = Some(Box::new(callback));
         self
     }
@@ -161,14 +159,24 @@ impl<T: 'static + Send + Sync> PickerView<T> {
     }
 
     fn confirm_selection(&mut self, cx: &mut ViewContext<Self>) {
+        println!("🎯 confirm_selection called with selected_index: {}", self.selected_index);
+        println!("🎯 filtered_indices length: {}", self.filtered_indices.len());
+        
         if let Some(idx) = self.filtered_indices.get(self.selected_index) {
+            println!("🎯 Found filtered index: {}", idx);
             if let Some(item) = self.items.get(*idx as usize) {
-                if let Some(data) = item.data.downcast_ref::<T>() {
-                    if let Some(on_select) = &mut self.on_select {
-                        on_select(data, cx);
-                    }
+                println!("🎯 Found item: {}", item.label);
+                if let Some(on_select) = &mut self.on_select {
+                    println!("🎯 Calling on_select callback");
+                    on_select(item, cx);
+                } else {
+                    println!("🚫 No on_select callback set");
                 }
+            } else {
+                println!("🚫 Item not found at index {}", idx);
             }
+        } else {
+            println!("🚫 No filtered index found for selected_index {}", self.selected_index);
         }
     }
 
@@ -179,15 +187,15 @@ impl<T: 'static + Send + Sync> PickerView<T> {
     }
 }
 
-impl<T: 'static + Send + Sync> FocusableView for PickerView<T> {
+impl FocusableView for PickerView {
     fn focus_handle(&self, _cx: &AppContext) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl<T: 'static + Send + Sync> EventEmitter<DismissEvent> for PickerView<T> {}
+impl EventEmitter<DismissEvent> for PickerView {}
 
-impl<T: 'static + Send + Sync> Render for PickerView<T> {
+impl Render for PickerView {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
         let font = cx.global::<crate::FontSettings>().fixed_font.clone();
         let visible_items = self
