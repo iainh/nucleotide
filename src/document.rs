@@ -3,17 +3,18 @@ use std::borrow::Cow;
 use gpui::{prelude::FluentBuilder, *};
 use helix_core::{
     ropey::RopeSlice,
-    syntax::Highlight,
+    syntax::{self, HighlightEvent},
     Uri,
 };
 use helix_lsp::lsp::{Diagnostic, DiagnosticSeverity, NumberOrString};
 use helix_term::ui::EditorView;
-// TODO: Add tree_house highlighter imports when syntax highlighting is implemented
+// Import helix's syntax highlighting system
 use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
 use log::debug;
 
 use crate::utils::color_to_hsla;
 use crate::{Core, Input, InputEvent};
+use helix_stdx::rope::RopeSliceExt;
 
 pub struct DocumentView {
     core: Model<Core>,
@@ -266,20 +267,40 @@ impl DocumentElement {
         doc: &'d helix_view::Document,
         anchor: usize,
         height: u16,
-        theme: &Theme,
-        syn_loader: &helix_core::syntax::Loader,
-    ) -> Option<()> { // TODO: Return proper highlighter type
-        // TODO: Implement syntax highlighting with tree_house
-        None
+        _theme: &Theme,
+        syn_loader: &'d helix_core::syntax::Loader,
+    ) -> Option<syntax::Highlighter<'d>> {
+        let syntax = doc.syntax()?;
+        debug!("Document has syntax support for: {:?}", doc.language_name());
+        
+        let text = doc.text().slice(..);
+        let row = text.char_to_line(anchor.min(text.len_chars()));
+        let range = Self::viewport_byte_range(text, row, height);
+        let range = range.start as u32..range.end as u32;
+        debug!("Creating highlighter for range: {:?}", range);
+
+        let highlighter = syntax.highlighter(text, syn_loader, range);
+        Some(highlighter)
+    }
+
+    fn viewport_byte_range(
+        text: RopeSlice,
+        row: usize,
+        height: u16,
+    ) -> std::ops::Range<usize> {
+        let start = text.line_to_byte(row);
+        let end_row = (row + height as usize).min(text.len_lines());
+        let end = text.line_to_byte(end_row);
+        start..end
     }
 
     fn doc_selection_highlights(
-        mode: helix_view::document::Mode,
-        doc: &Document,
-        view: &View,
-        theme: &Theme,
-        cursor_shape_config: &helix_view::editor::CursorShapeConfig,
-        is_window_focused: bool,
+        _mode: helix_view::document::Mode,
+        _doc: &Document,
+        _view: &View,
+        _theme: &Theme,
+        _cursor_shape_config: &helix_view::editor::CursorShapeConfig,
+        _is_window_focused: bool,
     ) -> Vec<(usize, std::ops::Range<usize>)> {
         // TODO: Convert OverlayHighlights to Vec<(usize, Range<usize>)>
         // For now return empty to get compilation working
@@ -294,30 +315,16 @@ impl DocumentElement {
         cursor_shape_config: &helix_view::editor::CursorShapeConfig,
         is_window_focused: bool,
         is_view_focused: bool,
-    ) -> Vec<helix_core::syntax::OverlayHighlights> {
-        let mut overlays = Vec::new();
-        
-        // Add diagnostics highlights
-        EditorView::doc_diagnostics_highlights_into(doc, theme, &mut overlays);
-        
-        if is_view_focused {
-            // Add selection highlights
-            overlays.push(EditorView::doc_selection_highlights(
-                mode,
-                doc,
-                view,
-                theme,
-                cursor_shape_config,
-                is_window_focused,
-            ));
-            
-            // Add focused view elements (matching brackets, etc.)
-            if let Some(focused_elements) = EditorView::highlight_focused_view_elements(view, doc, theme) {
-                overlays.push(focused_elements);
-            }
-        }
-        
-        overlays
+    ) -> helix_core::syntax::OverlayHighlights {
+        // Get selection highlights from helix-term EditorView
+        EditorView::doc_selection_highlights(
+            mode,
+            doc,
+            view,
+            theme,
+            cursor_shape_config,
+            is_window_focused,
+        )
     }
 
     fn highlight(
@@ -333,6 +340,20 @@ impl DocumentElement {
         font: Font,
     ) -> Vec<TextRun> {
         let mut runs = vec![];
+        let loader = editor.syn_loader.load();
+        
+        // Get syntax highlighter
+        let syntax_highlighter = Self::doc_syntax_highlights(
+            doc,
+            anchor,
+            lines,
+            theme,
+            &loader,
+        );
+        
+        debug!("Syntax highlighter created: {}", syntax_highlighter.is_some());
+        
+        // Get overlay highlights
         let overlay_highlights = Self::overlay_highlights(
             editor.mode(),
             doc,
@@ -342,60 +363,60 @@ impl DocumentElement {
             true,
             is_view_focused,
         );
-
-        // TODO: Reimplement syntax highlighting with new tree-house API
-        // For now, use default styling to get compilation working
-        let syntax_style = helix_view::graphics::Style::default();
-
-        // TODO: Reimplement overlay highlighting with new OverlayHighlights API
-        // For now, use default styling
-        let overlay_style = helix_view::graphics::Style::default();
-
-        // Simplified for now - use default styles
-        let syntax_span = (syntax_style, 0, usize::MAX);
-        let overlay_span = (overlay_style, 0, usize::MAX);
-
+        
+        let text = doc.text().slice(..);
+        let default_style = theme.get("ui.text");
+        let text_style = helix_view::graphics::Style {
+            fg: default_style.fg,
+            bg: default_style.bg,
+            ..Default::default()
+        };
+        
+        // Create syntax and overlay highlighters
+        let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
+        let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, theme);
+        
         let mut position = anchor;
-        loop {
-            let (syn_style, syn_start, syn_end) = syntax_span;
-            let (ovl_style, ovl_start, ovl_end) = overlay_span;
-
-            /* if we are between highlights, insert default style */
-            let (style, is_default) = if position < syn_start && position < ovl_start {
-                (helix_view::graphics::Style::default(), true)
-            } else {
-                let mut style = helix_view::graphics::Style::default();
-                if position >= syn_start && position < syn_end {
-                    style = style.patch(syn_style);
-                }
-                if position >= ovl_start && position < ovl_end {
-                    style = style.patch(ovl_style);
-                }
-                (style, false)
-            };
-
+        while position < end_char {
+            // Advance highlighters to current position
+            while position >= syntax_hl.pos {
+                syntax_hl.advance();
+            }
+            while position >= overlay_hl.pos {
+                overlay_hl.advance();
+            }
+            
+            // Calculate next position where style might change
+            let next_pos = std::cmp::min(
+                std::cmp::min(syntax_hl.pos, overlay_hl.pos),
+                end_char
+            );
+            
+            let len = next_pos - position;
+            if len == 0 {
+                break;
+            }
+            
+            // Combine syntax and overlay styles
+            let style = syntax_hl.style.patch(overlay_hl.style);
+            
+            // Debug log style changes
+            if style.fg != text_style.fg {
+                debug!("Style change at pos {}: {:?} -> {:?}", position, text_style.fg, style.fg);
+            }
+            
             let fg = style
                 .fg
                 .and_then(|fg| color_to_hsla(fg))
                 .unwrap_or(fg_color);
             let bg = style.bg.and_then(|bg| color_to_hsla(bg));
-            let len = if is_default {
-                std::cmp::min(syn_start, ovl_start) - position
-            } else {
-                std::cmp::min(
-                    syn_end.checked_sub(position).unwrap_or(usize::MAX),
-                    ovl_end.checked_sub(position).unwrap_or(usize::MAX),
-                )
-            };
             let underline = style.underline_color.and_then(color_to_hsla);
             let underline = underline.map(|color| UnderlineStyle {
                 thickness: px(1.),
                 color: Some(color),
                 wavy: true,
             });
-
-            let len = std::cmp::min(len, end_char);
-
+            
             let run = TextRun {
                 len,
                 font: font.clone(),
@@ -405,19 +426,9 @@ impl DocumentElement {
                 strikethrough: None,
             };
             runs.push(run);
-            position += len;
-
-            if position >= end_char {
-                break;
-            }
-            // TODO: Implement proper span advancement when highlighting is restored
-            if position >= syn_end {
-                // syntax_span = syntax_styles.next().unwrap_or((style, 0, usize::MAX));
-            }
-            if position >= ovl_end {
-                // overlay_span = overlay_styles.next().unwrap_or((style, 0, usize::MAX));
-            }
+            position = next_pos;
         }
+        
         runs
     }
 }
@@ -878,9 +889,113 @@ struct LinePos {
     pub start_char_idx: usize,
 }
 
-// TODO: copy-pasted from helix_term ui/document.rs
+// Syntax highlighting support based on helix-term implementation
 
-// TODO: Reimplement StyleIter with new tree-house API when syntax highlighting is restored
+struct SyntaxHighlighter<'h, 'r, 't> {
+    inner: Option<syntax::Highlighter<'h>>,
+    text: RopeSlice<'r>,
+    /// The character index of the next highlight event, or `usize::MAX` if the highlighter is
+    /// finished.
+    pos: usize,
+    theme: &'t Theme,
+    text_style: helix_view::graphics::Style,
+    style: helix_view::graphics::Style,
+}
+
+impl<'h, 'r, 't> SyntaxHighlighter<'h, 'r, 't> {
+    fn new(
+        inner: Option<syntax::Highlighter<'h>>,
+        text: RopeSlice<'r>,
+        theme: &'t Theme,
+        text_style: helix_view::graphics::Style,
+    ) -> Self {
+        let mut highlighter = Self {
+            inner,
+            text,
+            pos: 0,
+            theme,
+            style: text_style,
+            text_style,
+        };
+        highlighter.update_pos();
+        highlighter
+    }
+
+    fn update_pos(&mut self) {
+        self.pos = self
+            .inner
+            .as_ref()
+            .and_then(|highlighter| {
+                let next_byte_idx = highlighter.next_event_offset();
+                (next_byte_idx != u32::MAX).then(|| {
+                    // Move the byte index to the nearest character boundary (rounding up) and
+                    // convert it to a character index.
+                    self.text
+                        .byte_to_char(self.text.ceil_char_boundary(next_byte_idx as usize))
+                })
+            })
+            .unwrap_or(usize::MAX);
+    }
+
+    fn advance(&mut self) {
+        let Some(highlighter) = self.inner.as_mut() else {
+            return;
+        };
+
+        let (event, highlights) = highlighter.advance();
+        let base = match event {
+            HighlightEvent::Refresh => self.text_style,
+            HighlightEvent::Push => self.style,
+        };
+
+        self.style = highlights.fold(base, |acc, highlight| {
+            let patched = acc.patch(self.theme.highlight(highlight));
+            if patched != acc {
+                debug!("Applying highlight: {:?} -> style: {:?}", highlight, patched.fg);
+            }
+            patched
+        });
+        self.update_pos();
+    }
+}
+
+struct OverlayHighlighter<'t> {
+    inner: syntax::OverlayHighlighter,
+    pos: usize,
+    theme: &'t Theme,
+    style: helix_view::graphics::Style,
+}
+
+impl<'t> OverlayHighlighter<'t> {
+    fn new(overlays: syntax::OverlayHighlights, theme: &'t Theme) -> Self {
+        let inner = syntax::OverlayHighlighter::new(vec![overlays]);
+        let mut highlighter = Self {
+            inner,
+            pos: 0,
+            theme,
+            style: helix_view::graphics::Style::default(),
+        };
+        highlighter.update_pos();
+        highlighter
+    }
+
+    fn update_pos(&mut self) {
+        self.pos = self.inner.next_event_offset();
+    }
+
+    fn advance(&mut self) {
+        let (event, highlights) = self.inner.advance();
+        let base = match event {
+            HighlightEvent::Refresh => helix_view::graphics::Style::default(),
+            HighlightEvent::Push => self.style,
+        };
+
+        self.style = highlights.fold(base, |acc, highlight| {
+            acc.patch(self.theme.highlight(highlight))
+        });
+        self.update_pos();
+    }
+}
 
 struct DiagnosticView {
     diagnostic: Diagnostic,
