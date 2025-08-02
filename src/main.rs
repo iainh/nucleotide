@@ -7,13 +7,14 @@ use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
 
 use gpui::{
-    actions, App, AppContext, Context as _, Menu, MenuItem, TitlebarOptions, VisualContext as _,
-    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
+    actions, App, AppContext, AsyncApp, Menu, MenuItem, TitlebarOptions,
+    WeakEntity, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, px,
 };
 
 pub use application::Input;
 use application::{Application, InputEvent};
 
+mod actions;
 mod application;
 mod completion;
 mod document;
@@ -21,10 +22,13 @@ mod info_box;
 mod notification;
 mod overlay;
 mod picker;
+mod picker_delegate;
+mod picker_element;
 mod picker_view;
 mod prompt;
 mod prompt_view;
 mod statusline;
+mod ui;
 mod utils;
 mod workspace;
 
@@ -69,7 +73,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn window_options(_cx: &mut AppContext) -> gpui::WindowOptions {
+fn window_options(_cx: &mut App) -> gpui::WindowOptions {
     WindowOptions {
         app_id: Some("helix-gpui".to_string()),
         titlebar: Some(TitlebarOptions {
@@ -78,11 +82,8 @@ fn window_options(_cx: &mut AppContext) -> gpui::WindowOptions {
             traffic_light_position: None, //Some(point(px(9.0), px(9.0))),
         }),
         window_bounds: Some(WindowBounds::Windowed(gpui::Bounds {
-            origin: gpui::point(gpui::DevicePixels::from(100), gpui::DevicePixels::from(100)),
-            size: gpui::size(
-                gpui::DevicePixels::from(1200),
-                gpui::DevicePixels::from(800),
-            ),
+            origin: gpui::point(px(100.0), px(100.0)),
+            size: gpui::size(px(1200.0), px(800.0)),
         })),
         focus: true,
         show: true,
@@ -90,48 +91,20 @@ fn window_options(_cx: &mut AppContext) -> gpui::WindowOptions {
         is_movable: true,
         display_id: None,
         window_background: WindowBackgroundAppearance::Opaque,
+        window_decorations: Some(gpui::WindowDecorations::Server),
+        window_min_size: Some(gpui::size(px(400.0), px(300.0))),
     }
 }
 
-actions!(
-    workspace,
-    [
-        About,
-        Quit,
-        ShowModal,
-        Hide,
-        HideOthers,
-        ShowAll,
-        OpenFile,
-        Undo,
-        Redo,
-        Copy,
-        Paste,
-        Minimize,
-        MinimizeAll,
-        Zoom,
-        Tutor,
-        Cancel,
-        Confirm,
-        SelectPrev,
-        SelectNext,
-        MoveUp,
-        MoveDown,
-        TestPrompt,
-        TestCompletion,
-        CompletionUp,
-        CompletionDown,
-        CompletionSelect,
-        CompletionCancel,
-        CompletionFirst,
-        CompletionLast
-    ]
-);
+// Import actions from our centralized definitions
+use crate::actions::{
+    completion::*, editor::*, help::*, picker::*, prompt::*, test::*, window::*, workspace::*,
+};
 
-fn app_menus() -> Vec<Menu<'static>> {
+fn app_menus() -> Vec<Menu> {
     vec![
         Menu {
-            name: "Helix",
+            name: "Helix".into(),
             items: vec![
                 MenuItem::action("About", About),
                 MenuItem::separator(),
@@ -144,14 +117,14 @@ fn app_menus() -> Vec<Menu<'static>> {
             ],
         },
         Menu {
-            name: "File",
+            name: "File".into(),
             items: vec![
                 MenuItem::action("Open...", OpenFile),
                 // MenuItem::action("Open Directory", OpenDirectory),
             ],
         },
         Menu {
-            name: "Edit",
+            name: "Edit".into(),
             items: vec![
                 MenuItem::action("Undo", Undo),
                 MenuItem::action("Redo", Redo),
@@ -161,17 +134,16 @@ fn app_menus() -> Vec<Menu<'static>> {
             ],
         },
         Menu {
-            name: "Window",
+            name: "Window".into(),
             items: vec![
                 MenuItem::action("Minimize", Minimize),
-                MenuItem::action("Minimize All", MinimizeAll),
                 MenuItem::action("Zoom", Zoom),
             ],
         },
         Menu {
-            name: "Help",
+            name: "Help".into(),
             items: vec![
-                MenuItem::action("Tutorial", Tutor),
+                MenuItem::action("Tutorial", OpenTutorial),
                 MenuItem::action("Test Prompt", TestPrompt),
                 MenuItem::action("Test Completion", TestCompletion),
             ],
@@ -190,7 +162,7 @@ pub enum Update {
     Redraw,
     Prompt(prompt::Prompt),
     Picker(picker::Picker),
-    Completion(gpui::View<completion::CompletionView>),
+    Completion(gpui::Entity<completion::CompletionView>),
     Info(helix_view::info::Info),
     EditorEvent(helix_view::editor::EditorEvent),
     EditorStatus(EditorStatus),
@@ -208,18 +180,29 @@ struct FontSettings {
 impl gpui::Global for FontSettings {}
 
 fn gui_main(app: Application, handle: tokio::runtime::Handle) {
-    App::new().run(|cx: &mut AppContext| {
+    gpui::Application::new().run(|cx| {
+        // Set up theme
+        let theme = ui::Theme::dark();
+        cx.set_global(theme);
+        
+        // Set up fonts
+        let font_settings = FontSettings {
+            fixed_font: gpui::font("JetBrains Mono"),
+            var_font: gpui::font("SF Pro"),
+        };
+        cx.set_global(font_settings);
+        
         let options = window_options(cx);
 
-        cx.open_window(options, |cx| {
-            let input = cx.new_model(|_| crate::application::Input);
-            let crank = cx.new_model(|mc| {
-                mc.spawn(|crank, mut cx| async move {
+        cx.open_window(options, |window, cx| {
+            let input = cx.new(|_| crate::application::Input);
+            let crank = cx.new(|mc| {
+                mc.spawn(async move |crank, mut cx| {
                     loop {
                         cx.background_executor()
                             .timer(Duration::from_millis(200)) // 5fps instead of 20fps
                             .await;
-                        let _ = crank.update(&mut cx, |_crank, cx| {
+                        let _ = crank.update(cx, |_crank, cx| {
                             cx.emit(());
                         });
                     }
@@ -232,7 +215,7 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
 
             let input_1 = input.clone();
             let handle_1 = handle.clone();
-            let app = cx.new_model(move |mc| {
+            let app = cx.new(move |mc| {
                 let handle_1 = handle_1.clone();
                 let handle_2 = handle_1.clone();
                 mc.subscribe(
@@ -252,42 +235,71 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
             cx.activate(true);
             cx.set_menus(app_menus());
             
-            // Set up keybindings for picker and general actions
+            // Set up keybindings with proper key contexts
+            
+            // General editor actions
             cx.bind_keys([
-                gpui::KeyBinding::new("up", MoveUp, None),
-                gpui::KeyBinding::new("down", MoveDown, None),
-                gpui::KeyBinding::new("enter", Confirm, None),
-                gpui::KeyBinding::new("escape", Cancel, None),
+                gpui::KeyBinding::new("up", MoveUp, Some("Editor")),
+                gpui::KeyBinding::new("down", MoveDown, Some("Editor")),
+                gpui::KeyBinding::new("left", MoveLeft, Some("Editor")),
+                gpui::KeyBinding::new("right", MoveRight, Some("Editor")),
+                gpui::KeyBinding::new("enter", Confirm, Some("Editor")),
+                gpui::KeyBinding::new("escape", Cancel, Some("Editor")),
             ]);
             
-            // Completion-specific keybindings with proper context
+            // Picker-specific keybindings
             cx.bind_keys([
-                gpui::KeyBinding::new("up", CompletionUp, Some("completion")),
-                gpui::KeyBinding::new("down", CompletionDown, Some("completion")),
-                gpui::KeyBinding::new("ctrl-p", CompletionUp, Some("completion")),
-                gpui::KeyBinding::new("ctrl-n", CompletionDown, Some("completion")),
-                gpui::KeyBinding::new("enter", CompletionSelect, Some("completion")),
-                gpui::KeyBinding::new("tab", CompletionSelect, Some("completion")),
-                gpui::KeyBinding::new("escape", CompletionCancel, Some("completion")),
-                gpui::KeyBinding::new("ctrl-g", CompletionCancel, Some("completion")),
-                gpui::KeyBinding::new("home", CompletionFirst, Some("completion")),
-                gpui::KeyBinding::new("end", CompletionLast, Some("completion")),
+                gpui::KeyBinding::new("up", SelectPrev, Some("Picker")),
+                gpui::KeyBinding::new("down", SelectNext, Some("Picker")),
+                gpui::KeyBinding::new("enter", ConfirmSelection, Some("Picker")),
+                gpui::KeyBinding::new("escape", DismissPicker, Some("Picker")),
+                gpui::KeyBinding::new("cmd-p", TogglePreview, Some("Picker")),
+                gpui::KeyBinding::new("home", SelectFirst, Some("Picker")),
+                gpui::KeyBinding::new("end", SelectLast, Some("Picker")),
+            ]);
+            
+            // Completion-specific keybindings
+            cx.bind_keys([
+                gpui::KeyBinding::new("up", CompletionSelectPrev, Some("Completion")),
+                gpui::KeyBinding::new("down", CompletionSelectNext, Some("Completion")),
+                gpui::KeyBinding::new("ctrl-p", CompletionSelectPrev, Some("Completion")),
+                gpui::KeyBinding::new("ctrl-n", CompletionSelectNext, Some("Completion")),
+                gpui::KeyBinding::new("enter", CompletionConfirm, Some("Completion")),
+                gpui::KeyBinding::new("tab", CompletionConfirm, Some("Completion")),
+                gpui::KeyBinding::new("escape", CompletionDismiss, Some("Completion")),
+                gpui::KeyBinding::new("ctrl-g", CompletionDismiss, Some("Completion")),
+                gpui::KeyBinding::new("home", CompletionSelectFirst, Some("Completion")),
+                gpui::KeyBinding::new("end", CompletionSelectLast, Some("Completion")),
             ]);
 
-            let font_settings = FontSettings {
-                fixed_font: gpui::font("JetBrains Mono"),
-                var_font: gpui::font("SF Pro"),
-            };
-            cx.set_global(font_settings);
-
             let input_1 = input.clone();
-            cx.new_view(|cx| {
+            // Create overlay view
+            let overlay = cx.new(|cx| {
+                let view = overlay::OverlayView::new(&cx.focus_handle(), &app);
+                view.subscribe(&app, cx);
+                view
+            });
+            
+            // Create notifications view with default colors
+            let notifications = cx.new(|_cx| {
+                notification::NotificationView::new(gpui::black(), gpui::white())
+            });
+            
+            // Create info box view with default style
+            let info = cx.new(|_cx| {
+                info_box::InfoBoxView::new(gpui::Style::default())
+            });
+            
+            // Create workspace
+            let workspace = cx.new(|cx| {
                 cx.subscribe(&app, |w: &mut workspace::Workspace, _, ev, cx| {
                     w.handle_event(ev, cx);
                 })
                 .detach();
-                workspace::Workspace::new(app, input_1.clone(), handle, cx)
-            })
+                workspace::Workspace::with_views(app, input_1.clone(), handle, overlay, notifications, info, cx)
+            });
+            
+            workspace
         });
     })
 }
