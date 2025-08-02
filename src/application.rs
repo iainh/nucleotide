@@ -395,7 +395,10 @@ impl Application {
                 
                 // Ensure cursor is visible after keyboard navigation
                 let view_id = self.editor.tree.focus;
-                self.editor.ensure_cursor_in_view(view_id);
+                // Check if the view exists before trying to ensure cursor visibility
+                if self.editor.tree.contains(view_id) {
+                    self.editor.ensure_cursor_in_view(view_id);
+                }
                 
                 self.emit_overlays(cx);
                 cx.emit(crate::Update::Redraw);
@@ -999,13 +1002,16 @@ pub fn init_editor(
         // let path = Path::new("./test.rs");
         let doc_id = editor.open(&path, Action::VerticalSplit)?;
         let view_id = editor.tree.focus;
-        let doc = doc_mut!(editor, &doc_id);
-        let pos = Selection::point(pos_at_coords(
-            doc.text().slice(..),
-            Position::new(0, 0),
-            true,
-        ));
-        doc.set_selection(view_id, pos);
+        // Check if the view exists before setting selection
+        if editor.tree.contains(view_id) {
+            let doc = doc_mut!(editor, &doc_id);
+            let pos = Selection::point(pos_at_coords(
+                doc.text().slice(..),
+                Position::new(0, 0),
+                true,
+            ));
+            doc.set_selection(view_id, pos);
+        }
 
         // Unset path to prevent accidentally saving to the original tutor file.
         doc_mut!(editor).set_path(None);

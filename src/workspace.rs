@@ -133,13 +133,16 @@ impl Workspace {
                             // Set cursor to beginning of file without selecting content
                             let view_id = editor.tree.focus;
                             
-                            // Set the selection and ensure cursor is in view
-                            editor.ensure_cursor_in_view(view_id);
-                            if let Some(doc) = editor.document_mut(doc_id) {
-                                let pos = Selection::point(0);
-                                doc.set_selection(view_id, pos);
+                            // Check if the view exists before attempting operations
+                            if editor.tree.contains(view_id) {
+                                // Set the selection and ensure cursor is in view
+                                editor.ensure_cursor_in_view(view_id);
+                                if let Some(doc) = editor.document_mut(doc_id) {
+                                    let pos = Selection::point(0);
+                                    doc.set_selection(view_id, pos);
+                                }
+                                editor.ensure_cursor_in_view(view_id);
                             }
-                            editor.ensure_cursor_in_view(view_id);
                         }
                     }
                     cx.notify();
