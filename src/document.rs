@@ -824,6 +824,25 @@ impl Element for DocumentElement {
                     let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
                     
                     if !line_str.is_empty() {
+                        // First, paint any background highlights
+                        let mut char_offset = 0;
+                        for run in &line_runs {
+                            if let Some(bg_color) = run.background_color {
+                                let run_width = after_layout.cell_width * run.len as f32;
+                                let bg_origin = point(
+                                    text_origin_x + (after_layout.cell_width * char_offset as f32),
+                                    bounds.origin.y + px(1.) + y_offset
+                                );
+                                let bg_bounds = Bounds {
+                                    origin: bg_origin,
+                                    size: size(run_width, after_layout.line_height),
+                                };
+                                window.paint_quad(fill(bg_bounds, bg_color));
+                            }
+                            char_offset += run.len;
+                        }
+                        
+                        // Then paint the text on top
                         let shaped_line = window.text_system()
                             .shape_line(line_str, self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
                         
