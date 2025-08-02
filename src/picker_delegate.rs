@@ -5,6 +5,17 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::sync::Arc;
 
+/// Theme colors for picker UI elements
+#[derive(Clone)]
+pub struct PickerThemeColors {
+    pub background: Hsla,
+    pub text: Hsla,
+    pub selected_background: Hsla,
+    pub selected_text: Hsla,
+    pub border: Hsla,
+    pub prompt_text: Hsla,
+}
+
 /// Trait for implementing picker behavior following Zed's delegate pattern
 pub trait PickerDelegate: Sized + 'static {
     /// The type of items being picked
@@ -75,6 +86,11 @@ pub trait PickerDelegate: Sized + 'static {
     fn placeholder_text(&self) -> SharedString {
         "Search...".into()
     }
+    
+    /// Return theme colors for the picker UI (optional)
+    fn theme_colors(&self) -> Option<PickerThemeColors> {
+        None
+    }
 }
 
 /// File picker delegate implementation
@@ -84,6 +100,7 @@ pub struct FilePickerDelegate {
     selected_index: usize,
     query: SharedString,
     on_select: Option<Arc<dyn Fn(std::path::PathBuf, &mut App) + Send + Sync>>,
+    theme_colors: Option<PickerThemeColors>,
 }
 
 #[derive(Clone)]
@@ -103,7 +120,13 @@ impl FilePickerDelegate {
             selected_index: 0,
             query: SharedString::default(),
             on_select: None,
+            theme_colors: None,
         }
+    }
+    
+    pub fn with_theme_colors(mut self, theme_colors: PickerThemeColors) -> Self {
+        self.theme_colors = Some(theme_colors);
+        self
     }
     
     pub fn with_on_select(
@@ -192,10 +215,14 @@ impl PickerDelegate for FilePickerDelegate {
                         .child(item.label.clone())
                 )
                 .when_some(item.sublabel.as_ref(), |this, sublabel| {
+                    let sublabel_color = self.theme_colors.as_ref()
+                        .map(|colors| colors.prompt_text)
+                        .unwrap_or_else(|| hsla(0.0, 0.0, 0.7, 1.0));
+                    
                     this.child(
                         div()
                             .text_size(px(12.))
-                            .text_color(hsla(0.0, 0.0, 0.7, 1.0))
+                            .text_color(sublabel_color)
                             .text_ellipsis()
                             .child(sublabel.clone())
                     )
@@ -236,9 +263,15 @@ impl PickerDelegate for FilePickerDelegate {
                         .child("Preview")
                 )
                 .child(
-                    div()
-                        .text_color(hsla(0.0, 0.0, 0.7, 1.0))
-                        .child(format!("File: {}", item.path.display()))
+                    {
+                        let text_color = self.theme_colors.as_ref()
+                            .map(|colors| colors.prompt_text)
+                            .unwrap_or_else(|| hsla(0.0, 0.0, 0.7, 1.0));
+                        
+                        div()
+                            .text_color(text_color)
+                            .child(format!("File: {}", item.path.display()))
+                    }
                 )
         )
     }
@@ -265,6 +298,10 @@ impl PickerDelegate for FilePickerDelegate {
     
     fn placeholder_text(&self) -> SharedString {
         "Search files...".into()
+    }
+    
+    fn theme_colors(&self) -> Option<PickerThemeColors> {
+        self.theme_colors.clone()
     }
 }
 

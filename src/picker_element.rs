@@ -116,11 +116,26 @@ impl<D: PickerDelegate> Render for Picker<D> {
         let supports_preview = delegate.supports_preview();
         let show_preview = self.show_preview && supports_preview;
         
-        // Get theme colors
-        let bg_color = hsla(0.0, 0.0, 0.1, 1.0);
-        let border_color = hsla(0.0, 0.0, 0.3, 1.0);
-        let _text_color = hsla(0.0, 0.0, 0.9, 1.0);
-        let prompt_color = hsla(0.0, 0.0, 0.7, 1.0);
+        // Get theme colors from delegate if available, otherwise use defaults
+        let (bg_color, border_color, _text_color, prompt_color) = {
+            // Try to get theme colors through delegate
+            if let Some(theme_colors) = delegate.theme_colors() {
+                (
+                    theme_colors.background,
+                    theme_colors.border,
+                    theme_colors.text,
+                    theme_colors.prompt_text,
+                )
+            } else {
+                // Fall back to static colors
+                (
+                    hsla(0.0, 0.0, 0.1, 1.0),
+                    hsla(0.0, 0.0, 0.3, 1.0),
+                    hsla(0.0, 0.0, 0.9, 1.0),
+                    hsla(0.0, 0.0, 0.7, 1.0),
+                )
+            }
+        };
         
         // Calculate dimensions
         let window_size = window.viewport_size();

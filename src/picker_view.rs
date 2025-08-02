@@ -77,6 +77,52 @@ impl Default for PickerStyle {
     }
 }
 
+impl PickerStyle {
+    /// Create PickerStyle from helix theme using appropriate theme keys
+    pub fn from_theme(theme: &helix_view::Theme) -> Self {
+        use crate::utils::color_to_hsla;
+        
+        // Use appropriate helix theme keys for picker UI elements
+        let background = theme.get("ui.popup").bg
+            .and_then(color_to_hsla)
+            .or_else(|| theme.get("ui.background").bg.and_then(color_to_hsla))
+            .unwrap_or_else(|| hsla(0.0, 0.0, 0.1, 1.0));
+        
+        let text = theme.get("ui.text").fg
+            .and_then(color_to_hsla)
+            .unwrap_or_else(|| hsla(0.0, 0.0, 0.9, 1.0));
+        
+        let selected_background = theme.get("ui.menu.selected").bg
+            .and_then(color_to_hsla)
+            .or_else(|| theme.get("ui.selection").bg.and_then(color_to_hsla))
+            .unwrap_or_else(|| hsla(220.0 / 360.0, 0.6, 0.5, 1.0));
+        
+        let selected_text = theme.get("ui.menu.selected").fg
+            .and_then(color_to_hsla)
+            .unwrap_or(text);
+        
+        let border = theme.get("ui.popup").fg
+            .and_then(color_to_hsla)
+            .or_else(|| theme.get("ui.text").fg.and_then(color_to_hsla))
+            .map(|color| hsla(color.h, color.s, color.l * 0.5, color.a)) // Make border dimmer
+            .unwrap_or_else(|| hsla(0.0, 0.0, 0.3, 1.0));
+        
+        let prompt_text = theme.get("ui.text").fg
+            .and_then(color_to_hsla)
+            .map(|color| hsla(color.h, color.s, color.l * 0.7, color.a)) // Make prompt text dimmer
+            .unwrap_or_else(|| hsla(0.0, 0.0, 0.7, 1.0));
+        
+        Self {
+            background,
+            text,
+            selected_background,
+            selected_text,
+            border,
+            prompt_text,
+        }
+    }
+}
+
 impl PickerView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
@@ -93,6 +139,28 @@ impl PickerView {
             on_select: None,
             on_cancel: None,
             style: PickerStyle::default(),
+            cached_dimensions: None,
+        }
+    }
+    
+    /// Create a new PickerView with theme-based styling
+    pub fn new_with_theme(theme: &helix_view::Theme, cx: &mut Context<Self>) -> Self {
+        let style = PickerStyle::from_theme(theme);
+        
+        Self {
+            query: SharedString::default(),
+            items: Vec::new(),
+            filtered_indices: Vec::new(),
+            selected_index: 0,
+            matcher: None,
+            focus_handle: cx.focus_handle(),
+            list_scroll_handle: UniformListScrollHandle::new(),
+            show_preview: true,
+            preview_content: None,
+            preview_loading: false,
+            on_select: None,
+            on_cancel: None,
+            style,
             cached_dimensions: None,
         }
     }

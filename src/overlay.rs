@@ -134,8 +134,17 @@ impl OverlayView {
                         let core_weak = self.core.clone();
                         let items_count = items.len();
                         
+                        // Get theme outside the closure to avoid borrow conflict
+                        let theme = core_weak.upgrade()
+                            .map(|core| core.read(cx).editor.theme.clone());
+                        
                         let picker_view = cx.new(|cx| {
-                            let mut view = PickerView::new(cx);
+                            // Use theme-aware constructor if theme is available
+                            let mut view = if let Some(theme) = &theme {
+                                PickerView::new_with_theme(theme, cx)
+                            } else {
+                                PickerView::new(cx)
+                            };
                             let items_for_callback = items.clone();
                             view = view.with_items(items);
                             

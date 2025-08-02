@@ -61,84 +61,94 @@ impl RenderOnce for PickerElement {
                 // Native GPUI picker rendering
                 let font = cx.global::<crate::FontSettings>().fixed_font.clone();
 
-                div()
-                    .track_focus(&self.focus)
-                    .flex()
-                    .flex_col()
-                    .w(px(600.))
-                    .max_h(px(400.))
-                    .bg(hsla(0.0, 0.0, 0.1, 1.0))
-                    .border_1()
-                    .border_color(hsla(0.0, 0.0, 0.3, 1.0))
-                    .rounded_md()
-                    .shadow_lg()
-                    .font(font)
-                    .text_size(px(14.))
-                    .child(
-                        // Title bar
-                        div()
-                            .flex()
-                            .items_center()
-                            .px_3()
-                            .py_2()
-                            .border_b_1()
-                            .border_color(hsla(0.0, 0.0, 0.3, 1.0))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(hsla(0.0, 0.0, 0.9, 1.0))
-                                    .child(title.clone())
-                            )
-                    )
-                    .child(
-                        // Items list  
-                        div()
-                            .flex_1()
-                            .overflow_hidden()
-                            .children(items.iter().enumerate().take(8).map(|(idx, item)| {
-                                let is_selected = idx == self.selected_index;
+                {
+                    // Create default theme colors for fallback
+                    let background = hsla(0.0, 0.0, 0.1, 1.0);
+                    let border = hsla(0.0, 0.0, 0.3, 1.0);
+                    let text = hsla(0.0, 0.0, 0.9, 1.0);
+                    let selected_bg = hsla(220.0 / 360.0, 0.6, 0.5, 1.0);
+                    let selected_text = hsla(0.0, 0.0, 1.0, 1.0);
+                    let prompt_text = hsla(0.0, 0.0, 0.7, 1.0);
+                    
+                    div()
+                        .track_focus(&self.focus)
+                        .flex()
+                        .flex_col()
+                        .w(px(600.))
+                        .max_h(px(400.))
+                        .bg(background)
+                        .border_1()
+                        .border_color(border)
+                        .rounded_md()
+                        .shadow_lg()
+                        .font(font)
+                        .text_size(px(14.))
+                        .child(
+                            // Title bar
+                            div()
+                                .flex()
+                                .items_center()
+                                .px_3()
+                                .py_2()
+                                .border_b_1()
+                                .border_color(border)
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(text)
+                                        .child(title.clone())
+                                )
+                        )
+                        .child(
+                            // Items list  
+                            div()
+                                .flex_1()
+                                .overflow_hidden()
+                                .children(items.iter().enumerate().take(8).map(|(idx, item)| {
+                                    let is_selected = idx == self.selected_index;
 
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .px_3()
-                                    .py_1()
-                                    .when(is_selected, |this| {
-                                        this.bg(hsla(220.0 / 360.0, 0.6, 0.5, 1.0))
-                                            .text_color(hsla(0.0, 0.0, 1.0, 1.0))
-                                    })
-                                    .when(!is_selected, |this| {
-                                        this.text_color(hsla(0.0, 0.0, 0.9, 1.0))
-                                    })
-                                    .child(item.label.clone())
-                                    .when_some(item.sublabel.as_ref(), |this, sublabel| {
-                                        this.child(
-                                            div()
-                                                .text_size(px(12.))
-                                                .text_color(hsla(0.0, 0.0, 0.7, 1.0))
-                                                .child(sublabel.clone())
-                                        )
-                                    })
-                            }))
-                    )
-                    .child(
-                        // Footer with instructions
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .px_3()
-                            .py_1()
-                            .border_t_1()
-                            .border_color(hsla(0.0, 0.0, 0.3, 1.0))
-                            .text_size(px(11.))
-                            .text_color(hsla(0.0, 0.0, 0.6, 1.0))
-                            .child(format!(
-                                "Native GPUI Picker [{}/{}] - ↑↓ to navigate, Enter to select, Esc to cancel",
-                                self.selected_index + 1,
-                                items.len().min(8)
-                            ))
-                    )
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .px_3()
+                                        .py_1()
+                                        .when(is_selected, |this| {
+                                            this.bg(selected_bg)
+                                                .text_color(selected_text)
+                                        })
+                                        .when(!is_selected, |this| {
+                                            this.text_color(text)
+                                        })
+                                        .child(item.label.clone())
+                                        .when_some(item.sublabel.as_ref(), |this, sublabel| {
+                                            this.child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .text_color(prompt_text)
+                                                    .child(sublabel.clone())
+                                            )
+                                        })
+                                }))
+                        )
+                        .child(
+                            // Footer with instructions
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .px_3()
+                                .py_1()
+                                .border_t_1()
+                                .border_color(border)
+                                .text_size(px(11.))
+                                .text_color(prompt_text)
+                                .child(format!(
+                                    "Native GPUI Picker [{}/{}] - ↑↓ to navigate, Enter to select, Esc to cancel",
+                                    self.selected_index + 1,
+                                    items.len().min(8)
+                                ))
+                        )
+                }
             }
         }
     }
