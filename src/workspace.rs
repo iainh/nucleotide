@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use helix_core::{pos_at_coords, Position, Selection};
 use helix_view::ViewId;
 use log::info;
 
@@ -122,10 +123,24 @@ impl Workspace {
                     let editor = &mut core.editor;
                     
                     // Open the file in the editor
-                    if let Err(e) = editor.open(&path, helix_view::editor::Action::Replace) {
-                        eprintln!("Failed to open file {:?}: {}", path, e);
-                    } else {
-                        info!("Successfully opened file: {:?}", path);
+                    match editor.open(&path, helix_view::editor::Action::Replace) {
+                        Err(e) => {
+                            eprintln!("Failed to open file {:?}: {}", path, e);
+                        }
+                        Ok(doc_id) => {
+                            info!("Successfully opened file: {:?}", path);
+                            
+                            // Set cursor to beginning of file without selecting content
+                            let view_id = editor.tree.focus;
+                            if let Some(doc) = editor.document_mut(doc_id) {
+                                let pos = Selection::point(pos_at_coords(
+                                    doc.text().slice(..),
+                                    Position::new(0, 0),
+                                    true,
+                                ));
+                                doc.set_selection(view_id, pos);
+                            }
+                        }
                     }
                     cx.notify();
                 });
