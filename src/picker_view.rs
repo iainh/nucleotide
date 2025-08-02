@@ -331,6 +331,19 @@ impl PickerView {
         }
     }
     
+    fn insert_char(&mut self, ch: char, cx: &mut Context<Self>) {
+        let mut query = self.query.to_string();
+        query.push(ch);
+        self.set_query(query, cx);
+    }
+    
+    fn delete_char(&mut self, cx: &mut Context<Self>) {
+        let mut query = self.query.to_string();
+        if query.pop().is_some() {
+            self.set_query(query, cx);
+        }
+    }
+    
     fn calculate_dimensions(&self, window_size: Size<Pixels>) -> CachedDimensions {
         let min_width_for_preview = 800.0;
         let window_width = window_size.width.0 as f64;
@@ -602,6 +615,36 @@ impl Render for PickerView {
             .text_size(px(14.))
             .overflow_hidden()
             .track_focus(&self.focus_handle)
+            // Handle keyboard input for filtering
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                println!("🔤 Picker received key: {}", event.keystroke.key);
+                match event.keystroke.key.as_str() {
+                    "backspace" => {
+                        this.delete_char(cx);
+                    }
+                    "enter" => {
+                        this.confirm_selection(cx);
+                    }
+                    "escape" => {
+                        if this.query.is_empty() {
+                            this.cancel(cx);
+                        } else {
+                            // Clear the query instead of cancelling
+                            this.set_query("", cx);
+                        }
+                    }
+                    key if key.len() == 1 => {
+                        if let Some(ch) = key.chars().next() {
+                            if ch.is_alphanumeric() || ch.is_ascii_punctuation() || ch == ' ' || ch == '/' || ch == '.' || ch == '-' || ch == '_' {
+                                this.insert_char(ch, cx);
+                            }
+                        }
+                    }
+                    _ => {
+                        // Let other keys be handled by actions
+                    }
+                }
+            }))
             // Use GPUI actions instead of direct key handling
             .on_action(cx.listener(|this, _: &crate::actions::picker::SelectPrev, _window, cx| {
                 println!("⬆️ SelectPrev action triggered");
