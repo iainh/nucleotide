@@ -1,9 +1,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use std::path::PathBuf;
 
 use crate::completion::CompletionView;
-use crate::picker::{Picker, PickerElement};
+use crate::picker::Picker;
 use crate::picker_view::{PickerItem, PickerView};
 use crate::prompt::{Prompt, PromptElement};
 use crate::prompt_view::PromptView;
@@ -127,7 +126,7 @@ impl OverlayView {
             crate::Update::Picker(picker) => {
                 println!("🔍 OverlayView received picker: {:?}", picker);
                 match picker {
-                    Picker::Native { title, items, on_select } => {
+                    Picker::Native { title: _, items, on_select } => {
                         println!("🎯 Creating native PickerView with {} items", items.len());
                         
                         let items = items.clone();
@@ -216,7 +215,7 @@ impl Focusable for OverlayView {
 impl EventEmitter<DismissEvent> for OverlayView {}
 
 impl Render for OverlayView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         println!(
             "🎨 rendering overlay - prompt: {}, native_prompt: {}, completion: {}, native_picker: {}", 
             self.prompt.is_some(),

@@ -188,7 +188,7 @@ impl NotificationView {
             match ev {
                 LspStatusEvent::Begin => {
                     let id = *id;
-                    cx.spawn(async move |this, mut cx| {
+                    cx.spawn(async move |this, cx| {
                         loop {
                             cx.background_executor()
                                 .timer(std::time::Duration::from_millis(5000))
@@ -255,7 +255,7 @@ impl Render for NotificationView {
 }
 
 impl RenderOnce for Notification {
-    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let message = self.message.take();
         div()
             .flex()

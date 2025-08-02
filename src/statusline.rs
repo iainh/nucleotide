@@ -29,7 +29,7 @@ impl StatusLine {
         }
     }
 
-    fn style(&self, window: &mut Window, cx: &mut App) -> (Hsla, Hsla) {
+    fn style(&self, _window: &mut Window, cx: &mut App) -> (Hsla, Hsla) {
         let editor = &self.core.read(cx).editor;
         let base_style = if self.focused {
             editor.theme.get("ui.statusline")
@@ -49,7 +49,7 @@ impl StatusLine {
 
     fn text(
         &self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
         base_fg: Hsla,
         base_bg: Hsla,

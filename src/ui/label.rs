@@ -2,7 +2,6 @@
 // ABOUTME: Provides consistent text styling
 
 use crate::ui::Theme;
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 /// Label weight options

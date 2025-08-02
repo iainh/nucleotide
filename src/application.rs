@@ -20,7 +20,6 @@ use helix_term::ui::FilePickerData;
 use helix_core::Uri;
 use helix_term::{
     args::Args,
-    commands::MappableCommand as Command,
     compositor::{self, Compositor},
     config::Config,
     job::Jobs,
@@ -325,12 +324,7 @@ impl Application {
 
         let picker = self.try_create_picker_component();
 
-        let prompt = if let Some(p) = self.compositor.find::<helix_term::ui::Prompt>() {
-            Some(Prompt::make(&mut self.editor, p))
-        } else {
-            None
-        };
-        let prompt = if let Some(p) = self.compositor.find::<helix_term::ui::Prompt>() {
+        let _prompt = if let Some(p) = self.compositor.find::<helix_term::ui::Prompt>() {
             Some(Prompt::make(&mut self.editor, p))
         } else {
             None
@@ -340,7 +334,7 @@ impl Application {
             cx.emit(crate::Update::Picker(picker));
         }
 
-        if let Some(prompt) = prompt {
+        if let Some(prompt) = _prompt {
             cx.emit(crate::Update::Prompt(prompt));
         }
 
@@ -363,13 +357,12 @@ impl Application {
         };
         match event {
             InputEvent::Key(key) => {
-                let mut is_handled = self
+                let is_handled = self
                     .compositor
                     .handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
                 if !is_handled {
                     let event = &helix_view::input::Event::Key(key);
                     let res = self.view.handle_event(event, &mut comp_ctx);
-                    is_handled = matches!(res, EventResult::Consumed(_));
                     if let EventResult::Consumed(Some(cb)) = res {
                         cb(&mut self.compositor, &mut comp_ctx);
                     }

@@ -63,7 +63,7 @@ pub fn translate_key(ks: &Keystroke) -> helix_view::input::KeyEvent {
         "f10" => KeyCode::F(10),
         "f11" => KeyCode::F(11),
         "f12" => KeyCode::F(12),
-        any => {
+        _any => {
             let chars: Vec<char> = key.chars().collect();
             if chars.len() == 1 {
                 KeyCode::Char(chars[0])

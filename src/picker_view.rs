@@ -234,7 +234,7 @@ impl PickerView {
     fn calculate_dimensions(&self, window_size: Size<Pixels>) -> CachedDimensions {
         let min_width_for_preview = 800.0;
         let window_width = window_size.width.0 as f64;
-        let window_height = window_size.height.0 as f64;
+        let _window_height = window_size.height.0 as f64;
         
         let show_preview = self.show_preview && window_width > min_width_for_preview;
         
@@ -292,7 +292,7 @@ impl PickerView {
         cx.notify();
 
         // When spawning from Context<T>, the closure gets WeakEntity<T> as first param
-        cx.spawn(async move |view_weak, mut cx| {
+        cx.spawn(async move |view_weak, cx| {
             let content = if path.is_dir() {
                 // Load directory listing
                 match std::fs::read_dir(&path) {

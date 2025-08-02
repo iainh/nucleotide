@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use gpui::{prelude::FluentBuilder, *};
-use gpui::{point, size, StyledText, Overflow, TextRun, canvas};
+use gpui::{point, size, TextRun};
 use helix_core::{
     ropey::RopeSlice,
     syntax::{self, HighlightEvent},
@@ -158,9 +158,9 @@ impl Render for DocumentView {
         );
 
         let diags = {
-            let theme = self.core.read(cx).editor.theme.clone();
+            let _theme = self.core.read(cx).editor.theme.clone();
 
-            self.get_diagnostics(cx).into_iter().map(move |diag| {
+            self.get_diagnostics(cx).into_iter().map(move |_diag| {
                 // TODO: Fix new_view API - DiagnosticView disabled for now
                 div() // Placeholder
             })
@@ -285,7 +285,7 @@ impl DocumentElement {
         theme: &Theme,
         cursor_shape_config: &helix_view::editor::CursorShapeConfig,
         is_window_focused: bool,
-        is_view_focused: bool,
+        _is_view_focused: bool,
     ) -> helix_core::syntax::OverlayHighlights {
         // Get selection highlights from helix-term EditorView
         EditorView::doc_selection_highlights(
@@ -648,9 +648,9 @@ impl Element for DocumentElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         debug!("editor bounds {:?}", bounds);
-        let core = self.core.clone();
+        let _core = self.core.clone();
         self.interactivity
-            .prepaint(_global_id, _inspector_id, bounds, bounds.size, window, cx, |_, _, hitbox, window, cx| {
+            .prepaint(_global_id, _inspector_id, bounds, bounds.size, window, cx, |_, _, hitbox, _window, cx| {
                 // TODO: Content masking not available in new GPUI
                 {
                     let font_id = cx.text_system().resolve_font(&self.style.font());
@@ -699,7 +699,7 @@ impl Element for DocumentElement {
     ) {
         let focus = self.focus.clone();
         self.interactivity
-            .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+            .on_mouse_down(MouseButton::Left, move |_ev, _window, _cx| {
                 println!("MOUSE DOWN");
                 focus.focus(_window);
             });
@@ -718,7 +718,7 @@ impl Element for DocumentElement {
                 let default_style = theme.get("ui.background");
                 let bg_color = color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
                 let cursor_style = theme.get("ui.cursor.primary");
-                let bg = fill(bounds, bg_color);
+                let _bg = fill(bounds, bg_color);
                 let fg_color = color_to_hsla(
                     default_style
                         .fg
@@ -767,7 +767,7 @@ impl Element for DocumentElement {
                 let doc_text = document.text().clone();
                 
                 // Drop the core borrow before the loop
-                drop(core);
+                let _ = core;
                 
                 let text = doc_text.slice(..);
                 
@@ -819,7 +819,7 @@ impl Element for DocumentElement {
                     );
                     
                     // Drop core before painting
-                    drop(core);
+                    let _ = core;
                     
                     let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
                     
@@ -918,7 +918,7 @@ impl Element for DocumentElement {
                     drop(gutters);
                     
                     // Drop core borrow before painting
-                    drop(core);
+                    let _ = core;
                     
                     // Now paint the gutter lines
                     for (origin, line) in gutter.lines {
@@ -1067,7 +1067,7 @@ impl Cursor {
     pub fn paint(&mut self, origin: gpui::Point<Pixels>, window: &mut Window, cx: &mut App) {
         let bounds = self.bounds(origin);
 
-        let cursor = fill(bounds, self.color);
+        let _cursor = fill(bounds, self.color);
 
         // Quad painting is handled differently in new GPUI
         // TODO: Use div with background color instead
@@ -1225,7 +1225,7 @@ struct DiagnosticView {
 }
 
 impl Render for DiagnosticView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         debug!("rendering diag {:?}", self.diagnostic);
 
         fn color(style: helix_view::graphics::Style) -> Hsla {

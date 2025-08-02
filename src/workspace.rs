@@ -55,10 +55,10 @@ impl Workspace {
     }
     
     pub fn new(
-        core: Entity<Core>,
-        input: Entity<Input>,
-        handle: tokio::runtime::Handle,
-        cx: &mut Context<Self>,
+        _core: Entity<Core>,
+        _input: Entity<Input>,
+        _handle: tokio::runtime::Handle,
+        _cx: &mut Context<Self>,
     ) -> Self {
         panic!("Use Workspace::with_views instead - views must be created in window context");
     }
@@ -451,7 +451,7 @@ fn load_tutor(core: Entity<Core>, handle: tokio::runtime::Handle, cx: &mut Conte
 fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     use crate::picker_view::PickerItem;
     use std::sync::Arc;
-    use ignore::{Walk, WalkBuilder};
+    use ignore::WalkBuilder;
     
     // Get all files in the current directory using ignore crate (respects .gitignore)
     let mut items = Vec::new();
@@ -480,7 +480,7 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
         let path_str = relative_path.to_string_lossy().into_owned();
         
         // Get filename for label
-        let filename = path.file_name()
+        let _filename = path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("<unknown>")
             .to_string();

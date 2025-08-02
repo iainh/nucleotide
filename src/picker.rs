@@ -2,8 +2,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::sync::Arc;
 
-use crate::picker_view::{PickerItem, PickerView};
-use crate::utils::TextWithStyle;
+use crate::picker_view::PickerItem;
 
 #[derive(Clone)]
 pub enum Picker {
@@ -52,7 +51,7 @@ pub struct PickerElement {
 }
 
 impl RenderOnce for PickerElement {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         match &self.picker {
             Picker::Native {
                 title,

@@ -3,7 +3,6 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct CompletionItem {

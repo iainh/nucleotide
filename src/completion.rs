@@ -3,7 +3,6 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct CompletionItem {
@@ -283,7 +282,7 @@ impl Focusable for CompletionView {
 impl EventEmitter<DismissEvent> for CompletionView {}
 
 impl Render for CompletionView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let font = cx.global::<crate::FontSettings>().fixed_font.clone();
         
         if self.filtered_items.is_empty() {

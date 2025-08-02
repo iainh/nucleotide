@@ -119,7 +119,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
         // Get theme colors
         let bg_color = hsla(0.0, 0.0, 0.1, 1.0);
         let border_color = hsla(0.0, 0.0, 0.3, 1.0);
-        let text_color = hsla(0.0, 0.0, 0.9, 1.0);
+        let _text_color = hsla(0.0, 0.0, 0.9, 1.0);
         let prompt_color = hsla(0.0, 0.0, 0.7, 1.0);
         
         // Calculate dimensions

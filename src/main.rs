@@ -7,8 +7,8 @@ use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
 
 use gpui::{
-    actions, App, AppContext, AsyncApp, Menu, MenuItem, TitlebarOptions,
-    WeakEntity, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, px,
+    App, AppContext, Menu, MenuItem, TitlebarOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, px,
 };
 
 pub use application::Input;
@@ -98,7 +98,7 @@ fn window_options(_cx: &mut App) -> gpui::WindowOptions {
 
 // Import actions from our centralized definitions
 use crate::actions::{
-    completion::*, editor::*, help::*, picker::*, prompt::*, test::*, window::*, workspace::*,
+    completion::*, editor::*, help::*, picker::*, test::*, window::*,
 };
 
 fn app_menus() -> Vec<Menu> {
@@ -194,10 +194,10 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
         
         let options = window_options(cx);
 
-        cx.open_window(options, |window, cx| {
+        let _ = cx.open_window(options, |_window, cx| {
             let input = cx.new(|_| crate::application::Input);
             let crank = cx.new(|mc| {
-                mc.spawn(async move |crank, mut cx| {
+                mc.spawn(async move |crank, cx| {
                     loop {
                         cx.background_executor()
                             .timer(Duration::from_millis(200)) // 5fps instead of 20fps

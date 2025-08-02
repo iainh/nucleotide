@@ -2,7 +2,6 @@
 // ABOUTME: Reusable component for consistent list rendering
 
 use crate::ui::spacing;
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 use smallvec::SmallVec;
 

@@ -2,7 +2,6 @@
 // ABOUTME: Container component for organizing content
 
 use crate::ui::{spacing, Theme};
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 /// Panel padding options
