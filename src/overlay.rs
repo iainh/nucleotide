@@ -14,7 +14,6 @@ pub struct OverlayView {
     completion_view: Option<Entity<CompletionView>>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
-    previous_focus: Option<FocusHandle>,
 }
 
 impl OverlayView {
@@ -26,7 +25,6 @@ impl OverlayView {
             completion_view: None,
             focus: focus.clone(),
             core: core.downgrade(),
-            previous_focus: None,
         }
     }
 
@@ -34,8 +32,14 @@ impl OverlayView {
         self.prompt.is_none() && self.native_picker_view.is_none() && self.native_prompt_view.is_none() && self.completion_view.is_none()
     }
     
-    pub fn store_previous_focus(&mut self, focus_handle: FocusHandle) {
-        self.previous_focus = Some(focus_handle);
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        // Clear all overlay components
+        self.prompt = None;
+        self.native_picker_view = None;
+        self.native_prompt_view = None;
+        self.completion_view = None;
+        
+        cx.notify();
     }
 
     pub fn subscribe(&self, editor: &Entity<crate::Core>, cx: &mut Context<Self>) {
@@ -92,7 +96,8 @@ impl OverlayView {
                         cx.subscribe(&prompt_view, |this, _prompt_view, _event: &DismissEvent, cx| {
                             println!("🚨 DismissEvent received - clearing native_prompt_view");
                             this.native_prompt_view = None;
-                            // Note: Focus restoration would go here if we had access to window
+                            // Emit dismiss event to notify workspace
+                            cx.emit(DismissEvent);
                             cx.notify();
                         }).detach();
                         
@@ -115,7 +120,8 @@ impl OverlayView {
                 cx.subscribe(completion_view, |this, _completion_view, _event: &DismissEvent, cx| {
                     println!("🚨 DismissEvent received - clearing completion_view");
                     this.completion_view = None;
-                    // Note: Focus restoration would go here if we had access to window
+                    // Emit dismiss event to notify workspace
+                    cx.emit(DismissEvent);
                     cx.notify();
                 }).detach();
                 
@@ -186,7 +192,8 @@ impl OverlayView {
                             // Clear the native picker when it emits a dismiss event
                             println!("🚨 DismissEvent received - clearing native_picker_view");
                             this.native_picker_view = None;
-                            // Note: Focus restoration would go here if we had access to window
+                            // Emit dismiss event to notify workspace
+                            cx.emit(DismissEvent);
                             cx.notify();
                         }).detach();
                         

@@ -23,6 +23,7 @@ pub struct Workspace {
     info_hidden: bool,
     notifications: Entity<NotificationView>,
     focus_handle: FocusHandle,
+    needs_focus_restore: bool,
 }
 
 impl Workspace {
@@ -36,6 +37,15 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
+        
+        // Subscribe to overlay dismiss events to restore focus
+        cx.subscribe(&overlay, |workspace, _overlay, _event: &DismissEvent, cx| {
+            println!("🎯 Workspace received DismissEvent from overlay");
+            // Mark that we need to restore focus in the next render
+            workspace.needs_focus_restore = true;
+            cx.notify();
+        }).detach();
+        
         let mut workspace = Self {
             core,
             input,
@@ -47,6 +57,7 @@ impl Workspace {
             info_hidden: true,
             notifications,
             focus_handle,
+            needs_focus_restore: false,
         };
         // Initialize document views
         workspace.update_document_views(cx);
@@ -99,15 +110,6 @@ impl Workspace {
             crate::Update::Prompt(_) | crate::Update::Picker(_) | crate::Update::Completion(_) => {
                 // When a picker, prompt, or completion appears, auto-dismiss the info box
                 self.info_hidden = true;
-                
-                // Store current focus in overlay before showing it
-                if let Some(view_id) = self.focused_view_id {
-                    if let Some(doc_view) = self.documents.get(&view_id) {
-                        self.overlay.update(cx, |overlay, cx| {
-                            overlay.store_previous_focus(doc_view.focus_handle(cx));
-                        });
-                    }
-                }
                 
                 // Focus will be handled by the overlay components
                 cx.notify();
@@ -262,7 +264,18 @@ impl Focusable for Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Handle focus restoration if needed
+        if self.needs_focus_restore {
+            if let Some(view_id) = self.focused_view_id {
+                if let Some(doc_view) = self.documents.get(&view_id) {
+                    println!("🔄 Restoring focus to document view: {:?}", view_id);
+                    let doc_focus = doc_view.focus_handle(cx);
+                    window.focus(&doc_focus);
+                }
+            }
+            self.needs_focus_restore = false;
+        }
         // Don't create views during render - just use existing ones
         let mut view_ids = HashSet::new();
         let mut right_borders = HashSet::new();
