@@ -742,12 +742,60 @@ impl Element for DocumentElement {
                     debug!("need to render gutter {}", gutter_width);
                 }
 
-                let cursor_text = None; // TODO
-
                 let _cursor_row = cursor_pos.map(|p| p.row);
                 let anchor = document.view_offset(self.view_id).anchor;
                 let total_lines = text.len_lines();
                 let first_row = text.char_to_line(anchor.min(text.len_chars()));
+
+                // Get the character under the cursor for block cursor mode
+                let cursor_text = if matches!(cursor_kind, CursorKind::Block) {
+                    if let Some(pos) = cursor_pos {
+                        // Convert screen position to document position
+                        let line_idx = first_row + pos.row;
+                        if line_idx < total_lines {
+                            let line_start = text.line_to_char(line_idx);
+                            let char_idx = line_start + pos.col;
+                            
+                            if char_idx < text.len_chars() {
+                                let cursor_char_end = (char_idx + 1).min(text.len_chars());
+                                let char_slice = text.slice(char_idx..cursor_char_end);
+                                let char_str: SharedString = RopeWrapper(char_slice).into();
+                                
+                                if !char_str.is_empty() && !char_str.chars().all(|c| c.is_whitespace()) {
+                                    // Use the background color of cursor as foreground for text
+                                    let text_color = cursor_style
+                                        .bg
+                                        .and_then(|bg| color_to_hsla(bg))
+                                        .unwrap_or(black());
+                                    
+                                    let run = TextRun {
+                                        len: char_str.len(),
+                                        font: self.style.font(),
+                                        color: text_color,
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    };
+                                    
+                                    let shaped = window.text_system()
+                                        .shape_line(char_str, self.style.font_size.to_pixels(px(16.0)), &[run], None);
+                                    
+                                    Some(shaped)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 // println!("first row is {}", row);
                 let last_row = (first_row + after_layout.rows + 1).min(total_lines);
                 // println!("first row is {first_row} last row is {last_row}");
