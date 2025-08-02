@@ -164,14 +164,14 @@ impl NotificationView {
         ev
     }
 
-    pub fn subscribe(&self, editor: &Model<crate::Core>, cx: &mut ViewContext<Self>) {
+    pub fn subscribe(&self, editor: &Entity<crate::Core>, cx: &mut Context<Self>) {
         cx.subscribe(editor, |this, _, ev, cx| {
             this.handle_event(ev, cx);
         })
         .detach()
     }
 
-    fn handle_event(&mut self, ev: &crate::Update, cx: &mut ViewContext<Self>) {
+    fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         use helix_view::editor::EditorEvent;
 
         info!("handling event {:?}", ev);
@@ -188,12 +188,12 @@ impl NotificationView {
             match ev {
                 LspStatusEvent::Begin => {
                     let id = *id;
-                    cx.spawn(|this, mut cx| async move {
+                    cx.spawn(async move |this, mut cx| {
                         loop {
                             cx.background_executor()
                                 .timer(std::time::Duration::from_millis(5000))
                                 .await;
-                            this.update(&mut cx, |this, _cx| {
+                            this.update(cx, |this, _cx| {
                                 if this.lsp_status.contains_key(&id) {
                                     // TODO: this call causes workspace redraw for some reason
                                     //cx.notify();
@@ -215,7 +215,7 @@ impl NotificationView {
 }
 
 impl Render for NotificationView {
-    fn render(&mut self, _cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let mut notifications = vec![];
         for status in self.lsp_status.values() {
             if status.is_empty() {
@@ -255,7 +255,7 @@ impl Render for NotificationView {
 }
 
 impl RenderOnce for Notification {
-    fn render(mut self, cx: &mut WindowContext) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let message = self.message.take();
         div()
             .flex()

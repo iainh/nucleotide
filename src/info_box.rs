@@ -18,14 +18,14 @@ impl InfoBoxView {
         }
     }
 
-    fn handle_event(&mut self, ev: &crate::Update, cx: &mut ViewContext<Self>) {
+    fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         if let crate::Update::Info(info) = ev {
             self.set_info(info);
             cx.notify();
         }
     }
 
-    pub fn subscribe(&self, editor: &Model<crate::Core>, cx: &mut ViewContext<Self>) {
+    pub fn subscribe(&self, editor: &Entity<crate::Core>, cx: &mut Context<Self>) {
         cx.subscribe(editor, |this, _, ev, cx| {
             this.handle_event(ev, cx);
         })
@@ -45,7 +45,7 @@ impl InfoBoxView {
 impl EventEmitter<DismissEvent> for InfoBoxView {}
 
 impl Render for InfoBoxView {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let font = cx.global::<crate::FontSettings>().fixed_font.clone();
 
         div()

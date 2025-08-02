@@ -5,7 +5,7 @@ use helix_view::{DocumentId, ViewId};
 
 #[derive(IntoElement)]
 pub struct StatusLine {
-    core: Model<Core>,
+    core: Entity<Core>,
     doc_id: DocumentId,
     view_id: ViewId,
     focused: bool,
@@ -14,7 +14,7 @@ pub struct StatusLine {
 
 impl StatusLine {
     pub fn new(
-        core: Model<Core>,
+        core: Entity<Core>,
         doc_id: DocumentId,
         view_id: ViewId,
         focused: bool,
@@ -29,7 +29,7 @@ impl StatusLine {
         }
     }
 
-    fn style(&self, cx: &mut WindowContext<'_>) -> (Hsla, Hsla) {
+    fn style(&self, window: &mut Window, cx: &mut App) -> (Hsla, Hsla) {
         let editor = &self.core.read(cx).editor;
         let base_style = if self.focused {
             editor.theme.get("ui.statusline")
@@ -49,7 +49,8 @@ impl StatusLine {
 
     fn text(
         &self,
-        cx: &mut WindowContext<'_>,
+        window: &mut Window,
+        cx: &mut App,
         base_fg: Hsla,
         base_bg: Hsla,
     ) -> (StyledText, StyledText, StyledText) {
@@ -82,7 +83,8 @@ impl StatusLine {
                 runs.push(((idx..idx + len), run));
                 idx += len;
             }
-            StyledText::new(text).with_highlights(&self.style, runs)
+            // Highlights are passed differently in new GPUI
+            StyledText::new(text).with_highlights(runs)
         };
 
         (
@@ -94,9 +96,9 @@ impl StatusLine {
 }
 
 impl RenderOnce for StatusLine {
-    fn render(self, cx: &mut WindowContext<'_>) -> impl IntoElement {
-        let (base_fg, base_bg) = self.style(cx);
-        let parts = self.text(cx, base_fg, base_bg);
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (base_fg, base_bg) = self.style(window, cx);
+        let parts = self.text(window, cx, base_fg, base_bg);
         let (left, center, right) = parts;
 
         div()

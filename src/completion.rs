@@ -97,8 +97,8 @@ pub struct CompletionView {
     anchor_position: Point<Pixels>,
     
     // Callbacks
-    on_select: Option<Box<dyn FnMut(&CompletionItem, &mut ViewContext<Self>) + 'static>>,
-    on_dismiss: Option<Box<dyn FnMut(&mut ViewContext<Self>) + 'static>>,
+    on_select: Option<Box<dyn FnMut(&CompletionItem, &mut Context<Self>) + 'static>>,
+    on_dismiss: Option<Box<dyn FnMut(&mut Context<Self>) + 'static>>,
     
     // Styling
     style: CompletionStyle,
@@ -130,7 +130,7 @@ impl Default for CompletionStyle {
 }
 
 impl CompletionView {
-    pub fn new(items: Vec<CompletionItem>, anchor_position: Point<Pixels>, cx: &mut ViewContext<Self>) -> Self {
+    pub fn new(items: Vec<CompletionItem>, anchor_position: Point<Pixels>, cx: &mut Context<Self>) -> Self {
         let filtered_items: Vec<usize> = (0..items.len()).collect();
         
         Self {
@@ -160,12 +160,12 @@ impl CompletionView {
         self
     }
     
-    pub fn on_select(mut self, callback: impl FnMut(&CompletionItem, &mut ViewContext<Self>) + 'static) -> Self {
+    pub fn on_select(mut self, callback: impl FnMut(&CompletionItem, &mut Context<Self>) + 'static) -> Self {
         self.on_select = Some(Box::new(callback));
         self
     }
     
-    pub fn on_dismiss(mut self, callback: impl FnMut(&mut ViewContext<Self>) + 'static) -> Self {
+    pub fn on_dismiss(mut self, callback: impl FnMut(&mut Context<Self>) + 'static) -> Self {
         self.on_dismiss = Some(Box::new(callback));
         self
     }
@@ -191,13 +191,13 @@ impl CompletionView {
         self.scroll_offset = 0;
     }
     
-    pub fn update_filter(&mut self, filter_text: impl Into<SharedString>, cx: &mut ViewContext<Self>) {
+    pub fn update_filter(&mut self, filter_text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.filter_text = filter_text.into();
         self.apply_filter();
         cx.notify();
     }
     
-    fn move_selection(&mut self, delta: isize, cx: &mut ViewContext<Self>) {
+    fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.filtered_items.is_empty() {
             return;
         }
@@ -222,7 +222,7 @@ impl CompletionView {
         cx.notify();
     }
     
-    fn move_to_first(&mut self, cx: &mut ViewContext<Self>) {
+    fn move_to_first(&mut self, cx: &mut Context<Self>) {
         if self.filtered_items.is_empty() {
             return;
         }
@@ -233,7 +233,7 @@ impl CompletionView {
         cx.notify();
     }
     
-    fn move_to_last(&mut self, cx: &mut ViewContext<Self>) {
+    fn move_to_last(&mut self, cx: &mut Context<Self>) {
         if self.filtered_items.is_empty() {
             return;
         }
@@ -249,7 +249,7 @@ impl CompletionView {
         cx.notify();
     }
     
-    fn select_current(&mut self, cx: &mut ViewContext<Self>) {
+    fn select_current(&mut self, cx: &mut Context<Self>) {
         if let Some(item_idx) = self.filtered_items.get(self.selected_index) {
             if let Some(item) = self.items.get(*item_idx) {
                 if let Some(on_select) = &mut self.on_select {
@@ -259,7 +259,7 @@ impl CompletionView {
         }
     }
     
-    fn dismiss(&mut self, cx: &mut ViewContext<Self>) {
+    fn dismiss(&mut self, cx: &mut Context<Self>) {
         if let Some(on_dismiss) = &mut self.on_dismiss {
             on_dismiss(cx);
         }
@@ -274,8 +274,8 @@ impl CompletionView {
     }
 }
 
-impl FocusableView for CompletionView {
-    fn focus_handle(&self, _cx: &AppContext) -> FocusHandle {
+impl Focusable for CompletionView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
@@ -283,11 +283,11 @@ impl FocusableView for CompletionView {
 impl EventEmitter<DismissEvent> for CompletionView {}
 
 impl Render for CompletionView {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let font = cx.global::<crate::FontSettings>().fixed_font.clone();
         
         if self.filtered_items.is_empty() {
-            return div().size_0();
+            return div().size_0().into_any_element();
         }
         
         let visible_items = self.filtered_items
@@ -351,9 +351,8 @@ impl Render for CompletionView {
             })
             .collect::<Vec<_>>();
         
-        // Focus this completion view for keyboard input
-        println!("🎯 CompletionView render: Focusing completion component");
-        cx.focus(&self.focus_handle);
+        // Note: Focus is handled automatically by the overlay view - don't manually focus here
+        println!("🎯 CompletionView render: Rendering completion component");
         
         div()
             .absolute()
@@ -371,29 +370,30 @@ impl Render for CompletionView {
             .font(font)
             .text_size(px(13.))
             .key_context("completion")
-            .on_action(cx.listener(|this, _: &crate::CompletionUp, cx| {
-                println!("🔥 CompletionView received CompletionUp action");
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectPrev, _window, cx| {
+                println!("🔥 CompletionView received CompletionSelectPrev action");
                 this.move_selection(-1, cx);
             }))
-            .on_action(cx.listener(|this, _: &crate::CompletionDown, cx| {
-                println!("🔥 CompletionView received CompletionDown action");
+            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectNext, _window, cx| {
+                println!("🔥 CompletionView received CompletionSelectNext action");
                 this.move_selection(1, cx);
             }))
-            .on_action(cx.listener(|this, _: &crate::CompletionSelect, cx| {
-                println!("🔥 CompletionView received CompletionSelect action");
+            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionConfirm, _window, cx| {
+                println!("🔥 CompletionView received CompletionConfirm action");
                 this.select_current(cx);
             }))
-            .on_action(cx.listener(|this, _: &crate::CompletionCancel, cx| {
-                println!("🔥 CompletionView received CompletionCancel action");
+            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionDismiss, _window, cx| {
+                println!("🔥 CompletionView received CompletionDismiss action");
                 this.dismiss(cx);
                 cx.emit(DismissEvent);
             }))
-            .on_action(cx.listener(|this, _: &crate::CompletionFirst, cx| {
-                println!("🔥 CompletionView received CompletionFirst action");
+            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectFirst, _window, cx| {
+                println!("🔥 CompletionView received CompletionSelectFirst action");
                 this.move_to_first(cx);
             }))
-            .on_action(cx.listener(|this, _: &crate::CompletionLast, cx| {
-                println!("🔥 CompletionView received CompletionLast action");
+            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectLast, _window, cx| {
+                println!("🔥 CompletionView received CompletionSelectLast action");
                 this.move_to_last(cx);
             }))
             .children(visible_items)
@@ -421,7 +421,7 @@ impl Render for CompletionView {
                                 .top(px(scroll_position))
                         )
                 )
-            })
+            }).into_any_element()
     }
 }
 
