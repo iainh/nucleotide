@@ -353,6 +353,11 @@ impl Application {
                         cb(&mut self.compositor, &mut comp_ctx);
                     }
                 }
+                
+                // Ensure cursor is visible after keyboard navigation
+                let view_id = self.editor.tree.focus;
+                self.editor.ensure_cursor_in_view(view_id);
+                
                 self.emit_overlays(cx);
                 cx.emit(crate::Update::Redraw);
             }

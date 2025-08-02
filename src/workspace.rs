@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use helix_core::{pos_at_coords, Position, Selection};
+use helix_core::Selection;
 use helix_view::ViewId;
 use log::info;
 
@@ -132,14 +132,14 @@ impl Workspace {
                             
                             // Set cursor to beginning of file without selecting content
                             let view_id = editor.tree.focus;
+                            
+                            // Set the selection and ensure cursor is in view
+                            editor.ensure_cursor_in_view(view_id);
                             if let Some(doc) = editor.document_mut(doc_id) {
-                                let pos = Selection::point(pos_at_coords(
-                                    doc.text().slice(..),
-                                    Position::new(0, 0),
-                                    true,
-                                ));
+                                let pos = Selection::point(0);
                                 doc.set_selection(view_id, pos);
                             }
+                            editor.ensure_cursor_in_view(view_id);
                         }
                     }
                     cx.notify();
