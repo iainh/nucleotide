@@ -3,9 +3,10 @@ use std::borrow::Cow;
 use gpui::{prelude::FluentBuilder, *};
 use gpui::{point, size, TextRun};
 use helix_core::{
+    graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     ropey::RopeSlice,
     syntax::{self, HighlightEvent},
-    Uri,
+    Selection, Uri,
 };
 use helix_lsp::lsp::{Diagnostic, DiagnosticSeverity, NumberOrString};
 use helix_term::ui::EditorView;
@@ -698,10 +699,112 @@ impl Element for DocumentElement {
         cx: &mut App,
     ) {
         let focus = self.focus.clone();
+        let core = self.core.clone();
+        let view_id = self.view_id;
+        let cell_width = after_layout.cell_width;
+        let line_height = after_layout.line_height;
+        let gutter_width_cells = {
+            let editor = &core.read(cx).editor;
+            let view = editor.tree.get(view_id);
+            let doc = editor.document(self.doc_id).unwrap();
+            view.gutter_offset(doc)
+        };
+        let gutter_width_px = cell_width * gutter_width_cells as f32;
+        
         self.interactivity
-            .on_mouse_down(MouseButton::Left, move |_ev, _window, _cx| {
-                println!("MOUSE DOWN");
-                focus.focus(_window);
+            .on_mouse_down(MouseButton::Left, move |ev, window, cx| {
+                focus.focus(window);
+                
+                // Calculate text position from mouse coordinates
+                let mouse_pos = ev.position;
+                let relative_x = mouse_pos.x - bounds.origin.x - px(2.) - gutter_width_px;
+                let relative_y = mouse_pos.y - bounds.origin.y - px(1.);
+                
+                // Convert to row/column
+                let col = (relative_x / cell_width).max(0.0) as u16;
+                let row = (relative_y / line_height).max(0.0) as u16;
+                
+                // Update cursor position in the editor
+                core.update(cx, |core, cx| {
+                    let editor = &mut core.editor;
+                    let view = editor.tree.get(view_id);
+                    let doc_id = view.doc;
+                    
+                    // Use helix's built-in function to convert screen coordinates to text position
+                    // This properly handles tabs, wide characters, and other visual considerations
+                    let pos = {
+                        let doc = editor.document(doc_id).unwrap();
+                        view.pos_at_visual_coords(doc, row, col, true)
+                    };
+                    
+                    if let Some(pos) = pos {
+                        let doc = editor.document_mut(doc_id).unwrap();
+                        // Snap to grapheme boundary for proper cursor positioning
+                        let text = doc.text().slice(..);
+                        let pos = prev_grapheme_boundary(text, pos);
+                        
+                        // Set selection to the clicked position
+                        let selection = Selection::point(pos);
+                        doc.set_selection(view_id, selection);
+                    }
+                    
+                    cx.notify();
+                });
+            });
+        
+        // Handle mouse drag for selection
+        let core_drag = self.core.clone();
+        let view_id_drag = self.view_id;
+        let cell_width_drag = after_layout.cell_width;
+        let line_height_drag = after_layout.line_height;
+        let gutter_width_px_drag = gutter_width_px;
+        
+        self.interactivity
+            .on_mouse_move(move |ev, _window, cx| {
+                // Only process if dragging (mouse button held down)
+                if !ev.dragging() {
+                    return;
+                }
+                // Calculate text position from mouse coordinates
+                let mouse_pos = ev.position;
+                let relative_x = mouse_pos.x - bounds.origin.x - px(2.) - gutter_width_px_drag;
+                let relative_y = mouse_pos.y - bounds.origin.y - px(1.);
+                
+                // Convert to row/column
+                let col = (relative_x / cell_width_drag).max(0.0) as u16;
+                let row = (relative_y / line_height_drag).max(0.0) as u16;
+                
+                // Update selection end position in the editor
+                core_drag.update(cx, |core, cx| {
+                    let editor = &mut core.editor;
+                    let view = editor.tree.get(view_id_drag);
+                    let doc_id = view.doc;
+                    
+                    // Use helix's built-in function to convert screen coordinates to text position
+                    let pos = {
+                        let doc = editor.document(doc_id).unwrap();
+                        view.pos_at_visual_coords(doc, row, col, true)
+                    };
+                    
+                    if let Some(pos) = pos {
+                        let doc = editor.document_mut(doc_id).unwrap();
+                        let text = doc.text().slice(..);
+                        // Snap to grapheme boundary for proper selection
+                        let pos = if pos > 0 {
+                            prev_grapheme_boundary(text, pos)
+                        } else {
+                            pos
+                        };
+                        
+                        // Get current selection and extend it
+                        let mut selection = doc.selection(view_id_drag).clone();
+                        let range = selection.primary_mut();
+                        range.head = pos;
+                        doc.set_selection(view_id_drag, selection);
+                    }
+                    
+                    cx.notify();
+                });
             });
 
         let is_focused = self.is_focused;
@@ -717,7 +820,38 @@ impl Element for DocumentElement {
                 let theme = &editor.theme;
                 let default_style = theme.get("ui.background");
                 let bg_color = color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
-                let cursor_style = theme.get("ui.cursor.primary");
+                // Get mode-specific cursor theme like terminal version
+                let mode = editor.mode();
+                let _base_cursor_style = theme.get("ui.cursor");
+                let base_primary_cursor_style = theme.get("ui.cursor.primary");
+                
+                // Try to get mode-specific cursor style, fallback to base
+                let cursor_style = match mode {
+                    helix_view::document::Mode::Insert => {
+                        let style = theme.get("ui.cursor.primary.insert");
+                        if style.fg.is_some() || style.bg.is_some() {
+                            style
+                        } else {
+                            base_primary_cursor_style
+                        }
+                    }
+                    helix_view::document::Mode::Select => {
+                        let style = theme.get("ui.cursor.primary.select");
+                        if style.fg.is_some() || style.bg.is_some() {
+                            style
+                        } else {
+                            base_primary_cursor_style
+                        }
+                    }
+                    helix_view::document::Mode::Normal => {
+                        let style = theme.get("ui.cursor.primary.normal");
+                        if style.fg.is_some() || style.bg.is_some() {
+                            style
+                        } else {
+                            base_primary_cursor_style
+                        }
+                    }
+                };
                 let _bg = fill(bounds, bg_color);
                 let fg_color = color_to_hsla(
                     default_style
@@ -735,8 +869,12 @@ impl Element for DocumentElement {
                     .primary()
                     .cursor(text.slice(..));
                 let cursor_pos = view.screen_coords_at_pos(document, text.slice(..), primary_idx);
-
                 let gutter_width = view.gutter_offset(document);
+                
+                if let Some(pos) = cursor_pos {
+                    debug!("Cursor position - row: {}, col: {}, primary_idx: {}, gutter_width: {}", 
+                           pos.row, pos.col, primary_idx, gutter_width);
+                }
                 let gutter_overflow = gutter_width == 0;
                 if !gutter_overflow {
                     debug!("need to render gutter {}", gutter_width);
@@ -748,25 +886,28 @@ impl Element for DocumentElement {
                 let first_row = text.char_to_line(anchor.min(text.len_chars()));
 
                 // Get the character under the cursor for block cursor mode
-                let cursor_text = if matches!(cursor_kind, CursorKind::Block) {
-                    if let Some(pos) = cursor_pos {
-                        // Convert screen position to document position
-                        let line_idx = first_row + pos.row;
-                        if line_idx < total_lines {
-                            let line_start = text.line_to_char(line_idx);
-                            let char_idx = line_start + pos.col;
-                            
-                            if char_idx < text.len_chars() {
-                                let cursor_char_end = (char_idx + 1).min(text.len_chars());
-                                let char_slice = text.slice(char_idx..cursor_char_end);
-                                let char_str: SharedString = RopeWrapper(char_slice).into();
-                                
-                                if !char_str.is_empty() && !char_str.chars().all(|c| c.is_whitespace()) {
-                                    // Use the background color of cursor as foreground for text
-                                    let text_color = cursor_style
-                                        .bg
-                                        .and_then(|bg| color_to_hsla(bg))
-                                        .unwrap_or(black());
+                let cursor_text = if matches!(cursor_kind, CursorKind::Block) && self.is_focused {
+                    // Get the actual cursor position in the document
+                    let cursor_char_idx = document
+                        .selection(self.view_id)
+                        .primary()
+                        .cursor(text.slice(..));
+                    
+                    if cursor_char_idx < text.len_chars() {
+                        // Use grapheme boundary for proper character extraction
+                        let grapheme_end = next_grapheme_boundary(text.slice(..), cursor_char_idx);
+                        let char_slice = text.slice(cursor_char_idx..grapheme_end);
+                        let char_str: SharedString = RopeWrapper(char_slice).into();
+                        
+                        if !char_str.is_empty() {
+                                    // For block cursor, invert colors: use cursor background as text color
+                                    // and render on transparent background (cursor will provide the bg)
+                                    let text_color = if let Some(bg) = cursor_style.bg {
+                                        color_to_hsla(bg).unwrap_or(black())
+                                    } else {
+                                        // If no cursor bg defined, use inverse of foreground
+                                        black()
+                                    };
                                     
                                     let run = TextRun {
                                         len: char_str.len(),
@@ -777,19 +918,10 @@ impl Element for DocumentElement {
                                         strikethrough: None,
                                     };
                                     
-                                    let shaped = window.text_system()
-                                        .shape_line(char_str, self.style.font_size.to_pixels(px(16.0)), &[run], None);
-                                    
-                                    Some(shaped)
+                                    Some((char_str, text_color))
                                 } else {
                                     None
                                 }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
                     } else {
                         None
                     }
@@ -814,8 +946,34 @@ impl Element for DocumentElement {
                 // Clone text to avoid borrowing issues
                 let doc_text = document.text().clone();
                 
+                // Also extract document_id and view_id for use in the loop
+                let doc_id = self.doc_id;
+                let view_id = self.view_id;
+                
+                // Extract cursor-related data before dropping core
+                let cursor_char_idx = document
+                    .selection(self.view_id)
+                    .primary()
+                    .cursor(text.slice(..));
+                let tab_width = document.tab_width() as u16;
+                
+                // Shape cursor text before dropping core borrow
+                let cursor_text_shaped = cursor_text.map(|(char_str, text_color)| {
+                    let run = TextRun {
+                        len: char_str.len(),
+                        font: self.style.font(),
+                        color: text_color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    
+                    window.text_system()
+                        .shape_line(char_str, self.style.font_size.to_pixels(px(16.0)), &[run], None)
+                });
+                
                 // Drop the core borrow before the loop
-                let _ = core;
+                // core goes out of scope here
                 
                 let text = doc_text.slice(..);
                 
@@ -849,8 +1007,8 @@ impl Element for DocumentElement {
                     // Re-read core for this iteration
                     let core = self.core.read(cx);
                     let editor = &core.editor;
-                    let document = editor.document(self.doc_id).unwrap();
-                    let view = editor.tree.get(self.view_id);
+                    let document = editor.document(doc_id).unwrap();
+                    let view = editor.tree.get(view_id);
                     
                     let line_runs = Self::highlight_line_with_params(
                         document,
@@ -867,7 +1025,7 @@ impl Element for DocumentElement {
                     );
                     
                     // Drop core before painting
-                    let _ = core;
+                    // core goes out of scope here
                     
                     let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
                     
@@ -901,12 +1059,47 @@ impl Element for DocumentElement {
                 }
                 // draw cursor
                 if self.is_focused {
-                    match (cursor_pos, cursor_kind) {
-                        (Some(position), kind) => {
-                            let helix_core::Position { row, col } = position;
+                    if let Some(position) = cursor_pos {
+                        // The position from screen_coords_at_pos is already viewport-relative
+                        let helix_core::Position { row, col: _ } = position;
+                        
+                        // We need to calculate the actual pixel position by iterating through
+                        // the line's graphemes up to the cursor position, just like helix does
+                        
+                        // Get the line containing the cursor
+                        let cursor_line = text.char_to_line(cursor_char_idx);
+                        let viewport_line = cursor_line.saturating_sub(first_row);
+                        
+                        if viewport_line == row {
+                            // Calculate the visual x position by iterating through graphemes
+                            let line_start = text.line_to_char(cursor_line);
+                            let line_slice = text.slice(line_start..cursor_char_idx);
+                            
+                            let mut visual_x = px(0.0);
+                            
+                            // Calculate visual position accounting for tabs and wide characters
+                            let mut char_pos = 0;
+                            for grapheme in line_slice.graphemes() {
+                                if grapheme == "\t" {
+                                    // Tab width calculation like helix
+                                    let tab_cols = tab_width as usize - (char_pos % tab_width as usize);
+                                    visual_x += after_layout.cell_width * tab_cols as f32;
+                                    char_pos += tab_cols;
+                                } else {
+                                    // Use helix's grapheme_width function logic
+                                    let grapheme_str = grapheme.as_str().unwrap_or("");
+                                    let width = if !grapheme_str.is_empty() && grapheme_str.as_bytes()[0] <= 127 {
+                                        1
+                                    } else {
+                                        use unicode_width::UnicodeWidthStr;
+                                        UnicodeWidthStr::width(grapheme_str).max(1)
+                                    };
+                                    visual_x += after_layout.cell_width * width as f32;
+                                    char_pos += width;
+                                }
+                            }
+                            
                             let origin_y = after_layout.line_height * row as f32;
-                            let origin_x =
-                                after_layout.cell_width * ((col + gutter_width as usize) as f32);
                             let cursor_color = cursor_style
                                 .fg
                                 .and_then(|fg| color_to_hsla(fg))
@@ -914,20 +1107,20 @@ impl Element for DocumentElement {
                                 .unwrap_or(fg_color);
 
                             let mut cursor = Cursor {
-                                origin: gpui::Point::new(origin_x, origin_y),
-                                kind,
+                                origin: gpui::Point::new(visual_x, origin_y),
+                                kind: cursor_kind,
                                 color: cursor_color,
                                 block_width: after_layout.cell_width,
                                 line_height: after_layout.line_height,
-                                text: cursor_text,
+                                text: cursor_text_shaped,
                             };
+                            // Use the same origin as text (including gutter offset)
                             let mut origin = bounds.origin;
-                            origin.x += px(2.);
+                            origin.x += px(2.) + (after_layout.cell_width * gutter_width as f32);
                             origin.y += px(1.);
 
                             cursor.paint(origin, window, cx);
                         }
-                        (None, _) => {}
                     }
                 }
                 // draw gutter
@@ -985,14 +1178,14 @@ impl Element for DocumentElement {
                     drop(gutters);
                     
                     // Drop core borrow before painting
-                    let _ = core;
+                    // core goes out of scope here
                     
                     // Now paint the gutter lines
                     for (origin, line) in gutter.lines {
                         line.paint(origin, after_layout.line_height, window, cx).unwrap();
                     }
                 }
-            });
+            })
     }
 }
 
