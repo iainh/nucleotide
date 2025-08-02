@@ -26,9 +26,9 @@ pub struct PromptView {
     focus_handle: FocusHandle,
     
     // Callbacks
-    on_submit: Option<Box<dyn FnMut(&str, &mut ViewContext<Self>) + 'static>>,
-    on_cancel: Option<Box<dyn FnMut(&mut ViewContext<Self>) + 'static>>,
-    on_change: Option<Box<dyn FnMut(&str, &mut ViewContext<Self>) + 'static>>,
+    on_submit: Option<Box<dyn FnMut(&str, &mut Context<Self>) + 'static>>,
+    on_cancel: Option<Box<dyn FnMut(&mut Context<Self>) + 'static>>,
+    on_change: Option<Box<dyn FnMut(&str, &mut Context<Self>) + 'static>>,
     
     // Styling
     style: PromptStyle,
@@ -58,7 +58,7 @@ impl Default for PromptStyle {
 }
 
 impl PromptView {
-    pub fn new(prompt: impl Into<SharedString>, cx: &mut ViewContext<Self>) -> Self {
+    pub fn new(prompt: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
             prompt: prompt.into(),
             input: SharedString::default(),
@@ -79,29 +79,35 @@ impl PromptView {
         self
     }
     
-    pub fn on_submit(mut self, callback: impl FnMut(&str, &mut ViewContext<Self>) + 'static) -> Self {
+    pub fn on_submit(mut self, callback: impl FnMut(&str, &mut Context<Self>) + 'static) -> Self {
         self.on_submit = Some(Box::new(callback));
         self
     }
     
-    pub fn on_cancel(mut self, callback: impl FnMut(&mut ViewContext<Self>) + 'static) -> Self {
+    pub fn on_cancel(mut self, callback: impl FnMut(&mut Context<Self>) + 'static) -> Self {
         self.on_cancel = Some(Box::new(callback));
         self
     }
     
-    pub fn on_change(mut self, callback: impl FnMut(&str, &mut ViewContext<Self>) + 'static) -> Self {
+    pub fn on_change(mut self, callback: impl FnMut(&str, &mut Context<Self>) + 'static) -> Self {
         self.on_change = Some(Box::new(callback));
         self
     }
     
-    pub fn set_completions(&mut self, completions: Vec<CompletionItem>, cx: &mut ViewContext<Self>) {
+    pub fn set_completions(&mut self, completions: Vec<CompletionItem>, cx: &mut Context<Self>) {
         self.completions = completions;
         self.completion_selection = 0;
         self.show_completions = !self.completions.is_empty();
         cx.notify();
     }
     
-    fn insert_char(&mut self, ch: char, cx: &mut ViewContext<Self>) {
+    pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.input = SharedString::from(text.to_string());
+        self.cursor_position = text.len();
+        cx.notify();
+    }
+    
+    fn insert_char(&mut self, ch: char, cx: &mut Context<Self>) {
         let mut input = self.input.to_string();
         input.insert(self.cursor_position, ch);
         self.input = input.into();
@@ -114,7 +120,7 @@ impl PromptView {
         cx.notify();
     }
     
-    fn delete_char(&mut self, cx: &mut ViewContext<Self>) {
+    fn delete_char(&mut self, cx: &mut Context<Self>) {
         if self.cursor_position > 0 {
             let mut input = self.input.to_string();
             let mut chars: Vec<char> = input.chars().collect();
@@ -134,7 +140,7 @@ impl PromptView {
         }
     }
     
-    fn move_cursor(&mut self, delta: isize, cx: &mut ViewContext<Self>) {
+    fn move_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
         let input_len = self.input.chars().count();
         if delta > 0 {
             self.cursor_position = (self.cursor_position + delta as usize).min(input_len);
@@ -144,7 +150,7 @@ impl PromptView {
         cx.notify();
     }
     
-    fn move_completion_selection(&mut self, delta: isize, cx: &mut ViewContext<Self>) {
+    fn move_completion_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.completions.is_empty() {
             return;
         }
@@ -157,7 +163,7 @@ impl PromptView {
         cx.notify();
     }
     
-    fn accept_completion(&mut self, cx: &mut ViewContext<Self>) {
+    fn accept_completion(&mut self, cx: &mut Context<Self>) {
         if self.show_completions && !self.completions.is_empty() {
             if let Some(completion) = self.completions.get(self.completion_selection) {
                 self.input = completion.text.clone();
@@ -173,21 +179,21 @@ impl PromptView {
         }
     }
     
-    fn submit(&mut self, cx: &mut ViewContext<Self>) {
+    fn submit(&mut self, cx: &mut Context<Self>) {
         if let Some(on_submit) = &mut self.on_submit {
             on_submit(&self.input, cx);
         }
     }
     
-    fn cancel(&mut self, cx: &mut ViewContext<Self>) {
+    fn cancel(&mut self, cx: &mut Context<Self>) {
         if let Some(on_cancel) = &mut self.on_cancel {
             on_cancel(cx);
         }
     }
 }
 
-impl FocusableView for PromptView {
-    fn focus_handle(&self, _cx: &AppContext) -> FocusHandle {
+impl Focusable for PromptView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
@@ -195,7 +201,7 @@ impl FocusableView for PromptView {
 impl EventEmitter<DismissEvent> for PromptView {}
 
 impl Render for PromptView {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let font = cx.global::<crate::FontSettings>().fixed_font.clone();
         let input_display = if self.input.is_empty() {
             "".to_string()
@@ -204,7 +210,7 @@ impl Render for PromptView {
         };
         
         // Create cursor indicator
-        let cursor_indicator = if cx.focused() == Some(self.focus_handle.clone()) {
+        let cursor_indicator = if self.focus_handle.is_focused(window) {
             "│"
         } else {
             " "
@@ -222,7 +228,7 @@ impl Render for PromptView {
             .font(font)
             .text_size(px(14.))
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, cx| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 println!("🔥 PromptView received key: {}", event.keystroke.key);
                 match event.keystroke.key.as_str() {
                     "enter" => {
