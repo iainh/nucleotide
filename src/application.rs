@@ -279,22 +279,8 @@ impl Application {
                     // Format the label to show relative path like Helix
                     let label = relative_path.display().to_string();
                     
-                    // Get file icon based on extension
-                    let icon = match path.extension().and_then(|e| e.to_str()) {
-                        Some("rs") => "🦀",
-                        Some("toml") => "⚙️",
-                        Some("md") => "📄",
-                        Some("json") => "🔧",
-                        Some("txt") => "📄",
-                        Some("js") | Some("ts") => "📜",
-                        Some("py") => "🐍",
-                        Some("go") => "🐹",
-                        Some("c") | Some("cpp") | Some("cc") | Some("h") => "🔨",
-                        _ => "📄"
-                    };
-                    
                     items.push(PickerItem {
-                        label: format!("{} {}", icon, label).into(),
+                        label: label.into(),
                         sublabel: None,  // No sublabel needed since full path is in label
                         data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
                     });

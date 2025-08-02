@@ -36,6 +36,7 @@ pub struct PickerView {
     preview_doc_id: Option<DocumentId>,
     preview_view_id: Option<helix_view::ViewId>,
     core: Option<WeakEntity<crate::Core>>,
+    initial_preview_loaded: bool,
 
     // Callbacks
     on_select: Option<Box<dyn FnMut(&PickerItem, &mut Context<Self>) + 'static>>,
@@ -66,6 +67,7 @@ pub struct PickerStyle {
     pub selected_text: Hsla,
     pub border: Hsla,
     pub prompt_text: Hsla,
+    pub preview_background: Hsla,
 }
 
 impl Default for PickerStyle {
@@ -77,6 +79,7 @@ impl Default for PickerStyle {
             selected_text: hsla(0.0, 0.0, 1.0, 1.0),
             border: hsla(0.0, 0.0, 0.3, 1.0),
             prompt_text: hsla(0.0, 0.0, 0.7, 1.0),
+            preview_background: hsla(0.0, 0.0, 0.05, 1.0),
         }
     }
 }
@@ -116,6 +119,12 @@ impl PickerStyle {
             .map(|color| hsla(color.h, color.s, color.l * 0.7, color.a)) // Make prompt text dimmer
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.7, 1.0));
         
+        // Get preview background - slightly different from main background
+        let preview_background = theme.get("ui.background.separator").bg
+            .and_then(color_to_hsla)
+            .or_else(|| theme.get("ui.background").bg.and_then(color_to_hsla))
+            .unwrap_or(background);
+        
         Self {
             background,
             text,
@@ -123,6 +132,7 @@ impl PickerStyle {
             selected_text,
             border,
             prompt_text,
+            preview_background,
         }
     }
 }
@@ -143,6 +153,7 @@ impl PickerView {
             preview_doc_id: None,
             preview_view_id: None,
             core: None,
+            initial_preview_loaded: false,
             on_select: None,
             on_cancel: None,
             style: PickerStyle::default(),
@@ -168,6 +179,7 @@ impl PickerView {
             preview_doc_id: None,
             preview_view_id: None,
             core: None,
+            initial_preview_loaded: false,
             on_select: None,
             on_cancel: None,
             style,
@@ -185,6 +197,8 @@ impl PickerView {
         self.filtered_indices = (0..self.items.len() as u32).collect();
         // Reset matcher when items change
         self.matcher = None;
+        // Reset initial preview flag so preview loads for new items
+        self.initial_preview_loaded = false;
         self
     }
 
@@ -542,6 +556,12 @@ impl Render for PickerView {
             self.focus_handle.focus(window);
         }
         
+        // Load initial preview if not already loaded
+        if !self.initial_preview_loaded && !self.filtered_indices.is_empty() {
+            self.initial_preview_loaded = true;
+            self.load_preview_for_selected_item(cx);
+        }
+        
         let font = cx.global::<crate::FontSettings>().fixed_font.clone();
         let window_size = window.viewport_size();
         
@@ -610,7 +630,7 @@ impl Render for PickerView {
                 this.cancel(cx);
             }))
             .child(
-                // Search input (full width)
+                // Search input with file count display
                 div()
                     .flex()
                     .items_center()
@@ -621,8 +641,22 @@ impl Render for PickerView {
                     .child(
                         div()
                             .flex_1()
-                            .child(format!("🔍 {}", self.query))
+                            .child(self.query.clone())
                             .text_color(self.style.prompt_text)
+                    )
+                    .child(
+                        // File count display
+                        div()
+                            .text_size(px(12.))
+                            .text_color(self.style.prompt_text)
+                            .child(if self.filtered_indices.is_empty() {
+                                "0/0".to_string()
+                            } else {
+                                format!("{}/{}", 
+                                    self.selected_index + 1,
+                                    self.filtered_indices.len()
+                                )
+                            })
                     )
             )
             .child(
@@ -705,18 +739,7 @@ impl Render for PickerView {
                                 .w(preview_width)
                                 .h_full()  // Use full height instead of flex_1
                                 .overflow_hidden()  // Ensure overflow is hidden
-                                .bg(hsla(0.0, 0.0, 0.05, 1.0))
-                                .child(
-                                    // Preview header
-                                    div()
-                                        .px_3()
-                                        .py_2()
-                                        .border_b_1()
-                                        .border_color(self.style.border)
-                                        .text_size(px(12.))
-                                        .text_color(self.style.prompt_text)
-                                        .child("Preview")
-                                )
+                                .bg(self.style.preview_background)
                                 .child(
                                     // Preview content
                                     div()
