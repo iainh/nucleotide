@@ -840,16 +840,16 @@ impl Element for DocumentElement {
                             let origin_y = after_layout.line_height * row as f32;
                             let origin_x =
                                 after_layout.cell_width * ((col + gutter_width as usize) as f32);
-                            let mut cursor_fg = cursor_style
-                                .bg
+                            let cursor_color = cursor_style
+                                .fg
                                 .and_then(|fg| color_to_hsla(fg))
+                                .or_else(|| cursor_style.bg.and_then(|bg| color_to_hsla(bg)))
                                 .unwrap_or(fg_color);
-                            cursor_fg.a = 0.5;
 
                             let mut cursor = Cursor {
                                 origin: gpui::Point::new(origin_x, origin_y),
                                 kind,
-                                color: cursor_fg,
+                                color: cursor_color,
                                 block_width: after_layout.cell_width,
                                 line_height: after_layout.line_height,
                                 text: cursor_text,
@@ -1067,10 +1067,8 @@ impl Cursor {
     pub fn paint(&mut self, origin: gpui::Point<Pixels>, window: &mut Window, cx: &mut App) {
         let bounds = self.bounds(origin);
 
-        let _cursor = fill(bounds, self.color);
-
-        // Quad painting is handled differently in new GPUI
-        // TODO: Use div with background color instead
+        // Paint the cursor quad
+        window.paint_quad(fill(bounds, self.color));
 
         if let Some(text) = &self.text {
             text.paint(self.origin + origin, self.line_height, window, cx)
