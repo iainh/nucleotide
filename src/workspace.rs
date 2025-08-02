@@ -13,96 +13,65 @@ use crate::utils;
 use crate::{Core, Input, InputEvent};
 
 pub struct Workspace {
-    core: Model<Core>,
-    input: Model<Input>,
+    core: Entity<Core>,
+    input: Entity<Input>,
     focused_view_id: Option<ViewId>,
-    documents: HashMap<ViewId, View<DocumentView>>,
+    documents: HashMap<ViewId, Entity<DocumentView>>,
     handle: tokio::runtime::Handle,
-    overlay: View<OverlayView>,
-    info: View<InfoBoxView>,
+    overlay: Entity<OverlayView>,
+    info: Entity<InfoBoxView>,
     info_hidden: bool,
-    notifications: View<NotificationView>,
+    notifications: Entity<NotificationView>,
+    focus_handle: FocusHandle,
 }
 
 impl Workspace {
-    pub fn new(
-        core: Model<Core>,
-        input: Model<Input>,
+    pub fn with_views(
+        core: Entity<Core>,
+        input: Entity<Input>,
         handle: tokio::runtime::Handle,
-        cx: &mut ViewContext<Self>,
+        overlay: Entity<OverlayView>,
+        notifications: Entity<NotificationView>,
+        info: Entity<InfoBoxView>,
+        cx: &mut Context<Self>,
     ) -> Self {
-        let notifications = Self::init_notifications(&core, cx);
-        let info = Self::init_info_box(&core, cx);
-        let overlay = cx.new_view(|cx| {
-            let view = OverlayView::new(&cx.focus_handle(), &core);
-            view.subscribe(&core, cx);
-            view
-        });
-
-        Self {
+        let focus_handle = cx.focus_handle();
+        let mut workspace = Self {
             core,
             input,
             focused_view_id: None,
+            documents: HashMap::new(),
             handle,
             overlay,
             info,
             info_hidden: true,
-            documents: HashMap::default(),
             notifications,
-        }
+            focus_handle,
+        };
+        // Initialize document views
+        workspace.update_document_views(cx);
+        // Focus the workspace by default (focus will be managed by render)
+        workspace
+    }
+    
+    pub fn new(
+        core: Entity<Core>,
+        input: Entity<Input>,
+        handle: tokio::runtime::Handle,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        panic!("Use Workspace::with_views instead - views must be created in window context");
     }
 
-    fn init_notifications(
-        editor: &Model<Core>,
-        cx: &mut ViewContext<Self>,
-    ) -> View<NotificationView> {
-        let theme = Self::theme(&editor, cx);
-        let text_style = theme.get("ui.text.info");
-        let popup_style = theme.get("ui.popup.info");
-        let popup_bg_color = utils::color_to_hsla(popup_style.bg.unwrap()).unwrap_or(black());
-        let popup_text_color = utils::color_to_hsla(text_style.fg.unwrap()).unwrap_or(white());
+    // Removed - views are created in main.rs and passed in
 
-        cx.new_view(|cx| {
-            let view = NotificationView::new(popup_bg_color, popup_text_color);
-            view.subscribe(&editor, cx);
-            view
-        })
-    }
+    // Removed - views are created in main.rs and passed in
 
-    fn init_info_box(editor: &Model<Core>, cx: &mut ViewContext<Self>) -> View<InfoBoxView> {
-        let theme = Self::theme(editor, cx);
-        let text_style = theme.get("ui.text.info");
-        let popup_style = theme.get("ui.popup.info");
-        let fg = text_style
-            .fg
-            .and_then(utils::color_to_hsla)
-            .unwrap_or(white());
-        let bg = popup_style
-            .bg
-            .and_then(utils::color_to_hsla)
-            .unwrap_or(black());
-        let mut style = Style::default();
-        style.text.color = Some(fg);
-        style.background = Some(bg.into());
-
-        let info = cx.new_view(|cx| {
-            let view = InfoBoxView::new(style);
-            view.subscribe(&editor, cx);
-            view
-        });
-        cx.subscribe(&info, |v, _e, _evt, cx| {
-            v.info_hidden = true;
-            cx.notify();
-        })
-        .detach();
-        info
-    }
-
-    pub fn theme(editor: &Model<Core>, cx: &mut ViewContext<Self>) -> helix_view::Theme {
+    pub fn theme(editor: &Entity<Core>, cx: &mut Context<Self>) -> helix_view::Theme {
         editor.read(cx).editor.theme.clone()
     }
 
-    pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut ViewContext<Self>) {
+    pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         info!("handling event {:?}", ev);
         match ev {
             crate::Update::EditorEvent(ev) => {
@@ -117,6 +86,9 @@ impl Workspace {
             }
             crate::Update::EditorStatus(_) => {}
             crate::Update::Redraw => {
+                // Update views when editor state changes
+                self.update_document_views(cx);
+                
                 if let Some(view) = self.focused_view_id.and_then(|id| self.documents.get(&id)) {
                     view.update(cx, |_view, cx| {
                         cx.notify();
@@ -127,7 +99,17 @@ impl Workspace {
             crate::Update::Prompt(_) | crate::Update::Picker(_) | crate::Update::Completion(_) => {
                 // When a picker, prompt, or completion appears, auto-dismiss the info box
                 self.info_hidden = true;
-                // handled by overlay
+                
+                // Store current focus in overlay before showing it
+                if let Some(view_id) = self.focused_view_id {
+                    if let Some(doc_view) = self.documents.get(&view_id) {
+                        self.overlay.update(cx, |overlay, cx| {
+                            overlay.store_previous_focus(doc_view.focus_handle(cx));
+                        });
+                    }
+                }
+                
+                // Focus will be handled by the overlay components
                 cx.notify();
             }
             crate::Update::OpenFile(path) => {
@@ -145,6 +127,8 @@ impl Workspace {
                     }
                     cx.notify();
                 });
+                // Update document views after opening file
+                self.update_document_views(cx);
                 cx.notify();
             }
             crate::Update::Info(_) => {
@@ -158,7 +142,7 @@ impl Workspace {
         }
     }
 
-    fn handle_key(&mut self, ev: &KeyDownEvent, cx: &mut ViewContext<Self>) {
+    fn handle_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         // Check if we should dismiss the info box first
         if ev.keystroke.key == "escape" && !self.info_hidden {
             self.info_hidden = true;
@@ -181,15 +165,22 @@ impl Workspace {
         })
     }
 
+    fn update_document_views(&mut self, cx: &mut Context<Self>) {
+        let mut view_ids = HashSet::new();
+        let mut right_borders = HashSet::new();
+        self.make_views(&mut view_ids, &mut right_borders, cx);
+    }
+    
     fn make_views(
         &mut self,
         view_ids: &mut HashSet<ViewId>,
         right_borders: &mut HashSet<ViewId>,
-        cx: &mut ViewContext<Self>,
+        cx: &mut Context<Self>,
     ) -> Option<String> {
         let editor = &self.core.read(cx).editor;
         let mut focused_file_name = None;
 
+        // First pass: collect all active view IDs
         for (view, is_focused) in editor.tree.views() {
             let view_id = view.id;
 
@@ -209,7 +200,19 @@ impl Workspace {
                 focused_file_name = doc.path().map(|p| p.display().to_string());
             }
         }
+        
+        // Remove views that are no longer active
+        let to_remove: Vec<_> = self
+            .documents
+            .keys()
+            .copied()
+            .filter(|id| !view_ids.contains(id))
+            .collect();
+        for view_id in to_remove {
+            self.documents.remove(&view_id);
+        }
 
+        // Second pass: create or update views
         for view_id in view_ids.iter() {
             let view_id = *view_id;
             let is_focused = self.focused_view_id == Some(view_id);
@@ -221,31 +224,60 @@ impl Workspace {
             let core = self.core.clone();
             let input = self.input.clone();
             let view = self.documents.entry(view_id).or_insert_with(|| {
-                cx.new_view(|cx| {
+                cx.new(|cx| {
+                    let doc_focus_handle = cx.focus_handle();
                     DocumentView::new(
                         core,
                         input,
                         view_id,
                         style.clone(),
-                        &cx.focus_handle(),
+                        &doc_focus_handle,
                         is_focused,
                     )
                 })
             });
+            
             view.update(cx, |view, _cx| {
                 view.set_focused(is_focused);
+                // Focus is managed by the view's render method
             });
         }
         focused_file_name
     }
 }
 
+impl Focusable for Workspace {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl Render for Workspace {
-    fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Don't create views during render - just use existing ones
         let mut view_ids = HashSet::new();
         let mut right_borders = HashSet::new();
-
-        let focused_file_name = self.make_views(&mut view_ids, &mut right_borders, cx);
+        let mut focused_file_name = None;
+        
+        let editor = &self.core.read(cx).editor;
+        
+        for (view, is_focused) in editor.tree.views() {
+            let view_id = view.id;
+            view_ids.insert(view_id);
+            
+            if editor
+                .tree
+                .find_split_in_direction(view_id, helix_view::tree::Direction::Right)
+                .is_some()
+            {
+                right_borders.insert(view_id);
+            }
+            
+            if is_focused {
+                let doc = editor.document(view.doc).unwrap();
+                focused_file_name = doc.path().map(|p| p.display().to_string());
+            }
+        }
 
         let editor = &self.core.read(cx).editor;
 
@@ -276,24 +308,25 @@ impl Render for Workspace {
             }
         }
 
-        let to_remove = self
-            .documents
-            .keys()
-            .copied()
-            .filter(|id| !view_ids.contains(id))
-            .collect::<Vec<_>>();
-        for view_id in to_remove {
-            if let Some(view) = self.documents.remove(&view_id) {
-                cx.dismiss_view(&view);
-            }
-        }
+        // Don't remove views during render - handle this in update_document_views
+        // let to_remove = self
+        //     .documents
+        //     .keys()
+        //     .copied()
+        //     .filter(|id| !view_ids.contains(id))
+        //     .collect::<Vec<_>>();
+        // for view_id in to_remove {
+        //     if let Some(_view) = self.documents.remove(&view_id) {
+        //         // Views are automatically cleaned up when no longer referenced in GPUI
+        //     }
+        // }
 
         let focused_view = self
             .focused_view_id
             .and_then(|id| self.documents.get(&id))
             .cloned();
-        if let Some(view) = &focused_view {
-            cx.focus_view(view);
+        if let Some(_view) = &focused_view {
+            // Focus is managed by DocumentView's focus state
         }
 
         let label = if let Some(path) = focused_file_name {
@@ -317,62 +350,71 @@ impl Render for Workspace {
 
         self.core.update(cx, |core, _cx| {
             core.compositor.resize(editor_rect);
+            // Also resize the editor to match
+            core.editor.resize(editor_rect);
         });
 
-        if let Some(view) = &focused_view {
-            cx.focus_view(view);
+        if let Some(_view) = &focused_view {
+            // Focus is managed by DocumentView's focus state
         }
 
         div()
-            .on_key_down(cx.listener(|view, ev, cx| {
+            .key_context("Workspace")
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|view, ev, _window, cx| {
                 view.handle_key(ev, cx);
             }))
-            .on_action(move |&crate::About, _cx| {
-                eprintln!("hello");
-            })
+            .on_action(cx.listener(move |_, _: &crate::actions::help::About, _window, _cx| {
+                eprintln!("About Helix");
+            }))
             .on_action({
                 let handle = self.handle.clone();
                 let core = self.core.clone();
-
-                move |&crate::Quit, cx| {
-                    eprintln!("quit?");
+                cx.listener(move |_, _: &crate::actions::editor::Quit, _window, cx| {
                     quit(core.clone(), handle.clone(), cx);
-                    eprintln!("quit!");
                     cx.quit();
-                }
+                })
             })
             .on_action({
                 let handle = self.handle.clone();
                 let core = self.core.clone();
-
-                move |&crate::OpenFile, cx| {
-                    info!("open file");
+                cx.listener(move |_, _: &crate::actions::editor::OpenFile, _window, cx| {
                     open(core.clone(), handle.clone(), cx)
-                }
+                })
             })
-            .on_action(move |&crate::Hide, cx| cx.hide())
-            .on_action(move |&crate::HideOthers, cx| cx.hide_other_apps())
-            .on_action(move |&crate::ShowAll, cx| cx.unhide_other_apps())
-            .on_action(move |&crate::Minimize, cx| cx.minimize_window())
-            .on_action(move |&crate::Zoom, cx| cx.zoom_window())
+            .on_action(cx.listener(move |_, _: &crate::actions::window::Hide, _window, cx| {
+                cx.hide()
+            }))
+            .on_action(cx.listener(move |_, _: &crate::actions::window::HideOthers, _window, cx| {
+                cx.hide_other_apps()
+            }))
+            .on_action(cx.listener(move |_, _: &crate::actions::window::ShowAll, _window, cx| {
+                cx.unhide_other_apps()
+            }))
+            .on_action(cx.listener(move |_, _: &crate::actions::window::Minimize, _window, _cx| {
+                // minimize not available in GPUI yet
+            }))
+            .on_action(cx.listener(move |_, _: &crate::actions::window::Zoom, _window, _cx| {
+                // zoom not available in GPUI yet
+            }))
             .on_action({
                 let handle = self.handle.clone();
                 let core = self.core.clone();
-                cx.listener(move |_, &crate::Tutor, cx| {
+                cx.listener(move |_, _: &crate::actions::help::OpenTutorial, _window, cx| {
                     load_tutor(core.clone(), handle.clone(), cx)
                 })
             })
             .on_action({
                 let handle = self.handle.clone();
                 let core = self.core.clone();
-                cx.listener(move |_, &crate::TestPrompt, cx| {
+                cx.listener(move |_, _: &crate::actions::test::TestPrompt, _window, cx| {
                     test_prompt(core.clone(), handle.clone(), cx)
                 })
             })
             .on_action({
                 let handle = self.handle.clone();
                 let core = self.core.clone();
-                cx.listener(move |_, &crate::TestCompletion, cx| {
+                cx.listener(move |_, _: &crate::actions::test::TestCompletion, _window, cx| {
                     test_completion(core.clone(), handle.clone(), cx)
                 })
             })
@@ -388,7 +430,7 @@ impl Render for Workspace {
             .child(self.notifications.clone())
             .when(!self.overlay.read(cx).is_empty(), |this| {
                 let view = &self.overlay;
-                cx.focus_view(&view);
+                // TODO: Implement focus for OverlayView
                 this.child(view.clone())
             })
             .when(
@@ -398,7 +440,7 @@ impl Render for Workspace {
     }
 }
 
-fn load_tutor(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut ViewContext<Workspace>) {
+fn load_tutor(core: Entity<Core>, handle: tokio::runtime::Handle, cx: &mut Context<Workspace>) {
     core.update(cx, move |core, cx| {
         let _guard = handle.enter();
         let _ = utils::load_tutor(&mut core.editor);
@@ -406,37 +448,59 @@ fn load_tutor(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut ViewCo
     })
 }
 
-fn open(core: Model<Core>, _handle: tokio::runtime::Handle, cx: &mut WindowContext) {
+fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     use crate::picker_view::PickerItem;
     use std::sync::Arc;
+    use ignore::{Walk, WalkBuilder};
     
-    // Create sample file picker items
-    let items = vec![
-        PickerItem {
-            label: "main.rs".into(),
-            sublabel: Some("src/main.rs".into()),
-            data: Arc::new(std::path::PathBuf::from("src/main.rs"))
+    // Get all files in the current directory using ignore crate (respects .gitignore)
+    let mut items = Vec::new();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    
+    // Use ignore::Walk to get files, respecting .gitignore
+    let mut walker = WalkBuilder::new(&cwd);
+    walker.add_custom_ignore_filename(".helix/ignore");
+    walker.hidden(false); // Show hidden files like .gitignore
+    
+    for entry in walker.build().filter_map(|e| e.ok()) {
+        let path = entry.path().to_path_buf();
+        
+        // Skip directories
+        if path.is_dir() {
+            continue;
+        }
+        
+        // Skip zed-source directory
+        if path.to_string_lossy().starts_with("zed-source/") {
+            continue;
+        }
+        
+        // Get relative path from current directory
+        let relative_path = path.strip_prefix(&cwd).unwrap_or(&path);
+        let path_str = relative_path.to_string_lossy().into_owned();
+        
+        // Get filename for label
+        let filename = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        
+        // For project files, use path as label for better visibility
+        items.push(PickerItem {
+            label: path_str.clone().into(),
+            sublabel: None,
+            data: Arc::new(path)
                 as Arc<dyn std::any::Any + Send + Sync>,
-        },
-        PickerItem {
-            label: "application.rs".into(),
-            sublabel: Some("src/application.rs".into()),
-            data: Arc::new(std::path::PathBuf::from("src/application.rs"))
-                as Arc<dyn std::any::Any + Send + Sync>,
-        },
-        PickerItem {
-            label: "picker_view.rs".into(),
-            sublabel: Some("src/picker_view.rs".into()),
-            data: Arc::new(std::path::PathBuf::from("src/picker_view.rs"))
-                as Arc<dyn std::any::Any + Send + Sync>,
-        },
-        PickerItem {
-            label: "workspace.rs".into(),
-            sublabel: Some("src/workspace.rs".into()),
-            data: Arc::new(std::path::PathBuf::from("src/workspace.rs"))
-                as Arc<dyn std::any::Any + Send + Sync>,
-        },
-    ];
+        });
+        
+        // Limit to 1000 files to prevent hanging on large projects
+        if items.len() >= 1000 {
+            break;
+        }
+    }
+    
+    // Sort items by path for consistent ordering
+    items.sort_by(|a, b| a.sublabel.cmp(&b.sublabel));
     
     // Create a simple native picker without callback - the overlay will handle file opening via events
     let file_picker = crate::picker::Picker::native(
@@ -454,7 +518,7 @@ fn open(core: Model<Core>, _handle: tokio::runtime::Handle, cx: &mut WindowConte
     });
 }
 
-fn test_prompt(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
+fn test_prompt(core: Entity<Core>, handle: tokio::runtime::Handle, cx: &mut App) {
     // Create and emit a native prompt for testing
     core.update(cx, move |core, cx| {
         let _guard = handle.enter();
@@ -467,32 +531,29 @@ fn test_prompt(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut Windo
     });
 }
 
-fn test_completion(core: Model<Core>, handle: tokio::runtime::Handle, cx: &mut WindowContext) {
+fn test_completion(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     // Create sample completion items
     let items = core.read(cx).create_sample_completion_items();
     
     // Position the completion near the top-left (simulating cursor position)  
     let anchor_position = gpui::point(gpui::px(200.0), gpui::px(300.0));
     
-    // Create the completion view within the proper context
-    let completion_view = cx.new_view(|cx| {
-        crate::completion::CompletionView::new(items, anchor_position, cx)
-            .on_select(move |item, _cx| {
-                println!("🎯 Selected completion: '{}'", item.label);
-            })
-            .on_dismiss(move |cx| {
-                println!("🚫 Completion dismissed");
-                cx.emit(gpui::DismissEvent);
-            })
+    // Create completion view
+    let completion_view = cx.new(|cx| {
+        crate::completion::CompletionView::new(
+            items,
+            anchor_position,
+            cx
+        )
     });
     
-    // Emit the completion to show it in the overlay
+    // Emit completion event to show it in the overlay
     core.update(cx, |_core, cx| {
-        cx.emit(crate::Update::Completion(completion_view.clone()));
+        cx.emit(crate::Update::Completion(completion_view));
     });
 }
 
-fn quit(core: Model<Core>, rt: tokio::runtime::Handle, cx: &mut WindowContext) {
+fn quit(core: Entity<Core>, rt: tokio::runtime::Handle, cx: &mut App) {
     core.update(cx, |core, _cx| {
         let editor = &mut core.editor;
         let _guard = rt.enter();
