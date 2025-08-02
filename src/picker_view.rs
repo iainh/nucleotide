@@ -18,6 +18,7 @@ pub struct PickerItem {
 pub struct PickerView {
     // Core picker state
     query: SharedString,
+    cursor_position: usize,
     items: Vec<PickerItem>,
     filtered_indices: Vec<u32>,
     selected_index: usize,
@@ -68,6 +69,7 @@ pub struct PickerStyle {
     pub border: Hsla,
     pub prompt_text: Hsla,
     pub preview_background: Hsla,
+    pub cursor: Hsla,
 }
 
 impl Default for PickerStyle {
@@ -80,6 +82,7 @@ impl Default for PickerStyle {
             border: hsla(0.0, 0.0, 0.3, 1.0),
             prompt_text: hsla(0.0, 0.0, 0.7, 1.0),
             preview_background: hsla(0.0, 0.0, 0.05, 1.0),
+            cursor: hsla(0.0, 0.0, 0.9, 1.0),
         }
     }
 }
@@ -125,6 +128,13 @@ impl PickerStyle {
             .or_else(|| theme.get("ui.background").bg.and_then(color_to_hsla))
             .unwrap_or(background);
         
+        // Get cursor color from theme
+        let cursor = theme.get("ui.cursor").fg
+            .and_then(color_to_hsla)
+            .or_else(|| theme.get("ui.cursor.primary").fg.and_then(color_to_hsla))
+            .or_else(|| theme.get("ui.cursor").bg.and_then(color_to_hsla))
+            .unwrap_or(text);
+        
         Self {
             background,
             text,
@@ -133,6 +143,7 @@ impl PickerStyle {
             border,
             prompt_text,
             preview_background,
+            cursor,
         }
     }
 }
@@ -141,6 +152,7 @@ impl PickerView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             query: SharedString::default(),
+            cursor_position: 0,
             items: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: 0,
@@ -167,6 +179,7 @@ impl PickerView {
         
         Self {
             query: SharedString::default(),
+            cursor_position: 0,
             items: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: 0,
@@ -224,6 +237,7 @@ impl PickerView {
 
     pub fn set_query(&mut self, query: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.query = query.into();
+        self.cursor_position = self.query.len();
         self.filter_items(cx);
         self.selected_index = 0;
         // Scroll to top when query changes
@@ -333,14 +347,51 @@ impl PickerView {
     
     fn insert_char(&mut self, ch: char, cx: &mut Context<Self>) {
         let mut query = self.query.to_string();
-        query.push(ch);
-        self.set_query(query, cx);
+        let chars: Vec<char> = query.chars().collect();
+        
+        // Calculate byte position from character position
+        let mut byte_pos = 0;
+        for (i, c) in chars.iter().enumerate() {
+            if i >= self.cursor_position {
+                break;
+            }
+            byte_pos += c.len_utf8();
+        }
+        
+        query.insert(byte_pos, ch);
+        self.cursor_position += 1; // Move cursor by one character position
+        self.query = query.into();
+        self.filter_items(cx);
+        self.selected_index = 0;
+        self.list_scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        self.load_preview_for_selected_item(cx);
+        cx.notify();
     }
     
     fn delete_char(&mut self, cx: &mut Context<Self>) {
-        let mut query = self.query.to_string();
-        if query.pop().is_some() {
-            self.set_query(query, cx);
+        if self.cursor_position > 0 {
+            let mut query = self.query.to_string();
+            let char_pos = self.cursor_position.saturating_sub(1);
+            let char_count = query.chars().count();
+            if char_pos < char_count {
+                // Find the byte position for the character position
+                let mut byte_pos = 0;
+                for (i, ch) in query.chars().enumerate() {
+                    if i == char_pos {
+                        break;
+                    }
+                    byte_pos += ch.len_utf8();
+                }
+                let ch_len = query.chars().nth(char_pos).unwrap().len_utf8();
+                query.drain(byte_pos..byte_pos + ch_len);
+                self.query = query.into();
+                self.cursor_position = char_pos;
+                self.filter_items(cx);
+                self.selected_index = 0;
+                self.list_scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+                self.load_preview_for_selected_item(cx);
+                cx.notify();
+            }
         }
     }
     
@@ -633,6 +684,27 @@ impl Render for PickerView {
                             this.set_query("", cx);
                         }
                     }
+                    "left" => {
+                        if this.cursor_position > 0 {
+                            this.cursor_position -= 1;
+                            cx.notify();
+                        }
+                    }
+                    "right" => {
+                        let char_count = this.query.chars().count();
+                        if this.cursor_position < char_count {
+                            this.cursor_position += 1;
+                            cx.notify();
+                        }
+                    }
+                    "home" => {
+                        this.cursor_position = 0;
+                        cx.notify();
+                    }
+                    "end" => {
+                        this.cursor_position = this.query.chars().count();
+                        cx.notify();
+                    }
                     key if key.len() == 1 => {
                         if let Some(ch) = key.chars().next() {
                             if ch.is_alphanumeric() || ch.is_ascii_punctuation() || ch == ' ' || ch == '/' || ch == '.' || ch == '-' || ch == '_' {
@@ -684,8 +756,55 @@ impl Render for PickerView {
                     .child(
                         div()
                             .flex_1()
-                            .child(self.query.clone())
-                            .text_color(self.style.prompt_text)
+                            .flex()
+                            .items_center()
+                            .child({
+                                // Render query with cursor
+                                let query_str = self.query.to_string();
+                                let chars: Vec<char> = query_str.chars().collect();
+                                
+                                // Calculate byte position from character position
+                                let mut byte_pos = 0;
+                                for (i, ch) in chars.iter().enumerate() {
+                                    if i >= self.cursor_position {
+                                        break;
+                                    }
+                                    byte_pos += ch.len_utf8();
+                                }
+                                
+                                let before_cursor = query_str[..byte_pos].to_string();
+                                let after_cursor = query_str[byte_pos..].to_string();
+                                
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        // Text before cursor
+                                        div()
+                                            .when(!before_cursor.is_empty(), |this| {
+                                                this.child(before_cursor)
+                                                    .text_color(self.style.prompt_text)
+                                            })
+                                    )
+                                    .child(
+                                        // Cursor
+                                        div()
+                                            .w(px(2.0))
+                                            .h(px(16.0))
+                                            .bg(self.style.cursor)
+                                            .when(!self.focus_handle.is_focused(window), |this| {
+                                                this.opacity(0.5)
+                                            })
+                                    )
+                                    .child(
+                                        // Text after cursor
+                                        div()
+                                            .when(!after_cursor.is_empty(), |this| {
+                                                this.child(after_cursor)
+                                                    .text_color(self.style.prompt_text)
+                                            })
+                                    )
+                            })
                     )
                     .child(
                         // File count display
