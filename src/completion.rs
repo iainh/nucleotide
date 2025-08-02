@@ -295,7 +295,14 @@ impl Render for CompletionView {
             .take(self.max_visible_items)
             .enumerate()
             .map(|(visible_idx, &item_idx)| {
-                let item = &self.items[item_idx];
+                // Safe access to item by index
+                let item = match self.items.get(item_idx) {
+                    Some(item) => item,
+                    None => {
+                        log::error!("Invalid item index: {}", item_idx);
+                        return div(); // Return empty div if item not found
+                    }
+                };
                 let is_selected = visible_idx + self.scroll_offset == self.selected_index;
                 
                 div()

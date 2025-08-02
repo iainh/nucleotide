@@ -1088,11 +1088,16 @@ impl Element for DocumentElement {
                                 } else {
                                     // Use helix's grapheme_width function logic
                                     let grapheme_str = grapheme.as_str().unwrap_or("");
-                                    let width = if !grapheme_str.is_empty() && grapheme_str.as_bytes()[0] <= 127 {
-                                        1
+                                    let width = if !grapheme_str.is_empty() {
+                                        match grapheme_str.as_bytes().first() {
+                                            Some(&b) if b <= 127 => 1,
+                                            _ => {
+                                                use unicode_width::UnicodeWidthStr;
+                                                UnicodeWidthStr::width(grapheme_str).max(1)
+                                            }
+                                        }
                                     } else {
-                                        use unicode_width::UnicodeWidthStr;
-                                        UnicodeWidthStr::width(grapheme_str).max(1)
+                                        1
                                     };
                                     visual_x += after_layout.cell_width * width as f32;
                                     char_pos += width;

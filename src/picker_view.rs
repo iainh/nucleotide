@@ -382,8 +382,13 @@ impl PickerView {
                     }
                     byte_pos += ch.len_utf8();
                 }
-                let ch_len = query.chars().nth(char_pos).unwrap().len_utf8();
-                query.drain(byte_pos..byte_pos + ch_len);
+                // Safe access to character at position
+                if let Some(ch) = query.chars().nth(char_pos) {
+                    let ch_len = ch.len_utf8();
+                    query.drain(byte_pos..byte_pos + ch_len);
+                } else {
+                    log::warn!("Attempted to delete character at invalid position {}", char_pos);
+                }
                 self.query = query.into();
                 self.cursor_position = char_pos;
                 self.filter_items(cx);

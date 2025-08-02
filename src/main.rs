@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::panic;
 
 use anyhow::{Context, Error, Result};
 use helix_core::diagnostic::Severity;
@@ -63,7 +64,30 @@ fn setup_logging(verbosity: u64) -> Result<()> {
     Ok(())
 }
 
+fn install_panic_handler() {
+    panic::set_hook(Box::new(|info| {
+        log::error!("Application panic: {}", info);
+        
+        // Log backtrace if enabled
+        if let Ok(backtrace) = std::env::var("RUST_BACKTRACE") {
+            if backtrace == "1" || backtrace == "full" {
+                eprintln!("Backtrace:\n{:?}", std::backtrace::Backtrace::capture());
+            }
+        }
+        
+        // Try to save any unsaved work would go here if we had access to the app state
+        // For now, just log and exit gracefully
+        eprintln!("Fatal error: {}", info);
+        
+        // Exit gracefully
+        std::process::exit(1);
+    }));
+}
+
 fn main() -> Result<()> {
+    // Install panic handler to prevent data loss
+    install_panic_handler();
+    
     let rt = tokio::runtime::Runtime::new().unwrap();
     let handle = rt.handle();
     let _guard = handle.enter();

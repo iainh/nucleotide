@@ -156,6 +156,45 @@ pub struct Crank;
 impl gpui::EventEmitter<()> for Crank {}
 
 impl Application {
+    /// Safe document access API - read only
+    pub fn with_document<F, R>(&self, doc_id: DocumentId, f: F) -> Option<R>
+    where
+        F: FnOnce(&helix_view::Document) -> R,
+    {
+        self.editor.document(doc_id).map(f)
+    }
+    
+    /// Safe document access API - mutable
+    pub fn with_document_mut<F, R>(&mut self, doc_id: DocumentId, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut helix_view::Document) -> R,
+    {
+        self.editor.document_mut(doc_id).map(f)
+    }
+    
+    /// Safe document access API - returns Result instead of Option
+    pub fn try_with_document<F, R, E>(&self, doc_id: DocumentId, f: F) -> Result<R, E>
+    where
+        F: FnOnce(&helix_view::Document) -> Result<R, E>,
+        E: From<String>,
+    {
+        match self.editor.document(doc_id) {
+            Some(doc) => f(doc),
+            None => Err(E::from(format!("Document {} not found", doc_id))),
+        }
+    }
+    
+    /// Safe document access API - mutable with Result
+    pub fn try_with_document_mut<F, R, E>(&mut self, doc_id: DocumentId, f: F) -> Result<R, E>
+    where
+        F: FnOnce(&mut helix_view::Document) -> Result<R, E>,
+        E: From<String>,
+    {
+        match self.editor.document_mut(doc_id) {
+            Some(doc) => f(doc),
+            None => Err(E::from(format!("Document {} not found", doc_id))),
+        }
+    }
     fn try_create_picker_component(&mut self) -> Option<crate::picker::Picker> {
         use helix_term::ui::{overlay::Overlay, Picker};
 

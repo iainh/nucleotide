@@ -70,7 +70,11 @@ pub fn translate_key(ks: &Keystroke) -> helix_view::input::KeyEvent {
         _any => {
             let chars: Vec<char> = key.chars().collect();
             if chars.len() == 1 {
-                KeyCode::Char(chars[0])
+                // Safe access using first() instead of direct indexing
+                match chars.first() {
+                    Some(&ch) => KeyCode::Char(ch),
+                    None => KeyCode::Null,
+                }
             } else {
                 // Fallback for unhandled keys, might need further refinement
                 KeyCode::Null
