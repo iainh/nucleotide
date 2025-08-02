@@ -90,7 +90,7 @@ pub struct PromptElement {
 }
 
 impl RenderOnce for PromptElement {
-    fn render(self, cx: &mut WindowContext) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match &self.prompt {
             Prompt::Legacy(text_with_style) => {
                 let bg_color = text_with_style
@@ -102,7 +102,7 @@ impl RenderOnce for PromptElement {
                 default_style.background_color = bg_color;
 
                 let text = text_with_style.clone().into_styled_text(&default_style);
-                cx.focus(&self.focus);
+                self.focus.focus(window);
                 div()
                     .track_focus(&self.focus)
                     .flex()
@@ -114,7 +114,7 @@ impl RenderOnce for PromptElement {
                     .text_color(hsla(1., 1., 1., 1.))
                     .font(cx.global::<crate::FontSettings>().fixed_font.clone())
                     .text_size(px(12.))
-                    .line_height(px(1.3) * px(12.))
+                    .line_height(px(1.3 * 12.))
                     .child(text)
             }
             Prompt::Native { .. } => {
