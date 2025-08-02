@@ -35,7 +35,7 @@ pub fn translate_key(ks: &Keystroke) -> helix_view::input::KeyEvent {
     if ks.modifiers.shift {
         modifiers |= KeyModifiers::SHIFT;
     }
-    let key = ks.ime_key.as_ref().unwrap_or(&ks.key);
+    let key = &ks.key;
     let code = match key.as_str() {
         "backspace" => KeyCode::Backspace,
         "enter" => KeyCode::Enter,
@@ -207,8 +207,9 @@ impl TextWithStyle {
         }
     }
 
-    pub fn into_styled_text(self, default_style: &TextStyle) -> StyledText {
-        StyledText::new(self.text).with_highlights(default_style, self.highlights)
+    pub fn into_styled_text(self, _default_style: &TextStyle) -> StyledText {
+        // Default style is applied by StyledText itself, not in with_highlights
+        StyledText::new(self.text).with_highlights(self.highlights)
     }
 
     pub fn style(&self, idx: usize) -> Option<&HighlightStyle> {

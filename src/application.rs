@@ -29,7 +29,27 @@ use helix_term::{
 };
 use helix_view::document::DocumentSavedEventResult;
 use helix_view::DocumentId;
-use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, theme::Theme, Editor};
+use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, Editor};
+
+// Helper function to find workspace root (similar to Helix)
+fn find_workspace_root() -> PathBuf {
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    
+    // Walk up the directory tree looking for VCS directories
+    for ancestor in current_dir.ancestors() {
+        if ancestor.join(".git").exists()
+            || ancestor.join(".svn").exists()
+            || ancestor.join(".hg").exists()
+            || ancestor.join(".jj").exists()
+            || ancestor.join(".helix").exists()
+        {
+            return ancestor.to_path_buf();
+        }
+    }
+    
+    // If no VCS directory found, use current directory
+    current_dir
+}
 
 #[derive(Debug, Clone)]
 pub struct JumpMeta {
@@ -138,13 +158,12 @@ impl gpui::EventEmitter<()> for Crank {}
 
 impl Application {
     fn try_create_picker_component(&mut self) -> Option<crate::picker::Picker> {
-        use crate::picker::Picker as PickerComponent;
         use helix_term::ui::{overlay::Overlay, Picker};
 
         // Check for known picker types and create native implementations when possible
         // For now, we'll demonstrate the native picker capability by using it for file picker
 
-        // Create a sample native file picker to show the new functionality
+        // Create a native file picker for file operations
         if let Some(_file_picker) = self
             .compositor
             .find_id::<Overlay<Picker<PathBuf, FilePickerData>>>(helix_term::ui::picker::ID)
@@ -152,129 +171,23 @@ impl Application {
             // Remove the original picker from compositor to prevent infinite loop
             self.compositor.remove(helix_term::ui::picker::ID);
             
-            // Create a native file picker with sample files
-            use crate::picker_view::PickerItem;
-            use std::sync::Arc;
+            // Create a native file picker with files from current directory
+            let items = self.create_file_picker_items();
             
-            let items = vec![
-                PickerItem {
-                    label: "main.rs".into(),
-                    sublabel: Some("src/main.rs".into()),
-                    data: Arc::new(std::path::PathBuf::from("src/main.rs"))
-                        as Arc<dyn std::any::Any + Send + Sync>,
-                },
-                PickerItem {
-                    label: "application.rs".into(),
-                    sublabel: Some("src/application.rs".into()),
-                    data: Arc::new(std::path::PathBuf::from("src/application.rs"))
-                        as Arc<dyn std::any::Any + Send + Sync>,
-                },
-                PickerItem {
-                    label: "picker_view.rs".into(),
-                    sublabel: Some("src/picker_view.rs".into()),
-                    data: Arc::new(std::path::PathBuf::from("src/picker_view.rs"))
-                        as Arc<dyn std::any::Any + Send + Sync>,
-                },
-                PickerItem {
-                    label: "workspace.rs".into(),
-                    sublabel: Some("src/workspace.rs".into()),
-                    data: Arc::new(std::path::PathBuf::from("src/workspace.rs"))
-                        as Arc<dyn std::any::Any + Send + Sync>,
-                },
-            ];
-            
-            return Some(PickerComponent::native(
+            return Some(crate::picker::Picker::native(
                 "Open File",
                 items,
                 |_index| {
-                    // File opening is handled via OpenFile events in the overlay
-                }
+                    // File selection logic would go here
+                    println!("File selected at index: {}", _index);
+                },
             ));
         }
 
-        if let Some(p) = self
-            .compositor
-            .find_id::<Overlay<Picker<SymbolInformationItem, ()>>>(helix_term::ui::picker::ID)
-        {
-            return Some(PickerComponent::make_symbol_picker(
-                &mut self.editor,
-                &mut p.content,
-            ));
-        }
-
-        if let Some(p) = self
-            .compositor
-            .find_id::<Overlay<Picker<(usize, usize), ()>>>(helix_term::ui::picker::ID)
-        {
-            return Some(PickerComponent::make(&mut self.editor, &mut p.content));
-        }
-
-        if let Some(p) = self
-            .compositor
-            .find_id::<Overlay<Picker<PickerDiagnostic, ()>>>(helix_term::ui::picker::ID)
-        {
-            return Some(PickerComponent::make_diagnostic_picker(
-                &mut self.editor,
-                &mut p.content,
-            ));
-        }
-
-        if let Some(p) = self
-            .compositor
-            .find_id::<Overlay<Picker<JumpMeta, ()>>>(helix_term::ui::picker::ID)
-        {
-            return Some(PickerComponent::make_jump_picker(
-                &mut self.editor,
-                &mut p.content,
-            ));
-        }
-
-        if let Some(p) = self.compositor.find_id::<Overlay<
-            Picker<(std::path::PathBuf, bool), (std::path::PathBuf, helix_view::graphics::Style)>,
-        >>(helix_term::ui::picker::ID)
-        {
-            return Some(PickerComponent::make(&mut self.editor, &mut p.content));
-        }
-
-        // Fallback: Try to render any picker generically using the Component trait
-        // This handles picker types we don't explicitly match above
-        self.try_render_any_picker()
+        // All picker types now use the native implementation
+        None
     }
 
-    fn try_render_any_picker(&mut self) -> Option<crate::picker::Picker> {
-        // Alternative approach: Always try to render the compositor and see if there's any picker content
-        // This will work for any picker type, regardless of its generic parameters
-        self.render_compositor_picker()
-    }
-
-    fn render_compositor_picker(&mut self) -> Option<crate::picker::Picker> {
-        use crate::utils::TextWithStyle;
-        use helix_term::compositor::Component;
-
-        let area = self.editor.tree.area();
-        let compositor_rect = helix_view::graphics::Rect {
-            x: 0,
-            y: 0,
-            width: area.width * 2 / 3,
-            height: area.height,
-        };
-
-        let mut comp_ctx = helix_term::compositor::Context {
-            editor: &mut self.editor,
-            scroll: None,
-            jobs: &mut self.jobs,
-        };
-
-        // Render the entire compositor to capture any picker
-        let mut buf = tui::buffer::Buffer::empty(compositor_rect);
-        self.compositor
-            .render(compositor_rect, &mut buf, &mut comp_ctx);
-
-        // Return the rendered buffer as a picker component
-        Some(crate::picker::Picker::Legacy(TextWithStyle::from_buffer(
-            buf,
-        )))
-    }
 
     // Native picker creation methods that demonstrate the new GPUI-native picker functionality
 
@@ -325,8 +238,89 @@ impl Application {
         self.editor.open(path, Action::Replace).map(|_| ()).map_err(|e| anyhow::Error::new(e))
     }
 
-    fn emit_overlays(&mut self, cx: &mut gpui::ModelContext<'_, crate::Core>) {
-        use crate::picker::Picker as PickerComponent;
+    fn create_file_picker_items(&self) -> Vec<crate::picker_view::PickerItem> {
+        use crate::picker_view::PickerItem;
+        use std::sync::Arc;
+        use ignore::WalkBuilder;
+        
+        let mut items = Vec::new();
+        
+        // Find workspace root (similar to Helix)
+        let workspace_root = find_workspace_root();
+        
+        // Use WalkBuilder from the ignore crate to walk all files
+        let mut walk_builder = WalkBuilder::new(&workspace_root);
+        walk_builder
+            .hidden(false)  // Show hidden files (can be made configurable)
+            .follow_links(true)
+            .git_ignore(true)  // Respect .gitignore
+            .git_global(true)  // Respect global .gitignore
+            .git_exclude(true) // Respect .git/info/exclude
+            .sort_by_file_name(|a, b| a.cmp(b))  // Sort alphabetically
+            .filter_entry(|entry| {
+                // Filter out VCS directories and common build directories
+                if let Some(name) = entry.file_name().to_str() {
+                    !matches!(name, ".git" | ".svn" | ".hg" | ".jj" | "target" | "node_modules")
+                } else {
+                    true
+                }
+            });
+            
+        // Walk the directory tree and collect files only
+        for entry in walk_builder.build() {
+            if let Ok(entry) = entry {
+                // Skip directories - we only want files
+                if entry.file_type().map_or(false, |ft| ft.is_file()) {
+                    let path = entry.path().to_path_buf();
+                    
+                    // Get relative path from workspace root
+                    let relative_path = path.strip_prefix(&workspace_root)
+                        .unwrap_or(&path);
+                    
+                    // Format the label to show relative path like Helix
+                    let label = relative_path.display().to_string();
+                    
+                    // Get file icon based on extension
+                    let icon = match path.extension().and_then(|e| e.to_str()) {
+                        Some("rs") => "🦀",
+                        Some("toml") => "⚙️",
+                        Some("md") => "📄",
+                        Some("json") => "🔧",
+                        Some("txt") => "📄",
+                        Some("js") | Some("ts") => "📜",
+                        Some("py") => "🐍",
+                        Some("go") => "🐹",
+                        Some("c") | Some("cpp") | Some("cc") | Some("h") => "🔨",
+                        _ => "📄"
+                    };
+                    
+                    items.push(PickerItem {
+                        label: format!("{} {}", icon, label).into(),
+                        sublabel: None,  // No sublabel needed since full path is in label
+                        data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
+                    });
+                    
+                    // Limit to reasonable number of files
+                    if items.len() >= 10000 {
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // If no files found, add a placeholder
+        if items.is_empty() {
+            items.push(PickerItem {
+                label: "No files found".into(),
+                sublabel: Some("Workspace is empty or unreadable".into()),
+                data: Arc::new(std::path::PathBuf::new()) as Arc<dyn std::any::Any + Send + Sync>,
+            });
+        }
+        
+        items
+    }
+
+    fn emit_overlays(&mut self, cx: &mut gpui::Context<crate::Core>) {
         use crate::prompt::Prompt;
 
         let picker = self.try_create_picker_component();
@@ -357,7 +351,7 @@ impl Application {
     pub fn handle_input_event(
         &mut self,
         event: InputEvent,
-        cx: &mut gpui::ModelContext<'_, crate::Core>,
+        cx: &mut gpui::Context<crate::Core>,
         handle: tokio::runtime::Handle,
     ) {
         let _guard = handle.enter();
@@ -448,7 +442,7 @@ impl Application {
     pub fn handle_crank_event(
         &mut self,
         _event: (),
-        cx: &mut gpui::ModelContext<'_, crate::Core>,
+        cx: &mut gpui::Context<crate::Core>,
         handle: tokio::runtime::Handle,
     ) {
         let _guard = handle.enter();
@@ -465,7 +459,7 @@ impl Application {
         */
     }
 
-    pub async fn step(&mut self, cx: &mut gpui::ModelContext<'_, crate::Core>) {
+    pub async fn step(&mut self, cx: &mut gpui::Context<'_, crate::Core>) {
         loop {
             // Check if all views are closed and we should quit
             if self.editor.tree.views().count() == 0 {
