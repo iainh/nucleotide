@@ -18,7 +18,11 @@ pub fn color_to_hsla(color: helix_view::graphics::Color) -> Option<Hsla> {
             Some(rgb(r | g | b).into())
         }
         Color::Reset => None,
-        any => todo!("{:?} not implemented", any),
+        _ => {
+            // For unhandled color types, use a default color instead of panicking
+            log::warn!("Unhandled color type: {:?}, using default", color);
+            None
+        }
     }
 }
 

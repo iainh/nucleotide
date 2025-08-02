@@ -143,26 +143,31 @@ impl Workspace {
     }
 
     fn handle_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
-        // Check if we should dismiss the info box first
-        if ev.keystroke.key == "escape" && !self.info_hidden {
-            self.info_hidden = true;
-            cx.notify();
-            return; // Don't pass escape to editor when dismissing info box
-        }
+        // Wrap the entire key handling in a catch to prevent panics from propagating to FFI
+        if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Check if we should dismiss the info box first
+            if ev.keystroke.key == "escape" && !self.info_hidden {
+                self.info_hidden = true;
+                cx.notify();
+                return; // Don't pass escape to editor when dismissing info box
+            }
 
-        // Check if overlay has a native component (picker, prompt, completion) - if so, don't consume key events
-        // Let GPUI actions bubble up to the native components instead
-        let overlay_view = &self.overlay.read(cx);
-        if !overlay_view.is_empty() {
-            // Skip helix key processing when overlay is not empty
-            // The native components (picker, prompt, completion) will handle their own key events via GPUI actions
-            return;
-        }
+            // Check if overlay has a native component (picker, prompt, completion) - if so, don't consume key events
+            // Let GPUI actions bubble up to the native components instead
+            let overlay_view = &self.overlay.read(cx);
+            if !overlay_view.is_empty() {
+                // Skip helix key processing when overlay is not empty
+                // The native components (picker, prompt, completion) will handle their own key events via GPUI actions
+                return;
+            }
 
-        let key = utils::translate_key(&ev.keystroke);
-        self.input.update(cx, |_, cx| {
-            cx.emit(InputEvent::Key(key));
-        })
+            let key = utils::translate_key(&ev.keystroke);
+            self.input.update(cx, |_, cx| {
+                cx.emit(InputEvent::Key(key));
+            })
+        })) {
+            log::error!("Panic in key handler: {:?}", e);
+        }
     }
 
     fn update_document_views(&mut self, cx: &mut Context<Self>) {
@@ -195,9 +200,13 @@ impl Workspace {
             view_ids.insert(view_id);
 
             if is_focused {
-                let doc = editor.document(view.doc).unwrap();
-                self.focused_view_id = Some(view_id);
-                focused_file_name = doc.path().map(|p| p.display().to_string());
+                // Verify the view still exists in the tree before accessing
+                if editor.tree.contains(view_id) {
+                    if let Some(doc) = editor.document(view.doc) {
+                        self.focused_view_id = Some(view_id);
+                        focused_file_name = doc.path().map(|p| p.display().to_string());
+                    }
+                }
             }
         }
         
@@ -274,8 +283,12 @@ impl Render for Workspace {
             }
             
             if is_focused {
-                let doc = editor.document(view.doc).unwrap();
-                focused_file_name = doc.path().map(|p| p.display().to_string());
+                // Verify the view still exists in the tree before accessing
+                if editor.tree.contains(view_id) {
+                    if let Some(doc) = editor.document(view.doc) {
+                        focused_file_name = doc.path().map(|p| p.display().to_string());
+                    }
+                }
             }
         }
 
@@ -283,10 +296,16 @@ impl Render for Workspace {
 
         let default_style = editor.theme.get("ui.background");
         let default_ui_text = editor.theme.get("ui.text");
-        let bg_color = utils::color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
-        let text_color = utils::color_to_hsla(default_ui_text.fg.unwrap()).unwrap_or(white());
+        let bg_color = default_style.bg
+            .and_then(|c| utils::color_to_hsla(c))
+            .unwrap_or(black());
+        let text_color = default_ui_text.fg
+            .and_then(|c| utils::color_to_hsla(c))
+            .unwrap_or(white());
         let window_style = editor.theme.get("ui.window");
-        let border_color = utils::color_to_hsla(window_style.fg.unwrap()).unwrap_or(white());
+        let border_color = window_style.fg
+            .and_then(|c| utils::color_to_hsla(c))
+            .unwrap_or(white());
 
         let editor_rect = editor.tree.area();
 
@@ -557,10 +576,15 @@ fn quit(core: Entity<Core>, rt: tokio::runtime::Handle, cx: &mut App) {
     core.update(cx, |core, _cx| {
         let editor = &mut core.editor;
         let _guard = rt.enter();
-        rt.block_on(async { editor.flush_writes().await }).unwrap();
+        if let Err(e) = rt.block_on(async { editor.flush_writes().await }) {
+            log::error!("Failed to flush writes: {}", e);
+        }
         let views: Vec<_> = editor.tree.views().map(|(view, _)| view.id).collect();
         for view_id in views {
-            editor.close(view_id);
+            // Check if the view still exists before trying to close it
+            if editor.tree.contains(view_id) {
+                editor.close(view_id);
+            }
         }
     });
 }

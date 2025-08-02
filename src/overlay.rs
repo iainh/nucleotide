@@ -146,7 +146,7 @@ impl OverlayView {
                                 PickerView::new(cx)
                             };
                             let items_for_callback = items.clone();
-                            view = view.with_items(items);
+                            view = view.with_core(core_weak.clone()).with_items(items);
                             
                             // Set up the selection callback
                             view = view.on_select(move |selected_item: &PickerItem, picker_cx| {

@@ -6,6 +6,7 @@ use gpui::*;
 use gpui::{Context, Window, ScrollStrategy};
 use nucleo::Nucleo;
 use std::{ops::Range, sync::Arc};
+use helix_view::DocumentId;
 
 #[derive(Clone, Debug)]
 pub struct PickerItem {
@@ -32,6 +33,9 @@ pub struct PickerView {
     show_preview: bool,
     preview_content: Option<String>,
     preview_loading: bool,
+    preview_doc_id: Option<DocumentId>,
+    preview_view_id: Option<helix_view::ViewId>,
+    core: Option<WeakEntity<crate::Core>>,
 
     // Callbacks
     on_select: Option<Box<dyn FnMut(&PickerItem, &mut Context<Self>) + 'static>>,
@@ -136,6 +140,9 @@ impl PickerView {
             show_preview: true,
             preview_content: None,
             preview_loading: false,
+            preview_doc_id: None,
+            preview_view_id: None,
+            core: None,
             on_select: None,
             on_cancel: None,
             style: PickerStyle::default(),
@@ -158,11 +165,19 @@ impl PickerView {
             show_preview: true,
             preview_content: None,
             preview_loading: false,
+            preview_doc_id: None,
+            preview_view_id: None,
+            core: None,
             on_select: None,
             on_cancel: None,
             style,
             cached_dimensions: None,
         }
+    }
+
+    pub fn with_core(mut self, core: WeakEntity<crate::Core>) -> Self {
+        self.core = Some(core);
+        self
     }
 
     pub fn with_items(mut self, items: Vec<PickerItem>) -> Self {
@@ -294,6 +309,9 @@ impl PickerView {
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
+        // Clean up preview document before cancelling
+        self.cleanup_preview_document(cx);
+        
         if let Some(on_cancel) = &mut self.on_cancel {
             on_cancel(cx);
         }
@@ -355,10 +373,14 @@ impl PickerView {
             return;
         }
 
+        // Clean up previous preview document if any
+        self.cleanup_preview_document(cx);
+
         self.preview_loading = true;
         self.preview_content = Some("Loading...".to_string());
         cx.notify();
 
+        let core_weak = self.core.clone();
         // When spawning from Context<T>, the closure gets WeakEntity<T> as first param
         cx.spawn(async move |view_weak, cx| {
             let content = if path.is_dir() {
@@ -421,12 +443,77 @@ impl PickerView {
             };
 
             _ = view_weak.update(cx, |this, cx| {
+                // For directories, just show the content as before
+                if path.is_dir() {
+                    this.preview_loading = false;
+                    this.preview_content = Some(content);
+                    cx.notify();
+                    return;
+                }
+
+                // For files, try to create a document for syntax highlighting
+                if let Some(core_weak) = &core_weak {
+                    if let Some(core) = core_weak.upgrade() {
+                        core.update(cx, |core, _cx| {
+                            // Create a new document
+                            let doc_id = core.editor.new_file(helix_view::editor::Action::Load);
+                            
+                            // Create a view ID for the preview
+                            let view_id = helix_view::ViewId::default();
+                            
+                            // Get the syntax loader before we borrow the document mutably
+                            let loader = core.editor.syn_loader.load();
+                            
+                            // Set the content
+                            if let Some(doc) = core.editor.document_mut(doc_id) {
+                                // Set the path for language detection
+                                doc.set_path(Some(&path));
+                                
+                                // Initialize the view in the document
+                                doc.ensure_view_init(view_id);
+                                
+                                // Apply the content
+                                let transaction = helix_core::Transaction::change(
+                                    doc.text(),
+                                    vec![(0, doc.text().len_chars(), Some(content.into()))].into_iter()
+                                );
+                                
+                                doc.apply(&transaction, view_id);
+                                
+                                // Detect language and enable syntax highlighting
+                                doc.detect_language(&loader);
+                            }
+                            
+                            // Store both document ID and view ID
+                            this.preview_doc_id = Some(doc_id);
+                            this.preview_view_id = Some(view_id);
+                            this.preview_content = None; // We'll use DocumentElement instead
+                        });
+                    }
+                }
+                
                 this.preview_loading = false;
-                this.preview_content = Some(content);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn cleanup_preview_document(&mut self, cx: &mut Context<Self>) {
+        if let (Some(doc_id), Some(view_id)) = (self.preview_doc_id.take(), self.preview_view_id.take()) {
+            if let Some(core_weak) = &self.core {
+                if let Some(core) = core_weak.upgrade() {
+                    core.update(cx, |core, _cx| {
+                        // Close the view first, but only if it still exists
+                        if core.editor.tree.contains(view_id) {
+                            core.editor.close(view_id);
+                        }
+                        // Then close the document without saving
+                        let _ = core.editor.close_document(doc_id, false);
+                    });
+                }
+            }
+        }
     }
 
 }
@@ -438,6 +525,14 @@ impl Focusable for PickerView {
 }
 
 impl EventEmitter<DismissEvent> for PickerView {}
+
+impl Drop for PickerView {
+    fn drop(&mut self) {
+        // Clean up preview document when picker is closed
+        // Note: We can't use update() in drop, so cleanup happens via cleanup_preview_document
+        // when the picker is dismissed or a new file is selected
+    }
+}
 
 impl Render for PickerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -627,17 +722,65 @@ impl Render for PickerView {
                                     div()
                                         .h_full()  // Use full height instead of flex_1
                                         .overflow_y_hidden()  // Hide overflow for preview content
-                                        .px_3()
-                                        .py_2()
-                                        .text_size(px(12.))
-                                        .text_color(self.style.text)
-                                        .font_family("monospace")
-                                        .child(
-                                            match &self.preview_content {
-                                                Some(content) => content.clone(),
-                                                None => "Select a file to preview".to_string()
+                                        .child({
+                                            if let (Some(doc_id), Some(_view_id), Some(core_weak)) = (self.preview_doc_id, self.preview_view_id, &self.core) {
+                                                if let Some(core) = core_weak.upgrade() {
+                                                    // Use a simpler approach: render the document text with basic styling
+                                                    // This avoids the DocumentElement complexity while still showing content
+                                                    let content = core.read(cx).editor.document(doc_id)
+                                                        .map(|doc| {
+                                                            let text = doc.text();
+                                                            let content = text.to_string();
+                                                            // Limit preview to first 500 lines for performance
+                                                            let lines: Vec<&str> = content.lines().take(500).collect();
+                                                            lines.join("\n")
+                                                        })
+                                                        .unwrap_or_else(|| "Unable to load file".to_string());
+                                                    
+                                                    div()
+                                                        .px_3()
+                                                        .py_2()
+                                                        .text_size(px(12.))
+                                                        .text_color(self.style.text)
+                                                        .font_family("monospace")
+                                                        .overflow_y_hidden()
+                                                        .w_full()
+                                                        .h_full()
+                                                        .child(content)
+                                                        .into_any_element()
+                                                } else {
+                                                    // Fallback to text preview
+                                                    div()
+                                                        .px_3()
+                                                        .py_2()
+                                                        .text_size(px(12.))
+                                                        .text_color(self.style.text)
+                                                        .font_family("monospace")
+                                                        .child(
+                                                            match &self.preview_content {
+                                                                Some(content) => content.clone(),
+                                                                None => "Select a file to preview".to_string()
+                                                            }
+                                                        )
+                                                        .into_any_element()
+                                                }
+                                            } else {
+                                                // Regular text preview for directories or when no document
+                                                div()
+                                                    .px_3()
+                                                    .py_2()
+                                                    .text_size(px(12.))
+                                                    .text_color(self.style.text)
+                                                    .font_family("monospace")
+                                                    .child(
+                                                        match &self.preview_content {
+                                                            Some(content) => content.clone(),
+                                                            None => "Select a file to preview".to_string()
+                                                        }
+                                                    )
+                                                    .into_any_element()
                                             }
-                                        )
+                                        })
                                 )
                         )
                     })
