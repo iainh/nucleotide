@@ -9,10 +9,6 @@ use helix_view::{
     theme::Theme,
 };
 
-const PADDING: f32 = 8.0;
-const LINE_HEIGHT: f32 = 20.0;
-const CHAR_WIDTH: f32 = 9.0;
-
 #[derive(Debug)]
 pub struct KeyHintView {
     info: Option<Info>,
@@ -128,36 +124,11 @@ impl KeyHintView {
             .into_any_element()
     }
 
-    fn calculate_dimensions(&self) -> (f32, f32) {
-        if let Some(info) = &self.info {
-            let mut max_width: f32 = 0.0;
-            let mut total_height = PADDING * 2.0;
-
-            // Add title height if present
-            if !info.title.is_empty() {
-                max_width = max_width.max(info.title.len() as f32 * CHAR_WIDTH);
-                total_height += LINE_HEIGHT + PADDING;
-            }
-
-            // Calculate dimensions for text lines
-            let lines_count = info.text.lines().count();
-            total_height += lines_count as f32 * LINE_HEIGHT;
-            
-            // Use the info's width property
-            max_width = max_width.max(info.width as f32 * CHAR_WIDTH);
-
-            (max_width + PADDING * 2.0, total_height)
-        } else {
-            (0.0, 0.0)
-        }
-    }
 }
 
 impl Render for KeyHintView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(info) = &self.info {
-            let (width, height) = self.calculate_dimensions();
-            
             let bg_color = self.get_theme_color("ui.popup.info");
             let border_color = self.get_theme_color("ui.window");
             let title_color = self.get_theme_color("ui.text.info");
@@ -169,8 +140,6 @@ impl Render for KeyHintView {
                 .absolute()
                 .bottom_4()
                 .right_4()
-                .w(px(width))
-                .h(px(height))
                 .bg(bg_color)
                 .border_2()
                 .border_color(border_color)
