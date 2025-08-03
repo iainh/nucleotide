@@ -24,6 +24,7 @@ pub struct PromptView {
     completions: Vec<CompletionItem>,
     completion_selection: usize,
     show_completions: bool,
+    original_input: Option<SharedString>, // Store original input before showing completions
     
     // UI state
     focus_handle: FocusHandle,
@@ -111,6 +112,7 @@ impl PromptView {
             completions: Vec::new(),
             completion_selection: 0,
             show_completions: false,
+            original_input: None,
             focus_handle: cx.focus_handle(),
             completion_scroll_offset: 0,
             on_submit: None,
@@ -165,9 +167,10 @@ impl PromptView {
     
     fn insert_char(&mut self, ch: char, cx: &mut Context<Self>) {
         let mut input = self.input.to_string();
-        input.insert(self.cursor_position, ch);
+        let byte_pos = self.byte_position_from_char_position(&input, self.cursor_position);
+        input.insert(byte_pos, ch);
         self.input = input.into();
-        self.cursor_position += ch.len_utf8();
+        self.cursor_position += 1; // Move cursor by one character
         
         // Recalculate completions
         self.recalculate_completions(cx);
@@ -179,13 +182,28 @@ impl PromptView {
         cx.notify();
     }
     
+    fn byte_position_from_char_position(&self, s: &str, char_pos: usize) -> usize {
+        s.chars().take(char_pos).map(|c| c.len_utf8()).sum()
+    }
+    
     fn recalculate_completions(&mut self, cx: &mut Context<Self>) {
         if let Some(completion_fn) = &self.completion_fn {
             let completions = completion_fn(&self.input);
             self.completions = completions;
             self.completion_selection = 0;
             self.completion_scroll_offset = 0; // Reset scroll when completions change
-            self.show_completions = !self.completions.is_empty();
+            let will_show_completions = !self.completions.is_empty();
+            
+            // Store original input when we first show completions
+            if will_show_completions && !self.show_completions {
+                self.original_input = Some(self.input.clone());
+            }
+            // Clear original input when hiding completions
+            else if !will_show_completions && self.show_completions {
+                self.original_input = None;
+            }
+            
+            self.show_completions = will_show_completions;
             
             cx.notify();
         }
@@ -230,7 +248,7 @@ impl PromptView {
         }
         
         let max_visible = 4; // Must match the value in render
-        let old_selection = self.completion_selection;
+        let _old_selection = self.completion_selection;
         
         // Move selection
         if delta > 0 {
@@ -264,6 +282,7 @@ impl PromptView {
                 self.input = completion.text.clone();
                 self.cursor_position = self.input.chars().count();
                 self.show_completions = false;
+                self.original_input = None; // Clear original input since completion is accepted
                 
                 if let Some(on_change) = &mut self.on_change {
                     on_change(&self.input, cx);
@@ -275,6 +294,14 @@ impl PromptView {
     }
     
     fn submit(&mut self, cx: &mut Context<Self>) {
+        // Accept completion first if showing
+        if self.show_completions && !self.completions.is_empty() {
+            if let Some(completion) = self.completions.get(self.completion_selection) {
+                self.input = completion.text.clone();
+                self.cursor_position = self.input.chars().count();
+            }
+        }
+        
         // Add to history if not empty
         if !self.input.is_empty() {
             self.history.push(self.input.clone());
@@ -339,6 +366,23 @@ impl Render for PromptView {
         let font = cx.global::<crate::FontSettings>().fixed_font.clone();
         let input_display = self.input.to_string();
         
+        // Get the ghost text (completion suggestion after cursor)
+        let ghost_text = if self.show_completions && !self.completions.is_empty() {
+            if let Some(completion) = self.completions.get(self.completion_selection) {
+                let completion_str = completion.text.as_ref();
+                if completion_str.starts_with(&input_display) {
+                    // Get the part of the completion that comes after the current input
+                    Some(completion_str[input_display.len()..].to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
         // Focus ourselves if we're not already focused
         if !self.focus_handle.is_focused(window) {
             self.focus_handle.focus(window);
@@ -361,15 +405,23 @@ impl Render for PromptView {
                 println!("🔥 PromptView received key: {}", event.keystroke.key);
                 match event.keystroke.key.as_str() {
                     "enter" => {
-                        if this.show_completions && !this.completions.is_empty() {
-                            this.accept_completion(cx);
-                        } else {
-                            this.submit(cx);
-                        }
+                        this.submit(cx);
                     }
                     "escape" => {
                         if this.show_completions {
+                            // Restore original input before hiding completions
+                            if let Some(original) = &this.original_input {
+                                this.input = original.clone();
+                                // Keep cursor at its original position (where user was typing)
+                                // cursor_position is already at the right place
+                                
+                                // Trigger onChange callback for the restoration
+                                if let Some(on_change) = &mut this.on_change {
+                                    on_change(&this.input, cx);
+                                }
+                            }
                             this.show_completions = false;
+                            this.original_input = None;
                             cx.notify();
                         } else {
                             this.cancel(cx);
@@ -459,6 +511,15 @@ impl Render for PromptView {
                                         div().child(input_display.chars().skip(self.cursor_position).collect::<String>())
                                     } else {
                                         div()
+                                    })
+                                    // Add ghost text after cursor
+                                    .when_some(ghost_text.clone(), |this, ghost| {
+                                        this.child(
+                                            div()
+                                                .text_color(self.style.text)
+                                                .opacity(0.5) // Make it faded
+                                                .child(ghost)
+                                        )
                                     })
                             )
                     )
