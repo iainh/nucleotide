@@ -344,22 +344,48 @@ impl Application {
         items
     }
 
-    fn emit_overlays(&mut self, cx: &mut gpui::Context<crate::Core>) {
+    fn create_native_prompt_from_helix(&mut self, cx: &mut gpui::Context<crate::Core>) -> Option<crate::prompt::Prompt> {
         use crate::prompt::Prompt;
+        use std::sync::Arc;
+        
+        // Check if there's a helix prompt in the compositor
+        if let Some(helix_prompt) = self.compositor.find::<helix_term::ui::Prompt>() {
+            // Get the current prompt text and line content
+            let prompt_text = ":"; // Command mode prompt
+            let current_line = helix_prompt.line().clone();
+            
+            // Create native prompt with command execution through Update event
+            let prompt = Prompt::Native {
+                prompt: prompt_text.into(),
+                initial_input: current_line.into(),
+                on_submit: Arc::new(move |input: &str| {
+                    println!("Native command submitted: {}", input);
+                    // The actual command execution will be handled by workspace
+                    // through a CommandSubmitted event
+                }),
+                on_cancel: Some(Arc::new(|| {
+                    println!("Native command cancelled");
+                })),
+            };
+            
+            Some(prompt)
+        } else {
+            None
+        }
+    }
+
+    fn emit_overlays(&mut self, cx: &mut gpui::Context<crate::Core>) {
 
         let picker = self.try_create_picker_component();
 
-        let _prompt = if let Some(p) = self.compositor.find::<helix_term::ui::Prompt>() {
-            Some(Prompt::make(&mut self.editor, p))
-        } else {
-            None
-        };
+        // Check for helix prompt and convert to native GPUI prompt
+        let prompt = self.create_native_prompt_from_helix(cx);
 
         if let Some(picker) = picker {
             cx.emit(crate::Update::Picker(picker));
         }
 
-        if let Some(prompt) = _prompt {
+        if let Some(prompt) = prompt {
             cx.emit(crate::Update::Prompt(prompt));
         }
 
@@ -382,6 +408,24 @@ impl Application {
         };
         match event {
             InputEvent::Key(key) => {
+                debug!("Handling key event: {:?}", key);
+                
+                // Log cursor position before key handling
+                let view_id = comp_ctx.editor.tree.focus;
+                let doc_id = comp_ctx.editor.tree.get(view_id).doc;
+                
+                // Store before position
+                let before_cursor = if let Some(doc) = comp_ctx.editor.document(doc_id) {
+                    let sel = doc.selection(view_id);
+                    let text = doc.text();
+                    let cursor_pos = sel.primary().cursor(text.slice(..));
+                    let line = text.char_to_line(cursor_pos);
+                    debug!("Before key - cursor pos: {}, line: {}", cursor_pos, line);
+                    Some((cursor_pos, line))
+                } else {
+                    None
+                };
+                
                 let is_handled = self
                     .compositor
                     .handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
@@ -393,11 +437,26 @@ impl Application {
                     }
                 }
                 
+                // Log cursor position after key handling
+                if let Some(doc) = comp_ctx.editor.document(doc_id) {
+                    let sel = doc.selection(view_id);
+                    let text = doc.text();
+                    let cursor_pos = sel.primary().cursor(text.slice(..));
+                    let line = text.char_to_line(cursor_pos);
+                    debug!("After key - cursor pos: {}, line: {}", cursor_pos, line);
+                    
+                    // Check if we moved lines
+                    if let Some((_before_pos, before_line)) = before_cursor {
+                        if before_line != line {
+                            debug!("Moved from line {} to line {}", before_line, line);
+                        }
+                    }
+                }
+                
                 // Ensure cursor is visible after keyboard navigation
-                let view_id = self.editor.tree.focus;
                 // Check if the view exists before trying to ensure cursor visibility
-                if self.editor.tree.contains(view_id) {
-                    self.editor.ensure_cursor_in_view(view_id);
+                if comp_ctx.editor.tree.contains(view_id) {
+                    comp_ctx.editor.ensure_cursor_in_view(view_id);
                 }
                 
                 self.emit_overlays(cx);

@@ -101,9 +101,9 @@ fn window_options(_cx: &mut App) -> gpui::WindowOptions {
     WindowOptions {
         app_id: Some("helix-gpui".to_string()),
         titlebar: Some(TitlebarOptions {
-            title: None,
-            appears_transparent: true,
-            traffic_light_position: None, //Some(point(px(9.0), px(9.0))),
+            title: Some("Helix".into()),
+            appears_transparent: false,
+            traffic_light_position: None,
         }),
         window_bounds: Some(WindowBounds::Windowed(gpui::Bounds {
             origin: gpui::point(px(100.0), px(100.0)),
@@ -192,6 +192,7 @@ pub enum Update {
     EditorStatus(EditorStatus),
     OpenFile(std::path::PathBuf),
     ShouldQuit,
+    CommandSubmitted(String),
 }
 
 impl gpui::EventEmitter<Update> for Application {}

@@ -16,6 +16,10 @@ pub struct PromptView {
     input: SharedString,
     cursor_position: usize,
     
+    // Command history
+    history: Vec<SharedString>,
+    history_position: Option<usize>,
+    
     // Completion state
     completions: Vec<CompletionItem>,
     completion_selection: usize,
@@ -23,11 +27,13 @@ pub struct PromptView {
     
     // UI state
     focus_handle: FocusHandle,
+    completion_scroll_offset: usize,
     
     // Callbacks
     on_submit: Option<Box<dyn FnMut(&str, &mut Context<Self>) + 'static>>,
     on_cancel: Option<Box<dyn FnMut(&mut Context<Self>) + 'static>>,
     on_change: Option<Box<dyn FnMut(&str, &mut Context<Self>) + 'static>>,
+    completion_fn: Option<Box<dyn Fn(&str) -> Vec<CompletionItem> + 'static>>,
     
     // Styling
     style: PromptStyle,
@@ -41,6 +47,7 @@ pub struct PromptStyle {
     pub border: Hsla,
     pub completion_background: Hsla,
     pub completion_selected: Hsla,
+    pub completion_selected_text: Hsla,
 }
 
 impl Default for PromptStyle {
@@ -52,6 +59,43 @@ impl Default for PromptStyle {
             border: hsla(0.0, 0.0, 0.3, 1.0),
             completion_background: hsla(0.0, 0.0, 0.15, 1.0),
             completion_selected: hsla(220.0 / 360.0, 0.6, 0.5, 1.0),
+            completion_selected_text: hsla(0.0, 0.0, 1.0, 1.0),
+        }
+    }
+}
+
+impl PromptStyle {
+    pub fn from_helix_theme(theme: &helix_view::Theme) -> Self {
+        use crate::utils::color_to_hsla;
+        
+        let ui_bg = theme.get("ui.background");
+        let ui_text = theme.get("ui.text");
+        let ui_menu = theme.get("ui.menu");
+        let ui_menu_selected = theme.get("ui.menu.selected");
+        let ui_window = theme.get("ui.window");
+        
+        Self {
+            background: ui_bg.bg
+                .and_then(color_to_hsla)
+                .unwrap_or(hsla(0.0, 0.0, 0.1, 1.0)),
+            text: ui_text.fg
+                .and_then(color_to_hsla)
+                .unwrap_or(hsla(0.0, 0.0, 0.9, 1.0)),
+            prompt_text: ui_text.fg
+                .and_then(color_to_hsla)
+                .unwrap_or(hsla(220.0 / 360.0, 0.6, 0.7, 1.0)),
+            border: ui_window.fg
+                .and_then(color_to_hsla)
+                .unwrap_or(hsla(0.0, 0.0, 0.3, 1.0)),
+            completion_background: ui_menu.bg
+                .and_then(color_to_hsla)
+                .unwrap_or(hsla(0.0, 0.0, 0.15, 1.0)),
+            completion_selected: ui_menu_selected.bg
+                .and_then(color_to_hsla)
+                .unwrap_or(hsla(220.0 / 360.0, 0.6, 0.5, 1.0)),
+            completion_selected_text: ui_menu_selected.fg
+                .and_then(color_to_hsla)
+                .unwrap_or(hsla(0.0, 0.0, 1.0, 1.0)),
         }
     }
 }
@@ -62,13 +106,17 @@ impl PromptView {
             prompt: prompt.into(),
             input: SharedString::default(),
             cursor_position: 0,
+            history: Vec::new(),
+            history_position: None,
             completions: Vec::new(),
             completion_selection: 0,
             show_completions: false,
             focus_handle: cx.focus_handle(),
+            completion_scroll_offset: 0,
             on_submit: None,
             on_cancel: None,
             on_change: None,
+            completion_fn: None,
             style: PromptStyle::default(),
         }
     }
@@ -93,6 +141,11 @@ impl PromptView {
         self
     }
     
+    pub fn with_completion_fn(mut self, completion_fn: impl Fn(&str) -> Vec<CompletionItem> + 'static) -> Self {
+        self.completion_fn = Some(Box::new(completion_fn));
+        self
+    }
+    
     pub fn set_completions(&mut self, completions: Vec<CompletionItem>, cx: &mut Context<Self>) {
         self.completions = completions;
         self.completion_selection = 0;
@@ -103,6 +156,10 @@ impl PromptView {
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.input = SharedString::from(text.to_string());
         self.cursor_position = text.len();
+        
+        // Recalculate completions for the initial text
+        self.recalculate_completions(cx);
+        
         cx.notify();
     }
     
@@ -112,11 +169,26 @@ impl PromptView {
         self.input = input.into();
         self.cursor_position += ch.len_utf8();
         
+        // Recalculate completions
+        self.recalculate_completions(cx);
+        
         if let Some(on_change) = &mut self.on_change {
             on_change(&self.input, cx);
         }
         
         cx.notify();
+    }
+    
+    fn recalculate_completions(&mut self, cx: &mut Context<Self>) {
+        if let Some(completion_fn) = &self.completion_fn {
+            let completions = completion_fn(&self.input);
+            self.completions = completions;
+            self.completion_selection = 0;
+            self.completion_scroll_offset = 0; // Reset scroll when completions change
+            self.show_completions = !self.completions.is_empty();
+            
+            cx.notify();
+        }
     }
     
     fn delete_char(&mut self, cx: &mut Context<Self>) {
@@ -129,6 +201,9 @@ impl PromptView {
                 input = chars.into_iter().collect();
                 self.input = input.into();
                 self.cursor_position = char_pos;
+                
+                // Recalculate completions
+                self.recalculate_completions(cx);
                 
                 if let Some(on_change) = &mut self.on_change {
                     on_change(&self.input, cx);
@@ -154,11 +229,32 @@ impl PromptView {
             return;
         }
         
+        let max_visible = 4; // Must match the value in render
+        let old_selection = self.completion_selection;
+        
+        // Move selection
         if delta > 0 {
             self.completion_selection = (self.completion_selection + delta as usize).min(self.completions.len() - 1);
         } else {
             self.completion_selection = self.completion_selection.saturating_sub((-delta) as usize);
         }
+        
+        // Adjust scroll offset based on selection movement
+        if delta > 0 {
+            // Moving down: scroll only if we moved past the last visible item
+            let last_visible_index = self.completion_scroll_offset + max_visible - 1;
+            if self.completion_selection > last_visible_index {
+                // Selection moved beyond visible area, scroll down
+                self.completion_scroll_offset = self.completion_selection + 1 - max_visible;
+            }
+        } else if delta < 0 {
+            // Moving up: scroll only if we moved before the first visible item
+            if self.completion_selection < self.completion_scroll_offset {
+                // Selection moved before visible area, scroll up
+                self.completion_scroll_offset = self.completion_selection;
+            }
+        }
+        
         cx.notify();
     }
     
@@ -179,9 +275,48 @@ impl PromptView {
     }
     
     fn submit(&mut self, cx: &mut Context<Self>) {
+        // Add to history if not empty
+        if !self.input.is_empty() {
+            self.history.push(self.input.clone());
+        }
+        
         if let Some(on_submit) = &mut self.on_submit {
             on_submit(&self.input, cx);
         }
+    }
+    
+    fn navigate_history(&mut self, up: bool, cx: &mut Context<Self>) {
+        if self.history.is_empty() {
+            return;
+        }
+        
+        match self.history_position {
+            None => {
+                if up {
+                    self.history_position = Some(self.history.len() - 1);
+                    self.input = self.history[self.history.len() - 1].clone();
+                    self.cursor_position = self.input.len();
+                }
+            }
+            Some(pos) => {
+                if up && pos > 0 {
+                    self.history_position = Some(pos - 1);
+                    self.input = self.history[pos - 1].clone();
+                    self.cursor_position = self.input.len();
+                } else if !up && pos < self.history.len() - 1 {
+                    self.history_position = Some(pos + 1);
+                    self.input = self.history[pos + 1].clone();
+                    self.cursor_position = self.input.len();
+                } else if !up {
+                    // Going down from the last history item, clear input
+                    self.history_position = None;
+                    self.input = SharedString::default();
+                    self.cursor_position = 0;
+                }
+            }
+        }
+        
+        cx.notify();
     }
     
     fn cancel(&mut self, cx: &mut Context<Self>) {
@@ -202,20 +337,15 @@ impl EventEmitter<DismissEvent> for PromptView {}
 impl Render for PromptView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let font = cx.global::<crate::FontSettings>().fixed_font.clone();
-        let input_display = if self.input.is_empty() {
-            "".to_string()
-        } else {
-            self.input.to_string()
-        };
+        let input_display = self.input.to_string();
         
-        // Create cursor indicator
-        let cursor_indicator = if self.focus_handle.is_focused(window) {
-            "│"
-        } else {
-            " "
-        };
+        // Focus ourselves if we're not already focused
+        if !self.focus_handle.is_focused(window) {
+            self.focus_handle.focus(window);
+        }
         
         div()
+            .key_context("PromptView")
             .flex()
             .flex_col()
             .w(px(500.))
@@ -253,11 +383,15 @@ impl Render for PromptView {
                     "up" => {
                         if this.show_completions {
                             this.move_completion_selection(-1, cx);
+                        } else {
+                            this.navigate_history(true, cx);
                         }
                     }
                     "down" => {
                         if this.show_completions {
                             this.move_completion_selection(1, cx);
+                        } else {
+                            this.navigate_history(false, cx);
                         }
                     }
                     "left" => {
@@ -268,6 +402,9 @@ impl Render for PromptView {
                     }
                     "backspace" => {
                         this.delete_char(cx);
+                    }
+                    "space" => {
+                        this.insert_char(' ', cx);
                     }
                     key if key.len() == 1 => {
                         if let Some(ch) = key.chars().next() {
@@ -288,17 +425,42 @@ impl Render for PromptView {
                     .items_center()
                     .px_3()
                     .py_2()
+                    .gap_2()
                     .child(
                         div()
                             .text_color(self.style.prompt_text)
+                            .font_weight(gpui::FontWeight::BOLD)
                             .child(self.prompt.clone())
                     )
                     .child(
                         div()
                             .flex_1()
-                            .ml_2()
                             .text_color(self.style.text)
-                            .child(format!("{}{}", input_display, cursor_indicator))
+                            .child(
+                                // Split the input at cursor position for proper cursor rendering
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .child(if self.cursor_position > 0 {
+                                        div().child(input_display.chars().take(self.cursor_position).collect::<String>())
+                                    } else {
+                                        div()
+                                    })
+                                    .child(
+                                        div()
+                                            .w(px(2.))
+                                            .h(px(18.))
+                                            .bg(self.style.text)
+                                            .when(!self.focus_handle.is_focused(window), |this| {
+                                                this.opacity(0.5)
+                                            })
+                                    )
+                                    .child(if self.cursor_position < input_display.len() {
+                                        div().child(input_display.chars().skip(self.cursor_position).collect::<String>())
+                                    } else {
+                                        div()
+                                    })
+                            )
                     )
             )
             .when(self.show_completions && !self.completions.is_empty(), |this| {
@@ -309,38 +471,48 @@ impl Render for PromptView {
                         .bg(self.style.completion_background)
                         .max_h(px(200.))
                         .overflow_y_hidden()
-                        .children(self.completions.iter().enumerate().map(|(idx, completion)| {
-                            let is_selected = idx == self.completion_selection;
-                            div()
-                                .flex()
-                                .flex_col()
-                                .px_3()
-                                .py_1()
-                                .when(is_selected, |this| {
-                                    this.bg(self.style.completion_selected)
-                                })
-                                .child(
-                                    div()
-                                        .text_color(if is_selected { 
-                                            hsla(0.0, 0.0, 1.0, 1.0) 
-                                        } else { 
-                                            self.style.text 
-                                        })
-                                        .child(completion.text.clone())
-                                )
-                                .when_some(completion.description.as_ref(), |this, desc| {
-                                    this.child(
+                        .children({
+                            // Use the tracked scroll offset to determine visible window
+                            let max_visible = 4; // Maximum number of visible items (matches visual capacity)
+                            
+                            let start_idx = self.completion_scroll_offset;
+                            let end_idx = (start_idx + max_visible).min(self.completions.len());
+                            
+                            self.completions[start_idx..end_idx].iter().enumerate().map(|(visible_idx, completion)| {
+                                let actual_idx = start_idx + visible_idx;
+                                let is_selected = actual_idx == self.completion_selection;
+                                div()
+                                    .id(("completion_item", actual_idx))
+                                    .flex()
+                                    .flex_col()
+                                    .px_3()
+                                    .py_1()
+                                    .when(is_selected, |this| {
+                                        this.bg(self.style.completion_selected)
+                                    })
+                                    .child(
                                         div()
-                                            .text_size(px(12.))
-                                            .text_color(if is_selected {
-                                                hsla(0.0, 0.0, 0.8, 1.0)
-                                            } else {
-                                                self.style.prompt_text
+                                            .text_color(if is_selected { 
+                                                self.style.completion_selected_text 
+                                            } else { 
+                                                self.style.text 
                                             })
-                                            .child(desc.clone())
+                                            .child(completion.text.clone())
                                     )
-                                })
-                        }))
+                                    .when_some(completion.description.as_ref(), |this, desc| {
+                                        this.child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(if is_selected {
+                                                    self.style.completion_selected_text
+                                                } else {
+                                                    self.style.prompt_text
+                                                })
+                                                .child(desc.clone())
+                                        )
+                                    })
+                            }).collect::<Vec<_>>()
+                        })
                 )
             })
     }

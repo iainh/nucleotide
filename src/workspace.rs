@@ -159,6 +159,97 @@ impl Workspace {
                 info!("ShouldQuit event received - triggering application quit");
                 cx.quit();
             }
+            crate::Update::CommandSubmitted(command) => {
+                println!("🎯 Workspace received command: {}", command);
+                // Execute the command through helix's command system
+                let core = self.core.clone();
+                let handle = self.handle.clone();
+                core.update(cx, move |core, cx| {
+                    let _guard = handle.enter();
+                    
+                    // First, close the prompt by clearing the compositor
+                    if core.compositor.find::<helix_term::ui::Prompt>().is_some() {
+                        core.compositor.pop();
+                    }
+                    
+                    // Create a helix compositor context to execute the command
+                    let mut comp_ctx = helix_term::compositor::Context {
+                        editor: &mut core.editor,
+                        scroll: None,
+                        jobs: &mut core.jobs,
+                    };
+                    
+                    // Execute the command using helix's command system
+                    // Since execute_command_line is not public, we need to manually parse and execute
+                    let (cmd_name, args, _) = helix_core::command_line::split(&command);
+                    
+                    if !cmd_name.is_empty() {
+                        // Check if it's a line number
+                        if cmd_name.parse::<usize>().is_ok() && args.trim().is_empty() {
+                            // Handle goto line
+                            if let Some(cmd) = helix_term::commands::TYPABLE_COMMAND_MAP.get("goto") {
+                                // Parse args manually since we can't use execute_command
+                                let parsed_args = helix_core::command_line::Args::parse(
+                                    cmd_name,
+                                    cmd.signature.clone(),
+                                    true,
+                                    |token| Ok(token.content),
+                                );
+                                
+                                if let Ok(parsed_args) = parsed_args {
+                                    if let Err(err) = (cmd.fun)(
+                                        &mut comp_ctx,
+                                        parsed_args,
+                                        helix_term::ui::PromptEvent::Validate,
+                                    ) {
+                                        core.editor.set_error(err.to_string());
+                                    }
+                                } else {
+                                    core.editor.set_error("Failed to parse arguments".to_string());
+                                }
+                            }
+                        } else {
+                            // Execute regular command
+                            match helix_term::commands::TYPABLE_COMMAND_MAP.get(cmd_name) {
+                                Some(cmd) => {
+                                    // Parse args for the command
+                                    let parsed_args = helix_core::command_line::Args::parse(
+                                        args,
+                                        cmd.signature.clone(),
+                                        true,
+                                        |token| helix_view::expansion::expand(&comp_ctx.editor, token).map_err(|err| err.into()),
+                                    );
+                                    
+                                    match parsed_args {
+                                        Ok(parsed_args) => {
+                                            if let Err(err) = (cmd.fun)(
+                                                &mut comp_ctx,
+                                                parsed_args,
+                                                helix_term::ui::PromptEvent::Validate,
+                                            ) {
+                                                core.editor.set_error(format!("'{}': {}", cmd_name, err));
+                                            }
+                                        }
+                                        Err(err) => {
+                                            core.editor.set_error(format!("'{}': {}", cmd_name, err));
+                                        }
+                                    }
+                                }
+                                None => {
+                                    core.editor.set_error(format!("no such command: '{}'", cmd_name));
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Check if we should quit after command execution
+                    if core.editor.should_close() {
+                        cx.emit(crate::Update::ShouldQuit);
+                    }
+                    
+                    cx.notify();
+                });
+            }
         }
     }
 
@@ -317,12 +408,26 @@ impl Render for Workspace {
                 // Verify the view still exists in the tree before accessing
                 if editor.tree.contains(view_id) {
                     if let Some(doc) = editor.document(view.doc) {
-                        focused_file_name = doc.path().map(|p| p.display().to_string());
+                        focused_file_name = doc.path().map(|p| {
+                            p.file_name()
+                                .and_then(|name| name.to_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| p.display().to_string())
+                        });
                     }
                 }
             }
         }
+        
+        // Set the native window title (macOS convention: filename — appname)
+        let window_title = if let Some(ref path) = focused_file_name {
+            format!("{} — Helix", path)  // Using em dash like macOS
+        } else {
+            "Helix".to_string()
+        };
+        window.set_window_title(&window_title);
 
+        
         let editor = &self.core.read(cx).editor;
 
         let default_style = editor.theme.get("ui.background");
@@ -330,7 +435,7 @@ impl Render for Workspace {
         let bg_color = default_style.bg
             .and_then(|c| utils::color_to_hsla(c))
             .unwrap_or(black());
-        let text_color = default_ui_text.fg
+        let _text_color = default_ui_text.fg
             .and_then(|c| utils::color_to_hsla(c))
             .unwrap_or(white());
         let window_style = editor.theme.get("ui.window");
@@ -341,7 +446,10 @@ impl Render for Workspace {
         let editor_rect = editor.tree.area();
 
         let editor = &self.core.read(cx).editor;
-        let mut docs_root = div().flex().w_full().h_full();
+        let mut docs_root = div()
+            .flex()
+            .w_full()
+            .h_full();
 
         for (view, _) in editor.tree.views() {
             let view_id = view.id;
@@ -379,24 +487,6 @@ impl Render for Workspace {
             // Focus is managed by DocumentView's focus state
         }
 
-        let label = if let Some(path) = focused_file_name {
-            div()
-                .flex_shrink()
-                .font(cx.global::<crate::FontSettings>().var_font.clone())
-                .text_color(text_color)
-                .text_size(px(12.))
-                .child(format!("{} - Helix", path))
-        } else {
-            div().flex()
-        };
-        let top_bar = div()
-            .w_full()
-            .flex()
-            .flex_none()
-            .h_8()
-            .justify_center()
-            .items_center()
-            .child(label);
 
         self.core.update(cx, |core, _cx| {
             core.compositor.resize(editor_rect);
@@ -408,12 +498,16 @@ impl Render for Workspace {
             // Focus is managed by DocumentView's focus state
         }
 
+        let has_overlay = !self.overlay.read(cx).is_empty();
+        
         div()
             .key_context("Workspace")
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|view, ev, _window, cx| {
-                view.handle_key(ev, cx);
-            }))
+            .when(!has_overlay, |this| {
+                this.track_focus(&self.focus_handle)
+                    .on_key_down(cx.listener(|view, ev, _window, cx| {
+                        view.handle_key(ev, cx);
+                    }))
+            })
             .on_action(cx.listener(move |_, _: &crate::actions::help::About, _window, _cx| {
                 eprintln!("About Helix");
             }))
@@ -475,7 +569,6 @@ impl Render for Workspace {
             .w_full()
             .h_full()
             .focusable()
-            .child(top_bar)
             .when_some(Some(docs_root), |this, docs| this.child(docs))
             .child(self.notifications.clone())
             .when(!self.overlay.read(cx).is_empty(), |this| {

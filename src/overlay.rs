@@ -62,17 +62,107 @@ impl OverlayView {
                         let on_submit = on_submit.clone();
                         let on_cancel = on_cancel.clone();
                         
+                        // Get theme from core for styling
+                        let theme = self.core.upgrade()
+                            .map(|core| core.read(cx).editor.theme.clone());
+                        
                         let prompt_view = cx.new(|cx| {
                             let mut view = PromptView::new(prompt_text, cx);
+                            
+                            // Apply theme styling if available
+                            if let Some(theme) = theme {
+                                let style = crate::prompt_view::PromptStyle::from_helix_theme(&theme);
+                                view = view.with_style(style);
+                            }
                             
                             if !initial_input.is_empty() {
                                 view.set_text(&initial_input, cx);
                             }
                             
-                            // Set up the submit callback
-                            view = view.on_submit(move |input: &str, _cx| {
+                            // Set up completion function for command mode using helix's completions
+                            let core_weak_completion = self.core.clone();
+                            view = view.with_completion_fn(move |input| {
+                                // Get completions from our Core
+                                // Since we're in a closure without cx, we need to access core directly
+                                // The completion function runs outside of the GPUI event loop
+                                core_weak_completion.upgrade()
+                                    .map(|_core| {
+                                            // We need to access the Core directly since we don't have cx here
+                                            // This is safe because we're just reading theme names
+                                            use helix_term::commands::TYPABLE_COMMAND_LIST;
+                                            use helix_core::fuzzy::fuzzy_match;
+                                            
+                                            // Split input to see if we're completing a command or arguments
+                                            let parts: Vec<&str> = input.split_whitespace().collect();
+                                            
+                                            if parts.is_empty() || (parts.len() == 1 && !input.ends_with(' ')) {
+                                                // Complete command names
+                                                let pattern = if parts.is_empty() { "" } else { parts[0] };
+                                                
+                                                fuzzy_match(
+                                                    pattern,
+                                                    TYPABLE_COMMAND_LIST.iter().flat_map(|cmd| {
+                                                        // Include both the command name and aliases
+                                                        std::iter::once(cmd.name).chain(cmd.aliases.iter().copied())
+                                                    }),
+                                                    false,
+                                                )
+                                                .into_iter()
+                                                .map(|(name, _score)| {
+                                                    // Find the command to get its description
+                                                    let desc = TYPABLE_COMMAND_LIST.iter()
+                                                        .find(|cmd| cmd.name == name || cmd.aliases.contains(&name))
+                                                        .map(|cmd| cmd.doc.to_string());
+                                                    crate::prompt_view::CompletionItem {
+                                                        text: name.to_string().into(),
+                                                        description: desc.map(|d| d.into()),
+                                                    }
+                                                })
+                                                .collect()
+                                            } else if parts.len() >= 1 && parts[0] == "theme" {
+                                                // Get available themes - inline the theme completion logic
+                                                let theme_prefix = if parts.len() > 1 { parts[1] } else { "" };
+                                                
+                                                let mut names = helix_view::theme::Loader::read_names(&helix_loader::config_dir().join("themes"));
+                                                for rt_dir in helix_loader::runtime_dirs() {
+                                                    names.extend(helix_view::theme::Loader::read_names(&rt_dir.join("themes")));
+                                                }
+                                                names.push("default".into());
+                                                names.push("base16_default".into());
+                                                names.sort();
+                                                names.dedup();
+                                                
+                                                fuzzy_match(theme_prefix, names, false)
+                                                    .into_iter()
+                                                    .map(|(name, _score)| crate::prompt_view::CompletionItem {
+                                                        text: format!("theme {}", name).into(),
+                                                        description: Some(format!("Switch to {} theme", name).into()),
+                                                    })
+                                                    .collect()
+                                            } else {
+                                                Vec::new()
+                                            }
+                                    })
+                                    .unwrap_or_else(Vec::new)
+                            });
+                            
+                            // Set up the submit callback with command execution
+                            let core_weak_submit = self.core.clone();
+                            view = view.on_submit(move |input: &str, cx| {
                                 println!("📝 Prompt submitted: '{}'", input);
+                                
+                                // Emit CommandSubmitted event to be handled by workspace
+                                if let Some(core) = core_weak_submit.upgrade() {
+                                    core.update(cx, |_core, cx| {
+                                        cx.emit(crate::Update::CommandSubmitted(input.to_string()));
+                                    });
+                                }
+                                
+                                // Also call the original callback
                                 (on_submit)(input);
+                                
+                                // Dismiss the prompt after submission
+                                cx.emit(DismissEvent);
                             });
                             
                             // Set up the cancel callback if provided
@@ -100,6 +190,8 @@ impl OverlayView {
                             cx.emit(DismissEvent);
                             cx.notify();
                         }).detach();
+                        
+                        // Focus will be handled by the prompt view's render method
                         
                         self.native_prompt_view = Some(prompt_view);
                         println!("✅ Set native_prompt_view to Some() and focused it");
@@ -240,7 +332,16 @@ impl Render for OverlayView {
             self.native_picker_view.is_some()
         );
         
-        div().absolute().size_full().bottom_0().left_0()
+        div()
+            .key_context("Overlay")
+            .absolute()
+            .size_full()
+            .bottom_0()
+            .left_0()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, _| {
+                // Prevent click-through to elements below
+            })
             .child(
                 div()
                     .flex()
@@ -262,9 +363,13 @@ impl Render for OverlayView {
                         println!("🎨 Rendering legacy prompt");
                         // Fallback for legacy prompts
                         let handle = cx.focus_handle();
+                        // Get theme from core
+                        let theme = self.core.upgrade()
+                            .map(|core| core.read(cx).editor.theme.clone());
                         let prompt = PromptElement {
                             prompt,
                             focus: handle.clone(),
+                            theme,
                         };
                         // Focus is set through the focus handle when needed
                         this.child(prompt)

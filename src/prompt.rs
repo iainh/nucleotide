@@ -87,34 +87,62 @@ impl Prompt {
 pub struct PromptElement {
     pub prompt: Prompt,
     pub focus: FocusHandle,
+    pub theme: Option<helix_view::Theme>,
 }
 
 impl RenderOnce for PromptElement {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match &self.prompt {
             Prompt::Legacy(text_with_style) => {
-                let bg_color = text_with_style
-                    .style(0)
-                    .and_then(|style| style.background_color);
+                // Get colors from helix theme if available
+                let (bg_color, text_color, border_color) = if let Some(theme) = &self.theme {
+                    let ui_bg = theme.get("ui.background");
+                    let ui_text = theme.get("ui.text");
+                    let ui_window = theme.get("ui.window");
+                    
+                    let bg = ui_bg.bg
+                        .and_then(|c| crate::utils::color_to_hsla(c))
+                        .unwrap_or(hsla(0.0, 0.0, 0.1, 1.0));
+                    let text = ui_text.fg
+                        .and_then(|c| crate::utils::color_to_hsla(c))
+                        .unwrap_or(hsla(0.0, 0.0, 0.9, 1.0));
+                    let border = ui_window.fg
+                        .and_then(|c| crate::utils::color_to_hsla(c))
+                        .unwrap_or(hsla(0.0, 0.0, 0.3, 1.0));
+                    
+                    (bg, text, border)
+                } else {
+                    // Fallback to style from rendered text or defaults
+                    let bg = text_with_style
+                        .style(0)
+                        .and_then(|style| style.background_color)
+                        .unwrap_or(hsla(0.0, 0.0, 0.1, 1.0));
+                    (bg, hsla(0.0, 0.0, 0.9, 1.0), hsla(0.0, 0.0, 0.3, 1.0))
+                };
+
                 let mut default_style = TextStyle::default();
                 default_style.font_family = "JetBrains Mono".into();
-                default_style.font_size = px(12.).into();
-                default_style.background_color = bg_color;
+                default_style.font_size = px(14.).into();
+                default_style.background_color = Some(bg_color);
 
                 let text = text_with_style.clone().into_styled_text(&default_style);
                 self.focus.focus(window);
+                println!("🎯 Legacy prompt focusing");
+                
                 div()
                     .track_focus(&self.focus)
                     .flex()
                     .flex_col()
-                    .p_5()
-                    .bg(bg_color.unwrap_or(black()))
-                    .shadow_sm()
-                    .rounded_sm()
-                    .text_color(hsla(1., 1., 1., 1.))
+                    .p_2()
+                    .bg(bg_color)
+                    .border_1()
+                    .border_color(border_color)
+                    .rounded_md()
+                    .shadow_lg()
+                    .text_color(text_color)
                     .font(cx.global::<crate::FontSettings>().fixed_font.clone())
-                    .text_size(px(12.))
-                    .line_height(px(1.3 * 12.))
+                    .text_size(px(14.))
+                    .line_height(px(1.3 * 14.))
                     .child(text)
             }
             Prompt::Native { .. } => {
