@@ -1,0 +1,27 @@
+# Example GUI configuration for helix-gpui
+# Place this file as ghx.toml in your Helix config directory
+# (usually ~/.config/helix/ghx.toml)
+
+# UI font configuration - used for menus, prompts, pickers, etc.
+[ui.font]
+family = "SF Pro Display"    # Font family name
+weight = "normal"            # Options: thin, extralight, light, normal, medium, semibold, bold, extrabold, black
+size = 13.0                  # Font size in pixels
+
+# Editor font configuration - used in the main editor view
+[editor.font]
+family = "SF Mono"           # Font family name  
+weight = "medium"            # Options: thin, extralight, light, normal, medium, semibold, bold, extrabold, black
+size = 14.0                  # Font size in pixels
+
+# Note: All standard Helix configuration options from config.toml are also supported here.
+# Any settings not specified in ghx.toml will fall back to values in config.toml.
+# 
+# Example of overriding a Helix setting:
+# [editor]
+# line-number = "relative"
+# 
+# [editor.cursor-shape]
+# insert = "bar"
+# normal = "block"
+# select = "underline"

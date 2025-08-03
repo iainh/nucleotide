@@ -283,7 +283,7 @@ impl EventEmitter<DismissEvent> for CompletionView {}
 
 impl Render for CompletionView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let font = cx.global::<crate::FontSettings>().fixed_font.clone();
+        let font = cx.global::<crate::FontSettings>().var_font.clone();
         
         if self.filtered_items.is_empty() {
             return div().size_0().into_any_element();
@@ -324,7 +324,7 @@ impl Render for CompletionView {
                             .w(px(20.))
                             .flex_shrink_0()
                             .text_color(self.style.kind_text)
-                            .text_size(px(12.))
+                            .text_size(px(cx.global::<crate::UiFontConfig>().size - 1.0))
                             .child(item.kind.icon())
                     )
                     .child(

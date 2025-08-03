@@ -268,8 +268,8 @@ impl RenderOnce for Notification {
             .text_color(self.text)
             .shadow_sm()
             .rounded_sm()
-            .font(cx.global::<crate::FontSettings>().fixed_font.clone())
-            .text_size(px(12.))
+            .font(cx.global::<crate::FontSettings>().var_font.clone())
+            .text_size(px(cx.global::<crate::UiFontConfig>().size - 1.0))
             .child(
                 div()
                     .flex()

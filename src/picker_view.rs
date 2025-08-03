@@ -631,7 +631,7 @@ impl Render for PickerView {
             self.load_preview_for_selected_item(cx);
         }
         
-        let font = cx.global::<crate::FontSettings>().fixed_font.clone();
+        let font = cx.global::<crate::FontSettings>().var_font.clone();
         let window_size = window.viewport_size();
         
         // Check if we need to recalculate dimensions
@@ -668,7 +668,7 @@ impl Render for PickerView {
             .rounded_md()
             .shadow_lg()
             .font(font)
-            .text_size(px(14.))
+            .text_size(px(cx.global::<crate::UiFontConfig>().size))
             .overflow_hidden()
             .track_focus(&self.focus_handle)
             // Handle keyboard input for filtering
@@ -932,7 +932,7 @@ impl Render for PickerView {
                                                         .py_2()
                                                         .text_size(px(12.))
                                                         .text_color(self.style.text)
-                                                        .font_family("monospace")
+                                                        .font(cx.global::<crate::FontSettings>().fixed_font.clone())
                                                         .overflow_y_hidden()
                                                         .w_full()
                                                         .h_full()
@@ -945,7 +945,7 @@ impl Render for PickerView {
                                                         .py_2()
                                                         .text_size(px(12.))
                                                         .text_color(self.style.text)
-                                                        .font_family("monospace")
+                                                        .font(cx.global::<crate::FontSettings>().fixed_font.clone())
                                                         .child(
                                                             match &self.preview_content {
                                                                 Some(content) => content.clone(),

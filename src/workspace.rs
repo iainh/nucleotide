@@ -386,9 +386,11 @@ impl Workspace {
         for view_id in view_ids.iter() {
             let view_id = *view_id;
             let is_focused = self.focused_view_id == Some(view_id);
+            let editor_font = cx.global::<crate::EditorFontConfig>();
             let style = TextStyle {
                 font_family: cx.global::<crate::FontSettings>().fixed_font.family.clone(),
-                font_size: px(14.0).into(),
+                font_size: px(editor_font.size).into(),
+                font_weight: editor_font.weight,
                 ..Default::default()
             };
             let core = self.core.clone();

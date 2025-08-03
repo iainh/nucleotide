@@ -363,7 +363,7 @@ impl EventEmitter<DismissEvent> for PromptView {}
 
 impl Render for PromptView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let font = cx.global::<crate::FontSettings>().fixed_font.clone();
+        let font = cx.global::<crate::FontSettings>().var_font.clone();
         let input_display = self.input.to_string();
         
         // Get the ghost text (completion suggestion after cursor)
@@ -399,7 +399,7 @@ impl Render for PromptView {
             .rounded_md()
             .shadow_lg()
             .font(font)
-            .text_size(px(14.))
+            .text_size(px(cx.global::<crate::UiFontConfig>().size))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 println!("🔥 PromptView received key: {}", event.keystroke.key);

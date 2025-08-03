@@ -1,11 +1,10 @@
 use std::time::Duration;
 use std::panic;
 
-use anyhow::{Context, Error, Result};
+use anyhow::{Context, Result};
 use helix_core::diagnostic::Severity;
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
-use helix_term::config::{Config, ConfigLoadError};
 
 use gpui::{
     App, AppContext, Menu, MenuItem, TitlebarOptions,
@@ -18,8 +17,10 @@ use application::{Application, InputEvent};
 mod actions;
 mod application;
 mod completion;
+mod config;
 mod document;
 mod info_box;
+mod key_hint_view;
 mod notification;
 mod overlay;
 mod picker;
@@ -91,9 +92,9 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let handle = rt.handle();
     let _guard = handle.enter();
-    let app = init_editor().unwrap().unwrap();
+    let (app, config) = init_editor().unwrap().unwrap();
     drop(_guard);
-    gui_main(app, handle.clone());
+    gui_main(app, config, handle.clone());
     Ok(())
 }
 
@@ -204,18 +205,53 @@ struct FontSettings {
 
 impl gpui::Global for FontSettings {}
 
-fn gui_main(app: Application, handle: tokio::runtime::Handle) {
-    gpui::Application::new().run(|cx| {
+#[derive(Clone)]
+pub struct EditorFontConfig {
+    pub family: String,
+    pub size: f32,
+    pub weight: gpui::FontWeight,
+}
+
+impl gpui::Global for EditorFontConfig {}
+
+#[derive(Clone)]
+pub struct UiFontConfig {
+    pub family: String,
+    pub size: f32,
+    pub weight: gpui::FontWeight,
+}
+
+impl gpui::Global for UiFontConfig {}
+
+fn gui_main(app: Application, config: crate::config::Config, handle: tokio::runtime::Handle) {
+    gpui::Application::new().run(move |cx| {
         // Set up theme
         let theme = ui::Theme::dark();
         cx.set_global(theme);
         
-        // Set up fonts
+        // Set up fonts from configuration
+        let editor_font_config = config.editor_font();
+        let ui_font_config = config.ui_font();
+        
         let font_settings = FontSettings {
-            fixed_font: gpui::font("JetBrains Mono"),
-            var_font: gpui::font("SF Pro"),
+            fixed_font: gpui::font(&editor_font_config.family),
+            var_font: gpui::font(&ui_font_config.family),
         };
         cx.set_global(font_settings);
+        
+        // Store editor font config for document views
+        cx.set_global(EditorFontConfig {
+            family: editor_font_config.family,
+            size: editor_font_config.size,
+            weight: editor_font_config.weight.into(),
+        });
+        
+        // Store UI font config for UI components
+        cx.set_global(UiFontConfig {
+            family: ui_font_config.family,
+            size: ui_font_config.size,
+            weight: ui_font_config.weight.into(),
+        });
         
         let options = window_options(cx);
 
@@ -329,7 +365,7 @@ fn gui_main(app: Application, handle: tokio::runtime::Handle) {
     })
 }
 
-fn init_editor() -> Result<Option<Application>> {
+fn init_editor() -> Result<Option<(Application, crate::config::Config)>> {
     let help = format!(
         "\
 {} {}
@@ -422,18 +458,16 @@ FLAGS:
         helix_stdx::env::set_current_working_dir(path)?;
     }
 
-    let config = match Config::load_default() {
+    // Load our combined configuration (helix + gui)
+    let config = match crate::config::Config::load() {
         Ok(config) => config,
-        Err(ConfigLoadError::Error(err)) if err.kind() == std::io::ErrorKind::NotFound => {
-            Config::default()
-        }
-        Err(ConfigLoadError::Error(err)) => return Err(Error::new(err)),
-        Err(ConfigLoadError::BadConfig(err)) => {
-            eprintln!("Bad config: {}", err);
-            eprintln!("Press <ENTER> to continue with default config");
-            use std::io::Read;
-            let _ = std::io::stdin().read(&mut []);
-            Config::default()
+        Err(err) => {
+            eprintln!("Failed to load configuration: {}", err);
+            eprintln!("Using default configuration");
+            crate::config::Config {
+                helix: helix_term::config::Config::default(),
+                gui: crate::config::GuiConfig::default(),
+            }
         }
     };
 
@@ -447,8 +481,8 @@ FLAGS:
     });
 
     // TODO: use the thread local executor to spawn the application task separately from the work pool
-    let app = application::init_editor(args, config, lang_loader)
+    let app = application::init_editor(args, config.helix.clone(), lang_loader)
         .context("unable to create new application")?;
 
-    Ok(Some(app))
+    Ok(Some((app, config)))
 }

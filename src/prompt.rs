@@ -140,9 +140,9 @@ impl RenderOnce for PromptElement {
                     .rounded_md()
                     .shadow_lg()
                     .text_color(text_color)
-                    .font(cx.global::<crate::FontSettings>().fixed_font.clone())
-                    .text_size(px(14.))
-                    .line_height(px(1.3 * 14.))
+                    .font(cx.global::<crate::FontSettings>().var_font.clone())
+                    .text_size(px(cx.global::<crate::UiFontConfig>().size))
+                    .line_height(px(1.3 * cx.global::<crate::UiFontConfig>().size))
                     .child(text)
             }
             Prompt::Native { .. } => {
