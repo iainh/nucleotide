@@ -233,6 +233,72 @@ impl DocumentElement {
         }
         .track_focus(&focus)
     }
+    
+    /// Create a shaped line for a specific line, used for cursor positioning and mouse interaction
+    fn create_shaped_line(
+        &self,
+        line_idx: usize,
+        text: RopeSlice,
+        first_row: usize,
+        end_char: usize,
+        fg_color: Hsla,
+        window: &mut Window,
+        cx: &mut App
+    ) -> Option<ShapedLine> {
+        let line_start = text.line_to_char(line_idx);
+        let line_end = if line_idx + 1 < text.len_lines() {
+            text.line_to_char(line_idx + 1).saturating_sub(1) // Exclude newline
+        } else {
+            text.len_chars()
+        };
+        
+        // Check if line is within our view
+        let anchor = first_row;
+        if line_start >= end_char || line_end < anchor {
+            return None;
+        }
+        
+        // Adjust line bounds to our view
+        let line_start = line_start.max(anchor);
+        let line_end = line_end.min(end_char);
+        
+        if line_start >= line_end {
+            return None;
+        }
+        
+        let line_slice = text.slice(line_start..line_end);
+        let line_str: SharedString = RopeWrapper(line_slice).into();
+        
+        if line_str.is_empty() {
+            return None;
+        }
+        
+        // Get highlights for this line (re-read core)
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+        let document = editor.document(self.doc_id).unwrap();
+        let view = editor.tree.get(self.view_id);
+        
+        let line_runs = Self::highlight_line_with_params(
+            document,
+            view,
+            &editor.theme,
+            editor.mode(),
+            &editor.config().cursor_shape,
+            &editor.syn_loader,
+            self.is_focused,
+            line_start,
+            line_end,
+            fg_color,
+            self.style.font(),
+        );
+        
+        // Create the shaped line
+        let shaped_line = window.text_system()
+            .shape_line(line_str, self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
+            
+        Some(shaped_line)
+    }
 
     // These 3 methods are just proxies for EditorView
     // TODO: make a PR to helix to extract them from helix_term into helix_view or smth.
@@ -603,6 +669,14 @@ pub struct DocumentLayout {
     hitbox: Option<Hitbox>,
 }
 
+/// Stores layout information for a single line in the document
+#[derive(Clone)]
+struct LineLayout {
+    line_idx: usize,
+    shaped_line: ShapedLine,
+    origin: gpui::Point<Pixels>,
+}
+
 struct RopeWrapper<'a>(RopeSlice<'a>);
 
 impl<'a> Into<SharedString> for RopeWrapper<'a> {
@@ -711,53 +785,67 @@ impl Element for DocumentElement {
         };
         let gutter_width_px = cell_width * gutter_width_cells as f32;
         
+        // Store line layouts in element state for mouse interaction
+        let line_layouts = std::rc::Rc::new(std::cell::RefCell::new(Vec::<LineLayout>::new()));
+        let line_layouts_for_mouse = line_layouts.clone();
+        let line_layouts_for_drag = line_layouts.clone();
+        let line_layouts_for_paint = line_layouts.clone();
+        
         self.interactivity
             .on_mouse_down(MouseButton::Left, move |ev, window, cx| {
                 focus.focus(window);
                 
-                // Calculate text position from mouse coordinates
                 let mouse_pos = ev.position;
-                let relative_x = mouse_pos.x - bounds.origin.x - px(2.) - gutter_width_px;
-                let relative_y = mouse_pos.y - bounds.origin.y - px(1.);
                 
-                // Convert to row/column
-                let col = (relative_x / cell_width).max(0.0) as u16;
-                let row = (relative_y / line_height).max(0.0) as u16;
-                
-                // Update cursor position in the editor
-                core.update(cx, |core, cx| {
-                    let editor = &mut core.editor;
-                    let view = editor.tree.get(view_id);
-                    let doc_id = view.doc;
-                    
-                    // Use helix's built-in function to convert screen coordinates to text position
-                    // This properly handles tabs, wide characters, and other visual considerations
-                    let pos = {
-                        let doc = editor.document(doc_id).unwrap();
-                        view.pos_at_visual_coords(doc, row, col, true)
+                // Find which line was clicked by checking line layouts
+                let line_layouts = line_layouts_for_mouse.borrow();
+                let clicked_line = line_layouts.iter().find(|layout| {
+                    let line_bounds = Bounds {
+                        origin: layout.origin,
+                        size: size(bounds.size.width, line_height),
                     };
-                    
-                    if let Some(pos) = pos {
-                        let doc = editor.document_mut(doc_id).unwrap();
-                        // Snap to grapheme boundary for proper cursor positioning
-                        let text = doc.text().slice(..);
-                        let pos = prev_grapheme_boundary(text, pos);
-                        
-                        // Set selection to the clicked position
-                        let selection = Selection::point(pos);
-                        doc.set_selection(view_id, selection);
-                    }
-                    
-                    cx.notify();
+                    line_bounds.contains(&mouse_pos)
                 });
+                
+                if let Some(line_layout) = clicked_line {
+                    // Calculate x position relative to the line origin
+                    let relative_x = mouse_pos.x - line_layout.origin.x;
+                    
+                    // Find the character index at this x position using GPUI's method
+                    // This is more accurate than cell-based calculation
+                    let char_idx = line_layout.shaped_line.closest_index_for_x(relative_x);
+                    
+                    // Update cursor position in the editor
+                    core.update(cx, |core, cx| {
+                        let editor = &mut core.editor;
+                        let view = editor.tree.get(view_id);
+                        let doc_id = view.doc;
+                        let doc = editor.document(doc_id).unwrap();
+                        let text = doc.text();
+                        
+                        // Convert line index and char offset to document position
+                        let line_start = text.line_to_char(line_layout.line_idx);
+                        let pos = line_start + char_idx;
+                        
+                        if pos <= text.len_chars() {
+                            let doc = editor.document_mut(doc_id).unwrap();
+                            // Snap to grapheme boundary for proper cursor positioning
+                            let text = doc.text().slice(..);
+                            let pos = prev_grapheme_boundary(text, pos);
+                            
+                            // Set selection to the clicked position
+                            let selection = Selection::point(pos);
+                            doc.set_selection(view_id, selection);
+                        }
+                        
+                        cx.notify();
+                    });
+                }
             });
         
         // Handle mouse drag for selection
         let core_drag = self.core.clone();
         let view_id_drag = self.view_id;
-        let cell_width_drag = after_layout.cell_width;
-        let line_height_drag = after_layout.line_height;
-        let gutter_width_px_drag = gutter_width_px;
         
         self.interactivity
             .on_mouse_move(move |ev, _window, cx| {
@@ -765,46 +853,58 @@ impl Element for DocumentElement {
                 if !ev.dragging() {
                     return;
                 }
-                // Calculate text position from mouse coordinates
+                
                 let mouse_pos = ev.position;
-                let relative_x = mouse_pos.x - bounds.origin.x - px(2.) - gutter_width_px_drag;
-                let relative_y = mouse_pos.y - bounds.origin.y - px(1.);
                 
-                // Convert to row/column
-                let col = (relative_x / cell_width_drag).max(0.0) as u16;
-                let row = (relative_y / line_height_drag).max(0.0) as u16;
-                
-                // Update selection end position in the editor
-                core_drag.update(cx, |core, cx| {
-                    let editor = &mut core.editor;
-                    let view = editor.tree.get(view_id_drag);
-                    let doc_id = view.doc;
-                    
-                    // Use helix's built-in function to convert screen coordinates to text position
-                    let pos = {
-                        let doc = editor.document(doc_id).unwrap();
-                        view.pos_at_visual_coords(doc, row, col, true)
+                // Find which line is under the mouse using line layouts
+                let line_layouts = line_layouts_for_drag.borrow();
+                let hovered_line = line_layouts.iter().find(|layout| {
+                    let line_bounds = Bounds {
+                        origin: layout.origin,
+                        size: size(bounds.size.width, line_height),
                     };
-                    
-                    if let Some(pos) = pos {
-                        let doc = editor.document_mut(doc_id).unwrap();
-                        let text = doc.text().slice(..);
-                        // Snap to grapheme boundary for proper selection
-                        let pos = if pos > 0 {
-                            prev_grapheme_boundary(text, pos)
-                        } else {
-                            pos
-                        };
-                        
-                        // Get current selection and extend it
-                        let mut selection = doc.selection(view_id_drag).clone();
-                        let range = selection.primary_mut();
-                        range.head = pos;
-                        doc.set_selection(view_id_drag, selection);
-                    }
-                    
-                    cx.notify();
+                    line_bounds.contains(&mouse_pos)
                 });
+                
+                if let Some(line_layout) = hovered_line {
+                    // Calculate x position relative to the line origin
+                    let relative_x = mouse_pos.x - line_layout.origin.x;
+                    
+                    // Find the character index at this x position
+                    let char_idx = line_layout.shaped_line.closest_index_for_x(relative_x);
+                    
+                    // Update selection end position in the editor
+                    core_drag.update(cx, |core, cx| {
+                        let editor = &mut core.editor;
+                        let view = editor.tree.get(view_id_drag);
+                        let doc_id = view.doc;
+                        let doc = editor.document(doc_id).unwrap();
+                        let text = doc.text();
+                        
+                        // Convert line index and char offset to document position
+                        let line_start = text.line_to_char(line_layout.line_idx);
+                        let pos = line_start + char_idx;
+                        
+                        if pos <= text.len_chars() {
+                            let doc = editor.document_mut(doc_id).unwrap();
+                            // Snap to grapheme boundary for proper selection
+                            let text = doc.text().slice(..);
+                            let pos = if pos > 0 {
+                                prev_grapheme_boundary(text, pos)
+                            } else {
+                                pos
+                            };
+                            
+                            // Get current selection and extend it
+                            let mut selection = doc.selection(view_id_drag).clone();
+                            let range = selection.primary_mut();
+                            range.head = pos;
+                            doc.set_selection(view_id_drag, selection);
+                        }
+                        
+                        cx.notify();
+                    });
+                }
             });
 
         let is_focused = self.is_focused;
@@ -874,6 +974,15 @@ impl Element for DocumentElement {
                 if let Some(pos) = cursor_pos {
                     debug!("Cursor position - row: {}, col: {}, primary_idx: {}, gutter_width: {}", 
                            pos.row, pos.col, primary_idx, gutter_width);
+                    
+                    // Additional debug: check what line and column we're actually at
+                    let line = text.char_to_line(primary_idx);
+                    let line_start = text.line_to_char(line);
+                    let col_in_line = primary_idx - line_start;
+                    debug!("Actual position - line: {}, col_in_line: {}, line_start: {}", 
+                           line, col_in_line, line_start);
+                } else {
+                    debug!("Warning: screen_coords_at_pos returned None for cursor position {}", primary_idx);
                 }
                 let gutter_overflow = gutter_width == 0;
                 if !gutter_overflow {
@@ -899,6 +1008,17 @@ impl Element for DocumentElement {
                         let char_slice = text.slice(cursor_char_idx..grapheme_end);
                         let char_str: SharedString = RopeWrapper(char_slice).into();
                         
+                        // Replace newlines with visible character for display
+                        let char_str = if char_str == "\n" {
+                            "⏎".into() // Use return symbol for newlines
+                        } else if char_str == "\r\n" {
+                            "⏎".into()
+                        } else if char_str == "\r" {
+                            "⏎".into()
+                        } else {
+                            char_str
+                        };
+                        
                         if !char_str.is_empty() {
                                     // For block cursor, invert colors: use cursor background as text color
                                     // and render on transparent background (cursor will provide the bg)
@@ -909,7 +1029,7 @@ impl Element for DocumentElement {
                                         black()
                                     };
                                     
-                                    let run = TextRun {
+                                    let _run = TextRun {
                                         len: char_str.len(),
                                         font: self.style.font(),
                                         color: text_color,
@@ -955,7 +1075,7 @@ impl Element for DocumentElement {
                     .selection(self.view_id)
                     .primary()
                     .cursor(text.slice(..));
-                let tab_width = document.tab_width() as u16;
+                let _tab_width = document.tab_width() as u16;
                 
                 // Shape cursor text before dropping core borrow
                 let cursor_text_shaped = cursor_text.map(|(char_str, text_color)| {
@@ -976,6 +1096,12 @@ impl Element for DocumentElement {
                 // core goes out of scope here
                 
                 let text = doc_text.slice(..);
+                
+                // Update the shared line layouts for mouse interaction
+                let mut line_layouts_local: Vec<LineLayout> = Vec::new();
+                
+                // Clear and update the shared line layouts
+                line_layouts_for_paint.borrow_mut().clear();
                 
                 for line_idx in first_row..last_row {
                     let line_start = text.line_to_char(line_idx);
@@ -1001,7 +1127,16 @@ impl Element for DocumentElement {
                     }
                     
                     let line_slice = text.slice(line_start..line_end);
-                    let line_str: SharedString = RopeWrapper(line_slice).into();
+                    // Convert to string and remove any trailing newlines
+                    let line_str = {
+                        let cow: Cow<'_, str> = line_slice.into();
+                        let mut s = cow.into_owned();
+                        // Remove any trailing newline characters to prevent GPUI panic
+                        while s.ends_with('\n') || s.ends_with('\r') {
+                            s.pop();
+                        }
+                        SharedString::from(s)
+                    };
                     
                     // Get highlights for this specific line using the extracted values
                     // Re-read core for this iteration
@@ -1029,7 +1164,8 @@ impl Element for DocumentElement {
                     
                     let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
                     
-                    if !line_str.is_empty() {
+                    // Always create a shaped line, even for empty lines (needed for cursor positioning)
+                    let shaped_line = if !line_str.is_empty() {
                         // First, paint any background highlights
                         let mut char_offset = 0;
                         for run in &line_runs {
@@ -1048,85 +1184,128 @@ impl Element for DocumentElement {
                             char_offset += run.len;
                         }
                         
-                        // Then paint the text on top
-                        let shaped_line = window.text_system()
+                        // Shape and paint the text
+                        let shaped = window.text_system()
                             .shape_line(line_str, self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
                         
-                        shaped_line.paint(text_origin, after_layout.line_height, window, cx).unwrap();
-                    }
+                        shaped.paint(text_origin, after_layout.line_height, window, cx).unwrap();
+                        shaped
+                    } else {
+                        // Create an empty shaped line for cursor positioning
+                        window.text_system()
+                            .shape_line("".into(), self.style.font_size.to_pixels(px(16.0)), &[], None)
+                    };
+                    
+                    // Always store the line layout for cursor positioning
+                    let layout = LineLayout {
+                        line_idx,
+                        shaped_line,
+                        origin: text_origin,
+                    };
+                    line_layouts_local.push(layout.clone());
+                    line_layouts_for_paint.borrow_mut().push(layout);
                     
                     y_offset += after_layout.line_height;
                 }
                 // draw cursor
-                if self.is_focused {
-                    if let Some(position) = cursor_pos {
+                let element_focused = self.focus.is_focused(window);
+                debug!("Cursor rendering check - is_focused: {}, element_focused: {}, cursor_pos: {:?}", 
+                    self.is_focused, element_focused, cursor_pos);
+                
+                // Debug: Log cursor position info
+                {
+                    let core = self.core.read(cx);
+                    let editor = &core.editor;
+                    if let Some(doc) = editor.document(self.doc_id) {
+                        if let Some(view) = editor.tree.try_get(self.view_id) {
+                            let sel = doc.selection(self.view_id);
+                            let cursor_char = sel.primary().cursor(text);
+                            debug!("Cursor char idx: {}, line: {}, selection: {:?}", 
+                                cursor_char, text.char_to_line(cursor_char), sel);
+                        }
+                    }
+                }
+                
+                // Check both is_focused flag and actual focus state
+                if self.is_focused || element_focused {
+                    // Try to render cursor even if screen_coords_at_pos failed
+                    let position = cursor_pos.or_else(|| {
+                        // Fallback: calculate position manually if screen_coords_at_pos failed
+                        let cursor_line = text.char_to_line(cursor_char_idx);
+                        if cursor_line >= first_row && cursor_line < last_row {
+                            let viewport_row = cursor_line.saturating_sub(first_row);
+                            Some(helix_core::Position {
+                                row: viewport_row,
+                                col: 0, // We'll calculate actual column from shaped line
+                            })
+                        } else {
+                            None
+                        }
+                    });
+                    
+                    if let Some(position) = position {
                         // The position from screen_coords_at_pos is already viewport-relative
-                        let helix_core::Position { row, col: _ } = position;
-                        
-                        // We need to calculate the actual pixel position by iterating through
-                        // the line's graphemes up to the cursor position, just like helix does
+                        let helix_core::Position { row: viewport_row, col: _ } = position;
                         
                         // Get the line containing the cursor
                         let cursor_line = text.char_to_line(cursor_char_idx);
-                        let viewport_line = cursor_line.saturating_sub(first_row);
                         
-                        if viewport_line == row {
-                            // Calculate the visual x position by iterating through graphemes
-                            let line_start = text.line_to_char(cursor_line);
-                            let line_slice = text.slice(line_start..cursor_char_idx);
-                            
-                            let mut visual_x = px(0.0);
-                            
-                            // Calculate visual position accounting for tabs and wide characters
-                            let mut char_pos = 0;
-                            for grapheme in line_slice.graphemes() {
-                                if grapheme == "\t" {
-                                    // Tab width calculation like helix
-                                    let tab_cols = tab_width as usize - (char_pos % tab_width as usize);
-                                    visual_x += after_layout.cell_width * tab_cols as f32;
-                                    char_pos += tab_cols;
-                                } else {
-                                    // Use helix's grapheme_width function logic
-                                    let grapheme_str = grapheme.as_str().unwrap_or("");
-                                    let width = if !grapheme_str.is_empty() {
-                                        match grapheme_str.as_bytes().first() {
-                                            Some(&b) if b <= 127 => 1,
-                                            _ => {
-                                                use unicode_width::UnicodeWidthStr;
-                                                UnicodeWidthStr::width(grapheme_str).max(1)
-                                            }
-                                        }
-                                    } else {
-                                        1
-                                    };
-                                    visual_x += after_layout.cell_width * width as f32;
-                                    char_pos += width;
-                                }
+                        // Check if cursor line is in the rendered range
+                        if cursor_line >= first_row && cursor_line < last_row {
+                            // Find the line layout for the cursor line
+                            if let Some(line_layout) = line_layouts_local.iter().find(|layout| layout.line_idx == cursor_line) {
+                                // Calculate the cursor position within the line
+                                let line_start = text.line_to_char(cursor_line);
+                                let cursor_offset_in_line = cursor_char_idx.saturating_sub(line_start);
+                                
+                                // Get the x position from the shaped line
+                                let cursor_x = line_layout.shaped_line.x_for_index(cursor_offset_in_line);
+                                
+                                // Debug logging
+                                debug!("Cursor rendering - line: {}, offset: {}, x: {:?}, viewport_row: {}", 
+                                    cursor_line, cursor_offset_in_line, cursor_x, viewport_row);
+                                
+                                // More debug info about the line content
+                                let line_end = text.line_to_char(cursor_line + 1).saturating_sub(1);
+                                let line_text = text.slice(line_start..line_end.min(text.len_chars()));
+                                debug!("Line content: {:?}, cursor at offset {} in line", 
+                                    line_text.to_string(), cursor_offset_in_line);
+                                
+                                // Cursor origin is relative to the line's origin
+                                let cursor_origin = gpui::Point::new(
+                                    cursor_x,
+                                    px(0.0) // Relative to line origin
+                                );
+                                
+                                let cursor_color = cursor_style
+                                    .fg
+                                    .and_then(|fg| color_to_hsla(fg))
+                                    .or_else(|| cursor_style.bg.and_then(|bg| color_to_hsla(bg)))
+                                    .unwrap_or(fg_color);
+
+                                let mut cursor = Cursor {
+                                    origin: cursor_origin,
+                                    kind: cursor_kind,
+                                    color: cursor_color,
+                                    block_width: after_layout.cell_width,
+                                    line_height: after_layout.line_height,
+                                    text: cursor_text_shaped,
+                                };
+                                
+                                // Paint cursor at the line's origin
+                                cursor.paint(line_layout.origin, window, cx);
+                            } else {
+                                debug!("Warning: Could not find line layout for cursor line {}", cursor_line);
                             }
-                            
-                            let origin_y = after_layout.line_height * row as f32;
-                            let cursor_color = cursor_style
-                                .fg
-                                .and_then(|fg| color_to_hsla(fg))
-                                .or_else(|| cursor_style.bg.and_then(|bg| color_to_hsla(bg)))
-                                .unwrap_or(fg_color);
-
-                            let mut cursor = Cursor {
-                                origin: gpui::Point::new(visual_x, origin_y),
-                                kind: cursor_kind,
-                                color: cursor_color,
-                                block_width: after_layout.cell_width,
-                                line_height: after_layout.line_height,
-                                text: cursor_text_shaped,
-                            };
-                            // Use the same origin as text (including gutter offset)
-                            let mut origin = bounds.origin;
-                            origin.x += px(2.) + (after_layout.cell_width * gutter_width as f32);
-                            origin.y += px(1.);
-
-                            cursor.paint(origin, window, cx);
+                        } else {
+                            debug!("Cursor line {} is outside rendered range {}..{}", cursor_line, first_row, last_row);
                         }
+                    } else {
+                        debug!("Cursor rendering skipped - no cursor_pos from screen_coords_at_pos");
                     }
+                } else {
+                    debug!("Cursor rendering skipped - is_focused: {}, element_focused: {}", 
+                        self.is_focused, element_focused);
                 }
                 // draw gutter
                 {
@@ -1545,6 +1724,14 @@ impl Render for DiagnosticView {
                     .items_center()
                     .when_some(source_and_code, |this, source| this.child(source.clone())),
             )
-            .child(div().flex_col().child(self.diagnostic.message.clone()))
+            .child(
+                div()
+                    .flex_col()
+                    .children(
+                        self.diagnostic.message
+                            .lines()
+                            .map(|line| div().child(line.to_string()))
+                    )
+            )
     }
 }

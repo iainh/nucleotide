@@ -389,8 +389,14 @@ impl Application {
             cx.emit(crate::Update::Prompt(prompt));
         }
 
-        if let Some(info) = self.editor.autoinfo.take() {
-            cx.emit(crate::Update::Info(info));
+        // Don't take() the autoinfo - just clone it so it persists
+        if let Some(info) = &self.editor.autoinfo {
+            cx.emit(crate::Update::Info(helix_view::info::Info {
+                title: info.title.clone(),
+                text: info.text.clone(),
+                width: info.width,
+                height: info.height,
+            }));
         }
     }
     pub fn handle_input_event(
@@ -426,12 +432,15 @@ impl Application {
                     None
                 };
                 
+                
                 let is_handled = self
                     .compositor
                     .handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
                 if !is_handled {
                     let event = &helix_view::input::Event::Key(key);
+                    
                     let res = self.view.handle_event(event, &mut comp_ctx);
+                    
                     if let EventResult::Consumed(Some(cb)) = res {
                         cb(&mut self.compositor, &mut comp_ctx);
                     }
@@ -460,6 +469,7 @@ impl Application {
                 }
                 
                 self.emit_overlays(cx);
+                
                 cx.emit(crate::Update::Redraw);
             }
             InputEvent::ScrollLines {

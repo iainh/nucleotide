@@ -8,6 +8,7 @@ use log::info;
 
 use crate::document::DocumentView;
 use crate::info_box::InfoBoxView;
+use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
 use crate::utils;
@@ -22,6 +23,7 @@ pub struct Workspace {
     overlay: Entity<OverlayView>,
     info: Entity<InfoBoxView>,
     info_hidden: bool,
+    key_hints: Entity<KeyHintView>,
     notifications: Entity<NotificationView>,
     focus_handle: FocusHandle,
     needs_focus_restore: bool,
@@ -47,6 +49,8 @@ impl Workspace {
             cx.notify();
         }).detach();
         
+        let key_hints = cx.new(|_cx| KeyHintView::new());
+        
         let mut workspace = Self {
             core,
             input,
@@ -56,6 +60,7 @@ impl Workspace {
             overlay,
             info,
             info_hidden: true,
+            key_hints,
             notifications,
             focus_handle,
             needs_focus_restore: false,
@@ -106,6 +111,9 @@ impl Workspace {
                         cx.notify();
                     })
                 }
+                
+                // Update key hints on redraw
+                self.update_key_hints(cx);
                 cx.notify();
             }
             crate::Update::Prompt(_) | crate::Update::Picker(_) | crate::Update::Completion(_) => {
@@ -154,6 +162,8 @@ impl Workspace {
             crate::Update::Info(_) => {
                 self.info_hidden = false;
                 // handled by the info box view
+                // Also update key hints
+                self.update_key_hints(cx);
             }
             crate::Update::ShouldQuit => {
                 info!("ShouldQuit event received - triggering application quit");
@@ -263,6 +273,24 @@ impl Workspace {
                 return; // Don't pass escape to editor when dismissing info box
             }
 
+            // Check if we should dismiss key hints
+            if ev.keystroke.key == "escape" {
+                let has_hints = self.key_hints.read(cx).has_info();
+                if has_hints {
+                    // Clear key hints
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    // Also clear the editor's autoinfo
+                    self.core.update(cx, |core, _| {
+                        core.editor.autoinfo = None;
+                    });
+                    cx.notify();
+                    return; // Don't pass escape to editor when dismissing key hints
+                }
+            }
+
             // Check if overlay has a native component (picker, prompt, completion) - if so, don't consume key events
             // Let GPUI actions bubble up to the native components instead
             let overlay_view = &self.overlay.read(cx);
@@ -275,10 +303,32 @@ impl Workspace {
             let key = utils::translate_key(&ev.keystroke);
             self.input.update(cx, |_, cx| {
                 cx.emit(InputEvent::Key(key));
-            })
+            });
+            
+            // Update key hints after processing the key
+            self.update_key_hints(cx);
         })) {
             log::error!("Panic in key handler: {:?}", e);
         }
+    }
+
+    fn update_key_hints(&mut self, cx: &mut Context<Self>) {
+        // Check if editor has pending keymap info
+        let editor = &self.core.read(cx).editor;
+        let editor_info = editor.autoinfo.as_ref().map(|info| helix_view::info::Info {
+            title: info.title.clone(),
+            text: info.text.clone(),
+            width: info.width,
+            height: info.height,
+        });
+        let theme = editor.theme.clone();
+        
+        
+        self.key_hints.update(cx, |key_hints, cx| {
+            key_hints.set_info(editor_info);
+            key_hints.set_theme(theme);
+            cx.notify();
+        });
     }
 
     fn update_document_views(&mut self, cx: &mut Context<Self>) {
@@ -580,6 +630,7 @@ impl Render for Workspace {
                 !self.info_hidden && !self.info.read(cx).is_empty(),
                 |this| this.child(self.info.clone()),
             )
+            .child(self.key_hints.clone())
     }
 }
 
