@@ -74,3 +74,17 @@ grep-searcher = "0.1.13"
 
 # Unicode handling
 unicode-width = "0.1"
+
+[package.metadata.bundle]
+name = "Helix GPUI"
+identifier = "dev.plhk.helix-gpui"
+icon = ["assets/helix-gpui.icns"]
+version = "0.0.1"
+copyright = "Copyright © 2025 Alexander Polakov, Blaž Hrastnik, Iain Heggie. All rights reserved."
+category = "public.app-category.developer-tools"
+short_description = "A post-modern text editor with GUI"
+long_description = """
+Helix GPUI is a native GUI implementation of the Helix text editor,
+built with GPUI (the UI framework from Zed editor). It brings modal
+editing to a native GUI application.
+"""
