@@ -148,6 +148,8 @@ impl Render for KeyHintView {
                 .flex()
                 .flex_col()
                 .gap_1()
+                .font(cx.global::<crate::FontSettings>().var_font.clone())
+                .text_size(px(cx.global::<crate::UiFontConfig>().size - 1.0))
                 .children(
                     // Title if present
                     if !clean_title.is_empty() {
