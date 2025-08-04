@@ -33,6 +33,12 @@ impl OverlayView {
     }
     
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        // Clean up picker before clearing
+        if let Some(picker) = &self.native_picker_view {
+            picker.update(cx, |picker, cx| {
+                picker.cleanup(cx);
+            });
+        }
         // Clear all overlay components
         self.prompt = None;
         self.native_picker_view = None;
@@ -280,9 +286,12 @@ impl OverlayView {
                         });
                         
                         // Subscribe to dismiss events from the picker view
-                        cx.subscribe(&picker_view, |this, _picker_view, _event: &DismissEvent, cx| {
-                            // Clear the native picker when it emits a dismiss event
-                            println!("🚨 DismissEvent received - clearing native_picker_view");
+                        cx.subscribe(&picker_view, |this, picker_view, _event: &DismissEvent, cx| {
+                            // Clean up the picker before clearing it
+                            println!("🚨 DismissEvent received - cleaning up and clearing native_picker_view");
+                            picker_view.update(cx, |picker, cx| {
+                                picker.cleanup(cx);
+                            });
                             this.native_picker_view = None;
                             // Emit dismiss event to notify workspace
                             cx.emit(DismissEvent);

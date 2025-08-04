@@ -28,6 +28,7 @@ mod picker;
 mod picker_delegate;
 mod picker_element;
 mod picker_view;
+mod preview_tracker;
 mod prompt;
 mod prompt_view;
 mod statusline;
@@ -269,6 +270,9 @@ fn gui_main(app: Application, config: crate::config::Config, handle: tokio::runt
             size: ui_font_config.size,
             weight: ui_font_config.weight.into(),
         });
+        
+        // Initialize preview tracker
+        cx.set_global(crate::preview_tracker::PreviewTracker::new());
         
         let options = window_options(cx);
 

@@ -7,6 +7,7 @@ use gpui::{Context, Window, ScrollStrategy};
 use nucleo::Nucleo;
 use std::{ops::Range, sync::Arc};
 use helix_view::DocumentId;
+use crate::preview_tracker::PreviewTracker;
 
 #[derive(Clone, Debug)]
 pub struct PickerItem {
@@ -212,6 +213,10 @@ impl PickerView {
         self.matcher = None;
         // Reset initial preview flag so preview loads for new items
         self.initial_preview_loaded = false;
+        // Clear any existing preview document IDs (cleanup happens elsewhere)
+        self.preview_doc_id = None;
+        self.preview_view_id = None;
+        self.preview_content = None;
         self
     }
 
@@ -317,6 +322,9 @@ impl PickerView {
     fn confirm_selection(&mut self, cx: &mut Context<Self>) {
         println!("🎯 confirm_selection called with selected_index: {}", self.selected_index);
         println!("🎯 filtered_indices length: {}", self.filtered_indices.len());
+        
+        // Clean up preview document before confirming selection
+        self.cleanup_preview_document(cx);
         
         if let Some(idx) = self.filtered_indices.get(self.selected_index) {
             println!("🎯 Found filtered index: {}", idx);
@@ -537,6 +545,9 @@ impl PickerView {
                 // For files, try to create a document for syntax highlighting
                 if let Some(core_weak) = &core_weak {
                     if let Some(core) = core_weak.upgrade() {
+                        let mut preview_doc_id = None;
+                        let mut preview_view_id = None;
+                        
                         core.update(cx, |core, _cx| {
                             // Create a new document
                             let doc_id = core.editor.new_file(helix_view::editor::Action::Load);
@@ -567,11 +578,22 @@ impl PickerView {
                                 doc.detect_language(&loader);
                             }
                             
-                            // Store both document ID and view ID
+                            // Store IDs for later use
+                            preview_doc_id = Some(doc_id);
+                            preview_view_id = Some(view_id);
+                        });
+                        
+                        // Update picker state and register with tracker
+                        if let (Some(doc_id), Some(view_id)) = (preview_doc_id, preview_view_id) {
                             this.preview_doc_id = Some(doc_id);
                             this.preview_view_id = Some(view_id);
                             this.preview_content = None; // We'll use DocumentElement instead
-                        });
+                            
+                            // Register with preview tracker
+                            if let Some(tracker) = cx.try_global::<PreviewTracker>() {
+                                tracker.register(doc_id, view_id);
+                            }
+                        }
                     }
                 }
                 
@@ -582,20 +604,37 @@ impl PickerView {
         .detach();
     }
 
+    /// Clean up preview document - public method for external cleanup
+    pub fn cleanup(&mut self, cx: &mut Context<Self>) {
+        self.cleanup_preview_document(cx);
+    }
+    
     fn cleanup_preview_document(&mut self, cx: &mut Context<Self>) {
         if let (Some(doc_id), Some(view_id)) = (self.preview_doc_id.take(), self.preview_view_id.take()) {
+            println!("🧹 Cleaning up preview document: doc_id={:?}, view_id={:?}", doc_id, view_id);
             if let Some(core_weak) = &self.core {
                 if let Some(core) = core_weak.upgrade() {
                     core.update(cx, |core, _cx| {
                         // Close the view first, but only if it still exists
                         if core.editor.tree.contains(view_id) {
+                            println!("🧹 Closing preview view: {:?}", view_id);
                             core.editor.close(view_id);
                         }
                         // Then close the document without saving
+                        println!("🧹 Closing preview document: {:?}", doc_id);
                         let _ = core.editor.close_document(doc_id, false);
+                        
+                        // Note: Unregistering from preview tracker happens in the outer scope
                     });
+                    
+                    // Unregister from preview tracker
+                    if let Some(tracker) = cx.try_global::<PreviewTracker>() {
+                        tracker.unregister(doc_id, view_id);
+                    }
                 }
             }
+        } else {
+            println!("🧹 No preview document to clean up");
         }
     }
 
