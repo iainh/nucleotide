@@ -180,7 +180,7 @@ impl Application {
     {
         match self.editor.document(doc_id) {
             Some(doc) => f(doc),
-            None => Err(E::from(format!("Document {} not found", doc_id))),
+            None => Err(E::from(format!("Document {doc_id} not found"))),
         }
     }
     
@@ -192,7 +192,7 @@ impl Application {
     {
         match self.editor.document_mut(doc_id) {
             Some(doc) => f(doc),
-            None => Err(E::from(format!("Document {} not found", doc_id))),
+            None => Err(E::from(format!("Document {doc_id} not found"))),
         }
     }
     fn try_create_picker_component(&mut self) -> Option<crate::picker::Picker> {
@@ -273,7 +273,7 @@ impl Application {
     
     pub fn open_file(&mut self, path: &Path) -> Result<(), anyhow::Error> {
         use helix_view::editor::Action;
-        self.editor.open(path, Action::Replace).map(|_| ()).map_err(|e| anyhow::Error::new(e))
+        self.editor.open(path, Action::Replace).map(|_| ()).map_err(anyhow::Error::new)
     }
 
     fn create_file_picker_items(&self) -> Vec<crate::picker_view::PickerItem> {
@@ -305,10 +305,9 @@ impl Application {
             });
             
         // Walk the directory tree and collect files only
-        for entry in walk_builder.build() {
-            if let Ok(entry) = entry {
-                // Skip directories - we only want files
-                if entry.file_type().map_or(false, |ft| ft.is_file()) {
+        for entry in walk_builder.build().flatten() {
+            // Skip directories - we only want files
+            if entry.file_type().is_some_and(|ft| ft.is_file()) {
                     let path = entry.path().to_path_buf();
                     
                     // Get relative path from workspace root
@@ -328,7 +327,6 @@ impl Application {
                     if items.len() >= 10000 {
                         break;
                     }
-                }
             }
         }
         

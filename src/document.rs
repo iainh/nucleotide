@@ -14,6 +14,7 @@ use helix_term::ui::EditorView;
 use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
 use log::debug;
 
+use crate::line_cache::LineLayoutCache;
 use crate::utils::color_to_hsla;
 use crate::{Core, Input, InputEvent};
 use helix_stdx::rope::RopeSliceExt;
@@ -61,7 +62,10 @@ impl DocumentView {
         let (cursor_pos, doc_id, first_row) = {
             let view = editor.tree.get(self.view_id);
             let doc_id = view.doc;
-            let document = editor.document(doc_id).unwrap();
+            let document = match editor.document(doc_id) {
+                Some(doc) => doc,
+                None => return Vec::new(), // Document was closed
+            };
             let text = document.text();
 
             let primary_idx = document
@@ -308,7 +312,13 @@ impl DocumentElement {
         // Get highlights for this line (re-read core)
         let core = self.core.read(cx);
         let editor = &core.editor;
-        let document = editor.document(self.doc_id).unwrap();
+        let document = match editor.document(self.doc_id) {
+            Some(doc) => doc,
+            None => {
+                // Document was closed, return empty line runs
+                return None;
+            }
+        };
         let view = editor.tree.get(self.view_id);
         
         let line_runs = Self::highlight_line_with_params(
@@ -701,13 +711,6 @@ pub struct DocumentLayout {
     hitbox: Option<Hitbox>,
 }
 
-/// Stores layout information for a single line in the document
-#[derive(Clone)]
-struct LineLayout {
-    line_idx: usize,
-    shaped_line: ShapedLine,
-    origin: gpui::Point<Pixels>,
-}
 
 struct RopeWrapper<'a>(RopeSlice<'a>);
 
@@ -766,14 +769,13 @@ impl Element for DocumentElement {
                     let em_width = cx
                         .text_system()
                         .typographic_bounds(font_id, font_size, 'm')
-                        .unwrap()
-                        .size
-                        .width;
+                        .map(|bounds| bounds.size.width)
+                        .unwrap_or(px(8.0)); // Default em width
                     let cell_width = cx
                         .text_system()
                         .advance(font_id, font_size, 'm')
-                        .unwrap()
-                        .width;
+                        .map(|advance| advance.width)
+                        .unwrap_or(em_width); // Use em_width as fallback
                     // Division of Pixels returns f32
                     let columns_f32 = (bounds.size.width / em_width).floor();
                     let rows_f32 = (bounds.size.height / line_height).floor();
@@ -812,17 +814,27 @@ impl Element for DocumentElement {
         let gutter_width_cells = {
             let editor = &core.read(cx).editor;
             let view = editor.tree.get(view_id);
-            let doc = editor.document(self.doc_id).unwrap();
+            let doc = match editor.document(self.doc_id) {
+                Some(doc) => doc,
+                None => return, // Document was closed
+            };
             view.gutter_offset(doc)
         };
-        let gutter_width_px = cell_width * gutter_width_cells as f32;
+        let _gutter_width_px = cell_width * gutter_width_cells as f32;
         
         // Store line layouts in element state for mouse interaction
-        let line_layouts = std::rc::Rc::new(std::cell::RefCell::new(Vec::<LineLayout>::new()));
-        let line_layouts_for_mouse = line_layouts.clone();
-        let line_layouts_for_drag = line_layouts.clone();
-        let line_layouts_for_paint = line_layouts.clone();
+        // Using LineLayoutCache instead of RefCell for thread safety
+        // Get or create the LineLayoutCache
+        let line_cache = if let Some(cache) = cx.try_global::<LineLayoutCache>() {
+            cache.clone()
+        } else {
+            let cache = LineLayoutCache::new();
+            cx.set_global(cache.clone());
+            cache
+        };
+        line_cache.clear(); // Clear previous layouts
         
+        let line_cache_mouse = line_cache.clone();
         self.interactivity
             .on_mouse_down(MouseButton::Left, move |ev, window, cx| {
                 focus.focus(window);
@@ -830,14 +842,7 @@ impl Element for DocumentElement {
                 let mouse_pos = ev.position;
                 
                 // Find which line was clicked by checking line layouts
-                let line_layouts = line_layouts_for_mouse.borrow();
-                let clicked_line = line_layouts.iter().find(|layout| {
-                    let line_bounds = Bounds {
-                        origin: layout.origin,
-                        size: size(bounds.size.width, line_height),
-                    };
-                    line_bounds.contains(&mouse_pos)
-                });
+                let clicked_line = line_cache_mouse.find_line_at_position(mouse_pos, bounds.size.width, line_height);
                 
                 if let Some(line_layout) = clicked_line {
                     // Calculate x position relative to the line origin
@@ -871,7 +876,10 @@ impl Element for DocumentElement {
                         let pos = line_start + grapheme_idx;
                         
                         if pos <= text.len_chars() {
-                            let doc = editor.document_mut(doc_id).unwrap();
+                            let doc = match editor.document_mut(doc_id) {
+                                Some(doc) => doc,
+                                None => return,
+                            };
                             // Snap to grapheme boundary for proper cursor positioning
                             let text = doc.text().slice(..);
                             let pos = prev_grapheme_boundary(text, pos);
@@ -889,6 +897,7 @@ impl Element for DocumentElement {
         // Handle mouse drag for selection
         let core_drag = self.core.clone();
         let view_id_drag = self.view_id;
+        let line_cache_drag = line_cache.clone();
         
         self.interactivity
             .on_mouse_move(move |ev, _window, cx| {
@@ -900,14 +909,7 @@ impl Element for DocumentElement {
                 let mouse_pos = ev.position;
                 
                 // Find which line is under the mouse using line layouts
-                let line_layouts = line_layouts_for_drag.borrow();
-                let hovered_line = line_layouts.iter().find(|layout| {
-                    let line_bounds = Bounds {
-                        origin: layout.origin,
-                        size: size(bounds.size.width, line_height),
-                    };
-                    line_bounds.contains(&mouse_pos)
-                });
+                let hovered_line = line_cache_drag.find_line_at_position(mouse_pos, bounds.size.width, line_height);
                 
                 if let Some(line_layout) = hovered_line {
                     // Calculate x position relative to the line origin
@@ -940,7 +942,10 @@ impl Element for DocumentElement {
                         let pos = line_start + grapheme_idx;
                         
                         if pos <= text.len_chars() {
-                            let doc = editor.document_mut(doc_id).unwrap();
+                            let doc = match editor.document_mut(doc_id) {
+                                Some(doc) => doc,
+                                None => return,
+                            };
                             // Snap to grapheme boundary for proper selection
                             let text = doc.text().slice(..);
                             let pos = if pos > 0 {
@@ -973,7 +978,9 @@ impl Element for DocumentElement {
 
                 let theme = &editor.theme;
                 let default_style = theme.get("ui.background");
-                let bg_color = color_to_hsla(default_style.bg.unwrap()).unwrap_or(black());
+                let bg_color = default_style.bg
+                    .and_then(|c| color_to_hsla(c))
+                    .unwrap_or(black());
                 // Get mode-specific cursor theme like terminal version
                 let mode = editor.mode();
                 let _base_cursor_style = theme.get("ui.cursor");
@@ -1014,7 +1021,10 @@ impl Element for DocumentElement {
                 )
                 .unwrap_or(white());
 
-                let document = editor.document(self.doc_id).unwrap();
+                let document = match editor.document(self.doc_id) {
+                    Some(doc) => doc,
+                    None => return,
+                };
                 let text = document.text();
 
                 let (_, cursor_kind) = editor.cursor();
@@ -1184,10 +1194,6 @@ impl Element for DocumentElement {
                 let text = doc_text.slice(..);
                 
                 // Update the shared line layouts for mouse interaction
-                let mut line_layouts_local: Vec<LineLayout> = Vec::new();
-                
-                // Clear and update the shared line layouts
-                line_layouts_for_paint.borrow_mut().clear();
                 
                 for (loop_index, line_idx) in (first_row..last_row).enumerate() {
                     debug!("Rendering line {} (loop index {}), y_offset: {:?}", line_idx, loop_index, y_offset);
@@ -1247,7 +1253,10 @@ impl Element for DocumentElement {
                         // Re-read core for this iteration
                         let core = self.core.read(cx);
                         let editor = &core.editor;
-                        let document = editor.document(doc_id).unwrap();
+                        let document = match editor.document(doc_id) {
+                            Some(doc) => doc,
+                            None => return,
+                        };
                         let view = editor.tree.get(view_id);
                         
                         let line_runs = Self::highlight_line_with_params(
@@ -1296,7 +1305,9 @@ impl Element for DocumentElement {
                         let shaped = window.text_system()
                             .shape_line(line_str, self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
                         
-                        shaped.paint(text_origin, after_layout.line_height, window, cx).unwrap();
+                        if let Err(e) = shaped.paint(text_origin, after_layout.line_height, window, cx) {
+                            log::error!("Failed to paint text: {:?}", e);
+                        }
                         shaped
                     } else {
                         // Create an empty shaped line for cursor positioning
@@ -1305,7 +1316,7 @@ impl Element for DocumentElement {
                     };
                     
                     // Always store the line layout for cursor positioning
-                    let layout = LineLayout {
+                    let layout = crate::line_cache::LineLayout {
                         line_idx,
                         shaped_line,
                         origin: text_origin,
@@ -1321,15 +1332,9 @@ impl Element for DocumentElement {
                         println!("  y_offset: {:?}", y_offset);
                     }
                     
-                    line_layouts_local.push(layout.clone());
-                    line_layouts_for_paint.borrow_mut().push(layout);
+                    line_cache.push(layout);
                     
                     y_offset += after_layout.line_height;
-                }
-                
-                debug!("Total line layouts created: {}", line_layouts_local.len());
-                for (i, layout) in line_layouts_local.iter().enumerate() {
-                    debug!("  Layout {}: line_idx = {}, origin.y = {:?}", i, layout.line_idx, layout.origin.y);
                 }
                 
                 // draw cursor
@@ -1342,7 +1347,7 @@ impl Element for DocumentElement {
                     let core = self.core.read(cx);
                     let editor = &core.editor;
                     if let Some(doc) = editor.document(self.doc_id) {
-                        if let Some(view) = editor.tree.try_get(self.view_id) {
+                        if let Some(_view) = editor.tree.try_get(self.view_id) {
                             let sel = doc.selection(self.view_id);
                             let cursor_char = sel.primary().cursor(text);
                             debug!("Cursor char idx: {}, line: {}, selection: {:?}", 
@@ -1384,18 +1389,15 @@ impl Element for DocumentElement {
                             text.char_to_line(cursor_char_idx)
                         };
                         
-                        debug!("Looking for cursor line {} in range {}..{}, total line layouts: {}", 
-                            cursor_line, first_row, last_row, line_layouts_local.len());
+                        debug!("Looking for cursor line {} in range {}..{}", 
+                            cursor_line, first_row, last_row);
                         
                         // Check if cursor line is in the rendered range
                         // For phantom line, use the effective cursor line
                         let effective_cursor_line = cursor_line;
                         
                         if effective_cursor_line >= first_row && effective_cursor_line < last_row {
-                            // Debug: print all line layouts
-                            for (i, layout) in line_layouts_local.iter().enumerate() {
-                                debug!("  Line layout {}: line_idx = {}", i, layout.line_idx);
-                            }
+                            // Debug: line layouts are now stored in LineLayoutCache
                             
                             // Use the cursor line directly as the layout index
                             let layout_line_idx = cursor_line;
@@ -1404,7 +1406,7 @@ impl Element for DocumentElement {
                                 layout_line_idx, cursor_line, cursor_at_end && file_ends_with_newline);
                             
                             // Find the line layout for the cursor line
-                            if let Some(line_layout) = line_layouts_local.iter().find(|layout| layout.line_idx == layout_line_idx) {
+                            if let Some(line_layout) = line_cache.find_line_by_index(layout_line_idx) {
                                 debug!("Found line layout - line_idx: {}, origin.y: {:?}, expected line: {}", 
                                     line_layout.line_idx, line_layout.origin.y, layout_line_idx);
                                 
@@ -1415,14 +1417,12 @@ impl Element for DocumentElement {
                                     println!("  Found layout with line_idx: {}", line_layout.line_idx);
                                     println!("  Layout origin.y: {:?}", line_layout.origin.y);
                                     println!("  All layouts:");
-                                    for (i, layout) in line_layouts_local.iter().enumerate() {
-                                        println!("    Layout {}: line_idx={}, y={:?}", i, layout.line_idx, layout.origin.y);
-                                    }
+                                    // Line layouts are now stored in LineLayoutCache
                                 }
                                 // Special handling for phantom line
                                 let is_phantom_line = layout_line_idx >= text.len_lines();
                                 
-                                let (line_start, cursor_grapheme_offset, line_text) = if is_phantom_line {
+                                let (_line_start, cursor_grapheme_offset, line_text) = if is_phantom_line {
                                     // Phantom line: cursor is at end of file
                                     (text.len_chars(), 0, String::new())
                                 } else {
@@ -1501,7 +1501,10 @@ impl Element for DocumentElement {
                     let editor = &core.editor;
                     let theme = &editor.theme;
                     let view = editor.tree.get(self.view_id);
-                    let document = editor.document(self.doc_id).unwrap();
+                    let document = match editor.document(self.doc_id) {
+                    Some(doc) => doc,
+                    None => return,
+                };
                     
                     // Clone necessary values before creating mutable references
                     let text_system = window.text_system().clone();
@@ -1551,7 +1554,9 @@ impl Element for DocumentElement {
                     
                     // Now paint the gutter lines
                     for (origin, line) in gutter.lines {
-                        line.paint(origin, after_layout.line_height, window, cx).unwrap();
+                        if let Err(e) = line.paint(origin, after_layout.line_height, window, cx) {
+                            log::error!("Failed to paint gutter line: {:?}", e);
+                        }
                     }
                 }
             })
@@ -1700,8 +1705,9 @@ impl Cursor {
         window.paint_quad(fill(bounds, self.color));
 
         if let Some(text) = &self.text {
-            text.paint(self.origin + origin, self.line_height, window, cx)
-                .unwrap();
+            if let Err(e) = text.paint(self.origin + origin, self.line_height, window, cx) {
+                log::error!("Failed to paint cursor text: {:?}", e);
+            }
         }
     }
 }

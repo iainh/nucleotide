@@ -21,6 +21,7 @@ mod config;
 mod document;
 mod info_box;
 mod key_hint_view;
+mod line_cache;
 mod notification;
 mod overlay;
 mod picker;
@@ -89,10 +90,26 @@ fn main() -> Result<()> {
     // Install panic handler to prevent data loss
     install_panic_handler();
     
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("Failed to initialize Tokio runtime: {}", e);
+            return Err(anyhow::anyhow!("Runtime initialization failed: {}", e));
+        }
+    };
     let handle = rt.handle();
     let _guard = handle.enter();
-    let (app, config) = init_editor().unwrap().unwrap();
+    let (app, config) = match init_editor() {
+        Ok(Some((app, config))) => (app, config),
+        Ok(None) => {
+            eprintln!("Editor initialization returned None");
+            return Err(anyhow::anyhow!("Editor initialization failed"));
+        }
+        Err(e) => {
+            eprintln!("Failed to initialize editor: {}", e);
+            return Err(e);
+        }
+    };
     drop(_guard);
     gui_main(app, config, handle.clone());
     Ok(())
