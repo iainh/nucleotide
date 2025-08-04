@@ -214,6 +214,41 @@ impl IntoElement for DocumentElement {
 }
 
 impl DocumentElement {
+    /// Convert a character index within a line to a grapheme index
+    /// This is needed because GPUI's shaped line works with UTF-8 character indices
+    /// but Helix works with grapheme cluster indices
+    fn char_idx_to_grapheme_idx(line_text: &str, char_idx: usize) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+        
+        let mut grapheme_idx = 0;
+        let mut current_char_idx = 0;
+        
+        for grapheme in line_text.graphemes(true) {
+            if current_char_idx >= char_idx {
+                break;
+            }
+            current_char_idx += grapheme.len();
+            grapheme_idx += 1;
+        }
+        
+        grapheme_idx
+    }
+    
+    /// Convert a grapheme index within a line to a character index for GPUI
+    fn grapheme_idx_to_char_idx(line_text: &str, grapheme_idx: usize) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+        
+        let mut char_idx = 0;
+        for (idx, grapheme) in line_text.graphemes(true).enumerate() {
+            if idx >= grapheme_idx {
+                break;
+            }
+            char_idx += grapheme.len();
+        }
+        
+        char_idx
+    }
+
     pub fn new(
         core: Entity<Core>,
         doc_id: DocumentId,
@@ -823,9 +858,20 @@ impl Element for DocumentElement {
                         let doc = editor.document(doc_id).unwrap();
                         let text = doc.text();
                         
-                        // Convert line index and char offset to document position
+                        // Get the line text to convert between char and grapheme indices
                         let line_start = text.line_to_char(line_layout.line_idx);
-                        let pos = line_start + char_idx;
+                        let line_end = if line_layout.line_idx + 1 < text.len_lines() {
+                            text.line_to_char(line_layout.line_idx + 1)
+                        } else {
+                            text.len_chars()
+                        };
+                        let line_text = text.slice(line_start..line_end).to_string();
+                        
+                        // Convert GPUI char index to grapheme index
+                        let grapheme_idx = Self::char_idx_to_grapheme_idx(&line_text, char_idx);
+                        
+                        // Convert line index and grapheme offset to document position
+                        let pos = line_start + grapheme_idx;
                         
                         if pos <= text.len_chars() {
                             let doc = editor.document_mut(doc_id).unwrap();
@@ -881,9 +927,20 @@ impl Element for DocumentElement {
                         let doc = editor.document(doc_id).unwrap();
                         let text = doc.text();
                         
-                        // Convert line index and char offset to document position
+                        // Get the line text to convert between char and grapheme indices
                         let line_start = text.line_to_char(line_layout.line_idx);
-                        let pos = line_start + char_idx;
+                        let line_end = if line_layout.line_idx + 1 < text.len_lines() {
+                            text.line_to_char(line_layout.line_idx + 1)
+                        } else {
+                            text.len_chars()
+                        };
+                        let line_text = text.slice(line_start..line_end).to_string();
+                        
+                        // Convert GPUI char index to grapheme index
+                        let grapheme_idx = Self::char_idx_to_grapheme_idx(&line_text, char_idx);
+                        
+                        // Convert line index and grapheme offset to document position
+                        let pos = line_start + grapheme_idx;
                         
                         if pos <= text.len_chars() {
                             let doc = editor.document_mut(doc_id).unwrap();
@@ -1256,20 +1313,31 @@ impl Element for DocumentElement {
                             if let Some(line_layout) = line_layouts_local.iter().find(|layout| layout.line_idx == cursor_line) {
                                 // Calculate the cursor position within the line
                                 let line_start = text.line_to_char(cursor_line);
-                                let cursor_offset_in_line = cursor_char_idx.saturating_sub(line_start);
+                                let cursor_grapheme_offset = cursor_char_idx.saturating_sub(line_start);
+                                
+                                // Get the line text to convert grapheme offset to char offset
+                                let line_end = if cursor_line + 1 < text.len_lines() {
+                                    text.line_to_char(cursor_line + 1)
+                                } else {
+                                    text.len_chars()
+                                };
+                                let line_text = text.slice(line_start..line_end).to_string();
+                                
+                                // Convert grapheme offset to char offset for GPUI
+                                let cursor_char_offset = Self::grapheme_idx_to_char_idx(&line_text, cursor_grapheme_offset);
                                 
                                 // Get the x position from the shaped line
-                                let cursor_x = line_layout.shaped_line.x_for_index(cursor_offset_in_line);
+                                let cursor_x = line_layout.shaped_line.x_for_index(cursor_char_offset);
                                 
                                 // Debug logging
-                                debug!("Cursor rendering - line: {}, offset: {}, x: {:?}, viewport_row: {}", 
-                                    cursor_line, cursor_offset_in_line, cursor_x, viewport_row);
+                                debug!("Cursor rendering - line: {}, grapheme_offset: {}, char_offset: {}, x: {:?}, viewport_row: {}", 
+                                    cursor_line, cursor_grapheme_offset, cursor_char_offset, cursor_x, viewport_row);
                                 
                                 // More debug info about the line content
                                 let line_end = text.line_to_char(cursor_line + 1).saturating_sub(1);
                                 let line_text = text.slice(line_start..line_end.min(text.len_chars()));
-                                debug!("Line content: {:?}, cursor at offset {} in line", 
-                                    line_text.to_string(), cursor_offset_in_line);
+                                debug!("Line content: {:?}, cursor at grapheme offset {} (char offset {}) in line", 
+                                    line_text.to_string(), cursor_grapheme_offset, cursor_char_offset);
                                 
                                 // Cursor origin is relative to the line's origin
                                 let cursor_origin = gpui::Point::new(

@@ -43,6 +43,7 @@ futures-util = { version = "0.3", features = ["std", "async-await"], default-fea
 arc-swap = { version = "1.7.1" }
 smallvec = "1.13"
 termini = "1"
+unicode-segmentation = "1.11.0"
 
 # Logging
 fern = "0.6"

@@ -3176,6 +3176,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml 0.8.23",
+ "unicode-segmentation",
  "unicode-width 0.1.12",
  "url",
 ]
