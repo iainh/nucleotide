@@ -1102,10 +1102,45 @@ impl Element for DocumentElement {
                 } else {
                     None
                 };
+                // Extract cursor position early to check for phantom line
+                let cursor_char_idx = document
+                    .selection(self.view_id)
+                    .primary()
+                    .cursor(text.slice(..));
+                
                 // println!("first row is {}", row);
-                let last_row = (first_row + after_layout.rows + 1).min(total_lines);
+                let mut last_row = (first_row + after_layout.rows + 1).min(total_lines);
+                println!("Initial last_row calculation: first_row={}, after_layout.rows={}, total_lines={}, last_row={}", 
+                    first_row, after_layout.rows, total_lines, last_row);
+                
+                // Check if cursor is at the very end of the file (phantom line)
+                let cursor_at_end = cursor_char_idx == text.len_chars();
+                let file_ends_with_newline = text.len_chars() > 0 && text.char(text.len_chars() - 1) == '\n';
+                
+                debug!("End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}", 
+                    cursor_char_idx, text.len_chars(), 
+                    if text.len_chars() > 0 { Some(text.char(text.len_chars() - 1)) } else { None },
+                    cursor_at_end, file_ends_with_newline);
+                
+                // If cursor is at end of file with trailing newline, we need to render the phantom line
+                // For a file ending with \n, Rope counts the empty line after it, so we don't need to add 1
+                if cursor_at_end && file_ends_with_newline {
+                    let cursor_line = text.char_to_line(cursor_char_idx.saturating_sub(1));
+                    debug!("Cursor at EOF with newline - cursor_line: {}, last_row before: {}, total_lines: {}", 
+                        cursor_line, last_row, total_lines);
+                    
+                    // Ensure last_row includes the phantom line (which is at index total_lines - 1)
+                    last_row = last_row.max(total_lines);
+                    debug!("last_row after adjustment: {}", last_row);
+                }
+                
                 // println!("first row is {first_row} last row is {last_row}");
-                let end_char = text.line_to_char(std::cmp::min(last_row, total_lines));
+                // When rendering phantom line, end_char should be beyond the document end
+                let end_char = if last_row > total_lines {
+                    text.len_chars() + 1  // Allow phantom line to be rendered
+                } else {
+                    text.line_to_char(std::cmp::min(last_row, total_lines))
+                };
 
                 // Render text line by line to avoid newline issues
                 let mut y_offset = px(0.);
@@ -1125,10 +1160,7 @@ impl Element for DocumentElement {
                 let view_id = self.view_id;
                 
                 // Extract cursor-related data before dropping core
-                let cursor_char_idx = document
-                    .selection(self.view_id)
-                    .primary()
-                    .cursor(text.slice(..));
+                // cursor_char_idx was already extracted earlier for phantom line check
                 let _tab_width = document.tab_width() as u16;
                 
                 // Shape cursor text before dropping core borrow
@@ -1157,16 +1189,29 @@ impl Element for DocumentElement {
                 // Clear and update the shared line layouts
                 line_layouts_for_paint.borrow_mut().clear();
                 
-                for line_idx in first_row..last_row {
-                    let line_start = text.line_to_char(line_idx);
-                    let line_end = if line_idx + 1 < total_lines {
-                        text.line_to_char(line_idx + 1).saturating_sub(1) // Exclude newline
+                for (loop_index, line_idx) in (first_row..last_row).enumerate() {
+                    debug!("Rendering line {} (loop index {}), y_offset: {:?}", line_idx, loop_index, y_offset);
+                    // Handle phantom line (empty line at EOF when file ends with newline)
+                    // For a file ending with \n, the last line is empty and is the phantom line
+                    let is_phantom_line = cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1;
+                    
+                    let (line_start, line_end) = if is_phantom_line {
+                        // Phantom line is empty, positioned at end of file
+                        debug!("Rendering phantom line at index {}", line_idx);
+                        (text.len_chars(), text.len_chars())
                     } else {
-                        text.len_chars()
+                        let line_start = text.line_to_char(line_idx);
+                        let line_end = if line_idx + 1 < total_lines {
+                            text.line_to_char(line_idx + 1).saturating_sub(1) // Exclude newline
+                        } else {
+                            text.len_chars()
+                        };
+                        (line_start, line_end)
                     };
                     
-                    // Skip empty lines or lines outside our view
-                    if line_start >= end_char || line_end < anchor {
+                    // Skip lines outside our view
+                    // For phantom line, we need special handling since line_start == end_char == text.len_chars()
+                    if !is_phantom_line && (line_start >= end_char || line_end < anchor) {
                         y_offset += after_layout.line_height;
                         continue;
                     }
@@ -1182,38 +1227,45 @@ impl Element for DocumentElement {
                         continue;
                     }
                     
-                    let line_slice = text.slice(line_start..line_end);
-                    // Convert to string and remove any trailing newlines
-                    let line_str = {
-                        let cow: Cow<'_, str> = line_slice.into();
-                        let mut s = cow.into_owned();
-                        // Remove any trailing newline characters to prevent GPUI panic
-                        while s.ends_with('\n') || s.ends_with('\r') {
-                            s.pop();
-                        }
-                        SharedString::from(s)
+                    let (line_str, line_runs) = if is_phantom_line {
+                        // Phantom line is always empty with no highlights
+                        (SharedString::from(""), Vec::new())
+                    } else {
+                        let line_slice = text.slice(line_start..line_end);
+                        // Convert to string and remove any trailing newlines
+                        let line_str = {
+                            let cow: Cow<'_, str> = line_slice.into();
+                            let mut s = cow.into_owned();
+                            // Remove any trailing newline characters to prevent GPUI panic
+                            while s.ends_with('\n') || s.ends_with('\r') {
+                                s.pop();
+                            }
+                            SharedString::from(s)
+                        };
+                        
+                        // Get highlights for this specific line using the extracted values
+                        // Re-read core for this iteration
+                        let core = self.core.read(cx);
+                        let editor = &core.editor;
+                        let document = editor.document(doc_id).unwrap();
+                        let view = editor.tree.get(view_id);
+                        
+                        let line_runs = Self::highlight_line_with_params(
+                            document,
+                            view,
+                            &editor_theme,
+                            editor_mode,
+                            &cursor_shape,
+                            &syn_loader,
+                            self.is_focused,
+                            line_start,
+                            line_end,
+                            fg_color,
+                            self.style.font(),
+                        );
+                        
+                        (line_str, line_runs)
                     };
-                    
-                    // Get highlights for this specific line using the extracted values
-                    // Re-read core for this iteration
-                    let core = self.core.read(cx);
-                    let editor = &core.editor;
-                    let document = editor.document(doc_id).unwrap();
-                    let view = editor.tree.get(view_id);
-                    
-                    let line_runs = Self::highlight_line_with_params(
-                        document,
-                        view,
-                        &editor_theme,
-                        editor_mode,
-                        &cursor_shape,
-                        &syn_loader,
-                        self.is_focused,
-                        line_start,
-                        line_end,
-                        fg_color,
-                        self.style.font(),
-                    );
                     
                     // Drop core before painting
                     // core goes out of scope here
@@ -1258,11 +1310,28 @@ impl Element for DocumentElement {
                         shaped_line,
                         origin: text_origin,
                     };
+                    
+                    // Debug: log phantom line layout creation
+                    if is_phantom_line {
+                        debug!("Created phantom line layout - line_idx: {}, origin.y: {:?}, y_offset: {:?}", 
+                            line_idx, text_origin.y, y_offset);
+                        println!("CREATING PHANTOM LINE LAYOUT:");
+                        println!("  line_idx: {}", line_idx);
+                        println!("  text_origin.y: {:?}", text_origin.y);
+                        println!("  y_offset: {:?}", y_offset);
+                    }
+                    
                     line_layouts_local.push(layout.clone());
                     line_layouts_for_paint.borrow_mut().push(layout);
                     
                     y_offset += after_layout.line_height;
                 }
+                
+                debug!("Total line layouts created: {}", line_layouts_local.len());
+                for (i, layout) in line_layouts_local.iter().enumerate() {
+                    debug!("  Layout {}: line_idx = {}, origin.y = {:?}", i, layout.line_idx, layout.origin.y);
+                }
+                
                 // draw cursor
                 let element_focused = self.focus.is_focused(window);
                 debug!("Cursor rendering check - is_focused: {}, element_focused: {}, cursor_pos: {:?}", 
@@ -1288,8 +1357,12 @@ impl Element for DocumentElement {
                     let position = cursor_pos.or_else(|| {
                         // Fallback: calculate position manually if screen_coords_at_pos failed
                         let cursor_line = text.char_to_line(cursor_char_idx);
-                        if cursor_line >= first_row && cursor_line < last_row {
-                            let viewport_row = cursor_line.saturating_sub(first_row);
+                        
+                        // Use the cursor line directly
+                        let effective_cursor_line = cursor_line;
+                        
+                        if effective_cursor_line >= first_row && effective_cursor_line < last_row {
+                            let viewport_row = effective_cursor_line.saturating_sub(first_row);
                             Some(helix_core::Position {
                                 row: viewport_row,
                                 col: 0, // We'll calculate actual column from shaped line
@@ -1304,23 +1377,68 @@ impl Element for DocumentElement {
                         let helix_core::Position { row: viewport_row, col: _ } = position;
                         
                         // Get the line containing the cursor
-                        let cursor_line = text.char_to_line(cursor_char_idx);
+                        // When cursor is at EOF with newline, the phantom line is the last line
+                        let cursor_line = if cursor_at_end && file_ends_with_newline {
+                            total_lines - 1  // Phantom line is the last line
+                        } else {
+                            text.char_to_line(cursor_char_idx)
+                        };
+                        
+                        debug!("Looking for cursor line {} in range {}..{}, total line layouts: {}", 
+                            cursor_line, first_row, last_row, line_layouts_local.len());
                         
                         // Check if cursor line is in the rendered range
-                        if cursor_line >= first_row && cursor_line < last_row {
+                        // For phantom line, use the effective cursor line
+                        let effective_cursor_line = cursor_line;
+                        
+                        if effective_cursor_line >= first_row && effective_cursor_line < last_row {
+                            // Debug: print all line layouts
+                            for (i, layout) in line_layouts_local.iter().enumerate() {
+                                debug!("  Line layout {}: line_idx = {}", i, layout.line_idx);
+                            }
+                            
+                            // Use the cursor line directly as the layout index
+                            let layout_line_idx = cursor_line;
+                            
+                            debug!("Looking for line layout with index {} (cursor_line: {}, is phantom: {})", 
+                                layout_line_idx, cursor_line, cursor_at_end && file_ends_with_newline);
+                            
                             // Find the line layout for the cursor line
-                            if let Some(line_layout) = line_layouts_local.iter().find(|layout| layout.line_idx == cursor_line) {
-                                // Calculate the cursor position within the line
-                                let line_start = text.line_to_char(cursor_line);
-                                let cursor_grapheme_offset = cursor_char_idx.saturating_sub(line_start);
+                            if let Some(line_layout) = line_layouts_local.iter().find(|layout| layout.line_idx == layout_line_idx) {
+                                debug!("Found line layout - line_idx: {}, origin.y: {:?}, expected line: {}", 
+                                    line_layout.line_idx, line_layout.origin.y, layout_line_idx);
                                 
-                                // Get the line text to convert grapheme offset to char offset
-                                let line_end = if cursor_line + 1 < text.len_lines() {
-                                    text.line_to_char(cursor_line + 1)
+                                // Additional debug for phantom line
+                                if cursor_at_end && file_ends_with_newline {
+                                    println!("PHANTOM LINE DEBUG:");
+                                    println!("  Cursor at phantom line (line {})", layout_line_idx);
+                                    println!("  Found layout with line_idx: {}", line_layout.line_idx);
+                                    println!("  Layout origin.y: {:?}", line_layout.origin.y);
+                                    println!("  All layouts:");
+                                    for (i, layout) in line_layouts_local.iter().enumerate() {
+                                        println!("    Layout {}: line_idx={}, y={:?}", i, layout.line_idx, layout.origin.y);
+                                    }
+                                }
+                                // Special handling for phantom line
+                                let is_phantom_line = layout_line_idx >= text.len_lines();
+                                
+                                let (line_start, cursor_grapheme_offset, line_text) = if is_phantom_line {
+                                    // Phantom line: cursor is at end of file
+                                    (text.len_chars(), 0, String::new())
                                 } else {
-                                    text.len_chars()
+                                    // Normal line
+                                    let line_start = text.line_to_char(cursor_line);
+                                    let cursor_grapheme_offset = cursor_char_idx.saturating_sub(line_start);
+                                    
+                                    // Get the line text to convert grapheme offset to char offset
+                                    let line_end = if cursor_line + 1 < text.len_lines() {
+                                        text.line_to_char(cursor_line + 1)
+                                    } else {
+                                        text.len_chars()
+                                    };
+                                    let line_text = text.slice(line_start..line_end).to_string();
+                                    (line_start, cursor_grapheme_offset, line_text)
                                 };
-                                let line_text = text.slice(line_start..line_end).to_string();
                                 
                                 // Convert grapheme offset to char offset for GPUI
                                 let cursor_char_offset = Self::grapheme_idx_to_char_idx(&line_text, cursor_grapheme_offset);
@@ -1332,11 +1450,9 @@ impl Element for DocumentElement {
                                 debug!("Cursor rendering - line: {}, grapheme_offset: {}, char_offset: {}, x: {:?}, viewport_row: {}", 
                                     cursor_line, cursor_grapheme_offset, cursor_char_offset, cursor_x, viewport_row);
                                 
-                                // More debug info about the line content
-                                let line_end = text.line_to_char(cursor_line + 1).saturating_sub(1);
-                                let line_text = text.slice(line_start..line_end.min(text.len_chars()));
-                                debug!("Line content: {:?}, cursor at grapheme offset {} (char offset {}) in line", 
-                                    line_text.to_string(), cursor_grapheme_offset, cursor_char_offset);
+                                // Debug info about the line content
+                                debug!("Line content: {:?}, cursor at grapheme offset {} (char offset {}) in line, is_phantom: {}", 
+                                    &line_text, cursor_grapheme_offset, cursor_char_offset, is_phantom_line);
                                 
                                 // Cursor origin is relative to the line's origin
                                 let cursor_origin = gpui::Point::new(
@@ -1391,7 +1507,9 @@ impl Element for DocumentElement {
                     let text_system = window.text_system().clone();
                     let style = self.style.clone();
                     
-                    let lines = (first_row..last_row)
+                    // Only pass actual document lines to gutter, not phantom lines
+                    let gutter_last_row = last_row.min(total_lines);
+                    let lines = (first_row..gutter_last_row)
                         .enumerate()
                         .map(|(visual_line, doc_line)| LinePos {
                             first_visual_line: true,
