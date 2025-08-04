@@ -8,6 +8,7 @@ use nucleo::Nucleo;
 use std::{ops::Range, sync::Arc};
 use helix_view::DocumentId;
 use crate::preview_tracker::PreviewTracker;
+use crate::ui::common::{ModalStyle, SearchInput, FocusableModal};
 
 #[derive(Clone, Debug)]
 pub struct PickerItem {
@@ -63,12 +64,7 @@ struct CachedDimensions {
 
 #[derive(Clone)]
 pub struct PickerStyle {
-    pub background: Hsla,
-    pub text: Hsla,
-    pub selected_background: Hsla,
-    pub selected_text: Hsla,
-    pub border: Hsla,
-    pub prompt_text: Hsla,
+    pub modal_style: ModalStyle,
     pub preview_background: Hsla,
     pub cursor: Hsla,
 }
@@ -76,12 +72,7 @@ pub struct PickerStyle {
 impl Default for PickerStyle {
     fn default() -> Self {
         Self {
-            background: hsla(0.0, 0.0, 0.1, 1.0),
-            text: hsla(0.0, 0.0, 0.9, 1.0),
-            selected_background: hsla(220.0 / 360.0, 0.6, 0.5, 1.0),
-            selected_text: hsla(0.0, 0.0, 1.0, 1.0),
-            border: hsla(0.0, 0.0, 0.3, 1.0),
-            prompt_text: hsla(0.0, 0.0, 0.7, 1.0),
+            modal_style: ModalStyle::default(),
             preview_background: hsla(0.0, 0.0, 0.05, 1.0),
             cursor: hsla(0.0, 0.0, 0.9, 1.0),
         }
@@ -93,56 +84,23 @@ impl PickerStyle {
     pub fn from_theme(theme: &helix_view::Theme) -> Self {
         use crate::utils::color_to_hsla;
         
-        // Use appropriate helix theme keys for picker UI elements
-        let background = theme.get("ui.popup").bg
-            .and_then(color_to_hsla)
-            .or_else(|| theme.get("ui.background").bg.and_then(color_to_hsla))
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.1, 1.0));
-        
-        let text = theme.get("ui.text").fg
-            .and_then(color_to_hsla)
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.9, 1.0));
-        
-        let selected_background = theme.get("ui.menu.selected").bg
-            .and_then(color_to_hsla)
-            .or_else(|| theme.get("ui.selection").bg.and_then(color_to_hsla))
-            .unwrap_or_else(|| hsla(220.0 / 360.0, 0.6, 0.5, 1.0));
-        
-        let selected_text = theme.get("ui.menu.selected").fg
-            .and_then(color_to_hsla)
-            .unwrap_or(text);
-        
-        let border = theme.get("ui.popup").fg
-            .and_then(color_to_hsla)
-            .or_else(|| theme.get("ui.text").fg.and_then(color_to_hsla))
-            .map(|color| hsla(color.h, color.s, color.l * 0.5, color.a)) // Make border dimmer
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.3, 1.0));
-        
-        let prompt_text = theme.get("ui.text").fg
-            .and_then(color_to_hsla)
-            .map(|color| hsla(color.h, color.s, color.l * 0.7, color.a)) // Make prompt text dimmer
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.7, 1.0));
+        let modal_style = ModalStyle::from_theme(theme);
         
         // Get preview background - slightly different from main background
         let preview_background = theme.get("ui.background.separator").bg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.background").bg.and_then(color_to_hsla))
-            .unwrap_or(background);
+            .unwrap_or(modal_style.background);
         
         // Get cursor color from theme
         let cursor = theme.get("ui.cursor").fg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.cursor.primary").fg.and_then(color_to_hsla))
             .or_else(|| theme.get("ui.cursor").bg.and_then(color_to_hsla))
-            .unwrap_or(text);
+            .unwrap_or(modal_style.text);
         
         Self {
-            background,
-            text,
-            selected_background,
-            selected_text,
-            border,
-            prompt_text,
+            modal_style,
             preview_background,
             cursor,
         }
@@ -656,13 +614,12 @@ impl Drop for PickerView {
     }
 }
 
+impl FocusableModal for PickerView {}
+
 impl Render for PickerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Ensure the picker has focus when rendered
-        if !self.focus_handle.is_focused(window) {
-            println!("🔍 Picker not focused, requesting focus");
-            self.focus_handle.focus(window);
-        }
+        self.ensure_focus(window, &self.focus_handle);
         
         // Load initial preview if not already loaded
         if !self.initial_preview_loaded && !self.filtered_indices.is_empty() {
@@ -701,9 +658,9 @@ impl Render for PickerView {
             .absolute()  // Use absolute positioning
             .w(total_width)
             .h(max_height)  // Use fixed height instead of max_h to prevent size changes
-            .bg(self.style.background)
+            .bg(self.style.modal_style.background)
             .border_1()
-            .border_color(self.style.border)
+            .border_color(self.style.modal_style.border)
             .rounded_md()
             .shadow_lg()
             .font(font)
@@ -796,65 +753,27 @@ impl Render for PickerView {
                     .px_3()
                     .h_10()  // Fixed height for search input
                     .border_b_1()
-                    .border_color(self.style.border)
+                    .border_color(self.style.modal_style.border)
                     .child(
                         div()
                             .flex_1()
                             .flex()
                             .items_center()
-                            .child({
-                                // Render query with cursor
-                                let query_str = self.query.to_string();
-                                let chars: Vec<char> = query_str.chars().collect();
-                                
-                                // Calculate byte position from character position
-                                let mut byte_pos = 0;
-                                for (i, ch) in chars.iter().enumerate() {
-                                    if i >= self.cursor_position {
-                                        break;
-                                    }
-                                    byte_pos += ch.len_utf8();
-                                }
-                                
-                                let before_cursor = query_str[..byte_pos].to_string();
-                                let after_cursor = query_str[byte_pos..].to_string();
-                                
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .child(
-                                        // Text before cursor
-                                        div()
-                                            .when(!before_cursor.is_empty(), |this| {
-                                                this.child(before_cursor)
-                                                    .text_color(self.style.prompt_text)
-                                            })
-                                    )
-                                    .child(
-                                        // Cursor
-                                        div()
-                                            .w(px(2.0))
-                                            .h(px(16.0))
-                                            .bg(self.style.cursor)
-                                            .when(!self.focus_handle.is_focused(window), |this| {
-                                                this.opacity(0.5)
-                                            })
-                                    )
-                                    .child(
-                                        // Text after cursor
-                                        div()
-                                            .when(!after_cursor.is_empty(), |this| {
-                                                this.child(after_cursor)
-                                                    .text_color(self.style.prompt_text)
-                                            })
-                                    )
-                            })
+                            .child(
+                                SearchInput::new(
+                                    &self.query,
+                                    self.cursor_position,
+                                    self.style.cursor,
+                                    self.style.modal_style.prompt_text,
+                                    self.focus_handle.is_focused(window),
+                                )
+                            )
                     )
                     .child(
                         // File count display
                         div()
                             .text_size(px(12.))
-                            .text_color(self.style.prompt_text)
+                            .text_color(self.style.modal_style.prompt_text)
                             .child(if self.filtered_indices.is_empty() {
                                 "0/0".to_string()
                             } else {
@@ -876,7 +795,7 @@ impl Render for PickerView {
                             .w(list_width)
                             .h_full()  // Use fixed height instead of flex_1
                             .overflow_hidden()  // Ensure overflow is hidden
-                            .when(show_preview, |this| this.border_r_1().border_color(self.style.border))
+                            .when(show_preview, |this| this.border_r_1().border_color(self.style.modal_style.border))
                             .when(self.filtered_indices.is_empty(), |this| {
                                 this.child(
                                     div()
@@ -884,7 +803,7 @@ impl Render for PickerView {
                                         .items_center()
                                         .justify_center()
                                         .h_24()
-                                        .text_color(self.style.prompt_text)
+                                        .text_color(self.style.modal_style.prompt_text)
                                         .child("No matches found")
                                 )
                             })
@@ -909,10 +828,10 @@ impl Render for PickerView {
                                                         .justify_center()
                                                         .cursor_pointer()
                                                         .when(is_selected, |this| {
-                                                            this.bg(picker.style.selected_background)
-                                                                .text_color(picker.style.selected_text)
+                                                            this.bg(picker.style.modal_style.selected_background)
+                                                                .text_color(picker.style.modal_style.selected_text)
                                                         })
-                                                        .when(!is_selected, |this| this.text_color(picker.style.text))
+                                                        .when(!is_selected, |this| this.text_color(picker.style.modal_style.text))
                                                         .child(
                                                             div()
                                                                 .overflow_hidden()
@@ -925,7 +844,7 @@ impl Render for PickerView {
                                                                     .overflow_hidden()
                                                                     .text_ellipsis()
                                                                     .text_size(px(12.))
-                                                                    .text_color(picker.style.prompt_text)
+                                                                    .text_color(picker.style.modal_style.prompt_text)
                                                                     .child(sublabel.clone())
                                                             )
                                                         })
@@ -970,7 +889,7 @@ impl Render for PickerView {
                                                         .px_3()
                                                         .py_2()
                                                         .text_size(px(12.))
-                                                        .text_color(self.style.text)
+                                                        .text_color(self.style.modal_style.text)
                                                         .font(cx.global::<crate::FontSettings>().fixed_font.clone())
                                                         .overflow_y_hidden()
                                                         .w_full()
@@ -983,7 +902,7 @@ impl Render for PickerView {
                                                         .px_3()
                                                         .py_2()
                                                         .text_size(px(12.))
-                                                        .text_color(self.style.text)
+                                                        .text_color(self.style.modal_style.text)
                                                         .font(cx.global::<crate::FontSettings>().fixed_font.clone())
                                                         .child(
                                                             match &self.preview_content {
@@ -999,7 +918,7 @@ impl Render for PickerView {
                                                     .px_3()
                                                     .py_2()
                                                     .text_size(px(12.))
-                                                    .text_color(self.style.text)
+                                                    .text_color(self.style.modal_style.text)
                                                     .font_family("monospace")
                                                     .child(
                                                         match &self.preview_content {

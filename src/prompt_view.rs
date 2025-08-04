@@ -3,6 +3,7 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use crate::ui::common::ModalStyle;
 
 #[derive(Clone, Debug)]
 pub struct CompletionItem {
@@ -42,25 +43,15 @@ pub struct PromptView {
 
 #[derive(Clone)]
 pub struct PromptStyle {
-    pub background: Hsla,
-    pub text: Hsla,
-    pub prompt_text: Hsla,
-    pub border: Hsla,
+    pub modal_style: ModalStyle,
     pub completion_background: Hsla,
-    pub completion_selected: Hsla,
-    pub completion_selected_text: Hsla,
 }
 
 impl Default for PromptStyle {
     fn default() -> Self {
         Self {
-            background: hsla(0.0, 0.0, 0.1, 1.0),
-            text: hsla(0.0, 0.0, 0.9, 1.0),
-            prompt_text: hsla(220.0 / 360.0, 0.6, 0.7, 1.0),
-            border: hsla(0.0, 0.0, 0.3, 1.0),
+            modal_style: ModalStyle::default(),
             completion_background: hsla(0.0, 0.0, 0.15, 1.0),
-            completion_selected: hsla(220.0 / 360.0, 0.6, 0.5, 1.0),
-            completion_selected_text: hsla(0.0, 0.0, 1.0, 1.0),
         }
     }
 }
@@ -69,34 +60,14 @@ impl PromptStyle {
     pub fn from_helix_theme(theme: &helix_view::Theme) -> Self {
         use crate::utils::color_to_hsla;
         
-        let ui_bg = theme.get("ui.background");
-        let ui_text = theme.get("ui.text");
+        let modal_style = ModalStyle::from_theme(theme);
         let ui_menu = theme.get("ui.menu");
-        let ui_menu_selected = theme.get("ui.menu.selected");
-        let ui_window = theme.get("ui.window");
         
         Self {
-            background: ui_bg.bg
-                .and_then(color_to_hsla)
-                .unwrap_or(hsla(0.0, 0.0, 0.1, 1.0)),
-            text: ui_text.fg
-                .and_then(color_to_hsla)
-                .unwrap_or(hsla(0.0, 0.0, 0.9, 1.0)),
-            prompt_text: ui_text.fg
-                .and_then(color_to_hsla)
-                .unwrap_or(hsla(220.0 / 360.0, 0.6, 0.7, 1.0)),
-            border: ui_window.fg
-                .and_then(color_to_hsla)
-                .unwrap_or(hsla(0.0, 0.0, 0.3, 1.0)),
+            modal_style,
             completion_background: ui_menu.bg
                 .and_then(color_to_hsla)
                 .unwrap_or(hsla(0.0, 0.0, 0.15, 1.0)),
-            completion_selected: ui_menu_selected.bg
-                .and_then(color_to_hsla)
-                .unwrap_or(hsla(220.0 / 360.0, 0.6, 0.5, 1.0)),
-            completion_selected_text: ui_menu_selected.fg
-                .and_then(color_to_hsla)
-                .unwrap_or(hsla(0.0, 0.0, 1.0, 1.0)),
         }
     }
 }
@@ -393,9 +364,9 @@ impl Render for PromptView {
             .flex()
             .flex_col()
             .w(px(500.))
-            .bg(self.style.background)
+            .bg(self.style.modal_style.background)
             .border_1()
-            .border_color(self.style.border)
+            .border_color(self.style.modal_style.border)
             .rounded_md()
             .shadow_lg()
             .font(font)
@@ -480,14 +451,14 @@ impl Render for PromptView {
                     .gap_2()
                     .child(
                         div()
-                            .text_color(self.style.prompt_text)
+                            .text_color(self.style.modal_style.prompt_text)
                             .font_weight(gpui::FontWeight::BOLD)
                             .child(self.prompt.clone())
                     )
                     .child(
                         div()
                             .flex_1()
-                            .text_color(self.style.text)
+                            .text_color(self.style.modal_style.text)
                             .child(
                                 // Split the input at cursor position for proper cursor rendering
                                 div()
@@ -502,7 +473,7 @@ impl Render for PromptView {
                                         div()
                                             .w(px(2.))
                                             .h(px(18.))
-                                            .bg(self.style.text)
+                                            .bg(self.style.modal_style.text)
                                             .when(!self.focus_handle.is_focused(window), |this| {
                                                 this.opacity(0.5)
                                             })
@@ -516,7 +487,7 @@ impl Render for PromptView {
                                     .when_some(ghost_text.clone(), |this, ghost| {
                                         this.child(
                                             div()
-                                                .text_color(self.style.text)
+                                                .text_color(self.style.modal_style.text)
                                                 .opacity(0.5) // Make it faded
                                                 .child(ghost)
                                         )
@@ -528,7 +499,7 @@ impl Render for PromptView {
                 this.child(
                     div()
                         .border_t_1()
-                        .border_color(self.style.border)
+                        .border_color(self.style.modal_style.border)
                         .bg(self.style.completion_background)
                         .max_h(px(200.))
                         .overflow_y_hidden()
@@ -549,14 +520,14 @@ impl Render for PromptView {
                                     .px_3()
                                     .py_1()
                                     .when(is_selected, |this| {
-                                        this.bg(self.style.completion_selected)
+                                        this.bg(self.style.modal_style.selected_background)
                                     })
                                     .child(
                                         div()
                                             .text_color(if is_selected { 
-                                                self.style.completion_selected_text 
+                                                self.style.modal_style.selected_text 
                                             } else { 
-                                                self.style.text 
+                                                self.style.modal_style.text 
                                             })
                                             .child(completion.text.clone())
                                     )
@@ -565,9 +536,9 @@ impl Render for PromptView {
                                             div()
                                                 .text_size(px(12.))
                                                 .text_color(if is_selected {
-                                                    self.style.completion_selected_text
+                                                    self.style.modal_style.selected_text
                                                 } else {
-                                                    self.style.prompt_text
+                                                    self.style.modal_style.prompt_text
                                                 })
                                                 .child(desc.clone())
                                         )

@@ -2,6 +2,7 @@
 // ABOUTME: Provides consistent, styled components for the application
 
 pub mod button;
+pub mod common;
 pub mod input;
 pub mod label;
 pub mod list_item;
