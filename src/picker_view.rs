@@ -621,8 +621,8 @@ impl Drop for PickerView {
 
 impl FocusableModal for PickerView {}
 
-impl Render for PickerView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl PickerView {
+    fn render_picker_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Ensure the picker has focus when rendered
         self.ensure_focus(window, &self.focus_handle);
         
@@ -660,7 +660,6 @@ impl Render for PickerView {
 
         div().flex().flex_col()
             .key_context("Picker")  // Set proper key context for picker
-            .absolute()  // Use absolute positioning
             .w(total_width)
             .h(max_height)  // Use fixed height instead of max_h to prevent size changes
             .bg(self.style.modal_style.background)
@@ -938,5 +937,13 @@ impl Render for PickerView {
                         )
                     })
             )
+    }
+}
+
+impl Render for PickerView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The picker view itself is the content that will be wrapped by Overlay
+        // We only render the inner content here, not the overlay wrapper
+        self.render_picker_content(window, cx)
     }
 }

@@ -1,4 +1,3 @@
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::completion::CompletionView;
@@ -58,7 +57,7 @@ impl OverlayView {
     fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         match ev {
             crate::Update::Prompt(prompt) => {
-                println!("📝 OverlayView received prompt: {:?}", prompt);
+                println!("📝 OverlayView received prompt: {prompt:?}");
                 match prompt {
                     Prompt::Native { prompt: prompt_text, initial_input, on_submit, on_cancel } => {
                         println!("🎯 Creating native PromptView");
@@ -122,7 +121,7 @@ impl OverlayView {
                                                     }
                                                 })
                                                 .collect()
-                                            } else if parts.len() >= 1 && parts[0] == "theme" {
+                                            } else if !parts.is_empty() && parts[0] == "theme" {
                                                 // Get available themes - inline the theme completion logic
                                                 let theme_prefix = if parts.len() > 1 { parts[1] } else { "" };
                                                 
@@ -138,21 +137,21 @@ impl OverlayView {
                                                 fuzzy_match(theme_prefix, names, false)
                                                     .into_iter()
                                                     .map(|(name, _score)| crate::prompt_view::CompletionItem {
-                                                        text: format!("theme {}", name).into(),
-                                                        description: Some(format!("Switch to {} theme", name).into()),
+                                                        text: format!("theme {name}").into(),
+                                                        description: Some(format!("Switch to {name} theme").into()),
                                                     })
                                                     .collect()
                                             } else {
                                                 Vec::new()
                                             }
                                     })
-                                    .unwrap_or_else(Vec::new)
+                                    .unwrap_or_default()
                             });
                             
                             // Set up the submit callback with command execution
                             let core_weak_submit = self.core.clone();
                             view = view.on_submit(move |input: &str, cx| {
-                                println!("📝 Prompt submitted: '{}'", input);
+                                println!("📝 Prompt submitted: '{input}'");
                                 
                                 // Emit CommandSubmitted event to be handled by workspace
                                 if let Some(core) = core_weak_submit.upgrade() {
@@ -225,7 +224,7 @@ impl OverlayView {
                 cx.notify();
             }
             crate::Update::Picker(picker) => {
-                println!("🔍 OverlayView received picker: {:?}", picker);
+                println!("🔍 OverlayView received picker: {picker:?}");
                 match picker {
                     Picker::Native { title: _, items, on_select } => {
                         println!("🎯 Creating native PickerView with {} items", items.len());
@@ -291,7 +290,7 @@ impl OverlayView {
                         }).detach();
                         
                         self.native_picker_view = Some(picker_view);
-                        println!("✅ Set native_picker_view to Some() with {} items", items_count);
+                        println!("✅ Set native_picker_view to Some() with {items_count} items");
                     }
                 }
                 
@@ -333,54 +332,94 @@ impl Render for OverlayView {
             self.native_picker_view.is_some()
         );
         
-        div()
-            .key_context("Overlay")
-            .absolute()
-            .size_full()
-            .bottom_0()
-            .left_0()
-            .occlude()
-            .on_mouse_down(MouseButton::Left, |_, _, _| {
-                // Prevent click-through to elements below
-            })
-            .child(
-                div()
-                    .flex()
-                    .size_full()
-                    .justify_center()
-                    .items_start()  // Align to top instead of center
-                    .pt_20()  // Add padding from top
-                    .when_some(self.completion_view.clone(), |this, completion_view| {
-                        println!("🎨 Rendering completion view");
-                        // Completion view handles its own positioning (absolute)
-                        this.child(completion_view)
-                    })
-                    .when_some(self.native_prompt_view.clone(), |this, prompt_view| {
-                        println!("🎨 Rendering native prompt view");
-                        // Use the actual PromptView component with full keyboard support
-                        this.child(prompt_view)
-                    })
-                    .when_some(self.prompt.take(), |this, prompt| {
-                        println!("🎨 Rendering legacy prompt");
-                        // Fallback for legacy prompts
-                        let handle = cx.focus_handle();
-                        // Get theme from core
-                        let theme = self.core.upgrade()
-                            .map(|core| core.read(cx).editor.theme.clone());
-                        let prompt = PromptElement {
-                            prompt,
-                            focus: handle.clone(),
-                            theme,
-                        };
-                        // Focus is set through the focus handle when needed
-                        this.child(prompt)
-                    })
-                    .when_some(self.native_picker_view.clone(), |this, picker_view| {
-                        println!("🎨 Rendering native picker view");
-                        // Use the actual PickerView component with full keyboard support
-                        // Focus is handled by focus delegation in FocusableView
-                        this.child(picker_view)
-                    })
-            )
+        // Check what type of overlay we should render
+        if let Some(picker_view) = &self.native_picker_view {
+            println!("🎨 Rendering native picker view with Overlay wrapper");
+            // For now, render picker directly until we update Overlay to work with entities
+            return div()
+                .key_context("Overlay")
+                .absolute()
+                .size_full()
+                .bottom_0()
+                .left_0()
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, _| {
+                    // Prevent click-through to elements below
+                })
+                .child(
+                    div()
+                        .flex()
+                        .size_full()
+                        .justify_center()
+                        .items_start()
+                        .pt_20()
+                        .child(picker_view.clone())
+                )
+                .into_any_element();
+        }
+        
+        if let Some(prompt_view) = &self.native_prompt_view {
+            println!("🎨 Rendering native prompt view with Overlay wrapper");
+            // For now, render prompt directly until we update Overlay to work with entities
+            return div()
+                .key_context("Overlay")
+                .absolute()
+                .size_full()
+                .bottom_0()
+                .left_0()
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, _| {
+                    // Prevent click-through to elements below
+                })
+                .child(
+                    div()
+                        .flex()
+                        .size_full()
+                        .justify_center()
+                        .items_start()
+                        .pt_20()
+                        .child(prompt_view.clone())
+                )
+                .into_any_element();
+        }
+        
+        if let Some(completion_view) = &self.completion_view {
+            println!("🎨 Rendering completion view");
+            // Completion view handles its own positioning
+            return completion_view.clone().into_any_element();
+        }
+        
+        // Legacy prompt fallback
+        if let Some(prompt) = self.prompt.take() {
+            println!("🎨 Rendering legacy prompt");
+            let handle = cx.focus_handle();
+            let theme = self.core.upgrade()
+                .map(|core| core.read(cx).editor.theme.clone());
+            let prompt_elem = PromptElement {
+                prompt,
+                focus: handle.clone(),
+                theme,
+            };
+            return div()
+                .key_context("Overlay")
+                .absolute()
+                .size_full()
+                .bottom_0()
+                .left_0()
+                .occlude()
+                .child(
+                    div()
+                        .flex()
+                        .size_full()
+                        .justify_center()
+                        .items_start()
+                        .pt_20()
+                        .child(prompt_elem)
+                )
+                .into_any_element();
+        }
+        
+        // Empty overlay
+        div().size_0().into_any_element()
     }
 }
