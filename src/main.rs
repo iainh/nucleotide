@@ -19,6 +19,7 @@ mod application;
 mod completion;
 mod config;
 mod document;
+mod error_boundary;
 mod info_box;
 mod key_hint_view;
 mod line_cache;
@@ -285,12 +286,20 @@ fn gui_main(app: Application, config: crate::config::Config, handle: tokio::runt
             let crank = cx.new(|mc| {
                 mc.spawn(async move |crank, cx| {
                     loop {
-                        cx.background_executor()
+                        // Add error handling around the timer operation
+                        match cx.background_executor()
                             .timer(Duration::from_millis(200)) // 5fps instead of 20fps
-                            .await;
-                        let _ = crank.update(cx, |_crank, cx| {
-                            cx.emit(());
-                        });
+                            .await {
+                            _ => {
+                                // Timer completed, emit update event
+                                if let Err(e) = crank.update(cx, |_crank, cx| {
+                                    cx.emit(());
+                                }) {
+                                    log::warn!("Failed to emit crank event: {:?}", e);
+                                    // Continue the loop even if update fails
+                                }
+                            }
+                        }
                     }
                 })
                 .detach();

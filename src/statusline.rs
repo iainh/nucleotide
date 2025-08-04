@@ -56,7 +56,17 @@ impl StatusLine {
     ) -> (StyledText, StyledText, StyledText) {
         use self::copy_pasta::{render_status_parts, RenderContext};
         let editor = &self.core.read(cx).editor;
-        let doc = editor.document(self.doc_id).unwrap();
+        let doc = match editor.document(self.doc_id) {
+            Some(doc) => doc,
+            None => {
+                // Document was closed, return empty status
+                return (
+                    StyledText::new(""),
+                    StyledText::new(""),
+                    StyledText::new(""),
+                );
+            }
+        };
         let view = editor.tree.get(self.view_id);
 
         let mut ctx = RenderContext {

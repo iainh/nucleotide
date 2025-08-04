@@ -858,7 +858,13 @@ impl Element for DocumentElement {
                         let editor = &mut core.editor;
                         let view = editor.tree.get(view_id);
                         let doc_id = view.doc;
-                        let doc = editor.document(doc_id).unwrap();
+                        let doc = match editor.document(doc_id) {
+                            Some(doc) => doc,
+                            None => {
+                                // Document was closed during interaction
+                                return;
+                            }
+                        };
                         let text = doc.text();
                         
                         // Get the line text to convert between char and grapheme indices
@@ -924,7 +930,13 @@ impl Element for DocumentElement {
                         let editor = &mut core.editor;
                         let view = editor.tree.get(view_id_drag);
                         let doc_id = view.doc;
-                        let doc = editor.document(doc_id).unwrap();
+                        let doc = match editor.document(doc_id) {
+                            Some(doc) => doc,
+                            None => {
+                                // Document was closed during interaction
+                                return;
+                            }
+                        };
                         let text = doc.text();
                         
                         // Get the line text to convert between char and grapheme indices
