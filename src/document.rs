@@ -297,16 +297,13 @@ impl DocumentElement {
         let line_start = line_start.max(anchor);
         let line_end = line_end.min(end_char);
         
-        if line_start >= line_end {
+        // For empty lines, line_start may equal line_end, which is valid
+        if line_start > line_end {
             return None;
         }
         
         let line_slice = text.slice(line_start..line_end);
         let line_str: SharedString = RopeWrapper(line_slice).into();
-        
-        if line_str.is_empty() {
-            return None;
-        }
         
         // Get highlights for this line (re-read core)
         let core = self.core.read(cx);
@@ -1178,7 +1175,9 @@ impl Element for DocumentElement {
                     let line_start = line_start.max(anchor);
                     let line_end = line_end.min(end_char);
                     
-                    if line_start >= line_end {
+                    // For empty lines, line_start may equal line_end, which is valid
+                    // We still need to render them for cursor positioning
+                    if line_start > line_end {
                         y_offset += after_layout.line_height;
                         continue;
                     }
