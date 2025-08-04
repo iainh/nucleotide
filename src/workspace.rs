@@ -252,6 +252,27 @@ impl Workspace {
                         }
                     }
                     
+                    // Check if the theme has changed after command execution
+                    let current_theme = core.editor.theme.clone();
+                    let theme_manager = cx.global::<crate::theme_manager::ThemeManager>();
+                    
+                    // If the theme has changed, update the ThemeManager and UI theme
+                    if theme_manager.helix_theme().name() != current_theme.name() {
+                        // Update the global ThemeManager
+                        cx.update_global(|theme_manager: &mut crate::theme_manager::ThemeManager, _cx| {
+                            theme_manager.set_theme(current_theme.clone());
+                        });
+                        
+                        // Update the global UI theme
+                        let new_ui_theme = cx.global::<crate::theme_manager::ThemeManager>().ui_theme().clone();
+                        cx.update_global(|_ui_theme: &mut crate::ui::Theme, _cx| {
+                            *_ui_theme = new_ui_theme;
+                        });
+                        
+                        // Force a full redraw to update all components
+                        cx.notify();
+                    }
+                    
                     // Check if we should quit after command execution
                     if core.editor.should_close() {
                         cx.emit(crate::Update::ShouldQuit);
@@ -322,7 +343,7 @@ impl Workspace {
             width: info.width,
             height: info.height,
         });
-        let theme = editor.theme.clone();
+        let theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme().clone();
         
         
         self.key_hints.update(cx, |key_hints, cx| {
@@ -483,15 +504,17 @@ impl Render for Workspace {
         
         let editor = &self.core.read(cx).editor;
 
-        let default_style = editor.theme.get("ui.background");
-        let default_ui_text = editor.theme.get("ui.text");
+        // Get theme from ThemeManager instead of editor directly
+        let theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
+        let default_style = theme.get("ui.background");
+        let default_ui_text = theme.get("ui.text");
         let bg_color = default_style.bg
             .and_then(|c| utils::color_to_hsla(c))
             .unwrap_or(black());
         let _text_color = default_ui_text.fg
             .and_then(|c| utils::color_to_hsla(c))
             .unwrap_or(white());
-        let window_style = editor.theme.get("ui.window");
+        let window_style = theme.get("ui.window");
         let border_color = window_style.fg
             .and_then(|c| utils::color_to_hsla(c))
             .unwrap_or(white());
