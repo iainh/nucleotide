@@ -1756,6 +1756,23 @@ struct LinePos {
 
 // Syntax highlighting support based on helix-term implementation
 
+/// Safe wrapper for theme.highlight() that handles out of bounds access
+fn safe_highlight(theme: &Theme, highlight: syntax::Highlight) -> helix_view::graphics::Style {
+    // The theme.highlight() method can panic if the highlight index is out of bounds
+    // This can happen when syntax highlighting returns indices for highlights that
+    // don't exist in the current theme. We handle this gracefully by returning
+    // a default style instead of panicking.
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    
+    match catch_unwind(AssertUnwindSafe(|| theme.highlight(highlight))) {
+        Ok(style) => style,
+        Err(_) => {
+            log::debug!("Highlight index out of bounds for current theme, using default style");
+            helix_view::graphics::Style::default()
+        }
+    }
+}
+
 struct SyntaxHighlighter<'h, 'r, 't> {
     inner: Option<syntax::Highlighter<'h>>,
     text: RopeSlice<'r>,
@@ -1814,7 +1831,8 @@ impl<'h, 'r, 't> SyntaxHighlighter<'h, 'r, 't> {
         };
 
         self.style = highlights.fold(base, |acc, highlight| {
-            let patched = acc.patch(self.theme.highlight(highlight));
+            let highlight_style = safe_highlight(self.theme, highlight);
+            let patched = acc.patch(highlight_style);
             if patched != acc {
                 debug!(
                     "Applying highlight: {:?} -> style: {:?}",
@@ -1859,7 +1877,8 @@ impl<'t> OverlayHighlighter<'t> {
         };
 
         self.style = highlights.fold(base, |acc, highlight| {
-            acc.patch(self.theme.highlight(highlight))
+            let highlight_style = safe_highlight(self.theme, highlight);
+            acc.patch(highlight_style)
         });
         self.update_pos();
     }
