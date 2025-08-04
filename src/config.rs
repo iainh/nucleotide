@@ -9,10 +9,12 @@ use helix_term::config::Config as HelixConfig;
 /// Font weight enumeration matching common font weights
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum FontWeight {
     Thin,
     ExtraLight,
     Light,
+    #[default]
     Normal,
     Medium,
     SemiBold,
@@ -21,11 +23,6 @@ pub enum FontWeight {
     Black,
 }
 
-impl Default for FontWeight {
-    fn default() -> Self {
-        FontWeight::Normal
-    }
-}
 
 impl From<FontWeight> for gpui::FontWeight {
     fn from(weight: FontWeight) -> Self {
@@ -194,12 +191,16 @@ mod tests {
     
     #[test]
     fn test_font_weight_serialization() {
-        let weight = FontWeight::Bold;
-        let serialized = toml::to_string(&weight).unwrap();
-        assert_eq!(serialized.trim(), "\"bold\"");
-        
-        let deserialized: FontWeight = toml::from_str("\"semibold\"").unwrap();
+        // Test deserialization from JSON (since TOML doesn't support bare enum values)
+        let deserialized: FontWeight = serde_json::from_str("\"semibold\"").expect("Failed to deserialize FontWeight");
         assert_eq!(deserialized, FontWeight::SemiBold);
+        
+        let deserialized: FontWeight = serde_json::from_str("\"bold\"").expect("Failed to deserialize FontWeight");
+        assert_eq!(deserialized, FontWeight::Bold);
+        
+        // Test that FontWeight converts correctly to gpui::FontWeight
+        assert_eq!(gpui::FontWeight::from(FontWeight::Bold), gpui::FontWeight::BOLD);
+        assert_eq!(gpui::FontWeight::from(FontWeight::Normal), gpui::FontWeight::NORMAL);
     }
     
     #[test]
@@ -216,14 +217,16 @@ weight = "normal"
 size = 14.5
 "#;
         
-        let config: GuiConfig = toml::from_str(config_str).unwrap();
+        let config: GuiConfig = toml::from_str(config_str).expect("Failed to parse GuiConfig");
         
-        assert_eq!(config.ui.font.as_ref().unwrap().family, "Inter");
-        assert_eq!(config.ui.font.as_ref().unwrap().weight, FontWeight::Medium);
-        assert_eq!(config.ui.font.as_ref().unwrap().size, 13.0);
+        let ui_font = config.ui.font.as_ref().expect("UI font should be set");
+        assert_eq!(ui_font.family, "Inter");
+        assert_eq!(ui_font.weight, FontWeight::Medium);
+        assert_eq!(ui_font.size, 13.0);
         
-        assert_eq!(config.editor.font.as_ref().unwrap().family, "JetBrains Mono");
-        assert_eq!(config.editor.font.as_ref().unwrap().weight, FontWeight::Normal);
-        assert_eq!(config.editor.font.as_ref().unwrap().size, 14.5);
+        let editor_font = config.editor.font.as_ref().expect("Editor font should be set");
+        assert_eq!(editor_font.family, "JetBrains Mono");
+        assert_eq!(editor_font.weight, FontWeight::Normal);
+        assert_eq!(editor_font.size, 14.5);
     }
 }

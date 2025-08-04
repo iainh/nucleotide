@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 use std::time::Duration;
 use std::panic;
 
@@ -71,7 +73,7 @@ fn setup_logging(verbosity: u64) -> Result<()> {
 
 fn install_panic_handler() {
     panic::set_hook(Box::new(|info| {
-        log::error!("Application panic: {}", info);
+        log::error!("Application panic: {info}");
         
         // Log backtrace if enabled
         if let Ok(backtrace) = std::env::var("RUST_BACKTRACE") {
@@ -82,7 +84,7 @@ fn install_panic_handler() {
         
         // Try to save any unsaved work would go here if we had access to the app state
         // For now, just log and exit gracefully
-        eprintln!("Fatal error: {}", info);
+        eprintln!("Fatal error: {info}");
         
         // Exit gracefully
         std::process::exit(1);
@@ -96,7 +98,7 @@ fn main() -> Result<()> {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(e) => {
-            eprintln!("Failed to initialize Tokio runtime: {}", e);
+            eprintln!("Failed to initialize Tokio runtime: {e}");
             return Err(anyhow::anyhow!("Runtime initialization failed: {}", e));
         }
     };
@@ -109,7 +111,7 @@ fn main() -> Result<()> {
             return Err(anyhow::anyhow!("Editor initialization failed"));
         }
         Err(e) => {
-            eprintln!("Failed to initialize editor: {}", e);
+            eprintln!("Failed to initialize editor: {e}");
             return Err(e);
         }
     };
@@ -295,7 +297,7 @@ fn gui_main(app: Application, config: crate::config::Config, handle: tokio::runt
                                 if let Err(e) = crank.update(cx, |_crank, cx| {
                                     cx.emit(());
                                 }) {
-                                    log::warn!("Failed to emit crank event: {:?}", e);
+                                    log::warn!("Failed to emit crank event: {e:?}");
                                     // Continue the loop even if update fails
                                 }
                             }
@@ -321,7 +323,8 @@ fn gui_main(app: Application, config: crate::config::Config, handle: tokio::runt
                 )
                 .detach();
                 mc.subscribe(&crank, move |this: &mut Application, _, ev, cx| {
-                    this.handle_crank_event(*ev, cx, handle_2.clone());
+                    *ev;
+                    this.handle_crank_event((), cx, handle_2.clone());
                 })
                 .detach();
                 app
@@ -387,15 +390,15 @@ fn gui_main(app: Application, config: crate::config::Config, handle: tokio::runt
             });
             
             // Create workspace
-            let workspace = cx.new(|cx| {
+            
+            
+            cx.new(|cx| {
                 cx.subscribe(&app, |w: &mut workspace::Workspace, _, ev, cx| {
                     w.handle_event(ev, cx);
                 })
                 .detach();
                 workspace::Workspace::with_views(app, input_1.clone(), handle, overlay, notifications, info, cx)
-            });
-            
-            workspace
+            })
         });
     })
 }
@@ -444,12 +447,12 @@ FLAGS:
 
     // Help has a higher priority and should be handled separately.
     if args.display_help {
-        print!("{}", help);
+        print!("{help}");
         std::process::exit(0);
     }
 
     if args.display_version {
-        println!("helix {}", VERSION_AND_GIT_HASH);
+        println!("helix {VERSION_AND_GIT_HASH}");
         std::process::exit(0);
     }
 
@@ -497,7 +500,7 @@ FLAGS:
     let config = match crate::config::Config::load() {
         Ok(config) => config,
         Err(err) => {
-            eprintln!("Failed to load configuration: {}", err);
+            eprintln!("Failed to load configuration: {err}");
             eprintln!("Using default configuration");
             crate::config::Config {
                 helix: helix_term::config::Config::default(),
@@ -507,7 +510,7 @@ FLAGS:
     };
 
     let lang_loader = helix_core::config::user_lang_loader().unwrap_or_else(|err| {
-        eprintln!("{}", err);
+        eprintln!("{err}");
         eprintln!("Press <ENTER> to continue with default language config");
         use std::io::Read;
         // This waits for an enter press.

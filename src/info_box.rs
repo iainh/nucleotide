@@ -60,8 +60,12 @@ impl Render for InfoBoxView {
                     .shadow_sm()
                     .font(font)
                     .text_size(px(cx.global::<crate::UiFontConfig>().size - 1.0))
-                    .text_color(self.style.text.color.unwrap())
-                    .bg(self.style.background.as_ref().cloned().unwrap())
+                    .when_some(self.style.text.color, |this, color| {
+                        this.text_color(color)
+                    })
+                    .when_some(self.style.background.as_ref().cloned(), |this, bg| {
+                        this.bg(bg)
+                    })
                     .p_2()
                     .flex()
                     .flex_row()
@@ -88,3 +92,4 @@ impl Render for InfoBoxView {
             )
     }
 }
+

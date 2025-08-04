@@ -40,6 +40,7 @@ pub struct PickerView {
     preview_view_id: Option<helix_view::ViewId>,
     core: Option<WeakEntity<crate::Core>>,
     initial_preview_loaded: bool,
+    preview_task: Option<Task<()>>,
 
     // Callbacks
     on_select: Option<Box<dyn FnMut(&PickerItem, &mut Context<Self>) + 'static>>,
@@ -125,6 +126,7 @@ impl PickerView {
             preview_view_id: None,
             core: None,
             initial_preview_loaded: false,
+            preview_task: None,
             on_select: None,
             on_cancel: None,
             style: PickerStyle::default(),
@@ -152,6 +154,7 @@ impl PickerView {
             preview_view_id: None,
             core: None,
             initial_preview_loaded: false,
+            preview_task: None,
             on_select: None,
             on_cancel: None,
             style,
@@ -266,7 +269,7 @@ impl PickerView {
         };
 
         self.selected_index = new_index;
-        println!("🎯 Selection moved from {} to {} (delta: {})", old_index, new_index, delta);
+        println!("🎯 Selection moved from {old_index} to {new_index} (delta: {delta})");
 
         // Scroll to keep selection visible - GPUI handles this automatically!
         self.list_scroll_handle.scroll_to_item(self.selected_index, ScrollStrategy::Top);
@@ -285,7 +288,7 @@ impl PickerView {
         self.cleanup_preview_document(cx);
         
         if let Some(idx) = self.filtered_indices.get(self.selected_index) {
-            println!("🎯 Found filtered index: {}", idx);
+            println!("🎯 Found filtered index: {idx}");
             if let Some(item) = self.items.get(*idx as usize) {
                 println!("🎯 Found item: {}", item.label);
                 if let Some(on_select) = &mut self.on_select {
@@ -295,7 +298,7 @@ impl PickerView {
                     println!("🚫 No on_select callback set");
                 }
             } else {
-                println!("🚫 Item not found at index {}", idx);
+                println!("🚫 Item not found at index {idx}");
             }
         } else {
             println!("🚫 No filtered index found for selected_index {}", self.selected_index);
@@ -353,7 +356,7 @@ impl PickerView {
                     let ch_len = ch.len_utf8();
                     query.drain(byte_pos..byte_pos + ch_len);
                 } else {
-                    log::warn!("Attempted to delete character at invalid position {}", char_pos);
+                    log::warn!("Attempted to delete character at invalid position {char_pos}");
                 }
                 self.query = query.into();
                 self.cursor_position = char_pos;
@@ -431,7 +434,7 @@ impl PickerView {
 
         let core_weak = self.core.clone();
         // When spawning from Context<T>, the closure gets WeakEntity<T> as first param
-        cx.spawn(async move |view_weak, cx| {
+        self.preview_task = Some(cx.spawn(async move |view_weak, cx| {
             let content = if path.is_dir() {
                 // Load directory listing
                 match std::fs::read_dir(&path) {
@@ -463,7 +466,7 @@ impl PickerView {
                         }
                         content
                     }
-                    Err(e) => format!("Error reading directory: {}", e),
+                    Err(e) => format!("Error reading directory: {e}"),
                 }
             } else {
                 // Load file content
@@ -485,7 +488,7 @@ impl PickerView {
                                 meta.len(),
                                 meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH)
                             ),
-                            Err(e) => format!("Error reading file: {}", e),
+                            Err(e) => format!("Error reading file: {e}"),
                         }
                     }
                 }
@@ -558,8 +561,7 @@ impl PickerView {
                 this.preview_loading = false;
                 cx.notify();
             });
-        })
-        .detach();
+        }));
     }
 
     /// Clean up preview document - public method for external cleanup
@@ -568,18 +570,21 @@ impl PickerView {
     }
     
     fn cleanup_preview_document(&mut self, cx: &mut Context<Self>) {
+        // Cancel any pending preview task
+        self.preview_task = None;
+        
         if let (Some(doc_id), Some(view_id)) = (self.preview_doc_id.take(), self.preview_view_id.take()) {
-            println!("🧹 Cleaning up preview document: doc_id={:?}, view_id={:?}", doc_id, view_id);
+            println!("🧹 Cleaning up preview document: doc_id={doc_id:?}, view_id={view_id:?}");
             if let Some(core_weak) = &self.core {
                 if let Some(core) = core_weak.upgrade() {
                     core.update(cx, |core, _cx| {
                         // Close the view first, but only if it still exists
                         if core.editor.tree.contains(view_id) {
-                            println!("🧹 Closing preview view: {:?}", view_id);
+                            println!("🧹 Closing preview view: {view_id:?}");
                             core.editor.close(view_id);
                         }
                         // Then close the document without saving
-                        println!("🧹 Closing preview document: {:?}", doc_id);
+                        println!("🧹 Closing preview document: {doc_id:?}");
                         let _ = core.editor.close_document(doc_id, false);
                         
                         // Note: Unregistering from preview tracker happens in the outer scope
