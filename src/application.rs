@@ -1,5 +1,4 @@
 use std::{
-    collections::btree_map::Entry,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -7,11 +6,11 @@ use std::{
 use arc_swap::{access::Map, ArcSwap};
 use futures_util::FutureExt;
 use helix_core::{
-    diagnostic::{DiagnosticProvider, Severity},
+    diagnostic::Severity,
     pos_at_coords, syntax, Position, Selection,
 };
 use helix_lsp::{
-    lsp::{self, notification::Notification, Location},
+    lsp::Location,
     LanguageServerId, LspProgressMap,
 };
 use helix_stdx::path::get_relative_path;
@@ -125,8 +124,7 @@ pub struct Tag {
 }
 
 use anyhow::Error;
-use log::{debug, error, info, warn};
-use serde_json::json;
+use log::{debug, warn};
 use tokio_stream::StreamExt;
 
 pub struct Application {
@@ -135,6 +133,7 @@ pub struct Application {
     pub view: EditorView,
     pub jobs: Jobs,
     pub lsp_progress: LspProgressMap,
+    pub lsp_state: Option<gpui::Entity<crate::core::lsp_state::LspState>>,
 }
 
 #[derive(Debug, Clone)]
@@ -156,12 +155,35 @@ pub struct Crank;
 impl gpui::EventEmitter<()> for Crank {}
 
 impl Application {
+    /// Sync LSP state from the editor and progress map
+    pub fn sync_lsp_state(&self, cx: &mut gpui::App) {
+        if let Some(lsp_state) = &self.lsp_state {
+            lsp_state.update(cx, |state, _cx| {
+                // For now, we'll just track general LSP activity
+                // The helix Registry API doesn't expose direct iteration
+                // We'll track servers as they send messages
+                
+                // Clear old state
+                state.progress.clear();
+                
+                // We'll track active servers through LSP messages instead
+                // This is a simplified implementation until we figure out the Registry API
+                
+                // Update status message based on editor state
+                if let Some((msg, _severity)) = &self.editor.status_msg {
+                    state.status_message = Some(msg.to_string());
+                }
+            });
+        }
+    }
+    
     /// Safe document access API - read only
     pub fn with_document<F, R>(&self, doc_id: DocumentId, f: F) -> Option<R>
     where
         F: FnOnce(&helix_view::Document) -> R,
     {
-        self.editor.document(doc_id).map(f)
+        let doc_manager = crate::core::DocumentManager::new(&self.editor);
+        doc_manager.with_document(doc_id, f)
     }
     
     /// Safe document access API - mutable
@@ -169,7 +191,8 @@ impl Application {
     where
         F: FnOnce(&mut helix_view::Document) -> R,
     {
-        self.editor.document_mut(doc_id).map(f)
+        let mut doc_manager = crate::core::DocumentManagerMut::new(&mut self.editor);
+        doc_manager.with_document_mut(doc_id, f)
     }
     
     /// Safe document access API - returns Result instead of Option
@@ -178,10 +201,8 @@ impl Application {
         F: FnOnce(&helix_view::Document) -> Result<R, E>,
         E: From<String>,
     {
-        match self.editor.document(doc_id) {
-            Some(doc) => f(doc),
-            None => Err(E::from(format!("Document {doc_id} not found"))),
-        }
+        let doc_manager = crate::core::DocumentManager::new(&self.editor);
+        doc_manager.try_with_document(doc_id, f)
     }
     
     /// Safe document access API - mutable with Result
@@ -190,10 +211,8 @@ impl Application {
         F: FnOnce(&mut helix_view::Document) -> Result<R, E>,
         E: From<String>,
     {
-        match self.editor.document_mut(doc_id) {
-            Some(doc) => f(doc),
-            None => Err(E::from(format!("Document {doc_id} not found"))),
-        }
+        let mut doc_manager = crate::core::DocumentManagerMut::new(&mut self.editor);
+        doc_manager.try_with_document_mut(doc_id, f)
     }
     fn try_create_picker_component(&mut self) -> Option<crate::picker::Picker> {
         use helix_term::ui::{overlay::Overlay, Picker};
@@ -217,7 +236,7 @@ impl Application {
                 items,
                 |_index| {
                     // File selection logic would go here
-                    println!("File selected at index: {}", _index);
+                    println!("File selected at index: {_index}");
                 },
             ));
         }
@@ -234,7 +253,7 @@ impl Application {
             "Search:",
             "",
             |input| {
-                println!("🎉 Prompt submitted with input: '{}'", input);
+                println!("🎉 Prompt submitted with input: '{input}'");
                 // For now, just show the input - we'll handle the actual search via a different mechanism
             }
         ).with_cancel(|| {
@@ -272,8 +291,8 @@ impl Application {
     }
     
     pub fn open_file(&mut self, path: &Path) -> Result<(), anyhow::Error> {
-        use helix_view::editor::Action;
-        self.editor.open(path, Action::Replace).map(|_| ()).map_err(anyhow::Error::new)
+        let mut doc_manager = crate::core::DocumentManagerMut::new(&mut self.editor);
+        doc_manager.open_file(path)
     }
 
     fn create_file_picker_items(&self) -> Vec<crate::picker_view::PickerItem> {
@@ -370,7 +389,7 @@ impl Application {
                 prompt: prompt_text.into(),
                 initial_input: initial_input.into(),
                 on_submit: Arc::new(move |input: &str| {
-                    println!("Native command submitted: {}", input);
+                    println!("Native command submitted: {input}");
                     // The actual command execution will be handled by workspace
                     // through a CommandSubmitted event
                 }),
@@ -445,7 +464,7 @@ impl Application {
         };
         match event {
             InputEvent::Key(key) => {
-                debug!("Handling key event: {:?}", key);
+                debug!("Handling key event: {key:?}");
                 
                 // Log cursor position before key handling
                 let view_id = comp_ctx.editor.tree.focus;
@@ -457,7 +476,7 @@ impl Application {
                     let text = doc.text();
                     let cursor_pos = sel.primary().cursor(text.slice(..));
                     let line = text.char_to_line(cursor_pos);
-                    debug!("Before key - cursor pos: {}, line: {}", cursor_pos, line);
+                    debug!("Before key - cursor pos: {cursor_pos}, line: {line}");
                     Some((cursor_pos, line))
                 } else {
                     None
@@ -486,12 +505,12 @@ impl Application {
                     let text = doc.text();
                     let cursor_pos = sel.primary().cursor(text.slice(..));
                     let line = text.char_to_line(cursor_pos);
-                    debug!("After key - cursor pos: {}, line: {}", cursor_pos, line);
+                    debug!("After key - cursor pos: {cursor_pos}, line: {line}");
                     
                     // Check if we moved lines
                     if let Some((_before_pos, before_line)) = before_cursor {
                         if before_line != line {
-                            debug!("Moved from line {} to line {}", before_line, line);
+                            debug!("Moved from line {before_line} to line {line}");
                         }
                     }
                 }
@@ -583,6 +602,9 @@ impl Application {
         let _guard = handle.enter();
 
         self.step(cx).now_or_never();
+        
+        // Sync LSP state periodically
+        self.sync_lsp_state(cx);
         /*
         use std::future::Future;
         let fut = self.step(cx);
@@ -653,7 +675,10 @@ impl Application {
                             /* TODO */
                         }
                         EditorEvent::LanguageServerMessage((id, call)) => {
-                            self.handle_language_server_message(call, id).await;
+                            // We need cx here but it's not available in the async context
+                            // For now, handle without UI updates
+                            let mut lsp_manager = crate::core::LspManager::new(&mut self.editor, &mut self.lsp_progress);
+                            lsp_manager.handle_language_server_message(call, id).await;
                         }
                         EditorEvent::DebuggerEvent(_) => {
                             /* TODO */
@@ -667,385 +692,14 @@ impl Application {
         }
     }
 
-    // copy pasted from helix_term/src/application.rs
+    // Handle language server messages using the LSP manager
     async fn handle_language_server_message(
         &mut self,
         call: helix_lsp::Call,
         server_id: LanguageServerId,
     ) {
-        use helix_lsp::{Call, MethodCall, Notification};
-
-        macro_rules! language_server {
-            () => {
-                match self.editor.language_server_by_id(server_id) {
-                    Some(language_server) => language_server,
-                    None => {
-                        warn!("can't find language server with id `{}`", server_id);
-                        return;
-                    }
-                }
-            };
-        }
-
-        match call {
-            Call::Notification(helix_lsp::jsonrpc::Notification { method, params, .. }) => {
-                let notification = match Notification::parse(&method, params) {
-                    Ok(notification) => notification,
-                    Err(helix_lsp::Error::Unhandled) => {
-                        info!("Ignoring Unhandled notification from Language Server");
-                        return;
-                    }
-                    Err(err) => {
-                        error!(
-                            "Ignoring unknown notification from Language Server: {}",
-                            err
-                        );
-                        return;
-                    }
-                };
-
-                match notification {
-                    Notification::Initialized => {
-                        let language_server = language_server!();
-
-                        // Trigger a workspace/didChangeConfiguration notification after initialization.
-                        // This might not be required by the spec but Neovim does this as well, so it's
-                        // probably a good idea for compatibility.
-                        if let Some(config) = language_server.config() {
-                            language_server.did_change_configuration(config.clone());
-                        }
-
-                        let docs = self
-                            .editor
-                            .documents()
-                            .filter(|doc| doc.supports_language_server(server_id));
-
-                        // trigger textDocument/didOpen for docs that are already open
-                        for doc in docs {
-                            let url = match doc.url() {
-                                Some(url) => url,
-                                None => continue, // skip documents with no path
-                            };
-
-                            let language_id =
-                                doc.language_id().map(ToOwned::to_owned).unwrap_or_default();
-
-                            language_server.text_document_did_open(
-                                url,
-                                doc.version(),
-                                doc.text(),
-                                language_id,
-                            );
-                        }
-                    }
-                    Notification::PublishDiagnostics(mut params) => {
-                        let path = match params.uri.to_file_path() {
-                            Ok(path) => helix_stdx::path::normalize(path),
-                            Err(_) => {
-                                log::error!("Unsupported file URI: {}", params.uri);
-                                return;
-                            }
-                        };
-                        let language_server = language_server!();
-                        if !language_server.is_initialized() {
-                            log::error!("Discarding publishDiagnostic notification sent by an uninitialized server: {}", language_server.name());
-                            return;
-                        }
-                        // have to inline the function because of borrow checking...
-                        let doc = self.editor.documents.values_mut()
-                            .find(|doc| doc.path().map(|p| p == &path).unwrap_or(false))
-                            .filter(|doc| {
-                                if let Some(version) = params.version {
-                                    if version != doc.version() {
-                                        log::info!("Version ({version}) is out of date for {path:?} (expected ({}), dropping PublishDiagnostic notification", doc.version());
-                                        return false;
-                                    }
-                                }
-                                true
-                            });
-
-                        let mut unchanged_diag_sources = Vec::new();
-                        if let Some(doc) = &doc {
-                            let lang_conf = doc.language.clone();
-
-                            if let Some(lang_conf) = &lang_conf {
-                                let uri = helix_core::Uri::from(path.clone());
-                                if let Some(old_diagnostics) = self.editor.diagnostics.get(&uri) {
-                                    if !lang_conf.persistent_diagnostic_sources.is_empty() {
-                                        // Sort diagnostics first by severity and then by line numbers.
-                                        // Note: The `lsp::DiagnosticSeverity` enum is already defined in decreasing order
-                                        params
-                                            .diagnostics
-                                            .sort_unstable_by_key(|d| (d.severity, d.range.start));
-                                    }
-                                    for source in &lang_conf.persistent_diagnostic_sources {
-                                        let new_diagnostics = params
-                                            .diagnostics
-                                            .iter()
-                                            .filter(|d| d.source.as_ref() == Some(source));
-                                        let old_diagnostics = old_diagnostics
-                                            .iter()
-                                            .filter(|(d, d_server)| {
-                                                d_server.language_server_id() == Some(server_id)
-                                                    && d.source.as_ref() == Some(source)
-                                            })
-                                            .map(|(d, _)| d);
-                                        if new_diagnostics.eq(old_diagnostics) {
-                                            unchanged_diag_sources.push(source.clone())
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        let provider = DiagnosticProvider::Lsp {
-                            server_id,
-                            identifier: None,
-                        };
-                        let diagnostics = params
-                            .diagnostics
-                            .into_iter()
-                            .map(|d| (d, provider.clone()));
-
-                        // Insert the original lsp::Diagnostics here because we may have no open document
-                        // for diagnosic message and so we can't calculate the exact position.
-                        // When using them later in the diagnostics picker, we calculate them on-demand.
-                        let uri = helix_core::Uri::from(path.clone());
-                        let diagnostics = match self.editor.diagnostics.entry(uri) {
-                            Entry::Occupied(o) => {
-                                let current_diagnostics = o.into_mut();
-                                // there may entries of other language servers, which is why we can't overwrite the whole entry
-                                current_diagnostics.retain(|(_, provider)| {
-                                    provider.language_server_id() != Some(server_id)
-                                });
-                                current_diagnostics.extend(diagnostics);
-                                current_diagnostics
-                                // Sort diagnostics first by severity and then by line numbers.
-                            }
-                            Entry::Vacant(v) => v.insert(diagnostics.collect()),
-                        };
-
-                        // Sort diagnostics first by severity and then by line numbers.
-                        // Note: The `lsp::DiagnosticSeverity` enum is already defined in decreasing order
-                        diagnostics.sort_unstable_by_key(|(d, server_id)| {
-                            (d.severity, d.range.start, server_id.clone())
-                        });
-
-                        if let Some(doc) = doc {
-                            let diagnostic_of_language_server_and_not_in_unchanged_sources =
-                                |diagnostic: &lsp::Diagnostic, provider: &DiagnosticProvider| {
-                                    provider.language_server_id() == Some(server_id)
-                                        && diagnostic.source.as_ref().map_or(true, |source| {
-                                            !unchanged_diag_sources.contains(source)
-                                        })
-                                };
-                            let diagnostics = Editor::doc_diagnostics_with_filter(
-                                &self.editor.language_servers,
-                                &self.editor.diagnostics,
-                                doc,
-                                diagnostic_of_language_server_and_not_in_unchanged_sources,
-                            );
-                            doc.replace_diagnostics(
-                                diagnostics,
-                                &unchanged_diag_sources,
-                                Some(&DiagnosticProvider::Lsp {
-                                    server_id,
-                                    identifier: None,
-                                }),
-                            );
-                        }
-                    }
-                    Notification::ShowMessage(params) => {
-                        log::warn!("unhandled window/showMessage: {:?}", params);
-                    }
-                    Notification::LogMessage(params) => {
-                        log::info!("window/logMessage: {:?}", params);
-                    }
-                    Notification::ProgressMessage(_params) => {
-                        // do nothing
-                    }
-                    Notification::Exit => {
-                        self.editor.set_status("Language server exited");
-
-                        // LSPs may produce diagnostics for files that haven't been opened in helix,
-                        // we need to clear those and remove the entries from the list if this leads to
-                        // an empty diagnostic list for said files
-                        for diags in self.editor.diagnostics.values_mut() {
-                            diags.retain(|(_, provider)| {
-                                provider.language_server_id() != Some(server_id)
-                            });
-                        }
-
-                        self.editor.diagnostics.retain(|_, diags| !diags.is_empty());
-
-                        // Clear any diagnostics for documents with this server open.
-                        for doc in self.editor.documents_mut() {
-                            doc.clear_diagnostics_for_language_server(server_id);
-                        }
-
-                        // Remove the language server from the registry.
-                        self.editor.language_servers.remove_by_id(server_id);
-                    }
-                }
-            }
-            Call::MethodCall(helix_lsp::jsonrpc::MethodCall {
-                method, params, id, ..
-            }) => {
-                let reply = match MethodCall::parse(&method, params) {
-                    Err(helix_lsp::Error::Unhandled) => {
-                        error!(
-                            "Language Server: Method {} not found in request {}",
-                            method, id
-                        );
-                        Err(helix_lsp::jsonrpc::Error {
-                            code: helix_lsp::jsonrpc::ErrorCode::MethodNotFound,
-                            message: format!("Method not found: {}", method),
-                            data: None,
-                        })
-                    }
-                    Err(err) => {
-                        log::error!(
-                            "Language Server: Received malformed method call {} in request {}: {}",
-                            method,
-                            id,
-                            err
-                        );
-                        Err(helix_lsp::jsonrpc::Error {
-                            code: helix_lsp::jsonrpc::ErrorCode::ParseError,
-                            message: format!("Malformed method call: {}", method),
-                            data: None,
-                        })
-                    }
-                    Ok(MethodCall::WorkDoneProgressCreate(params)) => {
-                        self.lsp_progress.create(server_id, params.token);
-
-                        // let editor_view = self
-                        //     .compositor
-                        //     .find::<ui::EditorView>()
-                        //     .expect("expected at least one EditorView");
-                        // let spinner = editor_view.spinners_mut().get_or_create(server_id);
-                        // if spinner.is_stopped() {
-                        //     spinner.start();
-                        // }
-
-                        Ok(serde_json::Value::Null)
-                    }
-                    Ok(MethodCall::ApplyWorkspaceEdit(params)) => {
-                        let language_server = language_server!();
-                        if language_server.is_initialized() {
-                            let offset_encoding = language_server.offset_encoding();
-                            let res = self
-                                .editor
-                                .apply_workspace_edit(offset_encoding, &params.edit);
-
-                            Ok(json!(lsp::ApplyWorkspaceEditResponse {
-                                applied: res.is_ok(),
-                                failure_reason: res.as_ref().err().map(|err| err.kind.to_string()),
-                                failed_change: res
-                                    .as_ref()
-                                    .err()
-                                    .map(|err| err.failed_change_idx as u32),
-                            }))
-                        } else {
-                            Err(helix_lsp::jsonrpc::Error {
-                                code: helix_lsp::jsonrpc::ErrorCode::InvalidRequest,
-                                message: "Server must be initialized to request workspace edits"
-                                    .to_string(),
-                                data: None,
-                            })
-                        }
-                    }
-                    Ok(MethodCall::WorkspaceFolders) => {
-                        Ok(json!(&*language_server!().workspace_folders().await))
-                    }
-                    Ok(MethodCall::WorkspaceConfiguration(params)) => {
-                        let language_server = language_server!();
-                        let result: Vec<_> = params
-                            .items
-                            .iter()
-                            .map(|item| {
-                                let mut config = language_server.config()?;
-                                if let Some(section) = item.section.as_ref() {
-                                    // for some reason some lsps send an empty string (observed in 'vscode-eslint-language-server')
-                                    if !section.is_empty() {
-                                        for part in section.split('.') {
-                                            config = config.get(part)?;
-                                        }
-                                    }
-                                }
-                                Some(config)
-                            })
-                            .collect();
-                        Ok(json!(result))
-                    }
-                    Ok(MethodCall::RegisterCapability(params)) => {
-                        if let Some(client) = self.editor.language_servers.get_by_id(server_id) {
-                            for reg in params.registrations {
-                                match reg.method.as_str() {
-                                    lsp::notification::DidChangeWatchedFiles::METHOD => {
-                                        let Some(options) = reg.register_options else {
-                                            continue;
-                                        };
-                                        let ops: lsp::DidChangeWatchedFilesRegistrationOptions =
-                                            match serde_json::from_value(options) {
-                                                Ok(ops) => ops,
-                                                Err(err) => {
-                                                    log::warn!("Failed to deserialize DidChangeWatchedFilesRegistrationOptions: {err}");
-                                                    continue;
-                                                }
-                                            };
-                                        self.editor.language_servers.file_event_handler.register(
-                                            client.id(),
-                                            Arc::downgrade(client),
-                                            reg.id,
-                                            ops,
-                                        )
-                                    }
-                                    _ => {
-                                        // Language Servers based on the `vscode-languageserver-node` library often send
-                                        // client/registerCapability even though we do not enable dynamic registration
-                                        // for most capabilities. We should send a MethodNotFound JSONRPC error in this
-                                        // case but that rejects the registration promise in the server which causes an
-                                        // exit. So we work around this by ignoring the request and sending back an OK
-                                        // response.
-                                        log::warn!("Ignoring a client/registerCapability request because dynamic capability registration is not enabled. Please report this upstream to the language server");
-                                    }
-                                }
-                            }
-                        }
-
-                        Ok(serde_json::Value::Null)
-                    }
-                    Ok(MethodCall::UnregisterCapability(params)) => {
-                        for unreg in params.unregisterations {
-                            match unreg.method.as_str() {
-                                lsp::notification::DidChangeWatchedFiles::METHOD => {
-                                    self.editor
-                                        .language_servers
-                                        .file_event_handler
-                                        .unregister(server_id, unreg.id);
-                                }
-                                _ => {
-                                    log::warn!("Received unregistration request for unsupported method: {}", unreg.method);
-                                }
-                            }
-                        }
-                        Ok(serde_json::Value::Null)
-                    }
-                    Ok(MethodCall::ShowDocument(_params)) => {
-                        // let language_server = language_server!();
-                        // let offset_encoding = language_server.offset_encoding();
-
-                        // let result = self.handle_show_document(params, offset_encoding);
-                        let result = lsp::ShowDocumentResult { success: true };
-                        Ok(json!(result))
-                    }
-                };
-
-                let _ = language_server!().reply(id, reply);
-            }
-            Call::Invalid { id } => log::error!("LSP invalid method call id={:?}", id),
-        }
+        let mut lsp_manager = crate::core::LspManager::new(&mut self.editor, &mut self.lsp_progress);
+        lsp_manager.handle_language_server_message(call, server_id).await;
     }
 }
 
@@ -1068,7 +722,7 @@ pub fn init_editor(
             theme_loader
                 .load(theme)
                 .map_err(|e| {
-                    log::warn!("failed to load theme `{}` - {}", theme, e);
+                    log::warn!("failed to load theme `{theme}` - {e}");
                     e
                 })
                 .ok()
@@ -1151,5 +805,6 @@ pub fn init_editor(
         view,
         jobs,
         lsp_progress: LspProgressMap::new(),
+        lsp_state: None,
     })
 }

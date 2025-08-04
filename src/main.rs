@@ -18,6 +18,7 @@ use application::{Application, InputEvent};
 
 mod actions;
 mod application;
+mod core;
 mod completion;
 mod config;
 mod document;
@@ -25,6 +26,7 @@ mod error_boundary;
 mod info_box;
 mod key_hint_view;
 mod line_cache;
+mod lsp_status;
 mod notification;
 mod overlay;
 mod picker;
@@ -245,7 +247,7 @@ pub struct UiFontConfig {
 
 impl gpui::Global for UiFontConfig {}
 
-fn gui_main(app: Application, config: crate::config::Config, handle: tokio::runtime::Handle) {
+fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::runtime::Handle) {
     gpui::Application::new().run(move |cx| {
         // Set up theme manager with Helix theme
         let helix_theme = app.editor.theme.clone();
@@ -312,6 +314,9 @@ fn gui_main(app: Application, config: crate::config::Config, handle: tokio::runt
 
             let input_1 = input.clone();
             let handle_1 = handle.clone();
+            // Create LSP state entity
+            let lsp_state = cx.new(|_| crate::core::lsp_state::LspState::new());
+            
             let app = cx.new(move |mc| {
                 let handle_1 = handle_1.clone();
                 let handle_2 = handle_1.clone();
@@ -327,6 +332,9 @@ fn gui_main(app: Application, config: crate::config::Config, handle: tokio::runt
                     this.handle_crank_event((), cx, handle_2.clone());
                 })
                 .detach();
+                
+                // Set the LSP state
+                app.lsp_state = Some(lsp_state.clone());
                 app
             });
 
