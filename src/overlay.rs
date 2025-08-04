@@ -68,18 +68,15 @@ impl OverlayView {
                         let on_submit = on_submit.clone();
                         let on_cancel = on_cancel.clone();
                         
-                        // Get theme from core for styling
-                        let theme = self.core.upgrade()
-                            .map(|core| core.read(cx).editor.theme.clone());
+                        // Get theme from ThemeManager
+                        let helix_theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme().clone();
                         
                         let prompt_view = cx.new(|cx| {
                             let mut view = PromptView::new(prompt_text, cx);
                             
-                            // Apply theme styling if available
-                            if let Some(theme) = theme {
-                                let style = crate::prompt_view::PromptStyle::from_helix_theme(&theme);
-                                view = view.with_style(style);
-                            }
+                            // Apply theme styling
+                            let style = crate::prompt_view::PromptStyle::from_helix_theme(&helix_theme);
+                            view = view.with_style(style);
                             
                             if !initial_input.is_empty() {
                                 view.set_text(&initial_input, cx);
@@ -238,17 +235,12 @@ impl OverlayView {
                         let core_weak = self.core.clone();
                         let items_count = items.len();
                         
-                        // Get theme outside the closure to avoid borrow conflict
-                        let theme = core_weak.upgrade()
-                            .map(|core| core.read(cx).editor.theme.clone());
+                        // Get theme from ThemeManager
+                        let helix_theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme().clone();
                         
                         let picker_view = cx.new(|cx| {
-                            // Use theme-aware constructor if theme is available
-                            let mut view = if let Some(theme) = &theme {
-                                PickerView::new_with_theme(theme, cx)
-                            } else {
-                                PickerView::new(cx)
-                            };
+                            // Use theme-aware constructor
+                            let mut view = PickerView::new_with_theme(&helix_theme, cx);
                             let items_for_callback = items.clone();
                             view = view.with_core(core_weak.clone()).with_items(items);
                             

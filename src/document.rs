@@ -163,7 +163,7 @@ impl Render for DocumentView {
         );
 
         let diags = {
-            let _theme = self.core.read(cx).editor.theme.clone();
+            let _theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme().clone();
 
             self.get_diagnostics(cx).into_iter().map(move |_diag| {
                 // TODO: Fix new_view API - DiagnosticView disabled for now
@@ -321,10 +321,11 @@ impl DocumentElement {
         };
         let view = editor.tree.get(self.view_id);
         
+        let theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
         let line_runs = Self::highlight_line_with_params(
             document,
             view,
-            &editor.theme,
+            theme,
             editor.mode(),
             &editor.config().cursor_shape,
             &editor.syn_loader,
@@ -976,7 +977,7 @@ impl Element for DocumentElement {
                 let view = editor.tree.get(self.view_id);
                 let _viewport = view.area;
 
-                let theme = &editor.theme;
+                let theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
                 let default_style = theme.get("ui.background");
                 let bg_color = default_style.bg
                     .and_then(|c| color_to_hsla(c))
@@ -1157,7 +1158,7 @@ impl Element for DocumentElement {
                 let text_origin_x = bounds.origin.x + px(2.) + (after_layout.cell_width * gutter_width as f32);
                 
                 // Extract necessary values before the loop to avoid borrowing issues
-                let editor_theme = editor.theme.clone();
+                let editor_theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme().clone();
                 let editor_mode = editor.mode();
                 let cursor_shape = editor.config().cursor_shape.clone();
                 let syn_loader = editor.syn_loader.clone();
@@ -1499,7 +1500,7 @@ impl Element for DocumentElement {
                     // Re-read core for gutter rendering
                     let core = self.core.read(cx);
                     let editor = &core.editor;
-                    let theme = &editor.theme;
+                    let theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
                     let view = editor.tree.get(self.view_id);
                     let document = match editor.document(self.doc_id) {
                     Some(doc) => doc,

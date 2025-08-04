@@ -32,6 +32,7 @@ mod preview_tracker;
 mod prompt;
 mod prompt_view;
 mod statusline;
+mod theme_manager;
 mod ui;
 mod utils;
 mod workspace;
@@ -243,9 +244,12 @@ impl gpui::Global for UiFontConfig {}
 
 fn gui_main(app: Application, config: crate::config::Config, handle: tokio::runtime::Handle) {
     gpui::Application::new().run(move |cx| {
-        // Set up theme
-        let theme = ui::Theme::dark();
-        cx.set_global(theme);
+        // Set up theme manager with Helix theme
+        let helix_theme = app.editor.theme.clone();
+        let theme_manager = theme_manager::ThemeManager::new(helix_theme);
+        let ui_theme = theme_manager.ui_theme().clone();
+        cx.set_global(theme_manager);
+        cx.set_global(ui_theme);
         
         // Set up fonts from configuration
         let editor_font_config = config.editor_font();
@@ -362,9 +366,10 @@ fn gui_main(app: Application, config: crate::config::Config, handle: tokio::runt
                 view
             });
             
-            // Create notifications view with default colors
-            let notifications = cx.new(|_cx| {
-                notification::NotificationView::new(gpui::black(), gpui::white())
+            // Create notifications view with theme colors
+            let notifications = cx.new(|cx| {
+                let ui_theme = cx.global::<ui::Theme>();
+                notification::NotificationView::new(ui_theme.background, ui_theme.text)
             });
             
             // Create info box view with default style

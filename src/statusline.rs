@@ -30,11 +30,11 @@ impl StatusLine {
     }
 
     fn style(&self, _window: &mut Window, cx: &mut App) -> (Hsla, Hsla) {
-        let editor = &self.core.read(cx).editor;
+        let theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
         let base_style = if self.focused {
-            editor.theme.get("ui.statusline")
+            theme.get("ui.statusline")
         } else {
-            editor.theme.get("ui.statusline.inactive")
+            theme.get("ui.statusline.inactive")
         };
         let base_fg = base_style
             .fg
