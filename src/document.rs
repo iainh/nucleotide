@@ -118,8 +118,8 @@ impl Render for DocumentView {
         // Use DocumentElement for proper editor rendering
         let doc = DocumentElement::new(
             self.core.clone(),
-            doc_id.clone(),
-            self.view_id.clone(),
+            doc_id,
+            self.view_id,
             self.style.clone(),
             &self.focus,
             self.is_focused,
@@ -156,7 +156,7 @@ impl Render for DocumentView {
 
         let status = crate::statusline::StatusLine::new(
             self.core.clone(),
-            doc_id.clone(),
+            doc_id,
             self.view_id,
             self.is_focused,
             self.style.clone(),
@@ -270,7 +270,7 @@ impl DocumentElement {
             focus: focus.clone(),
             is_focused,
         }
-        .track_focus(&focus)
+        .track_focus(focus)
     }
     
     /// Create a shaped line for a specific line, used for cursor positioning and mouse interaction
@@ -362,7 +362,7 @@ impl DocumentElement {
         let row = text.char_to_line(anchor.min(text.len_chars()));
         let range = Self::viewport_byte_range(text, row, height);
         let range = range.start as u32..range.end as u32;
-        debug!("Creating highlighter for range: {:?}", range);
+        debug!("Creating highlighter for range: {range:?}");
 
         let highlighter = syntax.highlighter(text, syn_loader, range);
         Some(highlighter)
@@ -475,9 +475,9 @@ impl DocumentElement {
 
             let fg = style
                 .fg
-                .and_then(|fg| color_to_hsla(fg))
+                .and_then(color_to_hsla)
                 .unwrap_or(fg_color);
-            let bg = style.bg.and_then(|bg| color_to_hsla(bg));
+            let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
             let underline = underline.map(|color| UnderlineStyle {
                 thickness: px(1.),
@@ -565,9 +565,9 @@ impl DocumentElement {
 
             let fg = style
                 .fg
-                .and_then(|fg| color_to_hsla(fg))
+                .and_then(color_to_hsla)
                 .unwrap_or(fg_color);
-            let bg = style.bg.and_then(|bg| color_to_hsla(bg));
+            let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
             let underline = underline.map(|color| UnderlineStyle {
                 thickness: px(1.),
@@ -667,9 +667,9 @@ impl DocumentElement {
 
             let fg = style
                 .fg
-                .and_then(|fg| color_to_hsla(fg))
+                .and_then(color_to_hsla)
                 .unwrap_or(fg_color);
-            let bg = style.bg.and_then(|bg| color_to_hsla(bg));
+            let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
             let underline = underline.map(|color| UnderlineStyle {
                 thickness: px(1.),
@@ -715,9 +715,9 @@ pub struct DocumentLayout {
 
 struct RopeWrapper<'a>(RopeSlice<'a>);
 
-impl<'a> Into<SharedString> for RopeWrapper<'a> {
-    fn into(self) -> SharedString {
-        let cow: Cow<'_, str> = self.0.into();
+impl<'a> From<RopeWrapper<'a>> for SharedString {
+    fn from(val: RopeWrapper<'a>) -> Self {
+        let cow: Cow<'_, str> = val.0.into();
         cow.to_string().into() // this is crazy
     }
 }
@@ -758,7 +758,7 @@ impl Element for DocumentElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        debug!("editor bounds {:?}", bounds);
+        debug!("editor bounds {bounds:?}");
         let _core = self.core.clone();
         self.interactivity
             .prepaint(_global_id, _inspector_id, bounds, bounds.size, window, cx, |_, _, hitbox, _window, cx| {
@@ -992,7 +992,7 @@ impl Element for DocumentElement {
                 let theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
                 let default_style = theme.get("ui.background");
                 let bg_color = default_style.bg
-                    .and_then(|c| color_to_hsla(c))
+                    .and_then(color_to_hsla)
                     .unwrap_or(black());
                 // Get mode-specific cursor theme like terminal version
                 let mode = editor.mode();
@@ -1056,14 +1056,13 @@ impl Element for DocumentElement {
                     let line = text.char_to_line(primary_idx);
                     let line_start = text.line_to_char(line);
                     let col_in_line = primary_idx - line_start;
-                    debug!("Actual position - line: {}, col_in_line: {}, line_start: {}", 
-                           line, col_in_line, line_start);
+                    debug!("Actual position - line: {line}, col_in_line: {col_in_line}, line_start: {line_start}");
                 } else {
-                    debug!("Warning: screen_coords_at_pos returned None for cursor position {}", primary_idx);
+                    debug!("Warning: screen_coords_at_pos returned None for cursor position {primary_idx}");
                 }
                 let gutter_overflow = gutter_width == 0;
                 if !gutter_overflow {
-                    debug!("need to render gutter {}", gutter_width);
+                    debug!("need to render gutter {gutter_width}");
                 }
 
                 let _cursor_row = cursor_pos.map(|p| p.row);
@@ -1149,12 +1148,11 @@ impl Element for DocumentElement {
                 // For a file ending with \n, Rope counts the empty line after it, so we don't need to add 1
                 if cursor_at_end && file_ends_with_newline {
                     let cursor_line = text.char_to_line(cursor_char_idx.saturating_sub(1));
-                    debug!("Cursor at EOF with newline - cursor_line: {}, last_row before: {}, total_lines: {}", 
-                        cursor_line, last_row, total_lines);
+                    debug!("Cursor at EOF with newline - cursor_line: {cursor_line}, last_row before: {last_row}, total_lines: {total_lines}");
                     
                     // Ensure last_row includes the phantom line (which is at index total_lines - 1)
                     last_row = last_row.max(total_lines);
-                    debug!("last_row after adjustment: {}", last_row);
+                    debug!("last_row after adjustment: {last_row}");
                 }
                 
                 // println!("first row is {first_row} last row is {last_row}");
@@ -1209,14 +1207,14 @@ impl Element for DocumentElement {
                 // Update the shared line layouts for mouse interaction
                 
                 for (loop_index, line_idx) in (first_row..last_row).enumerate() {
-                    debug!("Rendering line {} (loop index {}), y_offset: {:?}", line_idx, loop_index, y_offset);
+                    debug!("Rendering line {line_idx} (loop index {loop_index}), y_offset: {y_offset:?}");
                     // Handle phantom line (empty line at EOF when file ends with newline)
                     // For a file ending with \n, the last line is empty and is the phantom line
                     let is_phantom_line = cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1;
                     
                     let (line_start, line_end) = if is_phantom_line {
                         // Phantom line is empty, positioned at end of file
-                        debug!("Rendering phantom line at index {}", line_idx);
+                        debug!("Rendering phantom line at index {line_idx}");
                         (text.len_chars(), text.len_chars())
                     } else {
                         let line_start = text.line_to_char(line_idx);
@@ -1314,18 +1312,43 @@ impl Element for DocumentElement {
                             char_offset += run.len;
                         }
                         
-                        // Shape and paint the text
-                        let shaped = window.text_system()
-                            .shape_line(line_str, self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
+                        // Try to get cached shaped line first
+                        let cache_key = crate::line_cache::ShapedLineKey {
+                            line_text: line_str.to_string(),
+                            font_size: self.style.font_size.to_pixels(px(16.0)).0 as u32,
+                            viewport_width: bounds.size.width.0 as u32,
+                        };
+                        
+                        let shaped = if let Some(cached) = line_cache.get_shaped_line(&cache_key) {
+                            cached
+                        } else {
+                            // Shape and cache the line
+                            let shaped = window.text_system()
+                                .shape_line(line_str.clone(), self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
+                            line_cache.store_shaped_line(cache_key, shaped.clone());
+                            shaped
+                        };
                         
                         if let Err(e) = shaped.paint(text_origin, after_layout.line_height, window, cx) {
-                            log::error!("Failed to paint text: {:?}", e);
+                            log::error!("Failed to paint text: {e:?}");
                         }
                         shaped
                     } else {
                         // Create an empty shaped line for cursor positioning
-                        window.text_system()
-                            .shape_line("".into(), self.style.font_size.to_pixels(px(16.0)), &[], None)
+                        let cache_key = crate::line_cache::ShapedLineKey {
+                            line_text: String::new(),
+                            font_size: self.style.font_size.to_pixels(px(16.0)).0 as u32,
+                            viewport_width: bounds.size.width.0 as u32,
+                        };
+                        
+                        if let Some(cached) = line_cache.get_shaped_line(&cache_key) {
+                            cached
+                        } else {
+                            let shaped = window.text_system()
+                                .shape_line("".into(), self.style.font_size.to_pixels(px(16.0)), &[], None);
+                            line_cache.store_shaped_line(cache_key, shaped.clone());
+                            shaped
+                        }
                     };
                     
                     // Always store the line layout for cursor positioning
@@ -1340,9 +1363,9 @@ impl Element for DocumentElement {
                         debug!("Created phantom line layout - line_idx: {}, origin.y: {:?}, y_offset: {:?}", 
                             line_idx, text_origin.y, y_offset);
                         println!("CREATING PHANTOM LINE LAYOUT:");
-                        println!("  line_idx: {}", line_idx);
+                        println!("  line_idx: {line_idx}");
                         println!("  text_origin.y: {:?}", text_origin.y);
-                        println!("  y_offset: {:?}", y_offset);
+                        println!("  y_offset: {y_offset:?}");
                     }
                     
                     line_cache.push(layout);
@@ -1402,8 +1425,7 @@ impl Element for DocumentElement {
                             text.char_to_line(cursor_char_idx)
                         };
                         
-                        debug!("Looking for cursor line {} in range {}..{}", 
-                            cursor_line, first_row, last_row);
+                        debug!("Looking for cursor line {cursor_line} in range {first_row}..{last_row}");
                         
                         // Check if cursor line is in the rendered range
                         // For phantom line, use the effective cursor line
@@ -1426,7 +1448,7 @@ impl Element for DocumentElement {
                                 // Additional debug for phantom line
                                 if cursor_at_end && file_ends_with_newline {
                                     println!("PHANTOM LINE DEBUG:");
-                                    println!("  Cursor at phantom line (line {})", layout_line_idx);
+                                    println!("  Cursor at phantom line (line {layout_line_idx})");
                                     println!("  Found layout with line_idx: {}", line_layout.line_idx);
                                     println!("  Layout origin.y: {:?}", line_layout.origin.y);
                                     println!("  All layouts:");
@@ -1460,8 +1482,7 @@ impl Element for DocumentElement {
                                 let cursor_x = line_layout.shaped_line.x_for_index(cursor_char_offset);
                                 
                                 // Debug logging
-                                debug!("Cursor rendering - line: {}, grapheme_offset: {}, char_offset: {}, x: {:?}, viewport_row: {}", 
-                                    cursor_line, cursor_grapheme_offset, cursor_char_offset, cursor_x, viewport_row);
+                                debug!("Cursor rendering - line: {cursor_line}, grapheme_offset: {cursor_grapheme_offset}, char_offset: {cursor_char_offset}, x: {cursor_x:?}, viewport_row: {viewport_row}");
                                 
                                 // Debug info about the line content
                                 debug!("Line content: {:?}, cursor at grapheme offset {} (char offset {}) in line, is_phantom: {}", 
@@ -1475,8 +1496,8 @@ impl Element for DocumentElement {
                                 
                                 let cursor_color = cursor_style
                                     .fg
-                                    .and_then(|fg| color_to_hsla(fg))
-                                    .or_else(|| cursor_style.bg.and_then(|bg| color_to_hsla(bg)))
+                                    .and_then(color_to_hsla)
+                                    .or_else(|| cursor_style.bg.and_then(color_to_hsla))
                                     .unwrap_or(fg_color);
 
                                 let mut cursor = Cursor {
@@ -1491,10 +1512,10 @@ impl Element for DocumentElement {
                                 // Paint cursor at the line's origin
                                 cursor.paint(line_layout.origin, window, cx);
                             } else {
-                                debug!("Warning: Could not find line layout for cursor line {}", cursor_line);
+                                debug!("Warning: Could not find line layout for cursor line {cursor_line}");
                             }
                         } else {
-                            debug!("Cursor line {} is outside rendered range {}..{}", cursor_line, first_row, last_row);
+                            debug!("Cursor line {cursor_line} is outside rendered range {first_row}..{last_row}");
                         }
                     } else {
                         debug!("Cursor rendering skipped - no cursor_pos from screen_coords_at_pos");
@@ -1544,7 +1565,7 @@ impl Element for DocumentElement {
                     
                     let mut gutters = Vec::new();
                     Gutter::init_gutter(
-                        &editor,
+                        editor,
                         document,
                         view,
                         theme,
@@ -1568,7 +1589,7 @@ impl Element for DocumentElement {
                     // Now paint the gutter lines
                     for (origin, line) in gutter.lines {
                         if let Err(e) = line.paint(origin, after_layout.line_height, window, cx) {
-                            log::error!("Failed to paint gutter line: {:?}", e);
+                            log::error!("Failed to paint gutter line: {e:?}");
                         }
                     }
                 }
@@ -1719,7 +1740,7 @@ impl Cursor {
 
         if let Some(text) = &self.text {
             if let Err(e) = text.paint(self.origin + origin, self.line_height, window, cx) {
-                log::error!("Failed to paint cursor text: {:?}", e);
+                log::error!("Failed to paint cursor text: {e:?}");
             }
         }
     }
@@ -1917,13 +1938,13 @@ impl Render for DiagnosticView {
         };
 
         let font = cx.global::<crate::FontSettings>().fixed_font.clone();
-        let source_and_code = self.diagnostic.source.as_ref().and_then(|src| {
+        let source_and_code = self.diagnostic.source.as_ref().map(|src| {
             let code = self.diagnostic.code.as_ref();
             let code_str = code.map(|code| match code {
                 NumberOrString::Number(num) => num.to_string(),
                 NumberOrString::String(str) => str.to_string(),
             });
-            Some(format!("{}: {}", src, code_str.unwrap_or_default()))
+            format!("{}: {}", src, code_str.unwrap_or_default())
         });
 
         div()

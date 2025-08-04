@@ -3,7 +3,7 @@ use crate::Core;
 use gpui::*;
 use helix_view::{DocumentId, ViewId};
 
-#[derive(IntoElement)]
+#[derive(Clone)]
 pub struct StatusLine {
     core: Entity<Core>,
     doc_id: DocumentId,
@@ -46,493 +46,260 @@ impl StatusLine {
             .unwrap_or(hsla(0.5, 0.5, 0.5, 1.));
         (base_fg, base_bg)
     }
+}
 
-    fn text(
-        &self,
-        _window: &mut Window,
+impl IntoElement for StatusLine {
+    type Element = StatusLineElement;
+
+    fn into_element(self) -> Self::Element {
+        StatusLineElement(self)
+    }
+}
+
+pub struct StatusLineElement(StatusLine);
+
+impl IntoElement for StatusLineElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for StatusLineElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(ElementId::NamedInteger(
+            format!("statusline-{}", self.0.doc_id).into(),
+            0, // We'll use a fixed ID since we can't access ViewId's internal field
+        ))
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
         cx: &mut App,
-        base_fg: Hsla,
-        base_bg: Hsla,
-    ) -> (StyledText, StyledText, StyledText) {
-        use self::copy_pasta::{render_status_parts, RenderContext};
-        let editor = &self.core.read(cx).editor;
-        let doc = match editor.document(self.doc_id) {
-            Some(doc) => doc,
-            None => {
-                // Document was closed, return empty status
-                return (
-                    StyledText::new(""),
-                    StyledText::new(""),
-                    StyledText::new(""),
-                );
-            }
-        };
-        let view = editor.tree.get(self.view_id);
-
-        let mut ctx = RenderContext {
-            editor: &editor,
-            doc,
-            view,
-            focused: self.focused,
-        };
-
-        let parts = render_status_parts(&mut ctx);
-
-        let styled = |spans: Vec<tui::text::Span<'_>>| {
-            let mut text = String::new();
-            let mut runs = Vec::new();
-            let mut idx = 0;
-            for span in spans {
-                let len = span.content.len();
-                text.push_str(&span.content);
-                let fg = span.style.fg.and_then(color_to_hsla).unwrap_or(base_fg);
-                let bg = span.style.bg.and_then(color_to_hsla).unwrap_or(base_bg);
-                let mut run = HighlightStyle::default();
-                run.color = Some(fg);
-                run.background_color = Some(bg);
-                runs.push(((idx..idx + len), run));
-                idx += len;
-            }
-            // Highlights are passed differently in new GPUI
-            StyledText::new(text).with_highlights(runs)
-        };
-
-        (
-            styled(parts.left),
-            styled(parts.center),
-            styled(parts.right),
-        )
-    }
-}
-
-impl RenderOnce for StatusLine {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let (base_fg, base_bg) = self.style(window, cx);
-        let parts = self.text(window, cx, base_fg, base_bg);
-        let (left, center, right) = parts;
-
-        div()
-            .w_full()
-            .flex()
-            .flex_row()
-            .bg(base_bg)
-            .justify_between()
-            .content_stretch()
-            .text_size(self.style.font_size)
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_row()
-                    .content_stretch()
-                    .child(left),
-            )
-            .child(div().flex().child(center))
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_row()
-                    .items_end()
-                    .content_stretch()
-                    .justify_end()
-                    .child(right),
-            )
-        // )
-    }
-}
-
-// copy/paste from helix term (ui/statusline.rs) going further
-mod copy_pasta {
-    use helix_core::{coords_at_pos, encoding, Position};
-    use helix_view::document::DEFAULT_LANGUAGE_NAME;
-    use helix_view::document::{Mode, SCRATCH_BUFFER_NAME};
-    use helix_view::{Document, Editor, View};
-
-    use helix_lsp::lsp::DiagnosticSeverity;
-    use helix_view::editor::StatusLineElement as StatusLineElementID;
-
-    use tui::text::{Span, Spans};
-
-    pub struct RenderContext<'a> {
-        pub editor: &'a Editor,
-        pub doc: &'a Document,
-        pub view: &'a View,
-        pub focused: bool,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        style.size.height = px(24.).into(); // Fixed height for status line
+        let layout_id = window.request_layout(style, None, cx);
+        (layout_id, ())
     }
 
-    #[derive(Debug)]
-    pub struct StatusLineElements<'a> {
-        pub left: Vec<Span<'a>>,
-        pub center: Vec<Span<'a>>,
-        pub right: Vec<Span<'a>>,
+    fn prepaint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Self::PrepaintState {
+        // TODO: Calculate actual status line layout
     }
 
-    pub fn render_status_parts<'a>(context: &mut RenderContext) -> StatusLineElements<'a> {
-        let config = context.editor.config();
+    fn paint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // Get theme colors first to avoid borrow checker issues
+        let (_fg_color, bg_color) = self.0.style(window, cx);
+        
+        // Collect all data we need before dropping the immutable borrow
+        let (mode_name, file_name, position_text) = {
+            let core = self.0.core.read(cx);
+            let editor = &core.editor;
+            let doc = match editor.document(self.0.doc_id) {
+                Some(doc) => doc,
+                None => return,
+            };
+            let view = match editor.tree.try_get(self.0.view_id) {
+                Some(view) => view,
+                None => return,
+            };
 
-        let element_ids = &config.statusline.left;
-        let left = element_ids
-            .iter()
-            .map(|element_id| get_render_function(*element_id))
-            .flat_map(|render| render(context).0)
-            .collect::<Vec<Span>>();
+            // Build status components
+            let position = helix_core::coords_at_pos(
+                doc.text().slice(..),
+                doc.selection(view.id)
+                    .primary()
+                    .cursor(doc.text().slice(..)),
+            );
 
-        let element_ids = &config.statusline.center;
-        let center = element_ids
-            .iter()
-            .map(|element_id| get_render_function(*element_id))
-            .flat_map(|render| render(context).0)
-            .collect::<Vec<Span>>();
+            let mode_name = match editor.mode() {
+                helix_view::document::Mode::Normal => "NOR",
+                helix_view::document::Mode::Insert => "INS",
+                helix_view::document::Mode::Select => "SEL",
+            };
 
-        let element_ids = &config.statusline.right;
-        let right = element_ids
-            .iter()
-            .map(|element_id| get_render_function(*element_id))
-            .flat_map(|render| render(context).0)
-            .collect::<Vec<Span>>();
-        StatusLineElements {
-            left,
-            right,
-            center,
-        }
-    }
-
-    fn get_render_function<'a>(
-        element_id: StatusLineElementID,
-    ) -> impl Fn(&RenderContext) -> Spans<'a> {
-        match element_id {
-            helix_view::editor::StatusLineElement::Mode => render_mode,
-            helix_view::editor::StatusLineElement::Spinner => render_lsp_spinner,
-            helix_view::editor::StatusLineElement::FileBaseName => render_file_base_name,
-            helix_view::editor::StatusLineElement::FileName => render_file_name,
-            helix_view::editor::StatusLineElement::FileAbsolutePath => render_file_absolute_path,
-            helix_view::editor::StatusLineElement::FileModificationIndicator => {
-                render_file_modification_indicator
-            }
-            helix_view::editor::StatusLineElement::ReadOnlyIndicator => render_read_only_indicator,
-            helix_view::editor::StatusLineElement::FileEncoding => render_file_encoding,
-            helix_view::editor::StatusLineElement::FileLineEnding => render_file_line_ending,
-            helix_view::editor::StatusLineElement::FileType => render_file_type,
-            helix_view::editor::StatusLineElement::Diagnostics => render_diagnostics,
-            helix_view::editor::StatusLineElement::WorkspaceDiagnostics => {
-                render_workspace_diagnostics
-            }
-            helix_view::editor::StatusLineElement::Selections => render_selections,
-            helix_view::editor::StatusLineElement::PrimarySelectionLength => {
-                render_primary_selection_length
-            }
-            helix_view::editor::StatusLineElement::Position => render_position,
-            helix_view::editor::StatusLineElement::PositionPercentage => render_position_percentage,
-            helix_view::editor::StatusLineElement::TotalLineNumbers => render_total_line_numbers,
-            helix_view::editor::StatusLineElement::Separator => render_separator,
-            helix_view::editor::StatusLineElement::Spacer => render_spacer,
-            helix_view::editor::StatusLineElement::VersionControl => render_version_control,
-            helix_view::editor::StatusLineElement::Register => render_register,
-            helix_view::editor::StatusLineElement::FileIndentStyle => render_spacer, // TODO: implement proper indent style rendering
-        }
-    }
-
-    fn render_mode<'a>(context: &RenderContext) -> Spans<'a> {
-        let visible = context.focused;
-        let config = context.editor.config();
-        let modenames = &config.statusline.mode;
-        let modename = if visible {
-            match context.editor.mode() {
-                Mode::Insert => modenames.insert.clone(),
-                Mode::Select => modenames.select.clone(),
-                Mode::Normal => modenames.normal.clone(),
-            }
-        } else {
-            // If not focused, explicitly leave an empty space.
-            " ".into()
-        };
-        let modename = format!(" {} ", modename);
-        if visible && config.color_modes {
-            Span::styled(
-                modename,
-                match context.editor.mode() {
-                    Mode::Insert => context.editor.theme.get("ui.statusline.insert"),
-                    Mode::Select => context.editor.theme.get("ui.statusline.select"),
-                    Mode::Normal => context.editor.theme.get("ui.statusline.normal"),
-                },
-            )
-            .into()
-        } else {
-            Span::raw(modename).into()
-        }
-    }
-
-    // TODO think about handling multiple language servers
-    fn render_lsp_spinner<'a>(context: &RenderContext) -> Spans<'a> {
-        let _language_server = context.doc.language_servers().next();
-        Span::raw(
-            "".to_string(), // language_server
-                            //     .and_then(|srv| {
-                            //         context
-                            //             .spinners
-                            //             .get(srv.id())
-                            //             .and_then(|spinner| spinner.frame())
-                            //     })
-                            //     // Even if there's no spinner; reserve its space to avoid elements frequently shifting.
-                            //     .unwrap_or(" ")
-                            //     .to_string(),
-        )
-        .into()
-    }
-
-    fn render_diagnostics<'a>(context: &RenderContext) -> Spans<'a> {
-        let (warnings, errors) =
-            context
-                .doc
-                .diagnostics()
-                .iter()
-                .fold((0, 0), |mut counts, diag| {
-                    use helix_core::diagnostic::Severity;
-                    match diag.severity {
-                        Some(Severity::Warning) => counts.0 += 1,
-                        Some(Severity::Error) | None => counts.1 += 1,
-                        _ => {}
+            let file_name: SharedString = doc.path()
+                .map(|p| {
+                    let path_str = p.to_string_lossy().to_string();
+                    // Truncate long paths - keep filename and some parent directories
+                    if path_str.len() > 50 {
+                        if let Some(file_name) = p.file_name() {
+                            let file_name_str = file_name.to_string_lossy();
+                            if let Some(parent) = p.parent() {
+                                if let Some(parent_name) = parent.file_name() {
+                                    format!(".../{}/{}", parent_name.to_string_lossy(), file_name_str).into()
+                                } else {
+                                    format!(".../{}", file_name_str).into()
+                                }
+                            } else {
+                                file_name_str.to_string().into()
+                            }
+                        } else {
+                            "...".into()
+                        }
+                    } else {
+                        path_str.into()
                     }
-                    counts
-                });
+                })
+                .unwrap_or_else(|| "[scratch]".into());
 
-        let mut output = Spans::default();
-
-        if warnings > 0 {
-            output.0.push(Span::styled(
-                "●".to_string(),
-                context.editor.theme.get("warning"),
-            ));
-            output.0.push(Span::raw(format!(" {} ", warnings)));
-        }
-
-        if errors > 0 {
-            output.0.push(Span::styled(
-                "●".to_string(),
-                context.editor.theme.get("error"),
-            ));
-            output.0.push(Span::raw(format!(" {} ", errors)));
-        }
-
-        output
-    }
-
-    fn render_workspace_diagnostics<'a>(context: &RenderContext) -> Spans<'a> {
-        let (warnings, errors) =
-            context
-                .editor
-                .diagnostics
-                .values()
-                .flatten()
-                .fold((0, 0), |mut counts, (diag, _)| {
-                    match diag.severity {
-                        Some(DiagnosticSeverity::WARNING) => counts.0 += 1,
-                        Some(DiagnosticSeverity::ERROR) | None => counts.1 += 1,
-                        _ => {}
-                    }
-                    counts
-                });
-
-        let mut output = Spans::default();
-
-        if warnings > 0 || errors > 0 {
-            output.0.push(Span::raw(" W "));
-        }
-
-        if warnings > 0 {
-            output.0.push(Span::styled(
-                "●".to_string(),
-                context.editor.theme.get("warning"),
-            ));
-            output.0.push(Span::raw(format!(" {} ", warnings)));
-        }
-
-        if errors > 0 {
-            output.0.push(Span::styled(
-                "●".to_string(),
-                context.editor.theme.get("error"),
-            ));
-            output.0.push(Span::raw(format!(" {} ", errors)));
-        }
-
-        output
-    }
-
-    fn render_selections<'a>(context: &RenderContext) -> Spans<'a> {
-        let count = context.doc.selection(context.view.id).len();
-        Span::raw(format!(
-            " {} sel{} ",
-            count,
-            if count == 1 { "" } else { "s" }
-        ))
-        .into()
-    }
-
-    fn render_primary_selection_length<'a>(context: &RenderContext) -> Spans<'a> {
-        let tot_sel = context.doc.selection(context.view.id).primary().len();
-        Span::raw(format!(
-            " {} char{} ",
-            tot_sel,
-            if tot_sel == 1 { "" } else { "s" }
-        ))
-        .into()
-    }
-
-    fn get_position(context: &RenderContext) -> Position {
-        coords_at_pos(
-            context.doc.text().slice(..),
-            context
-                .doc
-                .selection(context.view.id)
-                .primary()
-                .cursor(context.doc.text().slice(..)),
-        )
-    }
-
-    fn render_position<'a>(context: &RenderContext) -> Spans<'a> {
-        let position = get_position(context);
-        Span::raw(format!(" {}:{} ", position.row + 1, position.col + 1)).into()
-    }
-
-    fn render_total_line_numbers<'a>(context: &RenderContext) -> Spans<'a> {
-        let total_line_numbers = context.doc.text().len_lines();
-        Span::raw(format!(" {} ", total_line_numbers)).into()
-    }
-
-    fn render_position_percentage<'a>(context: &RenderContext) -> Spans<'a> {
-        let position = get_position(context);
-        let maxrows = context.doc.text().len_lines();
-        Span::raw(format!("{}%", (position.row + 1) * 100 / maxrows)).into()
-    }
-
-    fn render_file_encoding<'a>(context: &RenderContext) -> Spans<'a> {
-        let enc = context.doc.encoding();
-
-        if enc != encoding::UTF_8 {
-            Span::raw(format!(" {} ", enc.name())).into()
-        } else {
-            Spans::default()
-        }
-    }
-
-    fn render_file_line_ending<'a>(context: &RenderContext) -> Spans<'a> {
-        use helix_core::LineEnding::*;
-        let line_ending = match context.doc.line_ending {
-            Crlf => "CRLF",
-            LF => "LF",
-            #[cfg(feature = "unicode-lines")]
-            VT => "VT", // U+000B -- VerticalTab
-            #[cfg(feature = "unicode-lines")]
-            FF => "FF", // U+000C -- FormFeed
-            #[cfg(feature = "unicode-lines")]
-            CR => "CR", // U+000D -- CarriageReturn
-            #[cfg(feature = "unicode-lines")]
-            Nel => "NEL", // U+0085 -- NextLine
-            #[cfg(feature = "unicode-lines")]
-            LS => "LS", // U+2028 -- Line Separator
-            #[cfg(feature = "unicode-lines")]
-            PS => "PS", // U+2029 -- ParagraphSeparator
+            let position_text = format!("{}:{}", position.row + 1, position.col + 1);
+            
+            (mode_name, file_name, position_text)
         };
 
-        Span::raw(format!(" {} ", line_ending)).into()
-    }
+        // Fill background
+        window.paint_quad(gpui::fill(bounds, bg_color));
 
-    fn render_file_type<'a>(context: &RenderContext) -> Spans<'a> {
-        let file_type = context.doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME);
-
-        Span::raw(format!(" {} ", file_type)).into()
-    }
-
-    fn render_file_name<'a>(context: &RenderContext) -> Spans<'a> {
-        let title = {
-            let rel_path = context.doc.relative_path();
-            let path = rel_path
-                .as_ref()
-                .map(|p| p.to_string_lossy())
-                .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
-            format!(" {} ", path)
+        // Create divider color with reduced opacity
+        let divider_color = Hsla {
+            h: _fg_color.h,
+            s: _fg_color.s,
+            l: _fg_color.l,
+            a: 0.3,
         };
 
-        Span::raw(title).into()
-    }
-
-    fn render_file_absolute_path<'a>(context: &RenderContext) -> Spans<'a> {
-        let title = {
-            let path = context.doc.path();
-            let path = path
-                .as_ref()
-                .map(|p| p.to_string_lossy())
-                .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
-            format!(" {} ", path)
+        // Shape the text runs for each status component
+        let mode_run = TextRun {
+            len: mode_name.len(),
+            font: self.0.style.font(),
+            color: _fg_color,
+            background_color: None,
+            strikethrough: None,
+            underline: None,
         };
-
-        Span::raw(title).into()
-    }
-
-    fn render_file_modification_indicator<'a>(context: &RenderContext) -> Spans<'a> {
-        let title = (if context.doc.is_modified() {
-            "[+]"
-        } else {
-            "   "
-        })
-        .to_string();
-
-        Span::raw(title).into()
-    }
-
-    fn render_read_only_indicator<'a>(context: &RenderContext) -> Spans<'a> {
-        let title = if context.doc.readonly {
-            " [readonly] "
-        } else {
-            ""
+        
+        let file_run = TextRun {
+            len: file_name.len(),
+            font: self.0.style.font(),
+            color: _fg_color,
+            background_color: None,
+            strikethrough: None,
+            underline: None,
+        };
+        
+        let position_run = TextRun {
+            len: position_text.len(),
+            font: self.0.style.font(),
+            color: _fg_color,
+            background_color: None,
+            strikethrough: None,
+            underline: None,
+        };
+        
+        // Layout the text elements with spacing
+        let padding = px(8.);
+        let divider_width = px(1.);
+        let divider_height = px(16.);
+        let gap = px(8.);
+        
+        // Calculate available width for file name (leave space for mode and position)
+        let mode_width = px(3. * 8.); // 3 chars for mode
+        let position_width = px(10. * 8.); // Estimate for position (e.g., "999:999")
+        let reserved_width = padding * 2. + mode_width + position_width + gap * 4. + divider_width * 2.;
+        let available_file_width = (bounds.size.width - reserved_width).max(px(50.)); // At least 50px for file name
+        
+        let mut x_offset = bounds.origin.x + padding;
+        let y_center = bounds.origin.y + Pixels((bounds.size.height - self.0.style.line_height_in_pixels(px(16.0))).0 / 2.0);
+        
+        // Paint mode text
+        let mode_text: SharedString = mode_name.into();
+        let mode_line = window.text_system().shape_line(
+            mode_text,
+            self.0.style.font_size.to_pixels(px(16.0)),
+            &[mode_run],
+            None
+        );
+        if let Err(e) = mode_line.paint(gpui::Point::new(x_offset, y_center), self.0.style.line_height_in_pixels(px(16.0)), window, cx) {
+            log::error!("Failed to paint mode text: {e:?}");
         }
-        .to_string();
-        Span::raw(title).into()
-    }
-
-    fn render_file_base_name<'a>(context: &RenderContext) -> Spans<'a> {
-        let title = {
-            let rel_path = context.doc.relative_path();
-            let path = rel_path
-                .as_ref()
-                .and_then(|p| p.file_name().map(|s| s.to_string_lossy()))
-                .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
-            format!(" {} ", path)
-        };
-
-        Span::raw(title).into()
-    }
-
-    fn render_separator<'a>(context: &RenderContext) -> Spans<'a> {
-        let sep = &context.editor.config().statusline.separator;
-
-        Span::styled(
-            sep.to_string(),
-            context.editor.theme.get("ui.statusline.separator"),
-        )
-        .into()
-    }
-
-    fn render_spacer<'a>(_context: &RenderContext) -> Spans<'a> {
-        Span::raw(" ").into()
-    }
-
-    fn render_version_control<'a>(context: &RenderContext) -> Spans<'a> {
-        let head = context
-            .doc
-            .version_control_head()
-            .unwrap_or_default()
-            .to_string();
-
-        Span::raw(head).into()
-    }
-
-    fn render_register<'a>(context: &RenderContext) -> Spans<'a> {
-        if let Some(reg) = context.editor.selected_register {
-            Span::raw(format!(" reg={} ", reg)).into()
-        } else {
-            Spans::default()
+        x_offset += mode_width + gap;
+        
+        // Paint first divider
+        let divider_y = bounds.origin.y + Pixels((bounds.size.height - divider_height).0 / 2.0);
+        window.paint_quad(fill(
+            Bounds::new(
+                gpui::Point::new(x_offset, divider_y),
+                Size::new(divider_width, divider_height)
+            ),
+            divider_color
+        ));
+        x_offset += divider_width + gap;
+        
+        // Paint file name with clipping
+        let file_start_x = x_offset;
+        let file_line = window.text_system().shape_line(
+            file_name.clone(),
+            self.0.style.font_size.to_pixels(px(16.0)),
+            &[file_run],
+            None
+        );
+        
+        // Set up clipping bounds for the file name
+        let clip_bounds = Bounds::new(
+            gpui::Point::new(file_start_x, bounds.origin.y),
+            Size::new(available_file_width, bounds.size.height)
+        );
+        
+        window.with_content_mask(Some(ContentMask { bounds: clip_bounds }), |window| {
+            if let Err(e) = file_line.paint(gpui::Point::new(x_offset, y_center), self.0.style.line_height_in_pixels(px(16.0)), window, cx) {
+                log::error!("Failed to paint file name: {e:?}");
+            }
+        });
+        
+        x_offset = file_start_x + available_file_width + gap;
+        
+        // Paint second divider
+        window.paint_quad(fill(
+            Bounds::new(
+                gpui::Point::new(x_offset, divider_y),
+                Size::new(divider_width, divider_height)
+            ),
+            divider_color
+        ));
+        x_offset += divider_width + gap;
+        
+        // Paint position text
+        let position_shared: SharedString = position_text.into();
+        let position_line = window.text_system().shape_line(
+            position_shared,
+            self.0.style.font_size.to_pixels(px(16.0)),
+            &[position_run],
+            None
+        );
+        if let Err(e) = position_line.paint(gpui::Point::new(x_offset, y_center), self.0.style.line_height_in_pixels(px(16.0)), window, cx) {
+            log::error!("Failed to paint position text: {e:?}");
         }
     }
 }
+
+// TODO: Implement GPUI-based status line components as needed
