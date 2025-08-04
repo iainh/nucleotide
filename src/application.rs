@@ -344,20 +344,33 @@ impl Application {
         items
     }
 
-    fn create_native_prompt_from_helix(&mut self, cx: &mut gpui::Context<crate::Core>) -> Option<crate::prompt::Prompt> {
+    fn create_native_prompt_from_helix(&mut self, _cx: &mut gpui::Context<crate::Core>) -> Option<crate::prompt::Prompt> {
         use crate::prompt::Prompt;
         use std::sync::Arc;
         
         // Check if there's a helix prompt in the compositor
-        if let Some(helix_prompt) = self.compositor.find::<helix_term::ui::Prompt>() {
-            // Get the current prompt text and line content
-            let prompt_text = ":"; // Command mode prompt
-            let current_line = helix_prompt.line().clone();
+        if let Some(_helix_prompt) = self.compositor.find::<helix_term::ui::Prompt>() {
+            // To identify command prompts, we need to check the prompt text
+            // Since the prompt field is private, we'll use a different approach:
+            // 1. Get the current line (which we can access)
+            // 2. Check if this is likely a command based on context
+            
+            // We'll use a heuristic: if there's a prompt in the compositor and
+            // we just pressed ':', it's likely a command prompt
+            // This is checked by the workspace before calling this function
+            
+            // For now, we'll only show native prompts for command mode
+            // In the future, we might want to support other prompt types
+            let prompt_text = ":";
+            
+            // Command prompts should always start empty when first opened
+            // Any text in the helix prompt is likely from before the prompt was opened
+            let initial_input = String::new();
             
             // Create native prompt with command execution through Update event
             let prompt = Prompt::Native {
                 prompt: prompt_text.into(),
-                initial_input: current_line.into(),
+                initial_input: initial_input.into(),
                 on_submit: Arc::new(move |input: &str| {
                     println!("Native command submitted: {}", input);
                     // The actual command execution will be handled by workspace
@@ -371,6 +384,26 @@ impl Application {
             Some(prompt)
         } else {
             None
+        }
+    }
+    
+    fn emit_overlays_except_prompt(&mut self, cx: &mut gpui::Context<crate::Core>) {
+        let picker = self.try_create_picker_component();
+        
+        if let Some(picker) = picker {
+            cx.emit(crate::Update::Picker(picker));
+        }
+        
+        // Don't emit prompts here
+        
+        // Don't take() the autoinfo - just clone it so it persists
+        if let Some(info) = &self.editor.autoinfo {
+            cx.emit(crate::Update::Info(helix_view::info::Info {
+                title: info.title.clone(),
+                text: info.text.clone(),
+                width: info.width,
+                height: info.height,
+            }));
         }
     }
 
@@ -433,6 +466,9 @@ impl Application {
                 };
                 
                 
+                // Track if this is a command mode key
+                let is_command_key = key.code == helix_view::keyboard::KeyCode::Char(':');
+                
                 let is_handled = self
                     .compositor
                     .handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
@@ -468,7 +504,13 @@ impl Application {
                     comp_ctx.editor.ensure_cursor_in_view(view_id);
                 }
                 
-                self.emit_overlays(cx);
+                // Only emit overlays if we pressed ':' for command mode
+                if is_command_key {
+                    self.emit_overlays(cx);
+                } else {
+                    // For other keys, only emit picker and other overlays, not prompts
+                    self.emit_overlays_except_prompt(cx);
+                }
                 
                 cx.emit(crate::Update::Redraw);
             }
