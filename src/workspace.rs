@@ -266,15 +266,9 @@ impl Workspace {
     fn handle_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         // Wrap the entire key handling in a catch to prevent panics from propagating to FFI
         if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // Check if we should dismiss the info box first
-            if ev.keystroke.key == "escape" && !self.info_hidden {
-                self.info_hidden = true;
-                cx.notify();
-                return; // Don't pass escape to editor when dismissing info box
-            }
-
-            // Check if we should dismiss key hints
+            // Check if we should dismiss UI elements on escape
             if ev.keystroke.key == "escape" {
+                // First check if we should dismiss key hints (highest priority)
                 let has_hints = self.key_hints.read(cx).has_info();
                 if has_hints {
                     // Clear key hints
@@ -288,6 +282,13 @@ impl Workspace {
                     });
                     cx.notify();
                     return; // Don't pass escape to editor when dismissing key hints
+                }
+                
+                // Then check if we should dismiss the info box
+                if !self.info_hidden {
+                    self.info_hidden = true;
+                    cx.notify();
+                    return; // Don't pass escape to editor when dismissing info box
                 }
             }
 
