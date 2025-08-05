@@ -770,6 +770,9 @@ pub fn init_editor(
         width: 80,
         height: 25,
     };
+    // CRITICAL: Register events FIRST, before creating handlers
+    helix_term::events::register();
+    
     let (completion_tx, _completion_rx) = tokio::sync::mpsc::channel(1);
     let (signature_tx, _signature_rx) = tokio::sync::mpsc::channel(1);
     let (auto_save_tx, _auto_save_rx) = tokio::sync::mpsc::channel(1);
@@ -781,6 +784,10 @@ pub fn init_editor(
         document_colors: doc_colors_tx,
         // TODO: Add word_index handler when available in new API
     };
+    
+    // CRITICAL FIX: Register handler hooks to enable LSP features
+    helix_view::handlers::register_hooks(&handlers);
+    
     let mut editor = Editor::new(
         area,
         theme_loader.clone(),
@@ -880,8 +887,6 @@ pub fn init_editor(
     let keymaps = Keymaps::new(keys);
     let view = EditorView::new(keymaps);
     let jobs = Jobs::new();
-
-    helix_term::events::register();
 
     Ok(Application {
         editor,
