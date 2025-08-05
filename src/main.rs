@@ -169,7 +169,7 @@ fn app_menus() -> Vec<Menu> {
             name: "File".into(),
             items: vec![
                 MenuItem::action("Open...", OpenFile),
-                // MenuItem::action("Open Directory", OpenDirectory),
+                MenuItem::action("Open Directory", OpenDirectory),
             ],
         },
         Menu {
@@ -211,11 +211,13 @@ pub enum Update {
     Redraw,
     Prompt(prompt::Prompt),
     Picker(picker::Picker),
+    DirectoryPicker(picker::Picker),
     Completion(gpui::Entity<completion::CompletionView>),
     Info(helix_view::info::Info),
     EditorEvent(helix_view::editor::EditorEvent),
     EditorStatus(EditorStatus),
     OpenFile(std::path::PathBuf),
+    OpenDirectory(std::path::PathBuf),
     ShouldQuit,
     CommandSubmitted(String),
 }

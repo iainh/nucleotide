@@ -33,9 +33,13 @@ use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, Editor};
 // Helper function to find workspace root (similar to Helix)
 fn find_workspace_root() -> PathBuf {
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    
+    find_workspace_root_from(&current_dir)
+}
+
+// Helper function to find workspace root from a specific directory
+pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
     // Walk up the directory tree looking for VCS directories
-    for ancestor in current_dir.ancestors() {
+    for ancestor in start_dir.ancestors() {
         if ancestor.join(".git").exists()
             || ancestor.join(".svn").exists()
             || ancestor.join(".hg").exists()
@@ -46,8 +50,8 @@ fn find_workspace_root() -> PathBuf {
         }
     }
     
-    // If no VCS directory found, use current directory
-    current_dir
+    // If no VCS directory found, use the start directory
+    start_dir.to_path_buf()
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +139,7 @@ pub struct Application {
     pub jobs: Jobs,
     pub lsp_progress: LspProgressMap,
     pub lsp_state: Option<gpui::Entity<crate::core::lsp_state::LspState>>,
+    pub project_directory: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -885,5 +890,6 @@ pub fn init_editor(
         jobs,
         lsp_progress: LspProgressMap::new(),
         lsp_state: None,
+        project_directory: None,
     })
 }

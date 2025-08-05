@@ -4,7 +4,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use helix_core::Selection;
 use helix_view::ViewId;
-use log::info;
+use log::{info, warn};
 
 use crate::document::DocumentView;
 use crate::info_box::InfoBoxView;
@@ -13,6 +13,7 @@ use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
 use crate::utils;
 use crate::{Core, Input, InputEvent};
+use crate::application::find_workspace_root_from;
 
 pub struct Workspace {
     core: Entity<Core>,
@@ -116,7 +117,7 @@ impl Workspace {
                 self.update_key_hints(cx);
                 cx.notify();
             }
-            crate::Update::Prompt(_) | crate::Update::Picker(_) | crate::Update::Completion(_) => {
+            crate::Update::Prompt(_) | crate::Update::Picker(_) | crate::Update::DirectoryPicker(_) | crate::Update::Completion(_) => {
                 // When a picker, prompt, or completion appears, auto-dismiss the info box
                 self.info_hidden = true;
                 
@@ -247,6 +248,31 @@ impl Workspace {
                 
                 // Force a redraw
                 cx.notify();
+            }
+            crate::Update::OpenDirectory(path) => {
+                // Set the project directory
+                info!("Setting project directory: {path:?}");
+                self.core.update(cx, |core, cx| {
+                    core.project_directory = Some(path.clone());
+                    
+                    // Find the workspace root from this directory
+                    let workspace_root = find_workspace_root_from(&path);
+                    info!("Found workspace root: {workspace_root:?}");
+                    
+                    // Update the editor's working directory
+                    // This will affect file picker and other operations
+                    if let Err(e) = std::env::set_current_dir(&workspace_root) {
+                        warn!("Failed to change working directory: {}", e);
+                    }
+                    
+                    cx.notify();
+                });
+                
+                // Show status message about the new project directory
+                self.core.update(cx, |core, cx| {
+                    core.editor.set_status(format!("Project directory set to: {}", path.display()));
+                    cx.notify();
+                });
             }
             crate::Update::Info(_) => {
                 self.info_hidden = false;
@@ -691,6 +717,13 @@ impl Render for Workspace {
                     open(core.clone(), handle.clone(), cx)
                 })
             })
+            .on_action({
+                let handle = self.handle.clone();
+                let core = self.core.clone();
+                cx.listener(move |_, _: &crate::actions::editor::OpenDirectory, _window, cx| {
+                    open_directory(core.clone(), handle.clone(), cx)
+                })
+            })
             .on_action(cx.listener(move |_, _: &crate::actions::window::Hide, _window, cx| {
                 cx.hide()
             }))
@@ -766,11 +799,16 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     
     // Get all files in the current directory using ignore crate (respects .gitignore)
     let mut items = Vec::new();
-    let cwd = std::env::current_dir().unwrap_or_default();
-    info!("Current directory: {:?}", cwd);
+    
+    // Use project directory if set, otherwise use current directory
+    let base_dir = core.update(cx, |core, _| {
+        core.project_directory.clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+    });
+    info!("Base directory for file picker: {:?}", base_dir);
     
     // Use ignore::Walk to get files, respecting .gitignore
-    let mut walker = WalkBuilder::new(&cwd);
+    let mut walker = WalkBuilder::new(&base_dir);
     walker.add_custom_ignore_filename(".helix/ignore");
     walker.hidden(false); // Show hidden files like .gitignore
     
@@ -787,8 +825,8 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
             continue;
         }
         
-        // Get relative path from current directory
-        let relative_path = path.strip_prefix(&cwd).unwrap_or(&path);
+        // Get relative path from base directory
+        let relative_path = path.strip_prefix(&base_dir).unwrap_or(&path);
         let path_str = relative_path.to_string_lossy().into_owned();
         
         // Get filename for label
@@ -831,6 +869,24 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     // Emit the picker to show it in the overlay
     core.update(cx, |_core, cx| {
         cx.emit(crate::Update::Picker(file_picker));
+    });
+}
+
+fn open_directory(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
+    info!("Opening directory picker");
+    
+    // Create a native directory picker
+    let directory_picker = crate::picker::Picker::native_directory(
+        "Select Project Directory",
+        |path| {
+            info!("Directory selected: {:?}", path);
+            // The callback will be handled through events
+        }
+    );
+    
+    // Emit the picker to show it in the overlay
+    core.update(cx, |_core, cx| {
+        cx.emit(crate::Update::DirectoryPicker(directory_picker));
     });
 }
 

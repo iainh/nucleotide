@@ -296,6 +296,56 @@ impl OverlayView {
                 
                 cx.notify();
             }
+            crate::Update::DirectoryPicker(_picker) => {
+                println!("📁 OverlayView received directory picker");
+                
+                // Use GPUI's native file dialog API
+                let core_weak = self.core.clone();
+                cx.spawn(async move |this, cx| {
+                    // Configure the dialog to only allow directory selection
+                    let options = gpui::PathPromptOptions {
+                        files: false,        // Don't allow file selection
+                        directories: true,   // Allow directory selection
+                        multiple: false,     // Single directory only
+                    };
+                    
+                    // Open the native directory picker
+                    let result = cx.update(|cx| {
+                        cx.prompt_for_paths(options)
+                    }).ok();
+                    
+                    if let Some(receiver) = result {
+                        // Wait for the user to select a directory
+                        if let Ok(Ok(Some(paths))) = receiver.await {
+                            if let Some(path) = paths.first() {
+                                // Emit the selected directory through the core entity
+                                if let Some(core) = core_weak.upgrade() {
+                                    cx.update(|cx| {
+                                        core.update(cx, |_core, cx| {
+                                            cx.emit(crate::Update::OpenDirectory(path.clone()));
+                                        });
+                                    }).ok();
+                                }
+                                // Dismiss the overlay
+                                cx.update(|cx| {
+                                    this.update(cx, |_this, cx| {
+                                        cx.emit(DismissEvent);
+                                    }).ok();
+                                }).ok();
+                            }
+                        } else {
+                            // User cancelled - just dismiss
+                            cx.update(|cx| {
+                                this.update(cx, |_this, cx| {
+                                    cx.emit(DismissEvent);
+                                }).ok();
+                            }).ok();
+                        }
+                    }
+                }).detach();
+                
+                cx.notify();
+            }
             crate::Update::Redraw => {
                 // Don't clear native picker on redraw - let it persist until dismissed by user action
                 println!("🎨 Redraw event (not clearing native picker)");

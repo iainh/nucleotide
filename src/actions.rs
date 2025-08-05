@@ -24,6 +24,7 @@ pub mod editor {
             Save,
             SaveAs,
             OpenFile,
+            OpenDirectory,
             CloseFile,
             Quit,
         ]

@@ -27,6 +27,23 @@ impl Picker {
             on_select: Arc::new(on_select),
         }
     }
+    
+    /// Create a native directory picker
+    pub fn native_directory(
+        title: impl Into<SharedString>,
+        _on_select: impl Fn(Option<std::path::PathBuf>) + Send + Sync + 'static,
+    ) -> Self {
+        // For now, we'll create an empty picker that will trigger native dialog
+        // The actual directory selection will be handled by the OS
+        Picker::Native {
+            title: title.into(),
+            items: vec![],
+            on_select: Arc::new(move |_| {
+                // This won't be called for directory picker
+                // Directory selection will be handled through events
+            }),
+        }
+    }
 }
 
 impl std::fmt::Debug for Picker {
