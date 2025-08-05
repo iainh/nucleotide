@@ -110,7 +110,7 @@ impl FileTree {
 
     /// Toggle directory expansion
     pub fn toggle_directory(&mut self, path: &Path) -> Result<bool> {
-        let entry = self.entry_by_path(path)
+        let mut entry = self.entry_by_path(path)
             .context("Entry not found")?;
 
         if !entry.is_directory() {
@@ -122,10 +122,14 @@ impl FileTree {
         if is_expanded {
             // Collapse directory
             self.expanded_dirs.remove(path);
+            entry.is_expanded = false;
+            self.upsert_entry(entry);
             self.hide_children(path);
         } else {
             // Expand directory
             self.expanded_dirs.insert(path.to_path_buf());
+            entry.is_expanded = true;
+            self.upsert_entry(entry);
             self.load_directory(path)?;
         }
 
