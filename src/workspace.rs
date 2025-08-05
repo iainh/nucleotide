@@ -31,6 +31,10 @@ pub struct Workspace {
     needs_focus_restore: bool,
     file_tree: Option<Entity<FileTreeView>>,
     show_file_tree: bool,
+    file_tree_width: f32,
+    is_resizing_file_tree: bool,
+    resize_start_x: f32,
+    resize_start_width: f32,
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -98,6 +102,10 @@ impl Workspace {
             needs_focus_restore: false,
             file_tree,
             show_file_tree: true,
+            file_tree_width: 250.0, // Default width
+            is_resizing_file_tree: false,
+            resize_start_x: 0.0,
+            resize_start_width: 0.0,
         };
         // Initialize document views
         workspace.update_document_views(cx);
@@ -907,6 +915,20 @@ impl Render for Workspace {
                         view.handle_key(ev, cx);
                     }))
             })
+            .on_mouse_move(cx.listener(|workspace, event: &MouseMoveEvent, _window, cx| {
+                if workspace.is_resizing_file_tree {
+                    let delta = event.position.x.0 - workspace.resize_start_x;
+                    let new_width = (workspace.resize_start_width + delta).clamp(150.0, 600.0);
+                    workspace.file_tree_width = new_width;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|workspace, _event: &MouseUpEvent, _window, cx| {
+                if workspace.is_resizing_file_tree {
+                    workspace.is_resizing_file_tree = false;
+                    cx.notify();
+                }
+            }))
             .on_action(cx.listener(move |_, _: &crate::actions::help::About, _window, _cx| {
                 eprintln!("About Helix");
             }))
@@ -980,9 +1002,26 @@ impl Render for Workspace {
                 if let Some(file_tree) = &self.file_tree {
                     this.child(
                         div()
-                            .w(px(250.0)) // Fixed width for file tree
+                            .w(px(self.file_tree_width))
                             .h_full()
                             .child(file_tree.clone())
+                    )
+                    // Add resize handle
+                    .child(
+                        div()
+                            .w(px(4.0))
+                            .h_full()
+                            .bg(transparent_black())
+                            .hover(|style| style.bg(hsla(0.0, 0.0, 0.5, 0.3)))
+                            .cursor_pointer() // TODO: GPUI doesn't have resize cursor yet
+                            .id("file-tree-resize-handle")
+                            .on_mouse_down(MouseButton::Left, cx.listener(|workspace, event: &MouseDownEvent, _window, cx| {
+                                workspace.is_resizing_file_tree = true;
+                                workspace.resize_start_x = event.position.x.0;
+                                workspace.resize_start_width = workspace.file_tree_width;
+                                cx.stop_propagation();
+                                cx.notify();
+                            }))
                     )
                 } else {
                     this
