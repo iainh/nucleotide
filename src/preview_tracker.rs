@@ -20,7 +20,7 @@ impl PreviewTracker {
     /// Register a new preview document
     pub fn register(&self, doc_id: DocumentId, view_id: ViewId) {
         if let Ok(mut previews) = self.active_previews.lock() {
-            println!("📋 Registering preview: doc_id={:?}, view_id={:?}", doc_id, view_id);
+            println!("📋 Registering preview: doc_id={doc_id:?}, view_id={view_id:?}");
             previews.push((doc_id, view_id));
         }
     }
@@ -28,7 +28,7 @@ impl PreviewTracker {
     /// Unregister a preview document
     pub fn unregister(&self, doc_id: DocumentId, view_id: ViewId) {
         if let Ok(mut previews) = self.active_previews.lock() {
-            println!("📋 Unregistering preview: doc_id={:?}, view_id={:?}", doc_id, view_id);
+            println!("📋 Unregistering preview: doc_id={doc_id:?}, view_id={view_id:?}");
             previews.retain(|&(d, v)| d != doc_id || v != view_id);
         }
     }

@@ -70,7 +70,7 @@ impl KeyHintView {
 
     fn render_line(&self, line: &str, _cx: &mut Context<Self>) -> AnyElement {
         // Don't trim the line yet - we need to preserve spacing
-        let clean_line = line.replace('\n', " ").replace('\r', " ");
+        let clean_line = line.replace(['\n', '\r'], " ");
         
         // The format from Info has keys padded to a fixed width followed by description
         // Let's find where the description starts by looking for the first letter after spaces
@@ -134,7 +134,7 @@ impl Render for KeyHintView {
             let title_color = self.get_theme_color("ui.text.info");
             
             // Clean title
-            let clean_title = info.title.replace('\n', " ").replace('\r', " ").trim().to_string();
+            let clean_title = info.title.replace(['\n', '\r'], " ").trim().to_string();
             
             div()
                 .absolute()

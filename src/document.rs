@@ -104,7 +104,6 @@ impl EventEmitter<DismissEvent> for DocumentView {}
 
 impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        println!("{:?}: rendering document view", self.view_id);
         
         // Focus handlers should be set up once, not in render
         // The is_focused state is managed externally via set_focused()
@@ -154,13 +153,18 @@ impl Render for DocumentView {
             }
         }));
 
-        let status = crate::statusline::StatusLine::new(
+        let mut status = crate::statusline::StatusLine::new(
             self.core.clone(),
             doc_id,
             self.view_id,
             self.is_focused,
             self.style.clone(),
         );
+        
+        // Add LSP state if available
+        if let Some(lsp_state) = self.core.read(cx).lsp_state.as_ref() {
+            status = status.with_lsp_state(lsp_state.clone());
+        }
 
         let diags = {
             let _theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme().clone();
@@ -1132,8 +1136,6 @@ impl Element for DocumentElement {
                 
                 // println!("first row is {}", row);
                 let mut last_row = (first_row + after_layout.rows + 1).min(total_lines);
-                println!("Initial last_row calculation: first_row={}, after_layout.rows={}, total_lines={}, last_row={}", 
-                    first_row, after_layout.rows, total_lines, last_row);
                 
                 // Check if cursor is at the very end of the file (phantom line)
                 let cursor_at_end = cursor_char_idx == text.len_chars();

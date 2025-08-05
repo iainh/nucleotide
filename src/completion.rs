@@ -209,7 +209,7 @@ impl CompletionView {
         };
         
         self.selected_index = new_index;
-        println!("🎯 CompletionView selection moved from {} to {} (delta: {})", old_index, new_index, delta);
+        println!("🎯 CompletionView selection moved from {old_index} to {new_index} (delta: {delta})");
         
         // Adjust scroll to keep selection visible
         if self.selected_index < self.scroll_offset {
@@ -299,7 +299,7 @@ impl Render for CompletionView {
                 let item = match self.items.get(item_idx) {
                     Some(item) => item,
                     None => {
-                        log::error!("Invalid item index: {}", item_idx);
+                        log::error!("Invalid item index: {item_idx}");
                         return div(); // Return empty div if item not found
                     }
                 };

@@ -89,7 +89,7 @@ impl Workspace {
     }
 
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
-        info!("handling event {:?}", ev);
+        info!("handling event {ev:?}");
         match ev {
             crate::Update::EditorEvent(ev) => {
                 use helix_view::editor::EditorEvent;
@@ -97,7 +97,7 @@ impl Workspace {
                     EditorEvent::Redraw => cx.notify(),
                     EditorEvent::LanguageServerMessage(_) => { /* handled by notifications */ }
                     _ => {
-                        info!("editor event {:?} not handled", ev);
+                        info!("editor event {ev:?} not handled");
                     }
                 }
             }
@@ -125,24 +125,94 @@ impl Workspace {
             }
             crate::Update::OpenFile(path) => {
                 // Open the specified file in the editor
-                info!("Opening file: {:?}", path);
+                info!("Opening file: {path:?}");
                 self.core.update(cx, |core, cx| {
                     let _guard = self.handle.enter();
-                    let editor = &mut core.editor;
                     
-                    // Open the file in the editor
-                    match editor.open(&path, helix_view::editor::Action::Replace) {
+                    // Determine the right action based on whether we have views
+                    let action = if core.editor.tree.views().count() == 0 {
+                        info!("No views exist, using VerticalSplit action");
+                        helix_view::editor::Action::VerticalSplit
+                    } else {
+                        info!("Views exist, using Replace action to show in current view");
+                        helix_view::editor::Action::Replace
+                    };
+                    
+                    // Now open the file
+                    info!("About to open file from picker: {path:?} with action: {:?}", action);
+                    match core.editor.open(&path, action) {
                         Err(e) => {
-                            eprintln!("Failed to open file {:?}: {}", path, e);
+                            eprintln!("Failed to open file {path:?}: {e}");
                         }
                         Ok(doc_id) => {
-                            info!("Successfully opened file: {:?}", path);
+                            info!("Successfully opened file from picker: {path:?}, doc_id: {doc_id:?}");
+                            
+                            // Log document info
+                            if let Some(doc) = core.editor.document(doc_id) {
+                                info!("Document language: {:?}, path: {:?}", doc.language_name(), doc.path());
+                                
+                                // Check if document has language servers
+                                let lang_servers: Vec<_> = doc.language_servers().collect();
+                                info!("Document has {} language servers", lang_servers.len());
+                                for ls in &lang_servers {
+                                    info!("  Language server: {}", ls.name());
+                                }
+                            }
+                            
+                            // Trigger a redraw event which might help initialize language servers
+                            helix_event::request_redraw();
+                            
+                            // Try to ensure language servers are started for this document
+                            // This is a workaround - ideally helix would handle this automatically
+                            let editor = &mut core.editor;
+                            
+                            // Force a refresh of language servers by getting document language config
+                            if let Some(doc) = editor.document(doc_id) {
+                                if let Some(lang_config) = doc.language_config() {
+                                    info!("Document has language config: {:?}", lang_config.language_id);
+                                    // Try to trigger language server initialization
+                                    // by calling refresh_language_servers (if it exists)
+                                    info!("Attempting to refresh language servers for document");
+                                }
+                            }
+                            
+                            // Force the editor to refresh/check language servers for this document
+                            // This is a workaround - ideally helix would do this automatically
+                            if let Some(doc) = editor.document(doc_id) {
+                                // Try to trigger LSP by getting language configuration
+                                if let Some(lang_config) = doc.language_config() {
+                                    info!("Document has language: {}, checking for language servers", lang_config.language_id);
+                                    
+                                    // Check if we need to start language servers
+                                    let doc_langs: Vec<_> = doc.language_servers().collect();
+                                    if doc_langs.is_empty() {
+                                        info!("No language servers attached to document, may need initialization");
+                                        
+                                        // Try to trigger initialization by requesting a redraw
+                                        // which should cause helix to check if LSP needs to be started
+                                        helix_event::request_redraw();
+                                    }
+                                }
+                            }
+                            
+                            // Emit an editor redraw event which should trigger various checks
+                            cx.emit(crate::Update::EditorEvent(helix_view::editor::EditorEvent::Redraw));
                             
                             // Set cursor to beginning of file without selecting content
                             let view_id = editor.tree.focus;
                             
                             // Check if the view exists before attempting operations
                             if editor.tree.contains(view_id) {
+                                // Get the current document id from the view
+                                let view_doc_id = editor.tree.get(view_id).doc;
+                                info!("View {:?} has document ID: {:?}, opened doc_id: {:?}", view_id, view_doc_id, doc_id);
+                                
+                                // Make sure the view is showing the document we just opened
+                                if view_doc_id != doc_id {
+                                    info!("View is showing different document, switching to opened document");
+                                    editor.switch(doc_id, helix_view::editor::Action::Replace);
+                                }
+                                
                                 // Set the selection and ensure cursor is in view
                                 editor.ensure_cursor_in_view(view_id);
                                 if let Some(doc) = editor.document_mut(doc_id) {
@@ -155,8 +225,27 @@ impl Workspace {
                     }
                     cx.notify();
                 });
+                
+                // Force focus update to ensure the correct view is focused
+                self.core.update(cx, |core, _cx| {
+                    let view_id = core.editor.tree.focus;
+                    info!("Current focused view after opening: {:?}", view_id);
+                });
+                
                 // Update document views after opening file
                 self.update_document_views(cx);
+                
+                // Try to trigger the same flow as initialization
+                // by focusing the view and requesting a redraw
+                self.core.update(cx, |core, _cx| {
+                    let view_id = core.editor.tree.focus;
+                    core.editor.focus(view_id);
+                    
+                    // Request idle timer which might trigger LSP initialization
+                    core.editor.reset_idle_timer();
+                });
+                
+                // Force a redraw
                 cx.notify();
             }
             crate::Update::Info(_) => {
@@ -170,7 +259,7 @@ impl Workspace {
                 cx.quit();
             }
             crate::Update::CommandSubmitted(command) => {
-                println!("🎯 Workspace received command: {}", command);
+                println!("🎯 Workspace received command: {command}");
                 // Execute the command through helix's command system
                 let core = self.core.clone();
                 let handle = self.handle.clone();
@@ -191,7 +280,7 @@ impl Workspace {
                     
                     // Execute the command using helix's command system
                     // Since execute_command_line is not public, we need to manually parse and execute
-                    let (cmd_name, args, _) = helix_core::command_line::split(&command);
+                    let (cmd_name, args, _) = helix_core::command_line::split(command);
                     
                     if !cmd_name.is_empty() {
                         // Check if it's a line number
@@ -201,7 +290,7 @@ impl Workspace {
                                 // Parse args manually since we can't use execute_command
                                 let parsed_args = helix_core::command_line::Args::parse(
                                     cmd_name,
-                                    cmd.signature.clone(),
+                                    cmd.signature,
                                     true,
                                     |token| Ok(token.content),
                                 );
@@ -225,9 +314,9 @@ impl Workspace {
                                     // Parse args for the command
                                     let parsed_args = helix_core::command_line::Args::parse(
                                         args,
-                                        cmd.signature.clone(),
+                                        cmd.signature,
                                         true,
-                                        |token| helix_view::expansion::expand(&comp_ctx.editor, token).map_err(|err| err.into()),
+                                        |token| helix_view::expansion::expand(comp_ctx.editor, token).map_err(|err| err.into()),
                                     );
                                     
                                     match parsed_args {
@@ -237,16 +326,16 @@ impl Workspace {
                                                 parsed_args,
                                                 helix_term::ui::PromptEvent::Validate,
                                             ) {
-                                                core.editor.set_error(format!("'{}': {}", cmd_name, err));
+                                                core.editor.set_error(format!("'{cmd_name}': {err}"));
                                             }
                                         }
                                         Err(err) => {
-                                            core.editor.set_error(format!("'{}': {}", cmd_name, err));
+                                            core.editor.set_error(format!("'{cmd_name}': {err}"));
                                         }
                                     }
                                 }
                                 None => {
-                                    core.editor.set_error(format!("no such command: '{}'", cmd_name));
+                                    core.editor.set_error(format!("no such command: '{cmd_name}'"));
                                 }
                             }
                         }
@@ -330,7 +419,7 @@ impl Workspace {
             // Update key hints after processing the key
             self.update_key_hints(cx);
         })) {
-            log::error!("Panic in key handler: {:?}", e);
+            log::error!("Panic in key handler: {e:?}");
         }
     }
 
@@ -452,7 +541,7 @@ impl Render for Workspace {
         if self.needs_focus_restore {
             if let Some(view_id) = self.focused_view_id {
                 if let Some(doc_view) = self.documents.get(&view_id) {
-                    println!("🔄 Restoring focus to document view: {:?}", view_id);
+                    println!("🔄 Restoring focus to document view: {view_id:?}");
                     let doc_focus = doc_view.focus_handle(cx);
                     window.focus(&doc_focus);
                 }
@@ -495,7 +584,7 @@ impl Render for Workspace {
         
         // Set the native window title (macOS convention: filename — appname)
         let window_title = if let Some(ref path) = focused_file_name {
-            format!("{} — Helix", path)  // Using em dash like macOS
+            format!("{path} — Helix")  // Using em dash like macOS
         } else {
             "Helix".to_string()
         };
@@ -509,14 +598,14 @@ impl Render for Workspace {
         let default_style = theme.get("ui.background");
         let default_ui_text = theme.get("ui.text");
         let bg_color = default_style.bg
-            .and_then(|c| utils::color_to_hsla(c))
+            .and_then(utils::color_to_hsla)
             .unwrap_or(black());
         let _text_color = default_ui_text.fg
-            .and_then(|c| utils::color_to_hsla(c))
+            .and_then(utils::color_to_hsla)
             .unwrap_or(white());
         let window_style = theme.get("ui.window");
         let border_color = window_style.fg
-            .and_then(|c| utils::color_to_hsla(c))
+            .and_then(utils::color_to_hsla)
             .unwrap_or(white());
 
         let editor_rect = editor.tree.area();
@@ -673,9 +762,12 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     use std::sync::Arc;
     use ignore::WalkBuilder;
     
+    info!("Opening file picker");
+    
     // Get all files in the current directory using ignore crate (respects .gitignore)
     let mut items = Vec::new();
     let cwd = std::env::current_dir().unwrap_or_default();
+    info!("Current directory: {:?}", cwd);
     
     // Use ignore::Walk to get files, respecting .gitignore
     let mut walker = WalkBuilder::new(&cwd);
@@ -719,8 +811,10 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
         }
     }
     
-    // Sort items by path for consistent ordering
-    items.sort_by(|a, b| a.sublabel.cmp(&b.sublabel));
+    // Sort items by label (path) for consistent ordering
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    
+    info!("File picker has {} items", items.len());
     
     // Create a simple native picker without callback - the overlay will handle file opening via events
     let file_picker = crate::picker::Picker::native(
@@ -731,6 +825,8 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
             // The overlay will emit OpenFile events when files are selected
         }
     );
+    
+    info!("Emitting file picker to overlay");
     
     // Emit the picker to show it in the overlay
     core.update(cx, |_core, cx| {
@@ -778,7 +874,7 @@ fn quit(core: Entity<Core>, rt: tokio::runtime::Handle, cx: &mut App) {
         let editor = &mut core.editor;
         let _guard = rt.enter();
         if let Err(e) = rt.block_on(async { editor.flush_writes().await }) {
-            log::error!("Failed to flush writes: {}", e);
+            log::error!("Failed to flush writes: {e}");
         }
         let views: Vec<_> = editor.tree.views().map(|(view, _)| view.id).collect();
         for view_id in views {

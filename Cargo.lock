@@ -1166,23 +1166,6 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "crossterm"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f476fe445d41c9e991fd07515a6f463074b782242ccf4a5b7b1d1012e70824df"
-dependencies = [
- "bitflags 2.9.1",
- "crossterm_winapi",
- "futures-core",
- "libc",
- "mio 0.8.11",
- "parking_lot",
- "signal-hook",
- "signal-hook-mio",
- "winapi",
-]
-
-[[package]]
-name = "crossterm"
 version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "829d955a0bb380ef178a640b91779e3987da38c9aea133b20614cfed8cdea9c6"
@@ -1192,7 +1175,7 @@ dependencies = [
  "filedescriptor",
  "futures-core",
  "libc",
- "mio 1.0.4",
+ "mio",
  "parking_lot",
  "rustix 0.38.44",
  "signal-hook",
@@ -3147,7 +3130,6 @@ dependencies = [
  "arc-swap",
  "chrono",
  "content_inspector",
- "crossterm 0.27.0",
  "fern 0.6.2",
  "futures-util",
  "gpui",
@@ -3159,20 +3141,16 @@ dependencies = [
  "helix-lsp",
  "helix-stdx",
  "helix-term",
- "helix-tui",
  "helix-vcs",
  "helix-view",
  "ignore",
  "log",
  "nucleo 0.2.1",
- "once_cell",
  "open",
  "pulldown-cmark 0.10.3",
  "serde",
  "serde_json",
- "signal-hook",
  "smallvec",
- "termini",
  "tokio",
  "tokio-stream",
  "toml 0.8.23",
@@ -3266,7 +3244,7 @@ dependencies = [
  "arc-swap",
  "chrono",
  "content_inspector",
- "crossterm 0.28.1",
+ "crossterm",
  "fern 0.7.1",
  "futures-util",
  "grep-regex",
@@ -3307,7 +3285,7 @@ source = "git+https://github.com/helix-editor/helix?tag=25.07.1#a05c151bb6e8e9c6
 dependencies = [
  "bitflags 2.9.1",
  "cassowary",
- "crossterm 0.28.1",
+ "crossterm",
  "helix-core",
  "helix-view",
  "log",
@@ -3342,7 +3320,7 @@ dependencies = [
  "bitflags 2.9.1",
  "chardetng",
  "clipboard-win",
- "crossterm 0.28.1",
+ "crossterm",
  "futures-util",
  "helix-core",
  "helix-dap",
@@ -3475,7 +3453,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -3949,7 +3927,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667"
 dependencies = [
  "cfg-if",
- "windows-targets 0.53.3",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -4199,18 +4177,6 @@ name = "mint"
 version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff"
-
-[[package]]
-name = "mio"
-version = "0.8.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4a650543ca06a924e8b371db273b2756685faae30f8487da1b56505a8f78b0c"
-dependencies = [
- "libc",
- "log",
- "wasi 0.11.1+wasi-snapshot-preview1",
- "windows-sys 0.48.0",
-]
 
 [[package]]
 name = "mio"
@@ -5724,8 +5690,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34db1a06d485c9142248b7a054f034b349b212551f3dfd19c94d45a754a217cd"
 dependencies = [
  "libc",
- "mio 0.8.11",
- "mio 1.0.4",
+ "mio",
  "signal-hook",
 ]
 
@@ -6359,7 +6324,7 @@ dependencies = [
  "bytes",
  "io-uring",
  "libc",
- "mio 1.0.4",
+ "mio",
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
@@ -7082,7 +7047,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

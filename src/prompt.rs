@@ -63,23 +63,19 @@ impl std::fmt::Debug for Prompt {
 }
 
 impl Prompt {
-    pub fn make(editor: &mut helix_view::Editor, prompt: &mut helix_term::ui::Prompt) -> Prompt {
+    pub fn make(editor: &mut helix_view::Editor, _prompt: &mut helix_term::ui::Prompt) -> Prompt {
         let area = editor.tree.area();
-        let compositor_rect = helix_view::graphics::Rect {
+        let _compositor_rect = helix_view::graphics::Rect {
             x: 0,
             y: 0,
             width: area.width * 2 / 3,
             height: area.height,
         };
 
-        let mut comp_ctx = helix_term::compositor::Context {
-            editor,
-            scroll: None,
-            jobs: &mut helix_term::job::Jobs::new(),
-        };
-        let mut buf = tui::buffer::Buffer::empty(compositor_rect);
-        prompt.render_prompt(compositor_rect, &mut buf, &mut comp_ctx);
-        Prompt::legacy(TextWithStyle::from_buffer(buf))
+        // TODO: Properly convert helix prompts to GPUI without TUI
+        // For now, just create a simple text prompt
+        let prompt_text = "Command: "; // Placeholder
+        Prompt::native(prompt_text, "", |_| {})
     }
 }
 
@@ -101,13 +97,13 @@ impl RenderOnce for PromptElement {
                     let ui_window = theme.get("ui.window");
                     
                     let bg = ui_bg.bg
-                        .and_then(|c| crate::utils::color_to_hsla(c))
+                        .and_then(crate::utils::color_to_hsla)
                         .unwrap_or(hsla(0.0, 0.0, 0.1, 1.0));
                     let text = ui_text.fg
-                        .and_then(|c| crate::utils::color_to_hsla(c))
+                        .and_then(crate::utils::color_to_hsla)
                         .unwrap_or(hsla(0.0, 0.0, 0.9, 1.0));
                     let border = ui_window.fg
-                        .and_then(|c| crate::utils::color_to_hsla(c))
+                        .and_then(crate::utils::color_to_hsla)
                         .unwrap_or(hsla(0.0, 0.0, 0.3, 1.0));
                     
                     (bg, text, border)

@@ -13,6 +13,7 @@ use helix_lsp::{
     lsp::Location,
     LanguageServerId, LspProgressMap,
 };
+use crate::core::lsp_state::ServerStatus;
 use helix_stdx::path::get_relative_path;
 use helix_term::ui::FilePickerData;
 
@@ -158,20 +159,45 @@ impl Application {
     /// Sync LSP state from the editor and progress map
     pub fn sync_lsp_state(&self, cx: &mut gpui::App) {
         if let Some(lsp_state) = &self.lsp_state {
+            // Check for active language servers
+            let active_servers: Vec<(LanguageServerId, String)> = self.editor.language_servers
+                .iter_clients()
+                .map(|client| (client.id(), client.name().to_string()))
+                .collect();
+            
+            log::debug!("Syncing LSP state, active servers: {:?}", active_servers);
+            
+            // Check which servers are progressing
+            let progressing_servers: Vec<LanguageServerId> = active_servers
+                .iter()
+                .filter(|(id, _)| self.lsp_progress.is_progressing(*id))
+                .map(|(id, _)| *id)
+                .collect();
+            
             lsp_state.update(cx, |state, _cx| {
-                // For now, we'll just track general LSP activity
-                // The helix Registry API doesn't expose direct iteration
-                // We'll track servers as they send messages
-                
-                // Clear old state
+                // Clear old progress state
                 state.progress.clear();
                 
-                // We'll track active servers through LSP messages instead
-                // This is a simplified implementation until we figure out the Registry API
+                // Update server info if we have new servers
+                for (id, name) in active_servers {
+                    if !state.servers.contains_key(&id) {
+                        state.register_server(id, name, None);
+                        state.update_server_status(id, ServerStatus::Running);
+                    }
+                }
                 
-                // Update status message based on editor state
-                if let Some((msg, _severity)) = &self.editor.status_msg {
-                    state.status_message = Some(msg.to_string());
+                // Mark servers that are progressing
+                for id in progressing_servers {
+                    // Add a generic progress indicator
+                    state.start_progress(id, "lsp".to_string(), "Processing...".to_string());
+                }
+                
+                // Log current state for debugging
+                if !state.progress.is_empty() {
+                    log::debug!("LSP servers with progress: {}", state.progress.len());
+                }
+                if !state.servers.is_empty() {
+                    log::debug!("Active LSP servers: {}", state.servers.len());
                 }
             });
         }
@@ -778,6 +804,59 @@ pub fn init_editor(
 
         // Unset path to prevent accidentally saving to the original tutor file.
         doc_mut!(editor).set_path(None);
+    } else if !args.files.is_empty() {
+        // Open files from command line arguments
+        let mut first = true;
+        for (file, pos) in args.files {
+            // Skip directories
+            if file.is_dir() {
+                continue;
+            }
+            
+            let action = if first {
+                Action::VerticalSplit
+            } else {
+                // For now, just load additional files in the same view
+                // TODO: Support --vsplit and --hsplit arguments
+                Action::Load
+            };
+            
+            log::info!("Opening file from command line: {:?} with action: {:?}", file, action);
+            match editor.open(&file, action) {
+                Ok(doc_id) => {
+                    log::info!("Successfully opened file from CLI: {:?} with doc_id: {:?}", file, doc_id);
+                    
+                    // Log document info
+                    if let Some(doc) = editor.document(doc_id) {
+                        log::info!("Document language: {:?}, path: {:?}", doc.language_name(), doc.path());
+                    }
+                    let view_id = editor.tree.focus;
+                    if !pos.is_empty() {
+                        // Set cursor position if specified (use first position)
+                        if editor.tree.contains(view_id) {
+                            let doc = doc_mut!(editor, &doc_id);
+                            let text = doc.text();
+                            if let Some(first_pos) = pos.first() {
+                                let line = first_pos.row.saturating_sub(1); // Convert to 0-indexed
+                                let col = first_pos.col;
+                                let char_pos = text.try_line_to_char(line).unwrap_or(0) + col;
+                                let selection = Selection::point(char_pos);
+                                doc.set_selection(view_id, selection);
+                            }
+                        }
+                    }
+                    first = false;
+                }
+                Err(e) => {
+                    log::error!("Failed to open file {:?}: {}", file, e);
+                }
+            }
+        }
+        
+        // If no files were successfully opened, create a new file
+        if first {
+            editor.new_file(Action::VerticalSplit);
+        }
     } else {
         editor.new_file(Action::VerticalSplit);
     }

@@ -359,7 +359,6 @@ impl Render for OverlayView {
         }
         
         if let Some(prompt_view) = &self.native_prompt_view {
-            println!("🎨 Rendering native prompt view with Overlay wrapper");
             // For now, render prompt directly until we update Overlay to work with entities
             return div()
                 .key_context("Overlay")

@@ -30,23 +30,17 @@ helix-lsp = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
 helix-vcs = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
 helix-loader = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
 helix-term = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-tui = { git = "https://github.com/helix-editor/helix", package = "helix-tui", default-features = false, tag = "25.07.1" }
 
-anyhow = "1"
-once_cell = "1.19"
-
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "io-std", "time", "process", "macros", "fs", "parking_lot"] }
-crossterm = { version = "0.27", features = ["event-stream"] }
-signal-hook = "0.3"
+# Dependencies used by extracted code
+anyhow = "1.0"
+arc-swap = "1.7"
+tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-futures-util = { version = "0.3", features = ["std", "async-await"], default-features = false }
-arc-swap = { version = "1.7.1" }
+futures-util = "0.3"
+unicode-segmentation = "1.10"
 smallvec = "1.13"
-termini = "1"
-unicode-segmentation = "1.11.0"
-
-# Logging
 fern = "0.6"
+
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 log = "0.4"
 
@@ -88,3 +82,4 @@ Helix GPUI is a native GUI implementation of the Helix text editor,
 built with GPUI (the UI framework from Zed editor). It brings modal
 editing to a native GUI application.
 """
+

@@ -10,6 +10,7 @@ pub struct StatusLine {
     view_id: ViewId,
     focused: bool,
     style: TextStyle,
+    lsp_state: Option<Entity<crate::core::lsp_state::LspState>>,
 }
 
 impl StatusLine {
@@ -26,7 +27,13 @@ impl StatusLine {
             view_id,
             focused,
             style,
+            lsp_state: None,
         }
+    }
+    
+    pub fn with_lsp_state(mut self, lsp_state: Entity<crate::core::lsp_state::LspState>) -> Self {
+        self.lsp_state = Some(lsp_state);
+        self
     }
 
     fn style(&self, _window: &mut Window, cx: &mut App) -> (Hsla, Hsla) {
@@ -222,10 +229,22 @@ impl Element for StatusLineElement {
         let divider_height = px(16.);
         let gap = px(8.);
         
-        // Calculate available width for file name (leave space for mode and position)
+        // Calculate available width for file name (leave space for mode, position, and LSP)
         let mode_width = px(3. * 8.); // 3 chars for mode
         let position_width = px(10. * 8.); // Estimate for position (e.g., "999:999")
-        let reserved_width = padding * 2. + mode_width + position_width + gap * 4. + divider_width * 2.;
+        
+        // Calculate actual LSP text width
+        let lsp_width = if let Some(lsp_state) = &self.0.lsp_state {
+            if lsp_state.read(cx).status_message.is_some() {
+                px(8.) // Single character width for spinner or space
+            } else {
+                px(0.) // No LSP indicator
+            }
+        } else {
+            px(0.) // No LSP state
+        };
+        
+        let reserved_width = padding * 2. + mode_width + position_width + lsp_width + gap * 6. + divider_width * 3.;
         let available_file_width = (bounds.size.width - reserved_width).max(px(50.)); // At least 50px for file name
         
         let mut x_offset = bounds.origin.x + padding;
@@ -298,6 +317,50 @@ impl Element for StatusLineElement {
         );
         if let Err(e) = position_line.paint(gpui::Point::new(x_offset, y_center), self.0.style.line_height_in_pixels(px(16.0)), window, cx) {
             log::error!("Failed to paint position text: {e:?}");
+        }
+        x_offset += position_width + gap;
+        
+        // Paint LSP status from actual state
+        if let Some(lsp_state) = &self.0.lsp_state {
+            if let Some(lsp_char) = lsp_state.read(cx).status_message.as_ref() {
+                log::debug!("Painting LSP status: '{}'", lsp_char);
+                
+                // Paint divider before LSP status
+                window.paint_quad(fill(
+                    Bounds::new(
+                        gpui::Point::new(x_offset, divider_y),
+                        Size::new(divider_width, divider_height)
+                    ),
+                    divider_color
+                ));
+                x_offset += divider_width + gap;
+                
+                // Paint LSP status character (spinner or space)
+                let lsp_shared: SharedString = lsp_char.clone().into();
+                let lsp_run = TextRun {
+                    len: lsp_shared.len(),
+                    font: self.0.style.font(),
+                    color: _fg_color,
+                    background_color: None,
+                    strikethrough: None,
+                    underline: None,
+                };
+                
+                let lsp_line = window.text_system().shape_line(
+                    lsp_shared,
+                    self.0.style.font_size.to_pixels(px(16.0)),
+                    &[lsp_run],
+                    None
+                );
+                
+                if let Err(e) = lsp_line.paint(gpui::Point::new(x_offset, y_center), self.0.style.line_height_in_pixels(px(16.0)), window, cx) {
+                    log::error!("Failed to paint LSP status: {e:?}");
+                }
+            } else {
+                log::debug!("No LSP status message to paint");
+            }
+        } else {
+            log::debug!("No LSP state available in statusline");
         }
     }
 }

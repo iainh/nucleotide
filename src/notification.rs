@@ -26,7 +26,7 @@ struct LspStatus {
 
 impl LspStatus {
     fn is_empty(&self) -> bool {
-        self.token == "" && self.title == "" && self.message.is_none()
+        self.token.is_empty() && self.title.is_empty() && self.message.is_none()
     }
 }
 
@@ -45,7 +45,7 @@ impl Notification {
                 "Saved".to_string(),
                 format!("saved to {}", saved.path.display()),
             ),
-            Err(err) => ("Error".to_string(), format!("error saving: {}", err)),
+            Err(err) => ("Error".to_string(), format!("error saving: {err}")),
         };
 
         Notification {
@@ -81,7 +81,7 @@ impl Notification {
             status.title,
             status
                 .percentage
-                .map(|s| format!("{}%", s))
+                .map(|s| format!("{s}%"))
                 .unwrap_or_default()
         );
         Notification {
@@ -118,47 +118,41 @@ impl NotificationView {
 
         let status = self.lsp_status.entry(id).or_default();
 
-        match call {
-            Call::Notification(notification) => {
-                if let Ok(notification) =
-                    Notification::parse(&notification.method, notification.params.clone())
-                {
-                    match notification {
-                        Notification::ProgressMessage(ref msg) => {
-                            let token = match msg.token.clone() {
-                                NumberOrString::String(s) => s,
-                                NumberOrString::Number(num) => num.to_string(),
-                            };
-                            status.token = token;
-                            let ProgressParamsValue::WorkDone(value) = msg.value.clone();
-                            match value {
-                                WorkDoneProgress::Begin(begin) => {
-                                    status.title = begin.title;
-                                    status.message = begin.message;
-                                    status.percentage = begin.percentage;
-                                    ev = LspStatusEvent::Begin;
-                                }
-                                WorkDoneProgress::Report(report) => {
-                                    if let Some(msg) = report.message {
-                                        status.message = Some(msg);
-                                    }
-                                    status.percentage = report.percentage;
-
-                                    ev = LspStatusEvent::Progress;
-                                }
-                                WorkDoneProgress::End(end) => {
-                                    if let Some(msg) = end.message {
-                                        status.message = Some(msg);
-                                    }
-                                    ev = LspStatusEvent::End;
-                                }
-                            }
+        if let Call::Notification(notification) = call {
+            if let Ok(notification) =
+                Notification::parse(&notification.method, notification.params.clone())
+            {
+                if let Notification::ProgressMessage(ref msg) = notification {
+                    let token = match msg.token.clone() {
+                        NumberOrString::String(s) => s,
+                        NumberOrString::Number(num) => num.to_string(),
+                    };
+                    status.token = token;
+                    let ProgressParamsValue::WorkDone(value) = msg.value.clone();
+                    match value {
+                        WorkDoneProgress::Begin(begin) => {
+                            status.title = begin.title;
+                            status.message = begin.message;
+                            status.percentage = begin.percentage;
+                            ev = LspStatusEvent::Begin;
                         }
-                        _ => {}
+                        WorkDoneProgress::Report(report) => {
+                            if let Some(msg) = report.message {
+                                status.message = Some(msg);
+                            }
+                            status.percentage = report.percentage;
+
+                            ev = LspStatusEvent::Progress;
+                        }
+                        WorkDoneProgress::End(end) => {
+                            if let Some(msg) = end.message {
+                                status.message = Some(msg);
+                            }
+                            ev = LspStatusEvent::End;
+                        }
                     }
                 }
             }
-            _ => {}
         }
         // println!("{:?}", status);
         ev
@@ -174,13 +168,13 @@ impl NotificationView {
     fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         use helix_view::editor::EditorEvent;
 
-        info!("handling event {:?}", ev);
+        info!("handling event {ev:?}");
         if let crate::Update::EditorStatus(status) = ev {
             self.editor_status = Some(status.clone());
             cx.notify();
         }
         if let crate::Update::EditorEvent(EditorEvent::DocumentSaved(ev)) = ev {
-            self.saved = Some(ev.as_ref().map_err(|e| e.to_string()).map(|ok| ok.clone()));
+            self.saved = Some(ev.as_ref().map_err(|e| e.to_string()).cloned());
             cx.notify();
         }
         if let crate::Update::EditorEvent(EditorEvent::LanguageServerMessage((id, call))) = ev {
@@ -229,7 +223,7 @@ impl Render for NotificationView {
         }
         if let Some(status) = &self.editor_status {
             notifications.push(Notification::from_editor_status(
-                &status,
+                status,
                 self.popup_bg_color,
                 self.popup_text_color,
             ));

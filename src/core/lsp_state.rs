@@ -1,11 +1,15 @@
 // ABOUTME: LSP state management for reactive UI updates
 // ABOUTME: Provides a GPUI Model for LSP status, diagnostics, and progress
 
-use gpui::*;
-use helix_lsp::{LanguageServerId, LspProgressMap};
+use helix_lsp::LanguageServerId;
 use helix_core::Uri;
 use helix_core::diagnostic::Diagnostic;
 use std::collections::{HashMap, BTreeMap};
+use std::time::{Duration, Instant};
+
+/// Spinner frames matching helix-term
+pub const SPINNER_FRAMES: &[&str] = &["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+pub const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
 
 /// Progress information for a single LSP operation
 #[derive(Clone, Debug)]
@@ -58,8 +62,9 @@ pub struct LspState {
     /// Last status message
     pub status_message: Option<String>,
     
-    /// Progress map from helix
-    pub progress_map: LspProgressMap,
+    /// Spinner state
+    pub spinner_frame: usize,
+    pub last_spinner_update: Instant,
 }
 
 impl LspState {
@@ -69,8 +74,19 @@ impl LspState {
             progress: HashMap::new(),
             diagnostics: BTreeMap::new(),
             status_message: None,
-            progress_map: LspProgressMap::new(),
+            spinner_frame: 0,
+            last_spinner_update: Instant::now(),
         }
+    }
+    
+    /// Get the current spinner frame, advancing if needed
+    pub fn get_spinner_frame(&mut self) -> &'static str {
+        let now = Instant::now();
+        if now.duration_since(self.last_spinner_update) >= SPINNER_INTERVAL {
+            self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+            self.last_spinner_update = now;
+        }
+        SPINNER_FRAMES[self.spinner_frame]
     }
     
     /// Register a new language server
@@ -199,6 +215,27 @@ impl LspState {
         }
         
         None
+    }
+    
+    /// Check if we should show spinner (when there's LSP activity)
+    pub fn should_show_spinner(&self) -> bool {
+        // Show spinner if:
+        // - There are active progress operations
+        // - Any server is starting/initializing
+        let has_progress = !self.progress.is_empty();
+        let has_busy_servers = self.servers.values().any(|s| matches!(s.status, ServerStatus::Starting | ServerStatus::Initializing));
+        
+        let should_show = has_progress || has_busy_servers;
+        
+        println!(
+            "[LSP] should_show_spinner: {} (progress: {}, busy_servers: {}, total_servers: {})",
+            should_show,
+            self.progress.len(),
+            if has_busy_servers { "yes" } else { "no" },
+            self.servers.len()
+        );
+        
+        should_show
     }
 }
 

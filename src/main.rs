@@ -317,6 +317,41 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             // Create LSP state entity
             let lsp_state = cx.new(|_| crate::core::lsp_state::LspState::new());
             
+            // Create a separate timer for LSP spinner updates
+            struct SpinnerTimer;
+            impl gpui::EventEmitter<()> for SpinnerTimer {}
+            
+            let lsp_state_clone = lsp_state.clone();
+            let _spinner_timer = cx.new(|mc| {
+                mc.spawn(async move |_timer, cx| {
+                    loop {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(80)) // Match helix spinner interval
+                            .await;
+                        
+                        if let Err(e) = cx.update(|cx| {
+                            lsp_state_clone.update(cx, |state, cx| {
+                                // Only update spinner if there's LSP activity
+                                println!("[SPINNER] Timer tick");
+                                if state.should_show_spinner() {
+                                    let frame = state.get_spinner_frame();
+                                    state.status_message = Some(frame.to_string());
+                                } else {
+                                    // Clear status message when no activity
+                                    state.status_message = None;
+                                }
+                                // Always notify to ensure UI updates
+                                cx.notify();
+                            });
+                        }) {
+                            log::warn!("Failed to update LSP spinner: {e:?}");
+                        }
+                    }
+                })
+                .detach();
+                SpinnerTimer
+            });
+            
             let app = cx.new(move |mc| {
                 let handle_1 = handle_1.clone();
                 let handle_2 = handle_1.clone();
