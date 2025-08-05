@@ -223,6 +223,11 @@ impl FileTreeView {
                     view.select_path(Some(path.clone()), cx);
                     if is_dir {
                         view.toggle_directory(&path, cx);
+                    } else {
+                        // Open file when clicked
+                        cx.emit(FileTreeEvent::OpenFile { 
+                            path: path.clone() 
+                        });
                     }
                 })
             })

@@ -496,11 +496,15 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             
             
             cx.new(|cx| {
-                cx.subscribe(&app, |w: &mut workspace::Workspace, _, ev, cx| {
+                let workspace = workspace::Workspace::with_views(app, input_1.clone(), handle, overlay, notifications, info, cx);
+                
+                // Subscribe to self to handle Update events
+                cx.subscribe(&cx.entity(), |w: &mut workspace::Workspace, _, ev, cx| {
                     w.handle_event(ev, cx);
                 })
                 .detach();
-                workspace::Workspace::with_views(app, input_1.clone(), handle, overlay, notifications, info, cx)
+                
+                workspace
             })
         });
     })
