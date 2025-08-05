@@ -939,6 +939,9 @@ impl Render for Workspace {
                         view.handle_key(ev, cx);
                     }))
             })
+            .when(self.is_resizing_file_tree, |this| {
+                this.cursor(gpui::CursorStyle::ResizeLeftRight)
+            })
             .on_mouse_move(cx.listener(|workspace, event: &MouseMoveEvent, _window, cx| {
                 if workspace.is_resizing_file_tree {
                     let delta = event.position.x.0 - workspace.resize_start_x;
@@ -1037,7 +1040,7 @@ impl Render for Workspace {
                             .h_full()
                             .bg(transparent_black())
                             .hover(|style| style.bg(hsla(0.0, 0.0, 0.5, 0.3)))
-                            .cursor_pointer() // TODO: GPUI doesn't have resize cursor yet
+                            .cursor(gpui::CursorStyle::ResizeLeftRight)
                             .id("file-tree-resize-handle")
                             .on_mouse_down(MouseButton::Left, cx.listener(|workspace, event: &MouseDownEvent, _window, cx| {
                                 workspace.is_resizing_file_tree = true;
