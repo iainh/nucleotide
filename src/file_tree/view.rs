@@ -518,26 +518,6 @@ impl Render for FileTreeView {
                 }
             }))
             .child(
-                // Header
-                div()
-                    .w_full()
-                    .h(px(32.0))
-                    .px_3()
-                    .py_2()
-                    .bg(theme.surface)
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .text_color(theme.text)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("Files")
-                    )
-            )
-            .child(
                 // File list using uniform_list for performance
                 uniform_list("file-tree-list", entries.len(), {
                     let entries = entries.clone(); // Clone once outside the processor
