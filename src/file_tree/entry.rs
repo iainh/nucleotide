@@ -303,32 +303,8 @@ impl PartialOrd for FileTreeEntry {
 
 impl Ord for FileTreeEntry {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Compare paths component by component to preserve hierarchy
-        let self_components: Vec<_> = self.path.components().map(|c| c.as_os_str()).collect();
-        let other_components: Vec<_> = other.path.components().map(|c| c.as_os_str()).collect();
-        
-        // Compare paths component by component
-        let min_components = self_components.len().min(other_components.len());
-        
-        for i in 0..min_components {
-            match self_components[i].cmp(&other_components[i]) {
-                std::cmp::Ordering::Equal => continue,
-                other => return other,
-            }
-        }
-        
-        // If paths are identical up to this point, shorter path (parent) comes first
-        match self_components.len().cmp(&other_components.len()) {
-            std::cmp::Ordering::Equal => {
-                // Exact same path depth - directories before files
-                match (self.is_directory(), other.is_directory()) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => std::cmp::Ordering::Equal,
-                }
-            }
-            other => other,
-        }
+        // Simple alphabetical path comparison
+        self.path.cmp(&other.path)
     }
 }
 

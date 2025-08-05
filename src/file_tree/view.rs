@@ -53,17 +53,74 @@ impl FileTreeView {
 
     /// Toggle directory expansion
     pub fn toggle_directory(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
-        match self.tree.toggle_directory(path) {
-            Ok(expanded) => {
+        // Check if we're already loading this directory
+        if self.tree.is_directory_loading(path) {
+            return;
+        }
+        
+        let path_buf = path.clone();
+        let is_expanded = self.tree.is_expanded(path);
+        
+        if is_expanded {
+            // Collapse is synchronous
+            if let Err(e) = self.tree.collapse_directory(path) {
+                log::error!("Failed to collapse directory {}: {}", path.display(), e);
+            } else {
                 cx.emit(FileTreeEvent::DirectoryToggled {
                     path: path.clone(),
-                    expanded,
+                    expanded: false,
                 });
                 cx.notify();
             }
-            Err(e) => {
-                log::error!("Failed to toggle directory {}: {}", path.display(), e);
-            }
+        } else {
+            // Mark directory as loading to prevent double-clicks
+            self.tree.mark_directory_loading(path);
+            cx.notify();
+            
+            // Expand is asynchronous - spawn background task
+            let path_for_io = path_buf.clone();
+            cx.spawn(async move |this, mut cx| {
+                // Do the file I/O in a blocking task to avoid blocking the executor
+                let entries = cx.background_executor().spawn(async move {
+                    match std::fs::read_dir(&path_for_io) {
+                        Ok(read_dir) => {
+                            let mut entries = Vec::new();
+                            for entry in read_dir {
+                                if let Ok(entry) = entry {
+                                    if let Ok(metadata) = entry.metadata() {
+                                        entries.push((entry.path(), metadata));
+                                    }
+                                }
+                            }
+                            Ok(entries)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }).await;
+                
+                // Update the UI on the main thread
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |view, cx| {
+                            match entries {
+                                Ok(entries) => {
+                                    if let Err(e) = view.tree.expand_directory_with_entries(&path_buf, entries) {
+                                        log::error!("Failed to expand directory {}: {}", path_buf.display(), e);
+                                    } else {
+                                        cx.emit(FileTreeEvent::DirectoryToggled {
+                                            path: path_buf.clone(),
+                                            expanded: true,
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to read directory {}: {}", path_buf.display(), e);
+                                    view.tree.unmark_directory_loading(&path_buf);
+                                }
+                            }
+                            cx.notify();
+                    });
+                }
+            }).detach();
         }
     }
 
@@ -331,9 +388,9 @@ impl Render for FileTreeView {
             .child(
                 // File list using uniform_list for performance
                 uniform_list("file-tree-list", entries.len(), {
-                    cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
+                    let entries = entries.clone(); // Clone once outside the processor
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
                         let mut items = Vec::with_capacity(range.end - range.start);
-                        let entries = this.tree.visible_entries();
                         
                         for index in range {
                             if let Some(entry) = entries.get(index) {

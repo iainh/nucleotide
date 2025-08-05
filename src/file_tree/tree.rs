@@ -30,6 +30,10 @@ pub struct FileTree {
     next_id: u64,
     /// Whether the tree has been initially loaded
     is_loaded: bool,
+    /// Cache of visible entries to avoid recomputing
+    visible_entries_cache: Option<Vec<FileTreeEntry>>,
+    /// Set of directories currently being loaded
+    loading_dirs: HashSet<PathBuf>,
 }
 
 impl FileTree {
@@ -43,6 +47,8 @@ impl FileTree {
             config,
             next_id: 1,
             is_loaded: false,
+            visible_entries_cache: None,
+            loading_dirs: HashSet::new(),
         }
     }
 
@@ -69,9 +75,12 @@ impl FileTree {
             return Ok(());
         }
 
-        let entries = self.scan_directory(&self.root_path.clone(), 0, self.config.initial_depth)?;
+        // Only load immediate children of root initially
+        let entries = self.scan_directory(&self.root_path.clone(), 0, 1)?;
+        
         self.entries = SumTree::from_iter(entries, &());
         self.is_loaded = true;
+        self.invalidate_cache();
 
         Ok(())
     }
@@ -82,45 +91,69 @@ impl FileTree {
         self.path_to_id.clear();
         self.next_id = 1;
         self.is_loaded = false;
+        self.invalidate_cache();
         self.load()
     }
 
     /// Get all visible entries
-    pub fn visible_entries(&self) -> Vec<FileTreeEntry> {
-        let mut entries: Vec<_> = self.entries
+    pub fn visible_entries(&mut self) -> Vec<FileTreeEntry> {
+        if let Some(ref cache) = self.visible_entries_cache {
+            return cache.clone();
+        }
+        
+        // Get all visible entries from the tree
+        let entries: Vec<_> = self.entries
             .iter()
             .filter(|entry| entry.is_visible)
             .cloned()
             .collect();
             
-        // Use the standard ordering which preserves hierarchy
-        entries.sort();
-        
-        // Now reorder to put directories first within each parent group
+        // The entries are already sorted by path in the SumTree
+        // We just need to ensure directories come before files at each level
         let mut result = Vec::with_capacity(entries.len());
-        let mut i = 0;
+        self.build_sorted_tree(&entries, &self.root_path, &mut result);
         
-        while i < entries.len() {
-            let current_parent = entries[i].path.parent();
-            let mut dirs = Vec::new();
-            let mut files = Vec::new();
-            
-            // Collect all entries with the same parent
-            while i < entries.len() && entries[i].path.parent() == current_parent {
-                if entries[i].is_directory() {
-                    dirs.push(entries[i].clone());
-                } else {
-                    files.push(entries[i].clone());
+        self.visible_entries_cache = Some(result.clone());
+        result
+    }
+    
+    /// Build sorted tree with directories first at each level
+    fn build_sorted_tree(&self, entries: &[FileTreeEntry], parent_path: &Path, result: &mut Vec<FileTreeEntry>) {
+        // Find all immediate children of parent_path
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        
+        for entry in entries {
+            if let Some(entry_parent) = entry.path.parent() {
+                if entry_parent == parent_path {
+                    if entry.is_directory() {
+                        dirs.push(entry.clone());
+                    } else {
+                        files.push(entry.clone());
+                    }
                 }
-                i += 1;
             }
-            
-            // Add directories first, then files
-            result.extend(dirs);
-            result.extend(files);
         }
         
-        result
+        // Sort directories and files by name
+        dirs.sort_by(|a, b| a.path.file_name().cmp(&b.path.file_name()));
+        files.sort_by(|a, b| a.path.file_name().cmp(&b.path.file_name()));
+        
+        // Add directories first, recursively processing their children
+        for dir in dirs {
+            result.push(dir.clone());
+            if self.is_expanded(&dir.path) {
+                self.build_sorted_tree(entries, &dir.path, result);
+            }
+        }
+        
+        // Then add files
+        result.extend(files);
+    }
+    
+    /// Invalidate the visible entries cache
+    fn invalidate_cache(&mut self) {
+        self.visible_entries_cache = None;
     }
 
     /// Get entry by path
@@ -154,12 +187,14 @@ impl FileTree {
             entry.is_expanded = false;
             self.upsert_entry(entry);
             self.hide_children(path);
+            self.invalidate_cache();
         } else {
             // Expand directory
             self.expanded_dirs.insert(path.to_path_buf());
             entry.is_expanded = true;
             self.upsert_entry(entry);
             self.load_directory(path)?;
+            self.invalidate_cache();
         }
 
         Ok(!is_expanded)
@@ -168,6 +203,101 @@ impl FileTree {
     /// Check if a directory is expanded
     pub fn is_expanded(&self, path: &Path) -> bool {
         self.expanded_dirs.contains(path)
+    }
+    
+    /// Check if a directory is currently being loaded
+    pub fn is_directory_loading(&self, path: &Path) -> bool {
+        self.loading_dirs.contains(path)
+    }
+    
+    /// Mark a directory as being loaded
+    pub fn mark_directory_loading(&mut self, path: &Path) {
+        self.loading_dirs.insert(path.to_path_buf());
+    }
+    
+    /// Unmark a directory as being loaded
+    pub fn unmark_directory_loading(&mut self, path: &Path) {
+        self.loading_dirs.remove(path);
+    }
+    
+    /// Collapse a directory (synchronous)
+    pub fn collapse_directory(&mut self, path: &Path) -> Result<()> {
+        let mut entry = self.entry_by_path(path)
+            .context("Entry not found")?;
+            
+        if !entry.is_directory() {
+            anyhow::bail!("Not a directory");
+        }
+        
+        self.expanded_dirs.remove(path);
+        entry.is_expanded = false;
+        self.upsert_entry(entry);
+        self.hide_children(path);
+        self.invalidate_cache();
+        
+        Ok(())
+    }
+    
+    /// Expand a directory with pre-loaded entries
+    pub fn expand_directory_with_entries(&mut self, path: &Path, entries: Vec<(PathBuf, std::fs::Metadata)>) -> Result<()> {
+        let mut entry = self.entry_by_path(path)
+            .context("Entry not found")?;
+            
+        if !entry.is_directory() {
+            anyhow::bail!("Not a directory");
+        }
+        
+        // Mark as expanded
+        self.expanded_dirs.insert(path.to_path_buf());
+        entry.is_expanded = true;
+        
+        // Process the entries
+        let mut children = Vec::new();
+        for (child_path, metadata) in entries {
+            // Skip hidden files unless configured
+            if !self.config.show_hidden && self.is_hidden_file(&child_path) {
+                continue;
+            }
+            
+            let id = self.next_entry_id();
+            let mtime = metadata.modified().ok();
+            
+            let mut child_entry = if metadata.is_dir() {
+                FileTreeEntry::new_directory(id, child_path.clone(), mtime)
+            } else if metadata.is_file() {
+                FileTreeEntry::new_file(id, child_path.clone(), metadata.len(), mtime)
+            } else {
+                // Symlink
+                let target = std::fs::read_link(&child_path).ok();
+                let target_exists = target.as_ref().map(|t| t.exists()).unwrap_or(false);
+                FileTreeEntry::new_symlink(id, child_path.clone(), target, target_exists, mtime)
+            };
+            
+            child_entry.depth = entry.depth + 1;
+            child_entry.is_visible = true;
+            
+            self.path_to_id.insert(child_path, id);
+            children.push(child_entry);
+        }
+        
+        // Update directory entry
+        if let FileKind::Directory { ref mut child_count, ref mut is_loaded } = entry.kind {
+            *child_count = children.len();
+            *is_loaded = true;
+        }
+        
+        // Sort children before adding
+        children.sort();
+        
+        // Add all entries at once (parent + children)
+        let mut all_entries = vec![entry];
+        all_entries.extend(children);
+        self.upsert_entries(all_entries);
+        
+        // Remove from loading set
+        self.loading_dirs.remove(path);
+        
+        Ok(())
     }
 
     /// Get the total number of entries
@@ -195,19 +325,31 @@ impl FileTree {
 
     /// Add or update an entry
     pub fn upsert_entry(&mut self, entry: FileTreeEntry) {
-        // Remove existing entry if it exists
-        if let Some(existing_id) = self.path_to_id.get(&entry.path) {
-            self.remove_entry_by_id(*existing_id);
+        self.upsert_entries(vec![entry]);
+    }
+    
+    /// Add or update multiple entries at once
+    pub fn upsert_entries(&mut self, new_entries: Vec<FileTreeEntry>) {
+        // Remove existing entries if they exist
+        for entry in &new_entries {
+            if let Some(existing_id) = self.path_to_id.get(&entry.path) {
+                self.remove_entry_by_id(*existing_id);
+            }
         }
-
-        // Add new entry
-        self.path_to_id.insert(entry.path.clone(), entry.id);
         
-        // Insert into SumTree (rebuild for now - could be optimized)
+        // Collect all existing entries
         let mut entries: Vec<_> = self.entries.iter().cloned().collect();
-        entries.push(entry);
+        
+        // Add new entries and update path_to_id map
+        for entry in new_entries {
+            self.path_to_id.insert(entry.path.clone(), entry.id);
+            entries.push(entry);
+        }
+        
+        // Sort all entries - the Ord implementation ensures parents come before children
         entries.sort();
         self.entries = SumTree::from_iter(entries, &());
+        self.invalidate_cache();
     }
 
     /// Remove an entry by path
@@ -254,13 +396,12 @@ impl FileTree {
                 // Recursively scan subdirectories if within depth limit
                 if current_depth < max_depth {
                     if let Ok(children) = self.scan_directory(&path, current_depth + 1, max_depth) {
-                        entries.extend(children);
-                        
-                        // Update child count
+                        // Update child count with actual number of children
                         if let FileKind::Directory { ref mut child_count, ref mut is_loaded } = dir_entry.kind {
-                            *child_count = entries.len();
+                            *child_count = children.len();
                             *is_loaded = true;
                         }
+                        entries.extend(children);
                     }
                 }
                 
@@ -287,7 +428,6 @@ impl FileTree {
             entries.push(file_entry);
         }
 
-        entries.sort();
         Ok(entries)
     }
 
@@ -327,6 +467,7 @@ impl FileTree {
         }
 
         self.entries = SumTree::from_iter(updated_entries, &());
+        self.invalidate_cache();
     }
 
     /// Remove entry by ID
@@ -345,6 +486,7 @@ impl FileTree {
 
         if removed_entry.is_some() {
             self.entries = SumTree::from_iter(updated_entries, &());
+        self.invalidate_cache();
         }
 
         removed_entry
@@ -361,6 +503,7 @@ impl FileTree {
         }
 
         self.entries = SumTree::from_iter(updated_entries, &());
+        self.invalidate_cache();
     }
 
     /// Check if an entry should be visible based on current configuration
