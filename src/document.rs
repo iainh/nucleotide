@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use gpui::{prelude::FluentBuilder, *};
+use gpui::*;
 use gpui::{point, size, TextRun};
 use helix_core::{
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
@@ -8,7 +8,7 @@ use helix_core::{
     syntax::{self, HighlightEvent},
     Selection, Uri,
 };
-use helix_lsp::lsp::{Diagnostic, DiagnosticSeverity, NumberOrString};
+use helix_lsp::lsp::Diagnostic;
 use helix_term::ui::EditorView;
 // Import helix's syntax highlighting system
 use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
@@ -278,6 +278,7 @@ impl DocumentElement {
     }
     
     /// Create a shaped line for a specific line, used for cursor positioning and mouse interaction
+    #[allow(dead_code)]
     fn create_shaped_line(
         &self,
         line_idx: usize,

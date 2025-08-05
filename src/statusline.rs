@@ -43,15 +43,15 @@ impl StatusLine {
         } else {
             theme.get("ui.statusline.inactive")
         };
-        let base_fg = base_style
+        let foreground = base_style
             .fg
             .and_then(color_to_hsla)
             .unwrap_or(hsla(0.5, 0.5, 0.5, 1.));
-        let base_bg = base_style
+        let background = base_style
             .bg
             .and_then(color_to_hsla)
             .unwrap_or(hsla(0.5, 0.5, 0.5, 1.));
-        (base_fg, base_bg)
+        (foreground, background)
     }
 }
 

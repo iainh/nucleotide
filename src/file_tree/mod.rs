@@ -51,6 +51,7 @@ pub enum FileSystemEventKind {
 
 /// Configuration for file tree behavior
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FileTreeConfig {
     /// Show hidden files (starting with .)
     pub show_hidden: bool,

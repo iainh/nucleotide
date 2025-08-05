@@ -60,11 +60,11 @@ impl KeyHintView {
         
         // Fallback colors - use lighter backgrounds for popups
         match key {
-            "ui.popup" => rgb(0x2a2a3e).into(), // Slightly lighter than pure black
-            "ui.popup.info" => rgb(0x3b3b52).into(), // Even lighter for info popups
-            "ui.window" => rgb(0x414559).into(), // Border color
-            "ui.text.info" | "ui.text" => rgb(0xc6d0f5).into(),
-            _ => rgb(0xc6d0f5).into(),
+            "ui.popup" => rgb(0x002a_2a3e).into(), // Slightly lighter than pure black
+            "ui.popup.info" => rgb(0x003b_3b52).into(), // Even lighter for info popups
+            "ui.window" => rgb(0x0041_4559).into(), // Border color
+            "ui.text.info" | "ui.text" => rgb(0x00c6_d0f5).into(),
+            _ => rgb(0x00c6_d0f5).into(),
         }
     }
 

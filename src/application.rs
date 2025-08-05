@@ -10,14 +10,12 @@ use helix_core::{
     pos_at_coords, syntax, Position, Selection,
 };
 use helix_lsp::{
-    lsp::Location,
     LanguageServerId, LspProgressMap,
 };
 use crate::core::lsp_state::ServerStatus;
 use helix_stdx::path::get_relative_path;
 use helix_term::ui::FilePickerData;
 
-use helix_core::Uri;
 use helix_term::{
     args::Args,
     compositor::{self, Compositor},

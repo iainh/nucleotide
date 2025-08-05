@@ -82,6 +82,7 @@ pub struct CompletionView {
     items: Vec<CompletionItem>,
     filtered_items: Vec<usize>,
     selected_index: usize,
+    #[allow(dead_code)]
     trigger_offset: usize,
     
     // Filtering
@@ -201,7 +202,7 @@ impl CompletionView {
             return;
         }
         
-        let old_index = self.selected_index;
+        let _old_index = self.selected_index;
         let new_index = if delta > 0 {
             (self.selected_index + delta as usize).min(self.filtered_items.len() - 1)
         } else {
@@ -209,7 +210,6 @@ impl CompletionView {
         };
         
         self.selected_index = new_index;
-        println!("🎯 CompletionView selection moved from {old_index} to {new_index} (delta: {delta})");
         
         // Adjust scroll to keep selection visible
         if self.selected_index < self.scroll_offset {
@@ -228,7 +228,6 @@ impl CompletionView {
         
         self.selected_index = 0;
         self.scroll_offset = 0;
-        println!("🎯 CompletionView moved to first item");
         cx.notify();
     }
     
@@ -244,7 +243,6 @@ impl CompletionView {
         } else {
             self.scroll_offset = 0;
         }
-        println!("🎯 CompletionView moved to last item");
         cx.notify();
     }
     
@@ -358,7 +356,6 @@ impl Render for CompletionView {
             .collect::<Vec<_>>();
         
         // Note: Focus is handled automatically by the overlay view - don't manually focus here
-        println!("🎯 CompletionView render: Rendering completion component");
         
         div()
             .absolute()
@@ -378,28 +375,22 @@ impl Render for CompletionView {
             .key_context("completion")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectPrev, _window, cx| {
-                println!("🔥 CompletionView received CompletionSelectPrev action");
                 this.move_selection(-1, cx);
             }))
             .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectNext, _window, cx| {
-                println!("🔥 CompletionView received CompletionSelectNext action");
                 this.move_selection(1, cx);
             }))
             .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionConfirm, _window, cx| {
-                println!("🔥 CompletionView received CompletionConfirm action");
                 this.select_current(cx);
             }))
             .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionDismiss, _window, cx| {
-                println!("🔥 CompletionView received CompletionDismiss action");
                 this.dismiss(cx);
                 cx.emit(DismissEvent);
             }))
             .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectFirst, _window, cx| {
-                println!("🔥 CompletionView received CompletionSelectFirst action");
                 this.move_to_first(cx);
             }))
             .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectLast, _window, cx| {
-                println!("🔥 CompletionView received CompletionSelectLast action");
                 this.move_to_last(cx);
             }))
             .children(visible_items)

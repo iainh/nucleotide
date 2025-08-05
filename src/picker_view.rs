@@ -261,7 +261,7 @@ impl PickerView {
             return;
         }
 
-        let old_index = self.selected_index;
+        let _old_index = self.selected_index;
         let new_index = if delta > 0 {
             (self.selected_index + delta as usize).min(self.filtered_indices.len() - 1)
         } else {
@@ -269,7 +269,6 @@ impl PickerView {
         };
 
         self.selected_index = new_index;
-        println!("🎯 Selection moved from {old_index} to {new_index} (delta: {delta})");
 
         // Scroll to keep selection visible - GPUI handles this automatically!
         self.list_scroll_handle.scroll_to_item(self.selected_index, ScrollStrategy::Top);
@@ -281,27 +280,16 @@ impl PickerView {
     }
 
     fn confirm_selection(&mut self, cx: &mut Context<Self>) {
-        println!("🎯 confirm_selection called with selected_index: {}", self.selected_index);
-        println!("🎯 filtered_indices length: {}", self.filtered_indices.len());
         
         // Clean up preview document before confirming selection
         self.cleanup_preview_document(cx);
         
         if let Some(idx) = self.filtered_indices.get(self.selected_index) {
-            println!("🎯 Found filtered index: {idx}");
             if let Some(item) = self.items.get(*idx as usize) {
-                println!("🎯 Found item: {}", item.label);
                 if let Some(on_select) = &mut self.on_select {
-                    println!("🎯 Calling on_select callback");
                     on_select(item, cx);
-                } else {
-                    println!("🚫 No on_select callback set");
                 }
-            } else {
-                println!("🚫 Item not found at index {idx}");
             }
-        } else {
-            println!("🚫 No filtered index found for selected_index {}", self.selected_index);
         }
     }
 
@@ -574,17 +562,14 @@ impl PickerView {
         self.preview_task = None;
         
         if let (Some(doc_id), Some(view_id)) = (self.preview_doc_id.take(), self.preview_view_id.take()) {
-            println!("🧹 Cleaning up preview document: doc_id={doc_id:?}, view_id={view_id:?}");
             if let Some(core_weak) = &self.core {
                 if let Some(core) = core_weak.upgrade() {
                     core.update(cx, |core, _cx| {
                         // Close the view first, but only if it still exists
                         if core.editor.tree.contains(view_id) {
-                            println!("🧹 Closing preview view: {view_id:?}");
                             core.editor.close(view_id);
                         }
                         // Then close the document without saving
-                        println!("🧹 Closing preview document: {doc_id:?}");
                         let _ = core.editor.close_document(doc_id, false);
                         
                         // Note: Unregistering from preview tracker happens in the outer scope
@@ -596,8 +581,6 @@ impl PickerView {
                     }
                 }
             }
-        } else {
-            println!("🧹 No preview document to clean up");
         }
     }
 
@@ -639,13 +622,11 @@ impl PickerView {
         let dimensions = if let Some(cached) = self.cached_dimensions {
             // Only recalculate if window size changed
             if cached.window_size != window_size {
-                println!("📐 Window size changed, recalculating picker dimensions");
                 self.calculate_dimensions(window_size)
             } else {
                 cached
             }
         } else {
-            println!("📐 Initial picker dimension calculation");
             self.calculate_dimensions(window_size)
         };
         
@@ -673,7 +654,6 @@ impl PickerView {
             .track_focus(&self.focus_handle)
             // Handle keyboard input for filtering
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                println!("🔤 Picker received key: {}", event.keystroke.key);
                 match event.keystroke.key.as_str() {
                     "backspace" => {
                         this.delete_char(cx);
@@ -724,29 +704,23 @@ impl PickerView {
             }))
             // Use GPUI actions instead of direct key handling
             .on_action(cx.listener(|this, _: &crate::actions::picker::SelectPrev, _window, cx| {
-                println!("⬆️ SelectPrev action triggered");
                 this.move_selection(-1, cx);
             }))
             .on_action(cx.listener(|this, _: &crate::actions::picker::SelectNext, _window, cx| {
-                println!("⬇️ SelectNext action triggered");
                 this.move_selection(1, cx);
             }))
             .on_action(cx.listener(|this, _: &crate::actions::picker::SelectFirst, _window, cx| {
-                println!("⏫ SelectFirst action triggered");
                 this.move_selection(-(this.selected_index as isize), cx);
             }))
             .on_action(cx.listener(|this, _: &crate::actions::picker::SelectLast, _window, cx| {
-                println!("⏬ SelectLast action triggered");
                 let last_index = this.filtered_indices.len().saturating_sub(1);
                 let delta = last_index as isize - this.selected_index as isize;
                 this.move_selection(delta, cx);
             }))
             .on_action(cx.listener(|this, _: &crate::actions::picker::ConfirmSelection, _window, cx| {
-                println!("✅ ConfirmSelection action triggered");
                 this.confirm_selection(cx);
             }))
             .on_action(cx.listener(|this, _: &crate::actions::picker::DismissPicker, _window, cx| {
-                println!("❌ DismissPicker action triggered");
                 this.cancel(cx);
             }))
             .child(

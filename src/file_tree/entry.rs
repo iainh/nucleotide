@@ -1,7 +1,7 @@
 // ABOUTME: File tree entry types representing files and directories
 // ABOUTME: Implements SumTree traits for efficient tree operations
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::SystemTime;
 use sum_tree::{Item, KeyedItem, Dimension};
 
@@ -58,6 +58,7 @@ pub enum FileKind {
 
 /// Git status for a file
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum GitStatus {
     /// File is untracked
     Untracked,
@@ -289,7 +290,7 @@ impl<'a> Dimension<'a, crate::file_tree::FileTreeSummary> for FileTreePathKey {
         FileTreePathKey(PathBuf::new())
     }
 
-    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: &()) {
+    fn add_summary(&mut self, _summary: &'a crate::file_tree::FileTreeSummary, _cx: &()) {
         // For path key, we don't update based on summary
         // The key represents a specific path, not accumulated paths
     }

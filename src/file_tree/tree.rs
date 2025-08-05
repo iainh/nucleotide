@@ -4,15 +4,13 @@
 use std::path::{Path, PathBuf};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::time::SystemTime;
 use anyhow::{Result, Context};
 use sum_tree::SumTree;
 
 use crate::file_tree::{
-    FileTreeEntry, FileKind, FileTreeSummary, FileTreeConfig
+    FileTreeEntry, FileKind, FileTreeConfig
 };
 use crate::file_tree::entry::FileTreeEntryId;
-use crate::file_tree::summary::{Count, VisibleCount};
 
 /// Core file tree data structure
 pub struct FileTree {

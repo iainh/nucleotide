@@ -220,7 +220,7 @@ impl OverlayView {
                         let items = items.clone();
                         let on_select = on_select.clone();
                         let core_weak = self.core.clone();
-                        let items_count = items.len();
+                        let _items_count = items.len();
                         
                         // Get theme from ThemeManager
                         let helix_theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme().clone();

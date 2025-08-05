@@ -121,7 +121,7 @@ impl FileTreeView {
             
             // Expand is asynchronous - spawn background task
             let path_for_io = path_buf.clone();
-            cx.spawn(async move |this, mut cx| {
+            cx.spawn(async move |this, cx| {
                 // Do the file I/O in a blocking task to avoid blocking the executor
                 let entries = cx.background_executor().spawn(async move {
                     match std::fs::read_dir(&path_for_io) {
