@@ -264,7 +264,6 @@ pub enum Update {
     FileTreeEvent(crate::file_tree::FileTreeEvent),
 }
 
-impl gpui::EventEmitter<Update> for Application {}
 
 struct FontSettings {
     fixed_font: gpui::Font,

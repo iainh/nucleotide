@@ -59,6 +59,12 @@ impl Workspace {
             cx.notify();
         }).detach();
         
+        // Subscribe to core (Application) events to receive Update events
+        cx.subscribe(&core, |workspace, _core, event: &crate::Update, cx| {
+            info!("Workspace: Received Update event from core: {:?}", event);
+            workspace.handle_event(event, cx);
+        }).detach();
+        
         let key_hints = cx.new(|_cx| KeyHintView::new());
         
         // Initialize file tree if we can find a workspace root
@@ -306,6 +312,24 @@ impl Workspace {
                     
                     cx.notify();
                 });
+                
+                // Update the file tree with the new directory
+                let new_file_tree = cx.new(|cx| {
+                    let config = FileTreeConfig::default();
+                    FileTreeView::new(path.clone(), config, cx)
+                });
+                
+                // Subscribe to file tree events
+                cx.subscribe(&new_file_tree, |workspace, _file_tree, event, cx| {
+                    info!("Workspace: Received file tree event from new tree: {:?}", event);
+                    workspace.handle_file_tree_event(event, cx);
+                }).detach();
+                
+                self.file_tree = Some(new_file_tree);
+                
+                // Make sure file tree is visible
+                self.show_file_tree = true;
+                cx.notify();
                 
                 // Show status message about the new project directory
                 self.core.update(cx, |core, cx| {

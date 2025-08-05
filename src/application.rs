@@ -88,6 +88,8 @@ pub struct Input;
 
 impl gpui::EventEmitter<InputEvent> for Input {}
 
+impl gpui::EventEmitter<crate::Update> for Application {}
+
 pub struct Crank;
 
 impl gpui::EventEmitter<()> for Crank {}
