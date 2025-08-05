@@ -27,10 +27,7 @@ impl<'a> DocumentManager<'a> {
         self.editor.document(doc_id).map(f)
     }
     
-    /// Get the current document ID for a view
-    pub fn current_document_id(&self, view_id: helix_view::ViewId) -> Option<DocumentId> {
-        self.editor.tree.try_get(view_id).map(|view| view.doc)
-    }
+    // Removed current_document_id - can access directly via editor.tree.try_get(view_id).map(|v| v.doc)
     
     /// Safe document access API - returns Result instead of Option
     pub fn try_with_document<F, R, E>(&self, doc_id: DocumentId, f: F) -> Result<R, E>
@@ -80,18 +77,5 @@ impl<'a> DocumentManagerMut<'a> {
             .map_err(anyhow::Error::new)
     }
 
-    /// Save a document
-    pub fn save_document(&mut self, doc_id: DocumentId, force: bool) -> Result<(), anyhow::Error> {
-        
-        // Get the document path - we need to get it before the mutable borrow
-        let path = self.editor.document(doc_id)
-            .ok_or_else(|| anyhow::anyhow!("Document not found"))?
-            .path()
-            .ok_or_else(|| anyhow::anyhow!("Document has no path"))?
-            .to_path_buf();
-        
-        // Save the document
-        self.editor.save(doc_id, Some(&path), force)
-            .map_err(|e| anyhow::anyhow!("Failed to save document: {}", e))
-    }
+    // Removed save_document - can save directly via editor.save() or commands
 }

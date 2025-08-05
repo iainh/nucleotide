@@ -54,79 +54,9 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
     start_dir.to_path_buf()
 }
 
-#[derive(Debug, Clone)]
-pub struct JumpMeta {
-    pub id: helix_view::DocumentId,
-    pub path: Option<PathBuf>,
-    pub selection: helix_core::Selection,
-    pub text: String,
-    pub is_current: bool,
-}
+// Removed unused structs - now using event-driven architecture instead
 
-#[derive(Debug, Clone)]
-pub struct PickerDiagnostic {
-    pub location: Location,
-    pub diag: helix_lsp::lsp::Diagnostic,
-}
-
-#[derive(Debug, Clone)]
-pub struct SymbolInformationItem {
-    pub location: Location,
-    pub symbol: helix_lsp::lsp::SymbolInformation,
-}
-
-#[derive(Debug, Clone)]
-pub struct BufferMeta {
-    pub id: helix_view::DocumentId,
-    pub path: Option<PathBuf>,
-    pub is_modified: bool,
-    pub is_current: bool,
-    pub focused_at: std::time::Instant,
-}
-
-#[derive(Debug, Clone)]
-pub struct FileChangeData {
-    pub cwd: PathBuf,
-    pub style_untracked: helix_view::graphics::Style,
-    pub style_modified: helix_view::graphics::Style,
-    pub style_conflict: helix_view::graphics::Style,
-    pub style_deleted: helix_view::graphics::Style,
-    pub style_renamed: helix_view::graphics::Style,
-}
-
-#[derive(Debug)]
-pub struct SearchState {
-    pub search_root: PathBuf,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TagKind {
-    Class,
-    Constant,
-    Function,
-    Interface,
-    Macro,
-    Module,
-    Struct,
-    Type,
-}
-
-#[derive(Debug, Clone)]
-pub enum UriOrDocumentId {
-    Uri(Uri),
-    Id(DocumentId),
-}
-
-#[derive(Debug, Clone)]
-pub struct Tag {
-    pub kind: TagKind,
-    pub name: String,
-    pub start: usize,
-    pub end: usize,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub doc: UriOrDocumentId,
-}
+// Removed unused Tag-related structs and enums
 
 use anyhow::Error;
 use log::{debug, warn};
@@ -140,6 +70,8 @@ pub struct Application {
     pub lsp_progress: LspProgressMap,
     pub lsp_state: Option<gpui::Entity<crate::core::lsp_state::LspState>>,
     pub project_directory: Option<PathBuf>,
+    pub event_bridge_rx: Option<crate::event_bridge::BridgedEventReceiver>,
+    pub gpui_to_helix_rx: Option<crate::gpui_to_helix_bridge::GpuiToHelixEventReceiver>,
 }
 
 #[derive(Debug, Clone)]
@@ -679,6 +611,61 @@ impl Application {
                     self.editor.status_msg = Some((msg.message, severity));
                     helix_event::request_redraw();
                 }
+                Some(bridged_event) = async {
+                    if let Some(ref mut rx) = self.event_bridge_rx {
+                        rx.recv().await
+                    } else {
+                        // Return None to make this branch never match
+                        std::future::pending().await
+                    }
+                } => {
+                    // Convert bridged Helix events to GPUI Update events
+                    let update = match bridged_event {
+                        crate::event_bridge::BridgedEvent::DocumentChanged { doc_id } => {
+                            crate::Update::DocumentChanged { doc_id }
+                        }
+                        crate::event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
+                            crate::Update::SelectionChanged { doc_id, view_id }
+                        }
+                        crate::event_bridge::BridgedEvent::ModeChanged { old_mode, new_mode } => {
+                            crate::Update::ModeChanged { old_mode, new_mode }
+                        }
+                        crate::event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
+                            crate::Update::DiagnosticsChanged { doc_id }
+                        }
+                        crate::event_bridge::BridgedEvent::DocumentOpened { doc_id } => {
+                            crate::Update::DocumentOpened { doc_id }
+                        }
+                        crate::event_bridge::BridgedEvent::DocumentClosed { doc_id } => {
+                            crate::Update::DocumentClosed { doc_id }
+                        }
+                        crate::event_bridge::BridgedEvent::ViewFocused { view_id } => {
+                            crate::Update::ViewFocused { view_id }
+                        }
+                        crate::event_bridge::BridgedEvent::LanguageServerInitialized { server_id } => {
+                            crate::Update::LanguageServerInitialized { server_id }
+                        }
+                        crate::event_bridge::BridgedEvent::LanguageServerExited { server_id } => {
+                            crate::Update::LanguageServerExited { server_id }
+                        }
+                        crate::event_bridge::BridgedEvent::CompletionRequested { doc_id, view_id, trigger } => {
+                            crate::Update::CompletionRequested { doc_id, view_id, trigger }
+                        }
+                    };
+                    cx.emit(update);
+                    helix_event::request_redraw();
+                }
+                Some(gpui_event) = async {
+                    if let Some(ref mut rx) = self.gpui_to_helix_rx {
+                        rx.recv().await
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    // Handle GPUI events that affect Helix
+                    crate::gpui_to_helix_bridge::handle_gpui_event_in_helix(&gpui_event, &mut self.editor);
+                    helix_event::request_redraw();
+                }
                 Some(callback) = self.jobs.wait_futures.next() => {
                     self.jobs.handle_callback(&mut self.editor, &mut self.compositor, callback);
                     // self.render().await;
@@ -723,15 +710,7 @@ impl Application {
         }
     }
 
-    // Handle language server messages using the LSP manager
-    async fn handle_language_server_message(
-        &mut self,
-        call: helix_lsp::Call,
-        server_id: LanguageServerId,
-    ) {
-        let mut lsp_manager = crate::core::LspManager::new(&mut self.editor, &mut self.lsp_progress);
-        lsp_manager.handle_language_server_message(call, server_id).await;
-    }
+    // Removed unused handle_language_server_message - now handled via events
 }
 
 pub fn init_editor(
@@ -787,6 +766,16 @@ pub fn init_editor(
     
     // CRITICAL FIX: Register handler hooks to enable LSP features
     helix_view::handlers::register_hooks(&handlers);
+    
+    // Initialize event bridge system for Helix -> GPUI event forwarding
+    let (bridge_tx, bridge_rx) = crate::event_bridge::create_bridge_channel();
+    crate::event_bridge::initialize_bridge(bridge_tx);
+    crate::event_bridge::register_event_hooks();
+    
+    // Initialize reverse event bridge system for GPUI -> Helix event forwarding
+    let (gpui_to_helix_tx, gpui_to_helix_rx) = crate::gpui_to_helix_bridge::create_gpui_to_helix_channel();
+    crate::gpui_to_helix_bridge::initialize_gpui_to_helix_bridge(gpui_to_helix_tx);
+    crate::gpui_to_helix_bridge::register_gpui_event_handlers();
     
     let mut editor = Editor::new(
         area,
@@ -896,5 +885,7 @@ pub fn init_editor(
         lsp_progress: LspProgressMap::new(),
         lsp_state: None,
         project_directory: None,
+        event_bridge_rx: Some(bridge_rx),
+        gpui_to_helix_rx: Some(gpui_to_helix_rx),
     })
 }

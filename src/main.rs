@@ -22,7 +22,9 @@ mod core;
 mod completion;
 mod config;
 mod document;
-mod error_boundary;
+// Removed error_boundary - using GPUI's error handling instead
+mod event_bridge;
+mod gpui_to_helix_bridge;
 mod info_box;
 mod key_hint_view;
 mod line_cache;
@@ -220,6 +222,42 @@ pub enum Update {
     OpenDirectory(std::path::PathBuf),
     ShouldQuit,
     CommandSubmitted(String),
+    // Helix event bridge - these allow UI to respond to Helix events
+    DocumentChanged {
+        doc_id: helix_view::DocumentId,
+    },
+    SelectionChanged {
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+    },
+    ModeChanged {
+        old_mode: helix_view::document::Mode,
+        new_mode: helix_view::document::Mode,
+    },
+    DiagnosticsChanged {
+        doc_id: helix_view::DocumentId,
+    },
+    // Additional granular events for better UI responsiveness
+    DocumentOpened {
+        doc_id: helix_view::DocumentId,
+    },
+    DocumentClosed {
+        doc_id: helix_view::DocumentId,
+    },
+    ViewFocused {
+        view_id: helix_view::ViewId,
+    },
+    LanguageServerInitialized {
+        server_id: helix_lsp::LanguageServerId,
+    },
+    LanguageServerExited {
+        server_id: helix_lsp::LanguageServerId,
+    },
+    CompletionRequested {
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        trigger: crate::event_bridge::CompletionTrigger,
+    },
 }
 
 impl gpui::EventEmitter<Update> for Application {}
@@ -288,6 +326,22 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
         let options = window_options(cx);
 
         let _ = cx.open_window(options, |_window, cx| {
+            // Set up window event handlers to send events to Helix
+            log::info!("Setting up window event handlers");
+            
+            // Example: Send window resize events to Helix
+            // Note: This is a conceptual example - actual GPUI window resize events
+            // would be handled differently depending on the GPUI version
+            cx.spawn(async move |_cx| {
+                // This would be triggered by actual GPUI window events
+                crate::gpui_to_helix_bridge::send_gpui_event_to_helix(
+                    crate::gpui_to_helix_bridge::GpuiToHelixEvent::WindowResized {
+                        width: 120,
+                        height: 40,
+                    }
+                );
+            }).detach();
+            
             let input = cx.new(|_| crate::application::Input);
             let crank = cx.new(|mc| {
                 mc.spawn(async move |crank, cx| {

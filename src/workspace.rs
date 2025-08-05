@@ -104,9 +104,7 @@ impl Workspace {
             }
             crate::Update::EditorStatus(_) => {}
             crate::Update::Redraw => {
-                // Update views when editor state changes
-                self.update_document_views(cx);
-                
+                // Minimal redraw - most updates now come through specific events
                 if let Some(view) = self.focused_view_id.and_then(|id| self.documents.get(&id)) {
                     view.update(cx, |_view, cx| {
                         cx.notify();
@@ -386,6 +384,13 @@ impl Workspace {
                         
                         // Force a full redraw to update all components
                         cx.notify();
+                        
+                        // Send theme change event to Helix
+                        crate::gpui_to_helix_bridge::send_gpui_event_to_helix(
+                            crate::gpui_to_helix_bridge::GpuiToHelixEvent::ThemeChanged {
+                                theme_name: current_theme.name().to_string(),
+                            }
+                        );
                     }
                     
                     // Check if we should quit after command execution
@@ -395,6 +400,79 @@ impl Workspace {
                     
                     cx.notify();
                 });
+            }
+            // Helix event bridge - respond to automatic Helix events
+            crate::Update::DocumentChanged { doc_id } => {
+                // Document content changed - update specific document view
+                self.update_specific_document_view(*doc_id, cx);
+                cx.notify();
+            }
+            crate::Update::SelectionChanged { doc_id, view_id } => {
+                // Selection/cursor moved - update status and specific view
+                info!("Selection changed in doc {:?}, view {:?}", doc_id, view_id);
+                self.update_specific_document_view(*doc_id, cx);
+                cx.notify();
+            }
+            crate::Update::ModeChanged { old_mode, new_mode } => {
+                // Editor mode changed - update status line and current view
+                info!("Mode changed from {:?} to {:?}", old_mode, new_mode);
+                self.update_current_document_view(cx);
+                cx.notify();
+            }
+            crate::Update::DiagnosticsChanged { doc_id } => {
+                // LSP diagnostics changed - update specific document view
+                self.update_specific_document_view(*doc_id, cx);
+                cx.notify();
+            }
+            crate::Update::DocumentOpened { doc_id } => {
+                // New document opened - the view will be created automatically
+                info!("Document opened: {:?}", doc_id);
+                cx.notify();
+            }
+            crate::Update::DocumentClosed { doc_id } => {
+                // Document closed - the view will be cleaned up automatically
+                info!("Document closed: {:?}", doc_id);
+                cx.notify();
+            }
+            crate::Update::ViewFocused { view_id } => {
+                // View focus changed - just update focus state
+                info!("View focused: {:?}", view_id);
+                self.focused_view_id = Some(*view_id);
+                cx.notify();
+            }
+            crate::Update::LanguageServerInitialized { server_id } => {
+                // LSP server initialized - update status
+                info!("Language server initialized: {:?}", server_id);
+                cx.notify();
+            }
+            crate::Update::LanguageServerExited { server_id } => {
+                // LSP server exited - update status
+                info!("Language server exited: {:?}", server_id);
+                cx.notify();
+            }
+            crate::Update::CompletionRequested { doc_id, view_id, trigger } => {
+                // Completion was requested - trigger completion UI
+                info!("Completion requested for doc {:?}, view {:?}, trigger: {:?}", doc_id, view_id, trigger);
+                
+                // Only show completion for certain triggers (not every character)
+                match trigger {
+                    crate::event_bridge::CompletionTrigger::Manual => {
+                        // Always show for manual triggers
+                        self.trigger_completion(cx);
+                    }
+                    crate::event_bridge::CompletionTrigger::CharacterTyped(c) => {
+                        // Only trigger for certain characters that typically start identifiers
+                        if c.is_alphabetic() || *c == '_' || *c == '.' {
+                            self.trigger_completion(cx);
+                        }
+                    }
+                    crate::event_bridge::CompletionTrigger::Filter => {
+                        // Re-filter existing completion
+                        self.trigger_completion(cx);
+                    }
+                }
+                
+                cx.notify();
             }
         }
     }
@@ -472,6 +550,58 @@ impl Workspace {
         let mut view_ids = HashSet::new();
         let mut right_borders = HashSet::new();
         self.make_views(&mut view_ids, &mut right_borders, cx);
+    }
+    
+    /// Update only a specific document view - more efficient for targeted updates
+    fn update_specific_document_view(&mut self, doc_id: helix_view::DocumentId, cx: &mut Context<Self>) {
+        // Find views for this specific document
+        let view_ids: Vec<helix_view::ViewId> = self.core.read(cx).editor.tree.views()
+            .filter_map(|(view, _)| {
+                if view.doc == doc_id {
+                    Some(view.id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Update only the views for this document
+        for view_id in view_ids {
+            if let Some(view_entity) = self.documents.get(&view_id) {
+                view_entity.update(cx, |_view, cx| {
+                    cx.notify();
+                });
+            }
+        }
+    }
+    
+    /// Update only the currently focused document view
+    fn update_current_document_view(&mut self, cx: &mut Context<Self>) {
+        if let Some(focused_view_id) = self.focused_view_id {
+            if let Some(view_entity) = self.documents.get(&focused_view_id) {
+                view_entity.update(cx, |_view, cx| {
+                    cx.notify();
+                });
+            }
+        }
+    }
+    
+    /// Trigger completion UI based on current editor state
+    fn trigger_completion(&mut self, cx: &mut Context<Self>) {
+        // Create a completion view with sample items for now
+        // In a full implementation, this would query the LSP for actual completions
+        self.core.update(cx, |core, cx| {
+            let items = core.create_sample_completion_items();
+            // Create the completion view with a default anchor position
+            let anchor_position = gpui::Point::new(gpui::Pixels(100.0), gpui::Pixels(100.0));
+            
+            // Create completion view as an entity
+            let completion_view = cx.new(|cx| {
+                crate::completion::CompletionView::new(items, anchor_position, cx)
+            });
+            
+            cx.emit(crate::Update::Completion(completion_view));
+        });
     }
     
     fn make_views(

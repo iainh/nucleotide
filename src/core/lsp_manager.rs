@@ -453,10 +453,5 @@ impl<'a> LspManager<'a> {
         self.editor.language_servers.remove_by_id(server_id);
     }
 
-    /// Get current LSP progress items for display
-    pub fn get_progress_items(&self) -> Vec<(LanguageServerId, String, String)> {
-        // TODO: Implement progress tracking display
-        // The LspProgressMap API has changed and needs investigation
-        Vec::new()
-    }
+    // Removed get_progress_items - progress is now handled by events and LspState
 }
