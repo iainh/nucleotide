@@ -24,6 +24,7 @@ mod config;
 mod document;
 // Removed error_boundary - using GPUI's error handling instead
 mod event_bridge;
+mod file_tree;
 mod gpui_to_helix_bridge;
 mod info_box;
 mod key_hint_view;
@@ -258,6 +259,8 @@ pub enum Update {
         view_id: helix_view::ViewId,
         trigger: crate::event_bridge::CompletionTrigger,
     },
+    // File tree events
+    FileTreeEvent(crate::file_tree::FileTreeEvent),
 }
 
 impl gpui::EventEmitter<Update> for Application {}

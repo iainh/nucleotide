@@ -7,6 +7,7 @@ use helix_view::ViewId;
 use log::{info, warn};
 
 use crate::document::DocumentView;
+use crate::file_tree::{SimpleFileTreeView, FileTreeView, FileTreeEvent, FileTreeConfig};
 use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
@@ -28,7 +29,11 @@ pub struct Workspace {
     notifications: Entity<NotificationView>,
     focus_handle: FocusHandle,
     needs_focus_restore: bool,
+    file_tree: Option<Entity<FileTreeView>>,
+    show_file_tree: bool,
 }
+
+impl EventEmitter<crate::Update> for Workspace {}
 
 impl Workspace {
     pub fn with_views(
@@ -52,6 +57,28 @@ impl Workspace {
         
         let key_hints = cx.new(|_cx| KeyHintView::new());
         
+        // Initialize file tree if we can find a workspace root
+        let root_path = core.read(cx).project_directory.clone()
+            .or_else(|| {
+                // Try to find workspace root from current working directory
+                std::env::current_dir().ok()
+                    .map(|cwd| find_workspace_root_from(&cwd))
+            });
+        
+        let file_tree = root_path.map(|root_path| {
+            cx.new(|cx| {
+                let config = FileTreeConfig::default();
+                FileTreeView::new(root_path, config, cx)
+            })
+        });
+        
+        // Subscribe to file tree events if we have a file tree
+        if let Some(ref file_tree) = file_tree {
+            cx.subscribe(file_tree, |workspace, _file_tree, event, cx| {
+                workspace.handle_file_tree_event(event, cx);
+            }).detach();
+        }
+        
         let mut workspace = Self {
             core,
             input,
@@ -65,6 +92,8 @@ impl Workspace {
             notifications,
             focus_handle,
             needs_focus_restore: false,
+            file_tree,
+            show_file_tree: true,
         };
         // Initialize document views
         workspace.update_document_views(cx);
@@ -272,6 +301,9 @@ impl Workspace {
                     cx.notify();
                 });
             }
+            crate::Update::FileTreeEvent(event) => {
+                self.handle_file_tree_event(event, cx);
+            }
             crate::Update::Info(_) => {
                 self.info_hidden = false;
                 // handled by the info box view
@@ -472,6 +504,29 @@ impl Workspace {
                     }
                 }
                 
+                cx.notify();
+            }
+        }
+    }
+
+    fn handle_file_tree_event(&mut self, event: &FileTreeEvent, cx: &mut Context<Self>) {
+        match event {
+            FileTreeEvent::OpenFile { path } => {
+                // Emit an OpenFile event to trigger file opening
+                cx.emit(crate::Update::OpenFile(path.clone()));
+            }
+            FileTreeEvent::SelectionChanged { path: _ } => {
+                // Update UI if needed for selection changes
+                cx.notify();
+            }
+            FileTreeEvent::DirectoryToggled { path: _, expanded: _ } => {
+                // Update UI for directory expansion/collapse
+                cx.notify();
+            }
+            FileTreeEvent::FileSystemChanged { path, kind } => {
+                info!("File system change detected: {:?} - {:?}", path, kind);
+                // Handle file system changes
+                // Could refresh the file tree or update document views
                 cx.notify();
             }
         }
@@ -821,6 +876,24 @@ impl Render for Workspace {
 
         let has_overlay = !self.overlay.read(cx).is_empty();
         
+        // Create main content area (documents + notifications + overlays)
+        let main_content = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .when_some(Some(docs_root), |this, docs| this.child(docs))
+            .child(self.notifications.clone())
+            .when(!self.overlay.read(cx).is_empty(), |this| {
+                let view = &self.overlay;
+                this.child(view.clone())
+            })
+            .when(
+                !self.info_hidden && !self.info.read(cx).is_empty(),
+                |this| this.child(self.info.clone()),
+            )
+            .child(self.key_hints.clone());
+
         div()
             .key_context("Workspace")
             .when(!has_overlay, |this| {
@@ -893,22 +966,25 @@ impl Render for Workspace {
             .id("workspace")
             .bg(bg_color)
             .flex()
-            .flex_col()
+            .flex_row() // Changed to horizontal layout
             .w_full()
             .h_full()
             .focusable()
-            .when_some(Some(docs_root), |this, docs| this.child(docs))
-            .child(self.notifications.clone())
-            .when(!self.overlay.read(cx).is_empty(), |this| {
-                let view = &self.overlay;
-                // TODO: Implement focus for OverlayView
-                this.child(view.clone())
+            // Add file tree as left panel
+            .when(self.show_file_tree && self.file_tree.is_some(), |this| {
+                if let Some(file_tree) = &self.file_tree {
+                    this.child(
+                        div()
+                            .w(px(250.0)) // Fixed width for file tree
+                            .h_full()
+                            .child(file_tree.clone())
+                    )
+                } else {
+                    this
+                }
             })
-            .when(
-                !self.info_hidden && !self.info.read(cx).is_empty(),
-                |this| this.child(self.info.clone()),
-            )
-            .child(self.key_hints.clone())
+            // Add main content area
+            .child(main_content)
     }
 }
 
