@@ -108,10 +108,36 @@ impl FileTree {
             .cloned()
             .collect();
             
-        // The entries are already sorted by path in the SumTree
-        // We just need to ensure directories come before files at each level
-        let mut result = Vec::with_capacity(entries.len());
-        self.build_sorted_tree(&entries, &self.root_path, &mut result);
+        // Create the root entry
+        let mut result = Vec::with_capacity(entries.len() + 1);
+        
+        // Add the root directory as the first entry
+        let root_id = FileTreeEntryId(0); // Special ID for root
+        let mut root_entry = FileTreeEntry::new_directory(root_id, self.root_path.clone(), None);
+        root_entry.depth = 0;
+        root_entry.is_expanded = true; // Root is always expanded
+        
+        // Count direct children
+        let children_count = entries.iter()
+            .filter(|e| e.path.parent() == Some(&self.root_path))
+            .count();
+            
+        if let FileKind::Directory { ref mut child_count, ref mut is_loaded } = root_entry.kind {
+            *child_count = children_count;
+            *is_loaded = true;
+        }
+        
+        result.push(root_entry);
+        
+        // Add all other entries with depth increased by 1
+        let mut adjusted_entries: Vec<FileTreeEntry> = entries.iter().map(|e| {
+            let mut entry = e.clone();
+            entry.depth += 1;
+            entry
+        }).collect();
+        
+        // Build sorted tree starting from root
+        self.build_sorted_tree(&adjusted_entries, &self.root_path, &mut result);
         
         self.visible_entries_cache = Some(result.clone());
         result

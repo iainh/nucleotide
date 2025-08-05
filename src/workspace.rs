@@ -291,6 +291,13 @@ impl Workspace {
                     core.editor.reset_idle_timer();
                 });
                 
+                // Sync file tree selection with the newly opened file
+                if let Some(file_tree) = &self.file_tree {
+                    file_tree.update(cx, |tree, cx| {
+                        tree.sync_selection_with_file(Some(path), cx);
+                    });
+                }
+                
                 // Force a redraw
                 cx.notify();
             }
@@ -495,6 +502,23 @@ impl Workspace {
             crate::Update::DocumentOpened { doc_id } => {
                 // New document opened - the view will be created automatically
                 info!("Document opened: {:?}", doc_id);
+                
+                // Sync file tree selection with the newly opened document
+                let doc_path = {
+                    let core = self.core.read(cx);
+                    core.editor.document(*doc_id)
+                        .and_then(|doc| doc.path())
+                        .map(|p| p.to_path_buf())
+                };
+                
+                if let Some(path) = doc_path {
+                    if let Some(file_tree) = &self.file_tree {
+                        file_tree.update(cx, |tree, cx| {
+                            tree.sync_selection_with_file(Some(path.as_path()), cx);
+                        });
+                    }
+                }
+                
                 cx.notify();
             }
             crate::Update::DocumentClosed { doc_id } => {
@@ -506,6 +530,27 @@ impl Workspace {
                 // View focus changed - just update focus state
                 info!("View focused: {:?}", view_id);
                 self.focused_view_id = Some(*view_id);
+                
+                // Sync file tree selection with the newly focused view
+                let doc_path = {
+                    let core = self.core.read(cx);
+                    if let Some(view) = core.editor.tree.try_get(*view_id) {
+                        core.editor.document(view.doc)
+                            .and_then(|doc| doc.path())
+                            .map(|p| p.to_path_buf())
+                    } else {
+                        None
+                    }
+                };
+                    
+                if let Some(path) = doc_path {
+                    if let Some(file_tree) = &self.file_tree {
+                        file_tree.update(cx, |tree, cx| {
+                            tree.sync_selection_with_file(Some(path.as_path()), cx);
+                        });
+                    }
+                }
+                
                 cx.notify();
             }
             crate::Update::LanguageServerInitialized { server_id } => {
@@ -710,11 +755,14 @@ impl Workspace {
         right_borders: &mut HashSet<ViewId>,
         cx: &mut Context<Self>,
     ) -> Option<String> {
-        let editor = &self.core.read(cx).editor;
         let mut focused_file_name = None;
+        let mut focused_doc_path = None;
+        
+        {
+            let editor = &self.core.read(cx).editor;
 
-        // First pass: collect all active view IDs
-        for (view, is_focused) in editor.tree.views() {
+            // First pass: collect all active view IDs
+            for (view, is_focused) in editor.tree.views() {
             let view_id = view.id;
 
             if editor
@@ -732,9 +780,21 @@ impl Workspace {
                 if editor.tree.contains(view_id) {
                     if let Some(doc) = editor.document(view.doc) {
                         self.focused_view_id = Some(view_id);
-                        focused_file_name = doc.path().map(|p| p.display().to_string());
+                        let doc_path = doc.path();
+                        focused_file_name = doc_path.map(|p| p.display().to_string());
+                        focused_doc_path = doc_path.map(|p| p.to_path_buf());
                     }
                 }
+            }
+        }
+        } // End of editor borrow scope
+        
+        // Sync file tree selection with the focused document (after releasing borrow)
+        if let Some(path) = focused_doc_path {
+            if let Some(file_tree) = &self.file_tree {
+                file_tree.update(cx, |tree, cx| {
+                    tree.sync_selection_with_file(Some(path.as_path()), cx);
+                });
             }
         }
         

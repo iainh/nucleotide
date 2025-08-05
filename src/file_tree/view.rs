@@ -1,7 +1,7 @@
 // ABOUTME: File tree UI view component using GPUI's uniform_list for performance
 // ABOUTME: Handles user interaction, selection, and rendering of file tree entries
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use crate::file_tree::{FileTree, FileTreeEntry, FileTreeEvent, FileTreeConfig, GitStatus, get_file_icon, get_symlink_icon, icons::chevron_icon};
@@ -61,6 +61,40 @@ impl FileTreeView {
             cx.emit(FileTreeEvent::SelectionChanged { path });
             cx.notify();
         }
+    }
+    
+    /// Sync selection with the currently open file
+    pub fn sync_selection_with_file(&mut self, file_path: Option<&Path>, cx: &mut Context<Self>) {
+        if let Some(path) = file_path {
+            // Only update if the path exists in the tree
+            if self.tree.entry_by_path(path).is_some() {
+                self.select_path(Some(path.to_path_buf()), cx);
+                
+                // Ensure parent directories are expanded so the file is visible
+                if let Some(parent) = path.parent() {
+                    self.ensure_path_visible(parent, cx);
+                }
+            }
+        }
+    }
+    
+    /// Ensure a path is visible by expanding parent directories
+    fn ensure_path_visible(&mut self, path: &Path, cx: &mut Context<Self>) {
+        // Start from the root and expand directories along the path
+        let mut current = PathBuf::new();
+        
+        for component in path.components() {
+            current.push(component);
+            
+            if let Some(entry) = self.tree.entry_by_path(&current) {
+                if entry.is_directory() && !self.tree.is_expanded(&current) {
+                    // Expand this directory using toggle_directory
+                    self.toggle_directory(&current, cx);
+                }
+            }
+        }
+        
+        cx.notify();
     }
 
     /// Toggle directory expansion
@@ -290,14 +324,17 @@ impl FileTreeView {
             .on_click({
                 let path = entry.path.clone();
                 let is_dir = entry.is_directory();
+                let is_root = entry.depth == 0;
                 cx.listener(move |view, _event, window, cx| {
                     // Focus the tree view when any entry is clicked
                     log::debug!("File tree entry clicked, focusing tree view");
                     view.focus_handle.focus(window);
                     view.select_path(Some(path.clone()), cx);
-                    if is_dir {
+                    
+                    // Don't toggle the root directory
+                    if is_dir && !is_root {
                         view.toggle_directory(&path, cx);
-                    } else {
+                    } else if !is_dir {
                         // Open file when clicked
                         cx.emit(FileTreeEvent::OpenFile { 
                             path: path.clone() 
@@ -325,7 +362,10 @@ impl FileTreeView {
     fn render_chevron(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>();
         
-        chevron_icon(if entry.is_expanded { "down" } else { "right" })
+        // Root directory is always shown as expanded
+        let is_expanded = entry.is_expanded || entry.depth == 0;
+        
+        chevron_icon(if is_expanded { "down" } else { "right" })
             .size_3()
             .text_color(theme.text_muted)
     }
@@ -364,7 +404,18 @@ impl FileTreeView {
     /// Render the filename
     fn render_filename(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>();
-        let filename = entry.file_name().unwrap_or("?").to_string();
+        
+        // For root directory, show just the directory name
+        let filename = if entry.depth == 0 && entry.is_directory() {
+            entry.path.file_name()
+                .and_then(|name| name.to_str())
+                .or_else(|| entry.path.components().last()
+                    .and_then(|c| c.as_os_str().to_str()))
+                .unwrap_or(".")
+                .to_string()
+        } else {
+            entry.file_name().unwrap_or("?").to_string()
+        };
 
         div()
             .flex_1()
