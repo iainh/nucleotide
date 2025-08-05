@@ -391,7 +391,6 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
                         if let Err(e) = cx.update(|cx| {
                             lsp_state_clone.update(cx, |state, cx| {
                                 // Only update spinner if there's LSP activity
-                                println!("[SPINNER] Timer tick");
                                 if state.should_show_spinner() {
                                     let frame = state.get_spinner_frame();
                                     state.status_message = Some(frame.to_string());
@@ -558,7 +557,7 @@ FLAGS:
     }
 
     if args.display_version {
-        println!("helix {VERSION_AND_GIT_HASH}");
+        eprintln!("helix {VERSION_AND_GIT_HASH}");
         std::process::exit(0);
     }
 

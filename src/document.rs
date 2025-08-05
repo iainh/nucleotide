@@ -1364,10 +1364,6 @@ impl Element for DocumentElement {
                     if is_phantom_line {
                         debug!("Created phantom line layout - line_idx: {}, origin.y: {:?}, y_offset: {:?}", 
                             line_idx, text_origin.y, y_offset);
-                        println!("CREATING PHANTOM LINE LAYOUT:");
-                        println!("  line_idx: {line_idx}");
-                        println!("  text_origin.y: {:?}", text_origin.y);
-                        println!("  y_offset: {y_offset:?}");
                     }
                     
                     line_cache.push(layout);
@@ -1449,11 +1445,6 @@ impl Element for DocumentElement {
                                 
                                 // Additional debug for phantom line
                                 if cursor_at_end && file_ends_with_newline {
-                                    println!("PHANTOM LINE DEBUG:");
-                                    println!("  Cursor at phantom line (line {layout_line_idx})");
-                                    println!("  Found layout with line_idx: {}", line_layout.line_idx);
-                                    println!("  Layout origin.y: {:?}", line_layout.origin.y);
-                                    println!("  All layouts:");
                                     // Line layouts are now stored in LineLayoutCache
                                 }
                                 // Special handling for phantom line

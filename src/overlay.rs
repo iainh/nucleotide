@@ -57,10 +57,8 @@ impl OverlayView {
     fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         match ev {
             crate::Update::Prompt(prompt) => {
-                println!("📝 OverlayView received prompt: {prompt:?}");
                 match prompt {
                     Prompt::Native { prompt: prompt_text, initial_input, on_submit, on_cancel } => {
-                        println!("🎯 Creating native PromptView");
                         
                         let prompt_text = prompt_text.clone();
                         let initial_input = initial_input.clone();
@@ -151,7 +149,6 @@ impl OverlayView {
                             // Set up the submit callback with command execution
                             let core_weak_submit = self.core.clone();
                             view = view.on_submit(move |input: &str, cx| {
-                                println!("📝 Prompt submitted: '{input}'");
                                 
                                 // Emit CommandSubmitted event to be handled by workspace
                                 if let Some(core) = core_weak_submit.upgrade() {
@@ -170,13 +167,11 @@ impl OverlayView {
                             // Set up the cancel callback if provided
                             if let Some(cancel_fn) = on_cancel {
                                 view = view.on_cancel(move |cx| {
-                                    println!("📝 Prompt cancelled");
                                     (cancel_fn)();
                                     cx.emit(DismissEvent);
                                 });
                             } else {
                                 view = view.on_cancel(move |cx| {
-                                    println!("📝 Prompt cancelled (default)");
                                     cx.emit(DismissEvent);
                                 });
                             }
@@ -186,7 +181,6 @@ impl OverlayView {
                         
                         // Subscribe to dismiss events from the prompt view
                         cx.subscribe(&prompt_view, |this, _prompt_view, _event: &DismissEvent, cx| {
-                            println!("🚨 DismissEvent received - clearing native_prompt_view");
                             this.native_prompt_view = None;
                             // Emit dismiss event to notify workspace
                             cx.emit(DismissEvent);
@@ -196,7 +190,6 @@ impl OverlayView {
                         // Focus will be handled by the prompt view's render method
                         
                         self.native_prompt_view = Some(prompt_view);
-                        println!("✅ Set native_prompt_view to Some() and focused it");
                     }
                     Prompt::Legacy(_) => {
                         // For legacy prompts, store them as-is
@@ -208,11 +201,9 @@ impl OverlayView {
                 cx.notify();
             }
             crate::Update::Completion(completion_view) => {
-                println!("🔤 OverlayView received completion");
                 
                 // Subscribe to dismiss events from the completion view
                 cx.subscribe(completion_view, |this, _completion_view, _event: &DismissEvent, cx| {
-                    println!("🚨 DismissEvent received - clearing completion_view");
                     this.completion_view = None;
                     // Emit dismiss event to notify workspace
                     cx.emit(DismissEvent);
@@ -220,14 +211,11 @@ impl OverlayView {
                 }).detach();
                 
                 self.completion_view = Some(completion_view.clone());
-                println!("✅ Set completion_view to Some() and focused it");
                 cx.notify();
             }
             crate::Update::Picker(picker) => {
-                println!("🔍 OverlayView received picker: {picker:?}");
                 match picker {
                     Picker::Native { title: _, items, on_select } => {
-                        println!("🎯 Creating native PickerView with {} items", items.len());
                         
                         let items = items.clone();
                         let on_select = on_select.clone();
@@ -279,7 +267,6 @@ impl OverlayView {
                         // Subscribe to dismiss events from the picker view
                         cx.subscribe(&picker_view, |this, picker_view, _event: &DismissEvent, cx| {
                             // Clean up the picker before clearing it
-                            println!("🚨 DismissEvent received - cleaning up and clearing native_picker_view");
                             picker_view.update(cx, |picker, cx| {
                                 picker.cleanup(cx);
                             });
@@ -290,14 +277,12 @@ impl OverlayView {
                         }).detach();
                         
                         self.native_picker_view = Some(picker_view);
-                        println!("✅ Set native_picker_view to Some() with {items_count} items");
                     }
                 }
                 
                 cx.notify();
             }
             crate::Update::DirectoryPicker(_picker) => {
-                println!("📁 OverlayView received directory picker");
                 
                 // Use GPUI's native file dialog API
                 let core_weak = self.core.clone();
@@ -348,7 +333,6 @@ impl OverlayView {
             }
             crate::Update::Redraw => {
                 // Don't clear native picker on redraw - let it persist until dismissed by user action
-                println!("🎨 Redraw event (not clearing native picker)");
             }
             _ => {}
         }
@@ -374,17 +358,9 @@ impl EventEmitter<DismissEvent> for OverlayView {}
 
 impl Render for OverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        println!(
-            "🎨 rendering overlay - prompt: {}, native_prompt: {}, completion: {}, native_picker: {}", 
-            self.prompt.is_some(),
-            self.native_prompt_view.is_some(),
-            self.completion_view.is_some(),
-            self.native_picker_view.is_some()
-        );
         
         // Check what type of overlay we should render
         if let Some(picker_view) = &self.native_picker_view {
-            println!("🎨 Rendering native picker view with Overlay wrapper");
             // For now, render picker directly until we update Overlay to work with entities
             return div()
                 .key_context("Overlay")
@@ -433,14 +409,12 @@ impl Render for OverlayView {
         }
         
         if let Some(completion_view) = &self.completion_view {
-            println!("🎨 Rendering completion view");
             // Completion view handles its own positioning
             return completion_view.clone().into_any_element();
         }
         
         // Legacy prompt fallback
         if let Some(prompt) = self.prompt.take() {
-            println!("🎨 Rendering legacy prompt");
             let handle = cx.focus_handle();
             let theme = self.core.upgrade()
                 .map(|core| core.read(cx).editor.theme.clone());

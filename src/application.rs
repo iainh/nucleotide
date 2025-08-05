@@ -201,7 +201,6 @@ impl Application {
                 items,
                 |_index| {
                     // File selection logic would go here
-                    println!("File selected at index: {_index}");
                 },
             ));
         }
@@ -217,12 +216,11 @@ impl Application {
         crate::prompt::Prompt::native(
             "Search:",
             "",
-            |input| {
-                println!("🎉 Prompt submitted with input: '{input}'");
+            |_input| {
                 // For now, just show the input - we'll handle the actual search via a different mechanism
             }
         ).with_cancel(|| {
-            println!("🚫 Prompt cancelled");
+            // Prompt cancelled
         })
     }
 
@@ -353,13 +351,12 @@ impl Application {
             let prompt = Prompt::Native {
                 prompt: prompt_text.into(),
                 initial_input: initial_input.into(),
-                on_submit: Arc::new(move |input: &str| {
-                    println!("Native command submitted: {input}");
+                on_submit: Arc::new(move |_input: &str| {
                     // The actual command execution will be handled by workspace
                     // through a CommandSubmitted event
                 }),
                 on_cancel: Some(Arc::new(|| {
-                    println!("Native command cancelled");
+                    // Command cancelled
                 })),
             };
             

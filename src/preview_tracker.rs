@@ -20,7 +20,6 @@ impl PreviewTracker {
     /// Register a new preview document
     pub fn register(&self, doc_id: DocumentId, view_id: ViewId) {
         if let Ok(mut previews) = self.active_previews.lock() {
-            println!("📋 Registering preview: doc_id={doc_id:?}, view_id={view_id:?}");
             previews.push((doc_id, view_id));
         }
     }
@@ -28,7 +27,6 @@ impl PreviewTracker {
     /// Unregister a preview document
     pub fn unregister(&self, doc_id: DocumentId, view_id: ViewId) {
         if let Ok(mut previews) = self.active_previews.lock() {
-            println!("📋 Unregistering preview: doc_id={doc_id:?}, view_id={view_id:?}");
             previews.retain(|&(d, v)| d != doc_id || v != view_id);
         }
     }
@@ -45,7 +43,6 @@ impl PreviewTracker {
     /// Clean up all active preview documents
     pub fn cleanup_all(&self, editor: &mut helix_view::Editor) {
         if let Ok(mut previews) = self.active_previews.lock() {
-            println!("🧹 Cleaning up {} active preview documents", previews.len());
             for (doc_id, view_id) in previews.drain(..) {
                 // Close the view first if it exists
                 if editor.tree.contains(view_id) {

@@ -225,17 +225,7 @@ impl LspState {
         let has_progress = !self.progress.is_empty();
         let has_busy_servers = self.servers.values().any(|s| matches!(s.status, ServerStatus::Starting | ServerStatus::Initializing));
         
-        let should_show = has_progress || has_busy_servers;
-        
-        println!(
-            "[LSP] should_show_spinner: {} (progress: {}, busy_servers: {}, total_servers: {})",
-            should_show,
-            self.progress.len(),
-            if has_busy_servers { "yes" } else { "no" },
-            self.servers.len()
-        );
-        
-        should_show
+        has_progress || has_busy_servers
     }
 }
 

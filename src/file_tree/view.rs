@@ -38,12 +38,8 @@ impl FileTreeView {
 
         // Auto-select the first entry if there are any entries
         let entries = instance.tree.visible_entries();
-        println!("FileTreeView: Found {} visible entries during initialization", entries.len());
         if !entries.is_empty() {
-            println!("FileTreeView: Auto-selecting first entry: {:?}", entries[0].path);
             instance.selected_path = Some(entries[0].path.clone());
-        } else {
-            println!("FileTreeView: No entries to auto-select");
         }
 
         instance
@@ -186,15 +182,12 @@ impl FileTreeView {
     /// Select next entry
     pub fn select_next(&mut self, cx: &mut Context<Self>) {
         let entries = self.tree.visible_entries();
-        println!("select_next: {} visible entries", entries.len());
         if entries.is_empty() {
-            println!("select_next: No entries available");
             return;
         }
 
         // If no selection, start with first entry
         if self.selected_path.is_none() {
-            println!("select_next: No selection, selecting first entry");
             self.select_path(Some(entries[0].path.clone()), cx);
             return;
         }
@@ -203,9 +196,7 @@ impl FileTreeView {
             .and_then(|path| entries.iter().position(|e| &e.path == path))
             .unwrap_or(0);
 
-        println!("select_next: current_index={}, selected_path={:?}", current_index, self.selected_path);
         let next_index = (current_index + 1).min(entries.len() - 1);
-        println!("select_next: moving from index {} to {}", current_index, next_index);
         self.select_path(Some(entries[next_index].path.clone()), cx);
     }
 
@@ -483,26 +474,20 @@ impl Render for FileTreeView {
                 view.focus_handle.focus(window);
             }))
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, _window, cx| {
-                println!("File tree received key event: {:?}", event.keystroke.key);
                 match event.keystroke.key.as_str() {
                     "down" | "j" => {
-                        println!("File tree: down/j pressed");
                         view.select_next(cx);
                     }
                     "up" | "k" => {
-                        println!("File tree: up/k pressed");
                         view.select_previous(cx);
                     }
                     "left" | "h" => {
-                        println!("File tree: left/h pressed");
                         view.navigate_left(cx);
                     }
                     "right" | "l" => {
-                        println!("File tree: right/l pressed");
                         view.navigate_right(cx);
                     }
                     "enter" | " " => {
-                        println!("File tree: enter/space pressed");
                         view.open_selected(cx);
                     }
                     "home" => {

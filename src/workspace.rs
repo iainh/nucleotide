@@ -53,7 +53,6 @@ impl Workspace {
         
         // Subscribe to overlay dismiss events to restore focus
         cx.subscribe(&overlay, |workspace, _overlay, _event: &DismissEvent, cx| {
-            println!("🎯 Workspace received DismissEvent from overlay");
             // Mark that we need to restore focus in the next render
             workspace.needs_focus_restore = true;
             cx.notify();
@@ -358,7 +357,6 @@ impl Workspace {
                 cx.quit();
             }
             crate::Update::CommandSubmitted(command) => {
-                println!("🎯 Workspace received command: {command}");
                 // Execute the command through helix's command system
                 let core = self.core.clone();
                 let handle = self.handle.clone();
@@ -857,7 +855,6 @@ impl Render for Workspace {
         if self.needs_focus_restore {
             if let Some(view_id) = self.focused_view_id {
                 if let Some(doc_view) = self.documents.get(&view_id) {
-                    println!("🔄 Restoring focus to document view: {view_id:?}");
                     let doc_focus = doc_view.focus_handle(cx);
                     window.focus(&doc_focus);
                 }
