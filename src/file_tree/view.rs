@@ -324,17 +324,15 @@ impl FileTreeView {
             .on_click({
                 let path = entry.path.clone();
                 let is_dir = entry.is_directory();
-                let is_root = entry.depth == 0;
                 cx.listener(move |view, _event, window, cx| {
                     // Focus the tree view when any entry is clicked
                     log::debug!("File tree entry clicked, focusing tree view");
                     view.focus_handle.focus(window);
                     view.select_path(Some(path.clone()), cx);
                     
-                    // Don't toggle the root directory
-                    if is_dir && !is_root {
+                    if is_dir {
                         view.toggle_directory(&path, cx);
-                    } else if !is_dir {
+                    } else {
                         // Open file when clicked
                         cx.emit(FileTreeEvent::OpenFile { 
                             path: path.clone() 
@@ -362,10 +360,7 @@ impl FileTreeView {
     fn render_chevron(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>();
         
-        // Root directory is always shown as expanded
-        let is_expanded = entry.is_expanded || entry.depth == 0;
-        
-        chevron_icon(if is_expanded { "down" } else { "right" })
+        chevron_icon(if entry.is_expanded { "down" } else { "right" })
             .size_3()
             .text_color(theme.text_muted)
     }

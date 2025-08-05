@@ -76,7 +76,10 @@ impl FileTree {
         }
 
         // Only load immediate children of root initially
-        let entries = self.scan_directory(&self.root_path.clone(), 0, 1)?;
+        let entries = self.scan_directory(&self.root_path.clone(), 1, 1)?;
+        
+        // Mark root as expanded since we're loading its children
+        self.expanded_dirs.insert(self.root_path.clone());
         
         self.entries = SumTree::from_iter(entries, &());
         self.is_loaded = true;
@@ -115,7 +118,7 @@ impl FileTree {
         let root_id = FileTreeEntryId(0); // Special ID for root
         let mut root_entry = FileTreeEntry::new_directory(root_id, self.root_path.clone(), None);
         root_entry.depth = 0;
-        root_entry.is_expanded = true; // Root is always expanded
+        root_entry.is_expanded = self.is_expanded(&self.root_path);
         
         // Count direct children
         let children_count = entries.iter()
@@ -129,15 +132,17 @@ impl FileTree {
         
         result.push(root_entry);
         
-        // Add all other entries with depth increased by 1
-        let mut adjusted_entries: Vec<FileTreeEntry> = entries.iter().map(|e| {
-            let mut entry = e.clone();
-            entry.depth += 1;
-            entry
-        }).collect();
-        
-        // Build sorted tree starting from root
-        self.build_sorted_tree(&adjusted_entries, &self.root_path, &mut result);
+        // Build sorted tree starting from root only if root is expanded
+        if self.is_expanded(&self.root_path) {
+            // Adjust depth for all entries
+            let adjusted_entries: Vec<FileTreeEntry> = entries.iter().map(|e| {
+                let mut entry = e.clone();
+                entry.depth += 1;
+                entry
+            }).collect();
+            
+            self.build_sorted_tree(&adjusted_entries, &self.root_path, &mut result);
+        }
         
         self.visible_entries_cache = Some(result.clone());
         result
@@ -184,6 +189,28 @@ impl FileTree {
 
     /// Get entry by path
     pub fn entry_by_path(&self, path: &Path) -> Option<FileTreeEntry> {
+        // Special case for root path
+        if path == self.root_path {
+            return Some(FileTreeEntry {
+                id: FileTreeEntryId(0),
+                path: self.root_path.clone(),
+                kind: crate::file_tree::FileKind::Directory { 
+                    child_count: self.entries.iter()
+                        .filter(|e| e.path.parent() == Some(&self.root_path))
+                        .count(),
+                    is_loaded: true 
+                },
+                size: 0,
+                mtime: None,
+                depth: 0,
+                is_expanded: self.is_expanded(&self.root_path),
+                is_visible: true,
+                is_hidden: false,
+                is_ignored: false,
+                git_status: None,
+            });
+        }
+        
         let id = self.path_to_id.get(path)?;
         self.entry_by_id(*id)
     }
@@ -198,7 +225,7 @@ impl FileTree {
 
     /// Toggle directory expansion
     pub fn toggle_directory(&mut self, path: &Path) -> Result<bool> {
-        let mut entry = self.entry_by_path(path)
+        let entry = self.entry_by_path(path)
             .context("Entry not found")?;
 
         if !entry.is_directory() {
@@ -210,15 +237,27 @@ impl FileTree {
         if is_expanded {
             // Collapse directory
             self.expanded_dirs.remove(path);
-            entry.is_expanded = false;
-            self.upsert_entry(entry);
+            
+            // For root directory, we don't need to update the entry in the tree
+            if path != self.root_path {
+                let mut entry = entry;
+                entry.is_expanded = false;
+                self.upsert_entry(entry);
+            }
+            
             self.hide_children(path);
             self.invalidate_cache();
         } else {
             // Expand directory
             self.expanded_dirs.insert(path.to_path_buf());
-            entry.is_expanded = true;
-            self.upsert_entry(entry);
+            
+            // For root directory, we don't need to update the entry in the tree
+            if path != self.root_path {
+                let mut entry = entry;
+                entry.is_expanded = true;
+                self.upsert_entry(entry);
+            }
+            
             self.load_directory(path)?;
             self.invalidate_cache();
         }
@@ -508,6 +547,14 @@ impl FileTree {
     /// Load a specific directory (for lazy loading)
     fn load_directory(&mut self, dir_path: &Path) -> Result<()> {
         if let Some(mut entry) = self.entry_by_path(dir_path) {
+            // Check if already loaded
+            if let FileKind::Directory { is_loaded, .. } = &entry.kind {
+                if *is_loaded {
+                    // Directory already loaded, nothing to do
+                    return Ok(());
+                }
+            }
+            
             let children = self.scan_directory(dir_path, entry.depth + 1, entry.depth + 2)?;
             
             // Update the directory entry
