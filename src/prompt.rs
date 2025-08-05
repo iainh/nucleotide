@@ -123,7 +123,6 @@ impl RenderOnce for PromptElement {
 
                 let text = text_with_style.clone().into_styled_text(&default_style);
                 self.focus.focus(window);
-                println!("🎯 Legacy prompt focusing");
                 
                 div()
                     .track_focus(&self.focus)

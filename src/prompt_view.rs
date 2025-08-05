@@ -373,7 +373,6 @@ impl Render for PromptView {
             .text_size(px(cx.global::<crate::UiFontConfig>().size))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                println!("🔥 PromptView received key: {}", event.keystroke.key);
                 match event.keystroke.key.as_str() {
                     "enter" => {
                         this.submit(cx);
@@ -437,7 +436,6 @@ impl Render for PromptView {
                         }
                     }
                     _ => {
-                        println!("🔥 Unhandled key: {}", event.keystroke.key);
                     }
                 }
             }))
