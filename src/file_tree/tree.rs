@@ -358,6 +358,54 @@ impl FileTree {
         self.remove_entry_by_id(id)
     }
 
+    /// Find the parent entry of a given path in the visible entries
+    pub fn find_parent_entry(&mut self, path: &Path) -> Option<FileTreeEntry> {
+        let parent_path = path.parent()?;
+        
+        // Clone root_path to avoid borrowing issues
+        let root_path = self.root_path.clone();
+        
+        // Don't go above the root directory
+        if parent_path < &root_path {
+            return None;
+        }
+        
+        // Use the root path itself if the parent would be outside the tree
+        let target_path = if parent_path == &root_path {
+            root_path
+        } else {
+            parent_path.to_path_buf()
+        };
+        
+        // Find the parent in visible entries
+        let visible_entries = self.visible_entries();
+        visible_entries.into_iter()
+            .find(|entry| entry.path == target_path)
+    }
+
+    /// Find the first child entry of a directory in the visible entries
+    pub fn find_first_child_entry(&mut self, dir_path: &Path) -> Option<FileTreeEntry> {
+        // Only works for directories
+        if let Some(entry) = self.entry_by_path(dir_path) {
+            if !entry.is_directory() {
+                return None;
+            }
+        } else {
+            return None;
+        }
+
+        // Find the first child in visible entries
+        let visible_entries = self.visible_entries();
+        visible_entries.into_iter()
+            .find(|entry| {
+                if let Some(parent) = entry.path.parent() {
+                    parent == dir_path
+                } else {
+                    false
+                }
+            })
+    }
+
     /// Generate next entry ID
     fn next_entry_id(&mut self) -> FileTreeEntryId {
         let id = FileTreeEntryId(self.next_id);

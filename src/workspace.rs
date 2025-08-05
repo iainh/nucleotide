@@ -569,9 +569,17 @@ impl Workspace {
         }
     }
 
-    fn handle_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
         // Wrap the entire key handling in a catch to prevent panics from propagating to FFI
         if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Check if the file tree has focus - if so, don't consume the event
+            if let Some(file_tree) = &self.file_tree {
+                if file_tree.focus_handle(cx).is_focused(window) {
+                    log::debug!("File tree has focus, not forwarding key to editor");
+                    return; // Let the file tree handle its own key events
+                }
+            }
+            
             // Check if we should dismiss UI elements on escape
             if ev.keystroke.key == "escape" {
                 // First check if we should dismiss key hints (highest priority)
@@ -935,8 +943,8 @@ impl Render for Workspace {
             .key_context("Workspace")
             .when(!has_overlay, |this| {
                 this.track_focus(&self.focus_handle)
-                    .on_key_down(cx.listener(|view, ev, _window, cx| {
-                        view.handle_key(ev, cx);
+                    .on_key_down(cx.listener(|view, ev, window, cx| {
+                        view.handle_key(ev, window, cx);
                     }))
             })
             .when(self.is_resizing_file_tree, |this| {

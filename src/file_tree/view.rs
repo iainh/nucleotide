@@ -29,12 +29,24 @@ impl FileTreeView {
             log::error!("Failed to load file tree: {}", e);
         }
 
-        Self {
+        let mut instance = Self {
             tree,
             selected_path: None,
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
+        };
+
+        // Auto-select the first entry if there are any entries
+        let entries = instance.tree.visible_entries();
+        println!("FileTreeView: Found {} visible entries during initialization", entries.len());
+        if !entries.is_empty() {
+            println!("FileTreeView: Auto-selecting first entry: {:?}", entries[0].path);
+            instance.selected_path = Some(entries[0].path.clone());
+        } else {
+            println!("FileTreeView: No entries to auto-select");
         }
+
+        instance
     }
 
     /// Get the current selection
@@ -140,7 +152,16 @@ impl FileTreeView {
     /// Select next entry
     pub fn select_next(&mut self, cx: &mut Context<Self>) {
         let entries = self.tree.visible_entries();
+        println!("select_next: {} visible entries", entries.len());
         if entries.is_empty() {
+            println!("select_next: No entries available");
+            return;
+        }
+
+        // If no selection, start with first entry
+        if self.selected_path.is_none() {
+            println!("select_next: No selection, selecting first entry");
+            self.select_path(Some(entries[0].path.clone()), cx);
             return;
         }
 
@@ -148,14 +169,25 @@ impl FileTreeView {
             .and_then(|path| entries.iter().position(|e| &e.path == path))
             .unwrap_or(0);
 
+        println!("select_next: current_index={}, selected_path={:?}", current_index, self.selected_path);
         let next_index = (current_index + 1).min(entries.len() - 1);
+        println!("select_next: moving from index {} to {}", current_index, next_index);
         self.select_path(Some(entries[next_index].path.clone()), cx);
     }
 
     /// Select previous entry
     pub fn select_previous(&mut self, cx: &mut Context<Self>) {
         let entries = self.tree.visible_entries();
+        log::debug!("select_previous: {} visible entries", entries.len());
         if entries.is_empty() {
+            log::debug!("select_previous: No entries available");
+            return;
+        }
+
+        // If no selection, start with first entry
+        if self.selected_path.is_none() {
+            log::debug!("select_previous: No selection, selecting first entry");
+            self.select_path(Some(entries[0].path.clone()), cx);
             return;
         }
 
@@ -163,7 +195,9 @@ impl FileTreeView {
             .and_then(|path| entries.iter().position(|e| &e.path == path))
             .unwrap_or(0);
 
+        log::debug!("select_previous: current_index={}, selected_path={:?}", current_index, self.selected_path);
         let prev_index = current_index.saturating_sub(1);
+        log::debug!("select_previous: moving from index {} to {}", current_index, prev_index);
         self.select_path(Some(entries[prev_index].path.clone()), cx);
     }
 
@@ -180,6 +214,43 @@ impl FileTreeView {
         let entries = self.tree.visible_entries();
         if let Some(last) = entries.last() {
             self.select_path(Some(last.path.clone()), cx);
+        }
+    }
+
+    /// Handle left arrow key navigation
+    pub fn navigate_left(&mut self, cx: &mut Context<Self>) {
+        if let Some(current_path) = self.selected_path.clone() {
+            if let Some(current_entry) = self.tree.entry_by_path(&current_path) {
+                if current_entry.is_directory() && current_entry.is_expanded() {
+                    // Collapse the current directory if it's expanded
+                    self.toggle_directory(&current_path, cx);
+                } else {
+                    // Navigate to parent directory
+                    if let Some(parent_entry) = self.tree.find_parent_entry(&current_path) {
+                        self.select_path(Some(parent_entry.path), cx);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle right arrow key navigation  
+    pub fn navigate_right(&mut self, cx: &mut Context<Self>) {
+        if let Some(current_path) = self.selected_path.clone() {
+            if let Some(current_entry) = self.tree.entry_by_path(&current_path) {
+                if current_entry.is_directory() {
+                    if !current_entry.is_expanded() {
+                        // Expand the current directory if it's collapsed
+                        self.toggle_directory(&current_path, cx);
+                    } else {
+                        // Navigate to first child if already expanded
+                        if let Some(first_child) = self.tree.find_first_child_entry(&current_path) {
+                            self.select_path(Some(first_child.path), cx);
+                        }
+                    }
+                }
+                // For files, right arrow does nothing
+            }
         }
     }
 
@@ -213,13 +284,16 @@ impl FileTreeView {
             .pl(indentation)
             .pr(px(8.0))
             .when(is_selected, |div| {
-                div.bg(theme.accent)
+                div.bg(theme.accent).text_color(theme.background)
             })
             .hover(|style| style.bg(theme.surface_hover))
             .on_click({
                 let path = entry.path.clone();
                 let is_dir = entry.is_directory();
-                cx.listener(move |view, _event, _window, cx| {
+                cx.listener(move |view, _event, window, cx| {
+                    // Focus the tree view when any entry is clicked
+                    log::debug!("File tree entry clicked, focusing tree view");
+                    view.focus_handle.focus(window);
                     view.select_path(Some(path.clone()), cx);
                     if is_dir {
                         view.toggle_directory(&path, cx);
@@ -330,6 +404,12 @@ impl FileTreeView {
 
 impl EventEmitter<FileTreeEvent> for FileTreeView {}
 
+impl Focusable for FileTreeView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 // FileTreeView is focusable through its focus_handle field
 
 impl Render for FileTreeView {
@@ -339,32 +419,53 @@ impl Render for FileTreeView {
 
         div()
             .id("file-tree")
+            .key_context("FileTree")
             .w_full()
             .h_full()
             .bg(theme.background)
             .border_r_1()
             .border_color(theme.border)
+            .when(self.focus_handle.is_focused(_window), |style| {
+                style.border_color(theme.border_focused)
+            })
             .flex()
             .flex_col()
             .track_focus(&self.focus_handle)
+            .on_click(cx.listener(|view, _event, window, _cx| {
+                // Focus the tree view when clicked anywhere on it
+                log::debug!("File tree container clicked, focusing");
+                view.focus_handle.focus(window);
+            }))
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, _window, cx| {
+                println!("File tree received key event: {:?}", event.keystroke.key);
                 match event.keystroke.key.as_str() {
-                    "ArrowDown" | "j" => {
+                    "down" | "j" => {
+                        println!("File tree: down/j pressed");
                         view.select_next(cx);
                     }
-                    "ArrowUp" | "k" => {
+                    "up" | "k" => {
+                        println!("File tree: up/k pressed");
                         view.select_previous(cx);
                     }
-                    "Enter" | " " => {
+                    "left" | "h" => {
+                        println!("File tree: left/h pressed");
+                        view.navigate_left(cx);
+                    }
+                    "right" | "l" => {
+                        println!("File tree: right/l pressed");
+                        view.navigate_right(cx);
+                    }
+                    "enter" | " " => {
+                        println!("File tree: enter/space pressed");
                         view.open_selected(cx);
                     }
-                    "Home" => {
+                    "home" => {
                         view.select_first(cx);
                     }
-                    "End" => {
+                    "end" => {
                         view.select_last(cx);
                     }
-                    "F5" => {
+                    "f5" => {
                         view.refresh(cx);
                     }
                     _ => {}
