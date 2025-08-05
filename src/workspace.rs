@@ -7,7 +7,7 @@ use helix_view::ViewId;
 use log::{info, warn};
 
 use crate::document::DocumentView;
-use crate::file_tree::{SimpleFileTreeView, FileTreeView, FileTreeEvent, FileTreeConfig};
+use crate::file_tree::{FileTreeView, FileTreeEvent, FileTreeConfig};
 use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
@@ -74,9 +74,13 @@ impl Workspace {
         
         // Subscribe to file tree events if we have a file tree
         if let Some(ref file_tree) = file_tree {
+            info!("Workspace: Subscribing to file tree events");
             cx.subscribe(file_tree, |workspace, _file_tree, event, cx| {
+                info!("Workspace: Received file tree event: {:?}", event);
                 workspace.handle_file_tree_event(event, cx);
             }).detach();
+        } else {
+            info!("Workspace: No file tree to subscribe to");
         }
         
         let mut workspace = Self {
@@ -153,7 +157,7 @@ impl Workspace {
             }
             crate::Update::OpenFile(path) => {
                 // Open the specified file in the editor
-                info!("Opening file: {path:?}");
+                info!("Workspace: Received OpenFile update for: {path:?}");
                 self.core.update(cx, |core, cx| {
                     let _guard = self.handle.enter();
                     
@@ -513,6 +517,7 @@ impl Workspace {
         match event {
             FileTreeEvent::OpenFile { path } => {
                 // Emit an OpenFile event to trigger file opening
+                info!("FileTreeEvent::OpenFile received in workspace: {:?}", path);
                 cx.emit(crate::Update::OpenFile(path.clone()));
             }
             FileTreeEvent::SelectionChanged { path: _ } => {
