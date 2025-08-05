@@ -18,6 +18,7 @@ use application::{Application, InputEvent};
 
 mod actions;
 mod application;
+mod assets;
 mod core;
 mod completion;
 mod config;
@@ -291,7 +292,7 @@ pub struct UiFontConfig {
 impl gpui::Global for UiFontConfig {}
 
 fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::runtime::Handle) {
-    gpui::Application::new().run(move |cx| {
+    gpui::Application::new().with_assets(crate::assets::Assets).run(move |cx| {
         // Set up theme manager with Helix theme
         let helix_theme = app.editor.theme.clone();
         let theme_manager = theme_manager::ThemeManager::new(helix_theme);

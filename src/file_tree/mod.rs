@@ -2,6 +2,7 @@
 // ABOUTME: Provides hierarchical file system representation with git integration
 
 pub mod entry;
+pub mod icons;
 pub mod summary;  
 pub mod tree;
 pub mod view;
@@ -9,6 +10,7 @@ pub mod simple_view;
 // pub mod watcher; // Watcher - disabled for now
 
 pub use entry::{FileTreeEntry, FileKind, GitStatus};
+pub use icons::{get_file_icon, get_symlink_icon};
 pub use summary::FileTreeSummary;
 pub use tree::FileTree;
 pub use view::FileTreeView;

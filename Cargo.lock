@@ -3167,6 +3167,7 @@ dependencies = [
  "nucleo 0.2.1",
  "open",
  "pulldown-cmark 0.10.3",
+ "rust-embed",
  "serde",
  "serde_json",
  "smallvec",

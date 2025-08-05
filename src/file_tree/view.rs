@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use gpui::*;
 use gpui::prelude::FluentBuilder;
-use crate::file_tree::{FileTree, FileTreeEntry, FileTreeEvent, FileTreeConfig, GitStatus};
+use crate::file_tree::{FileTree, FileTreeEntry, FileTreeEvent, FileTreeConfig, GitStatus, get_file_icon, get_symlink_icon, icons::chevron_icon};
 use crate::ui::Theme;
 
 /// File tree view component
@@ -173,7 +173,10 @@ impl FileTreeView {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
+                    .when(entry.is_directory(), |div| {
+                        div.child(self.render_chevron(entry, cx))
+                    })
                     .child(self.render_icon(entry, cx))
                     .child(self.render_filename(entry, cx))
                     .when_some(entry.git_status.as_ref(), |div, status| {
@@ -182,38 +185,43 @@ impl FileTreeView {
             )
     }
 
+    /// Render the chevron for directories
+    fn render_chevron(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
+        
+        chevron_icon(if entry.is_expanded { "down" } else { "right" })
+            .size_3()
+            .text_color(theme.text_muted)
+    }
+
     /// Render the file/directory icon
-    fn render_icon(&self, entry: &FileTreeEntry, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_icon(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
+        
         let icon = match &entry.kind {
             crate::file_tree::FileKind::Directory { .. } => {
-                if entry.is_expanded {
-                    "📂" // Open folder
-                } else {
-                    "📁" // Closed folder
-                }
+                get_file_icon(None, true, entry.is_expanded)
+                    .size_4()
+                    .text_color(theme.accent)
             }
             crate::file_tree::FileKind::File { extension } => {
-                match extension.as_deref() {
-                    Some("rs") => "🦀",
-                    Some("js") | Some("ts") => "📜",
-                    Some("md") => "📄",
-                    Some("toml") | Some("yaml") | Some("yml") => "⚙️",
-                    Some("json") => "🔧",
-                    _ => "📄",
-                }
+                get_file_icon(extension.as_deref(), false, false)
+                    .size_4()
+                    .text_color(theme.text)
             }
             crate::file_tree::FileKind::Symlink { target_exists, .. } => {
-                if *target_exists { "🔗" } else { "💔" }
+                get_symlink_icon(*target_exists)
+                    .size_4()
+                    .text_color(if *target_exists { theme.accent } else { theme.error })
             }
         };
 
         div()
-            .w(px(16.0))
-            .h(px(16.0))
+            .w_4()
+            .h_4()
             .flex()
             .items_center()
             .justify_center()
-            .text_size(px(12.0))
             .child(icon)
     }
 

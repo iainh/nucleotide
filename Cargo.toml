@@ -54,6 +54,8 @@ pulldown-cmark = { version = "0.10", default-features = false }
 content_inspector = "0.2.4"
 # file system watching
 notify = "6.1"
+# embed assets
+rust-embed = "8.5"
 
 # opening URLs
 open = "5.1.2"
