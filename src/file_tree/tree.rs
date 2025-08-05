@@ -87,11 +87,40 @@ impl FileTree {
 
     /// Get all visible entries
     pub fn visible_entries(&self) -> Vec<FileTreeEntry> {
-        self.entries
+        let mut entries: Vec<_> = self.entries
             .iter()
             .filter(|entry| entry.is_visible)
             .cloned()
-            .collect()
+            .collect();
+            
+        // Use the standard ordering which preserves hierarchy
+        entries.sort();
+        
+        // Now reorder to put directories first within each parent group
+        let mut result = Vec::with_capacity(entries.len());
+        let mut i = 0;
+        
+        while i < entries.len() {
+            let current_parent = entries[i].path.parent();
+            let mut dirs = Vec::new();
+            let mut files = Vec::new();
+            
+            // Collect all entries with the same parent
+            while i < entries.len() && entries[i].path.parent() == current_parent {
+                if entries[i].is_directory() {
+                    dirs.push(entries[i].clone());
+                } else {
+                    files.push(entries[i].clone());
+                }
+                i += 1;
+            }
+            
+            // Add directories first, then files
+            result.extend(dirs);
+            result.extend(files);
+        }
+        
+        result
     }
 
     /// Get entry by path
