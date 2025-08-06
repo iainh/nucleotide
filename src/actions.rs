@@ -109,6 +109,7 @@ pub mod workspace {
             ShowCommandPalette,
             ShowFileFinder,
             ShowSymbolFinder,
+            ShowBufferPicker,
         ]
     );
 }

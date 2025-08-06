@@ -229,6 +229,16 @@ impl OverlayView {
                             // Use theme-aware constructor
                             let mut view = PickerView::new_with_theme(&helix_theme, cx);
                             let items_for_callback = items.clone();
+                            
+                            // Disable preview for buffer picker (detect by checking if items contain DocumentId)
+                            let is_buffer_picker = items.first()
+                                .map(|item| item.data.is::<helix_view::DocumentId>())
+                                .unwrap_or(false);
+                            
+                            if is_buffer_picker {
+                                view = view.with_preview(false);
+                            }
+                            
                             view = view.with_core(core_weak.clone()).with_items(items);
                             
                             // Set up the selection callback
@@ -247,6 +257,16 @@ impl OverlayView {
                                     if let Some(core) = core_weak.upgrade() {
                                         core.update(picker_cx, |_core, core_cx| {
                                             core_cx.emit(crate::Update::OpenFile(path.clone()));
+                                        });
+                                    }
+                                }
+                                // Check if it's a document ID for buffer switching
+                                else if let Some(doc_id) = selected_item.data.downcast_ref::<helix_view::DocumentId>() {
+                                    // Switch to the selected buffer
+                                    if let Some(core) = core_weak.upgrade() {
+                                        core.update(picker_cx, |core, _cx| {
+                                            // Switch to the selected document
+                                            core.editor.switch(*doc_id, helix_view::editor::Action::Replace);
                                         });
                                     }
                                 }

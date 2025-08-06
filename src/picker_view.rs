@@ -360,13 +360,30 @@ impl PickerView {
     fn calculate_dimensions(&self, window_size: Size<Pixels>) -> CachedDimensions {
         let min_width_for_preview = 800.0;
         let window_width = window_size.width.0 as f64;
-        let _window_height = window_size.height.0 as f64;
+        let window_height = window_size.height;
         
         let show_preview = self.show_preview && window_width > min_width_for_preview;
         
         // Calculate fixed dimensions to prevent size changes
         let total_width = px(800.0); // Fixed width
-        let max_height = px(500.0);   // Fixed height
+        
+        // Calculate height based on items with max 60% of window
+        let item_height = px(32.0); // Approximate height per item (including padding)
+        let header_footer_height = px(80.0); // Space for search bar, footer, etc.
+        
+        // Use filtered items if available, otherwise use all items
+        let item_count = if self.filtered_indices.is_empty() && self.query.is_empty() {
+            self.items.len()
+        } else {
+            self.filtered_indices.len()
+        };
+        
+        let items_height = item_height * item_count.min(20) as f32; // Cap at 20 visible items
+        let content_height = items_height + header_footer_height;
+        
+        // Limit to 60% of window height
+        let max_allowed_height = window_height * 0.6;
+        let max_height = content_height.min(max_allowed_height).max(px(200.0)); // Min height of 200px
         
         let (list_width, preview_width) = if show_preview {
             (px(400.0), px(400.0))
@@ -814,6 +831,7 @@ impl PickerView {
                                                             div()
                                                                 .overflow_hidden()
                                                                 .text_ellipsis()
+                                                                .font_family("monospace")  // Use monospace for terminal-like appearance
                                                                 .child(item.label.clone())
                                                         )
                                                         .when_some(item.sublabel.as_ref(), |this, sublabel| {
