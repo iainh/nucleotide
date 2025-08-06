@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::time::SystemTime;
-use sum_tree::{Item, KeyedItem, Dimension};
+use sum_tree::{Dimension, Item, KeyedItem};
 
 /// A single entry in the file tree
 #[derive(Debug, Clone, PartialEq)]
@@ -78,9 +78,17 @@ pub enum GitStatus {
 
 impl FileTreeEntry {
     /// Create a new file entry
-    pub fn new_file(id: FileTreeEntryId, path: PathBuf, size: u64, mtime: Option<SystemTime>) -> Self {
-        let extension = path.extension().map(|ext| ext.to_string_lossy().to_string());
-        let is_hidden = path.file_name()
+    pub fn new_file(
+        id: FileTreeEntryId,
+        path: PathBuf,
+        size: u64,
+        mtime: Option<SystemTime>,
+    ) -> Self {
+        let extension = path
+            .extension()
+            .map(|ext| ext.to_string_lossy().to_string());
+        let is_hidden = path
+            .file_name()
             .map(|name| name.to_string_lossy().starts_with('.'))
             .unwrap_or(false);
 
@@ -101,7 +109,8 @@ impl FileTreeEntry {
 
     /// Create a new directory entry
     pub fn new_directory(id: FileTreeEntryId, path: PathBuf, mtime: Option<SystemTime>) -> Self {
-        let is_hidden = path.file_name()
+        let is_hidden = path
+            .file_name()
             .map(|name| name.to_string_lossy().starts_with('.'))
             .unwrap_or(false);
 
@@ -125,20 +134,24 @@ impl FileTreeEntry {
 
     /// Create a new symlink entry
     pub fn new_symlink(
-        id: FileTreeEntryId, 
-        path: PathBuf, 
+        id: FileTreeEntryId,
+        path: PathBuf,
         target: Option<PathBuf>,
         target_exists: bool,
-        mtime: Option<SystemTime>
+        mtime: Option<SystemTime>,
     ) -> Self {
-        let is_hidden = path.file_name()
+        let is_hidden = path
+            .file_name()
             .map(|name| name.to_string_lossy().starts_with('.'))
             .unwrap_or(false);
 
         Self {
             id,
             path,
-            kind: FileKind::Symlink { target, target_exists },
+            kind: FileKind::Symlink {
+                target,
+                target_exists,
+            },
             size: 0,
             mtime,
             git_status: None,
