@@ -19,6 +19,7 @@ use application::{Application, InputEvent};
 mod actions;
 mod application;
 mod assets;
+mod command_system;
 mod core;
 mod completion;
 mod config;

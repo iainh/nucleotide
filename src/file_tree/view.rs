@@ -409,7 +409,6 @@ impl FileTreeView {
             // Use GPUI's background executor instead of Tokio spawn_blocking
             let vcs_result = cx.background_executor().spawn(async move {
                 // Directly call the git status implementation instead of using for_each_changed_file
-                use std::path::Path;
                 
                 println!("DEBUG: VCS background task started");
                 log::debug!("VCS: Background task started for path: {:?}", root_path);
