@@ -1,0 +1,87 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+# Cargo.lock is committed for binary projects
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Nix
+result
+result-*
+.direnv/
+.envrc.local
+
+# Development
+.cargo/
+# Local cargo config
+.cargo-home/
+
+# Helix/Editor temporary files
+.helix/
+*.orig
+*.rej
+
+# Debug
+*.log
+core
+
+# Test artifacts
+tarpaulin-report.html
+cobertura.xml
+
+# Profiling
+perf.data
+perf.data.old
+flamegraph.svg
+
+# Documentation
+/docs/_build/
+
+# Python (for any helper scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local environment files
+.env
+.env.local
+
+# Build artifacts
+*.dSYM/
+*.dylib
+*.so
+*.dll
+*.exe
+
+# Backup files
+*.backup
+*.bak
+
+# Temporary files
+*.tmp
+tmp/
+temp/
+
+# Coverage
+coverage/
+lcov.info
+
+# Node (if any JS tooling is added)
+node_modules/
+
+# Local notes
+TODO.local.md
+NOTES.local.md
