@@ -2,7 +2,7 @@
 // ABOUTME: Handles user interaction, selection, and rendering of file tree entries
 
 use crate::file_tree::{
-    get_file_icon, get_symlink_icon, icons::chevron_icon, FileTree, FileTreeConfig, FileTreeEntry,
+    get_file_icon, get_symlink_icon, icons::chevron_icon, DebouncedFileTreeWatcher, FileTree, FileTreeConfig, FileTreeEntry,
     FileTreeEvent, GitStatus,
 };
 use crate::ui::Theme;
@@ -22,6 +22,8 @@ pub struct FileTreeView {
     scroll_handle: ScrollHandle,
     /// Tokio runtime handle for async VCS operations
     tokio_handle: Option<tokio::runtime::Handle>,
+    /// File system watcher for detecting changes
+    _file_watcher: Option<DebouncedFileTreeWatcher>,
 }
 
 impl FileTreeView {
@@ -40,6 +42,7 @@ impl FileTreeView {
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
             tokio_handle: None,
+            _file_watcher: None,
         };
 
         // Auto-select the first entry if there are any entries
@@ -61,19 +64,36 @@ impl FileTreeView {
         tokio_handle: Option<tokio::runtime::Handle>,
         cx: &mut Context<Self>
     ) -> Self {
-        let mut tree = FileTree::new(root_path, config);
+        let mut tree = FileTree::new(root_path.clone(), config.clone());
         
         // Load initial tree structure
         if let Err(e) = tree.load() {
             log::error!("Failed to load file tree: {}", e);
         }
 
+        // Try to create file watcher if filesystem watching is enabled
+        let file_watcher = if config.watch_filesystem {
+            match DebouncedFileTreeWatcher::with_defaults(root_path.clone()) {
+                Ok(watcher) => {
+                    log::debug!("File system watcher created for: {:?}", root_path);
+                    Some(watcher)
+                }
+                Err(e) => {
+                    log::warn!("Failed to create file system watcher: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        
         let mut instance = Self {
             tree,
             selected_path: None,
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
             tokio_handle,
+            _file_watcher: file_watcher,
         };
 
         // Auto-select the first entry if there are any entries
@@ -373,6 +393,44 @@ impl FileTreeView {
             cx.notify();
         }
     }
+    
+    /// Handle VCS refresh request
+    pub fn handle_vcs_refresh(&mut self, force: bool, cx: &mut Context<Self>) {
+        if force || self.tree.needs_vcs_refresh() {
+            if let Some(ref handle) = self.tokio_handle {
+                log::debug!("VCS refresh requested (force: {})", force);
+                self.start_async_vcs_refresh_with_handle(handle.clone(), cx);
+            } else {
+                log::warn!("VCS refresh requested but no Tokio handle available");
+                let (_, root_path) = self.tree.get_vcs_info();
+                cx.emit(FileTreeEvent::VcsRefreshFailed {
+                    repository_root: root_path,
+                    error: "No Tokio runtime handle available".to_string(),
+                });
+            }
+        } else {
+            log::debug!("VCS refresh skipped - not needed");
+        }
+    }
+    
+    /// Handle file system change event (should trigger VCS refresh)
+    pub fn handle_file_system_change(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        log::debug!("File system change detected at: {:?}", path);
+        
+        // Only refresh VCS if the change is within our repository
+        let (_, root_path) = self.tree.get_vcs_info();
+        if path.starts_with(&root_path) {
+            log::debug!("File system change is within repository, triggering VCS refresh");
+            // Trigger a VCS refresh after a file system change
+            self.handle_vcs_refresh(false, cx);
+        }
+    }
+    
+    /// Trigger manual VCS refresh by emitting RefreshVcs event
+    pub fn request_vcs_refresh(&mut self, force: bool, cx: &mut Context<Self>) {
+        log::debug!("Manual VCS refresh requested (force: {})", force);
+        cx.emit(FileTreeEvent::RefreshVcs { force });
+    }
 
     /// Get tree statistics
     pub fn stats(&self) -> crate::file_tree::tree::FileTreeStats {
@@ -405,6 +463,12 @@ impl FileTreeView {
         log::debug!("VCS refresh starting for root path: {:?}", root_path);
         println!("DEBUG: VCS starting refresh using GPUI background executor for path: {:?}", root_path);
         
+        // Emit VCS refresh started event
+        cx.emit(FileTreeEvent::VcsRefreshStarted {
+            repository_root: root_path.clone(),
+        });
+        
+        let root_path_for_event = root_path.clone();
         cx.spawn(async move |this, cx| {
             // Use GPUI's background executor instead of Tokio spawn_blocking
             let vcs_result = cx.background_executor().spawn(async move {
@@ -475,6 +539,7 @@ impl FileTreeView {
                     Ok(changes) => changes,
                     Err(_) => {
                         println!("DEBUG: Panic occurred during git status parsing");
+                        log::error!("VCS: Panic occurred during git status parsing");
                         Vec::new()
                     }
                 }
@@ -513,7 +578,16 @@ impl FileTreeView {
                         println!("DEBUG: VCS status: {:?} -> {:?}", path.file_name(), status);
                         log::debug!("VCS status: {:?} -> {:?}", path.file_name(), status);
                     }
+                    
+                    let affected_files: Vec<PathBuf> = status_map.keys().cloned().collect();
                     view.tree.apply_vcs_status(status_map);
+                    
+                    // Emit VCS status changed event
+                    cx.emit(FileTreeEvent::VcsStatusChanged {
+                        repository_root: root_path_for_event.clone(),
+                        affected_files,
+                    });
+                    
                     cx.notify();
                 }).ok();
             }
@@ -814,6 +888,10 @@ impl Render for FileTreeView {
                     }
                     "f5" => {
                         view.refresh(cx);
+                    }
+                    "shift+f5" => {
+                        // Force VCS refresh
+                        view.request_vcs_refresh(true, cx);
                     }
                     _ => {}
                 }

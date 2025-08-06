@@ -6,14 +6,14 @@ pub mod icons;
 pub mod summary;  
 pub mod tree;
 pub mod view;
-// pub mod watcher; // Watcher - disabled for now
+pub mod watcher;
 
 pub use entry::{FileTreeEntry, FileKind, GitStatus};
 pub use icons::{get_file_icon, get_symlink_icon};
 pub use summary::FileTreeSummary;
 pub use tree::FileTree;
 pub use view::FileTreeView;
-// pub use watcher::FileTreeWatcher;
+pub use watcher::{DebouncedFileTreeWatcher, FileTreeWatcher};
 
 use std::path::PathBuf;
 
@@ -37,6 +37,24 @@ pub enum FileTreeEvent {
     FileSystemChanged {
         path: PathBuf,
         kind: FileSystemEventKind,
+    },
+    /// VCS status refresh has started
+    VcsRefreshStarted {
+        repository_root: PathBuf,
+    },
+    /// VCS status has been updated
+    VcsStatusChanged {
+        repository_root: PathBuf,
+        affected_files: Vec<PathBuf>,
+    },
+    /// VCS refresh failed
+    VcsRefreshFailed {
+        repository_root: PathBuf,
+        error: String,
+    },
+    /// Request to refresh VCS status
+    RefreshVcs {
+        force: bool,
     },
 }
 

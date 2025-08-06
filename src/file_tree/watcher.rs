@@ -130,21 +130,44 @@ impl DebouncedFileTreeWatcher {
     /// Get the next debounced event
     pub async fn next_event(&mut self) -> Option<FileTreeEvent> {
         loop {
-            tokio::select! {
-                // New file system event
-                event = self.watcher.next_event() => {
-                    if let Some(event) = event {
-                        self.handle_new_event(event);
-                        // Start or reset debounce timer
-                        self.reset_debounce_timer();
+            // Split the mutable borrows by extracting what we need
+            let has_pending = !self.pending_events.is_empty();
+            let has_timer = self.debounce_timer.is_some();
+            
+            if has_pending && has_timer {
+                tokio::select! {
+                    // New file system event
+                    event = self.watcher.next_event() => {
+                        if let Some(event) = event {
+                            self.handle_new_event(event);
+                            // Start or reset debounce timer
+                            self.reset_debounce_timer();
+                        }
+                    }
+                    
+                    // Debounce timer expired
+                    _ = async {
+                        if let Some(ref mut timer) = self.debounce_timer {
+                            timer.tick().await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {
+                        if let Some(event) = self.flush_pending_events() {
+                            return Some(event);
+                        }
                     }
                 }
-                
-                // Debounce timer expired
-                _ = self.wait_for_debounce() => {
-                    if let Some(event) = self.flush_pending_events() {
-                        return Some(event);
-                    }
+            } else if has_pending {
+                // Only check for debounce timeout if we have pending events
+                if let Some(event) = self.flush_pending_events() {
+                    return Some(event);
+                }
+            } else {
+                // No pending events, just wait for new file system events
+                if let Some(event) = self.watcher.next_event().await {
+                    self.handle_new_event(event);
+                    self.reset_debounce_timer();
                 }
             }
         }
@@ -164,16 +187,6 @@ impl DebouncedFileTreeWatcher {
     /// Reset the debounce timer
     fn reset_debounce_timer(&mut self) {
         self.debounce_timer = Some(tokio::time::interval(self.debounce_duration));
-    }
-
-    /// Wait for the debounce timer
-    async fn wait_for_debounce(&mut self) {
-        if let Some(ref mut timer) = self.debounce_timer {
-            timer.tick().await;
-        } else {
-            // No timer active, wait indefinitely
-            std::future::pending::<()>().await;
-        }
     }
 
     /// Flush pending events and return the next one

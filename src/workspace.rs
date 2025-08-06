@@ -4,7 +4,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use helix_core::Selection;
 use helix_view::ViewId;
-use log::{info, warn};
+use log::{error, info, warn};
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;
@@ -810,8 +810,37 @@ impl Workspace {
             }
             FileTreeEvent::FileSystemChanged { path, kind } => {
                 info!("File system change detected: {:?} - {:?}", path, kind);
-                // Handle file system changes
-                // Could refresh the file tree or update document views
+                // Handle file system changes by triggering VCS refresh
+                if let Some(ref mut file_tree) = self.file_tree {
+                    file_tree.update(cx, |tree, tree_cx| {
+                        tree.handle_file_system_change(path, tree_cx);
+                    });
+                }
+                cx.notify();
+            }
+            FileTreeEvent::VcsRefreshStarted { repository_root } => {
+                info!("VCS refresh started for repository: {:?}", repository_root);
+                // TODO: Show loading indicator in status bar
+                cx.notify();
+            }
+            FileTreeEvent::VcsStatusChanged { repository_root, affected_files } => {
+                info!("VCS status updated for repository: {:?} ({} files)", repository_root, affected_files.len());
+                // VCS status has been updated, file tree should already be refreshed
+                // Could trigger status bar updates or notifications here
+                cx.notify();
+            }
+            FileTreeEvent::VcsRefreshFailed { repository_root, error } => {
+                error!("VCS refresh failed for repository: {:?} - {}", repository_root, error);
+                // TODO: Show error notification to user
+                cx.notify();
+            }
+            FileTreeEvent::RefreshVcs { force } => {
+                info!("VCS refresh requested (force: {})", force);
+                if let Some(ref mut file_tree) = self.file_tree {
+                    file_tree.update(cx, |tree, tree_cx| {
+                        tree.handle_vcs_refresh(*force, tree_cx);
+                    });
+                }
                 cx.notify();
             }
         }
