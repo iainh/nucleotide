@@ -726,7 +726,7 @@ impl FileTreeView {
             crate::file_tree::FileKind::Directory { .. } => {
                 get_file_icon(None, true, entry.is_expanded)
                     .size_4()
-                    .text_color(theme.accent)
+                    .text_color(theme.text)
             }
             crate::file_tree::FileKind::File { extension } => {
                 get_file_icon(extension.as_deref(), false, false)
