@@ -208,6 +208,12 @@ impl Application {
         
         false
     }
+    
+    /// Legacy method - no longer used for event-based prompts
+    pub fn check_for_prompt_and_emit_event(&mut self, _cx: &mut gpui::Context<crate::Core>) -> bool {
+        // Disabled - prompts are now handled through the legacy Update::Prompt system
+        false
+    }
 
 
     // Native picker creation methods that demonstrate the new GPUI-native picker functionality
@@ -466,13 +472,13 @@ impl Application {
             return;
         }
         
+        // Don't check for prompts here - this method specifically excludes prompts
+        
         // Legacy picker handling (for non-file/buffer pickers)
         let picker = self.try_create_picker_component();
         if let Some(picker) = picker {
             cx.emit(crate::Update::Picker(picker));
         }
-        
-        // Don't emit prompts here
         
         // Don't take() the autoinfo - just clone it so it persists
         if let Some(info) = &self.editor.autoinfo {
@@ -491,16 +497,16 @@ impl Application {
             return;
         }
 
-        // Legacy picker handling (for non-file/buffer pickers)
+        // Handle prompts through legacy system
+        if let Some(prompt) = self.create_native_prompt_from_helix(cx) {
+            cx.emit(crate::Update::Prompt(prompt));
+            return;
+        }
+
+        // Legacy handling for other overlay types
         let picker = self.try_create_picker_component();
         if let Some(picker) = picker {
             cx.emit(crate::Update::Picker(picker));
-        }
-
-        // Check for helix prompt and convert to native GPUI prompt
-        let prompt = self.create_native_prompt_from_helix(cx);
-        if let Some(prompt) = prompt {
-            cx.emit(crate::Update::Prompt(prompt));
         }
 
         // Don't take() the autoinfo - just clone it so it persists
@@ -547,8 +553,6 @@ impl Application {
                 };
                 
                 
-                // Track if this is a command mode key
-                let is_command_key = key.code == helix_view::keyboard::KeyCode::Char(':');
                 
                 let is_handled = self
                     .compositor
@@ -585,13 +589,8 @@ impl Application {
                     comp_ctx.editor.ensure_cursor_in_view(view_id);
                 }
                 
-                // Only emit overlays if we pressed ':' for command mode
-                if is_command_key {
-                    self.emit_overlays(cx);
-                } else {
-                    // For other keys, only emit picker and other overlays, not prompts
-                    self.emit_overlays_except_prompt(cx);
-                }
+                // Emit overlays after key handling
+                self.emit_overlays(cx);
                 
                 cx.emit(crate::Update::Redraw);
             }
@@ -697,7 +696,6 @@ impl Application {
                 // }
                 Some(callback) = self.jobs.callbacks.recv() => {
                     self.jobs.handle_callback(&mut self.editor, &mut self.compositor, Ok(Some(callback)));
-                    // self.render().await;
                 }
                 Some(msg) = self.jobs.status_messages.recv() => {
                     let severity = match msg.severity{
@@ -791,7 +789,6 @@ impl Application {
                 }
                 Some(callback) = self.jobs.wait_futures.next() => {
                     self.jobs.handle_callback(&mut self.editor, &mut self.compositor, callback);
-                    // self.render().await;
                 }
                 event = self.editor.wait_event() => {
                     use helix_view::editor::EditorEvent;
