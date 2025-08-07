@@ -210,9 +210,9 @@ impl ScrollbarState {
         let max_offset = self.scroll_handle.max_offset().along(axis);
         let viewport_size = self.scroll_handle.viewport().size.along(axis);
         
-        // If content fits entirely, show full thumb
+        // If content fits entirely, don't show scrollbar
         if max_offset.is_zero() {
-            return Some(0.0..1.0);
+            return None;
         }
         
         if viewport_size.is_zero() {
@@ -258,8 +258,8 @@ impl Scrollbar {
     }
 
     fn new(state: ScrollbarState, axis: Axis) -> Option<Self> {
-        // Always create scrollbar, even if content fits
-        let thumb = state.thumb_range(axis).unwrap_or(0.0..1.0);
+        // Only create scrollbar if content doesn't fit in viewport
+        let thumb = state.thumb_range(axis)?;
         Some(Self { thumb, state, axis })
     }
 }
