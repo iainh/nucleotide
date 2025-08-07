@@ -95,6 +95,7 @@ impl ThemeManager {
         UITheme {
             background,
             surface,
+            surface_background: hsla(surface.h, surface.s, surface.l - 0.02, surface.a),
             surface_hover: hsla(surface.h, surface.s, surface.l + 0.05, surface.a),
             surface_active: hsla(surface.h, surface.s, surface.l + 0.1, surface.a),
             border,

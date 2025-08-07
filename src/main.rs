@@ -41,6 +41,7 @@ mod picker_view;
 mod preview_tracker;
 mod prompt;
 mod prompt_view;
+mod scroll_manager;
 mod statusline;
 mod theme_manager;
 mod titlebar;

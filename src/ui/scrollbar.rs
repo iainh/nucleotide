@@ -206,7 +206,7 @@ impl ScrollbarState {
     }
 
     fn thumb_range(&self, axis: Axis) -> Option<Range<f32>> {
-        const MINIMUM_THUMB_SIZE: Pixels = px(20.); // Smaller minimum for ultra-thin
+        const MINIMUM_THUMB_SIZE: Pixels = px(20.); // Minimum thumb size
         let max_offset = self.scroll_handle.max_offset().along(axis);
         let viewport_size = self.scroll_handle.viewport().size.along(axis);
         
@@ -286,11 +286,11 @@ impl Element for Scrollbar {
         style.flex_shrink = 0.;
 
         if self.axis == Axis::Vertical {
-            style.size.width = px(3.).into(); // Ultra-thin scrollbar
+            style.size.width = px(8.).into(); // Scrollbar width
             style.size.height = relative(1.).into();
         } else {
             style.size.width = relative(1.).into();
-            style.size.height = px(3.).into(); // Ultra-thin scrollbar
+            style.size.height = px(8.).into(); // Scrollbar height
         }
 
         (window.request_layout(style, None, cx), ())
@@ -320,7 +320,7 @@ impl Element for Scrollbar {
         window: &mut Window,
         cx: &mut App,
     ) {
-        const EXTRA_PADDING: Pixels = px(1.0); // Less padding for ultra-thin
+        const EXTRA_PADDING: Pixels = px(2.0); // Padding for scrollbar track
         
         // Recalculate thumb position every paint to reflect current scroll state
         self.thumb = self.state.thumb_range(self.axis).unwrap_or(0.0..1.0);

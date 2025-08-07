@@ -5,7 +5,7 @@ use crate::file_tree::{
     get_file_icon, get_symlink_icon, icons::chevron_icon, DebouncedFileTreeWatcher, FileTree, FileTreeConfig, FileTreeEntry,
     FileTreeEvent, GitStatus,
 };
-use crate::ui::Theme;
+use crate::ui::{scrollbar::{Scrollbar, ScrollbarState}, Theme};
 use crate::utils::color_to_hsla;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -20,8 +20,9 @@ pub struct FileTreeView {
     /// Focus handle for keyboard navigation
     focus_handle: FocusHandle,
     /// Scroll handle for the list
-    #[allow(dead_code)]
-    scroll_handle: ScrollHandle,
+    scroll_handle: UniformListScrollHandle,
+    /// Scrollbar state for managing scrollbar UI
+    scrollbar_state: ScrollbarState,
     /// Tokio runtime handle for async VCS operations
     tokio_handle: Option<tokio::runtime::Handle>,
     /// File system watcher for detecting changes
@@ -38,11 +39,15 @@ impl FileTreeView {
             log::error!("Failed to load file tree: {}", e);
         }
 
+        let scroll_handle = UniformListScrollHandle::new();
+        let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
+
         let mut instance = Self {
             tree,
             selected_path: None,
             focus_handle: cx.focus_handle(),
-            scroll_handle: ScrollHandle::new(),
+            scroll_handle,
+            scrollbar_state,
             tokio_handle: None,
             _file_watcher: None,
         };
@@ -89,11 +94,15 @@ impl FileTreeView {
             None
         };
         
+        let scroll_handle = UniformListScrollHandle::new();
+        let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
+
         let mut instance = Self {
             tree,
             selected_path: None,
             focus_handle: cx.focus_handle(),
-            scroll_handle: ScrollHandle::new(),
+            scroll_handle,
+            scrollbar_state,
             tokio_handle,
             _file_watcher: file_watcher,
         };
@@ -920,23 +929,32 @@ impl Render for FileTreeView {
                 }
             }))
             .child(
-                // File list using uniform_list for performance
-                uniform_list("file-tree-list", entries.len(), {
-                    let entries = entries.clone(); // Clone once outside the processor
-                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                        let mut items = Vec::with_capacity(range.end - range.start);
+                div()
+                    .flex()
+                    .flex_1()
+                    .w_full()
+                    .child(
+                        // File list using uniform_list for performance
+                        uniform_list("file-tree-list", entries.len(), {
+                            let entries = entries.clone(); // Clone once outside the processor
+                            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                                let mut items = Vec::with_capacity(range.end - range.start);
 
-                        for index in range {
-                            if let Some(entry) = entries.get(index) {
-                                items.push(this.render_entry(entry, cx));
-                            }
-                        }
+                                for index in range {
+                                    if let Some(entry) = entries.get(index) {
+                                        items.push(this.render_entry(entry, cx));
+                                    }
+                                }
 
-                        items
-                    })
-                })
-                .flex_1()
-                .w_full(),
+                                items
+                            })
+                        })
+                        .track_scroll(self.scroll_handle.clone())
+                        .flex_1(),
+                    )
+                    .when_some(Scrollbar::vertical(self.scrollbar_state.clone()), |div, scrollbar| {
+                        div.child(scrollbar)
+                    }),
             )
     }
 }

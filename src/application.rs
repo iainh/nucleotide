@@ -75,6 +75,10 @@ pub enum InputEvent {
         direction: helix_core::movement::Direction,
         view_id: helix_view::ViewId,
     },
+    SetViewportAnchor {
+        view_id: helix_view::ViewId,
+        anchor: usize,
+    },
 }
 
 pub struct Input;
@@ -607,6 +611,13 @@ impl Application {
                     jobs: &mut self.jobs,
                 };
                 helix_term::commands::scroll(&mut ctx, line_count, direction, false);
+                cx.emit(crate::Update::Redraw);
+            }
+            InputEvent::SetViewportAnchor { view_id, anchor } => {
+                // Set the viewport anchor for scrollbar integration
+                // For now, we'll use a simplified approach - just emit a redraw
+                // TODO: Implement proper viewport anchor setting through document API
+                log::debug!("SetViewportAnchor: view_id={:?}, anchor={}", view_id, anchor);
                 cx.emit(crate::Update::Redraw);
             }
         }
