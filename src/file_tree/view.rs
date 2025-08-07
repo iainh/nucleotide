@@ -105,12 +105,10 @@ impl FileTreeView {
 
         // Start async VCS loading if we have a runtime handle
         if instance.tokio_handle.is_some() {
-            println!("DEBUG: Starting async VCS refresh with Tokio handle");
             log::debug!("Starting async VCS refresh with Tokio handle");
             instance.start_async_vcs_refresh(cx);
         } else {
             // Fallback to test statuses for demonstration
-            println!("DEBUG: No Tokio handle available, using test statuses");
             log::debug!("No Tokio handle available, using test statuses");
             instance.apply_test_statuses(cx);
         }
@@ -462,7 +460,6 @@ impl FileTreeView {
         let (_, root_path) = self.tree.get_vcs_info();
         
         log::debug!("VCS refresh starting for root path: {:?}", root_path);
-        println!("DEBUG: VCS starting refresh using GPUI background executor for path: {:?}", root_path);
         
         // Emit VCS refresh started event
         cx.emit(FileTreeEvent::VcsRefreshStarted {
@@ -475,15 +472,12 @@ impl FileTreeView {
             let vcs_result = cx.background_executor().spawn(async move {
                 // Directly call the git status implementation instead of using for_each_changed_file
                 
-                println!("DEBUG: VCS background task started");
                 log::debug!("VCS: Background task started for path: {:?}", root_path);
                 
                 // Check if this is actually a git repository
                 let git_dir = root_path.join(".git");
-                println!("DEBUG: Checking for .git directory at: {:?}, exists: {}", git_dir, git_dir.exists());
                 
                 if !git_dir.exists() {
-                    println!("DEBUG: No .git directory found, returning empty changes");
                     return Vec::new();
                 }
                 
@@ -504,7 +498,6 @@ impl FileTreeView {
                         .output() {
                         Ok(output) => {
                             let git_status = String::from_utf8_lossy(&output.stdout);
-                            println!("DEBUG: Git command output: {} lines", git_status.lines().count());
                             
                             for line in git_status.lines() {
                                 if line.len() >= 3 {
@@ -526,11 +519,10 @@ impl FileTreeView {
                                 }
                             }
                             
-                            println!("DEBUG: Parsed {} changes from git status", changes.len());
                             changes
                         },
                         Err(e) => {
-                            println!("DEBUG: Failed to run git status: {}", e);
+                            log::warn!("Failed to run git status: {}", e);
                             Vec::new()
                         }
                     }
@@ -539,7 +531,6 @@ impl FileTreeView {
                 match result {
                     Ok(changes) => changes,
                     Err(_) => {
-                        println!("DEBUG: Panic occurred during git status parsing");
                         log::error!("VCS: Panic occurred during git status parsing");
                         Vec::new()
                     }
@@ -573,10 +564,8 @@ impl FileTreeView {
                         status_map.insert(path, status);
                     }
                     
-                    println!("DEBUG: Successfully loaded {} VCS status entries", status_map.len());
                     log::debug!("Successfully loaded {} VCS status entries", status_map.len());
                     for (path, status) in &status_map {
-                        println!("DEBUG: VCS status: {:?} -> {:?}", path.file_name(), status);
                         log::debug!("VCS status: {:?} -> {:?}", path.file_name(), status);
                     }
                     

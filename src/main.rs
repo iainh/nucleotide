@@ -156,8 +156,6 @@ fn window_options(_cx: &mut App) -> gpui::WindowOptions {
         window_min_size: Some(gpui::size(px(400.0), px(300.0))),
     };
     
-    eprintln!("DEBUG: WindowOptions decorations = {:?}", options.window_decorations);
-    eprintln!("DEBUG: WindowOptions titlebar = {:?}", options.titlebar);
     options
 }
 
@@ -523,7 +521,6 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             // Create and set titlebar after workspace is created - on macOS we always want custom titlebar
             // regardless of what decorations are reported
             let decorations = window.window_decorations();
-            eprintln!("DEBUG: Window decorations = {:?}", decorations);
             
             // Always create titlebar on macOS (and when client decorations on other platforms)
             #[cfg(target_os = "macos")]
@@ -532,18 +529,14 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             let should_create_titlebar = matches!(decorations, gpui::Decorations::Client { .. });
             
             if should_create_titlebar {
-                eprintln!("DEBUG: Creating custom titlebar");
                 let titlebar = cx.new(|cx| {
                     crate::titlebar::TitleBar::new("titlebar", &workspace, cx)
                 });
                 
                 workspace.update(cx, |workspace, cx| {
-                    eprintln!("DEBUG: Setting titlebar on workspace");
                     workspace.set_titlebar(titlebar.into());
                     cx.notify();
                 });
-            } else {
-                eprintln!("DEBUG: Using native decorations");
             }
             
             workspace
