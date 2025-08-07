@@ -701,9 +701,18 @@ impl FileTreeView {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .when(entry.is_directory(), |div| {
-                        div.child(self.render_chevron(entry, cx))
-                    })
+                    .child(
+                        // Always reserve space for chevron to align icons
+                        div()
+                            .w_3()
+                            .h_3()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(entry.is_directory(), |div| {
+                                div.child(self.render_chevron(entry, cx))
+                            })
+                    )
                     .child(self.render_icon_with_vcs_status(entry, cx))
                     .child(self.render_filename(entry, cx)),
             )
