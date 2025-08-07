@@ -84,6 +84,7 @@ impl ParsedCommand {
 
     /// Get the command description if it exists
     #[cfg(not(test))]
+    #[allow(dead_code)]
     pub fn description(&self) -> Option<&'static str> {
         helix_term::commands::TYPABLE_COMMAND_MAP
             .get(self.name.as_str())
@@ -91,6 +92,7 @@ impl ParsedCommand {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn description(&self) -> Option<&'static str> {
         match self.name.as_str() {
             "quit" | "q" => Some("Close the current view."),
@@ -132,8 +134,10 @@ pub enum Command {
     /// Close current window
     Close { force: bool },
     /// Search in files
+    #[allow(dead_code)]
     Search { pattern: String },
     /// Replace text
+    #[allow(dead_code)]
     Replace {
         pattern: String,
         replacement: String,
@@ -221,6 +225,7 @@ impl Command {
     }
 
     /// Convert back to a ParsedCommand for execution
+    #[allow(dead_code)]
     pub fn to_parsed(&self) -> ParsedCommand {
         match self {
             Command::Quit { force } => ParsedCommand {
@@ -293,7 +298,7 @@ impl Command {
     }
 }
 
-#[cfg(disabled_test)] // Temporarily disabled due to SIGBUS compiler crash
+#[cfg(test)]
 mod tests {
     use super::*;
 

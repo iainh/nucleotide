@@ -393,6 +393,7 @@ impl DocumentElement {
         start..end
     }
 
+    #[allow(dead_code)]
     fn doc_selection_highlights(
         _mode: helix_view::document::Mode,
         _doc: &Document,
@@ -518,6 +519,7 @@ impl DocumentElement {
         runs
     }
 
+    #[allow(dead_code)]
     fn highlight_line(
         editor: &Editor,
         doc: &Document,
@@ -608,6 +610,7 @@ impl DocumentElement {
         runs
     }
 
+    #[allow(dead_code)]
     fn highlight(
         editor: &Editor,
         doc: &Document,

@@ -2,7 +2,7 @@
 // ABOUTME: Provides consistent titlebar behavior across Linux, macOS, and Windows platforms
 
 use gpui::{
-    div, hsla, px, App, Context, Decorations, ElementId, Hsla, 
+    div, px, App, Context, Decorations, ElementId, Hsla, 
     InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, 
     Render, Styled, Window, WindowControlArea,
 };

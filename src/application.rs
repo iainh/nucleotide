@@ -28,11 +28,6 @@ use helix_view::document::DocumentSavedEventResult;
 use helix_view::DocumentId;
 use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, Editor};
 
-// Helper function to find workspace root (similar to Helix)
-fn find_workspace_root() -> PathBuf {
-    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    find_workspace_root_from(&current_dir)
-}
 
 // Helper function to find workspace root from a specific directory
 pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
@@ -264,6 +259,7 @@ impl Application {
         doc_manager.open_file(path)
     }
 
+    #[allow(dead_code)]
     fn create_file_picker_items(&self) -> Vec<crate::picker_view::PickerItem> {
         use crate::picker_view::PickerItem;
         use std::sync::Arc;
@@ -272,7 +268,8 @@ impl Application {
         let mut items = Vec::new();
         
         // Find workspace root (similar to Helix)
-        let workspace_root = find_workspace_root();
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let workspace_root = find_workspace_root_from(&current_dir);
         
         // Use WalkBuilder from the ignore crate to walk all files
         let mut walk_builder = WalkBuilder::new(&workspace_root);
@@ -330,6 +327,7 @@ impl Application {
         items
     }
 
+    #[allow(dead_code)]
     fn create_buffer_picker(&self) -> Option<crate::picker::Picker> {
         use crate::picker_view::PickerItem;
         use std::sync::Arc;
@@ -466,6 +464,7 @@ impl Application {
         }
     }
     
+    #[allow(dead_code)]
     fn emit_overlays_except_prompt(&mut self, cx: &mut gpui::Context<crate::Core>) {
         // Check for picker events first
         if self.check_for_picker_and_emit_event(cx) {
@@ -1010,7 +1009,7 @@ pub fn init_editor(
     })
 }
 
-#[cfg(disabled_test)]  // Temporarily disabled due to SIGBUS compiler crash
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::test_support::*;

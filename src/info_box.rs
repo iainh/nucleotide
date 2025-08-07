@@ -46,8 +46,6 @@ impl EventEmitter<DismissEvent> for InfoBoxView {}
 
 impl Render for InfoBoxView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let font = cx.global::<crate::FontSettings>().var_font.clone();
-
         div()
             .absolute()
             .bottom_7()

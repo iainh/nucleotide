@@ -789,6 +789,7 @@ impl FileTree {
 
 /// Statistics about the file tree
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FileTreeStats {
     pub total_entries: usize,
     pub visible_entries: usize,

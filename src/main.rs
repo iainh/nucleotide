@@ -341,7 +341,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
         
         let options = window_options(cx);
 
-        let _ = cx.open_window(options, |window, cx| {
+        let _ = cx.open_window(options, |_window, cx| {
             // Set up window event handlers to send events to Helix
             log::info!("Setting up window event handlers");
             
@@ -520,13 +520,15 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             
             // Create and set titlebar after workspace is created - on macOS we always want custom titlebar
             // regardless of what decorations are reported
-            let decorations = window.window_decorations();
             
             // Always create titlebar on macOS (and when client decorations on other platforms)
             #[cfg(target_os = "macos")]
             let should_create_titlebar = true;
             #[cfg(not(target_os = "macos"))]
-            let should_create_titlebar = matches!(decorations, gpui::Decorations::Client { .. });
+            let should_create_titlebar = {
+                let decorations = window.window_decorations();
+                matches!(decorations, gpui::Decorations::Client { .. })
+            };
             
             if should_create_titlebar {
                 let titlebar = cx.new(|cx| {

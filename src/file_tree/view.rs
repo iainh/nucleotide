@@ -20,6 +20,7 @@ pub struct FileTreeView {
     /// Focus handle for keyboard navigation
     focus_handle: FocusHandle,
     /// Scroll handle for the list
+    #[allow(dead_code)]
     scroll_handle: ScrollHandle,
     /// Tokio runtime handle for async VCS operations
     tokio_handle: Option<tokio::runtime::Handle>,

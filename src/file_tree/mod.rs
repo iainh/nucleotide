@@ -13,7 +13,7 @@ pub use icons::{get_file_icon, get_symlink_icon};
 pub use summary::FileTreeSummary;
 pub use tree::FileTree;
 pub use view::FileTreeView;
-pub use watcher::{DebouncedFileTreeWatcher, FileTreeWatcher};
+pub use watcher::DebouncedFileTreeWatcher;
 
 use std::path::PathBuf;
 

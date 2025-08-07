@@ -179,11 +179,13 @@ impl FileTreeEntry {
     }
 
     /// Check if this is a symlink
+    #[allow(dead_code)]
     pub fn is_symlink(&self) -> bool {
         matches!(self.kind, FileKind::Symlink { .. })
     }
 
     /// Get the file extension if it's a file
+    #[allow(dead_code)]
     pub fn extension(&self) -> Option<&str> {
         match &self.kind {
             FileKind::File { extension } => extension.as_deref(),
@@ -197,6 +199,7 @@ impl FileTreeEntry {
     }
 
     /// Set the expanded state (only valid for directories)
+    #[allow(dead_code)]
     pub fn set_expanded(&mut self, expanded: bool) {
         if self.is_directory() {
             self.is_expanded = expanded;
@@ -204,11 +207,13 @@ impl FileTreeEntry {
     }
 
     /// Set git status
+    #[allow(dead_code)]
     pub fn set_git_status(&mut self, status: GitStatus) {
         self.git_status = Some(status);
     }
 
     /// Clear git status
+    #[allow(dead_code)]
     pub fn clear_git_status(&mut self) {
         self.git_status = None;
     }
