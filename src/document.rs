@@ -1139,9 +1139,10 @@ impl Element for DocumentElement {
                 // Update scroll position based on wheel delta
                 let current_offset = scroll_manager.scroll_offset();
                 let delta = event.delta.pixel_delta(px(20.0)); // Use line height as scroll unit
+                // GPUI convention: scrolling down makes offset more negative
                 let new_offset = point(
-                    current_offset.x - delta.x,
-                    current_offset.y - delta.y,
+                    current_offset.x + delta.x,
+                    current_offset.y + delta.y,
                 );
                 
                 scroll_manager.set_scroll_offset(new_offset);

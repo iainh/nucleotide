@@ -82,12 +82,13 @@ impl ScrollManager {
         self.scroll_offset.get()
     }
 
-    /// Set the scroll offset in pixels
+    /// Set the scroll offset in pixels (follows GPUI convention: negative = scrolled down)
     pub fn set_scroll_offset(&self, offset: Point<Pixels>) {
         let max_offset = self.max_scroll_offset();
+        // GPUI convention: offsets are negative when scrolled, clamped between -max and 0
         let clamped_offset = point(
-            offset.x.max(px(0.0)).min(max_offset.width),
-            offset.y.max(px(0.0)).min(max_offset.height),
+            offset.x.min(px(0.0)).max(-max_offset.width),
+            offset.y.min(px(0.0)).max(-max_offset.height),
         );
         let old_offset = self.scroll_offset.get();
         self.scroll_offset.set(clamped_offset);
@@ -117,13 +118,15 @@ impl ScrollManager {
         let text = document.text();
         let anchor_line = text.char_to_line(view_offset.anchor);
         let y = self.anchor_to_pixels(anchor_line);
-        self.set_scroll_offset(point(px(0.0), y));
+        // GPUI convention: negative offset when scrolled down
+        self.set_scroll_offset(point(px(0.0), -y));
     }
 
     /// Update Helix's ViewOffset from current scroll position
     pub fn sync_to_helix(&self, document: &Document) -> ViewOffset {
         let y = self.scroll_offset.get().y;
-        let anchor_line = self.pixels_to_anchor(y);
+        // GPUI convention: offset.y is negative when scrolled down
+        let anchor_line = self.pixels_to_anchor(-y);
         let text = document.text();
         let anchor = text.line_to_char(anchor_line);
         
@@ -139,8 +142,10 @@ impl ScrollManager {
         let offset = self.scroll_offset.get();
         let viewport = self.viewport_size.get();
         
-        let first_line = self.pixels_to_anchor(offset.y);
-        let last_line = self.pixels_to_anchor(offset.y + viewport.height) + 1;
+        // GPUI convention: offset.y is negative when scrolled down
+        // So -offset.y gives us the positive scroll distance
+        let first_line = self.pixels_to_anchor(-offset.y);
+        let last_line = self.pixels_to_anchor(-offset.y + viewport.height) + 1;
         
         let total_lines = self.total_lines.get();
         let result = (first_line, last_line.min(total_lines));
@@ -172,7 +177,8 @@ impl ScrollManager {
             }
         };
         
-        self.set_scroll_offset(point(px(0.0), target_y));
+        // GPUI convention: negative offset when scrolled down
+        self.set_scroll_offset(point(px(0.0), -target_y));
     }
 }
 

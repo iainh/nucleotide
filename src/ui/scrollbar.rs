@@ -229,16 +229,9 @@ impl ScrollbarState {
         let raw_offset = self.scroll_handle.offset();
         let offset_along_axis = raw_offset.along(axis);
         
-        // GPUI's built-in scroll handles use negative offsets (scrolling down = negative y)
-        // Our custom DocumentScrollHandle uses positive offsets (scrolling down = positive y)
-        // We need to handle both cases
-        let current_offset = if offset_along_axis < px(0.0) {
-            // Negative offset (GPUI style) - clamp between -max_offset and 0, then take absolute value
-            offset_along_axis.clamp(-max_offset, Pixels::ZERO).abs()
-        } else {
-            // Positive offset (our style) - clamp between 0 and max_offset
-            offset_along_axis.clamp(Pixels::ZERO, max_offset)
-        };
+        // GPUI convention: offsets are negative when scrolled (scrolling down = negative y)
+        // Clamp between -max_offset and 0, then take absolute value for calculations
+        let current_offset = offset_along_axis.clamp(-max_offset, Pixels::ZERO).abs();
         
         
         // Handle division by zero
