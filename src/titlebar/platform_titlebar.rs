@@ -130,7 +130,8 @@ impl Render for PlatformTitleBar {
                     .w_full()
                     .h_full()
                     .items_center()
-                    .justify_between()
+                    .justify_center()  // Center the content
+                    .relative()  // For absolute positioning of window controls
                     .px_2()
                     // Stop propagation on titlebar interactions
                     .on_mouse_down(MouseButton::Left, |event, window, cx| {
@@ -145,14 +146,15 @@ impl Render for PlatformTitleBar {
                     })
                     .on_mouse_move(|_, _, cx| cx.stop_propagation())
                     .child(
-                        // Title text
+                        // Title text - centered and bold
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_sm()  // Standard small text size
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)  // Semibold weight
                                     .text_color(ui_theme.text)
                                     .child(self.title.clone())
                             )

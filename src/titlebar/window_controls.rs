@@ -152,6 +152,11 @@ impl RenderOnce for WindowControls {
             .flex()
             .flex_row()
             .id("window-controls")
+            .absolute()
+            .right_2()
+            .top_0()
+            .bottom_0()
+            .items_center()
             .px_2()
             .gap_1()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
