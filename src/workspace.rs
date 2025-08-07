@@ -776,6 +776,16 @@ impl Workspace {
             crate::Update::FileTreeEvent(event) => {
                 self.handle_file_tree_event(event, cx);
             }
+            crate::Update::ShowFilePicker => {
+                let handle = self.handle.clone();
+                let core = self.core.clone();
+                open(core, handle, cx);
+            }
+            crate::Update::ShowBufferPicker => {
+                let handle = self.handle.clone();
+                let core = self.core.clone();
+                show_buffer_picker(core, handle, cx);
+            }
             crate::Update::Info(_) => {
                 self.info_hidden = false;
                 // handled by the info box view
@@ -1360,6 +1370,15 @@ impl Render for Workspace {
                 show_buffer_picker(core.clone(), handle.clone(), cx)
             },
         ));
+        
+        // File finder action
+        let handle = self.handle.clone();
+        let core = self.core.clone();
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |_, _: &crate::actions::workspace::ShowFileFinder, _window, cx| {
+                open(core.clone(), handle.clone(), cx)
+            },
+        ));
 
         // Window actions
         workspace_div = workspace_div
@@ -1614,7 +1633,30 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
 
     for meta in buffer_metas {
         // Format like terminal: "ID  FLAGS  PATH"
-        let id_str = format!("{:?}", meta.doc_id);
+        // DocumentId likely has Display impl that shows "DocumentId(N)"
+        let display_str = format!("{}", meta.doc_id);
+        
+        // Extract number from "DocumentId(N)" format
+        let id_str = if display_str.starts_with("DocumentId(") && display_str.ends_with(")") {
+            // Extract the number between parentheses
+            display_str[11..display_str.len()-1].to_string()
+        } else if let Some(start) = display_str.find('(') {
+            // More flexible parsing for variations
+            if let Some(end) = display_str.rfind(')') {
+                display_str[start + 1..end].trim().to_string()
+            } else {
+                display_str[start + 1..].trim().to_string()
+            }
+        } else if display_str.chars().all(|c| c.is_numeric()) {
+            // If it's already just a number, use it
+            display_str
+        } else {
+            // Fallback - try to find any number in the string
+            display_str.chars()
+                .skip_while(|c| !c.is_numeric())
+                .take_while(|c| c.is_numeric())
+                .collect::<String>()
+        };
 
         // Build flags column
         let mut flags = String::new();
@@ -1643,13 +1685,18 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
         };
 
         // Combine into terminal-like format with proper spacing
+        // Pad ID to 4 characters for consistent alignment
         let label = format!("{:<4} {} {}", id_str, flags_str, path_str);
 
-        // Store the document ID in the picker item data
+        // Create data that includes both doc_id and path for preview functionality
+        // We'll store a tuple of (DocumentId, Option<PathBuf>) for all items
+        let picker_data = Arc::new((meta.doc_id, meta.path.clone())) as Arc<dyn std::any::Any + Send + Sync>;
+
+        // Store the document ID and path in the picker item data
         items.push(PickerItem {
             label: label.into(),
             sublabel: None, // No sublabel for terminal-style display
-            data: Arc::new(meta.doc_id),
+            data: picker_data,
         });
     }
 

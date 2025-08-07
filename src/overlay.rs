@@ -230,14 +230,8 @@ impl OverlayView {
                             let mut view = PickerView::new_with_theme(&helix_theme, cx);
                             let items_for_callback = items.clone();
                             
-                            // Disable preview for buffer picker (detect by checking if items contain DocumentId)
-                            let is_buffer_picker = items.first()
-                                .map(|item| item.data.is::<helix_view::DocumentId>())
-                                .unwrap_or(false);
-                            
-                            if is_buffer_picker {
-                                view = view.with_preview(false);
-                            }
+                            // Enable preview by default, especially for buffer picker
+                            view = view.with_preview(true);
                             
                             view = view.with_core(core_weak.clone()).with_items(items);
                             
@@ -251,8 +245,17 @@ impl OverlayView {
                                     (on_select)(index);
                                 }
                                 
+                                // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
+                                if let Some((doc_id, _path)) = selected_item.data.downcast_ref::<(helix_view::DocumentId, Option<std::path::PathBuf>)>() {
+                                    // Switch to the selected buffer
+                                    if let Some(core) = core_weak.upgrade() {
+                                        core.update(picker_cx, |core, _cx| {
+                                            core.editor.switch(*doc_id, helix_view::editor::Action::Replace);
+                                        });
+                                    }
+                                }
                                 // Extract the file path from the selected item for opening
-                                if let Some(path) = selected_item.data.downcast_ref::<std::path::PathBuf>() {
+                                else if let Some(path) = selected_item.data.downcast_ref::<std::path::PathBuf>() {
                                     // Emit OpenFile event to actually open the file
                                     if let Some(core) = core_weak.upgrade() {
                                         core.update(picker_cx, |_core, core_cx| {
@@ -260,7 +263,7 @@ impl OverlayView {
                                         });
                                     }
                                 }
-                                // Check if it's a document ID for buffer switching
+                                // Check if it's a document ID for buffer switching (legacy)
                                 else if let Some(doc_id) = selected_item.data.downcast_ref::<helix_view::DocumentId>() {
                                     // Switch to the selected buffer
                                     if let Some(core) = core_weak.upgrade() {

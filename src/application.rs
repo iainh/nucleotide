@@ -178,50 +178,35 @@ impl Application {
         doc_manager.try_with_document_mut(doc_id, f)
     }
     fn try_create_picker_component(&mut self) -> Option<crate::picker::Picker> {
+        // This method is no longer used for file/buffer pickers
+        // They are handled via events now
+        None
+    }
+    
+    /// Check if helix created a picker and emit the appropriate event
+    pub fn check_for_picker_and_emit_event(&mut self, cx: &mut gpui::Context<crate::Core>) -> bool {
         use helix_term::ui::{overlay::Overlay, Picker};
-
-        // Check for known picker types and create native implementations when possible
         
-        // Log what's in the compositor
-        log::info!("Checking compositor for pickers...");
+        // Check for file picker first
+        if self.compositor.find_id::<Overlay<Picker<PathBuf, FilePickerData>>>(helix_term::ui::picker::ID).is_some() {
+            log::info!("Detected file picker in compositor, emitting ShowFilePicker event");
+            self.compositor.remove(helix_term::ui::picker::ID);
+            cx.emit(crate::Update::ShowFilePicker);
+            return true;
+        }
         
-        // Check if the helix picker with ID exists and remove it
-        // This is a simple approach - if there's a picker and we have multiple documents,
-        // it's likely a buffer picker
+        // Check for any picker - if we have multiple docs, it's likely buffer picker
+        // We need to check if any picker exists by trying to remove it
         if self.compositor.remove(helix_term::ui::picker::ID).is_some() {
-            log::info!("Removed a picker from compositor");
-            // If we have multiple documents and just removed a picker, 
-            // it's likely the buffer picker (triggered by space+b)
+            log::info!("Found and removed picker from compositor");
             if self.editor.documents.len() > 1 {
-                log::info!("Creating native buffer picker");
-                return self.create_buffer_picker();
+                log::info!("Multiple documents open, assuming buffer picker, emitting ShowBufferPicker event");
+                cx.emit(crate::Update::ShowBufferPicker);
+                return true;
             }
         }
-
-        // For now, we'll demonstrate the native picker capability by using it for file picker
-
-        // Create a native file picker for file operations
-        if let Some(_file_picker) = self
-            .compositor
-            .find_id::<Overlay<Picker<PathBuf, FilePickerData>>>(helix_term::ui::picker::ID)
-        {
-            // Remove the original picker from compositor to prevent infinite loop
-            self.compositor.remove(helix_term::ui::picker::ID);
-            
-            // Create a native file picker with files from current directory
-            let items = self.create_file_picker_items();
-            
-            return Some(crate::picker::Picker::native(
-                "Open File",
-                items,
-                |_index| {
-                    // File selection logic would go here
-                },
-            ));
-        }
-
-        // All picker types now use the native implementation
-        None
+        
+        false
     }
 
 
@@ -476,8 +461,13 @@ impl Application {
     }
     
     fn emit_overlays_except_prompt(&mut self, cx: &mut gpui::Context<crate::Core>) {
-        let picker = self.try_create_picker_component();
+        // Check for picker events first
+        if self.check_for_picker_and_emit_event(cx) {
+            return;
+        }
         
+        // Legacy picker handling (for non-file/buffer pickers)
+        let picker = self.try_create_picker_component();
         if let Some(picker) = picker {
             cx.emit(crate::Update::Picker(picker));
         }
@@ -496,16 +486,19 @@ impl Application {
     }
 
     fn emit_overlays(&mut self, cx: &mut gpui::Context<crate::Core>) {
+        // Check for picker events first
+        if self.check_for_picker_and_emit_event(cx) {
+            return;
+        }
 
+        // Legacy picker handling (for non-file/buffer pickers)
         let picker = self.try_create_picker_component();
-
-        // Check for helix prompt and convert to native GPUI prompt
-        let prompt = self.create_native_prompt_from_helix(cx);
-
         if let Some(picker) = picker {
             cx.emit(crate::Update::Picker(picker));
         }
 
+        // Check for helix prompt and convert to native GPUI prompt
+        let prompt = self.create_native_prompt_from_helix(cx);
         if let Some(prompt) = prompt {
             cx.emit(crate::Update::Prompt(prompt));
         }

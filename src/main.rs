@@ -274,6 +274,9 @@ pub enum Update {
     },
     // File tree events
     FileTreeEvent(crate::file_tree::FileTreeEvent),
+    // Picker request events - emitted when helix wants to show a picker
+    ShowFilePicker,
+    ShowBufferPicker,
 }
 
 

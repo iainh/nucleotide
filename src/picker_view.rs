@@ -417,10 +417,40 @@ impl PickerView {
         };
 
         // Try to extract path from item data
-        if let Some(path_buf) = item.data.downcast_ref::<std::path::PathBuf>() {
+        // Handle buffer picker items (DocumentId, Option<PathBuf>) first
+        if let Some((doc_id, path_opt)) = item.data.downcast_ref::<(helix_view::DocumentId, Option<std::path::PathBuf>)>() {
+            if let Some(path) = path_opt {
+                // Load file preview for buffers with paths
+                self.load_file_preview(path.clone(), cx);
+            } else {
+                // For scratch buffers, load content directly from the document
+                if let Some(core_weak) = &self.core {
+                    if let Some(core) = core_weak.upgrade() {
+                        let content = core.read(cx).editor.document(*doc_id)
+                            .map(|doc| {
+                                let text = doc.text();
+                                let content = text.to_string();
+                                // Limit preview to first 500 lines for performance
+                                let lines: Vec<&str> = content.lines().take(500).collect();
+                                lines.join("\n")
+                            })
+                            .unwrap_or_else(|| "Unable to load buffer content".to_string());
+                        
+                        self.preview_content = Some(content);
+                        self.preview_loading = false;
+                        cx.notify();
+                    }
+                }
+            }
+        }
+        // Try standalone PathBuf (for file picker)
+        else if let Some(path_buf) = item.data.downcast_ref::<std::path::PathBuf>() {
             self.load_file_preview(path_buf.clone(), cx);
-        } else {
-            self.preview_content = Some(format!("Preview not available for: {}", item.label));
+        } 
+        else {
+            // Debug: check what type we actually have
+            log::warn!("Preview not available for item with type_id: {:?}", item.data.type_id());
+            self.preview_content = Some(format!("Preview not available"));
             cx.notify();
         }
     }
@@ -779,6 +809,50 @@ impl PickerView {
                             })
                     )
             )
+            // Add column headers for buffer picker
+            .when(self.items.first().map(|item| {
+                // Check if this is a buffer picker by looking at the label format
+                let parts: Vec<&str> = item.label.split_whitespace().collect();
+                // Check if first part looks like an ID (numeric or starts with digit)
+                parts.len() >= 3 && parts[0].chars().next().map_or(false, |c| c.is_numeric())
+            }).unwrap_or(false), |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .px_3()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(self.style.modal_style.border)
+                        .text_color(self.style.modal_style.prompt_text)
+                        .font_family("monospace")
+                        .text_size(px(12.))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(
+                                    // ID header
+                                    div()
+                                        .w(px(50.0))
+                                        .child("id")
+                                )
+                                .child(
+                                    // Flags header
+                                    div()
+                                        .w(px(30.0))
+                                        .text_center()
+                                        .child("flags")
+                                )
+                                .child(
+                                    // Path header
+                                    div()
+                                        .flex_1()
+                                        .child("path")
+                                )
+                        )
+                )
+            })
             .child(
                 // Main content area - horizontal split
                 div().flex()
@@ -828,11 +902,51 @@ impl PickerView {
                                                         })
                                                         .when(!is_selected, |this| this.text_color(picker.style.modal_style.text))
                                                         .child(
-                                                            div()
-                                                                .overflow_hidden()
-                                                                .text_ellipsis()
-                                                                .font_family("monospace")  // Use monospace for terminal-like appearance
-                                                                .child(item.label.clone())
+                                                            // Parse the label to extract columns: "ID FLAGS PATH"
+                                                            {
+                                                                let parts: Vec<&str> = item.label.split_whitespace().collect();
+                                                                if parts.len() >= 3 && parts[0].chars().next().map_or(false, |c| c.is_numeric()) {
+                                                                    // Format as columns for buffer picker
+                                                                    let id = parts[0].to_string();
+                                                                    let flags = parts[1].to_string();
+                                                                    let path = parts[2..].join(" ");
+                                                                    
+                                                                    div()
+                                                                        .flex()
+                                                                        .gap_2()
+                                                                        .font_family("monospace")
+                                                                        .child(
+                                                                            // ID column
+                                                                            div()
+                                                                                .w(px(50.0))
+                                                                                .overflow_hidden()
+                                                                                .text_ellipsis()
+                                                                                .child(id)
+                                                                        )
+                                                                        .child(
+                                                                            // Flags column
+                                                                            div()
+                                                                                .w(px(30.0))
+                                                                                .text_center()
+                                                                                .child(flags)
+                                                                        )
+                                                                        .child(
+                                                                            // Path column
+                                                                            div()
+                                                                                .flex_1()
+                                                                                .overflow_hidden()
+                                                                                .text_ellipsis()
+                                                                                .child(path)
+                                                                        )
+                                                                } else {
+                                                                    // Fallback for items that don't match the pattern
+                                                                    div()
+                                                                        .overflow_hidden()
+                                                                        .text_ellipsis()
+                                                                        .font_family("monospace")
+                                                                        .child(item.label.clone())
+                                                                }
+                                                            }
                                                         )
                                                         .when_some(item.sublabel.as_ref(), |this, sublabel| {
                                                             this.child(
