@@ -128,20 +128,33 @@ impl Render for DocumentView {
             let view_id = view.view_id;
             let line_height = px(20.0); // Approximate line height
             
-            // Extract y delta from ScrollDelta enum
-            let delta_y = match ev.delta {
+            // Apply Zed-like scroll sensitivity (default 1.0, but reduced for slower scrolling)
+            let scroll_sensitivity = 0.3; // Much slower than our previous implementation
+            let fast_scroll_sensitivity = 1.2; // When holding alt/option
+            
+            let sensitivity = if ev.modifiers.alt {
+                fast_scroll_sensitivity
+            } else {
+                scroll_sensitivity
+            };
+            
+            // Extract y delta from ScrollDelta enum and apply sensitivity
+            let raw_delta_y = match ev.delta {
                 ScrollDelta::Pixels(point) => point.y,
                 ScrollDelta::Lines(point) => px(point.y * 20.0), // Convert lines to pixels
             };
             
-            if delta_y != px(0.) {
+            let delta_y = raw_delta_y * sensitivity;
+            
+            if delta_y.abs() >= px(1.0) { // Only scroll if delta is significant
                 let lines = delta_y / line_height;
                 let direction = if lines > 0. {
                     Direction::Backward
                 } else {
                     Direction::Forward
                 };
-                let line_count = 1 + lines.abs() as usize;
+                // More conservative line count calculation
+                let line_count = (lines.abs() as usize).max(1);
 
                 view.input.update(cx, |_, cx| {
                     cx.emit(InputEvent::ScrollLines {
