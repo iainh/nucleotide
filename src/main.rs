@@ -43,6 +43,7 @@ mod prompt;
 mod prompt_view;
 mod statusline;
 mod theme_manager;
+mod titlebar;
 mod ui;
 mod utils;
 mod workspace;
@@ -128,12 +129,18 @@ fn main() -> Result<()> {
 }
 
 fn window_options(_cx: &mut App) -> gpui::WindowOptions {
-    WindowOptions {
+    let window_decorations = match std::env::var("HELIX_WINDOW_DECORATIONS") {
+        Ok(val) if val == "server" => gpui::WindowDecorations::Server,
+        Ok(val) if val == "client" => gpui::WindowDecorations::Client,
+        _ => gpui::WindowDecorations::Client,  // Default to client decorations
+    };
+    
+    let options = WindowOptions {
         app_id: Some("helix-gpui".to_string()),
         titlebar: Some(TitlebarOptions {
-            title: Some("Helix".into()),
-            appears_transparent: false,
-            traffic_light_position: None,
+            title: None,  // We'll render our own title
+            appears_transparent: true,  // Key for custom titlebar
+            traffic_light_position: Some(gpui::point(px(9.0), px(9.0))),  // Required for macOS client decorations
         }),
         window_bounds: Some(WindowBounds::Windowed(gpui::Bounds {
             origin: gpui::point(px(100.0), px(100.0)),
@@ -145,9 +152,13 @@ fn window_options(_cx: &mut App) -> gpui::WindowOptions {
         is_movable: true,
         display_id: None,
         window_background: WindowBackgroundAppearance::Opaque,
-        window_decorations: Some(gpui::WindowDecorations::Server),
+        window_decorations: Some(window_decorations),
         window_min_size: Some(gpui::size(px(400.0), px(300.0))),
-    }
+    };
+    
+    eprintln!("DEBUG: WindowOptions decorations = {:?}", options.window_decorations);
+    eprintln!("DEBUG: WindowOptions titlebar = {:?}", options.titlebar);
+    options
 }
 
 // Import actions from our centralized definitions
@@ -329,7 +340,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
         
         let options = window_options(cx);
 
-        let _ = cx.open_window(options, |_window, cx| {
+        let _ = cx.open_window(options, |window, cx| {
             // Set up window event handlers to send events to Helix
             log::info!("Setting up window event handlers");
             
@@ -494,7 +505,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             // Create workspace
             
             
-            cx.new(|cx| {
+            let workspace = cx.new(|cx| {
                 let workspace = workspace::Workspace::with_views(app, input_1.clone(), handle, overlay, notifications, info, cx);
                 
                 // Subscribe to self to handle Update events
@@ -504,7 +515,35 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
                 .detach();
                 
                 workspace
-            })
+            });
+            
+            // Create and set titlebar after workspace is created - on macOS we always want custom titlebar
+            // regardless of what decorations are reported
+            let decorations = window.window_decorations();
+            eprintln!("DEBUG: Window decorations = {:?}", decorations);
+            
+            // Always create titlebar on macOS (and when client decorations on other platforms)
+            #[cfg(target_os = "macos")]
+            let should_create_titlebar = true;
+            #[cfg(not(target_os = "macos"))]
+            let should_create_titlebar = matches!(decorations, gpui::Decorations::Client { .. });
+            
+            if should_create_titlebar {
+                eprintln!("DEBUG: Creating custom titlebar");
+                let titlebar = cx.new(|cx| {
+                    crate::titlebar::TitleBar::new("titlebar", &workspace, cx)
+                });
+                
+                workspace.update(cx, |workspace, cx| {
+                    eprintln!("DEBUG: Setting titlebar on workspace");
+                    workspace.set_titlebar(titlebar.into());
+                    cx.notify();
+                });
+            } else {
+                eprintln!("DEBUG: Using native decorations");
+            }
+            
+            workspace
         });
     })
 }

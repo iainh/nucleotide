@@ -72,7 +72,7 @@ impl ThemeManager {
         let border = ui_window.fg
             .and_then(color_to_hsla)
             .or_else(|| ui_text.fg.and_then(color_to_hsla))
-            .map(|c| hsla(c.h, c.s, c.l * 0.3, c.a))
+            .map(|c| hsla(c.h, c.s * 0.5, c.l * 0.5, c.a * 0.8))
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.2, 1.0));
             
         let accent = ui_selection.bg

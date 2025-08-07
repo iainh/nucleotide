@@ -35,11 +35,31 @@ pub struct Workspace {
     is_resizing_file_tree: bool,
     resize_start_x: f32,
     resize_start_width: f32,
+    titlebar: Option<gpui::AnyView>,
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
 
 impl Workspace {
+    pub fn current_filename(&self, cx: &App) -> Option<String> {
+        let editor = &self.core.read(cx).editor;
+        
+        // Get the currently focused view
+        for (view, is_focused) in editor.tree.views() {
+            if is_focused {
+                if let Some(doc) = editor.document(view.doc) {
+                    return doc.path().map(|p| {
+                        p.file_name()
+                            .and_then(|name| name.to_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| p.display().to_string())
+                    });
+                }
+            }
+        }
+        None
+    }
+    
     pub fn with_views(
         core: Entity<Core>,
         input: Entity<Input>,
@@ -118,6 +138,7 @@ impl Workspace {
             is_resizing_file_tree: false,
             resize_start_x: 0.0,
             resize_start_width: 0.0,
+            titlebar: None,
         };
         // Initialize document views
         workspace.update_document_views(cx);
@@ -132,6 +153,10 @@ impl Workspace {
         _cx: &mut Context<Self>,
     ) -> Self {
         panic!("Use Workspace::with_views instead - views must be created in window context");
+    }
+    
+    pub fn set_titlebar(&mut self, titlebar: gpui::AnyView) {
+        self.titlebar = Some(titlebar);
     }
 
     // Removed - views are created in main.rs and passed in
@@ -1139,13 +1164,20 @@ impl Render for Workspace {
             }
         }
 
-        // Set the native window title (macOS convention: filename — appname)
+        // For native titlebar - we still set the window title
         let window_title = if let Some(ref path) = focused_file_name {
             format!("{path} — Helix") // Using em dash like macOS
         } else {
             "Helix".to_string()
         };
-        window.set_window_title(&window_title);
+        
+        // Only set window title if using native decorations
+        match window.window_decorations() {
+            gpui::Decorations::Server => {
+                window.set_window_title(&window_title);
+            }
+            _ => {}
+        }
 
         let editor = &self.core.read(cx).editor;
 
@@ -1227,7 +1259,7 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .w_full()
-            .h_full()
+            .h_full()  // Back to h_full since properly wrapped
             .when_some(Some(docs_root), |this, docs| this.child(docs))
             .child(self.notifications.clone())
             .when(!self.overlay.read(cx).is_empty(), |this| {
@@ -1246,7 +1278,7 @@ impl Render for Workspace {
             .id("workspace")
             .bg(bg_color)
             .flex()
-            .flex_row()
+            .flex_col()  // Vertical layout to include titlebar
             .w_full()
             .h_full()
             .focusable();
@@ -1378,6 +1410,14 @@ impl Render for Workspace {
             },
         ));
 
+
+        // Create content area that will hold file tree and main content
+        let mut content_area = div()
+            .flex()
+            .flex_row()
+            .w_full()
+            .flex_1();  // Should use flex_1 in a flex column parent
+
         // Add file tree panel if needed
         if self.show_file_tree && self.file_tree.is_some() {
             if let Some(file_tree) = &self.file_tree {
@@ -1406,12 +1446,17 @@ impl Render for Workspace {
                         }),
                     );
 
-                workspace_div = workspace_div.child(file_tree_panel).child(resize_handle);
+                content_area = content_area.child(file_tree_panel).child(resize_handle);
             }
         }
 
-        // Add main content area
-        workspace_div.child(main_content)
+        // Add main content area to content area
+        content_area = content_area.child(main_content);
+
+        // Build final workspace - just like Zed, render titlebar if it exists
+        workspace_div
+            .children(self.titlebar.clone())  // Render titlebar if present
+            .child(content_area)  // Then add content
     }
 }
 
