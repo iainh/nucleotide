@@ -6,6 +6,7 @@ use crate::file_tree::{
     FileTreeEvent, GitStatus,
 };
 use crate::ui::Theme;
+use crate::utils::color_to_hsla;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::path::{Path, PathBuf};
@@ -844,12 +845,27 @@ impl Render for FileTreeView {
         let theme = cx.global::<Theme>();
         let entries = self.tree.visible_entries();
 
+        // Get prompt background color for consistency
+        let prompt_bg = {
+            let helix_theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
+            let popup_style = helix_theme.get("ui.popup");
+            popup_style
+                .bg
+                .and_then(color_to_hsla)
+                .or_else(|| {
+                    helix_theme.get("ui.background")
+                        .bg
+                        .and_then(color_to_hsla)
+                })
+                .unwrap_or(theme.background)
+        };
+
         div()
             .id("file-tree")
             .key_context("FileTree")
             .w_full()
             .h_full()
-            .bg(theme.background)
+            .bg(prompt_bg)
             .border_r_1()
             .border_color(theme.border)
             .when(self.focus_handle.is_focused(_window), |style| {
