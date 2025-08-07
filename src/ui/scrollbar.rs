@@ -427,14 +427,22 @@ impl Element for Scrollbar {
                     -max_offset * percentage
                 };
 
-            // Mouse down events
+            // Mouse down events - handle before they reach the editor
             window.on_mouse_event({
                 let state = self.state.clone();
                 move |event: &MouseDownEvent, phase, window, _| {
-                    if !phase.bubble()
-                        || event.button != MouseButton::Left
-                        || !bounds.contains(&event.position)
-                    {
+                    if event.button != MouseButton::Left {
+                        return;
+                    }
+                    
+                    // Handle during capture phase (before editor gets it)
+                    if phase.capture() && bounds.contains(&event.position) {
+                        // We'll handle this event in bubble phase
+                        return;
+                    }
+                    
+                    // Process during bubble phase
+                    if !phase.bubble() || !bounds.contains(&event.position) {
                         return;
                     }
 
