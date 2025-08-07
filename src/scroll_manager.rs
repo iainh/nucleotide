@@ -1,0 +1,188 @@
+// ABOUTME: Manages scroll state synchronization between Helix editor and GPUI UI
+// ABOUTME: Converts between pixel-based scrolling (GPUI) and line-based anchors (Helix)
+
+use gpui::*;
+use helix_view::{Document, DocumentId, ViewId};
+use std::cell::Cell;
+use std::rc::Rc;
+
+/// ViewOffset represents the scroll position of a view in the document
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ViewOffset {
+    pub anchor: usize,
+    pub horizontal_offset: usize,
+    pub vertical_offset: usize,
+}
+
+/// Manages scroll state for a document view, synchronizing between
+/// GPUI's pixel-based scrolling and Helix's line-based viewport
+#[derive(Clone, Debug)]
+pub struct ScrollManager {
+    /// Unique ID for debugging
+    id: usize,
+    /// The document being scrolled
+    doc_id: DocumentId,
+    /// The view of the document
+    view_id: ViewId,
+    /// Cached line height in pixels
+    line_height: Rc<Cell<Pixels>>,
+    /// Total number of lines in the document
+    total_lines: Rc<Cell<usize>>,
+    /// Current scroll offset in pixels
+    pub scroll_offset: Rc<Cell<Point<Pixels>>>,
+    /// Viewport size in pixels
+    pub viewport_size: Rc<Cell<Size<Pixels>>>,
+}
+
+impl ScrollManager {
+    pub fn new(doc_id: DocumentId, view_id: ViewId, line_height: Pixels) -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        
+        Self {
+            id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
+            doc_id,
+            view_id,
+            line_height: Rc::new(Cell::new(line_height)),
+            total_lines: Rc::new(Cell::new(1)),
+            scroll_offset: Rc::new(Cell::new(point(px(0.0), px(0.0)))),
+            viewport_size: Rc::new(Cell::new(size(px(800.0), px(600.0)))),
+        }
+    }
+
+    /// Update the total number of lines in the document
+    pub fn set_total_lines(&mut self, total_lines: usize) {
+        self.total_lines.set(total_lines);
+    }
+
+    /// Update the viewport size
+    pub fn set_viewport_size(&mut self, size: Size<Pixels>) {
+        self.viewport_size.set(size);
+    }
+
+    /// Update the line height
+    pub fn set_line_height(&mut self, line_height: Pixels) {
+        self.line_height.set(line_height);
+    }
+
+    /// Get the maximum scroll offset in pixels
+    pub fn max_scroll_offset(&self) -> Size<Pixels> {
+        let total_lines = self.total_lines.get();
+        let line_height = self.line_height.get();
+        let content_height = px(total_lines as f32 * line_height.0);
+        let viewport_height = self.viewport_size.get().height;
+        let max_y = (content_height - viewport_height).max(px(0.0));
+        
+        
+        size(px(0.0), max_y)
+    }
+
+    /// Get the current scroll offset in pixels
+    pub fn scroll_offset(&self) -> Point<Pixels> {
+        self.scroll_offset.get()
+    }
+
+    /// Set the scroll offset in pixels
+    pub fn set_scroll_offset(&self, offset: Point<Pixels>) {
+        let max_offset = self.max_scroll_offset();
+        let clamped_offset = point(
+            offset.x.max(px(0.0)).min(max_offset.width),
+            offset.y.max(px(0.0)).min(max_offset.height),
+        );
+        let old_offset = self.scroll_offset.get();
+        self.scroll_offset.set(clamped_offset);
+        
+        if old_offset != clamped_offset {
+            log::debug!("ScrollManager[{}]: offset changed from {:?} to {:?}", self.id, old_offset, clamped_offset);
+        }
+    }
+
+    /// Convert a pixel scroll offset to a Helix viewport anchor (line number)
+    pub fn pixels_to_anchor(&self, y: Pixels) -> usize {
+        let line_height = self.line_height.get();
+        let total_lines = self.total_lines.get();
+        let line = (y.0 / line_height.0).floor() as usize;
+        line.min(total_lines.saturating_sub(1))
+    }
+
+    /// Convert a Helix viewport anchor (line number) to pixel scroll offset
+    pub fn anchor_to_pixels(&self, anchor: usize) -> Pixels {
+        let line_height = self.line_height.get();
+        px(anchor as f32 * line_height.0)
+    }
+
+    /// Update scroll position from Helix's ViewOffset
+    pub fn sync_from_helix(&mut self, view_offset: &ViewOffset, document: &Document) {
+        // ViewOffset.anchor is a character position, convert to line
+        let text = document.text();
+        let anchor_line = text.char_to_line(view_offset.anchor);
+        let y = self.anchor_to_pixels(anchor_line);
+        self.set_scroll_offset(point(px(0.0), y));
+    }
+
+    /// Update Helix's ViewOffset from current scroll position
+    pub fn sync_to_helix(&self, document: &Document) -> ViewOffset {
+        let y = self.scroll_offset.get().y;
+        let anchor_line = self.pixels_to_anchor(y);
+        let text = document.text();
+        let anchor = text.line_to_char(anchor_line);
+        
+        ViewOffset {
+            anchor,
+            horizontal_offset: 0,
+            vertical_offset: 0,
+        }
+    }
+
+    /// Get the visible line range for the current scroll position
+    pub fn visible_line_range(&self) -> (usize, usize) {
+        let offset = self.scroll_offset.get();
+        let viewport = self.viewport_size.get();
+        
+        let first_line = self.pixels_to_anchor(offset.y);
+        let last_line = self.pixels_to_anchor(offset.y + viewport.height) + 1;
+        
+        let total_lines = self.total_lines.get();
+        let result = (first_line, last_line.min(total_lines));
+        log::debug!("ScrollManager[{}]: visible_line_range: offset={:?}, viewport={:?}, range={:?}", 
+                   self.id, offset, viewport, result);
+        result
+    }
+
+    /// Check if a line is visible in the current viewport
+    pub fn is_line_visible(&self, line: usize) -> bool {
+        let (first, last) = self.visible_line_range();
+        line >= first && line < last
+    }
+
+    /// Scroll to make a specific line visible
+    pub fn scroll_to_line(&mut self, line: usize, strategy: ScrollStrategy) {
+        let viewport_height = self.viewport_size.get().height;
+        let line_height = self.line_height.get();
+        let lines_per_viewport = (viewport_height.0 / line_height.0) as usize;
+        
+        let target_y = match strategy {
+            ScrollStrategy::Top => self.anchor_to_pixels(line),
+            ScrollStrategy::Center => {
+                let center_offset = lines_per_viewport / 2;
+                self.anchor_to_pixels(line.saturating_sub(center_offset))
+            }
+            ScrollStrategy::Bottom => {
+                self.anchor_to_pixels(line.saturating_sub(lines_per_viewport - 1))
+            }
+        };
+        
+        self.set_scroll_offset(point(px(0.0), target_y));
+    }
+}
+
+/// Strategy for scrolling to a specific line
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollStrategy {
+    /// Position the line at the top of the viewport
+    Top,
+    /// Position the line at the center of the viewport
+    Center,
+    /// Position the line at the bottom of the viewport
+    Bottom,
+}

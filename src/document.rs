@@ -1,7 +1,9 @@
 use std::borrow::Cow;
+use std::rc::Rc;
 
 use gpui::*;
 use gpui::{point, size, TextRun};
+use gpui::prelude::FluentBuilder;
 use helix_core::{
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     ropey::RopeSlice,
@@ -15,9 +17,67 @@ use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View
 use log::debug;
 
 use crate::line_cache::LineLayoutCache;
+use crate::scroll_manager::{ScrollManager, ViewOffset};
+use crate::ui::scrollbar::{Scrollbar, ScrollbarState, ScrollableHandle};
 use crate::utils::color_to_hsla;
-use crate::{Core, Input, InputEvent};
+use crate::{Core, Input};
 use helix_stdx::rope::RopeSliceExt;
+
+/// Custom scroll handle for DocumentView that integrates with ScrollManager
+#[derive(Clone)]
+pub struct DocumentScrollHandle {
+    scroll_manager: ScrollManager,
+    on_change: Option<Rc<dyn Fn()>>,
+}
+
+impl std::fmt::Debug for DocumentScrollHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DocumentScrollHandle")
+            .field("scroll_manager", &self.scroll_manager)
+            .field("on_change", &self.on_change.is_some())
+            .finish()
+    }
+}
+
+impl DocumentScrollHandle {
+    pub fn new(scroll_manager: ScrollManager) -> Self {
+        Self { 
+            scroll_manager,
+            on_change: None,
+        }
+    }
+    
+    pub fn with_callback(scroll_manager: ScrollManager, on_change: impl Fn() + 'static) -> Self {
+        Self {
+            scroll_manager,
+            on_change: Some(Rc::new(on_change)),
+        }
+    }
+}
+
+impl ScrollableHandle for DocumentScrollHandle {
+    fn max_offset(&self) -> Size<Pixels> {
+        self.scroll_manager.max_scroll_offset()
+    }
+
+    fn set_offset(&self, point: Point<Pixels>) {
+        self.scroll_manager.set_scroll_offset(point);
+        
+        // Trigger callback if available to notify of change
+        if let Some(on_change) = &self.on_change {
+            on_change();
+        }
+    }
+
+    fn offset(&self) -> Point<Pixels> {
+        self.scroll_manager.scroll_offset()
+    }
+
+    fn viewport(&self) -> Bounds<Pixels> {
+        let size = self.scroll_manager.viewport_size.get();
+        Bounds::new(point(px(0.0), px(0.0)), size)
+    }
+}
 
 pub struct DocumentView {
     core: Entity<Core>,
@@ -26,6 +86,9 @@ pub struct DocumentView {
     style: TextStyle,
     focus: FocusHandle,
     is_focused: bool,
+    scroll_manager: ScrollManager,
+    scrollbar_state: ScrollbarState,
+    line_height: Pixels,
 }
 
 impl DocumentView {
@@ -37,6 +100,14 @@ impl DocumentView {
         focus: &FocusHandle,
         is_focused: bool,
     ) -> Self {
+        // Create scroll manager with placeholder doc_id (will be updated in render)
+        let line_height = px(20.0); // Default, will be updated
+        let scroll_manager = ScrollManager::new(DocumentId::default(), view_id, line_height);
+        
+        // Create custom scroll handle that wraps our scroll manager
+        let scroll_handle = DocumentScrollHandle::new(scroll_manager.clone());
+        let scrollbar_state = ScrollbarState::new(scroll_handle);
+        
         Self {
             core,
             input,
@@ -44,11 +115,28 @@ impl DocumentView {
             style,
             focus: focus.clone(),
             is_focused,
+            scroll_manager,
+            scrollbar_state,
+            line_height,
         }
     }
 
     pub fn set_focused(&mut self, is_focused: bool) {
         self.is_focused = is_focused;
+    }
+
+    /// Convert a Helix anchor (character position) to scroll pixels
+    fn anchor_to_scroll_px(&self, anchor_char: usize, document: &helix_view::Document) -> Pixels {
+        let row = document.text().char_to_line(anchor_char);
+        px(row as f32 * self.line_height.0)
+    }
+
+    /// Convert scroll pixels to a Helix anchor (character position)
+    fn scroll_px_to_anchor(&self, y: Pixels, document: &helix_view::Document) -> usize {
+        let row = (y.0 / self.line_height.0).floor() as usize;
+        let text = document.text();
+        let clamped_row = row.min(text.len_lines().saturating_sub(1));
+        text.line_to_char(clamped_row)
     }
 
     fn get_diagnostics(&self, cx: &mut Context<Self>) -> Vec<Diagnostic> {
@@ -74,7 +162,8 @@ impl DocumentView {
                 .cursor(text.slice(..));
             let cursor_pos = view.screen_coords_at_pos(document, text.slice(..), primary_idx);
 
-            let anchor = document.view_offset(self.view_id).anchor;
+            let doc_view_offset = document.view_offset(self.view_id);
+            let anchor = doc_view_offset.anchor;
             let first_row = text.char_to_line(anchor.min(text.len_chars()));
             (cursor_pos, doc_id, first_row)
         };
@@ -104,67 +193,67 @@ impl EventEmitter<DismissEvent> for DocumentView {}
 
 impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        
-        // Focus handlers should be set up once, not in render
-        // The is_focused state is managed externally via set_focused()
-
         let doc_id = {
             let editor = &self.core.read(cx).editor;
             let view = editor.tree.get(self.view_id);
             view.doc
         };
 
-        // Use DocumentElement for proper editor rendering
-        let doc = DocumentElement::new(
+        // Update scroll manager with document info
+        {
+            let core = self.core.read(cx);
+            let editor = &core.editor;
+            if let Some(document) = editor.document(doc_id) {
+                let total_lines = document.text().len_lines();
+                self.scroll_manager.set_total_lines(total_lines);
+                self.scroll_manager.set_line_height(self.line_height);
+                
+                // Set a reasonable default viewport size if not already set
+                // This will be updated with actual size in the paint method
+                // Use a height that shows fewer lines than total to ensure scrollbar appears
+                let viewport_height = self.line_height * 30.0; // Show 30 lines
+                self.scroll_manager.set_viewport_size(size(px(800.0), viewport_height));
+                
+                // Don't recreate scrollbar state - it's already using our scroll manager
+                
+                debug!("Document has {} lines, viewport shows ~30 lines", total_lines);
+            }
+        }
+
+        // Create the DocumentElement that will handle the actual rendering
+        // Pass the same scroll manager to ensure state is shared
+        let document_element = DocumentElement::with_scroll_manager(
             self.core.clone(),
             doc_id,
             self.view_id,
             self.style.clone(),
             &self.focus,
             self.is_focused,
-        )
-        .on_scroll_wheel(cx.listener(move |view, ev: &ScrollWheelEvent, _window, cx| {
-            use helix_core::movement::Direction;
-            let view_id = view.view_id;
-            let line_height = px(20.0); // Approximate line height
-            
-            // Apply Zed-like scroll sensitivity (default 1.0, but reduced for slower scrolling)
-            let scroll_sensitivity = 0.3; // Much slower than our previous implementation
-            let fast_scroll_sensitivity = 1.2; // When holding alt/option
-            
-            let sensitivity = if ev.modifiers.alt {
-                fast_scroll_sensitivity
-            } else {
-                scroll_sensitivity
-            };
-            
-            // Extract y delta from ScrollDelta enum and apply sensitivity
-            let raw_delta_y = match ev.delta {
-                ScrollDelta::Pixels(point) => point.y,
-                ScrollDelta::Lines(point) => px(point.y * 20.0), // Convert lines to pixels
-            };
-            
-            let delta_y = raw_delta_y * sensitivity;
-            
-            if delta_y.abs() >= px(1.0) { // Only scroll if delta is significant
-                let lines = delta_y / line_height;
-                let direction = if lines > 0. {
-                    Direction::Backward
-                } else {
-                    Direction::Forward
-                };
-                // More conservative line count calculation
-                let line_count = (lines.abs() as usize).max(1);
+            self.scroll_manager.clone(),
+        );
 
-                view.input.update(cx, |_, cx| {
-                    cx.emit(InputEvent::ScrollLines {
-                        direction,
-                        line_count,
-                        view_id,
-                    })
-                });
-            }
-        }));
+        // Create the scrollbar
+        let scrollbar_opt = Scrollbar::vertical(self.scrollbar_state.clone());
+        
+        // Create the editor content with custom scrollbar
+        let editor_content = div()
+            .id("editor-content") 
+            .w_full()
+            .h_full()
+            .flex() // Horizontal flex layout
+            .child(
+                // Main editor area with DocumentElement
+                div()
+                    .id("editor-paint-area")
+                    .w_full()
+                    .h_full()
+                    .flex_1()
+                    .child(document_element)
+            )
+            .when_some(
+                scrollbar_opt,
+                |div, scrollbar| div.child(scrollbar)
+            );
 
         let mut status = crate::statusline::StatusLine::new(
             self.core.clone(),
@@ -193,7 +282,7 @@ impl Render for DocumentView {
             .h_full()
             .flex()
             .flex_col()
-            .child(doc)
+            .child(editor_content)
             .child(status)
             .child(
                 div()
@@ -224,6 +313,7 @@ pub struct DocumentElement {
     interactivity: Interactivity,
     focus: FocusHandle,
     is_focused: bool,
+    scroll_manager: ScrollManager,
 }
 
 impl IntoElement for DocumentElement {
@@ -278,6 +368,10 @@ impl DocumentElement {
         focus: &FocusHandle,
         is_focused: bool,
     ) -> Self {
+        // Create scroll manager for this element
+        let line_height = px(20.0); // Default, will be updated
+        let scroll_manager = ScrollManager::new(doc_id, view_id, line_height);
+        
         Self {
             core,
             doc_id,
@@ -286,6 +380,29 @@ impl DocumentElement {
             interactivity: Interactivity::default(),
             focus: focus.clone(),
             is_focused,
+            scroll_manager,
+        }
+        .track_focus(focus)
+    }
+    
+    pub fn with_scroll_manager(
+        core: Entity<Core>,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        style: TextStyle,
+        focus: &FocusHandle,
+        is_focused: bool,
+        scroll_manager: ScrollManager,
+    ) -> Self {
+        Self {
+            core,
+            doc_id,
+            view_id,
+            style,
+            interactivity: Interactivity::default(),
+            focus: focus.clone(),
+            is_focused,
+            scroll_manager,
         }
         .track_focus(focus)
     }
@@ -310,13 +427,13 @@ impl DocumentElement {
         };
         
         // Check if line is within our view
-        let anchor = first_row;
-        if line_start >= end_char || line_end < anchor {
+        let anchor_char = text.line_to_char(first_row);
+        if line_start >= end_char || line_end < anchor_char {
             return None;
         }
         
         // Adjust line bounds to our view
-        let line_start = line_start.max(anchor);
+        let line_start = line_start.max(anchor_char);
         let line_end = line_end.min(end_char);
         
         // For empty lines, line_start may equal line_end, which is valid
@@ -833,6 +950,11 @@ impl Element for DocumentElement {
         let view_id = self.view_id;
         let cell_width = after_layout.cell_width;
         let line_height = after_layout.line_height;
+        
+        // Update scroll manager with current layout info
+        self.scroll_manager.set_line_height(line_height);
+        self.scroll_manager.set_viewport_size(bounds.size);
+        
         let gutter_width_cells = {
             let editor = &core.read(cx).editor;
             let view = editor.tree.get(view_id);
@@ -840,6 +962,14 @@ impl Element for DocumentElement {
                 Some(doc) => doc,
                 None => return, // Document was closed
             };
+            
+            // Update scroll manager with document info
+            let total_lines = doc.text().len_lines();
+            self.scroll_manager.set_total_lines(total_lines);
+            
+            // Don't sync from Helix here - the scroll manager maintains its own state
+            // which is updated by scroll events and the scrollbar
+            
             view.gutter_offset(doc)
         };
         let _gutter_width_px = cell_width * gutter_width_cells as f32;
@@ -999,6 +1129,61 @@ impl Element for DocumentElement {
                     });
                 }
             });
+        
+        // Handle scroll wheel events
+        let scroll_manager = self.scroll_manager.clone();
+        let core_scroll = self.core.clone();
+        let view_id_scroll = self.view_id;
+        self.interactivity
+            .on_scroll_wheel(move |event, _window, cx| {
+                // Update scroll position based on wheel delta
+                let current_offset = scroll_manager.scroll_offset();
+                let delta = event.delta.pixel_delta(px(20.0)); // Use line height as scroll unit
+                let new_offset = point(
+                    current_offset.x - delta.x,
+                    current_offset.y - delta.y,
+                );
+                
+                scroll_manager.set_scroll_offset(new_offset);
+                
+                // Update Helix viewport to match the new scroll position
+                core_scroll.update(cx, |core, cx| {
+                    let editor = &mut core.editor;
+                    
+                    // Use Helix's scroll commands to properly update the view
+                    let scroll_lines = (delta.y.0 / 20.0).round() as isize; // Convert pixels to lines
+                    if scroll_lines != 0 {
+                        // Import the scroll command from helix
+                        use helix_term::commands;
+                        use helix_core::movement::Direction;
+                        
+                        let count = scroll_lines.unsigned_abs();
+                        
+                        // Create the correct context for the scroll command
+                        let mut ctx = helix_term::commands::Context {
+                            editor,
+                            register: None,
+                            count: None,
+                            callback: Vec::new(),
+                            on_next_key_callback: None,
+                            jobs: &mut core.jobs,
+                        };
+                        
+                        // Call the appropriate scroll function
+                        if scroll_lines > 0 {
+                            // Scroll up (content moves down)
+                            commands::scroll(&mut ctx, count, Direction::Backward, false);
+                        } else {
+                            // Scroll down (content moves up)
+                            commands::scroll(&mut ctx, count, Direction::Forward, false);
+                        }
+                        
+                        debug!("Scrolled by {} lines", scroll_lines);
+                    }
+                    
+                    cx.notify();
+                });
+            });
 
         let is_focused = self.is_focused;
 
@@ -1087,10 +1272,11 @@ impl Element for DocumentElement {
                 }
 
                 let _cursor_row = cursor_pos.map(|p| p.row);
-                let anchor = document.view_offset(self.view_id).anchor;
                 let total_lines = text.len_lines();
-                let first_row = text.char_to_line(anchor.min(text.len_chars()));
-
+                
+                // Use scroll manager to determine visible lines
+                let (first_row, last_row_from_scroll) = self.scroll_manager.visible_line_range();
+                
                 // Get the character under the cursor for block cursor mode
                 let cursor_text = if matches!(cursor_kind, CursorKind::Block) && self.is_focused {
                     // Get the actual cursor position in the document
@@ -1151,8 +1337,8 @@ impl Element for DocumentElement {
                     .primary()
                     .cursor(text.slice(..));
                 
-                // println!("first row is {}", row);
-                let mut last_row = (first_row + after_layout.rows + 1).min(total_lines);
+                // Use the last row from scroll manager
+                let mut last_row = last_row_from_scroll;
                 
                 // Check if cursor is at the very end of the file (phantom line)
                 let cursor_at_end = cursor_char_idx == text.len_chars();
@@ -1247,13 +1433,14 @@ impl Element for DocumentElement {
                     
                     // Skip lines outside our view
                     // For phantom line, we need special handling since line_start == end_char == text.len_chars()
-                    if !is_phantom_line && (line_start >= end_char || line_end < anchor) {
+                    let anchor_char = text.line_to_char(first_row);
+                    if !is_phantom_line && (line_start >= end_char || line_end < anchor_char) {
                         y_offset += after_layout.line_height;
                         continue;
                     }
                     
                     // Adjust line bounds to our view
-                    let line_start = line_start.max(anchor);
+                    let line_start = line_start.max(anchor_char);
                     let line_end = line_end.min(end_char);
                     
                     // For empty lines, line_start may equal line_end, which is valid

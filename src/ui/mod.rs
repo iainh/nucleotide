@@ -9,6 +9,7 @@ pub mod label;
 pub mod list_item;
 pub mod overlay;
 pub mod panel;
+pub mod scrollbar;
 pub mod selectable_list;
 pub mod theme_utils;
 
@@ -39,6 +40,7 @@ pub trait Themed {
 pub struct Theme {
     pub background: Hsla,
     pub surface: Hsla,
+    pub surface_background: Hsla,
     pub surface_hover: Hsla,
     pub surface_active: Hsla,
     pub border: Hsla,
@@ -65,6 +67,7 @@ impl Theme {
         Self {
             background: hsla(0.0, 0.0, 0.05, 1.0),
             surface: hsla(0.0, 0.0, 0.1, 1.0),
+            surface_background: hsla(0.0, 0.0, 0.08, 1.0),
             surface_hover: hsla(0.0, 0.0, 0.15, 1.0),
             surface_active: hsla(0.0, 0.0, 0.2, 1.0),
             border: hsla(0.0, 0.0, 0.2, 1.0),
@@ -85,6 +88,7 @@ impl Theme {
         Self {
             background: hsla(0.0, 0.0, 1.0, 1.0),
             surface: hsla(0.0, 0.0, 0.98, 1.0),
+            surface_background: hsla(0.0, 0.0, 0.99, 1.0),
             surface_hover: hsla(0.0, 0.0, 0.95, 1.0),
             surface_active: hsla(0.0, 0.0, 0.92, 1.0),
             border: hsla(0.0, 0.0, 0.9, 1.0),
