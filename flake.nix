@@ -3,17 +3,17 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    
+
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    
+
     crane = {
       url = "github:ipetkov/crane";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    
+
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -23,38 +23,26 @@
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
-            # Use apple-sdk 11.0 for macOS
+            # Use apple-sdk 13 for macOS
             (self: super: nixpkgs.lib.optionalAttrs (system == "aarch64-darwin" || system == "x86_64-darwin") {
               darwin = super.darwin.overrideScope (selfDarwin: superDarwin: {
-                apple_sdk = superDarwin.apple_sdk_11_0;
+                apple_sdk = superDarwin.apple_sdk_13;
               });
             })
           ];
         };
-        
+
         # Use latest stable Rust from Fenix
         rustToolchain = fenix.packages.${system}.stable.toolchain;
-        
+
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-        
+
         # Platform-specific dependencies
         darwinDeps = with pkgs; lib.optionals stdenv.isDarwin [
           libiconv
-          darwin.apple_sdk.frameworks.AppKit
-          darwin.apple_sdk.frameworks.CoreGraphics
-          darwin.apple_sdk.frameworks.CoreServices
-          darwin.apple_sdk.frameworks.CoreText
-          darwin.apple_sdk.frameworks.Foundation
-          darwin.apple_sdk.frameworks.Metal
-          darwin.apple_sdk.frameworks.MetalKit
-          darwin.apple_sdk.frameworks.MetalPerformanceShaders
-          darwin.apple_sdk.frameworks.QuartzCore
-          darwin.apple_sdk.frameworks.Security
-          darwin.apple_sdk.frameworks.SystemConfiguration
-          darwin.apple_sdk.frameworks.VideoToolbox
-          darwin.apple_sdk.frameworks.AVFoundation
+          darwin.apple_sdk
         ];
-        
+
         linuxDeps = with pkgs; lib.optionals stdenv.isLinux [
           libxkbcommon
           xorg.libxcb
@@ -95,9 +83,9 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          
+
           buildInputs = commonDeps ++ darwinDeps ++ linuxDeps;
-          
+
           nativeBuildInputs = with pkgs; [
             pkg-config
             cmake
@@ -105,7 +93,7 @@
           ] ++ lib.optionals stdenv.isDarwin [
             xcbuild
           ];
-          
+
           # Environment variables
           OPENSSL_NO_VENDOR = 1;
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
@@ -113,11 +101,11 @@
 
         # Build dependencies only (for better caching)
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-        
+
         # The main package
         helix-gpui = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
-          
+
           # macOS-specific: Create app bundle
           postInstall = pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
             mkdir -p $out/Applications
@@ -167,30 +155,31 @@
             # Create symlink in bin
             ln -s "$APP_DIR/Contents/MacOS/hxg" $out/bin/hxg
           '';
-          
+
           meta = with pkgs.lib; {
             description = "A GUI implementation of the Helix text editor built with GPUI";
             homepage = "https://github.com/polachok/helix-gpui";
             license = licenses.mpl20;
-            maintainers = [];
+            maintainers = [ ];
             mainProgram = "hxg";
           };
         });
 
-      in {
+      in
+      {
         packages = {
           default = helix-gpui;
           helix-gpui = helix-gpui;
         };
-        
+
         apps.default = flake-utils.lib.mkApp {
           drv = helix-gpui;
           name = "hxg";
         };
-        
+
         devShells.default = craneLib.devShell {
           checks = self.checks.${system};
-          
+
           packages = with pkgs; [
             # Rust toolchain with components
             (fenix.packages.${system}.stable.withComponents [
@@ -200,27 +189,27 @@
               "rustc"
               "rustfmt"
             ])
-            
+
             # Development tools
             rust-analyzer
             cargo-watch
             cargo-edit
             cargo-outdated
-            
+
             # For running the application
             ripgrep
-            
+
             # Platform-specific tools
           ] ++ lib.optionals stdenv.isDarwin [
             darwin.DarwinTools
             xcbuild
           ];
-          
+
           inputsFrom = [ helix-gpui ];
-          
+
           # Development environment variables
           RUST_SRC_PATH = "${fenix.packages.${system}.stable.rust-src}/lib/rustlib/src/rust/library";
-          
+
           shellHook = ''
             echo "Welcome to helix-gpui development environment!"
             echo ""
@@ -238,19 +227,20 @@
             ''}
           '';
         };
-        
+
         # Optional: checks for CI
         checks = {
           inherit helix-gpui;
-          
+
           helix-gpui-clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--all-targets -- --deny warnings";
           });
-          
+
           helix-gpui-fmt = craneLib.cargoFmt {
             inherit src;
           };
         };
       });
 }
+

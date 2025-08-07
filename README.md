@@ -9,3 +9,21 @@ Currently this project has *less* features and more bugs than helix-term (`hx`).
 * The first goal is to reach feature parity 
 * Second goal is refactoring helix to allow for implementing commands properly
 * Third goal is adding things like builtin terminal and file tree
+
+## Troubleshooting
+
+### Metal shader compilation error on macOS
+
+If you encounter this error when building:
+```
+--- stderr
+metal shader compilation failed:
+error: tool 'metal' not found
+```
+
+You need to ensure Xcode is selected as the active developer directory:
+```bash
+xcode-select --switch /Applications/Xcode.app/Contents/Developer
+```
+
+This provides the Metal shader compiler required for GPUI's graphics rendering on macOS.
