@@ -22,14 +22,6 @@
       let
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [
-            # Use apple-sdk 13 for macOS
-            (self: super: nixpkgs.lib.optionalAttrs (system == "aarch64-darwin" || system == "x86_64-darwin") {
-              darwin = super.darwin.overrideScope (selfDarwin: superDarwin: {
-                apple_sdk = superDarwin.apple_sdk_13;
-              });
-            })
-          ];
         };
 
         # Use latest stable Rust from Fenix
@@ -40,7 +32,15 @@
         # Platform-specific dependencies
         darwinDeps = with pkgs; lib.optionals stdenv.isDarwin [
           libiconv
-          darwin.apple_sdk
+          darwin.apple_sdk.frameworks.Foundation
+          darwin.apple_sdk.frameworks.AppKit
+          darwin.apple_sdk.frameworks.CoreGraphics
+          darwin.apple_sdk.frameworks.CoreServices
+          darwin.apple_sdk.frameworks.CoreText
+          darwin.apple_sdk.frameworks.IOKit
+          darwin.apple_sdk.frameworks.Metal
+          darwin.apple_sdk.frameworks.Security
+          darwin.apple_sdk.frameworks.SystemConfiguration
         ];
 
         linuxDeps = with pkgs; lib.optionals stdenv.isLinux [
