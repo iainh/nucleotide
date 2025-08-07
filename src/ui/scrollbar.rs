@@ -286,11 +286,11 @@ impl Element for Scrollbar {
         style.flex_shrink = 0.;
 
         if self.axis == Axis::Vertical {
-            style.size.width = px(8.).into(); // Scrollbar width
+            style.size.width = px(12.).into(); // Scrollbar width
             style.size.height = relative(1.).into();
         } else {
             style.size.width = relative(1.).into();
-            style.size.height = px(8.).into(); // Scrollbar height
+            style.size.height = px(12.).into(); // Scrollbar height
         }
 
         (window.request_layout(style, None, cx), ())
