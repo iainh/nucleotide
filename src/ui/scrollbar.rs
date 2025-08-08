@@ -367,14 +367,19 @@ impl Element for Scrollbar {
             let thumb_offset = self.thumb.start * padded_bounds.size.along(axis);
             let thumb_end = self.thumb.end * padded_bounds.size.along(axis);
 
+            // Center the thumb within the scrollbar gutter
+            let thumb_width = padded_bounds.size.along(axis.invert()) * 0.5; // Make thumb half the gutter width
+            let thumb_center_offset = (padded_bounds.size.along(axis.invert()) - thumb_width) / 2.0;
+            
             let thumb_bounds = Bounds::new(
                 padded_bounds
                     .origin
-                    .apply_along(axis, |origin| origin + thumb_offset),
+                    .apply_along(axis, |origin| origin + thumb_offset)
+                    .apply_along(axis.invert(), |origin| origin + thumb_center_offset),
                 padded_bounds
                     .size
                     .apply_along(axis, |_| thumb_end - thumb_offset)
-                    .apply_along(axis.invert(), |width| width / 2.0),
+                    .apply_along(axis.invert(), |_| thumb_width),
             );
 
             let corners = Corners::all(thumb_bounds.size.along(axis.invert()) / 2.0);
