@@ -405,12 +405,15 @@ impl Element for Scrollbar {
                 ThumbDrag(Pixels),
             }
 
+            // Store the actual thumb dimensions for use in event handlers
+            let actual_thumb_bounds = thumb_bounds;
+            
             let compute_click_offset =
                 move |event_position: Point<Pixels>,
                       max_offset: Size<Pixels>,
                       event_type: ScrollbarMouseEvent| {
                     let viewport_size = padded_bounds.size.along(axis);
-                    let thumb_size = thumb_bounds.size.along(axis);
+                    let thumb_size = actual_thumb_bounds.size.along(axis);
 
                     let thumb_offset = match event_type {
                         ScrollbarMouseEvent::GutterClick => thumb_size / 2.,
@@ -451,8 +454,8 @@ impl Element for Scrollbar {
                         return;
                     }
 
-                    if thumb_bounds.contains(&event.position) {
-                        let offset = event.position.along(axis) - thumb_bounds.origin.along(axis);
+                    if actual_thumb_bounds.contains(&event.position) {
+                        let offset = event.position.along(axis) - actual_thumb_bounds.origin.along(axis);
                         state.set_dragging(offset);
                     } else {
                         let scroll_handle = state.scroll_handle();
@@ -501,7 +504,7 @@ impl Element for Scrollbar {
                                 window.refresh();
                             }
                             _ if event.pressed_button.is_none() => {
-                                state.set_thumb_hovered(thumb_bounds.contains(&event.position))
+                                state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position))
                             }
                             _ => {}
                         }
@@ -517,7 +520,7 @@ impl Element for Scrollbar {
                         if state.is_dragging() {
                             state.scroll_handle().drag_ended();
                         }
-                        state.set_thumb_hovered(thumb_bounds.contains(&event.position));
+                        state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position));
                     }
                 }
             });
