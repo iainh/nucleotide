@@ -32,6 +32,8 @@ pub struct ScrollManager {
     pub scroll_offset: Rc<Cell<Point<Pixels>>>,
     /// Viewport size in pixels
     pub viewport_size: Rc<Cell<Size<Pixels>>>,
+    /// Track if scroll was changed by scrollbar (needs sync to Helix)
+    pub scrollbar_changed: Rc<Cell<bool>>,
 }
 
 impl ScrollManager {
@@ -47,6 +49,7 @@ impl ScrollManager {
             total_lines: Rc::new(Cell::new(1)),
             scroll_offset: Rc::new(Cell::new(point(px(0.0), px(0.0)))),
             viewport_size: Rc::new(Cell::new(size(px(800.0), px(600.0)))),
+            scrollbar_changed: Rc::new(Cell::new(false)),
         }
     }
 
@@ -82,8 +85,19 @@ impl ScrollManager {
         self.scroll_offset.get()
     }
 
-    /// Set the scroll offset in pixels (follows GPUI convention: negative = scrolled down)
+    /// Set the scroll offset in pixels from scrollbar interaction
+    /// This marks the position as needing sync back to Helix
     pub fn set_scroll_offset(&self, offset: Point<Pixels>) {
+        self.set_scroll_offset_internal(offset, true);
+    }
+    
+    /// Set the scroll offset from Helix sync (doesn't mark as scrollbar-changed)
+    pub fn set_scroll_offset_from_helix(&self, offset: Point<Pixels>) {
+        self.set_scroll_offset_internal(offset, false);
+    }
+    
+    /// Internal method to set scroll offset with control over scrollbar_changed flag
+    fn set_scroll_offset_internal(&self, offset: Point<Pixels>, from_scrollbar: bool) {
         let max_offset = self.max_scroll_offset();
         // GPUI convention: offsets are negative when scrolled, clamped between -max and 0
         let clamped_offset = point(
@@ -94,7 +108,12 @@ impl ScrollManager {
         self.scroll_offset.set(clamped_offset);
         
         if old_offset != clamped_offset {
-            log::debug!("ScrollManager[{}]: offset changed from {:?} to {:?}", self.id, old_offset, clamped_offset);
+            log::debug!("ScrollManager[{}]: offset changed from {:?} to {:?} (from_scrollbar: {})", 
+                self.id, old_offset, clamped_offset, from_scrollbar);
+            if from_scrollbar {
+                // Mark that scrollbar changed the position (needs sync to Helix)
+                self.scrollbar_changed.set(true);
+            }
         }
     }
 
@@ -119,7 +138,17 @@ impl ScrollManager {
         let anchor_line = text.char_to_line(view_offset.anchor);
         let y = self.anchor_to_pixels(anchor_line);
         // GPUI convention: negative offset when scrolled down
-        self.set_scroll_offset(point(px(0.0), -y));
+        let new_offset = point(px(0.0), -y);
+        
+        // Update scroll offset without marking as scrollbar-changed
+        // This is a sync FROM Helix, not a scrollbar action
+        let max_offset = self.max_scroll_offset();
+        let clamped_offset = point(
+            new_offset.x.min(px(0.0)).max(-max_offset.width),
+            new_offset.y.min(px(0.0)).max(-max_offset.height),
+        );
+        self.scroll_offset.set(clamped_offset);
+        // Don't set scrollbar_changed flag - this is Helix updating us
     }
 
     /// Update Helix's ViewOffset from current scroll position

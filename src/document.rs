@@ -974,9 +974,9 @@ impl Element for DocumentElement {
         self.scroll_manager.set_line_height(line_height);
         self.scroll_manager.set_viewport_size(bounds.size);
         
-        // Sync scroll position back to Helix if needed
-        // This happens when the scrollbar changes the scroll offset
-        {
+        // Sync scroll position back to Helix only if scrollbar changed it
+        // This prevents overriding Helix's auto-scroll behavior
+        if self.scroll_manager.scrollbar_changed.get() {
             core.update(cx, |core, _| {
                 let editor = &mut core.editor;
                 if let Some(doc) = editor.document(self.doc_id) {
@@ -992,6 +992,8 @@ impl Element for DocumentElement {
                     }
                 }
             });
+            // Clear the flag after syncing
+            self.scroll_manager.scrollbar_changed.set(false);
         }
         
         let gutter_width_cells = {
@@ -1013,7 +1015,8 @@ impl Element for DocumentElement {
             let anchor_line = text.char_to_line(view_offset.anchor);
             let y = px(anchor_line as f32 * self.scroll_manager.line_height.get().0);
             // GPUI convention: negative offset when scrolled down
-            self.scroll_manager.set_scroll_offset(point(px(0.0), -y));
+            // Use set_scroll_offset_from_helix to avoid marking as scrollbar-changed
+            self.scroll_manager.set_scroll_offset_from_helix(point(px(0.0), -y));
             
             view.gutter_offset(doc)
         };
