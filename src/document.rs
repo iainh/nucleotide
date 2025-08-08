@@ -965,10 +965,16 @@ impl Element for DocumentElement {
             
             // Update scroll manager with document info
             let total_lines = doc.text().len_lines();
-            self.scroll_manager.set_total_lines(total_lines);
+            self.scroll_manager.total_lines.set(total_lines);
             
-            // Don't sync from Helix here - the scroll manager maintains its own state
-            // which is updated by scroll events and the scrollbar
+            // Sync scroll position from Helix to ensure we reflect auto-scroll
+            // This is important for keeping cursor visible during editing
+            let view_offset = doc.view_offset(self.view_id);
+            let text = doc.text();
+            let anchor_line = text.char_to_line(view_offset.anchor);
+            let y = px(anchor_line as f32 * self.scroll_manager.line_height.get().0);
+            // GPUI convention: negative offset when scrolled down
+            self.scroll_manager.set_scroll_offset(point(px(0.0), -y));
             
             view.gutter_offset(doc)
         };

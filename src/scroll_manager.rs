@@ -25,9 +25,9 @@ pub struct ScrollManager {
     /// The view of the document
     view_id: ViewId,
     /// Cached line height in pixels
-    line_height: Rc<Cell<Pixels>>,
+    pub line_height: Rc<Cell<Pixels>>,
     /// Total number of lines in the document
-    total_lines: Rc<Cell<usize>>,
+    pub total_lines: Rc<Cell<usize>>,
     /// Current scroll offset in pixels
     pub scroll_offset: Rc<Cell<Point<Pixels>>>,
     /// Viewport size in pixels
