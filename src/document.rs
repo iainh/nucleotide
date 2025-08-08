@@ -13,11 +13,11 @@ use helix_core::{
 use helix_lsp::lsp::Diagnostic;
 use helix_term::ui::EditorView;
 // Import helix's syntax highlighting system
-use helix_view::{graphics::CursorKind, Document, DocumentId, Editor, Theme, View, ViewId};
+use helix_view::{graphics::CursorKind, view::ViewPosition, Document, DocumentId, Editor, Theme, View, ViewId};
 use log::debug;
 
 use crate::line_cache::LineLayoutCache;
-use crate::scroll_manager::{ScrollManager, ViewOffset};
+use crate::scroll_manager::ScrollManager;
 use crate::ui::scrollbar::{Scrollbar, ScrollbarState, ScrollableHandle};
 use crate::utils::color_to_hsla;
 use crate::{Core, Input};
@@ -28,6 +28,8 @@ use helix_stdx::rope::RopeSliceExt;
 pub struct DocumentScrollHandle {
     scroll_manager: ScrollManager,
     on_change: Option<Rc<dyn Fn()>>,
+    core: Option<WeakEntity<Core>>,
+    view_id: ViewId,
 }
 
 impl std::fmt::Debug for DocumentScrollHandle {
@@ -35,15 +37,18 @@ impl std::fmt::Debug for DocumentScrollHandle {
         f.debug_struct("DocumentScrollHandle")
             .field("scroll_manager", &self.scroll_manager)
             .field("on_change", &self.on_change.is_some())
+            .field("view_id", &self.view_id)
             .finish()
     }
 }
 
 impl DocumentScrollHandle {
-    pub fn new(scroll_manager: ScrollManager) -> Self {
+    pub fn new(scroll_manager: ScrollManager, core: Entity<Core>, view_id: ViewId) -> Self {
         Self { 
             scroll_manager,
             on_change: None,
+            core: Some(core.downgrade()),
+            view_id,
         }
     }
     
@@ -51,6 +56,8 @@ impl DocumentScrollHandle {
         Self {
             scroll_manager,
             on_change: Some(Rc::new(on_change)),
+            core: None,
+            view_id: ViewId::default(),
         }
     }
 }
@@ -62,6 +69,9 @@ impl ScrollableHandle for DocumentScrollHandle {
 
     fn set_offset(&self, point: Point<Pixels>) {
         self.scroll_manager.set_scroll_offset(point);
+        
+        // Mark that we need to sync back to Helix
+        // This will be done in the next paint cycle when we have access to cx
         
         // Trigger callback if available to notify of change
         if let Some(on_change) = &self.on_change {
@@ -105,7 +115,7 @@ impl DocumentView {
         let scroll_manager = ScrollManager::new(DocumentId::default(), view_id, line_height);
         
         // Create custom scroll handle that wraps our scroll manager
-        let scroll_handle = DocumentScrollHandle::new(scroll_manager.clone());
+        let scroll_handle = DocumentScrollHandle::new(scroll_manager.clone(), core.clone(), view_id);
         let scrollbar_state = ScrollbarState::new(scroll_handle);
         
         Self {
@@ -221,7 +231,7 @@ impl Render for DocumentView {
         }
 
         // Create the DocumentElement that will handle the actual rendering
-        // Pass the same scroll manager to ensure state is shared
+        // Pass the same scroll manager and scrollbar state to ensure state is shared
         let document_element = DocumentElement::with_scroll_manager(
             self.core.clone(),
             doc_id,
@@ -230,6 +240,7 @@ impl Render for DocumentView {
             &self.focus,
             self.is_focused,
             self.scroll_manager.clone(),
+            self.scrollbar_state.clone(),
         );
 
         // Create the scrollbar
@@ -314,6 +325,7 @@ pub struct DocumentElement {
     focus: FocusHandle,
     is_focused: bool,
     scroll_manager: ScrollManager,
+    scrollbar_state: ScrollbarState,
 }
 
 impl IntoElement for DocumentElement {
@@ -372,6 +384,10 @@ impl DocumentElement {
         let line_height = px(20.0); // Default, will be updated
         let scroll_manager = ScrollManager::new(doc_id, view_id, line_height);
         
+        // Create a default scrollbar state
+        let scroll_handle = DocumentScrollHandle::new(scroll_manager.clone(), core.clone(), view_id);
+        let scrollbar_state = ScrollbarState::new(scroll_handle);
+        
         Self {
             core,
             doc_id,
@@ -381,6 +397,7 @@ impl DocumentElement {
             focus: focus.clone(),
             is_focused,
             scroll_manager,
+            scrollbar_state,
         }
         .track_focus(focus)
     }
@@ -393,6 +410,7 @@ impl DocumentElement {
         focus: &FocusHandle,
         is_focused: bool,
         scroll_manager: ScrollManager,
+        scrollbar_state: ScrollbarState,
     ) -> Self {
         Self {
             core,
@@ -403,6 +421,7 @@ impl DocumentElement {
             focus: focus.clone(),
             is_focused,
             scroll_manager,
+            scrollbar_state,
         }
         .track_focus(focus)
     }
@@ -955,6 +974,26 @@ impl Element for DocumentElement {
         self.scroll_manager.set_line_height(line_height);
         self.scroll_manager.set_viewport_size(bounds.size);
         
+        // Sync scroll position back to Helix if needed
+        // This happens when the scrollbar changes the scroll offset
+        {
+            core.update(cx, |core, _| {
+                let editor = &mut core.editor;
+                if let Some(doc) = editor.document(self.doc_id) {
+                    let new_offset = self.scroll_manager.sync_to_helix(doc);
+                    // Convert our ViewOffset to helix ViewPosition
+                    let view_position = ViewPosition {
+                        anchor: new_offset.anchor,
+                        horizontal_offset: new_offset.horizontal_offset,
+                        vertical_offset: new_offset.vertical_offset,
+                    };
+                    if let Some(doc_mut) = editor.document_mut(self.doc_id) {
+                        doc_mut.set_view_offset(view_id, view_position);
+                    }
+                }
+            });
+        }
+        
         let gutter_width_cells = {
             let editor = &core.read(cx).editor;
             let view = editor.tree.get(view_id);
@@ -993,8 +1032,14 @@ impl Element for DocumentElement {
         line_cache.clear(); // Clear previous layouts
         
         let line_cache_mouse = line_cache.clone();
+        let scrollbar_state_mouse = self.scrollbar_state.clone();
         self.interactivity
             .on_mouse_down(MouseButton::Left, move |ev, window, cx| {
+                // Don't start selection if scrollbar is being dragged
+                if scrollbar_state_mouse.is_dragging() {
+                    return;
+                }
+                
                 focus.focus(window);
                 
                 let mouse_pos = ev.position;
@@ -1062,11 +1107,17 @@ impl Element for DocumentElement {
         let core_drag = self.core.clone();
         let view_id_drag = self.view_id;
         let line_cache_drag = line_cache.clone();
+        let scrollbar_state_drag = self.scrollbar_state.clone();
         
         self.interactivity
             .on_mouse_move(move |ev, _window, cx| {
                 // Only process if dragging (mouse button held down)
                 if !ev.dragging() {
+                    return;
+                }
+                
+                // Don't select text if scrollbar is being dragged
+                if scrollbar_state_drag.is_dragging() {
                     return;
                 }
                 

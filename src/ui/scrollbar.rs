@@ -435,7 +435,7 @@ impl Element for Scrollbar {
                     -max_offset * percentage
                 };
 
-            // Mouse down events - handle before they reach the editor
+            // Mouse down events - capture them before they reach the editor
             window.on_mouse_event({
                 let state = self.state.clone();
                 move |event: &MouseDownEvent, phase, window, _| {
@@ -443,30 +443,28 @@ impl Element for Scrollbar {
                         return;
                     }
                     
-                    // Handle during capture phase (before editor gets it)
-                    if phase.capture() && bounds.contains(&event.position) {
-                        // We'll handle this event in bubble phase
+                    // Only handle events within scrollbar bounds
+                    if !bounds.contains(&event.position) {
                         return;
                     }
                     
-                    // Process during bubble phase
-                    if !phase.bubble() || !bounds.contains(&event.position) {
-                        return;
-                    }
-
-                    if actual_thumb_bounds.contains(&event.position) {
-                        let offset = event.position.along(axis) - actual_thumb_bounds.origin.along(axis);
-                        state.set_dragging(offset);
-                    } else {
-                        let scroll_handle = state.scroll_handle();
-                        let click_offset = compute_click_offset(
-                            event.position,
-                            scroll_handle.max_offset(),
-                            ScrollbarMouseEvent::GutterClick,
-                        );
-                        scroll_handle
-                            .set_offset(scroll_handle.offset().apply_along(axis, |_| click_offset));
-                        window.refresh();
+                    // Handle during capture phase to prevent editor selection
+                    if phase.capture() {
+                        if actual_thumb_bounds.contains(&event.position) {
+                            let offset = event.position.along(axis) - actual_thumb_bounds.origin.along(axis);
+                            state.set_dragging(offset);
+                        } else {
+                            let scroll_handle = state.scroll_handle();
+                            let click_offset = compute_click_offset(
+                                event.position,
+                                scroll_handle.max_offset(),
+                                ScrollbarMouseEvent::GutterClick,
+                            );
+                            scroll_handle
+                                .set_offset(scroll_handle.offset().apply_along(axis, |_| click_offset));
+                            window.refresh();
+                        }
+                        // Event is consumed by handling it in capture phase
                     }
                 }
             });
@@ -489,25 +487,24 @@ impl Element for Scrollbar {
             window.on_mouse_event({
                 let state = self.state.clone();
                 move |event: &MouseMoveEvent, phase, window, _| {
-                    if phase.bubble() {
-                        match state.thumb_state.get() {
-                            ThumbState::Dragging(drag_state) if event.dragging() => {
-                                let scroll_handle = state.scroll_handle();
-                                let drag_offset = compute_click_offset(
-                                    event.position,
-                                    scroll_handle.max_offset(),
-                                    ScrollbarMouseEvent::ThumbDrag(drag_state),
-                                );
-                                scroll_handle.set_offset(
-                                    scroll_handle.offset().apply_along(axis, |_| drag_offset),
-                                );
-                                window.refresh();
-                            }
-                            _ if event.pressed_button.is_none() => {
-                                state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position))
-                            }
-                            _ => {}
+                    // Handle dragging in capture phase to prevent text selection
+                    if phase.capture() && state.thumb_state.get().is_dragging() && event.dragging() {
+                        let scroll_handle = state.scroll_handle();
+                        if let ThumbState::Dragging(drag_state) = state.thumb_state.get() {
+                            let drag_offset = compute_click_offset(
+                                event.position,
+                                scroll_handle.max_offset(),
+                                ScrollbarMouseEvent::ThumbDrag(drag_state),
+                            );
+                            scroll_handle.set_offset(
+                                scroll_handle.offset().apply_along(axis, |_| drag_offset),
+                            );
+                            window.refresh();
+                            // Event is consumed by handling it in capture phase
                         }
+                    } else if phase.bubble() && event.pressed_button.is_none() {
+                        // Handle hover state in bubble phase
+                        state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position))
                     }
                 }
             });
@@ -515,11 +512,14 @@ impl Element for Scrollbar {
             // Mouse up events
             window.on_mouse_event({
                 let state = self.state.clone();
-                move |event: &MouseUpEvent, phase, _, _| {
-                    if phase.bubble() {
-                        if state.is_dragging() {
-                            state.scroll_handle().drag_ended();
-                        }
+                move |event: &MouseUpEvent, phase, window, _| {
+                    // Handle in capture phase if we were dragging
+                    if phase.capture() && state.is_dragging() {
+                        state.scroll_handle().drag_ended();
+                        state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position));
+                        // Event is consumed by handling it in capture phase
+                    } else if phase.bubble() && !state.is_dragging() {
+                        // Update hover state for non-drag releases
                         state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position));
                     }
                 }
