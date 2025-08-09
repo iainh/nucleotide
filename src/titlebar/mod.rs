@@ -50,7 +50,7 @@ impl Render for TitleBar {
             .and_then(|workspace| {
                 workspace.read(cx).current_filename(cx)
             })
-            .unwrap_or_else(|| "Helix".to_string());
+            .unwrap_or_else(|| "Nucleotide".to_string());
         
         // Update platform titlebar with content
         self.platform_titlebar.update(cx, |titlebar, _cx| {
