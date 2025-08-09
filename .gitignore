@@ -85,3 +85,8 @@ node_modules/
 # Local notes
 TODO.local.md
 NOTES.local.md
+
+# Test/Development files
+test_scroll.txt
+Helix.app/
+reference/
