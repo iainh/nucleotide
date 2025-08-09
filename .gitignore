@@ -22,6 +22,12 @@
 result
 result-*
 .direnv/
+
+# Cross-compilation artifacts
+helix-gpui-linux*
+runtime/
+cross-compile.sh
+flake-cross.nix
 .envrc.local
 
 # Development
