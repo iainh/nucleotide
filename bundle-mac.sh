@@ -1,14 +1,14 @@
 #!/bin/bash
 
-# ABOUTME: Script to create macOS .app bundle for helix-gpui with embedded runtime files
+# ABOUTME: Script to create macOS .app bundle for nucleotide with embedded runtime files
 # ABOUTME: This bundles all Helix runtime files (grammars, themes, queries) inside the .app
 
 set -euo pipefail
 
-APP_NAME="Helix"
+APP_NAME="Nucleotide"
 BUNDLE_NAME="${APP_NAME}.app"
-EXECUTABLE_NAME="hxg"
-BUNDLE_ID="com.helix-editor.helix-gpui"
+EXECUTABLE_NAME="nucl"
+BUNDLE_ID="org.spiralpoint.nucleotide"
 
 # Colors for output
 RED='\033[0;31m'
@@ -16,7 +16,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}Building Helix GPUI macOS App Bundle${NC}"
+echo -e "${GREEN}Building Nucleotide macOS App Bundle${NC}"
 
 # Clean up existing bundle
 if [ -d "${BUNDLE_NAME}" ]; then
@@ -43,6 +43,14 @@ mkdir -p "${BUNDLE_NAME}/Contents/Resources"
 echo -e "${GREEN}Copying executable...${NC}"
 cp "target/release/${EXECUTABLE_NAME}" "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
 chmod +x "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
+
+# Copy the icon file
+echo -e "${GREEN}Copying icon...${NC}"
+if [ -f "assets/nucleotide.icns" ]; then
+    cp "assets/nucleotide.icns" "${BUNDLE_NAME}/Contents/Resources/"
+else
+    echo -e "${YELLOW}Warning: Icon file not found at assets/nucleotide.icns${NC}"
+fi
 
 # Find Helix runtime directory
 HELIX_RUNTIME_SOURCE=""
@@ -96,7 +104,7 @@ cat > "${BUNDLE_NAME}/Contents/Info.plist" << EOF
     <key>CFBundleName</key>
     <string>${APP_NAME}</string>
     <key>CFBundleDisplayName</key>
-    <string>Helix</string>
+    <string>Nucleotide</string>
     <key>CFBundleVersion</key>
     <string>1.0.0</string>
     <key>CFBundleShortVersionString</key>
@@ -126,7 +134,7 @@ cat > "${BUNDLE_NAME}/Contents/Info.plist" << EOF
                 <string>public.utf16-plain-text</string>
             </array>
             <key>CFBundleTypeIconFile</key>
-            <string>helix-gpui.icns</string>
+            <string>nucleotide.icns</string>
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
@@ -146,7 +154,7 @@ cat > "${BUNDLE_NAME}/Contents/Info.plist" << EOF
                 <string>com.sun.java-source</string>
             </array>
             <key>CFBundleTypeIconFile</key>
-            <string>helix-gpui.icns</string>
+            <string>nucleotide.icns</string>
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
@@ -158,7 +166,7 @@ cat > "${BUNDLE_NAME}/Contents/Info.plist" << EOF
                 <string>rs</string>
             </array>
             <key>CFBundleTypeIconFile</key>
-            <string>helix-gpui.icns</string>
+            <string>nucleotide.icns</string>
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
@@ -171,7 +179,7 @@ cat > "${BUNDLE_NAME}/Contents/Info.plist" << EOF
                 <string>markdown</string>
             </array>
             <key>CFBundleTypeIconFile</key>
-            <string>helix-gpui.icns</string>
+            <string>nucleotide.icns</string>
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
@@ -190,7 +198,7 @@ cat > "${BUNDLE_NAME}/Contents/Info.plist" << EOF
                 <string>conf</string>
             </array>
             <key>CFBundleTypeIconFile</key>
-            <string>helix-gpui.icns</string>
+            <string>nucleotide.icns</string>
         </dict>
     </array>
     <key>NSSupportsAutomaticTermination</key>

@@ -3,7 +3,7 @@
 
 set -e
 
-echo "Building helix-gpui with Nix environment..."
+echo "Building nucleotide with Nix environment..."
 
 # Build runtime files
 echo "Building runtime files..."
@@ -17,13 +17,13 @@ nix develop --command cargo build --release
 if [[ "$OSTYPE" == "darwin"* ]]; then
   echo "Creating macOS app bundle..."
   nix develop --command make-macos-bundle
-  echo "✓ App bundle created at Helix.app"
+  echo "✓ App bundle created at Nucleotide.app"
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
   echo "Creating Linux package..."
   nix develop --command make-linux-package
-  echo "✓ Linux package created at helix-gpui-linux.tar.gz"
+  echo "✓ Linux package created at nucleotide-linux.tar.gz"
 fi
 
 echo ""
 echo "Build complete!"
-echo "Binary location: target/release/hxg"
+echo "Binary location: target/release/nucl"

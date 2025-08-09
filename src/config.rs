@@ -1,5 +1,5 @@
-// ABOUTME: This file implements the GUI-specific configuration system for helix-gpui
-// ABOUTME: It loads ghx.toml and falls back to config.toml for unspecified values
+// ABOUTME: This file implements the GUI-specific configuration system for nucleotide
+// ABOUTME: It loads nucleotide.toml and falls back to config.toml for unspecified values
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -157,9 +157,9 @@ fn load_helix_config(_dir: &Path) -> anyhow::Result<HelixConfig> {
     }
 }
 
-/// Load GUI configuration from ghx.toml
+/// Load GUI configuration from nucleotide.toml
 fn load_gui_config(dir: &Path) -> anyhow::Result<GuiConfig> {
-    let gui_config_path = dir.join("ghx.toml");
+    let gui_config_path = dir.join("nucleotide.toml");
     
     if gui_config_path.exists() {
         let config_str = std::fs::read_to_string(&gui_config_path)?;
@@ -171,7 +171,7 @@ fn load_gui_config(dir: &Path) -> anyhow::Result<GuiConfig> {
     }
 }
 
-/// Example ghx.toml configuration:
+/// Example nucleotide.toml configuration:
 /// ```toml
 /// [ui]
 /// [ui.font]

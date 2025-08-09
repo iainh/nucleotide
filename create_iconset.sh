@@ -21,10 +21,10 @@ for item in "${sizes[@]}"; do
     size="${item%%:*}"
     filename="${item##*:}"
     echo "Creating $filename ($size x $size)"
-    nix-shell -p librsvg --run "rsvg-convert -w $size -h $size assets/logo.svg -o assets/helix-gpui.iconset/$filename"
+    nix-shell -p librsvg --run "rsvg-convert -w $size -h $size assets/logo.svg -o assets/nucleotide.iconset/$filename"
 done
 
 echo "Creating ICNS file..."
-iconutil -c icns assets/helix-gpui.iconset -o assets/helix-gpui.icns
+iconutil -c icns assets/nucleotide.iconset -o assets/nucleotide.icns
 
-echo "Done! Icon created at assets/helix-gpui.icns"
+echo "Done! Icon created at assets/nucleotide.icns"

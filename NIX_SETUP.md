@@ -1,4 +1,4 @@
-# Nix Development Environment for Helix GPUI
+# Nix Development Environment for Nucleotide
 
 This project uses Nix flakes to provide a reproducible development environment with all required dependencies.
 
@@ -69,7 +69,7 @@ nix build
 nix run
 
 # On macOS, the app bundle is created at:
-# result/Applications/Helix GPUI.app
+# result/Applications/Nucleotide.app
 ```
 
 ## Features
@@ -122,6 +122,6 @@ The flake includes checks that can be run in CI:
 nix flake check
 
 # Run specific checks
-nix build .#checks.x86_64-darwin.helix-gpui-clippy
-nix build .#checks.x86_64-darwin.helix-gpui-fmt
+nix build .#checks.x86_64-darwin.nucleotide-clippy
+nix build .#checks.x86_64-darwin.nucleotide-fmt
 ```

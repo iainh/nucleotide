@@ -29,5 +29,5 @@ for size, filename in sizes:
     print(f"- {filename}: {size}x{size} pixels")
 
 print()
-print("Place the PNG files in assets/helix-gpui.iconset/")
-print("Then run: iconutil -c icns assets/helix-gpui.iconset -o assets/helix-gpui.icns")
+print("Place the PNG files in assets/nucleotide.iconset/")
+print("Then run: iconutil -c icns assets/nucleotide.iconset -o assets/nucleotide.icns")

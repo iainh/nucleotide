@@ -171,7 +171,7 @@ fn window_options(_cx: &mut App) -> gpui::WindowOptions {
     };
     
     let options = WindowOptions {
-        app_id: Some("helix-gpui".to_string()),
+        app_id: Some("nucleotide".to_string()),
         titlebar: Some(TitlebarOptions {
             title: None,  // We'll render our own title
             appears_transparent: true,  // Key for custom titlebar
@@ -681,7 +681,7 @@ fn init_editor() -> Result<Option<(Application, crate::config::Config)>> {
 {}
 
 USAGE:
-    hx [FLAGS] [files]...
+    nucl [FLAGS] [files]...
 
 ARGS:
     <files>...    Sets the input file to use, position can also be specified via file[:row[:col]]

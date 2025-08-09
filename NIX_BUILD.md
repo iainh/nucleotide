@@ -1,4 +1,4 @@
-# Nix Build System for Helix GPUI
+# Nix Build System for Nucleotide
 
 ## Overview
 
@@ -19,7 +19,7 @@ The Nix build system consists of:
 ```bash
 # Quick build everything
 ./build-with-nix.sh
-# This creates Helix.app
+# This creates Nucleotide.app
 
 # Or step by step:
 nix develop                   # Enter dev shell
@@ -27,9 +27,9 @@ cargo build --release         # Build binary
 make-macos-bundle            # Create .app bundle
 
 # Run the app
-open Helix.app
+open Nucleotide.app
 # Or directly:
-./Helix.app/Contents/MacOS/Helix
+./Nucleotide.app/Contents/MacOS/Nucleotide
 ```
 
 ### For Linux Users
@@ -41,8 +41,8 @@ cargo build --release
 make-linux-package
 
 # Extract and run
-tar xzf helix-gpui-linux.tar.gz
-./helix-gpui-linux/bin/hxg
+tar xzf nucleotide-linux.tar.gz
+./nucleotide-linux/bin/nucl
 ```
 
 ## Important Notes
@@ -54,7 +54,7 @@ tar xzf helix-gpui-linux.tar.gz
 - Run a macOS binary on Linux
 
 Each platform must build its own binary natively:
-- **macOS users**: Use `Helix.app` bundle
+- **macOS users**: Use `Nucleotide.app` bundle
 - **Linux users**: Build on Linux or use CI artifacts
 
 ### Cross-Platform CI
@@ -66,8 +66,8 @@ GitHub Actions builds for both platforms natively:
 ## Package Outputs
 
 - **runtime**: Helix runtime files (themes, grammars, languages.toml) - works on all platforms
-- **Helix.app**: macOS application bundle (macOS only)
-- **helix-gpui-linux.tar.gz**: Linux distribution package (Linux only)
+- **Nucleotide.app**: macOS application bundle (macOS only)
+- **nucleotide-linux.tar.gz**: Linux distribution package (Linux only)
 
 ## Technical Details
 
@@ -120,7 +120,7 @@ The CI workflows use Nix for consistent builds:
 
 For faster CI builds, configure Cachix:
 1. Create account at cachix.org
-2. Create cache named "helix-gpui"
+2. Create cache named "nucleotide"
 3. Add CACHIX_AUTH_TOKEN to GitHub secrets
 4. Builds will cache and reuse Nix derivations
 

@@ -3141,46 +3141,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "helix-gpui"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "arc-swap",
- "chrono",
- "content_inspector",
- "fern 0.6.2",
- "futures-util",
- "gpui",
- "grep-regex",
- "grep-searcher",
- "helix-core",
- "helix-event",
- "helix-loader",
- "helix-lsp",
- "helix-stdx",
- "helix-term",
- "helix-vcs",
- "helix-view",
- "ignore",
- "log",
- "notify",
- "nucleo 0.2.1",
- "open",
- "pulldown-cmark 0.10.3",
- "rust-embed",
- "serde",
- "serde_json",
- "smallvec",
- "sum_tree",
- "tokio",
- "tokio-stream",
- "toml 0.8.23",
- "unicode-segmentation",
- "unicode-width 0.1.12",
- "url",
-]
-
-[[package]]
 name = "helix-loader"
 version = "25.7.1"
 source = "git+https://github.com/helix-editor/helix?tag=25.07.1#a05c151bb6e8e9c65ec390b0ae2afe7a5efd619b"
@@ -4413,6 +4373,46 @@ checksum = "bf33f538733d1a5a3494b836ba913207f14d9d4a1d3cd67030c5061bdd2cac85"
 dependencies = [
  "memchr",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "nucleotide"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "chrono",
+ "content_inspector",
+ "fern 0.6.2",
+ "futures-util",
+ "gpui",
+ "grep-regex",
+ "grep-searcher",
+ "helix-core",
+ "helix-event",
+ "helix-loader",
+ "helix-lsp",
+ "helix-stdx",
+ "helix-term",
+ "helix-vcs",
+ "helix-view",
+ "ignore",
+ "log",
+ "notify",
+ "nucleo 0.2.1",
+ "open",
+ "pulldown-cmark 0.10.3",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "sum_tree",
+ "tokio",
+ "tokio-stream",
+ "toml 0.8.23",
+ "unicode-segmentation",
+ "unicode-width 0.1.12",
+ "url",
 ]
 
 [[package]]
