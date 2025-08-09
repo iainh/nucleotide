@@ -1195,6 +1195,7 @@ impl Element for DocumentElement {
         let scroll_manager = self.scroll_manager.clone();
         let core_scroll = self.core.clone();
         let view_id_scroll = self.view_id;
+        let doc_id_scroll = self.doc_id;
         
         // Use a flag to batch scroll updates
         let last_scroll_time = Rc::new(Cell::new(std::time::Instant::now()));
@@ -1251,6 +1252,14 @@ impl Element for DocumentElement {
                         // Convert accumulated pixels to lines
                         let scroll_lines = (accumulated_delta.y.0 / line_height.0).round() as isize;
                         if scroll_lines != 0 {
+                            // Store cursor position before scrolling to ensure it doesn't move
+                            let cursor_pos = if let Some(doc) = editor.document(doc_id_scroll) {
+                                let selection = doc.selection(view_id_scroll).clone();
+                                Some(selection)
+                            } else {
+                                None
+                            };
+                            
                             // Import the scroll command from helix
                             use helix_term::commands;
                             use helix_core::movement::Direction;
@@ -1267,13 +1276,24 @@ impl Element for DocumentElement {
                             jobs: &mut core.jobs,
                         };
                         
-                        // Call the appropriate scroll function
+                        // Call the appropriate scroll function with sync_cursor=false
+                        // This ensures the cursor doesn't move with the viewport
                         if scroll_lines > 0 {
                             // Scroll up (content moves down)
                             commands::scroll(&mut ctx, count, Direction::Backward, false);
                         } else {
                             // Scroll down (content moves up)
                             commands::scroll(&mut ctx, count, Direction::Forward, false);
+                        }
+                        
+                        // Restore cursor position if it was changed (safeguard)
+                        if let Some(saved_selection) = cursor_pos {
+                            if let Some(doc) = ctx.editor.document_mut(doc_id_scroll) {
+                                let current_selection = doc.selection(view_id_scroll).clone();
+                                if current_selection != saved_selection {
+                                    doc.set_selection(view_id_scroll, saved_selection);
+                                }
+                            }
                         }
                     }
                     
