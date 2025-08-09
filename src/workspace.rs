@@ -158,6 +158,12 @@ impl Workspace {
     pub fn set_titlebar(&mut self, titlebar: gpui::AnyView) {
         self.titlebar = Some(titlebar);
     }
+    
+    pub fn set_project_directory(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.core.update(cx, |core, _cx| {
+            core.project_directory = Some(dir);
+        });
+    }
 
     // Removed - views are created in main.rs and passed in
 

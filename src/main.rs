@@ -129,6 +129,40 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn parse_file_url(url: &str) -> Option<String> {
+    // Handle file:// URLs
+    if let Some(file_path) = url.strip_prefix("file://") {
+        // Decode URL-encoded characters (spaces, special chars, etc.)
+        let decoded = file_path.replace("%20", " ")
+            .replace("%2F", "/")
+            .replace("%3A", ":")
+            .replace("%40", "@")
+            .replace("%21", "!")
+            .replace("%24", "$")
+            .replace("%26", "&")
+            .replace("%27", "'")
+            .replace("%28", "(")
+            .replace("%29", ")")
+            .replace("%2A", "*")
+            .replace("%2B", "+")
+            .replace("%2C", ",")
+            .replace("%3B", ";")
+            .replace("%3D", "=");
+        return Some(decoded);
+    }
+    
+    // Handle file: URLs without //
+    if let Some(file_path) = url.strip_prefix("file:") {
+        let decoded = file_path.replace("%20", " ")
+            .replace("%2F", "/")
+            .replace("%3A", ":")
+            .replace("%40", "@");
+        return Some(decoded);
+    }
+    
+    None
+}
+
 fn window_options(_cx: &mut App) -> gpui::WindowOptions {
     let window_decorations = match std::env::var("HELIX_WINDOW_DECORATIONS") {
         Ok(val) if val == "server" => gpui::WindowDecorations::Server,
@@ -305,7 +339,37 @@ pub struct UiFontConfig {
 impl gpui::Global for UiFontConfig {}
 
 fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::runtime::Handle) {
-    gpui::Application::new().with_assets(crate::assets::Assets).run(move |cx| {
+    // Store a channel for sending file open requests from macOS
+    let (file_open_tx, mut file_open_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<String>>();
+    
+    let gpui_app = gpui::Application::new().with_assets(crate::assets::Assets);
+    
+    // Register handler for macOS file open events (dock drops and Finder "Open With")
+    gpui_app.on_open_urls({
+        let file_open_tx = file_open_tx.clone();
+        move |urls| {
+            log::info!("Received open URLs request: {:?}", urls);
+            
+            // Parse URLs and send file paths to the main app
+            let mut paths = Vec::new();
+            for url in urls {
+                if let Some(file_path) = parse_file_url(&url) {
+                    paths.push(file_path);
+                } else if std::path::Path::new(&url).exists() {
+                    // Handle direct file paths (not URLs)
+                    paths.push(url.to_string());
+                }
+            }
+            
+            if !paths.is_empty() {
+                if let Err(e) = file_open_tx.send(paths) {
+                    log::error!("Failed to send file open request: {}", e);
+                }
+            }
+        }
+    });
+    
+    gpui_app.run(move |cx| {
         // Set up theme manager with Helix theme
         let helix_theme = app.editor.theme.clone();
         let theme_manager = theme_manager::ThemeManager::new(helix_theme);
@@ -513,6 +577,73 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
                 
                 workspace
             });
+            
+            // Spawn a task to handle file open requests from macOS
+            let workspace_clone = workspace.clone();
+            cx.spawn(async move |mut cx| {
+                while let Some(paths) = file_open_rx.recv().await {
+                    log::info!("Processing file open request for paths: {:?}", paths);
+                    
+                    // If we have files to open, change working directory to the parent of the first file
+                    let mut should_change_dir = false;
+                    let mut new_working_dir = None;
+                    
+                    for (index, path_str) in paths.iter().enumerate() {
+                        let path = std::path::PathBuf::from(path_str);
+                        if path.exists() {
+                            // For the first valid file, set its parent as the working directory
+                            if index == 0 && !should_change_dir {
+                                if let Some(parent) = path.parent() {
+                                    new_working_dir = Some(parent.to_path_buf());
+                                    should_change_dir = true;
+                                    log::info!("Will change working directory to: {:?}", parent);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Change working directory if needed
+                    if should_change_dir {
+                        if let Some(dir) = new_working_dir.clone() {
+                            if let Err(e) = helix_stdx::env::set_current_working_dir(&dir) {
+                                log::error!("Failed to change working directory to {:?}: {}", dir, e);
+                            } else {
+                                log::info!("Changed working directory to: {:?}", dir);
+                                
+                                // Update the core's project directory and emit OpenDirectory event
+                                if let Err(e) = cx.update(|cx| {
+                                    workspace_clone.update(cx, |workspace, cx| {
+                                        workspace.set_project_directory(dir.clone(), cx);
+                                        log::info!("Updated project directory to: {:?}", dir);
+                                        // Emit OpenDirectory event to update file tree
+                                        cx.emit(Update::OpenDirectory(dir.clone()));
+                                    })
+                                }) {
+                                    log::error!("Failed to update project directory: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Now open all the files
+                    for path_str in paths {
+                        let path = std::path::PathBuf::from(path_str);
+                        if path.exists() {
+                            // Send OpenFile update to the workspace
+                            if let Err(e) = cx.update(|cx| {
+                                workspace_clone.update(cx, |_workspace, cx| {
+                                    cx.emit(Update::OpenFile(path.clone()));
+                                })
+                            }) {
+                                log::error!("Failed to open file {}: {}", path.display(), e);
+                            }
+                        } else {
+                            log::warn!("File does not exist: {}", path.display());
+                        }
+                    }
+                }
+            })
+            .detach();
             
             // Create and set titlebar after workspace is created - on macOS we always want custom titlebar
             // regardless of what decorations are reported

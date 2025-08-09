@@ -115,17 +115,88 @@ cat > "${BUNDLE_NAME}/Contents/Info.plist" << EOF
     <array>
         <dict>
             <key>CFBundleTypeName</key>
-            <string>Text File</string>
+            <string>Text Document</string>
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
             <key>LSItemContentTypes</key>
             <array>
                 <string>public.text</string>
                 <string>public.plain-text</string>
-                <string>public.source-code</string>
+                <string>public.utf8-plain-text</string>
+                <string>public.utf16-plain-text</string>
             </array>
+            <key>CFBundleTypeIconFile</key>
+            <string>helix-gpui.icns</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Source Code</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.source-code</string>
+                <string>public.c-source</string>
+                <string>public.c-plus-plus-source</string>
+                <string>public.c-header</string>
+                <string>public.shell-script</string>
+                <string>public.python-script</string>
+                <string>public.ruby-script</string>
+                <string>public.perl-script</string>
+                <string>com.sun.java-source</string>
+            </array>
+            <key>CFBundleTypeIconFile</key>
+            <string>helix-gpui.icns</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Rust Source</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>rs</string>
+            </array>
+            <key>CFBundleTypeIconFile</key>
+            <string>helix-gpui.icns</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Markdown Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>md</string>
+                <string>markdown</string>
+            </array>
+            <key>CFBundleTypeIconFile</key>
+            <string>helix-gpui.icns</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Configuration File</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>toml</string>
+                <string>yaml</string>
+                <string>yml</string>
+                <string>json</string>
+                <string>xml</string>
+                <string>ini</string>
+                <string>cfg</string>
+                <string>conf</string>
+            </array>
+            <key>CFBundleTypeIconFile</key>
+            <string>helix-gpui.icns</string>
         </dict>
     </array>
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
 </dict>
 </plist>
 EOF
