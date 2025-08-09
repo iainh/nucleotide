@@ -10,7 +10,7 @@ use helix_core::{
     pos_at_coords, syntax, Position, Selection,
 };
 use helix_lsp::{
-    LanguageServerId, LspProgressMap,
+    lsp, LanguageServerId, LspProgressMap,
 };
 use crate::core::lsp_state::ServerStatus;
 use helix_stdx::path::get_relative_path;
@@ -101,7 +101,7 @@ impl Application {
                 .map(|client| (client.id(), client.name().to_string()))
                 .collect();
             
-            log::debug!("Syncing LSP state, active servers: {:?}", active_servers);
+            log::info!("Syncing LSP state, active servers: {:?}", active_servers);
             
             // Check which servers are progressing
             let progressing_servers: Vec<LanguageServerId> = active_servers
@@ -122,15 +122,63 @@ impl Application {
                     }
                 }
                 
-                // Mark servers that are progressing
+                // Extract actual progress information from LspProgressMap
                 for id in progressing_servers {
-                    // Add a generic progress indicator
-                    state.start_progress(id, "lsp".to_string(), "Processing...".to_string());
+                    // Get the progress map for this server
+                    if let Some(progress_map) = self.lsp_progress.progress_map(id) {
+                        // Only process if we have actual progress items
+                        if !progress_map.is_empty() {
+                            log::debug!("Server {} has {} progress items", id, progress_map.len());
+                            
+                            // Add each progress operation
+                            for (token, status) in progress_map {
+                                match status {
+                                    helix_lsp::ProgressStatus::Created => {
+                                        // Progress created but not started yet - skip these
+                                        log::info!("Skipping LSP progress token {:?} - in Created state (not started yet)", token);
+                                        continue;
+                                    }
+                                    helix_lsp::ProgressStatus::Started { title, progress } => {
+                                        let key = format!("{}-{:?}", id, token);
+                                        let (message, percentage) = match progress {
+                                            lsp::WorkDoneProgress::Begin(begin) => {
+                                                (begin.message.clone(), begin.percentage)
+                                            }
+                                            lsp::WorkDoneProgress::Report(report) => {
+                                                (report.message.clone(), report.percentage)
+                                            }
+                                            lsp::WorkDoneProgress::End(_) => {
+                                                // Progress ended, skip
+                                                continue;
+                                            }
+                                        };
+                                        
+                                        log::info!("LSP progress active: {} - {:?} ({}%)", 
+                                            title, message, percentage.unwrap_or(0));
+                                        
+                                        state.progress.insert(key, crate::core::lsp_state::LspProgress {
+                                            server_id: id,
+                                            token: format!("{:?}", token),
+                                            title: title.clone(),
+                                            message,
+                                            percentage,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 
                 // Log current state for debugging
                 if !state.progress.is_empty() {
                     log::debug!("LSP servers with progress: {}", state.progress.len());
+                    for progress in state.progress.values() {
+                        log::debug!("  - {}: {:?} ({}%)", 
+                            progress.title, 
+                            progress.message, 
+                            progress.percentage.unwrap_or(0));
+                    }
                 }
                 if !state.servers.is_empty() {
                     log::debug!("Active LSP servers: {}", state.servers.len());

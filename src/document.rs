@@ -267,18 +267,16 @@ impl Render for DocumentView {
                 |div, scrollbar| div.child(scrollbar)
             );
 
-        let mut status = crate::statusline::StatusLine::new(
-            self.core.clone(),
-            doc_id,
-            self.view_id,
-            self.is_focused,
-            self.style.clone(),
-        );
-        
-        // Add LSP state if available
-        if let Some(lsp_state) = self.core.read(cx).lsp_state.as_ref() {
-            status = status.with_lsp_state(lsp_state.clone());
-        }
+        // Create or update the status line view
+        let status_view = cx.new(|cx| {
+            crate::statusline::StatusLineView::new(
+                self.core.clone(),
+                doc_id,
+                self.view_id,
+                self.is_focused,
+                cx,
+            )
+        });
 
         let diags = {
             let _theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme().clone();
@@ -295,7 +293,7 @@ impl Render for DocumentView {
             .flex()
             .flex_col()
             .child(editor_content)
-            .child(status)
+            .child(status_view)
             .child(
                 div()
                     .flex()

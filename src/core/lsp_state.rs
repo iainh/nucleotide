@@ -227,6 +227,58 @@ impl LspState {
         
         has_progress || has_busy_servers
     }
+    
+    /// Check if any LSP servers are present (regardless of activity)
+    pub fn has_any_lsp_server(&self) -> bool {
+        !self.servers.is_empty()
+    }
+    
+    /// Get the appropriate LSP indicator character
+    pub fn get_lsp_indicator(&mut self) -> Option<String> {
+        if !self.has_any_lsp_server() {
+            return None;
+        }
+        
+        let indicator = if self.should_show_spinner() {
+            // If there's activity, use the animated spinner frame
+            self.get_spinner_frame().to_string()
+        } else {
+            // Otherwise, use a static indicator showing LSP is present but idle
+            "◉".to_string()  // Static dot indicating LSP presence
+        };
+        
+        // Add any progress message if available
+        if !self.progress.is_empty() {
+            // Get the most recent progress message
+            if let Some(progress) = self.progress.values().next() {
+                let mut result = indicator;
+                result.push(' ');
+                
+                // Build the message
+                let mut message = progress.title.clone();
+                if let Some(msg) = &progress.message {
+                    message.push_str(": ");
+                    message.push_str(msg);
+                }
+                if let Some(pct) = progress.percentage {
+                    message.push_str(&format!(" ({}%)", pct));
+                }
+                
+                // Truncate if too long (max 40 chars for the message part)
+                const MAX_MESSAGE_LEN: usize = 40;
+                if message.len() > MAX_MESSAGE_LEN {
+                    message.truncate(MAX_MESSAGE_LEN - 3);
+                    message.push_str("...");
+                }
+                
+                result.push_str(&message);
+                return Some(result);
+            }
+        }
+        
+        // Just return the indicator if no progress messages
+        Some(indicator)
+    }
 }
 
 impl Default for LspState {

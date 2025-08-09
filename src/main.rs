@@ -404,19 +404,14 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
                         
                         if let Err(e) = cx.update(|cx| {
                             lsp_state_clone.update(cx, |state, cx| {
-                                // Only update spinner if there's LSP activity
-                                if state.should_show_spinner() {
-                                    let frame = state.get_spinner_frame();
-                                    state.status_message = Some(frame.to_string());
-                                } else {
-                                    // Clear status message when no activity
-                                    state.status_message = None;
-                                }
-                                // Always notify to ensure UI updates
+                                // Update LSP indicator - shows static when idle, animated when busy
+                                state.status_message = state.get_lsp_indicator();
+                                
+                                // Only notify if there's a change
                                 cx.notify();
                             });
                         }) {
-                            log::warn!("Failed to update LSP spinner: {e:?}");
+                            log::warn!("Failed to update LSP indicator: {e:?}");
                         }
                     }
                 })
