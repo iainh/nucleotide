@@ -34,38 +34,9 @@
           };
         };
 
-        # Cross-compilation packages for Linux targets
-        pkgsCrossLinux64 = if pkgs.stdenv.isDarwin then
-          import nixpkgs {
-            inherit system;
-            crossSystem = {
-              config = "x86_64-unknown-linux-gnu";
-            };
-          }
-        else pkgs;
-
-        pkgsCrossLinuxArm64 = if pkgs.stdenv.isDarwin then
-          import nixpkgs {
-            inherit system;
-            crossSystem = {
-              config = "aarch64-unknown-linux-gnu";
-            };
-          }
-        else pkgs;
 
         # Native Rust toolchain
         rustToolchain = fenix.packages.${system}.stable.toolchain;
-        
-        # Cross-compilation Rust toolchain with Linux targets
-        rustCrossToolchain = fenix.packages.${system}.combine [
-          fenix.packages.${system}.stable.cargo
-          fenix.packages.${system}.stable.rustc
-          fenix.packages.${system}.stable.rust-src
-          fenix.packages.${system}.stable.clippy
-          fenix.packages.${system}.stable.rustfmt
-          fenix.packages.${system}.targets.x86_64-unknown-linux-gnu.stable.rust-std
-          fenix.packages.${system}.targets.aarch64-unknown-linux-gnu.stable.rust-std
-        ];
 
         # Platform-specific dependencies
         darwinDeps = with pkgs; lib.optionals stdenv.isDarwin [
@@ -147,153 +118,6 @@
           '';
         };
 
-        # Cross-compile script for Linux x86_64
-        crossBuildLinux64 = pkgs.writeScriptBin "cross-build-linux-x64" ''
-          #!${pkgs.stdenv.shell}
-          set -e
-          
-          echo "Cross-compiling for Linux x86_64 using Nix toolchain..."
-          
-          # Set up cross-compilation environment
-          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="${pkgsCrossLinux64.stdenv.cc}/bin/${pkgsCrossLinux64.stdenv.cc.targetPrefix}cc"
-          export CC_x86_64_unknown_linux_gnu="${pkgsCrossLinux64.stdenv.cc}/bin/${pkgsCrossLinux64.stdenv.cc.targetPrefix}cc"
-          export CXX_x86_64_unknown_linux_gnu="${pkgsCrossLinux64.stdenv.cc}/bin/${pkgsCrossLinux64.stdenv.cc.targetPrefix}c++"
-          export AR_x86_64_unknown_linux_gnu="${pkgsCrossLinux64.stdenv.cc}/bin/${pkgsCrossLinux64.stdenv.cc.targetPrefix}ar"
-          
-          # PKG_CONFIG setup for cross compilation
-          export PKG_CONFIG_ALLOW_CROSS=1
-          export PKG_CONFIG_PATH="${pkgsCrossLinux64.openssl.dev}/lib/pkgconfig"
-          export OPENSSL_DIR="${pkgsCrossLinux64.openssl.dev}"
-          export OPENSSL_LIB_DIR="${pkgsCrossLinux64.openssl.out}/lib"
-          export OPENSSL_INCLUDE_DIR="${pkgsCrossLinux64.openssl.dev}/include"
-          
-          # Ensure runtime directory exists with proper permissions
-          rm -rf runtime 2>/dev/null || true
-          mkdir -p runtime
-          cp ${helixRuntime}/languages.toml runtime/languages.toml
-          chmod -R u+w runtime
-          
-          echo "Building with Rust cross toolchain..."
-          ${rustCrossToolchain}/bin/cargo build --release --target x86_64-unknown-linux-gnu
-          
-          if [ -f target/x86_64-unknown-linux-gnu/release/hxg ]; then
-            echo "✓ Build successful!"
-            echo "Binary: target/x86_64-unknown-linux-gnu/release/hxg"
-            file target/x86_64-unknown-linux-gnu/release/hxg
-          else
-            echo "✗ Build failed"
-            exit 1
-          fi
-        '';
-
-        # Cross-compile script for Linux ARM64
-        crossBuildLinuxArm64 = pkgs.writeScriptBin "cross-build-linux-arm64" ''
-          #!${pkgs.stdenv.shell}
-          set -e
-          
-          echo "Cross-compiling for Linux aarch64 using Nix toolchain..."
-          
-          # Set up cross-compilation environment
-          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="${pkgsCrossLinuxArm64.stdenv.cc}/bin/${pkgsCrossLinuxArm64.stdenv.cc.targetPrefix}cc"
-          export CC_aarch64_unknown_linux_gnu="${pkgsCrossLinuxArm64.stdenv.cc}/bin/${pkgsCrossLinuxArm64.stdenv.cc.targetPrefix}cc"
-          export CXX_aarch64_unknown_linux_gnu="${pkgsCrossLinuxArm64.stdenv.cc}/bin/${pkgsCrossLinuxArm64.stdenv.cc.targetPrefix}c++"
-          export AR_aarch64_unknown_linux_gnu="${pkgsCrossLinuxArm64.stdenv.cc}/bin/${pkgsCrossLinuxArm64.stdenv.cc.targetPrefix}ar"
-          
-          # PKG_CONFIG setup for cross compilation
-          export PKG_CONFIG_ALLOW_CROSS=1
-          export PKG_CONFIG_PATH="${pkgsCrossLinuxArm64.openssl.dev}/lib/pkgconfig"
-          export OPENSSL_DIR="${pkgsCrossLinuxArm64.openssl.dev}"
-          export OPENSSL_LIB_DIR="${pkgsCrossLinuxArm64.openssl.out}/lib"
-          export OPENSSL_INCLUDE_DIR="${pkgsCrossLinuxArm64.openssl.dev}/include"
-          
-          # Ensure runtime directory exists with proper permissions
-          rm -rf runtime 2>/dev/null || true
-          mkdir -p runtime
-          cp ${helixRuntime}/languages.toml runtime/languages.toml
-          chmod -R u+w runtime
-          
-          echo "Building with Rust cross toolchain..."
-          ${rustCrossToolchain}/bin/cargo build --release --target aarch64-unknown-linux-gnu
-          
-          if [ -f target/aarch64-unknown-linux-gnu/release/hxg ]; then
-            echo "✓ Build successful!"
-            echo "Binary: target/aarch64-unknown-linux-gnu/release/hxg"
-            file target/aarch64-unknown-linux-gnu/release/hxg
-          else
-            echo "✗ Build failed"
-            exit 1
-          fi
-        '';
-
-        # Package creator for cross-compiled Linux binaries
-        packageCrossLinux = pkgs.writeScriptBin "package-cross-linux" ''
-          #!${pkgs.stdenv.shell}
-          set -e
-          
-          echo "Creating Linux packages from cross-compiled binaries..."
-          
-          # Package x86_64 if it exists
-          if [ -f target/x86_64-unknown-linux-gnu/release/hxg ]; then
-            echo "Packaging Linux x86_64..."
-            rm -rf helix-gpui-linux-x86_64
-            mkdir -p helix-gpui-linux-x86_64/{bin,share/{applications,helix-gpui}}
-            
-            cp target/x86_64-unknown-linux-gnu/release/hxg helix-gpui-linux-x86_64/bin/
-            
-            # Copy runtime files
-            ${pkgs.rsync}/bin/rsync -a --no-perms --no-owner --no-group \
-              ${helixRuntime}/ helix-gpui-linux-x86_64/share/helix-gpui/runtime/
-            
-            # Create desktop file
-            cat > helix-gpui-linux-x86_64/share/applications/helix-gpui.desktop <<EOF
-            [Desktop Entry]
-            Name=Helix GPUI
-            Comment=A post-modern text editor
-            Exec=hxg %F
-            Terminal=false
-            Type=Application
-            Icon=helix-gpui
-            Categories=Development;TextEditor;
-            MimeType=text/plain;
-            EOF
-            
-            tar czf helix-gpui-linux-x86_64.tar.gz helix-gpui-linux-x86_64
-            echo "✓ Created helix-gpui-linux-x86_64.tar.gz"
-          fi
-          
-          # Package aarch64 if it exists
-          if [ -f target/aarch64-unknown-linux-gnu/release/hxg ]; then
-            echo "Packaging Linux aarch64..."
-            rm -rf helix-gpui-linux-aarch64
-            mkdir -p helix-gpui-linux-aarch64/{bin,share/{applications,helix-gpui}}
-            
-            cp target/aarch64-unknown-linux-gnu/release/hxg helix-gpui-linux-aarch64/bin/
-            
-            # Copy runtime files
-            ${pkgs.rsync}/bin/rsync -a --no-perms --no-owner --no-group \
-              ${helixRuntime}/ helix-gpui-linux-aarch64/share/helix-gpui/runtime/
-            
-            # Create desktop file
-            cat > helix-gpui-linux-aarch64/share/applications/helix-gpui.desktop <<EOF
-            [Desktop Entry]
-            Name=Helix GPUI
-            Comment=A post-modern text editor
-            Exec=hxg %F
-            Terminal=false
-            Type=Application
-            Icon=helix-gpui
-            Categories=Development;TextEditor;
-            MimeType=text/plain;
-            EOF
-            
-            tar czf helix-gpui-linux-aarch64.tar.gz helix-gpui-linux-aarch64
-            echo "✓ Created helix-gpui-linux-aarch64.tar.gz"
-          fi
-          
-          echo ""
-          echo "Packages created:"
-          ls -lh helix-gpui-linux-*.tar.gz 2>/dev/null || echo "No packages found"
-        '';
 
         # Build script that produces the binary
         buildScript = pkgs.writeScriptBin "build-helix-gpui" ''
@@ -469,15 +293,12 @@
           buildScript = buildScript;
           makeMacOSBundle = makeMacOSBundle;
           makeLinuxPackage = makeLinuxPackage;
-          crossBuildLinux64 = crossBuildLinux64;
-          crossBuildLinuxArm64 = crossBuildLinuxArm64;
-          packageCrossLinux = packageCrossLinux;
         };
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
-            # Rust toolchain with cross-compilation targets
-            rustCrossToolchain
+            # Rust toolchain
+            rustToolchain
             rust-analyzer
 
             # Development tools
@@ -493,9 +314,6 @@
             buildScript
             makeMacOSBundle
             makeLinuxPackage
-            crossBuildLinux64
-            crossBuildLinuxArm64
-            packageCrossLinux
 
             # Platform-specific tools
           ] ++ lib.optionals stdenv.isDarwin [
@@ -503,14 +321,10 @@
             xcbuild
           ];
 
-          buildInputs = allBuildInputs ++ (if pkgs.stdenv.isDarwin then [
-            # Cross-compilation dependencies for Linux targets
-            pkgsCrossLinux64.stdenv.cc
-            pkgsCrossLinuxArm64.stdenv.cc
-          ] else []);
+          buildInputs = allBuildInputs;
 
           # Development environment variables
-          RUST_SRC_PATH = "${rustCrossToolchain}/lib/rustlib/src/rust/library";
+          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           HELIX_RUNTIME = "${helixRuntime}";
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
           OPENSSL_NO_VENDOR = 1;
@@ -527,11 +341,6 @@
             echo "  cargo clippy                 - Run linter"
             echo "  cargo fmt                    - Format code"
             echo ""
-            echo "Cross-compilation (from macOS to Linux):"
-            echo "  cross-build-linux-x64        - Build for Linux x86_64"
-            echo "  cross-build-linux-arm64      - Build for Linux ARM64"
-            echo "  package-cross-linux          - Package cross-compiled binaries"
-            echo ""
             echo "Bundle creation:"
             echo "  make-macos-bundle            - Create macOS .app bundle"
             echo "  make-linux-package           - Create Linux distribution"
@@ -540,9 +349,6 @@
             echo "  nix build .#runtime          - Build runtime files"
             echo ""
             echo "Runtime files available at: $HELIX_RUNTIME"
-            echo ""
-            echo "Note: Cross-compilation targets are included in the Rust toolchain."
-            echo "      No need for rustup!"
           '';
         };
       });

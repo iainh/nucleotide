@@ -52,17 +52,16 @@ tar xzf helix-gpui-linux.tar.gz
 **Binaries are platform-specific!** You cannot:
 - Run a Linux binary on macOS (causes "Exec format error")
 - Run a macOS binary on Linux
-- Create a Linux package on macOS (without cross-compilation)
 
-Each platform must build its own binary:
+Each platform must build its own binary natively:
 - **macOS users**: Use `Helix.app` bundle
 - **Linux users**: Build on Linux or use CI artifacts
 
 ### Cross-Platform CI
 
-GitHub Actions builds for both platforms:
-- macOS runners build macOS bundles
-- Linux runners build Linux packages
+GitHub Actions builds for both platforms natively:
+- macOS runners build macOS bundles (x86_64 and ARM64)
+- Linux runners build Linux packages (x86_64 and ARM64)
 
 ## Package Outputs
 
