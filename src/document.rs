@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::*;
@@ -1190,42 +1191,78 @@ impl Element for DocumentElement {
                 }
             });
         
-        // Handle scroll wheel events
+        // Handle scroll wheel events with optimized performance
         let scroll_manager = self.scroll_manager.clone();
         let core_scroll = self.core.clone();
         let view_id_scroll = self.view_id;
+        
+        // Use a flag to batch scroll updates
+        let last_scroll_time = Rc::new(Cell::new(std::time::Instant::now()));
+        let pending_scroll_delta = Rc::new(Cell::new(Point::<Pixels>::default()));
+        
         self.interactivity
             .on_scroll_wheel(move |event, _window, cx| {
-                // Update scroll position based on wheel delta
+                // Get the actual line height from scroll manager
+                let line_height = scroll_manager.line_height.get();
+                let delta = event.delta.pixel_delta(line_height);
+                
+                // Accumulate scroll delta for batching
+                let current_pending = pending_scroll_delta.get();
+                pending_scroll_delta.set(point(
+                    current_pending.x + delta.x,
+                    current_pending.y + delta.y,
+                ));
+                
+                // Update scroll position immediately for visual feedback
                 let current_offset = scroll_manager.scroll_offset();
-                let delta = event.delta.pixel_delta(px(20.0)); // Use line height as scroll unit
-                // GPUI convention: scrolling down makes offset more negative
+                
+                // Clamp the scroll offset to valid bounds
+                let max_scroll = scroll_manager.max_scroll_offset();
                 let new_offset = point(
-                    current_offset.x + delta.x,
-                    current_offset.y + delta.y,
+                    (current_offset.x + delta.x).max(px(0.0)).min(max_scroll.width),
+                    (current_offset.y + delta.y).max(-max_scroll.height).min(px(0.0)),
                 );
                 
-                scroll_manager.set_scroll_offset(new_offset);
+                // Only update if the offset actually changed
+                if new_offset != current_offset {
+                    scroll_manager.set_scroll_offset(new_offset);
+                } else {
+                    // We've hit the scroll bounds, clear pending delta
+                    pending_scroll_delta.set(Point::default());
+                    return;
+                }
                 
-                // Update Helix viewport to match the new scroll position
-                core_scroll.update(cx, |core, cx| {
-                    let editor = &mut core.editor;
+                // Only sync to Helix if enough time has passed or delta is significant
+                let now = std::time::Instant::now();
+                let time_since_last = now.duration_since(last_scroll_time.get());
+                let accumulated_delta = pending_scroll_delta.get();
+                
+                // Sync to Helix less frequently (every 16ms ~60fps or when delta is large)
+                if time_since_last > std::time::Duration::from_millis(16) 
+                    || accumulated_delta.y.abs() > px(60.0) {
                     
-                    // Use Helix's scroll commands to properly update the view
-                    let scroll_lines = (delta.y.0 / 20.0).round() as isize; // Convert pixels to lines
-                    if scroll_lines != 0 {
-                        // Import the scroll command from helix
-                        use helix_term::commands;
-                        use helix_core::movement::Direction;
+                    last_scroll_time.set(now);
+                    pending_scroll_delta.set(Point::default());
+                    
+                    // Update Helix viewport to match the new scroll position
+                    core_scroll.update(cx, |core, cx| {
+                        let editor = &mut core.editor;
                         
-                        let count = scroll_lines.unsigned_abs();
-                        
-                        // Create the correct context for the scroll command
-                        let mut ctx = helix_term::commands::Context {
-                            editor,
-                            register: None,
-                            count: None,
-                            callback: Vec::new(),
+                        // Convert accumulated pixels to lines
+                        let scroll_lines = (accumulated_delta.y.0 / line_height.0).round() as isize;
+                        if scroll_lines != 0 {
+                            // Import the scroll command from helix
+                            use helix_term::commands;
+                            use helix_core::movement::Direction;
+                            
+                            let count = scroll_lines.unsigned_abs();
+                            
+                            // Create the correct context for the scroll command
+                            let mut ctx = helix_term::commands::Context {
+                                editor,
+                                register: None,
+                                count: None,
+                                callback: Vec::new(),
                             on_next_key_callback: None,
                             jobs: &mut core.jobs,
                         };
@@ -1238,12 +1275,12 @@ impl Element for DocumentElement {
                             // Scroll down (content moves up)
                             commands::scroll(&mut ctx, count, Direction::Forward, false);
                         }
-                        
-                        debug!("Scrolled by {} lines", scroll_lines);
                     }
                     
+                    // Only notify for Helix sync, visual update already happened
                     cx.notify();
                 });
+                }
             });
 
         let is_focused = self.is_focused;
