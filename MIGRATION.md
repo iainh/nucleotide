@@ -8,7 +8,7 @@
 
 ### Configuration
 - Old config: `~/.config/helix/ghx.toml`
-- New config: `~/.config/nucleotide/nucleotide.toml`
+- New config: `~/.config/helix/nucleotide.toml`
 
 Nucleotide will automatically fall back to your Helix configuration if no Nucleotide-specific config exists.
 

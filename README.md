@@ -41,7 +41,7 @@ open Nucleotide.app
 
 ## Configuration
 
-Nucleotide looks for configuration in `~/.config/nucleotide/nucleotide.toml` and falls back to Helix configuration at `~/.config/helix/config.toml`.
+Nucleotide looks for configuration in `~/.config/helix/nucleotide.toml` and falls back to Helix configuration at `~/.config/helix/config.toml`.
 
 ## License
 

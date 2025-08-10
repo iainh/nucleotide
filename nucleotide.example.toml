@@ -1,6 +1,6 @@
-# Example GUI configuration for helix-gpui
-# Place this file as ghx.toml in your Helix config directory
-# (usually ~/.config/helix/ghx.toml)
+# Example GUI configuration for Nucleotide
+# Place this file as nucleotide.toml in your Helix config directory
+# (usually ~/.config/helix/nucleotide.toml)
 
 # UI font configuration - used for menus, prompts, pickers, etc.
 [ui.font]
@@ -15,7 +15,7 @@ weight = "medium"            # Options: thin, extralight, light, normal, medium,
 size = 14.0                  # Font size in pixels
 
 # Note: All standard Helix configuration options from config.toml are also supported here.
-# Any settings not specified in ghx.toml will fall back to values in config.toml.
+# Any settings not specified in nucleotide.toml will fall back to values in config.toml.
 # 
 # Example of overriding a Helix setting:
 # [editor]
