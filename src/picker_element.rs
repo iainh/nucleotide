@@ -1,6 +1,8 @@
 // ABOUTME: Generic picker element using delegate pattern like Zed
 // ABOUTME: Handles rendering and interaction, delegates business logic
 
+#![allow(dead_code)]
+
 use crate::actions::picker::*;
 use crate::picker_delegate::PickerDelegate;
 use gpui::prelude::FluentBuilder;

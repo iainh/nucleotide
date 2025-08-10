@@ -1,6 +1,8 @@
 // ABOUTME: Common UI components and patterns to reduce duplication
 // ABOUTME: Provides reusable building blocks for picker, prompt, and other views
 
+#![allow(dead_code)]
+
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 

@@ -1,6 +1,8 @@
 // ABOUTME: Generic overlay component that can wrap any view with modal styling
 // ABOUTME: Provides consistent overlay behavior and dismissal handling
 
+#![allow(dead_code)]
+
 use crate::ui::common::{ModalContainer, ModalStyle};
 use gpui::prelude::FluentBuilder;
 use gpui::*;

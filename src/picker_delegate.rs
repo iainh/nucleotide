@@ -1,6 +1,8 @@
 // ABOUTME: Picker delegate trait following Zed's idiomatic pattern
 // ABOUTME: Separates picker business logic from UI rendering
 
+#![allow(dead_code)]
+
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::sync::Arc;
