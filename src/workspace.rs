@@ -1101,6 +1101,24 @@ impl Workspace {
         });
     }
 
+    /// Adjust the editor font size
+    fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
+        // Get current font config
+        let mut font_config = cx.global::<crate::EditorFontConfig>().clone();
+
+        // Adjust size with bounds checking
+        font_config.size = (font_config.size + delta).max(8.0).min(72.0);
+
+        // Update global font config
+        cx.set_global(font_config);
+
+        // Update all document views to use new font size
+        self.update_document_views(cx);
+
+        // Force redraw
+        cx.notify();
+    }
+
     fn make_views(
         &mut self,
         view_ids: &mut HashSet<ViewId>,
@@ -1174,8 +1192,16 @@ impl Workspace {
             };
             let core = self.core.clone();
             let input = self.input.clone();
-            let view = self.documents.entry(view_id).or_insert_with(|| {
-                cx.new(|cx| {
+
+            // Check if view exists and update its style if it does
+            if let Some(view) = self.documents.get(&view_id) {
+                view.update(cx, |view, _cx| {
+                    view.set_focused(is_focused);
+                    view.update_text_style(style.clone());
+                });
+            } else {
+                // Create new view if it doesn't exist
+                let view = cx.new(|cx| {
                     let doc_focus_handle = cx.focus_handle();
                     DocumentView::new(
                         core,
@@ -1185,13 +1211,9 @@ impl Workspace {
                         &doc_focus_handle,
                         is_focused,
                     )
-                })
-            });
-
-            view.update(cx, |view, _cx| {
-                view.set_focused(is_focused);
-                // Focus is managed by the view's render method
-            });
+                });
+                self.documents.insert(view_id, view);
+            }
         }
         focused_file_name
     }
@@ -1476,6 +1498,19 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::editor::Paste, _window, cx| {
                 workspace.send_helix_key("p", cx);
+            },
+        ));
+
+        // Font size actions
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::IncreaseFontSize, _window, cx| {
+                workspace.adjust_font_size(2.0, cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::DecreaseFontSize, _window, cx| {
+                workspace.adjust_font_size(-2.0, cx);
             },
         ));
 

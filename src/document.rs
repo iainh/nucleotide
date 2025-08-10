@@ -139,6 +139,12 @@ impl DocumentView {
         self.is_focused = is_focused;
     }
 
+    pub fn update_text_style(&mut self, style: TextStyle) {
+        // Recalculate line height with new font size
+        self.line_height = style.line_height_in_pixels(px(16.0));
+        self.style = style;
+    }
+
     /// Convert a Helix anchor (character position) to scroll pixels
     fn anchor_to_scroll_px(&self, anchor_char: usize, document: &helix_view::Document) -> Pixels {
         let row = document.text().char_to_line(anchor_char);

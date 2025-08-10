@@ -636,6 +636,9 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
                 gpui::KeyBinding::new("cmd-shift-z", Redo, None),
                 gpui::KeyBinding::new("cmd-c", Copy, None),
                 gpui::KeyBinding::new("cmd-v", Paste, None),
+                gpui::KeyBinding::new("cmd-+", IncreaseFontSize, None),
+                gpui::KeyBinding::new("cmd-=", IncreaseFontSize, None), // Also bind = key since + requires shift
+                gpui::KeyBinding::new("cmd--", DecreaseFontSize, None),
             ]);
 
             // General editor actions

@@ -27,6 +27,8 @@ pub mod editor {
             OpenDirectory,
             CloseFile,
             Quit,
+            IncreaseFontSize,
+            DecreaseFontSize,
         ]
     );
 }
