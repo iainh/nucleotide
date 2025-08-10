@@ -140,6 +140,8 @@ cat > "${BUNDLE_NAME}/Contents/Info.plist" << EOF
     <string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
+    <key>CFBundleIconFile</key>
+    <string>nucleotide.icns</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
     <key>NSHighResolutionCapable</key>
