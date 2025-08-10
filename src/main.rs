@@ -202,13 +202,13 @@ use crate::actions::{
 fn app_menus() -> Vec<Menu> {
     vec![
         Menu {
-            name: "Helix".into(),
+            name: "Nucleotide".into(),
             items: vec![
                 MenuItem::action("About", About),
                 MenuItem::separator(),
                 // MenuItem::action("Settings", OpenSettings),
                 // MenuItem::separator(),
-                MenuItem::action("Hide Helix", Hide),
+                MenuItem::action("Hide Nucleotide", Hide),
                 MenuItem::action("Hide Others", HideOthers),
                 MenuItem::action("Show All", ShowAll),
                 MenuItem::action("Quit", Quit),
