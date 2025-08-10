@@ -70,7 +70,7 @@ where
             .left_0()
             .occlude()
             .when(self.show_backdrop, |this| {
-                this.child(ModalContainer::new())
+                this.child(ModalContainer::container())
             })
             .child(
                 div()
@@ -153,7 +153,7 @@ where
             .left_0()
             .occlude()
             .when(self.inner.show_backdrop, |this| {
-                this.child(ModalContainer::new())
+                this.child(ModalContainer::container())
             })
             .child(
                 div()
@@ -210,7 +210,7 @@ where
             .left_0()
             .occlude()
             .when(self.inner.show_backdrop, |this| {
-                this.child(ModalContainer::new())
+                this.child(ModalContainer::container())
             })
             .child(
                 div()

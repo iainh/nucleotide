@@ -9,7 +9,7 @@ pub struct ModalContainer;
 
 impl ModalContainer {
     /// Create a modal container with standard styling
-    pub fn new() -> Div {
+    pub fn container() -> Div {
         div()
             .absolute()
             .bg(black().opacity(0.5))
@@ -107,7 +107,7 @@ pub struct SearchInput;
 
 impl SearchInput {
     /// Create a search input with cursor rendering
-    pub fn new(
+    pub fn render(
         query: &str,
         cursor_position: usize,
         cursor_color: Hsla,
@@ -165,7 +165,7 @@ pub struct ListItemElement;
 
 impl ListItemElement {
     /// Create a list item with optional selection styling
-    pub fn new(
+    pub fn create(
         id: impl Into<ElementId>,
         is_selected: bool,
         style: &ModalStyle,
@@ -193,7 +193,7 @@ pub struct ModalHeader;
 
 impl ModalHeader {
     /// Create a modal header with title
-    pub fn new(style: &ModalStyle) -> Div {
+    pub fn create(style: &ModalStyle) -> Div {
         div()
             .flex()
             .items_center()
@@ -208,7 +208,7 @@ pub struct ModalFooter;
 
 impl ModalFooter {
     /// Create a modal footer with instructions
-    pub fn new(style: &ModalStyle) -> Div {
+    pub fn create(style: &ModalStyle) -> Div {
         div()
             .flex()
             .items_center()

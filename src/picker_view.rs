@@ -789,7 +789,7 @@ impl PickerView {
                             .flex()
                             .items_center()
                             .child(
-                                SearchInput::new(
+                                SearchInput::render(
                                     &self.query,
                                     self.cursor_position,
                                     self.style.cursor,

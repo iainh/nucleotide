@@ -116,10 +116,12 @@ impl RenderOnce for PromptElement {
                     (bg, hsla(0.0, 0.0, 0.9, 1.0), hsla(0.0, 0.0, 0.3, 1.0))
                 };
 
-                let mut default_style = TextStyle::default();
-                default_style.font_family = "JetBrains Mono".into();
-                default_style.font_size = px(14.).into();
-                default_style.background_color = Some(bg_color);
+                let default_style = TextStyle {
+                    font_family: "JetBrains Mono".into(),
+                    font_size: px(14.).into(),
+                    background_color: Some(bg_color),
+                    ..Default::default()
+                };
 
                 let text = text_with_style.clone().into_styled_text(&default_style);
                 self.focus.focus(window);

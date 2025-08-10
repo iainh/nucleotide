@@ -283,17 +283,27 @@ impl Element for Scrollbar {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.flex_grow = 0.;
-        style.flex_shrink = 0.;
-
-        if self.axis == Axis::Vertical {
-            style.size.width = px(12.).into(); // Scrollbar width
-            style.size.height = relative(1.).into();
+        let style = if self.axis == Axis::Vertical {
+            Style {
+                flex_grow: 0.,
+                flex_shrink: 0.,
+                size: Size {
+                    width: px(12.).into(), // Scrollbar width
+                    height: relative(1.).into(),
+                },
+                ..Default::default()
+            }
         } else {
-            style.size.width = relative(1.).into();
-            style.size.height = px(12.).into(); // Scrollbar height
-        }
+            Style {
+                flex_grow: 0.,
+                flex_shrink: 0.,
+                size: Size {
+                    width: relative(1.).into(),
+                    height: px(12.).into(), // Scrollbar height
+                },
+                ..Default::default()
+            }
+        };
 
         (window.request_layout(style, None, cx), ())
     }

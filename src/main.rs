@@ -427,19 +427,17 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             let crank = cx.new(|mc| {
                 mc.spawn(async move |crank, cx| {
                     loop {
-                        // Add error handling around the timer operation
-                        match cx.background_executor()
+                        // Wait for timer
+                        cx.background_executor()
                             .timer(Duration::from_millis(200)) // 5fps instead of 20fps
-                            .await {
-                            _ => {
-                                // Timer completed, emit update event
-                                if let Err(e) = crank.update(cx, |_crank, cx| {
-                                    cx.emit(());
-                                }) {
-                                    log::warn!("Failed to emit crank event: {e:?}");
-                                    // Continue the loop even if update fails
-                                }
-                            }
+                            .await;
+                        
+                        // Timer completed, emit update event
+                        if let Err(e) = crank.update(cx, |_crank, cx| {
+                            cx.emit(());
+                        }) {
+                            log::warn!("Failed to emit crank event: {e:?}");
+                            // Continue the loop even if update fails
                         }
                     }
                 })

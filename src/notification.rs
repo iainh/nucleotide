@@ -119,37 +119,35 @@ impl NotificationView {
         let status = self.lsp_status.entry(id).or_default();
 
         if let Call::Notification(notification) = call {
-            if let Ok(notification) =
+            if let Ok(Notification::ProgressMessage(ref msg)) =
                 Notification::parse(&notification.method, notification.params.clone())
             {
-                if let Notification::ProgressMessage(ref msg) = notification {
-                    let token = match msg.token.clone() {
-                        NumberOrString::String(s) => s,
-                        NumberOrString::Number(num) => num.to_string(),
-                    };
-                    status.token = token;
-                    let ProgressParamsValue::WorkDone(value) = msg.value.clone();
-                    match value {
-                        WorkDoneProgress::Begin(begin) => {
-                            status.title = begin.title;
-                            status.message = begin.message;
-                            status.percentage = begin.percentage;
-                            ev = LspStatusEvent::Begin;
+                let token = match msg.token.clone() {
+                    NumberOrString::String(s) => s,
+                    NumberOrString::Number(num) => num.to_string(),
+                };
+                status.token = token;
+                let ProgressParamsValue::WorkDone(value) = msg.value.clone();
+                match value {
+                    WorkDoneProgress::Begin(begin) => {
+                        status.title = begin.title;
+                        status.message = begin.message;
+                        status.percentage = begin.percentage;
+                        ev = LspStatusEvent::Begin;
+                    }
+                    WorkDoneProgress::Report(report) => {
+                        if let Some(msg) = report.message {
+                            status.message = Some(msg);
                         }
-                        WorkDoneProgress::Report(report) => {
-                            if let Some(msg) = report.message {
-                                status.message = Some(msg);
-                            }
-                            status.percentage = report.percentage;
+                        status.percentage = report.percentage;
 
-                            ev = LspStatusEvent::Progress;
+                        ev = LspStatusEvent::Progress;
+                    }
+                    WorkDoneProgress::End(end) => {
+                        if let Some(msg) = end.message {
+                            status.message = Some(msg);
                         }
-                        WorkDoneProgress::End(end) => {
-                            if let Some(msg) = end.message {
-                                status.message = Some(msg);
-                            }
-                            ev = LspStatusEvent::End;
-                        }
+                        ev = LspStatusEvent::End;
                     }
                 }
             }
