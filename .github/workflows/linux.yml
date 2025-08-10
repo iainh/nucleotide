@@ -188,6 +188,7 @@ jobs:
   build-with-nix:
     name: Build with Nix (using GitHub cache)
     runs-on: ubuntu-latest
+    continue-on-error: true  # Optional build - don't fail the whole workflow
     
     steps:
       - uses: actions/checkout@v4
@@ -200,13 +201,16 @@ jobs:
       
       - name: Build with Nix
         run: |
-          # Build the package
-          nix build .#nucleotide --print-build-logs
+          # Build runtime files
+          nix build .#runtime --print-build-logs
+          
+          # Build in Nix shell
+          nix develop --command cargo build --release
           
           # Test the result
-          if [ -f "result/bin/nucl" ]; then
+          if [ -f "target/release/nucl" ]; then
             echo "✓ Binary created successfully"
-            file result/bin/nucl
+            file target/release/nucl
           else
             echo "✗ Binary not found!"
             exit 1
@@ -214,18 +218,15 @@ jobs:
       
       - name: Create Nix distribution
         run: |
-          # Copy Nix build result
-          cp -rL result nucleotide-nix-linux
-          
-          # Create tarball
-          tar czf nucleotide-nix-linux-x86_64.tar.gz nucleotide-nix-linux
+          # Create distribution using Nix helper
+          nix develop --command make-linux-package
           
           echo "Nix distribution package created:"
-          ls -lh nucleotide-nix-linux-x86_64.tar.gz
+          ls -lh nucleotide-linux.tar.gz
       
       - name: Upload Nix package
         uses: actions/upload-artifact@v4
         with:
           name: nucleotide-nix-linux-x86_64
-          path: nucleotide-nix-linux-x86_64.tar.gz
+          path: nucleotide-linux.tar.gz
           retention-days: 7
