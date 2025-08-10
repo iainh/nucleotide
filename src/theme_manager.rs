@@ -43,7 +43,6 @@ impl ThemeManager {
 
     /// Derive a UI theme from a Helix theme
     fn derive_ui_theme(helix_theme: &HelixTheme) -> UITheme {
-        
         // Extract colors from Helix theme with fallbacks
         let ui_bg = helix_theme.get("ui.background");
         let ui_text = helix_theme.get("ui.text");

@@ -46,7 +46,7 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 // Removed unused Tag-related structs and enums
 
 use anyhow::Error;
-use log::{debug, warn, info};
+use log::{debug, info, warn};
 
 use tokio_stream::StreamExt;
 
@@ -907,7 +907,7 @@ pub fn init_editor(
 
     let mut theme_parent_dirs = vec![helix_loader::config_dir()];
     theme_parent_dirs.extend(helix_loader::runtime_dirs().iter().cloned());
-    
+
     // Add bundle runtime as a backup for macOS
     #[cfg(target_os = "macos")]
     if let Some(rt) = crate::detect_bundle_runtime() {
@@ -915,11 +915,11 @@ pub fn init_editor(
             theme_parent_dirs.push(rt);
         }
     }
-    
+
     let theme_loader = std::sync::Arc::new(helix_view::theme::Loader::new(&theme_parent_dirs));
 
     let true_color = true;
-    
+
     let theme = config
         .theme
         .as_ref()
@@ -946,12 +946,12 @@ pub fn init_editor(
         .unwrap_or_else(|| theme_loader.default_theme(true_color));
 
     let syn_loader = Arc::new(ArcSwap::from_pointee(lang_loader));
-    
+
     // CRITICAL: Enable true_color support for GUI mode before creating the editor
     // This is required for themes to work correctly
     let mut config = config;
     config.editor.true_color = true;
-    
+
     let config = Arc::new(ArcSwap::from_pointee(config));
 
     let area = Rect {
@@ -1115,7 +1115,7 @@ pub fn init_editor(
 }
 
 // Tests moved to tests/integration_test.rs to avoid GPUI proc macro compilation issues
-// The issue: When compiling with --test, GPUI proc macros cause stack overflow 
+// The issue: When compiling with --test, GPUI proc macros cause stack overflow
 // when processing certain patterns in our codebase
 #[cfg(test_disabled)]
 mod tests {

@@ -147,11 +147,12 @@ impl OverlayView {
                                             let mut names = helix_view::theme::Loader::read_names(
                                                 &helix_loader::config_dir().join("themes"),
                                             );
-                                            
+
                                             for rt_dir in helix_loader::runtime_dirs() {
-                                                let rt_names = helix_view::theme::Loader::read_names(
-                                                    &rt_dir.join("themes"),
-                                                );
+                                                let rt_names =
+                                                    helix_view::theme::Loader::read_names(
+                                                        &rt_dir.join("themes"),
+                                                    );
                                                 names.extend(rt_names);
                                             }
                                             names.push("default".into());

@@ -100,7 +100,6 @@ fn install_panic_handler() {
     }));
 }
 
-
 #[cfg(target_os = "macos")]
 pub fn detect_bundle_runtime() -> Option<std::path::PathBuf> {
     if let Ok(mut exe) = std::env::current_exe() {
@@ -355,7 +354,9 @@ impl std::fmt::Debug for Update {
             Update::Redraw => write!(f, "Update::Redraw"),
             Update::Prompt(p) => f.debug_tuple("Update::Prompt").field(p).finish(),
             Update::Picker(p) => f.debug_tuple("Update::Picker").field(p).finish(),
-            Update::DirectoryPicker(p) => f.debug_tuple("Update::DirectoryPicker").field(p).finish(),
+            Update::DirectoryPicker(p) => {
+                f.debug_tuple("Update::DirectoryPicker").field(p).finish()
+            }
             Update::Completion(_) => write!(f, "Update::Completion(<Entity>)"),
             Update::Info(i) => f.debug_tuple("Update::Info").field(i).finish(),
             Update::EditorEvent(e) => f.debug_tuple("Update::EditorEvent").field(e).finish(),
@@ -363,37 +364,53 @@ impl std::fmt::Debug for Update {
             Update::OpenFile(p) => f.debug_tuple("Update::OpenFile").field(p).finish(),
             Update::OpenDirectory(p) => f.debug_tuple("Update::OpenDirectory").field(p).finish(),
             Update::ShouldQuit => write!(f, "Update::ShouldQuit"),
-            Update::CommandSubmitted(c) => f.debug_tuple("Update::CommandSubmitted").field(c).finish(),
-            Update::DocumentChanged { doc_id } => f.debug_struct("Update::DocumentChanged")
+            Update::CommandSubmitted(c) => {
+                f.debug_tuple("Update::CommandSubmitted").field(c).finish()
+            }
+            Update::DocumentChanged { doc_id } => f
+                .debug_struct("Update::DocumentChanged")
                 .field("doc_id", doc_id)
                 .finish(),
-            Update::SelectionChanged { doc_id, view_id } => f.debug_struct("Update::SelectionChanged")
+            Update::SelectionChanged { doc_id, view_id } => f
+                .debug_struct("Update::SelectionChanged")
                 .field("doc_id", doc_id)
                 .field("view_id", view_id)
                 .finish(),
-            Update::ModeChanged { old_mode, new_mode } => f.debug_struct("Update::ModeChanged")
+            Update::ModeChanged { old_mode, new_mode } => f
+                .debug_struct("Update::ModeChanged")
                 .field("old_mode", old_mode)
                 .field("new_mode", new_mode)
                 .finish(),
-            Update::DiagnosticsChanged { doc_id } => f.debug_struct("Update::DiagnosticsChanged")
+            Update::DiagnosticsChanged { doc_id } => f
+                .debug_struct("Update::DiagnosticsChanged")
                 .field("doc_id", doc_id)
                 .finish(),
-            Update::DocumentOpened { doc_id } => f.debug_struct("Update::DocumentOpened")
+            Update::DocumentOpened { doc_id } => f
+                .debug_struct("Update::DocumentOpened")
                 .field("doc_id", doc_id)
                 .finish(),
-            Update::DocumentClosed { doc_id } => f.debug_struct("Update::DocumentClosed")
+            Update::DocumentClosed { doc_id } => f
+                .debug_struct("Update::DocumentClosed")
                 .field("doc_id", doc_id)
                 .finish(),
-            Update::ViewFocused { view_id } => f.debug_struct("Update::ViewFocused")
+            Update::ViewFocused { view_id } => f
+                .debug_struct("Update::ViewFocused")
                 .field("view_id", view_id)
                 .finish(),
-            Update::LanguageServerInitialized { server_id } => f.debug_struct("Update::LanguageServerInitialized")
+            Update::LanguageServerInitialized { server_id } => f
+                .debug_struct("Update::LanguageServerInitialized")
                 .field("server_id", server_id)
                 .finish(),
-            Update::LanguageServerExited { server_id } => f.debug_struct("Update::LanguageServerExited")
+            Update::LanguageServerExited { server_id } => f
+                .debug_struct("Update::LanguageServerExited")
                 .field("server_id", server_id)
                 .finish(),
-            Update::CompletionRequested { doc_id, view_id, trigger } => f.debug_struct("Update::CompletionRequested")
+            Update::CompletionRequested {
+                doc_id,
+                view_id,
+                trigger,
+            } => f
+                .debug_struct("Update::CompletionRequested")
                 .field("doc_id", doc_id)
                 .field("view_id", view_id)
                 .field("trigger", trigger)
