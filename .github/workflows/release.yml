@@ -12,303 +12,236 @@ on:
         type: string
 
 jobs:
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb-xfixes0-dev \
+            libxcb-shape0-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libvulkan-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev
+      
+      - name: Build release
+        run: cargo build --release
+      
+      - name: Prepare distribution
+        run: |
+          # Clone helix for runtime files
+          git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
+          
+          # Create distribution
+          mkdir -p nucleotide-linux/bin
+          mkdir -p nucleotide-linux/share/nucleotide/runtime
+          
+          cp target/release/nucl nucleotide-linux/bin/
+          cp -r helix-temp/runtime/* nucleotide-linux/share/nucleotide/runtime/
+          cp README.md LICENSE nucleotide-linux/ 2>/dev/null || true
+          
+          # Create tarball
+          tar czf nucleotide-linux-x86_64.tar.gz nucleotide-linux
+          
+          rm -rf helix-temp
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: nucleotide-linux-x86_64.tar.gz
+
   build-macos:
-    name: Build macOS (${{ matrix.arch }})
-    runs-on: ${{ matrix.os }}
+    name: Build macOS
+    runs-on: macos-latest
     strategy:
       matrix:
         include:
-          - os: macos-13  # Intel
-            arch: x86_64-darwin
-            runner_arch: x64
-          - os: macos-14  # Apple Silicon
-            arch: aarch64-darwin
-            runner_arch: arm64
+          - arch: x86_64
+            target: x86_64-apple-darwin
+          - arch: aarch64
+            target: aarch64-apple-darwin
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          fetch-depth: 0
+          targets: ${{ matrix.target }}
       
-      - name: Install Nix
-        uses: cachix/install-nix-action@v24
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v13
-        with:
-          name: helix-gpui
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
-      
-      - name: Build app bundle
+      - name: Build release
         run: |
-          nix build .#helix-gpui --print-build-logs
-          
-          # Verify the bundle was created
-          if [ ! -d "result/Applications/Helix.app" ]; then
-            echo "Error: App bundle not found!"
-            exit 1
-          fi
-          
-          # Get bundle info
-          echo "Bundle created successfully:"
-          du -sh result/Applications/Helix.app
-          echo ""
-          echo "Binary architecture:"
-          file result/Applications/Helix.app/Contents/MacOS/Helix
+          cargo build --release --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/nucl target/release/nucl
       
-      - name: Create DMG
+      - name: Prepare runtime
         run: |
-          nix build .#helix-gpui-dmg --print-build-logs
-          
-          # Copy DMG to workspace
-          cp result/*.dmg helix-gpui-${{ matrix.arch }}.dmg
-          
-          echo "DMG created:"
-          ls -lh helix-gpui-${{ matrix.arch }}.dmg
+          git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp
+          mkdir -p runtime
+          cp -r helix-temp/runtime/* runtime/
+          rm -rf helix-temp
       
-      - name: Create tarball
+      - name: Create app bundle
         run: |
-          # Create a tarball of the app bundle
-          cd result/Applications
-          tar czf ../../helix-gpui-${{ matrix.arch }}.tar.gz Helix.app
-          cd ../..
+          chmod +x bundle-mac.sh
+          ./bundle-mac.sh
           
-          echo "Tarball created:"
-          ls -lh helix-gpui-${{ matrix.arch }}.tar.gz
+          # Create DMG
+          mkdir -p dmg-content
+          cp -r Nucleotide.app dmg-content/
+          ln -s /Applications dmg-content/Applications
+          hdiutil create -volname "Nucleotide" -srcfolder dmg-content -ov -format UDZO Nucleotide-${{ matrix.arch }}.dmg
       
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: helix-gpui-${{ matrix.arch }}
-          path: |
-            helix-gpui-${{ matrix.arch }}.dmg
-            helix-gpui-${{ matrix.arch }}.tar.gz
-  
-  build-linux:
-    name: Build Linux (${{ matrix.arch }})
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [x86_64-linux, aarch64-linux]
+          name: macos-${{ matrix.arch }}-build
+          path: Nucleotide-${{ matrix.arch }}.dmg
+
+  build-macos-universal:
+    name: Build macOS Universal
+    runs-on: macos-latest
+    needs: build-macos
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
       
-      - name: Install Nix
-        uses: cachix/install-nix-action@v24
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
         with:
-          nix_path: nixpkgs=channel:nixos-unstable
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+          name: macos-x86_64-build
+          path: x86_64
       
-      - name: Setup QEMU for ARM builds
-        if: matrix.arch == 'aarch64-linux'
-        uses: docker/setup-qemu-action@v3
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
         with:
-          platforms: arm64
+          name: macos-aarch64-build
+          path: aarch64
       
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v13
-        with:
-          name: helix-gpui
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
-      
-      - name: Build binary
+      - name: Create universal binary
         run: |
-          if [ "${{ matrix.arch }}" = "aarch64-linux" ]; then
-            # Cross-compile for ARM64
-            nix build .#packages.aarch64-linux.helix-gpui --print-build-logs
-          else
-            nix build .#helix-gpui --print-build-logs
-          fi
+          # Extract apps from DMGs
+          hdiutil attach x86_64/Nucleotide-x86_64.dmg -mountpoint /tmp/x86_64-mount
+          cp -r /tmp/x86_64-mount/Nucleotide.app ./Nucleotide-x86_64.app
+          hdiutil detach /tmp/x86_64-mount
           
-          # Verify the binary was created
-          if [ ! -f "result/bin/hxg" ]; then
-            echo "Error: Binary not found!"
-            exit 1
-          fi
+          hdiutil attach aarch64/Nucleotide-aarch64.dmg -mountpoint /tmp/aarch64-mount
+          cp -r /tmp/aarch64-mount/Nucleotide.app ./Nucleotide-aarch64.app
+          hdiutil detach /tmp/aarch64-mount
           
-          echo "Binary created successfully:"
-          file result/bin/hxg
+          # Create universal app
+          cp -r Nucleotide-x86_64.app Nucleotide.app
+          lipo -create \
+            Nucleotide-x86_64.app/Contents/MacOS/nucl \
+            Nucleotide-aarch64.app/Contents/MacOS/nucl \
+            -output Nucleotide.app/Contents/MacOS/nucl
+          
+          # Create universal DMG
+          mkdir -p dmg-content
+          cp -r Nucleotide.app dmg-content/
+          ln -s /Applications dmg-content/Applications
+          hdiutil create -volname "Nucleotide" -srcfolder dmg-content -ov -format UDZO Nucleotide-universal.dmg
       
-      - name: Create tarball
-        run: |
-          # Create distribution directory
-          mkdir -p helix-gpui-${{ matrix.arch }}
-          
-          # Copy binary and runtime
-          cp -r result/* helix-gpui-${{ matrix.arch }}/
-          
-          # Create tarball
-          tar czf helix-gpui-${{ matrix.arch }}.tar.gz helix-gpui-${{ matrix.arch }}
-          
-          echo "Tarball created:"
-          ls -lh helix-gpui-${{ matrix.arch }}.tar.gz
-      
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: helix-gpui-${{ matrix.arch }}
-          path: helix-gpui-${{ matrix.arch }}.tar.gz
-  
+          name: macos-universal-build
+          path: Nucleotide-universal.dmg
+
   create-release:
     name: Create Release
-    needs: [build-macos, build-linux]
     runs-on: ubuntu-latest
+    needs: [build-linux, build-macos-universal]
     permissions:
       contents: write
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
       
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
       
-      - name: List artifacts
+      - name: Prepare release files
         run: |
-          echo "Downloaded artifacts:"
-          find artifacts -type f -name "*.dmg" -o -name "*.tar.gz" | sort
-      
-      - name: Generate changelog
-        id: changelog
-        run: |
-          # Get the tag name
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.tag }}"
-          else
-            TAG="${{ github.ref_name }}"
-          fi
-          
-          echo "Creating release for tag: $TAG"
-          
-          # Generate basic changelog (customize as needed)
-          cat > CHANGELOG.md << EOF
-          ## What's New
-          
-          This release includes:
-          - Optimized macOS app bundles for both Intel and Apple Silicon
-          - Linux binaries for x86_64 and ARM64
-          - Complete Helix runtime with all grammars and themes
-          - Performance improvements with LTO optimization
-          
-          ## Installation
-          
-          ### macOS
-          - Download the DMG for your architecture (Intel or Apple Silicon)
-          - Open the DMG and drag Helix.app to Applications
-          - Or download the tarball and extract to /Applications
-          
-          ### Linux
-          - Download the tarball for your architecture
-          - Extract to your preferred location
-          - Add the bin directory to your PATH
-          
-          ## Checksums
-          
-          EOF
+          mkdir -p release
+          cp artifacts/linux-build/nucleotide-linux-x86_64.tar.gz release/
+          cp artifacts/macos-universal-build/Nucleotide-universal.dmg release/Nucleotide.dmg
+          cp artifacts/macos-x86_64-build/Nucleotide-x86_64.dmg release/
+          cp artifacts/macos-aarch64-build/Nucleotide-aarch64.dmg release/
           
           # Generate checksums
-          cd artifacts
-          for file in */*.{dmg,tar.gz}; do
-            if [ -f "$file" ]; then
-              sha256sum "$file" >> ../CHANGELOG.md
-            fi
-          done
+          cd release
+          sha256sum * > SHA256SUMS
           cd ..
           
-          echo "changelog_path=CHANGELOG.md" >> $GITHUB_OUTPUT
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Release files:"
+          ls -lh release/
+      
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
       
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.changelog.outputs.tag }}
-          name: Helix GPUI ${{ steps.changelog.outputs.tag }}
-          body_path: ${{ steps.changelog.outputs.changelog_path }}
-          draft: false
-          prerelease: ${{ contains(steps.changelog.outputs.tag, 'beta') || contains(steps.changelog.outputs.tag, 'alpha') }}
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Nucleotide ${{ steps.version.outputs.version }}
+          body: |
+            ## Downloads
+            
+            ### macOS
+            - **Universal (Intel + Apple Silicon):** `Nucleotide.dmg`
+            - **Intel only:** `Nucleotide-x86_64.dmg`
+            - **Apple Silicon only:** `Nucleotide-aarch64.dmg`
+            
+            ### Linux
+            - **x86_64:** `nucleotide-linux-x86_64.tar.gz`
+            
+            ## Installation
+            
+            ### macOS
+            1. Download the appropriate DMG file
+            2. Open the DMG and drag Nucleotide to Applications
+            3. On first launch, you may need to right-click and select "Open" to bypass Gatekeeper
+            
+            ### Linux
+            1. Download and extract the tarball:
+               ```bash
+               tar xzf nucleotide-linux-x86_64.tar.gz
+               cd nucleotide-linux
+               ```
+            2. Add to PATH or run directly:
+               ```bash
+               ./bin/nucl
+               ```
+            
+            ## Checksums
+            SHA256 checksums are available in `SHA256SUMS`
+          draft: true
           files: |
-            artifacts/**/*.dmg
-            artifacts/**/*.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  
-  # Optional: Create a universal macOS binary
-  create-universal-macos:
-    name: Create Universal macOS Binary
-    needs: [build-macos]
-    runs-on: macos-latest
-    
-    steps:
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: helix-gpui-*-darwin
-          path: artifacts
-      
-      - name: Extract and create universal binary
-        run: |
-          # Extract both architectures
-          tar xzf artifacts/helix-gpui-x86_64-darwin/helix-gpui-x86_64-darwin.tar.gz
-          mv Helix.app Helix-x86_64.app
-          
-          tar xzf artifacts/helix-gpui-aarch64-darwin/helix-gpui-aarch64-darwin.tar.gz
-          mv Helix.app Helix-arm64.app
-          
-          # Create universal binary
-          mkdir -p Helix.app/Contents/MacOS
-          lipo -create \
-            Helix-x86_64.app/Contents/MacOS/Helix \
-            Helix-arm64.app/Contents/MacOS/Helix \
-            -output Helix.app/Contents/MacOS/Helix
-          
-          # Copy rest of the bundle (they should be identical)
-          cp -r Helix-x86_64.app/Contents/Resources Helix.app/Contents/
-          cp Helix-x86_64.app/Contents/Info.plist Helix.app/Contents/
-          
-          # Verify universal binary
-          echo "Universal binary created:"
-          file Helix.app/Contents/MacOS/Helix
-          lipo -info Helix.app/Contents/MacOS/Helix
-          
-          # Create universal tarball
-          tar czf helix-gpui-universal-darwin.tar.gz Helix.app
-          
-          # Create universal DMG
-          hdiutil create -volname "Helix GPUI" -srcfolder Helix.app -ov -format UDZO helix-gpui-universal-darwin.dmg
-      
-      - name: Upload universal artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: helix-gpui-universal-darwin
-          path: |
-            helix-gpui-universal-darwin.tar.gz
-            helix-gpui-universal-darwin.dmg
-      
-      - name: Add to release
-        if: needs.create-release.result == 'success'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: |
-            helix-gpui-universal-darwin.tar.gz
-            helix-gpui-universal-darwin.dmg
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            release/Nucleotide.dmg
+            release/Nucleotide-x86_64.dmg
+            release/Nucleotide-aarch64.dmg
+            release/nucleotide-linux-x86_64.tar.gz
+            release/SHA256SUMS
