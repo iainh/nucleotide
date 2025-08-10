@@ -121,3 +121,18 @@ pub mod test {
 
     actions!(test, [TestPrompt, TestCompletion, TestPicker,]);
 }
+
+pub mod file_tree {
+    use gpui::actions;
+
+    actions!(
+        file_tree,
+        [
+            SelectNext,
+            SelectPrev,
+            ExpandCollapse,
+            OpenFile,
+            FocusFileTree,
+        ]
+    );
+}

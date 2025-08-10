@@ -943,39 +943,34 @@ impl Render for FileTreeView {
                 log::debug!("File tree container clicked, focusing");
                 view.focus_handle.focus(window);
             }))
-            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _window, cx| {
-                match event.keystroke.key.as_str() {
-                    "down" | "j" => {
-                        view.select_next(cx);
+            // Handle FileTree actions
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::SelectNext, _window, cx| {
+                    view.select_next(cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::SelectPrev, _window, cx| {
+                    view.select_previous(cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::ExpandCollapse, _window, cx| {
+                    // For left/right arrow keys, handle expand/collapse
+                    if let Some(selected_path) = view.selected_path.clone() {
+                        if let Some(entry) = view.tree.entry_by_path(&selected_path) {
+                            if entry.is_directory() {
+                                view.toggle_directory(&selected_path, cx);
+                            }
+                        }
                     }
-                    "up" | "k" => {
-                        view.select_previous(cx);
-                    }
-                    "left" | "h" => {
-                        view.navigate_left(cx);
-                    }
-                    "right" | "l" => {
-                        view.navigate_right(cx);
-                    }
-                    "enter" | " " => {
-                        view.open_selected(cx);
-                    }
-                    "home" => {
-                        view.select_first(cx);
-                    }
-                    "end" => {
-                        view.select_last(cx);
-                    }
-                    "f5" => {
-                        view.refresh(cx);
-                    }
-                    "shift+f5" => {
-                        // Force VCS refresh
-                        view.request_vcs_refresh(true, cx);
-                    }
-                    _ => {}
-                }
-            }))
+                },
+            ))
+            .on_action(cx.listener(
+                |view, _: &crate::actions::file_tree::OpenFile, _window, cx| {
+                    view.open_selected(cx);
+                },
+            ))
             .child(
                 div()
                     .flex()

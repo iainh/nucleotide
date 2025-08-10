@@ -142,7 +142,12 @@ impl Workspace {
         };
         // Initialize document views
         workspace.update_document_views(cx);
-        // Focus the workspace by default (focus will be managed by render)
+
+        // Auto-focus the first document view on startup
+        if workspace.focused_view_id.is_some() {
+            workspace.needs_focus_restore = true;
+        }
+
         workspace
     }
 
@@ -640,7 +645,22 @@ impl Workspace {
         });
     }
 
+    fn handle_open_file_keep_focus(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        // Open file but don't steal focus from file tree
+        self.open_file_internal(path, false, cx);
+    }
+
     fn handle_open_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        // Open file and focus the editor
+        self.open_file_internal(path, true, cx);
+    }
+
+    fn open_file_internal(
+        &mut self,
+        path: &std::path::Path,
+        should_focus: bool,
+        cx: &mut Context<Self>,
+    ) {
         // Open the specified file in the editor
         info!("Workspace: Received OpenFile update for: {path:?}");
         self.core.update(cx, |core, cx| {
@@ -769,6 +789,11 @@ impl Workspace {
             });
         }
 
+        // Only focus the editor if requested (not when opening from file tree)
+        if should_focus && self.focused_view_id.is_some() {
+            self.needs_focus_restore = true;
+        }
+
         // Force a redraw
         cx.notify();
     }
@@ -842,9 +867,9 @@ impl Workspace {
     fn handle_file_tree_event(&mut self, event: &FileTreeEvent, cx: &mut Context<Self>) {
         match event {
             FileTreeEvent::OpenFile { path } => {
-                // Emit an OpenFile event to trigger file opening
+                // Open file but keep focus on file tree
                 info!("FileTreeEvent::OpenFile received in workspace: {:?}", path);
-                cx.emit(crate::Update::OpenFile(path.clone()));
+                self.handle_open_file_keep_focus(path, cx);
             }
             FileTreeEvent::SelectionChanged { path: _ } => {
                 // Update UI if needed for selection changes
@@ -1050,6 +1075,29 @@ impl Workspace {
                 cx.new(|cx| crate::completion::CompletionView::new(items, anchor_position, cx));
 
             cx.emit(crate::Update::Completion(completion_view));
+        });
+    }
+
+    /// Send a key directly to Helix, ensuring the editor has focus
+    fn send_helix_key(&mut self, key: &str, cx: &mut Context<Self>) {
+        // Ensure an editor view has focus
+        if self.focused_view_id.is_some() {
+            self.needs_focus_restore = true;
+        }
+
+        // Parse the key string and send it to Helix
+        let keystroke = gpui::Keystroke::parse(key).unwrap_or_else(|_| {
+            // Fallback for simple keys
+            gpui::Keystroke {
+                key_char: Some(key.chars().next().unwrap_or(' ').to_string()),
+                key: key.to_string(),
+                modifiers: gpui::Modifiers::default(),
+            }
+        });
+
+        let key_event = utils::translate_key(&keystroke);
+        self.input.update(cx, |_, cx| {
+            cx.emit(InputEvent::Key(key_event));
         });
     }
 
@@ -1360,7 +1408,7 @@ impl Render for Workspace {
             },
         ));
 
-        // Editor actions
+        // Global editor actions that work regardless of focus
         let handle = self.handle.clone();
         let core = self.core.clone();
         workspace_div = workspace_div.on_action(cx.listener(
@@ -1386,6 +1434,51 @@ impl Render for Workspace {
             },
         ));
 
+        // Add handlers for Save, SaveAs, CloseFile
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::Save, _window, cx| {
+                workspace.execute_raw_command("write", cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::SaveAs, _window, cx| {
+                // TODO: Implement save as with file dialog
+                workspace.execute_raw_command("write", cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::CloseFile, _window, cx| {
+                workspace.execute_raw_command("close", cx);
+            },
+        ));
+
+        // Add handlers for Undo, Redo, Copy, Paste
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::Undo, _window, cx| {
+                workspace.send_helix_key("u", cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::Redo, _window, cx| {
+                workspace.send_helix_key("U", cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::Copy, _window, cx| {
+                workspace.send_helix_key("y", cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::Paste, _window, cx| {
+                workspace.send_helix_key("p", cx);
+            },
+        ));
+
         // Workspace actions
         let handle = self.handle.clone();
         let core = self.core.clone();
@@ -1401,6 +1494,28 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |_, _: &crate::actions::workspace::ShowFileFinder, _window, cx| {
                 open(core.clone(), handle.clone(), cx)
+            },
+        ));
+
+        // NewFile action
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::NewFile, _window, cx| {
+                workspace.execute_raw_command("new", cx);
+            },
+        ));
+
+        // NewWindow action
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |_workspace, _: &crate::actions::workspace::NewWindow, _window, _cx| {
+                // TODO: Implement new window
+                eprintln!("New window not yet implemented");
+            },
+        ));
+
+        // ShowCommandPalette action
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::ShowCommandPalette, _window, cx| {
+                workspace.send_helix_key(":", cx);
             },
         ));
 

@@ -616,6 +616,28 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
 
             // Set up keybindings with proper key contexts
 
+            // Import workspace actions for global bindings
+            use crate::actions::workspace::*;
+
+            // Global actions - work regardless of focus (no context specified)
+            cx.bind_keys([
+                gpui::KeyBinding::new("cmd-q", Quit, None),
+                gpui::KeyBinding::new("cmd-o", OpenFile, None),
+                gpui::KeyBinding::new("cmd-shift-o", OpenDirectory, None),
+                gpui::KeyBinding::new("cmd-s", Save, None),
+                gpui::KeyBinding::new("cmd-shift-s", SaveAs, None),
+                gpui::KeyBinding::new("cmd-w", CloseFile, None),
+                gpui::KeyBinding::new("cmd-n", NewFile, None),
+                gpui::KeyBinding::new("cmd-shift-n", NewWindow, None),
+                gpui::KeyBinding::new("cmd-p", ShowFileFinder, None),
+                gpui::KeyBinding::new("cmd-shift-p", ShowCommandPalette, None),
+                gpui::KeyBinding::new("cmd-b", ShowBufferPicker, None),
+                gpui::KeyBinding::new("cmd-z", Undo, None),
+                gpui::KeyBinding::new("cmd-shift-z", Redo, None),
+                gpui::KeyBinding::new("cmd-c", Copy, None),
+                gpui::KeyBinding::new("cmd-v", Paste, None),
+            ]);
+
             // General editor actions
             cx.bind_keys([
                 gpui::KeyBinding::new("up", MoveUp, Some("Editor")),
@@ -649,6 +671,53 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
                 gpui::KeyBinding::new("ctrl-g", CompletionDismiss, Some("Completion")),
                 gpui::KeyBinding::new("home", CompletionSelectFirst, Some("Completion")),
                 gpui::KeyBinding::new("end", CompletionSelectLast, Some("Completion")),
+            ]);
+
+            // FileTree-specific keybindings
+            use crate::actions::file_tree::*;
+            cx.bind_keys([
+                gpui::KeyBinding::new(
+                    "up",
+                    crate::actions::file_tree::SelectPrev,
+                    Some("FileTree"),
+                ),
+                gpui::KeyBinding::new(
+                    "down",
+                    crate::actions::file_tree::SelectNext,
+                    Some("FileTree"),
+                ),
+                gpui::KeyBinding::new("k", crate::actions::file_tree::SelectPrev, Some("FileTree")),
+                gpui::KeyBinding::new("j", crate::actions::file_tree::SelectNext, Some("FileTree")),
+                gpui::KeyBinding::new(
+                    "left",
+                    crate::actions::file_tree::ExpandCollapse,
+                    Some("FileTree"),
+                ),
+                gpui::KeyBinding::new(
+                    "right",
+                    crate::actions::file_tree::ExpandCollapse,
+                    Some("FileTree"),
+                ),
+                gpui::KeyBinding::new(
+                    "h",
+                    crate::actions::file_tree::ExpandCollapse,
+                    Some("FileTree"),
+                ),
+                gpui::KeyBinding::new(
+                    "l",
+                    crate::actions::file_tree::ExpandCollapse,
+                    Some("FileTree"),
+                ),
+                gpui::KeyBinding::new(
+                    "space",
+                    crate::actions::file_tree::ExpandCollapse,
+                    Some("FileTree"),
+                ),
+                gpui::KeyBinding::new(
+                    "enter",
+                    crate::actions::file_tree::OpenFile,
+                    Some("FileTree"),
+                ),
             ]);
 
             let input_1 = input.clone();
