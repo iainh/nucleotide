@@ -39,6 +39,18 @@ cargo build --release
 open Nucleotide.app
 ```
 
+## Development Setup
+
+### Install Git Hooks
+
+To ensure consistent code formatting, install the pre-commit hooks:
+
+```bash
+./scripts/install-hooks.sh
+```
+
+This will set up automatic `cargo fmt` checks before each commit.
+
 ## Configuration
 
 Nucleotide looks for configuration in `~/.config/helix/nucleotide.toml` and falls back to Helix configuration at `~/.config/helix/config.toml`.
