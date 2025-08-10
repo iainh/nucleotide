@@ -24,14 +24,18 @@ if [ -d "${BUNDLE_NAME}" ]; then
     rm -rf "${BUNDLE_NAME}"
 fi
 
-# Build the release binary
-echo -e "${GREEN}Building release binary...${NC}"
-cargo build --release
-
-# Check if binary exists
+# Check if binary exists, build if not
 if [ ! -f "target/release/${EXECUTABLE_NAME}" ]; then
-    echo -e "${RED}Error: Binary target/release/${EXECUTABLE_NAME} not found${NC}"
-    exit 1
+    echo -e "${GREEN}Building release binary...${NC}"
+    cargo build --release
+    
+    # Check again after build
+    if [ ! -f "target/release/${EXECUTABLE_NAME}" ]; then
+        echo -e "${RED}Error: Binary target/release/${EXECUTABLE_NAME} not found${NC}"
+        exit 1
+    fi
+else
+    echo -e "${GREEN}Using existing binary at target/release/${EXECUTABLE_NAME}${NC}"
 fi
 
 # Create bundle directory structure
@@ -54,14 +58,31 @@ fi
 
 # Find Helix runtime directory
 HELIX_RUNTIME_SOURCE=""
-HELIX_CHECKOUT_RUNTIME="/Users/iheggie/.cargo/git/checkouts/helix-b99af130ded19729/a05c151/runtime"
 
-if [ -d "${HELIX_CHECKOUT_RUNTIME}" ]; then
-    HELIX_RUNTIME_SOURCE="${HELIX_CHECKOUT_RUNTIME}"
+# Check multiple possible locations for runtime files
+# 1. Local runtime directory (prepared by CI or manual setup)
+if [ -d "runtime" ]; then
+    HELIX_RUNTIME_SOURCE="runtime"
     echo -e "${GREEN}Found Helix runtime at: ${HELIX_RUNTIME_SOURCE}${NC}"
-else
+# 2. Try to find any helix checkout in cargo
+elif [ -d "$HOME/.cargo/git/checkouts" ]; then
+    HELIX_RUNTIME_SOURCE=$(find "$HOME/.cargo/git/checkouts" -name "runtime" -path "*/helix-*/runtime" -type d | head -1)
+    if [ -n "${HELIX_RUNTIME_SOURCE}" ]; then
+        echo -e "${GREEN}Found Helix runtime at: ${HELIX_RUNTIME_SOURCE}${NC}"
+    fi
+fi
+
+# If we still haven't found runtime, error out
+if [ -z "${HELIX_RUNTIME_SOURCE}" ] || [ ! -d "${HELIX_RUNTIME_SOURCE}" ]; then
     echo -e "${RED}Error: Helix runtime directory not found${NC}"
-    echo "Expected location: ${HELIX_CHECKOUT_RUNTIME}"
+    echo "Please ensure runtime files are available in one of:"
+    echo "  - ./runtime (preferred for CI)"
+    echo "  - ~/.cargo/git/checkouts/helix-*/runtime"
+    echo ""
+    echo "You can clone helix and copy the runtime directory:"
+    echo "  git clone --depth 1 --branch 25.07.1 https://github.com/helix-editor/helix.git helix-temp"
+    echo "  cp -r helix-temp/runtime ./runtime"
+    echo "  rm -rf helix-temp"
     exit 1
 fi
 
