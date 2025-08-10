@@ -9,6 +9,3 @@ pub mod lsp_state;
 
 pub use document_manager::{DocumentManager, DocumentManagerMut};
 pub use lsp_manager::LspManager;
-// pub use lsp_state::LspState;
-// pub use input_handler::InputHandler;
-// pub use ui_factory::UiFactory;

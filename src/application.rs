@@ -733,15 +733,6 @@ impl Application {
 
         // Sync LSP state periodically
         self.sync_lsp_state(cx);
-        /*
-        use std::future::Future;
-        let fut = self.step(cx);
-        let mut fut = Box::pin(fut);
-        handle.block_on(std::future::poll_fn(move |cx| {
-            let _ = fut.as_mut().poll(cx);
-            Poll::Ready(())
-        }));
-        */
     }
 
     pub async fn step(&mut self, cx: &mut gpui::Context<'_, crate::Core>) {
@@ -755,10 +746,6 @@ impl Application {
             tokio::select! {
                 biased;
 
-                // Some(event) = input_stream.next() => {
-                //     // self.handle_input_event(event, cx);
-                //     //self.handle_terminal_events(event).await;
-                // }
                 Some(callback) = self.jobs.callbacks.recv() => {
                     self.jobs.handle_callback(&mut self.editor, &mut self.compositor, Ok(Some(callback)));
                 }
@@ -1001,7 +988,6 @@ pub fn init_editor(
 
     if args.load_tutor {
         let path = helix_loader::runtime_file(Path::new("tutor"));
-        // let path = Path::new("./test.rs");
         let doc_id = editor.open(&path, Action::VerticalSplit)?;
         let view_id = editor.tree.focus;
         // Check if the view exists before setting selection

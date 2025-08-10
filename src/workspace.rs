@@ -1325,19 +1325,6 @@ impl Render for Workspace {
             }
         }
 
-        // Don't remove views during render - handle this in update_document_views
-        // let to_remove = self
-        //     .documents
-        //     .keys()
-        //     .copied()
-        //     .filter(|id| !view_ids.contains(id))
-        //     .collect::<Vec<_>>();
-        // for view_id in to_remove {
-        //     if let Some(_view) = self.documents.remove(&view_id) {
-        //         // Views are automatically cleaned up when no longer referenced in GPUI
-        //     }
-        // }
-
         let focused_view = self
             .focused_view_id
             .and_then(|id| self.documents.get(&id))

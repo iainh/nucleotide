@@ -108,7 +108,6 @@ impl RenderOnce for WindowControl {
                 match self.control_type {
                     WindowControlType::Minimize => {
                         // Note: minimize is not available in GPUI yet
-                        // window.minimize_window();
                     }
                     WindowControlType::Restore | WindowControlType::Maximize => {
                         window.toggle_fullscreen();

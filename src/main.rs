@@ -243,8 +243,6 @@ fn app_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("About", About),
                 MenuItem::separator(),
-                // MenuItem::action("Settings", OpenSettings),
-                // MenuItem::separator(),
                 MenuItem::action("Hide Nucleotide", Hide),
                 MenuItem::action("Hide Others", HideOthers),
                 MenuItem::action("Show All", ShowAll),

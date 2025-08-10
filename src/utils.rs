@@ -99,9 +99,6 @@ pub fn handle_key_result(
     use helix_view::document::Mode;
 
     let mut last_mode = mode;
-    //self.pseudo_pending.extend(self.keymaps.pending());
-    //let key_result = keymaps.get(mode, event);
-    //cxt.editor.autoinfo = keymaps.sticky().map(|node| node.infobox());
 
     let mut execute_command = |command: &helix_term::commands::MappableCommand| {
         command.execute(cxt);
@@ -120,8 +117,6 @@ pub fn handle_key_result(
             if current_mode == Mode::Insert {
                 // how we entered insert mode is important, and we should track that so
                 // we can repeat the side effect.
-                //self.last_insert.0 = command.clone();
-                //self.last_insert.1.clear();
             }
         }
 
@@ -171,7 +166,6 @@ pub fn load_tutor(editor: &mut helix_view::editor::Editor) -> Result<(), anyhow:
     use std::path::Path;
 
     let path = helix_loader::runtime_file(Path::new("tutor"));
-    // let path = Path::new("./test.rs");
     let doc_id = editor.open(&path, Action::VerticalSplit)?;
     let view_id = editor.tree.focus;
     // Check if the view exists before setting selection
