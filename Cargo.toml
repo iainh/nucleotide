@@ -1,11 +1,11 @@
 [package]
-name = "helix-gpui"
+name = "nucleotide"
 edition = "2021"
-authors = ["Alexander Polakov <alex@plhk.dev>", "Blaž Hrastnik <blaz@mxxn.io>"]
-description = "A post-modern text editor."
+authors = ["Iain H. <iain@spiralpoint.org>", "Alexander Polakov <alex@plhk.dev>", "Blaž Hrastnik <blaz@mxxn.io>"]
+description = "A native GUI for the Helix editor"
 include = ["src/**/*", "README.md"]
-default-run = "hxg"
-version = "0.0.1"
+default-run = "nucl"
+version = "0.1.0"
 license = "MPL-2.0"
 
 [features]
@@ -15,7 +15,7 @@ integration = ["helix-event/integration_test"]
 git = ["helix-vcs/git"]
 
 [[bin]]
-name = "hxg"
+name = "nucl"
 path = "src/main.rs"
 
 [dependencies]
@@ -27,7 +27,6 @@ helix-core = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
 helix-event = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
 helix-view = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
 helix-lsp = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-# helix-dap = { git = "https://github.com/polachok/helix" }
 helix-vcs = { git = "https://github.com/helix-editor/helix", tag = "25.07.1", features = ["git"] }
 helix-loader = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
 helix-term = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
@@ -75,15 +74,15 @@ grep-searcher = "0.1.13"
 unicode-width = "0.1"
 
 [package.metadata.bundle]
-name = "Helix GPUI"
-identifier = "dev.plhk.helix-gpui"
-icon = ["assets/helix-gpui.icns"]
-version = "0.0.1"
-copyright = "Copyright © 2025 Alexander Polakov, Blaž Hrastnik, Iain Heggie. All rights reserved."
+name = "Nucleotide"
+identifier = "org.spiralpoint.nucleotide"
+icon = ["assets/nucleotide.icns"]
+version = "0.1.0"
+copyright = "Copyright © 2025 Iain H. All rights reserved."
 category = "public.app-category.developer-tools"
-short_description = "A post-modern text editor with GUI"
+short_description = "A native GUI for the Helix editor"
 long_description = """
-Helix GPUI is a native GUI implementation of the Helix text editor,
+Nucleotide is a native GUI implementation of the Helix text editor,
 built with GPUI (the UI framework from Zed editor). It brings modal
 editing to a native GUI application.
 """

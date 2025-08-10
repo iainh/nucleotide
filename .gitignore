@@ -94,5 +94,5 @@ NOTES.local.md
 
 # Test/Development files
 test_scroll.txt
-Helix.app/
+*.app/
 reference/

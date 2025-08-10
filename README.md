@@ -1,29 +1,48 @@
-# Helix gpui
-<img width="1136" alt="Screenshot 2024-05-26 at 20 57 39" src="https://github.com/polachok/helix-gpui/assets/94035/0d5dbed5-77d9-4da0-88e0-6a0632cb6070">
+# Nucleotide
 
-This is a simple GUI for [helix](https://helix-editor.com/) editor. Most modal editors are terminal apps, I'd like to change that and implement a good modal GUI editor.
+**A Native GUI for Helix**
 
-## State of things
-Currently this project has *less* features and more bugs than helix-term (`hx`).
+Nucleotide is a high-performance graphical interface for the [Helix](https://helix-editor.com/) modal editor, bringing the power of terminal-based modal editing to a modern native GUI.
 
-* The first goal is to reach feature parity 
-* Second goal is refactoring helix to allow for implementing commands properly
-* Third goal is adding things like builtin terminal and file tree
+## Built on Giants
 
-## Troubleshooting
+Nucleotide wouldn't exist without these incredible projects:
 
-### Metal shader compilation error on macOS
+- **[Helix](https://helix-editor.com/)** - The powerful modal editor that powers our editing engine
+- **[GPUI](https://github.com/zed-industries/zed)** - Zed's blazing-fast GPU-accelerated UI framework  
+- **[helix-gpui](https://github.com/polachok/helix-gpui)** - The original project we forked from, created by @polachok
 
-If you encounter this error when building:
-```
---- stderr
-metal shader compilation failed:
-error: tool 'metal' not found
-```
+We are deeply grateful to these projects and their maintainers for making Nucleotide possible.
 
-You need to ensure Xcode is selected as the active developer directory:
+## Features
+
+Currently, Nucleotide provides a native GUI wrapper around Helix with:
+- Native macOS/Linux/Windows support
+- GPU-accelerated rendering via GPUI
+- File tree sidebar
+- Integrated terminal (planned)
+- Full Helix keybinding support
+
+## Installation
+
+### From Source
+
 ```bash
-xcode-select --switch /Applications/Xcode.app/Contents/Developer
+cargo build --release
+./target/release/nucl
 ```
 
-This provides the Metal shader compiler required for GPUI's graphics rendering on macOS.
+### macOS Bundle
+
+```bash
+./bundle-mac.sh
+open Nucleotide.app
+```
+
+## Configuration
+
+Nucleotide looks for configuration in `~/.config/nucleotide/nucleotide.toml` and falls back to Helix configuration at `~/.config/helix/config.toml`.
+
+## License
+
+MPL-2.0 (same as Helix)

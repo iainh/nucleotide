@@ -1,5 +1,5 @@
 {
-  description = "Helix GPUI - A GUI implementation of the Helix text editor built with GPUI";
+  description = "Nucleotide - A Native GUI for the Helix editor";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -82,8 +82,8 @@
 
         # Version info
         version = "0.1.0";
-        appName = "Helix";
-        bundleId = "dev.plhk.helix-gpui";
+        appName = "Nucleotide";
+        bundleId = "org.spiralpoint.nucleotide";
 
         # Helix runtime files
         helixRuntime = pkgs.stdenv.mkDerivation {
@@ -120,7 +120,7 @@
 
 
         # Build script that produces the binary
-        buildScript = pkgs.writeScriptBin "build-helix-gpui" ''
+        buildScript = pkgs.writeScriptBin "build-nucleotide" ''
           #!${pkgs.stdenv.shell}
           set -e
           
@@ -156,7 +156,7 @@
           
           # Copy binary to output
           mkdir -p $out/bin
-          cp target/release/hxg $out/bin/
+          cp target/release/nucl $out/bin/
         '';
 
         # macOS app bundle creator
@@ -164,7 +164,7 @@
           #!${pkgs.stdenv.shell}
           set -e
           
-          if [ ! -f "target/release/hxg" ]; then
+          if [ ! -f "target/release/nucl" ]; then
             echo "Error: Binary not found. Run 'nix develop --command cargo build --release' first"
             exit 1
           fi
@@ -172,27 +172,27 @@
           echo "Creating macOS app bundle..."
           
           # Clean up any existing bundle
-          rm -rf Helix.app
+          rm -rf Nucleotide.app
           
           # Create app structure
-          mkdir -p Helix.app/Contents/{MacOS,Resources}
+          mkdir -p Nucleotide.app/Contents/{MacOS,Resources}
           
           # Copy binary
-          cp target/release/hxg Helix.app/Contents/MacOS/Helix
+          cp target/release/nucl Nucleotide.app/Contents/MacOS/Nucleotide
           
           # Copy runtime files (from Nix store to writable location)
           echo "Copying runtime files..."
-          mkdir -p Helix.app/Contents/MacOS/runtime
+          mkdir -p Nucleotide.app/Contents/MacOS/runtime
           
           # Use rsync to properly copy from read-only Nix store
           ${pkgs.rsync}/bin/rsync -a --no-perms --no-owner --no-group \
-            ${helixRuntime}/ Helix.app/Contents/MacOS/runtime/
+            ${helixRuntime}/ Nucleotide.app/Contents/MacOS/runtime/
           
           # Ensure proper permissions
-          chmod -R u+w Helix.app/Contents/MacOS/runtime
+          chmod -R u+w Nucleotide.app/Contents/MacOS/runtime
           
           # Create Info.plist with full document type support
-          cat > Helix.app/Contents/Info.plist <<EOF
+          cat > Nucleotide.app/Contents/Info.plist <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -220,7 +220,7 @@
             <key>CFBundleDevelopmentRegion</key>
             <string>en</string>
             <key>CFBundleIconFile</key>
-            <string>helix-gpui.icns</string>
+            <string>nucleotide.icns</string>
             <key>LSApplicationCategoryType</key>
             <string>public.app-category.developer-tools</string>
             <key>CFBundleDocumentTypes</key>
@@ -238,7 +238,7 @@
                   <string>public.utf16-plain-text</string>
                 </array>
                 <key>CFBundleTypeIconFile</key>
-                <string>helix-gpui.icns</string>
+                <string>nucleotide.icns</string>
               </dict>
               <dict>
                 <key>CFBundleTypeName</key>
@@ -258,7 +258,7 @@
                   <string>com.sun.java-source</string>
                 </array>
                 <key>CFBundleTypeIconFile</key>
-                <string>helix-gpui.icns</string>
+                <string>nucleotide.icns</string>
               </dict>
               <dict>
                 <key>CFBundleTypeName</key>
@@ -270,7 +270,7 @@
                   <string>rs</string>
                 </array>
                 <key>CFBundleTypeIconFile</key>
-                <string>helix-gpui.icns</string>
+                <string>nucleotide.icns</string>
               </dict>
               <dict>
                 <key>CFBundleTypeName</key>
@@ -283,7 +283,7 @@
                   <string>markdown</string>
                 </array>
                 <key>CFBundleTypeIconFile</key>
-                <string>helix-gpui.icns</string>
+                <string>nucleotide.icns</string>
               </dict>
               <dict>
                 <key>CFBundleTypeName</key>
@@ -302,7 +302,7 @@
                   <string>conf</string>
                 </array>
                 <key>CFBundleTypeIconFile</key>
-                <string>helix-gpui.icns</string>
+                <string>nucleotide.icns</string>
               </dict>
             </array>
             <key>NSSupportsAutomaticTermination</key>
@@ -314,11 +314,11 @@
           EOF
           
           # Copy icon if available
-          if [ -f assets/helix-gpui.icns ]; then
-            cp assets/helix-gpui.icns Helix.app/Contents/Resources/
+          if [ -f assets/nucleotide.icns ]; then
+            cp assets/nucleotide.icns Nucleotide.app/Contents/Resources/
           fi
           
-          echo "✓ App bundle created at Helix.app"
+          echo "✓ App bundle created at Nucleotide.app"
         '';
 
         # Linux package creator
@@ -326,7 +326,7 @@
           #!${pkgs.stdenv.shell}
           set -e
           
-          if [ ! -f "target/release/hxg" ]; then
+          if [ ! -f "target/release/nucl" ]; then
             echo "Error: Binary not found. Run 'nix develop --command cargo build --release' first"
             exit 1
           fi
@@ -334,42 +334,42 @@
           echo "Creating Linux package..."
           
           # Clean up any existing package
-          rm -rf helix-gpui-linux helix-gpui-linux.tar.gz
+          rm -rf nucleotide-linux nucleotide-linux.tar.gz
           
           # Create directory structure
-          mkdir -p helix-gpui-linux/{bin,share/{applications,helix-gpui}}
+          mkdir -p nucleotide-linux/{bin,share/{applications,nucleotide}}
           
           # Copy binary
-          cp target/release/hxg helix-gpui-linux/bin/
+          cp target/release/nucl nucleotide-linux/bin/
           
           # Copy runtime files (from Nix store to writable location)
           echo "Copying runtime files..."
-          mkdir -p helix-gpui-linux/share/helix-gpui/runtime
+          mkdir -p nucleotide-linux/share/nucleotide/runtime
           
           # Use rsync to properly copy from read-only Nix store
           ${pkgs.rsync}/bin/rsync -a --no-perms --no-owner --no-group \
-            ${helixRuntime}/ helix-gpui-linux/share/helix-gpui/runtime/
+            ${helixRuntime}/ nucleotide-linux/share/nucleotide/runtime/
           
           # Ensure proper permissions
-          chmod -R u+w helix-gpui-linux/share/helix-gpui/runtime
+          chmod -R u+w nucleotide-linux/share/nucleotide/runtime
           
           # Create desktop file
-          cat > helix-gpui-linux/share/applications/helix-gpui.desktop <<EOF
+          cat > nucleotide-linux/share/applications/nucleotide.desktop <<EOF
           [Desktop Entry]
           Name=Helix GPUI
           Comment=A post-modern text editor
-          Exec=hxg %F
+          Exec=nucl %F
           Terminal=false
           Type=Application
-          Icon=helix-gpui
+          Icon=nucleotide
           Categories=Development;TextEditor;
           MimeType=text/plain;
           EOF
           
           # Create tarball
-          tar czf helix-gpui-linux.tar.gz helix-gpui-linux
+          tar czf nucleotide-linux.tar.gz nucleotide-linux
           
-          echo "✓ Linux package created at helix-gpui-linux.tar.gz"
+          echo "✓ Linux package created at nucleotide-linux.tar.gz"
         '';
 
       in
@@ -417,7 +417,7 @@
 
           shellHook = ''
             echo "╔════════════════════════════════════════════════════════════════╗"
-            echo "║         Welcome to helix-gpui development environment!         ║"
+            echo "║         Welcome to Nucleotide development environment!         ║"
             echo "╚════════════════════════════════════════════════════════════════╝"
             echo ""
             echo "Available commands:"
