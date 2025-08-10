@@ -210,19 +210,24 @@ jobs:
           echo "Checking aarch64 app:"
           ls -la Nucleotide-aarch64.app/Contents/MacOS/ || echo "aarch64 app not found"
           
+          # Verify the binary exists with correct name
+          echo "Verifying binaries exist:"
+          test -f Nucleotide-x86_64.app/Contents/MacOS/Nucleotide && echo "✓ x86_64 binary found" || echo "✗ x86_64 binary missing"
+          test -f Nucleotide-aarch64.app/Contents/MacOS/Nucleotide && echo "✓ aarch64 binary found" || echo "✗ aarch64 binary missing"
+          
           # Create universal app
           cp -r Nucleotide-aarch64.app Nucleotide-Universal.app
           
           # Create universal binary using lipo
           lipo -create \
-            Nucleotide-x86_64.app/Contents/MacOS/nucl \
-            Nucleotide-aarch64.app/Contents/MacOS/nucl \
-            -output Nucleotide-Universal.app/Contents/MacOS/nucl
+            Nucleotide-x86_64.app/Contents/MacOS/Nucleotide \
+            Nucleotide-aarch64.app/Contents/MacOS/Nucleotide \
+            -output Nucleotide-Universal.app/Contents/MacOS/Nucleotide
           
           # Verify universal binary
           echo "Universal binary created:"
-          file Nucleotide-Universal.app/Contents/MacOS/nucl
-          lipo -info Nucleotide-Universal.app/Contents/MacOS/nucl
+          file Nucleotide-Universal.app/Contents/MacOS/Nucleotide
+          lipo -info Nucleotide-Universal.app/Contents/MacOS/Nucleotide
       
       - name: Create Universal DMG
         run: |
