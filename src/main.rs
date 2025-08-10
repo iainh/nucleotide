@@ -43,6 +43,7 @@ mod prompt;
 mod prompt_view;
 mod scroll_manager;
 mod statusline;
+mod test_utils;
 mod theme_manager;
 mod titlebar;
 mod ui;

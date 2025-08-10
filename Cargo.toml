@@ -75,6 +75,9 @@ grep-searcher = "0.1.13"
 # Unicode handling
 unicode-width = "0.1"
 
+[dev-dependencies]
+tempfile = "3.8"
+
 [package.metadata.bundle]
 name = "Nucleotide"
 identifier = "org.spiralpoint.nucleotide"

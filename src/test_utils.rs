@@ -9,22 +9,46 @@ pub mod test_support {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::sync::mpsc;
-    
+
     // Test-only Update enum that doesn't include GPUI entities to avoid compilation issues
     #[derive(Debug, Clone)]
     pub enum TestUpdate {
-        DocumentChanged { doc_id: DocumentId },
-        SelectionChanged { doc_id: DocumentId, view_id: ViewId },
-        ModeChanged { old_mode: Mode, new_mode: Mode },
-        DiagnosticsChanged { doc_id: DocumentId },
-        DocumentOpened { doc_id: DocumentId },
-        DocumentClosed { doc_id: DocumentId },
-        ViewFocused { view_id: ViewId },
-        LanguageServerInitialized { server_id: helix_lsp::LanguageServerId },
-        LanguageServerExited { server_id: helix_lsp::LanguageServerId },
-        CompletionRequested { doc_id: DocumentId, view_id: ViewId, trigger: CompletionTrigger },
+        DocumentChanged {
+            doc_id: DocumentId,
+        },
+        SelectionChanged {
+            doc_id: DocumentId,
+            view_id: ViewId,
+        },
+        ModeChanged {
+            old_mode: Mode,
+            new_mode: Mode,
+        },
+        DiagnosticsChanged {
+            doc_id: DocumentId,
+        },
+        DocumentOpened {
+            doc_id: DocumentId,
+        },
+        DocumentClosed {
+            doc_id: DocumentId,
+        },
+        ViewFocused {
+            view_id: ViewId,
+        },
+        LanguageServerInitialized {
+            server_id: helix_lsp::LanguageServerId,
+        },
+        LanguageServerExited {
+            server_id: helix_lsp::LanguageServerId,
+        },
+        CompletionRequested {
+            doc_id: DocumentId,
+            view_id: ViewId,
+            trigger: CompletionTrigger,
+        },
     }
-    
+
     #[derive(Debug, Clone)]
     pub enum CompletionTrigger {
         Character(char),
@@ -74,7 +98,9 @@ pub mod test_support {
                 counter_clone.fetch_add(1, Ordering::SeqCst);
 
                 let update = match event {
-                    BridgedEvent::DocumentChanged { doc_id } => TestUpdate::DocumentChanged { doc_id },
+                    BridgedEvent::DocumentChanged { doc_id } => {
+                        TestUpdate::DocumentChanged { doc_id }
+                    }
                     BridgedEvent::SelectionChanged { doc_id, view_id } => {
                         TestUpdate::SelectionChanged { doc_id, view_id }
                     }
@@ -84,8 +110,12 @@ pub mod test_support {
                     BridgedEvent::DiagnosticsChanged { doc_id } => {
                         TestUpdate::DiagnosticsChanged { doc_id }
                     }
-                    BridgedEvent::DocumentOpened { doc_id } => TestUpdate::DocumentOpened { doc_id },
-                    BridgedEvent::DocumentClosed { doc_id } => TestUpdate::DocumentClosed { doc_id },
+                    BridgedEvent::DocumentOpened { doc_id } => {
+                        TestUpdate::DocumentOpened { doc_id }
+                    }
+                    BridgedEvent::DocumentClosed { doc_id } => {
+                        TestUpdate::DocumentClosed { doc_id }
+                    }
                     BridgedEvent::ViewFocused { view_id } => TestUpdate::ViewFocused { view_id },
                     BridgedEvent::LanguageServerInitialized { server_id } => {
                         TestUpdate::LanguageServerInitialized { server_id }
@@ -99,9 +129,13 @@ pub mod test_support {
                         trigger,
                     } => {
                         let test_trigger = match trigger {
-                            crate::event_bridge::CompletionTrigger::Character(c) => CompletionTrigger::Character(c),
-                            crate::event_bridge::CompletionTrigger::Invoked => CompletionTrigger::Invoked,
-                            crate::event_bridge::CompletionTrigger::TriggerForIncompleteCompletions => {
+                            crate::event_bridge::CompletionTrigger::CharacterTyped(c) => {
+                                CompletionTrigger::Character(c)
+                            }
+                            crate::event_bridge::CompletionTrigger::Manual => {
+                                CompletionTrigger::Invoked
+                            }
+                            crate::event_bridge::CompletionTrigger::Filter => {
                                 CompletionTrigger::TriggerForIncompleteCompletions
                             }
                         };
@@ -110,7 +144,7 @@ pub mod test_support {
                             view_id,
                             trigger: test_trigger,
                         }
-                    },
+                    }
                 };
 
                 let _ = update_tx.send(update);

@@ -1130,7 +1130,7 @@ mod tests {
         // This test SHOULD FAIL initially
         // We're testing that multiple rapid events get batched into fewer updates
 
-        let (event_tx, mut event_rx, counter) = create_counting_channel();
+        let (event_tx, mut event_rx, _counter) = create_counting_channel();
 
         // Send 10 rapid selection changed events
         let events = create_test_selection_events(10);
@@ -1173,7 +1173,7 @@ mod tests {
 
         let mut doc_change_count = 0;
         while let Ok(update) = event_rx.try_recv() {
-            if matches!(update, crate::Update::DocumentChanged { .. }) {
+            if matches!(update, TestUpdate::DocumentChanged { .. }) {
                 doc_change_count += 1;
             }
         }
@@ -1204,7 +1204,7 @@ mod tests {
 
         let mut diag_count = 0;
         while let Ok(update) = event_rx.try_recv() {
-            if matches!(update, crate::Update::DiagnosticsChanged { .. }) {
+            if matches!(update, TestUpdate::DiagnosticsChanged { .. }) {
                 diag_count += 1;
             }
         }
