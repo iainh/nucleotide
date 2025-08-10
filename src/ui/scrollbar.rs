@@ -3,9 +3,9 @@
 
 use std::{any::Any, cell::Cell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
 
+use crate::Core;
 use gpui::*;
 use helix_view::{DocumentId, ViewId};
-use crate::Core;
 
 /// A scrollbar component that can be attached to scrollable content
 pub struct Scrollbar {
@@ -34,22 +34,22 @@ pub trait ScrollableHandle: Any + Debug {
     fn content_size(&self) -> Size<Pixels> {
         self.viewport().size + self.max_offset()
     }
-    
+
     /// Get the maximum scroll offset
     fn max_offset(&self) -> Size<Pixels>;
-    
+
     /// Set the current scroll offset
     fn set_offset(&self, point: Point<Pixels>);
-    
+
     /// Get the current scroll offset
     fn offset(&self) -> Point<Pixels>;
-    
+
     /// Get the viewport bounds
     fn viewport(&self) -> Bounds<Pixels>;
-    
+
     /// Called when dragging starts
     fn drag_started(&self) {}
-    
+
     /// Called when dragging ends
     fn drag_ended(&self) {}
 }
@@ -132,14 +132,14 @@ impl ScrollableHandle for HelixEditorScrollHandle {
                 let line_height = px(20.0); // TODO: Get from theme/config
                 let content_height = px(total_lines as f32 * line_height.0);
                 let viewport_height = self.viewport_size.get().height;
-                
+
                 // Max offset is content height minus viewport height
                 let max_y = (content_height - viewport_height).max(px(0.0));
                 return size(px(0.0), max_y);
             }
         }*/
-        
-        // Fallback to default for now  
+
+        // Fallback to default for now
         size(px(0.0), px(2000.0)) // Large vertical scrollable area for testing
     }
 
@@ -147,7 +147,7 @@ impl ScrollableHandle for HelixEditorScrollHandle {
         // Convert pixel offset to line-based scrolling for Helix
         let line_height = px(20.0);
         let lines_offset = (-point.y / line_height) as usize;
-        
+
         // This would need to emit a scroll event to the helix editor
         // For now, we'll leave this as a placeholder
         log::debug!("Scrollbar setting offset to {} lines", lines_offset);
@@ -209,41 +209,40 @@ impl ScrollbarState {
         const MINIMUM_THUMB_SIZE: Pixels = px(20.); // Minimum thumb size
         let max_offset = self.scroll_handle.max_offset().along(axis);
         let viewport_size = self.scroll_handle.viewport().size.along(axis);
-        
+
         // If content fits entirely, don't show scrollbar
         if max_offset.is_zero() {
             return None;
         }
-        
+
         if viewport_size.is_zero() {
             return None;
         }
-        
+
         let content_size = viewport_size + max_offset;
         let visible_percentage = viewport_size / content_size;
         let thumb_size = MINIMUM_THUMB_SIZE.max(viewport_size * visible_percentage);
-        
+
         // Allow thumb even if it's large relative to viewport
         let thumb_size = thumb_size.min(viewport_size * 0.95); // Cap at 95% of viewport
-        
+
         let raw_offset = self.scroll_handle.offset();
         let offset_along_axis = raw_offset.along(axis);
-        
+
         // GPUI convention: offsets are negative when scrolled (scrolling down = negative y)
         // Clamp between -max_offset and 0, then take absolute value for calculations
         let current_offset = offset_along_axis.clamp(-max_offset, Pixels::ZERO).abs();
-        
-        
+
         // Handle division by zero
         let start_offset = if max_offset.0 > 0.0 {
             (current_offset / max_offset) * (viewport_size - thumb_size)
         } else {
             px(0.0)
         };
-        
+
         let thumb_percentage_start = start_offset / viewport_size;
         let thumb_percentage_end = (start_offset + thumb_size) / viewport_size;
-        
+
         Some(thumb_percentage_start..thumb_percentage_end)
     }
 }
@@ -333,15 +332,14 @@ impl Element for Scrollbar {
         cx: &mut App,
     ) {
         const EXTRA_PADDING: Pixels = px(2.0); // Padding for scrollbar track
-        
+
         // Recalculate thumb position every paint to reflect current scroll state
         self.thumb = self.state.thumb_range(self.axis).unwrap_or(0.0..1.0);
-        
-        
+
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let axis = self.axis;
             let thumb_state = self.state.thumb_state.get();
-            
+
             // Use theme colors - fallback to simple grays if theme is not available
             let (thumb_bg, track_bg) = {
                 if let Some(_theme) = cx.try_global::<crate::ui::Theme>() {
@@ -361,7 +359,7 @@ impl Element for Scrollbar {
                     (thumb_base_color, hsla(0.0, 0.0, 0.2, 0.2)) // Subtle track
                 }
             };
-            
+
             // Paint the track background first
             window.paint_quad(fill(bounds, track_bg));
 
@@ -380,7 +378,7 @@ impl Element for Scrollbar {
             // Center the thumb within the scrollbar gutter
             let thumb_width = padded_bounds.size.along(axis.invert()) * 0.5; // Make thumb half the gutter width
             let thumb_center_offset = (padded_bounds.size.along(axis.invert()) - thumb_width) / 2.0;
-            
+
             let thumb_bounds = Bounds::new(
                 padded_bounds
                     .origin
@@ -414,7 +412,7 @@ impl Element for Scrollbar {
 
             // Store the actual thumb dimensions for use in event handlers
             let actual_thumb_bounds = thumb_bounds;
-            
+
             let compute_click_offset =
                 move |event_position: Point<Pixels>,
                       max_offset: Size<Pixels>,
@@ -449,16 +447,17 @@ impl Element for Scrollbar {
                     if event.button != MouseButton::Left {
                         return;
                     }
-                    
+
                     // Only handle events within scrollbar bounds
                     if !bounds.contains(&event.position) {
                         return;
                     }
-                    
+
                     // Handle during capture phase to prevent editor selection
                     if phase.capture() {
                         if actual_thumb_bounds.contains(&event.position) {
-                            let offset = event.position.along(axis) - actual_thumb_bounds.origin.along(axis);
+                            let offset =
+                                event.position.along(axis) - actual_thumb_bounds.origin.along(axis);
                             state.set_dragging(offset);
                         } else {
                             let scroll_handle = state.scroll_handle();
@@ -467,8 +466,9 @@ impl Element for Scrollbar {
                                 scroll_handle.max_offset(),
                                 ScrollbarMouseEvent::GutterClick,
                             );
-                            scroll_handle
-                                .set_offset(scroll_handle.offset().apply_along(axis, |_| click_offset));
+                            scroll_handle.set_offset(
+                                scroll_handle.offset().apply_along(axis, |_| click_offset),
+                            );
                             window.refresh();
                         }
                         // Event is consumed by handling it in capture phase
@@ -495,7 +495,8 @@ impl Element for Scrollbar {
                 let state = self.state.clone();
                 move |event: &MouseMoveEvent, phase, window, _| {
                     // Handle dragging in capture phase to prevent text selection
-                    if phase.capture() && state.thumb_state.get().is_dragging() && event.dragging() {
+                    if phase.capture() && state.thumb_state.get().is_dragging() && event.dragging()
+                    {
                         let scroll_handle = state.scroll_handle();
                         if let ThumbState::Dragging(drag_state) = state.thumb_state.get() {
                             let drag_offset = compute_click_offset(

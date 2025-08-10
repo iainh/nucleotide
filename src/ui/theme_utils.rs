@@ -2,9 +2,9 @@
 // ABOUTME: Centralized location for color conversions and theme extraction
 
 use gpui::Hsla;
+use helix_view::document::Mode;
 use helix_view::graphics::Color;
 use helix_view::Theme as HelixTheme;
-use helix_view::document::Mode;
 
 /// Convert helix Color to GPUI Hsla
 pub fn color_to_hsla(color: Color) -> Option<Hsla> {
@@ -18,8 +18,9 @@ pub fn get_cursor_color(theme: &HelixTheme, mode: Mode) -> Option<Hsla> {
         Mode::Insert => theme.get("ui.cursor.insert"),
         Mode::Select => theme.get("ui.cursor.select"),
     };
-    
-    cursor_style.fg
+
+    cursor_style
+        .fg
         .or(cursor_style.bg)
         .and_then(color_to_hsla)
         .or_else(|| theme.get("ui.cursor.primary").fg.and_then(color_to_hsla))
@@ -41,44 +42,59 @@ pub struct ThemeColors {
 impl ThemeColors {
     pub fn from_helix_theme(theme: &HelixTheme) -> Self {
         use gpui::hsla;
-        
-        let background = theme.get("ui.background").bg
+
+        let background = theme
+            .get("ui.background")
+            .bg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.1, 1.0));
-            
-        let foreground = theme.get("ui.text").fg
+
+        let foreground = theme
+            .get("ui.text")
+            .fg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.9, 1.0));
-            
-        let border = theme.get("ui.window").fg
+
+        let border = theme
+            .get("ui.window")
+            .fg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.text").fg.and_then(color_to_hsla))
             .map(|color| hsla(color.h, color.s, color.l * 0.5, color.a))
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.3, 1.0));
-            
-        let selection = theme.get("ui.selection").bg
+
+        let selection = theme
+            .get("ui.selection")
+            .bg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(220.0 / 360.0, 0.6, 0.5, 0.3));
-            
-        let cursor = get_cursor_color(theme, Mode::Normal)
-            .unwrap_or(foreground);
-            
-        let error = theme.get("diagnostic.error").fg
+
+        let cursor = get_cursor_color(theme, Mode::Normal).unwrap_or(foreground);
+
+        let error = theme
+            .get("diagnostic.error")
+            .fg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(0.0, 0.8, 0.5, 1.0));
-            
-        let warning = theme.get("diagnostic.warning").fg
+
+        let warning = theme
+            .get("diagnostic.warning")
+            .fg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(40.0 / 360.0, 0.8, 0.5, 1.0));
-            
-        let info = theme.get("diagnostic.info").fg
+
+        let info = theme
+            .get("diagnostic.info")
+            .fg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(220.0 / 360.0, 0.6, 0.5, 1.0));
-            
-        let hint = theme.get("diagnostic.hint").fg
+
+        let hint = theme
+            .get("diagnostic.hint")
+            .fg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(280.0 / 360.0, 0.6, 0.5, 1.0));
-        
+
         Self {
             background,
             foreground,
@@ -111,26 +127,36 @@ pub struct ListColors {
 impl ListColors {
     pub fn from_helix_theme(theme: &HelixTheme) -> Self {
         use gpui::hsla;
-        
-        let background = theme.get("ui.popup").bg
+
+        let background = theme
+            .get("ui.popup")
+            .bg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.background").bg.and_then(color_to_hsla))
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.1, 1.0));
-            
-        let text = theme.get("ui.text").fg
+
+        let text = theme
+            .get("ui.text")
+            .fg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.9, 1.0));
-        
-        let selected_background = theme.get("ui.menu.selected").bg
+
+        let selected_background = theme
+            .get("ui.menu.selected")
+            .bg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.selection").bg.and_then(color_to_hsla))
             .unwrap_or_else(|| hsla(220.0 / 360.0, 0.6, 0.5, 1.0));
-            
-        let selected_text = theme.get("ui.menu.selected").fg
+
+        let selected_text = theme
+            .get("ui.menu.selected")
+            .fg
             .and_then(color_to_hsla)
             .unwrap_or(text);
-            
-        let hover_background = theme.get("ui.menu.hover").bg
+
+        let hover_background = theme
+            .get("ui.menu.hover")
+            .bg
             .and_then(color_to_hsla)
             .or_else(|| {
                 // Create a hover color by lightening the background
@@ -142,7 +168,7 @@ impl ListColors {
                 ))
             })
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.15, 1.0));
-        
+
         Self {
             background,
             hover_background,

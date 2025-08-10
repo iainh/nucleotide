@@ -88,22 +88,22 @@ pub struct CompletionView {
     selected_index: usize,
     #[allow(dead_code)]
     trigger_offset: usize,
-    
+
     // Filtering
     filter_text: SharedString,
-    
+
     // UI state
     focus_handle: FocusHandle,
     max_visible_items: usize,
     scroll_offset: usize,
-    
+
     // Positioning
     anchor_position: Point<Pixels>,
-    
+
     // Callbacks
     on_select: Option<SelectCallback>,
     on_dismiss: Option<DismissCallback>,
-    
+
     // Styling
     style: CompletionStyle,
 }
@@ -134,9 +134,13 @@ impl Default for CompletionStyle {
 }
 
 impl CompletionView {
-    pub fn new(items: Vec<CompletionItem>, anchor_position: Point<Pixels>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        items: Vec<CompletionItem>,
+        anchor_position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filtered_items: Vec<usize> = (0..items.len()).collect();
-        
+
         Self {
             items,
             filtered_items,
@@ -152,34 +156,38 @@ impl CompletionView {
             style: CompletionStyle::default(),
         }
     }
-    
+
     pub fn with_style(mut self, style: CompletionStyle) -> Self {
         self.style = style;
         self
     }
-    
+
     pub fn with_filter_text(mut self, filter_text: impl Into<SharedString>) -> Self {
         self.filter_text = filter_text.into();
         self.apply_filter();
         self
     }
-    
-    pub fn on_select(mut self, callback: impl FnMut(&CompletionItem, &mut Context<Self>) + 'static) -> Self {
+
+    pub fn on_select(
+        mut self,
+        callback: impl FnMut(&CompletionItem, &mut Context<Self>) + 'static,
+    ) -> Self {
         self.on_select = Some(Box::new(callback));
         self
     }
-    
+
     pub fn on_dismiss(mut self, callback: impl FnMut(&mut Context<Self>) + 'static) -> Self {
         self.on_dismiss = Some(Box::new(callback));
         self
     }
-    
+
     fn apply_filter(&mut self) {
         if self.filter_text.is_empty() {
             self.filtered_items = (0..self.items.len()).collect();
         } else {
             let filter_lower = self.filter_text.to_lowercase();
-            self.filtered_items = self.items
+            self.filtered_items = self
+                .items
                 .iter()
                 .enumerate()
                 .filter(|(_, item)| {
@@ -189,57 +197,57 @@ impl CompletionView {
                 .map(|(idx, _)| idx)
                 .collect();
         }
-        
+
         // Reset selection to first item
         self.selected_index = 0;
         self.scroll_offset = 0;
     }
-    
+
     pub fn update_filter(&mut self, filter_text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.filter_text = filter_text.into();
         self.apply_filter();
         cx.notify();
     }
-    
+
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.filtered_items.is_empty() {
             return;
         }
-        
+
         let _old_index = self.selected_index;
         let new_index = if delta > 0 {
             (self.selected_index + delta as usize).min(self.filtered_items.len() - 1)
         } else {
             self.selected_index.saturating_sub((-delta) as usize)
         };
-        
+
         self.selected_index = new_index;
-        
+
         // Adjust scroll to keep selection visible
         if self.selected_index < self.scroll_offset {
             self.scroll_offset = self.selected_index;
         } else if self.selected_index >= self.scroll_offset + self.max_visible_items {
             self.scroll_offset = self.selected_index - self.max_visible_items + 1;
         }
-        
+
         cx.notify();
     }
-    
+
     fn move_to_first(&mut self, cx: &mut Context<Self>) {
         if self.filtered_items.is_empty() {
             return;
         }
-        
+
         self.selected_index = 0;
         self.scroll_offset = 0;
         cx.notify();
     }
-    
+
     fn move_to_last(&mut self, cx: &mut Context<Self>) {
         if self.filtered_items.is_empty() {
             return;
         }
-        
+
         self.selected_index = self.filtered_items.len() - 1;
         // Adjust scroll to show the last item
         if self.filtered_items.len() > self.max_visible_items {
@@ -249,7 +257,7 @@ impl CompletionView {
         }
         cx.notify();
     }
-    
+
     fn select_current(&mut self, cx: &mut Context<Self>) {
         if let Some(item_idx) = self.filtered_items.get(self.selected_index) {
             if let Some(item) = self.items.get(*item_idx) {
@@ -259,17 +267,17 @@ impl CompletionView {
             }
         }
     }
-    
+
     fn dismiss(&mut self, cx: &mut Context<Self>) {
         if let Some(on_dismiss) = &mut self.on_dismiss {
             on_dismiss(cx);
         }
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.filtered_items.is_empty()
     }
-    
+
     pub fn item_count(&self) -> usize {
         self.filtered_items.len()
     }
@@ -286,12 +294,13 @@ impl EventEmitter<DismissEvent> for CompletionView {}
 impl Render for CompletionView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let font = cx.global::<crate::FontSettings>().var_font.clone();
-        
+
         if self.filtered_items.is_empty() {
             return div().size_0().into_any_element();
         }
-        
-        let visible_items = self.filtered_items
+
+        let visible_items = self
+            .filtered_items
             .iter()
             .skip(self.scroll_offset)
             .take(self.max_visible_items)
@@ -306,7 +315,7 @@ impl Render for CompletionView {
                     }
                 };
                 let is_selected = visible_idx + self.scroll_offset == self.selected_index;
-                
+
                 div()
                     .flex()
                     .items_center()
@@ -317,9 +326,7 @@ impl Render for CompletionView {
                         this.bg(self.style.selected_background)
                             .text_color(self.style.selected_text)
                     })
-                    .when(!is_selected, |this| {
-                        this.text_color(self.style.text)
-                    })
+                    .when(!is_selected, |this| this.text_color(self.style.text))
                     .child(
                         // Kind icon
                         div()
@@ -327,7 +334,7 @@ impl Render for CompletionView {
                             .flex_shrink_0()
                             .text_color(self.style.kind_text)
                             .text_size(px(cx.global::<crate::UiFontConfig>().size - 1.0))
-                            .child(item.kind.icon())
+                            .child(item.kind.icon()),
                     )
                     .child(
                         // Main content
@@ -341,7 +348,7 @@ impl Render for CompletionView {
                                 div()
                                     .text_size(px(13.))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .child(item.label.clone())
+                                    .child(item.label.clone()),
                             )
                             .when_some(item.detail.as_ref(), |this, detail| {
                                 this.child(
@@ -352,15 +359,15 @@ impl Render for CompletionView {
                                         } else {
                                             self.style.detail_text
                                         })
-                                        .child(detail.clone())
+                                        .child(detail.clone()),
                                 )
-                            })
+                            }),
                     )
             })
             .collect::<Vec<_>>();
-        
+
         // Note: Focus is handled automatically by the overlay view - don't manually focus here
-        
+
         div()
             .absolute()
             .left(self.anchor_position.x)
@@ -378,32 +385,45 @@ impl Render for CompletionView {
             .text_size(px(13.))
             .key_context("completion")
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectPrev, _window, cx| {
-                this.move_selection(-1, cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectNext, _window, cx| {
-                this.move_selection(1, cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionConfirm, _window, cx| {
-                this.select_current(cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionDismiss, _window, cx| {
-                this.dismiss(cx);
-                cx.emit(DismissEvent);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectFirst, _window, cx| {
-                this.move_to_first(cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::completion::CompletionSelectLast, _window, cx| {
-                this.move_to_last(cx);
-            }))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::completion::CompletionSelectPrev, _window, cx| {
+                    this.move_selection(-1, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::completion::CompletionSelectNext, _window, cx| {
+                    this.move_selection(1, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::completion::CompletionConfirm, _window, cx| {
+                    this.select_current(cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::completion::CompletionDismiss, _window, cx| {
+                    this.dismiss(cx);
+                    cx.emit(DismissEvent);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::completion::CompletionSelectFirst, _window, cx| {
+                    this.move_to_first(cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::completion::CompletionSelectLast, _window, cx| {
+                    this.move_to_last(cx);
+                },
+            ))
             .children(visible_items)
             .when(self.filtered_items.len() > self.max_visible_items, |this| {
-                let scroll_indicator_height = 
+                let scroll_indicator_height =
                     (self.max_visible_items as f32 / self.filtered_items.len() as f32) * 200.0;
-                let scroll_position = 
-                    (self.scroll_offset as f32 / (self.filtered_items.len() - self.max_visible_items) as f32) * (200.0 - scroll_indicator_height);
-                
+                let scroll_position = (self.scroll_offset as f32
+                    / (self.filtered_items.len() - self.max_visible_items) as f32)
+                    * (200.0 - scroll_indicator_height);
+
                 this.child(
                     div()
                         .absolute()
@@ -419,10 +439,11 @@ impl Render for CompletionView {
                                 .bg(self.style.border)
                                 .rounded_sm()
                                 .relative()
-                                .top(px(scroll_position))
-                        )
+                                .top(px(scroll_position)),
+                        ),
                 )
-            }).into_any_element()
+            })
+            .into_any_element()
     }
 }
 
@@ -440,32 +461,32 @@ impl CompletionItem {
             preselect: false,
         }
     }
-    
+
     pub fn with_detail(mut self, detail: impl Into<SharedString>) -> Self {
         self.detail = Some(detail.into());
         self
     }
-    
+
     pub fn with_documentation(mut self, documentation: impl Into<SharedString>) -> Self {
         self.documentation = Some(documentation.into());
         self
     }
-    
+
     pub fn with_insert_text(mut self, insert_text: impl Into<SharedString>) -> Self {
         self.insert_text = Some(insert_text.into());
         self
     }
-    
+
     pub fn with_filter_text(mut self, filter_text: impl Into<SharedString>) -> Self {
         self.filter_text = Some(filter_text.into());
         self
     }
-    
+
     pub fn preselected(mut self) -> Self {
         self.preselect = true;
         self
     }
-    
+
     pub fn get_insert_text(&self) -> &str {
         self.insert_text.as_ref().unwrap_or(&self.label)
     }

@@ -2,9 +2,9 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui::{point, size, TextRun};
-use gpui::prelude::FluentBuilder;
 use helix_core::{
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     ropey::RopeSlice,
@@ -14,12 +14,14 @@ use helix_core::{
 use helix_lsp::lsp::Diagnostic;
 use helix_term::ui::EditorView;
 // Import helix's syntax highlighting system
-use helix_view::{graphics::CursorKind, view::ViewPosition, Document, DocumentId, Editor, Theme, View, ViewId};
+use helix_view::{
+    graphics::CursorKind, view::ViewPosition, Document, DocumentId, Editor, Theme, View, ViewId,
+};
 use log::debug;
 
 use crate::line_cache::LineLayoutCache;
 use crate::scroll_manager::ScrollManager;
-use crate::ui::scrollbar::{Scrollbar, ScrollbarState, ScrollableHandle};
+use crate::ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use crate::utils::color_to_hsla;
 use crate::{Core, Input};
 use helix_stdx::rope::RopeSliceExt;
@@ -45,14 +47,14 @@ impl std::fmt::Debug for DocumentScrollHandle {
 
 impl DocumentScrollHandle {
     pub fn new(scroll_manager: ScrollManager, core: Entity<Core>, view_id: ViewId) -> Self {
-        Self { 
+        Self {
             scroll_manager,
             on_change: None,
             core: Some(core.downgrade()),
             view_id,
         }
     }
-    
+
     pub fn with_callback(scroll_manager: ScrollManager, on_change: impl Fn() + 'static) -> Self {
         Self {
             scroll_manager,
@@ -70,10 +72,10 @@ impl ScrollableHandle for DocumentScrollHandle {
 
     fn set_offset(&self, point: Point<Pixels>) {
         self.scroll_manager.set_scroll_offset(point);
-        
+
         // Mark that we need to sync back to Helix
         // This will be done in the next paint cycle when we have access to cx
-        
+
         // Trigger callback if available to notify of change
         if let Some(on_change) = &self.on_change {
             on_change();
@@ -114,11 +116,12 @@ impl DocumentView {
         // Create scroll manager with placeholder doc_id (will be updated in render)
         let line_height = px(20.0); // Default, will be updated
         let scroll_manager = ScrollManager::new(DocumentId::default(), view_id, line_height);
-        
+
         // Create custom scroll handle that wraps our scroll manager
-        let scroll_handle = DocumentScrollHandle::new(scroll_manager.clone(), core.clone(), view_id);
+        let scroll_handle =
+            DocumentScrollHandle::new(scroll_manager.clone(), core.clone(), view_id);
         let scrollbar_state = ScrollbarState::new(scroll_handle);
-        
+
         Self {
             core,
             input,
@@ -218,16 +221,20 @@ impl Render for DocumentView {
                 let total_lines = document.text().len_lines();
                 self.scroll_manager.set_total_lines(total_lines);
                 self.scroll_manager.set_line_height(self.line_height);
-                
+
                 // Set a reasonable default viewport size if not already set
                 // This will be updated with actual size in the paint method
                 // Use a height that shows fewer lines than total to ensure scrollbar appears
                 let viewport_height = self.line_height * 30.0; // Show 30 lines
-                self.scroll_manager.set_viewport_size(size(px(800.0), viewport_height));
-                
+                self.scroll_manager
+                    .set_viewport_size(size(px(800.0), viewport_height));
+
                 // Don't recreate scrollbar state - it's already using our scroll manager
-                
-                debug!("Document has {} lines, viewport shows ~30 lines", total_lines);
+
+                debug!(
+                    "Document has {} lines, viewport shows ~30 lines",
+                    total_lines
+                );
             }
         }
 
@@ -246,10 +253,10 @@ impl Render for DocumentView {
 
         // Create the scrollbar
         let scrollbar_opt = Scrollbar::vertical(self.scrollbar_state.clone());
-        
+
         // Create the editor content with custom scrollbar
         let editor_content = div()
-            .id("editor-content") 
+            .id("editor-content")
             .w_full()
             .h_full()
             .flex() // Horizontal flex layout
@@ -260,12 +267,9 @@ impl Render for DocumentView {
                     .w_full()
                     .h_full()
                     .flex_1()
-                    .child(document_element)
+                    .child(document_element),
             )
-            .when_some(
-                scrollbar_opt,
-                |div, scrollbar| div.child(scrollbar)
-            );
+            .when_some(scrollbar_opt, |div, scrollbar| div.child(scrollbar));
 
         // Create or update the status line view
         let status_view = cx.new(|cx| {
@@ -279,7 +283,10 @@ impl Render for DocumentView {
         });
 
         let diags = {
-            let _theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme().clone();
+            let _theme = cx
+                .global::<crate::theme_manager::ThemeManager>()
+                .helix_theme()
+                .clone();
 
             self.get_diagnostics(cx).into_iter().map(move |_diag| {
                 // TODO: Fix new_view API - DiagnosticView disabled for now
@@ -341,10 +348,10 @@ impl DocumentElement {
     /// but Helix works with grapheme cluster indices
     fn char_idx_to_grapheme_idx(line_text: &str, char_idx: usize) -> usize {
         use unicode_segmentation::UnicodeSegmentation;
-        
+
         let mut grapheme_idx = 0;
         let mut current_char_idx = 0;
-        
+
         for grapheme in line_text.graphemes(true) {
             if current_char_idx >= char_idx {
                 break;
@@ -352,14 +359,14 @@ impl DocumentElement {
             current_char_idx += grapheme.len();
             grapheme_idx += 1;
         }
-        
+
         grapheme_idx
     }
-    
+
     /// Convert a grapheme index within a line to a character index for GPUI
     fn grapheme_idx_to_char_idx(line_text: &str, grapheme_idx: usize) -> usize {
         use unicode_segmentation::UnicodeSegmentation;
-        
+
         let mut char_idx = 0;
         for (idx, grapheme) in line_text.graphemes(true).enumerate() {
             if idx >= grapheme_idx {
@@ -367,7 +374,7 @@ impl DocumentElement {
             }
             char_idx += grapheme.len();
         }
-        
+
         char_idx
     }
 
@@ -382,11 +389,12 @@ impl DocumentElement {
         // Create scroll manager for this element
         let line_height = px(20.0); // Default, will be updated
         let scroll_manager = ScrollManager::new(doc_id, view_id, line_height);
-        
+
         // Create a default scrollbar state
-        let scroll_handle = DocumentScrollHandle::new(scroll_manager.clone(), core.clone(), view_id);
+        let scroll_handle =
+            DocumentScrollHandle::new(scroll_manager.clone(), core.clone(), view_id);
         let scrollbar_state = ScrollbarState::new(scroll_handle);
-        
+
         Self {
             core,
             doc_id,
@@ -400,7 +408,7 @@ impl DocumentElement {
         }
         .track_focus(focus)
     }
-    
+
     pub fn with_scroll_manager(
         core: Entity<Core>,
         doc_id: DocumentId,
@@ -424,7 +432,7 @@ impl DocumentElement {
         }
         .track_focus(focus)
     }
-    
+
     /// Create a shaped line for a specific line, used for cursor positioning and mouse interaction
     #[allow(dead_code)]
     fn create_shaped_line(
@@ -435,7 +443,7 @@ impl DocumentElement {
         end_char: usize,
         fg_color: Hsla,
         window: &mut Window,
-        cx: &mut App
+        cx: &mut App,
     ) -> Option<ShapedLine> {
         let line_start = text.line_to_char(line_idx);
         let line_end = if line_idx + 1 < text.len_lines() {
@@ -443,25 +451,25 @@ impl DocumentElement {
         } else {
             text.len_chars()
         };
-        
+
         // Check if line is within our view
         let anchor_char = text.line_to_char(first_row);
         if line_start >= end_char || line_end < anchor_char {
             return None;
         }
-        
+
         // Adjust line bounds to our view
         let line_start = line_start.max(anchor_char);
         let line_end = line_end.min(end_char);
-        
+
         // For empty lines, line_start may equal line_end, which is valid
         if line_start > line_end {
             return None;
         }
-        
+
         let line_slice = text.slice(line_start..line_end);
         let line_str: SharedString = RopeWrapper(line_slice).into();
-        
+
         // Get highlights for this line (re-read core)
         let core = self.core.read(cx);
         let editor = &core.editor;
@@ -473,8 +481,10 @@ impl DocumentElement {
             }
         };
         let view = editor.tree.get(self.view_id);
-        
-        let theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
+
+        let theme = cx
+            .global::<crate::theme_manager::ThemeManager>()
+            .helix_theme();
         let line_runs = Self::highlight_line_with_params(
             document,
             view,
@@ -488,11 +498,15 @@ impl DocumentElement {
             fg_color,
             self.style.font(),
         );
-        
+
         // Create the shaped line
-        let shaped_line = window.text_system()
-            .shape_line(line_str, self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
-            
+        let shaped_line = window.text_system().shape_line(
+            line_str,
+            self.style.font_size.to_pixels(px(16.0)),
+            &line_runs,
+            None,
+        );
+
         Some(shaped_line)
     }
 
@@ -627,10 +641,7 @@ impl DocumentElement {
             // Combine syntax and overlay styles
             let style = syntax_hl.style.patch(overlay_hl.style);
 
-            let fg = style
-                .fg
-                .and_then(color_to_hsla)
-                .unwrap_or(fg_color);
+            let fg = style.fg.and_then(color_to_hsla).unwrap_or(fg_color);
             let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
             let underline = underline.map(|color| UnderlineStyle {
@@ -718,10 +729,7 @@ impl DocumentElement {
             // Combine syntax and overlay styles
             let style = syntax_hl.style.patch(overlay_hl.style);
 
-            let fg = style
-                .fg
-                .and_then(color_to_hsla)
-                .unwrap_or(fg_color);
+            let fg = style.fg.and_then(color_to_hsla).unwrap_or(fg_color);
             let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
             let underline = underline.map(|color| UnderlineStyle {
@@ -821,10 +829,7 @@ impl DocumentElement {
                 );
             }
 
-            let fg = style
-                .fg
-                .and_then(color_to_hsla)
-                .unwrap_or(fg_color);
+            let fg = style.fg.and_then(color_to_hsla).unwrap_or(fg_color);
             let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
             let underline = underline.map(|color| UnderlineStyle {
@@ -867,7 +872,6 @@ pub struct DocumentLayout {
     cell_width: Pixels,
     hitbox: Option<Hitbox>,
 }
-
 
 struct RopeWrapper<'a>(RopeSlice<'a>);
 
@@ -916,8 +920,14 @@ impl Element for DocumentElement {
     ) -> Self::PrepaintState {
         debug!("editor bounds {bounds:?}");
         let _core = self.core.clone();
-        self.interactivity
-            .prepaint(_global_id, _inspector_id, bounds, bounds.size, window, cx, |_, _, hitbox, _window, cx| {
+        self.interactivity.prepaint(
+            _global_id,
+            _inspector_id,
+            bounds,
+            bounds.size,
+            window,
+            cx,
+            |_, _, hitbox, _window, cx| {
                 // TODO: Content masking not available in new GPUI
                 {
                     let font_id = cx.text_system().resolve_font(&self.style.font());
@@ -933,7 +943,7 @@ impl Element for DocumentElement {
                         .advance(font_id, font_size, 'm')
                         .map(|advance| advance.width)
                         .unwrap_or(em_width); // Use em_width as fallback
-                    // Division of Pixels returns f32
+                                              // Division of Pixels returns f32
                     let columns_f32 = (bounds.size.width / em_width).floor();
                     let rows_f32 = (bounds.size.height / line_height).floor();
                     let columns = (columns_f32 as usize).max(1);
@@ -950,7 +960,8 @@ impl Element for DocumentElement {
                         cell_width,
                     }
                 }
-            })
+            },
+        )
     }
 
     fn paint(
@@ -968,11 +979,11 @@ impl Element for DocumentElement {
         let view_id = self.view_id;
         let cell_width = after_layout.cell_width;
         let line_height = after_layout.line_height;
-        
+
         // Update scroll manager with current layout info
         self.scroll_manager.set_line_height(line_height);
         self.scroll_manager.set_viewport_size(bounds.size);
-        
+
         // Sync scroll position back to Helix only if scrollbar changed it
         // This prevents overriding Helix's auto-scroll behavior
         if self.scroll_manager.scrollbar_changed.get() {
@@ -994,7 +1005,7 @@ impl Element for DocumentElement {
             // Clear the flag after syncing
             self.scroll_manager.scrollbar_changed.set(false);
         }
-        
+
         let gutter_width_cells = {
             let editor = &core.read(cx).editor;
             let view = editor.tree.get(view_id);
@@ -1002,11 +1013,11 @@ impl Element for DocumentElement {
                 Some(doc) => doc,
                 None => return, // Document was closed
             };
-            
+
             // Update scroll manager with document info
             let total_lines = doc.text().len_lines();
             self.scroll_manager.total_lines.set(total_lines);
-            
+
             // Sync scroll position from Helix to ensure we reflect auto-scroll
             // This is important for keeping cursor visible during editing
             let view_offset = doc.view_offset(self.view_id);
@@ -1015,12 +1026,13 @@ impl Element for DocumentElement {
             let y = px(anchor_line as f32 * self.scroll_manager.line_height.get().0);
             // GPUI convention: negative offset when scrolled down
             // Use set_scroll_offset_from_helix to avoid marking as scrollbar-changed
-            self.scroll_manager.set_scroll_offset_from_helix(point(px(0.0), -y));
-            
+            self.scroll_manager
+                .set_scroll_offset_from_helix(point(px(0.0), -y));
+
             view.gutter_offset(doc)
         };
         let _gutter_width_px = cell_width * gutter_width_cells as f32;
-        
+
         // Store line layouts in element state for mouse interaction
         // Using LineLayoutCache instead of RefCell for thread safety
         // Get or create the LineLayoutCache
@@ -1032,7 +1044,7 @@ impl Element for DocumentElement {
             cache
         };
         line_cache.clear(); // Clear previous layouts
-        
+
         let line_cache_mouse = line_cache.clone();
         let scrollbar_state_mouse = self.scrollbar_state.clone();
         self.interactivity
@@ -1041,22 +1053,26 @@ impl Element for DocumentElement {
                 if scrollbar_state_mouse.is_dragging() {
                     return;
                 }
-                
+
                 focus.focus(window);
-                
+
                 let mouse_pos = ev.position;
-                
+
                 // Find which line was clicked by checking line layouts
-                let clicked_line = line_cache_mouse.find_line_at_position(mouse_pos, bounds.size.width, line_height);
-                
+                let clicked_line = line_cache_mouse.find_line_at_position(
+                    mouse_pos,
+                    bounds.size.width,
+                    line_height,
+                );
+
                 if let Some(line_layout) = clicked_line {
                     // Calculate x position relative to the line origin
                     let relative_x = mouse_pos.x - line_layout.origin.x;
-                    
+
                     // Find the character index at this x position using GPUI's method
                     // This is more accurate than cell-based calculation
                     let char_idx = line_layout.shaped_line.closest_index_for_x(relative_x);
-                    
+
                     // Update cursor position in the editor
                     core.update(cx, |core, cx| {
                         let editor = &mut core.editor;
@@ -1070,7 +1086,7 @@ impl Element for DocumentElement {
                             }
                         };
                         let text = doc.text();
-                        
+
                         // Get the line text to convert between char and grapheme indices
                         let line_start = text.line_to_char(line_layout.line_idx);
                         let line_end = if line_layout.line_idx + 1 < text.len_lines() {
@@ -1079,13 +1095,13 @@ impl Element for DocumentElement {
                             text.len_chars()
                         };
                         let line_text = text.slice(line_start..line_end).to_string();
-                        
+
                         // Convert GPUI char index to grapheme index
                         let grapheme_idx = Self::char_idx_to_grapheme_idx(&line_text, char_idx);
-                        
+
                         // Convert line index and grapheme offset to document position
                         let pos = line_start + grapheme_idx;
-                        
+
                         if pos <= text.len_chars() {
                             let doc = match editor.document_mut(doc_id) {
                                 Some(doc) => doc,
@@ -1094,134 +1110,138 @@ impl Element for DocumentElement {
                             // Snap to grapheme boundary for proper cursor positioning
                             let text = doc.text().slice(..);
                             let pos = prev_grapheme_boundary(text, pos);
-                            
+
                             // Set selection to the clicked position
                             let selection = Selection::point(pos);
                             doc.set_selection(view_id, selection);
                         }
-                        
+
                         cx.notify();
                     });
                 }
             });
-        
+
         // Handle mouse drag for selection
         let core_drag = self.core.clone();
         let view_id_drag = self.view_id;
         let line_cache_drag = line_cache.clone();
         let scrollbar_state_drag = self.scrollbar_state.clone();
-        
-        self.interactivity
-            .on_mouse_move(move |ev, _window, cx| {
-                // Only process if dragging (mouse button held down)
-                if !ev.dragging() {
-                    return;
-                }
-                
-                // Don't select text if scrollbar is being dragged
-                if scrollbar_state_drag.is_dragging() {
-                    return;
-                }
-                
-                let mouse_pos = ev.position;
-                
-                // Find which line is under the mouse using line layouts
-                let hovered_line = line_cache_drag.find_line_at_position(mouse_pos, bounds.size.width, line_height);
-                
-                if let Some(line_layout) = hovered_line {
-                    // Calculate x position relative to the line origin
-                    let relative_x = mouse_pos.x - line_layout.origin.x;
-                    
-                    // Find the character index at this x position
-                    let char_idx = line_layout.shaped_line.closest_index_for_x(relative_x);
-                    
-                    // Update selection end position in the editor
-                    core_drag.update(cx, |core, cx| {
-                        let editor = &mut core.editor;
-                        let view = editor.tree.get(view_id_drag);
-                        let doc_id = view.doc;
-                        let doc = match editor.document(doc_id) {
-                            Some(doc) => doc,
-                            None => {
-                                // Document was closed during interaction
-                                return;
-                            }
-                        };
-                        let text = doc.text();
-                        
-                        // Get the line text to convert between char and grapheme indices
-                        let line_start = text.line_to_char(line_layout.line_idx);
-                        let line_end = if line_layout.line_idx + 1 < text.len_lines() {
-                            text.line_to_char(line_layout.line_idx + 1)
-                        } else {
-                            text.len_chars()
-                        };
-                        let line_text = text.slice(line_start..line_end).to_string();
-                        
-                        // Convert GPUI char index to grapheme index
-                        let grapheme_idx = Self::char_idx_to_grapheme_idx(&line_text, char_idx);
-                        
-                        // Convert line index and grapheme offset to document position
-                        let pos = line_start + grapheme_idx;
-                        
-                        if pos <= text.len_chars() {
-                            let doc = match editor.document_mut(doc_id) {
-                                Some(doc) => doc,
-                                None => return,
-                            };
-                            // Snap to grapheme boundary for proper selection
-                            let text = doc.text().slice(..);
-                            let pos = if pos > 0 {
-                                prev_grapheme_boundary(text, pos)
-                            } else {
-                                pos
-                            };
-                            
-                            // Get current selection and extend it
-                            let mut selection = doc.selection(view_id_drag).clone();
-                            let range = selection.primary_mut();
-                            range.head = pos;
-                            doc.set_selection(view_id_drag, selection);
+
+        self.interactivity.on_mouse_move(move |ev, _window, cx| {
+            // Only process if dragging (mouse button held down)
+            if !ev.dragging() {
+                return;
+            }
+
+            // Don't select text if scrollbar is being dragged
+            if scrollbar_state_drag.is_dragging() {
+                return;
+            }
+
+            let mouse_pos = ev.position;
+
+            // Find which line is under the mouse using line layouts
+            let hovered_line =
+                line_cache_drag.find_line_at_position(mouse_pos, bounds.size.width, line_height);
+
+            if let Some(line_layout) = hovered_line {
+                // Calculate x position relative to the line origin
+                let relative_x = mouse_pos.x - line_layout.origin.x;
+
+                // Find the character index at this x position
+                let char_idx = line_layout.shaped_line.closest_index_for_x(relative_x);
+
+                // Update selection end position in the editor
+                core_drag.update(cx, |core, cx| {
+                    let editor = &mut core.editor;
+                    let view = editor.tree.get(view_id_drag);
+                    let doc_id = view.doc;
+                    let doc = match editor.document(doc_id) {
+                        Some(doc) => doc,
+                        None => {
+                            // Document was closed during interaction
+                            return;
                         }
-                        
-                        cx.notify();
-                    });
-                }
-            });
-        
+                    };
+                    let text = doc.text();
+
+                    // Get the line text to convert between char and grapheme indices
+                    let line_start = text.line_to_char(line_layout.line_idx);
+                    let line_end = if line_layout.line_idx + 1 < text.len_lines() {
+                        text.line_to_char(line_layout.line_idx + 1)
+                    } else {
+                        text.len_chars()
+                    };
+                    let line_text = text.slice(line_start..line_end).to_string();
+
+                    // Convert GPUI char index to grapheme index
+                    let grapheme_idx = Self::char_idx_to_grapheme_idx(&line_text, char_idx);
+
+                    // Convert line index and grapheme offset to document position
+                    let pos = line_start + grapheme_idx;
+
+                    if pos <= text.len_chars() {
+                        let doc = match editor.document_mut(doc_id) {
+                            Some(doc) => doc,
+                            None => return,
+                        };
+                        // Snap to grapheme boundary for proper selection
+                        let text = doc.text().slice(..);
+                        let pos = if pos > 0 {
+                            prev_grapheme_boundary(text, pos)
+                        } else {
+                            pos
+                        };
+
+                        // Get current selection and extend it
+                        let mut selection = doc.selection(view_id_drag).clone();
+                        let range = selection.primary_mut();
+                        range.head = pos;
+                        doc.set_selection(view_id_drag, selection);
+                    }
+
+                    cx.notify();
+                });
+            }
+        });
+
         // Handle scroll wheel events with optimized performance
         let scroll_manager = self.scroll_manager.clone();
         let core_scroll = self.core.clone();
         let view_id_scroll = self.view_id;
         let doc_id_scroll = self.doc_id;
-        
+
         // Use a flag to batch scroll updates
         let last_scroll_time = Rc::new(Cell::new(std::time::Instant::now()));
         let pending_scroll_delta = Rc::new(Cell::new(Point::<Pixels>::default()));
-        
+
         self.interactivity
             .on_scroll_wheel(move |event, _window, cx| {
                 // Get the actual line height from scroll manager
                 let line_height = scroll_manager.line_height.get();
                 let delta = event.delta.pixel_delta(line_height);
-                
+
                 // Accumulate scroll delta for batching
                 let current_pending = pending_scroll_delta.get();
                 pending_scroll_delta.set(point(
                     current_pending.x + delta.x,
                     current_pending.y + delta.y,
                 ));
-                
+
                 // Update scroll position immediately for visual feedback
                 let current_offset = scroll_manager.scroll_offset();
-                
+
                 // Clamp the scroll offset to valid bounds
                 let max_scroll = scroll_manager.max_scroll_offset();
                 let new_offset = point(
-                    (current_offset.x + delta.x).max(px(0.0)).min(max_scroll.width),
-                    (current_offset.y + delta.y).max(-max_scroll.height).min(px(0.0)),
+                    (current_offset.x + delta.x)
+                        .max(px(0.0))
+                        .min(max_scroll.width),
+                    (current_offset.y + delta.y)
+                        .max(-max_scroll.height)
+                        .min(px(0.0)),
                 );
-                
+
                 // Only update if the offset actually changed
                 if new_offset != current_offset {
                     scroll_manager.set_scroll_offset(new_offset);
@@ -1230,23 +1250,23 @@ impl Element for DocumentElement {
                     pending_scroll_delta.set(Point::default());
                     return;
                 }
-                
+
                 // Only sync to Helix if enough time has passed or delta is significant
                 let now = std::time::Instant::now();
                 let time_since_last = now.duration_since(last_scroll_time.get());
                 let accumulated_delta = pending_scroll_delta.get();
-                
+
                 // Sync to Helix less frequently (every 16ms ~60fps or when delta is large)
-                if time_since_last > std::time::Duration::from_millis(16) 
-                    || accumulated_delta.y.abs() > px(60.0) {
-                    
+                if time_since_last > std::time::Duration::from_millis(16)
+                    || accumulated_delta.y.abs() > px(60.0)
+                {
                     last_scroll_time.set(now);
                     pending_scroll_delta.set(Point::default());
-                    
+
                     // Update Helix viewport to match the new scroll position
                     core_scroll.update(cx, |core, cx| {
                         let editor = &mut core.editor;
-                        
+
                         // Convert accumulated pixels to lines
                         let scroll_lines = (accumulated_delta.y.0 / line_height.0).round() as isize;
                         if scroll_lines != 0 {
@@ -1257,47 +1277,47 @@ impl Element for DocumentElement {
                             } else {
                                 None
                             };
-                            
+
                             // Import the scroll command from helix
-                            use helix_term::commands;
                             use helix_core::movement::Direction;
-                            
+                            use helix_term::commands;
+
                             let count = scroll_lines.unsigned_abs();
-                            
+
                             // Create the correct context for the scroll command
                             let mut ctx = helix_term::commands::Context {
                                 editor,
                                 register: None,
                                 count: None,
                                 callback: Vec::new(),
-                            on_next_key_callback: None,
-                            jobs: &mut core.jobs,
-                        };
-                        
-                        // Call the appropriate scroll function with sync_cursor=false
-                        // This ensures the cursor doesn't move with the viewport
-                        if scroll_lines > 0 {
-                            // Scroll up (content moves down)
-                            commands::scroll(&mut ctx, count, Direction::Backward, false);
-                        } else {
-                            // Scroll down (content moves up)
-                            commands::scroll(&mut ctx, count, Direction::Forward, false);
-                        }
-                        
-                        // Restore cursor position if it was changed (safeguard)
-                        if let Some(saved_selection) = cursor_pos {
-                            if let Some(doc) = ctx.editor.document_mut(doc_id_scroll) {
-                                let current_selection = doc.selection(view_id_scroll).clone();
-                                if current_selection != saved_selection {
-                                    doc.set_selection(view_id_scroll, saved_selection);
+                                on_next_key_callback: None,
+                                jobs: &mut core.jobs,
+                            };
+
+                            // Call the appropriate scroll function with sync_cursor=false
+                            // This ensures the cursor doesn't move with the viewport
+                            if scroll_lines > 0 {
+                                // Scroll up (content moves down)
+                                commands::scroll(&mut ctx, count, Direction::Backward, false);
+                            } else {
+                                // Scroll down (content moves up)
+                                commands::scroll(&mut ctx, count, Direction::Forward, false);
+                            }
+
+                            // Restore cursor position if it was changed (safeguard)
+                            if let Some(saved_selection) = cursor_pos {
+                                if let Some(doc) = ctx.editor.document_mut(doc_id_scroll) {
+                                    let current_selection = doc.selection(view_id_scroll).clone();
+                                    if current_selection != saved_selection {
+                                        doc.set_selection(view_id_scroll, saved_selection);
+                                    }
                                 }
                             }
                         }
-                    }
-                    
-                    // Only notify for Helix sync, visual update already happened
-                    cx.notify();
-                });
+
+                        // Only notify for Helix sync, visual update already happened
+                        cx.notify();
+                    });
                 }
             });
 
@@ -1320,7 +1340,7 @@ impl Element for DocumentElement {
                 let mode = editor.mode();
                 let _base_cursor_style = theme.get("ui.cursor");
                 let base_primary_cursor_style = theme.get("ui.cursor.primary");
-                
+
                 // Try to get mode-specific cursor style, fallback to base
                 let cursor_style = match mode {
                     helix_view::document::Mode::Insert => {
@@ -1369,11 +1389,11 @@ impl Element for DocumentElement {
                     .cursor(text.slice(..));
                 let cursor_pos = view.screen_coords_at_pos(document, text.slice(..), primary_idx);
                 let gutter_width = view.gutter_offset(document);
-                
+
                 if let Some(pos) = cursor_pos {
-                    debug!("Cursor position - row: {}, col: {}, primary_idx: {}, gutter_width: {}", 
+                    debug!("Cursor position - row: {}, col: {}, primary_idx: {}, gutter_width: {}",
                            pos.row, pos.col, primary_idx, gutter_width);
-                    
+
                     // Additional debug: check what line and column we're actually at
                     let line = text.char_to_line(primary_idx);
                     let line_start = text.line_to_char(line);
@@ -1389,10 +1409,10 @@ impl Element for DocumentElement {
 
                 let _cursor_row = cursor_pos.map(|p| p.row);
                 let total_lines = text.len_lines();
-                
+
                 // Use scroll manager to determine visible lines
                 let (first_row, last_row_from_scroll) = self.scroll_manager.visible_line_range();
-                
+
                 // Get the character under the cursor for block cursor mode
                 let cursor_text = if matches!(cursor_kind, CursorKind::Block) && self.is_focused {
                     // Get the actual cursor position in the document
@@ -1400,20 +1420,20 @@ impl Element for DocumentElement {
                         .selection(self.view_id)
                         .primary()
                         .cursor(text.slice(..));
-                    
+
                     if cursor_char_idx < text.len_chars() {
                         // Use grapheme boundary for proper character extraction
                         let grapheme_end = next_grapheme_boundary(text.slice(..), cursor_char_idx);
                         let char_slice = text.slice(cursor_char_idx..grapheme_end);
                         let char_str: SharedString = RopeWrapper(char_slice).into();
-                        
+
                         // Replace newlines with visible character for display
                         let char_str = if char_str == "\n" || char_str == "\r\n" || char_str == "\r" {
                             "⏎".into() // Use return symbol for newlines
                         } else {
                             char_str
                         };
-                        
+
                         if !char_str.is_empty() {
                                     // For block cursor, invert colors: use cursor background as text color
                                     // and render on transparent background (cursor will provide the bg)
@@ -1423,7 +1443,7 @@ impl Element for DocumentElement {
                                         // If no cursor bg defined, use inverse of foreground
                                         black()
                                     };
-                                    
+
                                     let _run = TextRun {
                                         len: char_str.len(),
                                         font: self.style.font(),
@@ -1432,7 +1452,7 @@ impl Element for DocumentElement {
                                         underline: None,
                                         strikethrough: None,
                                     };
-                                    
+
                                     Some((char_str, text_color))
                                 } else {
                                     None
@@ -1448,30 +1468,30 @@ impl Element for DocumentElement {
                     .selection(self.view_id)
                     .primary()
                     .cursor(text.slice(..));
-                
+
                 // Use the last row from scroll manager
                 let mut last_row = last_row_from_scroll;
-                
+
                 // Check if cursor is at the very end of the file (phantom line)
                 let cursor_at_end = cursor_char_idx == text.len_chars();
                 let file_ends_with_newline = text.len_chars() > 0 && text.char(text.len_chars() - 1) == '\n';
-                
-                debug!("End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}", 
-                    cursor_char_idx, text.len_chars(), 
+
+                debug!("End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}",
+                    cursor_char_idx, text.len_chars(),
                     if text.len_chars() > 0 { Some(text.char(text.len_chars() - 1)) } else { None },
                     cursor_at_end, file_ends_with_newline);
-                
+
                 // If cursor is at end of file with trailing newline, we need to render the phantom line
                 // For a file ending with \n, Rope counts the empty line after it, so we don't need to add 1
                 if cursor_at_end && file_ends_with_newline {
                     let cursor_line = text.char_to_line(cursor_char_idx.saturating_sub(1));
                     debug!("Cursor at EOF with newline - cursor_line: {cursor_line}, last_row before: {last_row}, total_lines: {total_lines}");
-                    
+
                     // Ensure last_row includes the phantom line (which is at index total_lines - 1)
                     last_row = last_row.max(total_lines);
                     debug!("last_row after adjustment: {last_row}");
                 }
-                
+
                 // println!("first row is {first_row} last row is {last_row}");
                 // When rendering phantom line, end_char should be beyond the document end
                 let end_char = if last_row > total_lines {
@@ -1483,24 +1503,24 @@ impl Element for DocumentElement {
                 // Render text line by line to avoid newline issues
                 let mut y_offset = px(0.);
                 let text_origin_x = bounds.origin.x + px(2.) + (after_layout.cell_width * gutter_width as f32);
-                
+
                 // Extract necessary values before the loop to avoid borrowing issues
                 let editor_theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme().clone();
                 let editor_mode = editor.mode();
                 let cursor_shape = editor.config().cursor_shape.clone();
                 let syn_loader = editor.syn_loader.clone();
-                
+
                 // Clone text to avoid borrowing issues
                 let doc_text = document.text().clone();
-                
+
                 // Also extract document_id and view_id for use in the loop
                 let doc_id = self.doc_id;
                 let view_id = self.view_id;
-                
+
                 // Extract cursor-related data before dropping core
                 // cursor_char_idx was already extracted earlier for phantom line check
                 let _tab_width = document.tab_width() as u16;
-                
+
                 // Shape cursor text before dropping core borrow
                 let cursor_text_shaped = cursor_text.map(|(char_str, text_color)| {
                     let run = TextRun {
@@ -1511,24 +1531,24 @@ impl Element for DocumentElement {
                         underline: None,
                         strikethrough: None,
                     };
-                    
+
                     window.text_system()
                         .shape_line(char_str, self.style.font_size.to_pixels(px(16.0)), &[run], None)
                 });
-                
+
                 // Drop the core borrow before the loop
                 // core goes out of scope here
-                
+
                 let text = doc_text.slice(..);
-                
+
                 // Update the shared line layouts for mouse interaction
-                
+
                 for (loop_index, line_idx) in (first_row..last_row).enumerate() {
                     debug!("Rendering line {line_idx} (loop index {loop_index}), y_offset: {y_offset:?}");
                     // Handle phantom line (empty line at EOF when file ends with newline)
                     // For a file ending with \n, the last line is empty and is the phantom line
                     let is_phantom_line = cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1;
-                    
+
                     let (line_start, line_end) = if is_phantom_line {
                         // Phantom line is empty, positioned at end of file
                         debug!("Rendering phantom line at index {line_idx}");
@@ -1542,7 +1562,7 @@ impl Element for DocumentElement {
                         };
                         (line_start, line_end)
                     };
-                    
+
                     // Skip lines outside our view
                     // For phantom line, we need special handling since line_start == end_char == text.len_chars()
                     let anchor_char = text.line_to_char(first_row);
@@ -1550,18 +1570,18 @@ impl Element for DocumentElement {
                         y_offset += after_layout.line_height;
                         continue;
                     }
-                    
+
                     // Adjust line bounds to our view
                     let line_start = line_start.max(anchor_char);
                     let line_end = line_end.min(end_char);
-                    
+
                     // For empty lines, line_start may equal line_end, which is valid
                     // We still need to render them for cursor positioning
                     if line_start > line_end {
                         y_offset += after_layout.line_height;
                         continue;
                     }
-                    
+
                     let (line_str, line_runs) = if is_phantom_line {
                         // Phantom line is always empty with no highlights
                         (SharedString::from(""), Vec::new())
@@ -1577,7 +1597,7 @@ impl Element for DocumentElement {
                             }
                             SharedString::from(s)
                         };
-                        
+
                         // Get highlights for this specific line using the extracted values
                         // Re-read core for this iteration
                         let core = self.core.read(cx);
@@ -1587,7 +1607,7 @@ impl Element for DocumentElement {
                             None => return,
                         };
                         let view = editor.tree.get(view_id);
-                        
+
                         let line_runs = Self::highlight_line_with_params(
                             document,
                             view,
@@ -1601,15 +1621,15 @@ impl Element for DocumentElement {
                             fg_color,
                             self.style.font(),
                         );
-                        
+
                         (line_str, line_runs)
                     };
-                    
+
                     // Drop core before painting
                     // core goes out of scope here
-                    
+
                     let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
-                    
+
                     // Always create a shaped line, even for empty lines (needed for cursor positioning)
                     let shaped_line = if !line_str.is_empty() {
                         // First, paint any background highlights
@@ -1629,14 +1649,14 @@ impl Element for DocumentElement {
                             }
                             char_offset += run.len;
                         }
-                        
+
                         // Try to get cached shaped line first
                         let cache_key = crate::line_cache::ShapedLineKey {
                             line_text: line_str.to_string(),
                             font_size: self.style.font_size.to_pixels(px(16.0)).0 as u32,
                             viewport_width: bounds.size.width.0 as u32,
                         };
-                        
+
                         let shaped = if let Some(cached) = line_cache.get_shaped_line(&cache_key) {
                             cached
                         } else {
@@ -1646,7 +1666,7 @@ impl Element for DocumentElement {
                             line_cache.store_shaped_line(cache_key, shaped.clone());
                             shaped
                         };
-                        
+
                         if let Err(e) = shaped.paint(text_origin, after_layout.line_height, window, cx) {
                             log::error!("Failed to paint text: {e:?}");
                         }
@@ -1658,7 +1678,7 @@ impl Element for DocumentElement {
                             font_size: self.style.font_size.to_pixels(px(16.0)).0 as u32,
                             viewport_width: bounds.size.width.0 as u32,
                         };
-                        
+
                         if let Some(cached) = line_cache.get_shaped_line(&cache_key) {
                             cached
                         } else {
@@ -1668,30 +1688,30 @@ impl Element for DocumentElement {
                             shaped
                         }
                     };
-                    
+
                     // Always store the line layout for cursor positioning
                     let layout = crate::line_cache::LineLayout {
                         line_idx,
                         shaped_line,
                         origin: text_origin,
                     };
-                    
+
                     // Debug: log phantom line layout creation
                     if is_phantom_line {
-                        debug!("Created phantom line layout - line_idx: {}, origin.y: {:?}, y_offset: {:?}", 
+                        debug!("Created phantom line layout - line_idx: {}, origin.y: {:?}, y_offset: {:?}",
                             line_idx, text_origin.y, y_offset);
                     }
-                    
+
                     line_cache.push(layout);
-                    
+
                     y_offset += after_layout.line_height;
                 }
-                
+
                 // draw cursor
                 let element_focused = self.focus.is_focused(window);
-                debug!("Cursor rendering check - is_focused: {}, element_focused: {}, cursor_pos: {:?}", 
+                debug!("Cursor rendering check - is_focused: {}, element_focused: {}, cursor_pos: {:?}",
                     self.is_focused, element_focused, cursor_pos);
-                
+
                 // Debug: Log cursor position info
                 {
                     let core = self.core.read(cx);
@@ -1700,22 +1720,22 @@ impl Element for DocumentElement {
                         if let Some(_view) = editor.tree.try_get(self.view_id) {
                             let sel = doc.selection(self.view_id);
                             let cursor_char = sel.primary().cursor(text);
-                            debug!("Cursor char idx: {}, line: {}, selection: {:?}", 
+                            debug!("Cursor char idx: {}, line: {}, selection: {:?}",
                                 cursor_char, text.char_to_line(cursor_char), sel);
                         }
                     }
                 }
-                
+
                 // Check both is_focused flag and actual focus state
                 if self.is_focused || element_focused {
                     // Try to render cursor even if screen_coords_at_pos failed
                     let position = cursor_pos.or_else(|| {
                         // Fallback: calculate position manually if screen_coords_at_pos failed
                         let cursor_line = text.char_to_line(cursor_char_idx);
-                        
+
                         // Use the cursor line directly
                         let effective_cursor_line = cursor_line;
-                        
+
                         if effective_cursor_line >= first_row && effective_cursor_line < last_row {
                             let viewport_row = effective_cursor_line.saturating_sub(first_row);
                             Some(helix_core::Position {
@@ -1726,11 +1746,11 @@ impl Element for DocumentElement {
                             None
                         }
                     });
-                    
+
                     if let Some(position) = position {
                         // The position from screen_coords_at_pos is already viewport-relative
                         let helix_core::Position { row: viewport_row, col: _ } = position;
-                        
+
                         // Get the line containing the cursor
                         // When cursor is at EOF with newline, the phantom line is the last line
                         let cursor_line = if cursor_at_end && file_ends_with_newline {
@@ -1738,34 +1758,34 @@ impl Element for DocumentElement {
                         } else {
                             text.char_to_line(cursor_char_idx)
                         };
-                        
+
                         debug!("Looking for cursor line {cursor_line} in range {first_row}..{last_row}");
-                        
+
                         // Check if cursor line is in the rendered range
                         // For phantom line, use the effective cursor line
                         let effective_cursor_line = cursor_line;
-                        
+
                         if effective_cursor_line >= first_row && effective_cursor_line < last_row {
                             // Debug: line layouts are now stored in LineLayoutCache
-                            
+
                             // Use the cursor line directly as the layout index
                             let layout_line_idx = cursor_line;
-                            
-                            debug!("Looking for line layout with index {} (cursor_line: {}, is phantom: {})", 
+
+                            debug!("Looking for line layout with index {} (cursor_line: {}, is phantom: {})",
                                 layout_line_idx, cursor_line, cursor_at_end && file_ends_with_newline);
-                            
+
                             // Find the line layout for the cursor line
                             if let Some(line_layout) = line_cache.find_line_by_index(layout_line_idx) {
-                                debug!("Found line layout - line_idx: {}, origin.y: {:?}, expected line: {}", 
+                                debug!("Found line layout - line_idx: {}, origin.y: {:?}, expected line: {}",
                                     line_layout.line_idx, line_layout.origin.y, layout_line_idx);
-                                
+
                                 // Additional debug for phantom line
                                 if cursor_at_end && file_ends_with_newline {
                                     // Line layouts are now stored in LineLayoutCache
                                 }
                                 // Special handling for phantom line
                                 let is_phantom_line = layout_line_idx >= text.len_lines();
-                                
+
                                 let (_line_start, cursor_grapheme_offset, line_text) = if is_phantom_line {
                                     // Phantom line: cursor is at end of file
                                     (text.len_chars(), 0, String::new())
@@ -1773,7 +1793,7 @@ impl Element for DocumentElement {
                                     // Normal line
                                     let line_start = text.line_to_char(cursor_line);
                                     let cursor_grapheme_offset = cursor_char_idx.saturating_sub(line_start);
-                                    
+
                                     // Get the line text to convert grapheme offset to char offset
                                     let line_end = if cursor_line + 1 < text.len_lines() {
                                         text.line_to_char(cursor_line + 1)
@@ -1783,26 +1803,26 @@ impl Element for DocumentElement {
                                     let line_text = text.slice(line_start..line_end).to_string();
                                     (line_start, cursor_grapheme_offset, line_text)
                                 };
-                                
+
                                 // Convert grapheme offset to char offset for GPUI
                                 let cursor_char_offset = Self::grapheme_idx_to_char_idx(&line_text, cursor_grapheme_offset);
-                                
+
                                 // Get the x position from the shaped line
                                 let cursor_x = line_layout.shaped_line.x_for_index(cursor_char_offset);
-                                
+
                                 // Debug logging
                                 debug!("Cursor rendering - line: {cursor_line}, grapheme_offset: {cursor_grapheme_offset}, char_offset: {cursor_char_offset}, x: {cursor_x:?}, viewport_row: {viewport_row}");
-                                
+
                                 // Debug info about the line content
-                                debug!("Line content: {:?}, cursor at grapheme offset {} (char offset {}) in line, is_phantom: {}", 
+                                debug!("Line content: {:?}, cursor at grapheme offset {} (char offset {}) in line, is_phantom: {}",
                                     &line_text, cursor_grapheme_offset, cursor_char_offset, is_phantom_line);
-                                
+
                                 // Cursor origin is relative to the line's origin
                                 let cursor_origin = gpui::Point::new(
                                     cursor_x,
                                     px(0.0) // Relative to line origin
                                 );
-                                
+
                                 let cursor_color = cursor_style
                                     .fg
                                     .and_then(color_to_hsla)
@@ -1817,7 +1837,7 @@ impl Element for DocumentElement {
                                     line_height: after_layout.line_height,
                                     text: cursor_text_shaped,
                                 };
-                                
+
                                 // Paint cursor at the line's origin
                                 cursor.paint(line_layout.origin, window, cx);
                             } else {
@@ -1830,7 +1850,7 @@ impl Element for DocumentElement {
                         debug!("Cursor rendering skipped - no cursor_pos from screen_coords_at_pos");
                     }
                 } else {
-                    debug!("Cursor rendering skipped - is_focused: {}, element_focused: {}", 
+                    debug!("Cursor rendering skipped - is_focused: {}, element_focused: {}",
                         self.is_focused, element_focused);
                 }
                 // draw gutter
@@ -1848,11 +1868,11 @@ impl Element for DocumentElement {
                     Some(doc) => doc,
                     None => return,
                 };
-                    
+
                     // Clone necessary values before creating mutable references
                     let text_system = window.text_system().clone();
                     let style = self.style.clone();
-                    
+
                     // Only pass actual document lines to gutter, not phantom lines
                     let gutter_last_row = last_row.min(total_lines);
                     let lines = (first_row..gutter_last_row)
@@ -1871,7 +1891,7 @@ impl Element for DocumentElement {
                         style,
                         origin: gutter_origin,
                     };
-                    
+
                     let mut gutters = Vec::new();
                     Gutter::init_gutter(
                         editor,
@@ -1881,20 +1901,20 @@ impl Element for DocumentElement {
                         is_focused,
                         &mut gutters,
                     );
-                    
+
                     // Execute gutters while we still have the borrow
                     for line in lines {
                         for gut in &mut gutters {
                             gut(line, &mut gutter)
                         }
                     }
-                    
+
                     // Drop gutters first (contains references to core)
                     drop(gutters);
-                    
+
                     // Drop core borrow before painting
                     // core goes out of scope here
-                    
+
                     // Now paint the gutter lines
                     for (origin, line) in gutter.lines {
                         if let Err(e) = line.paint(origin, after_layout.line_height, window, cx) {
@@ -1997,9 +2017,12 @@ impl<'a> GutterRenderer for Gutter<'a> {
                 underline: None,
                 strikethrough: None,
             };
-            let shaped = self
-                .text_system
-                .shape_line(text.to_string().into(), self.after_layout.font_size, &[run], None);
+            let shaped = self.text_system.shape_line(
+                text.to_string().into(),
+                self.after_layout.font_size,
+                &[run],
+                None,
+            );
             self.lines.push((
                 Point {
                     x: origin_x,
@@ -2093,7 +2116,7 @@ fn safe_highlight(theme: &Theme, highlight: syntax::Highlight) -> helix_view::gr
     // don't exist in the current theme. We handle this gracefully by returning
     // a default style instead of panicking.
     use std::panic::{catch_unwind, AssertUnwindSafe};
-    
+
     match catch_unwind(AssertUnwindSafe(|| theme.highlight(highlight))) {
         Ok(style) => style,
         Err(_) => {
@@ -2215,4 +2238,3 @@ impl<'t> OverlayHighlighter<'t> {
 }
 
 // Removed DiagnosticView - diagnostics are now handled through events and document highlights
-

@@ -4,7 +4,7 @@
 // Define action namespaces as modules
 pub mod editor {
     use gpui::actions;
-    
+
     actions!(
         editor,
         [
@@ -33,7 +33,7 @@ pub mod editor {
 
 pub mod picker {
     use gpui::actions;
-    
+
     actions!(
         picker,
         [
@@ -50,21 +50,16 @@ pub mod picker {
 
 pub mod prompt {
     use gpui::actions;
-    
+
     actions!(
         prompt,
-        [
-            SubmitPrompt,
-            CancelPrompt,
-            HistoryNext,
-            HistoryPrev,
-        ]
+        [SubmitPrompt, CancelPrompt, HistoryNext, HistoryPrev,]
     );
 }
 
 pub mod completion {
     use gpui::actions;
-    
+
     actions!(
         completion,
         [
@@ -80,23 +75,16 @@ pub mod completion {
 
 pub mod window {
     use gpui::actions;
-    
+
     actions!(
         window,
-        [
-            Hide,
-            HideOthers,
-            ShowAll,
-            Minimize,
-            Zoom,
-            ToggleFullScreen,
-        ]
+        [Hide, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen,]
     );
 }
 
 pub mod workspace {
     use gpui::actions;
-    
+
     actions!(
         workspace,
         [
@@ -116,7 +104,7 @@ pub mod workspace {
 
 pub mod help {
     use gpui::actions;
-    
+
     actions!(
         help,
         [
@@ -130,13 +118,6 @@ pub mod help {
 
 pub mod test {
     use gpui::actions;
-    
-    actions!(
-        test,
-        [
-            TestPrompt,
-            TestCompletion,
-            TestPicker,
-        ]
-    );
+
+    actions!(test, [TestPrompt, TestCompletion, TestPicker,]);
 }

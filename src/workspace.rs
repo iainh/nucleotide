@@ -43,7 +43,7 @@ impl EventEmitter<crate::Update> for Workspace {}
 impl Workspace {
     pub fn current_filename(&self, cx: &App) -> Option<String> {
         let editor = &self.core.read(cx).editor;
-        
+
         // Get the currently focused view
         for (view, is_focused) in editor.tree.views() {
             if is_focused {
@@ -59,7 +59,7 @@ impl Workspace {
         }
         None
     }
-    
+
     pub fn with_views(
         core: Entity<Core>,
         input: Entity<Input>,
@@ -154,11 +154,11 @@ impl Workspace {
     ) -> Self {
         panic!("Use Workspace::with_views instead - views must be created in window context");
     }
-    
+
     pub fn set_titlebar(&mut self, titlebar: gpui::AnyView) {
         self.titlebar = Some(titlebar);
     }
-    
+
     pub fn set_project_directory(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
         self.core.update(cx, |core, _cx| {
             core.project_directory = Some(dir);
@@ -637,7 +637,7 @@ impl Workspace {
         info!("Workspace: Received OpenFile update for: {path:?}");
         self.core.update(cx, |core, cx| {
             let _guard = self.handle.enter();
-            
+
             // Determine the right action based on whether we have views
             let action = if core.editor.tree.views().count() == 0 {
                 info!("No views exist, using VerticalSplit action");
@@ -646,7 +646,7 @@ impl Workspace {
                 info!("Views exist, using Replace action to show in current view");
                 helix_view::editor::Action::Replace
             };
-            
+
             // Now open the file
             info!("About to open file from picker: {path:?} with action: {:?}", action);
             match core.editor.open(path, action) {
@@ -655,11 +655,11 @@ impl Workspace {
                 }
                 Ok(doc_id) => {
                     info!("Successfully opened file from picker: {path:?}, doc_id: {doc_id:?}");
-                    
+
                     // Log document info
                     if let Some(doc) = core.editor.document(doc_id) {
                         info!("Document language: {:?}, path: {:?}", doc.language_name(), doc.path());
-                        
+
                         // Check if document has language servers
                         let lang_servers: Vec<_> = doc.language_servers().collect();
                         info!("Document has {} language servers", lang_servers.len());
@@ -667,14 +667,14 @@ impl Workspace {
                             info!("  Language server: {}", ls.name());
                         }
                     }
-                    
+
                     // Trigger a redraw event which might help initialize language servers
                     helix_event::request_redraw();
-                    
+
                     // Try to ensure language servers are started for this document
                     // This is a workaround - ideally helix would handle this automatically
                     let editor = &mut core.editor;
-                    
+
                     // Force a refresh of language servers by getting document language config
                     if let Some(doc) = editor.document(doc_id) {
                         if let Some(lang_config) = doc.language_config() {
@@ -684,44 +684,44 @@ impl Workspace {
                             info!("Attempting to refresh language servers for document");
                         }
                     }
-                    
+
                     // Force the editor to refresh/check language servers for this document
                     // This is a workaround - ideally helix would do this automatically
                     if let Some(doc) = editor.document(doc_id) {
                         // Try to trigger LSP by getting language configuration
                         if let Some(lang_config) = doc.language_config() {
                             info!("Document has language: {}, checking for language servers", lang_config.language_id);
-                            
+
                             // Check if we need to start language servers
                             let doc_langs: Vec<_> = doc.language_servers().collect();
                             if doc_langs.is_empty() {
                                 info!("No language servers attached to document, may need initialization");
-                                
+
                                 // Try to trigger initialization by requesting a redraw
                                 // which should cause helix to check if LSP needs to be started
                                 helix_event::request_redraw();
                             }
                         }
                     }
-                    
+
                     // Emit an editor redraw event which should trigger various checks
                     cx.emit(crate::Update::EditorEvent(helix_view::editor::EditorEvent::Redraw));
-                    
+
                     // Set cursor to beginning of file without selecting content
                     let view_id = editor.tree.focus;
-                    
+
                     // Check if the view exists before attempting operations
                     if editor.tree.contains(view_id) {
                         // Get the current document id from the view
                         let view_doc_id = editor.tree.get(view_id).doc;
                         info!("View {:?} has document ID: {:?}, opened doc_id: {:?}", view_id, view_doc_id, doc_id);
-                        
+
                         // Make sure the view is showing the document we just opened
                         if view_doc_id != doc_id {
                             info!("View is showing different document, switching to opened document");
                             editor.switch(doc_id, helix_view::editor::Action::Replace);
                         }
-                        
+
                         // Set the selection and ensure cursor is in view
                         editor.ensure_cursor_in_view(view_id);
                         if let Some(doc) = editor.document_mut(doc_id) {
@@ -864,14 +864,27 @@ impl Workspace {
                 // TODO: Show loading indicator in status bar
                 cx.notify();
             }
-            FileTreeEvent::VcsStatusChanged { repository_root, affected_files } => {
-                info!("VCS status updated for repository: {:?} ({} files)", repository_root, affected_files.len());
+            FileTreeEvent::VcsStatusChanged {
+                repository_root,
+                affected_files,
+            } => {
+                info!(
+                    "VCS status updated for repository: {:?} ({} files)",
+                    repository_root,
+                    affected_files.len()
+                );
                 // VCS status has been updated, file tree should already be refreshed
                 // Could trigger status bar updates or notifications here
                 cx.notify();
             }
-            FileTreeEvent::VcsRefreshFailed { repository_root, error } => {
-                error!("VCS refresh failed for repository: {:?} - {}", repository_root, error);
+            FileTreeEvent::VcsRefreshFailed {
+                repository_root,
+                error,
+            } => {
+                error!(
+                    "VCS refresh failed for repository: {:?} - {}",
+                    repository_root, error
+                );
                 // TODO: Show error notification to user
                 cx.notify();
             }
@@ -1186,7 +1199,7 @@ impl Render for Workspace {
         } else {
             "Helix".to_string()
         };
-        
+
         // Only set window title if using native decorations
         if window.window_decorations() == gpui::Decorations::Server {
             window.set_window_title(&window_title);
@@ -1272,7 +1285,7 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .w_full()
-            .h_full()  // Back to h_full since properly wrapped
+            .h_full() // Back to h_full since properly wrapped
             .when_some(Some(docs_root), |this, docs| this.child(docs))
             .child(self.notifications.clone())
             .when(!self.overlay.read(cx).is_empty(), |this| {
@@ -1291,7 +1304,7 @@ impl Render for Workspace {
             .id("workspace")
             .bg(bg_color)
             .flex()
-            .flex_col()  // Vertical layout to include titlebar
+            .flex_col() // Vertical layout to include titlebar
             .w_full()
             .h_full()
             .focusable();
@@ -1373,7 +1386,7 @@ impl Render for Workspace {
                 show_buffer_picker(core.clone(), handle.clone(), cx)
             },
         ));
-        
+
         // File finder action
         let handle = self.handle.clone();
         let core = self.core.clone();
@@ -1432,13 +1445,8 @@ impl Render for Workspace {
             },
         ));
 
-
         // Create content area that will hold file tree and main content
-        let mut content_area = div()
-            .flex()
-            .flex_row()
-            .w_full()
-            .flex_1();  // Should use flex_1 in a flex column parent
+        let mut content_area = div().flex().flex_row().w_full().flex_1(); // Should use flex_1 in a flex column parent
 
         // Add file tree panel if needed
         if self.show_file_tree && self.file_tree.is_some() {
@@ -1477,8 +1485,8 @@ impl Render for Workspace {
 
         // Build final workspace - just like Zed, render titlebar if it exists
         workspace_div
-            .children(self.titlebar.clone())  // Render titlebar if present
-            .child(content_area)  // Then add content
+            .children(self.titlebar.clone()) // Render titlebar if present
+            .child(content_area) // Then add content
     }
 }
 
@@ -1638,11 +1646,11 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
         // Format like terminal: "ID  FLAGS  PATH"
         // DocumentId likely has Display impl that shows "DocumentId(N)"
         let display_str = format!("{}", meta.doc_id);
-        
+
         // Extract number from "DocumentId(N)" format
         let id_str = if display_str.starts_with("DocumentId(") && display_str.ends_with(")") {
             // Extract the number between parentheses
-            display_str[11..display_str.len()-1].to_string()
+            display_str[11..display_str.len() - 1].to_string()
         } else if let Some(start) = display_str.find('(') {
             // More flexible parsing for variations
             if let Some(end) = display_str.rfind(')') {
@@ -1655,7 +1663,8 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
             display_str
         } else {
             // Fallback - try to find any number in the string
-            display_str.chars()
+            display_str
+                .chars()
                 .skip_while(|c| !c.is_numeric())
                 .take_while(|c| c.is_numeric())
                 .collect::<String>()
@@ -1693,7 +1702,8 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
 
         // Create data that includes both doc_id and path for preview functionality
         // We'll store a tuple of (DocumentId, Option<PathBuf>) for all items
-        let picker_data = Arc::new((meta.doc_id, meta.path.clone())) as Arc<dyn std::any::Any + Send + Sync>;
+        let picker_data =
+            Arc::new((meta.doc_id, meta.path.clone())) as Arc<dyn std::any::Any + Send + Sync>;
 
         // Store the document ID and path in the picker item data
         items.push(PickerItem {

@@ -1,10 +1,10 @@
 // ABOUTME: This file implements the GUI-specific configuration system for nucleotide
 // ABOUTME: It loads nucleotide.toml and falls back to config.toml for unspecified values
 
-use serde::{Deserialize, Serialize};
-use std::path::Path;
 use helix_loader::config_dir;
 use helix_term::config::Config as HelixConfig;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// Font weight enumeration matching common font weights
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,7 +22,6 @@ pub enum FontWeight {
     ExtraBold,
     Black,
 }
-
 
 impl From<FontWeight> for gpui::FontWeight {
     fn from(weight: FontWeight) -> Self {
@@ -84,7 +83,7 @@ pub struct GuiConfig {
     /// UI-specific settings
     #[serde(default)]
     pub ui: UiConfig,
-    
+
     /// Editor GUI settings
     #[serde(default)]
     pub editor: EditorGuiConfig,
@@ -95,7 +94,7 @@ pub struct GuiConfig {
 pub struct Config {
     /// Base Helix configuration
     pub helix: HelixConfig,
-    
+
     /// GUI-specific configuration
     pub gui: GuiConfig,
 }
@@ -106,21 +105,21 @@ impl Config {
         let config_dir = config_dir();
         Self::load_from_dir(&config_dir)
     }
-    
+
     /// Load configuration from a specific directory
     pub fn load_from_dir(dir: &Path) -> anyhow::Result<Self> {
         // First, load the base Helix configuration
         let helix_config = load_helix_config(dir)?;
-        
+
         // Then, load GUI-specific configuration if it exists
         let gui_config = load_gui_config(dir).unwrap_or_default();
-        
+
         Ok(Self {
             helix: helix_config,
             gui: gui_config,
         })
     }
-    
+
     /// Get the editor font configuration
     pub fn editor_font(&self) -> FontConfig {
         self.gui.editor.font.clone().unwrap_or_else(|| {
@@ -128,7 +127,7 @@ impl Config {
             self.gui.ui.font.clone().unwrap_or_default()
         })
     }
-    
+
     /// Get the UI font configuration
     pub fn ui_font(&self) -> FontConfig {
         self.gui.ui.font.clone().unwrap_or_else(|| {
@@ -145,11 +144,10 @@ impl Config {
 /// Load Helix configuration from config.toml
 fn load_helix_config(_dir: &Path) -> anyhow::Result<HelixConfig> {
     use helix_term::config::{Config, ConfigLoadError};
-    
+
     match Config::load_default() {
         Ok(config) => Ok(config),
-        Err(ConfigLoadError::Error(err)) 
-            if err.kind() == std::io::ErrorKind::NotFound => {
+        Err(ConfigLoadError::Error(err)) if err.kind() == std::io::ErrorKind::NotFound => {
             Ok(Config::default())
         }
         Err(ConfigLoadError::Error(err)) => Err(err.into()),
@@ -160,7 +158,7 @@ fn load_helix_config(_dir: &Path) -> anyhow::Result<HelixConfig> {
 /// Load GUI configuration from nucleotide.toml
 fn load_gui_config(dir: &Path) -> anyhow::Result<GuiConfig> {
     let gui_config_path = dir.join("nucleotide.toml");
-    
+
     if gui_config_path.exists() {
         let config_str = std::fs::read_to_string(&gui_config_path)?;
         let config: GuiConfig = toml::from_str(&config_str)?;
@@ -188,21 +186,29 @@ fn load_gui_config(dir: &Path) -> anyhow::Result<GuiConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_font_weight_serialization() {
         // Test deserialization from JSON (since TOML doesn't support bare enum values)
-        let deserialized: FontWeight = serde_json::from_str("\"semibold\"").expect("Failed to deserialize FontWeight");
+        let deserialized: FontWeight =
+            serde_json::from_str("\"semibold\"").expect("Failed to deserialize FontWeight");
         assert_eq!(deserialized, FontWeight::SemiBold);
-        
-        let deserialized: FontWeight = serde_json::from_str("\"bold\"").expect("Failed to deserialize FontWeight");
+
+        let deserialized: FontWeight =
+            serde_json::from_str("\"bold\"").expect("Failed to deserialize FontWeight");
         assert_eq!(deserialized, FontWeight::Bold);
-        
+
         // Test that FontWeight converts correctly to gpui::FontWeight
-        assert_eq!(gpui::FontWeight::from(FontWeight::Bold), gpui::FontWeight::BOLD);
-        assert_eq!(gpui::FontWeight::from(FontWeight::Normal), gpui::FontWeight::NORMAL);
+        assert_eq!(
+            gpui::FontWeight::from(FontWeight::Bold),
+            gpui::FontWeight::BOLD
+        );
+        assert_eq!(
+            gpui::FontWeight::from(FontWeight::Normal),
+            gpui::FontWeight::NORMAL
+        );
     }
-    
+
     #[test]
     fn test_gui_config_parsing() {
         let config_str = r#"
@@ -216,15 +222,19 @@ family = "JetBrains Mono"
 weight = "normal"
 size = 14.5
 "#;
-        
+
         let config: GuiConfig = toml::from_str(config_str).expect("Failed to parse GuiConfig");
-        
+
         let ui_font = config.ui.font.as_ref().expect("UI font should be set");
         assert_eq!(ui_font.family, "Inter");
         assert_eq!(ui_font.weight, FontWeight::Medium);
         assert_eq!(ui_font.size, 13.0);
-        
-        let editor_font = config.editor.font.as_ref().expect("Editor font should be set");
+
+        let editor_font = config
+            .editor
+            .font
+            .as_ref()
+            .expect("Editor font should be set");
         assert_eq!(editor_font.family, "JetBrains Mono");
         assert_eq!(editor_font.weight, FontWeight::Normal);
         assert_eq!(editor_font.size, 14.5);

@@ -1,10 +1,10 @@
 // ABOUTME: Asset management system for embedded resources like icons and fonts
 // ABOUTME: Uses rust-embed to include assets in the binary at compile time
 
-use std::borrow::Cow;
 use anyhow::{Context as _, Result};
 use gpui::{AssetSource, SharedString};
 use rust_embed::RustEmbed;
+use std::borrow::Cow;
 
 #[derive(RustEmbed)]
 #[folder = "assets"]

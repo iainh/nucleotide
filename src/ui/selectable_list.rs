@@ -1,16 +1,16 @@
 // ABOUTME: Reusable selectable list component for pickers and menus
 // ABOUTME: Handles keyboard navigation and selection with proper scrolling
 
-use gpui::*;
-use gpui::prelude::FluentBuilder;
 use crate::ui::theme_utils::ListColors;
+use gpui::prelude::FluentBuilder;
+use gpui::*;
 use std::ops::Range;
 
 /// A selectable list item
 pub trait SelectableItem: Clone {
     /// Get the unique ID for this item
     fn id(&self) -> ElementId;
-    
+
     /// Render the item content
     fn render(&self, is_selected: bool, colors: &ListColors, cx: &mut App) -> impl IntoElement;
 }
@@ -36,34 +36,34 @@ impl<T: SelectableItem> SelectableList<T> {
             list_id: id.into(),
         }
     }
-    
+
     pub fn with_selected_index(mut self, index: usize) -> Self {
         self.selected_index = index.min(self.items.len().saturating_sub(1));
         self
     }
-    
+
     pub fn with_max_height(mut self, height: Pixels) -> Self {
         self.max_height = Some(height);
         self
     }
-    
+
     pub fn with_item_height(mut self, height: Pixels) -> Self {
         self.item_height = height;
         self
     }
-    
+
     pub fn list_id(&self) -> &ElementId {
         &self.list_id
     }
-    
+
     pub fn selected_index(&self) -> usize {
         self.selected_index
     }
-    
+
     pub fn selected_item(&self) -> Option<&T> {
         self.items.get(self.selected_index)
     }
-    
+
     /// Move selection up
     pub fn select_previous(&mut self) {
         if self.selected_index > 0 {
@@ -71,7 +71,7 @@ impl<T: SelectableItem> SelectableList<T> {
             // TODO: Add scroll to item when UniformListScrollHandle is available
         }
     }
-    
+
     /// Move selection down
     pub fn select_next(&mut self) {
         if self.selected_index < self.items.len().saturating_sub(1) {
@@ -79,13 +79,13 @@ impl<T: SelectableItem> SelectableList<T> {
             // TODO: Add scroll to item when UniformListScrollHandle is available
         }
     }
-    
+
     /// Select first item
     pub fn select_first(&mut self) {
         self.selected_index = 0;
         // TODO: Add scroll to item when UniformListScrollHandle is available
     }
-    
+
     /// Select last item
     pub fn select_last(&mut self) {
         self.selected_index = self.items.len().saturating_sub(1);
@@ -99,36 +99,33 @@ impl<T: SelectableItem + 'static> RenderOnce for SelectableList<T> {
         let item_height = self.item_height;
         let colors = self.colors.clone();
         let selected_index = self.selected_index;
-        
+
         div()
             .flex()
             .flex_col()
             .bg(self.colors.background)
             .when_some(self.max_height, |this, max_height| {
-                this.max_h(max_height)
-                    .overflow_hidden()
+                this.max_h(max_height).overflow_hidden()
             })
-            .child(
-                uniform_list(
-                    self.list_id.clone(),
-                    item_count,
-                    move |visible_range: Range<usize>, _window, cx| {
-                        visible_range
-                            .map(|idx| {
-                                let item = self.items[idx].clone();
-                                let is_selected = idx == selected_index;
-                                let colors_clone = colors.clone();
-                                
-                                div()
-                                    .id(item.id())
-                                    .h(item_height)
-                                    .child(item.render(is_selected, &colors_clone, cx))
-                                    .into_any_element()
-                            })
-                            .collect()
-                    }
-                )
-            )
+            .child(uniform_list(
+                self.list_id.clone(),
+                item_count,
+                move |visible_range: Range<usize>, _window, cx| {
+                    visible_range
+                        .map(|idx| {
+                            let item = self.items[idx].clone();
+                            let is_selected = idx == selected_index;
+                            let colors_clone = colors.clone();
+
+                            div()
+                                .id(item.id())
+                                .h(item_height)
+                                .child(item.render(is_selected, &colors_clone, cx))
+                                .into_any_element()
+                        })
+                        .collect()
+                },
+            ))
     }
 }
 
@@ -144,7 +141,7 @@ impl SelectableItem for TextListItem {
     fn id(&self) -> ElementId {
         self.id.clone()
     }
-    
+
     fn render(&self, is_selected: bool, colors: &ListColors, _cx: &mut App) -> impl IntoElement {
         div()
             .flex()
@@ -162,12 +159,7 @@ impl SelectableItem for TextListItem {
             })
             .child(self.text.clone())
             .when_some(self.subtext.clone(), |this, subtext| {
-                this.child(
-                    div()
-                        .text_size(px(11.0))
-                        .opacity(0.7)
-                        .child(subtext)
-                )
+                this.child(div().text_size(px(11.0)).opacity(0.7).child(subtext))
             })
     }
 }

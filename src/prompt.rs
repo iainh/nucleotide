@@ -18,9 +18,9 @@ impl Prompt {
     pub fn legacy(text: TextWithStyle) -> Self {
         Self::Legacy(text)
     }
-    
+
     pub fn native(
-        prompt: impl Into<SharedString>, 
+        prompt: impl Into<SharedString>,
         initial_input: impl Into<SharedString>,
         on_submit: impl Fn(&str) + Send + Sync + 'static,
     ) -> Self {
@@ -31,14 +31,18 @@ impl Prompt {
             on_cancel: None,
         }
     }
-    
+
     pub fn with_cancel(mut self, on_cancel: impl Fn() + Send + Sync + 'static) -> Self {
-        if let Self::Native { on_cancel: ref mut cancel, .. } = self {
+        if let Self::Native {
+            on_cancel: ref mut cancel,
+            ..
+        } = self
+        {
             *cancel = Some(Arc::new(on_cancel));
         }
         self
     }
-    
+
     pub fn as_legacy(&self) -> Option<&TextWithStyle> {
         match self {
             Self::Legacy(text) => Some(text),
@@ -51,7 +55,11 @@ impl std::fmt::Debug for Prompt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Legacy(text) => f.debug_tuple("Legacy").field(text).finish(),
-            Self::Native { prompt, initial_input, .. } => f
+            Self::Native {
+                prompt,
+                initial_input,
+                ..
+            } => f
                 .debug_struct("Native")
                 .field("prompt", prompt)
                 .field("initial_input", initial_input)
@@ -95,17 +103,20 @@ impl RenderOnce for PromptElement {
                     let ui_bg = theme.get("ui.background");
                     let ui_text = theme.get("ui.text");
                     let ui_window = theme.get("ui.window");
-                    
-                    let bg = ui_bg.bg
+
+                    let bg = ui_bg
+                        .bg
                         .and_then(crate::utils::color_to_hsla)
                         .unwrap_or(hsla(0.0, 0.0, 0.1, 1.0));
-                    let text = ui_text.fg
+                    let text = ui_text
+                        .fg
                         .and_then(crate::utils::color_to_hsla)
                         .unwrap_or(hsla(0.0, 0.0, 0.9, 1.0));
-                    let border = ui_window.fg
+                    let border = ui_window
+                        .fg
                         .and_then(crate::utils::color_to_hsla)
                         .unwrap_or(hsla(0.0, 0.0, 0.3, 1.0));
-                    
+
                     (bg, text, border)
                 } else {
                     // Fallback to style from rendered text or defaults
@@ -125,7 +136,7 @@ impl RenderOnce for PromptElement {
 
                 let text = text_with_style.clone().into_styled_text(&default_style);
                 self.focus.focus(window);
-                
+
                 div()
                     .track_focus(&self.focus)
                     .flex()

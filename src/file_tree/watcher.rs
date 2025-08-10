@@ -1,13 +1,13 @@
 // ABOUTME: File system watcher using notify crate for real-time file tree updates
 // ABOUTME: Monitors file system changes and emits events for tree synchronization
 
+use anyhow::{Context, Result};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use notify::{Watcher, RecursiveMode, Event, EventKind};
 use tokio::sync::mpsc;
-use anyhow::{Result, Context};
 
-use crate::file_tree::{FileTreeEvent, FileSystemEventKind};
+use crate::file_tree::{FileSystemEventKind, FileTreeEvent};
 
 /// File system watcher for the file tree
 pub struct FileTreeWatcher {
@@ -23,7 +23,7 @@ impl FileTreeWatcher {
     /// Create a new file system watcher
     pub fn new(root_path: PathBuf) -> Result<Self> {
         let (tx, rx) = mpsc::unbounded_channel();
-        
+
         let mut watcher = notify::recommended_watcher(move |res| {
             if tx.send(res).is_err() {
                 // Channel closed, watcher is being dropped
@@ -31,7 +31,8 @@ impl FileTreeWatcher {
         })?;
 
         // Watch the root directory recursively
-        watcher.watch(&root_path, RecursiveMode::Recursive)
+        watcher
+            .watch(&root_path, RecursiveMode::Recursive)
             .with_context(|| format!("Failed to watch directory: {}", root_path.display()))?;
 
         Ok(Self {
@@ -66,7 +67,9 @@ impl FileTreeWatcher {
     /// Convert a notify Event to a FileTreeEvent
     fn convert_event(&self, event: Event) -> Option<FileTreeEvent> {
         // Filter out events for paths outside our root
-        let paths: Vec<_> = event.paths.into_iter()
+        let paths: Vec<_> = event
+            .paths
+            .into_iter()
             .filter(|path| path.starts_with(&self.root_path))
             .collect();
 
@@ -108,7 +111,7 @@ impl DebouncedFileTreeWatcher {
     /// Create a new debounced file system watcher
     pub fn new(root_path: PathBuf, debounce_duration: Duration) -> Result<Self> {
         let watcher = FileTreeWatcher::new(root_path)?;
-        
+
         Ok(Self {
             watcher,
             debounce_duration,
@@ -133,7 +136,7 @@ impl DebouncedFileTreeWatcher {
             // Split the mutable borrows by extracting what we need
             let has_pending = !self.pending_events.is_empty();
             let has_timer = self.debounce_timer.is_some();
-            
+
             if has_pending && has_timer {
                 tokio::select! {
                     // New file system event
@@ -144,7 +147,7 @@ impl DebouncedFileTreeWatcher {
                             self.reset_debounce_timer();
                         }
                     }
-                    
+
                     // Debounce timer expired
                     _ = async {
                         if let Some(ref mut timer) = self.debounce_timer {
@@ -177,10 +180,10 @@ impl DebouncedFileTreeWatcher {
     fn handle_new_event(&mut self, event: FileTreeEvent) {
         if let FileTreeEvent::FileSystemChanged { path, kind } = event {
             // Store the latest event for this path
-            self.pending_events.insert(path.clone(), FileTreeEvent::FileSystemChanged {
-                path,
-                kind,
-            });
+            self.pending_events.insert(
+                path.clone(),
+                FileTreeEvent::FileSystemChanged { path, kind },
+            );
         }
     }
 
@@ -192,7 +195,7 @@ impl DebouncedFileTreeWatcher {
     /// Flush pending events and return the next one
     fn flush_pending_events(&mut self) -> Option<FileTreeEvent> {
         self.debounce_timer = None;
-        
+
         if let Some((_, event)) = self.pending_events.drain().next() {
             Some(event)
         } else {

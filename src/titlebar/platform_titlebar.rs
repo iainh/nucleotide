@@ -1,12 +1,11 @@
 // ABOUTME: Platform-agnostic titlebar implementation that handles window decorations and controls
 // ABOUTME: Provides consistent titlebar behavior across Linux, macOS, and Windows platforms
 
-use gpui::{
-    div, px, App, Context, Decorations, ElementId, Hsla, 
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, 
-    Render, Styled, Window, WindowControlArea,
-};
 use gpui::prelude::FluentBuilder;
+use gpui::{
+    div, px, App, Context, Decorations, ElementId, Hsla, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Pixels, Render, Styled, Window, WindowControlArea,
+};
 
 use crate::titlebar::window_controls::WindowControls;
 
@@ -21,10 +20,10 @@ impl PlatformStyle {
     pub fn platform() -> Self {
         #[cfg(target_os = "macos")]
         return Self::Mac;
-        
+
         #[cfg(target_os = "windows")]
         return Self::Windows;
-        
+
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         return Self::Linux;
     }
@@ -45,26 +44,26 @@ impl PlatformTitleBar {
             title: String::new(),
         }
     }
-    
+
     pub fn set_title(&mut self, title: String) {
         self.title = title;
     }
-    
+
     pub fn height(window: &Window) -> Pixels {
         #[cfg(target_os = "windows")]
         return px(32.0);
-        
+
         #[cfg(not(target_os = "windows"))]
         return (1.75 * window.rem_size()).max(px(34.0));
     }
-    
+
     pub fn title_bar_color(&self, _window: &Window, cx: &App) -> Hsla {
         // Use the same background color as the workspace
         let theme = cx
             .global::<crate::theme_manager::ThemeManager>()
             .helix_theme();
         let default_style = theme.get("ui.background");
-        
+
         default_style
             .bg
             .and_then(crate::utils::color_to_hsla)
@@ -81,16 +80,16 @@ impl Render for PlatformTitleBar {
         // This ensures we use the same border color that's derived from ui.window
         let ui_theme = cx.global::<crate::ui::Theme>();
         let border_color = ui_theme.border;
-        
+
         // macOS traffic light padding
         const MAC_TRAFFIC_LIGHT_PADDING: f32 = 71.0;
-        
+
         // Set window insets based on decoration type
         match decorations {
             Decorations::Client { .. } => window.set_client_inset(px(0.0)), // We'll handle shadows separately
             Decorations::Server => window.set_client_inset(px(0.0)),
         }
-        
+
         // Build the titlebar
         div()
             .flex()
@@ -114,12 +113,8 @@ impl Render for PlatformTitleBar {
             .map(|el| match decorations {
                 Decorations::Server => el,
                 Decorations::Client { tiling } => el
-                    .when(!(tiling.top || tiling.right), |el| {
-                        el.rounded_tr_md()
-                    })
-                    .when(!(tiling.top || tiling.left), |el| {
-                        el.rounded_tl_md()
-                    }),
+                    .when(!(tiling.top || tiling.right), |el| el.rounded_tr_md())
+                    .when(!(tiling.top || tiling.left), |el| el.rounded_tl_md()),
             })
             .content_stretch()
             .child(
@@ -130,15 +125,15 @@ impl Render for PlatformTitleBar {
                     .w_full()
                     .h_full()
                     .items_center()
-                    .justify_center()  // Center the content
-                    .relative()  // For absolute positioning of window controls
+                    .justify_center() // Center the content
+                    .relative() // For absolute positioning of window controls
                     .px_2()
                     // Stop propagation on titlebar interactions
                     .on_mouse_down(MouseButton::Left, |event, window, cx| {
                         // Only start window move if not clicking on controls
                         let bounds = window.window_bounds().get_bounds();
                         let control_area_start = bounds.size.width.0 - 150.0;
-                        
+
                         if event.position.x.0 < control_area_start {
                             window.start_window_move();
                         }
@@ -147,18 +142,14 @@ impl Render for PlatformTitleBar {
                     .on_mouse_move(|_, _, cx| cx.stop_propagation())
                     .child(
                         // Title text - centered and bold
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_sm()  // Standard small text size
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)  // Semibold weight
-                                    .text_color(ui_theme.text)
-                                    .child(self.title.clone())
-                            )
-                    )
+                        div().flex().items_center().gap_2().child(
+                            div()
+                                .text_sm() // Standard small text size
+                                .font_weight(gpui::FontWeight::SEMIBOLD) // Semibold weight
+                                .text_color(ui_theme.text)
+                                .child(self.title.clone()),
+                        ),
+                    ),
             )
             .when(!window.is_fullscreen(), |title_bar| {
                 // Add platform-specific window controls
@@ -169,8 +160,7 @@ impl Render for PlatformTitleBar {
                     }
                     PlatformStyle::Linux | PlatformStyle::Windows => {
                         title_bar.child(
-                            WindowControls::new(self.platform_style)
-                                // Note: WindowControlArea doesn't have WindowControls variant in this GPUI version
+                            WindowControls::new(self.platform_style), // Note: WindowControlArea doesn't have WindowControls variant in this GPUI version
                         )
                     }
                 }

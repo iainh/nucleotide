@@ -40,7 +40,7 @@ impl ScrollManager {
     pub fn new(doc_id: DocumentId, view_id: ViewId, line_height: Pixels) -> Self {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
-        
+
         Self {
             id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
             doc_id,
@@ -75,8 +75,7 @@ impl ScrollManager {
         let content_height = px(total_lines as f32 * line_height.0);
         let viewport_height = self.viewport_size.get().height;
         let max_y = (content_height - viewport_height).max(px(0.0));
-        
-        
+
         size(px(0.0), max_y)
     }
 
@@ -90,12 +89,12 @@ impl ScrollManager {
     pub fn set_scroll_offset(&self, offset: Point<Pixels>) {
         self.set_scroll_offset_internal(offset, true);
     }
-    
+
     /// Set the scroll offset from Helix sync (doesn't mark as scrollbar-changed)
     pub fn set_scroll_offset_from_helix(&self, offset: Point<Pixels>) {
         self.set_scroll_offset_internal(offset, false);
     }
-    
+
     /// Internal method to set scroll offset with control over scrollbar_changed flag
     fn set_scroll_offset_internal(&self, offset: Point<Pixels>, from_scrollbar: bool) {
         let max_offset = self.max_scroll_offset();
@@ -106,10 +105,15 @@ impl ScrollManager {
         );
         let old_offset = self.scroll_offset.get();
         self.scroll_offset.set(clamped_offset);
-        
+
         if old_offset != clamped_offset {
-            log::debug!("ScrollManager[{}]: offset changed from {:?} to {:?} (from_scrollbar: {})", 
-                self.id, old_offset, clamped_offset, from_scrollbar);
+            log::debug!(
+                "ScrollManager[{}]: offset changed from {:?} to {:?} (from_scrollbar: {})",
+                self.id,
+                old_offset,
+                clamped_offset,
+                from_scrollbar
+            );
             if from_scrollbar {
                 // Mark that scrollbar changed the position (needs sync to Helix)
                 self.scrollbar_changed.set(true);
@@ -139,7 +143,7 @@ impl ScrollManager {
         let y = self.anchor_to_pixels(anchor_line);
         // GPUI convention: negative offset when scrolled down
         let new_offset = point(px(0.0), -y);
-        
+
         // Update scroll offset without marking as scrollbar-changed
         // This is a sync FROM Helix, not a scrollbar action
         let max_offset = self.max_scroll_offset();
@@ -158,7 +162,7 @@ impl ScrollManager {
         let anchor_line = self.pixels_to_anchor(-y);
         let text = document.text();
         let anchor = text.line_to_char(anchor_line);
-        
+
         ViewOffset {
             anchor,
             horizontal_offset: 0,
@@ -170,16 +174,21 @@ impl ScrollManager {
     pub fn visible_line_range(&self) -> (usize, usize) {
         let offset = self.scroll_offset.get();
         let viewport = self.viewport_size.get();
-        
+
         // GPUI convention: offset.y is negative when scrolled down
         // So -offset.y gives us the positive scroll distance
         let first_line = self.pixels_to_anchor(-offset.y);
         let last_line = self.pixels_to_anchor(-offset.y + viewport.height) + 1;
-        
+
         let total_lines = self.total_lines.get();
         let result = (first_line, last_line.min(total_lines));
-        log::debug!("ScrollManager[{}]: visible_line_range: offset={:?}, viewport={:?}, range={:?}", 
-                   self.id, offset, viewport, result);
+        log::debug!(
+            "ScrollManager[{}]: visible_line_range: offset={:?}, viewport={:?}, range={:?}",
+            self.id,
+            offset,
+            viewport,
+            result
+        );
         result
     }
 
@@ -194,7 +203,7 @@ impl ScrollManager {
         let viewport_height = self.viewport_size.get().height;
         let line_height = self.line_height.get();
         let lines_per_viewport = (viewport_height.0 / line_height.0) as usize;
-        
+
         let target_y = match strategy {
             ScrollStrategy::Top => self.anchor_to_pixels(line),
             ScrollStrategy::Center => {
@@ -205,7 +214,7 @@ impl ScrollManager {
                 self.anchor_to_pixels(line.saturating_sub(lines_per_viewport - 1))
             }
         };
-        
+
         // GPUI convention: negative offset when scrolled down
         self.set_scroll_offset(point(px(0.0), -target_y));
     }

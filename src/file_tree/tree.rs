@@ -729,12 +729,12 @@ impl FileTree {
     pub fn needs_vcs_refresh(&self) -> bool {
         self.git_status_cache.is_empty() && self.is_loaded
     }
-    
+
     /// Get VCS registry and root path for async refresh
     pub fn get_vcs_info(&self) -> (Arc<DiffProviderRegistry>, PathBuf) {
         (Arc::clone(&self.vcs_registry), self.root_path.clone())
     }
-    
+
     /// Apply VCS status results
     pub fn apply_vcs_status(&mut self, status_map: HashMap<PathBuf, GitStatus>) {
         self.git_status_cache = status_map;
@@ -765,7 +765,7 @@ impl FileTree {
     fn get_vcs_status(&self, path: &Path) -> Option<GitStatus> {
         self.git_status_cache.get(path).cloned()
     }
-    
+
     /// Debug: Print all entries with their VCS status
     pub fn debug_vcs_status(&self) {
         log::debug!("=== VCS Status Debug ===");
@@ -773,7 +773,7 @@ impl FileTree {
         for (path, status) in &self.git_status_cache {
             log::debug!("  Cache: {:?} -> {:?}", path.file_name(), status);
         }
-        
+
         let entries = self.entries.iter().collect::<Vec<_>>();
         log::debug!("Tree has {} entries", entries.len());
         for entry in entries {

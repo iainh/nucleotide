@@ -2,9 +2,8 @@
 // ABOUTME: Provides minimize, maximize/restore, and close buttons with platform-specific styling
 
 use gpui::{
-    svg, App, Hsla, InteractiveElement, IntoElement, 
-    MouseButton, ParentElement, RenderOnce, 
-    Styled, Window, WindowControlArea, hsla,
+    hsla, svg, App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce,
+    Styled, Window, WindowControlArea,
 };
 
 use crate::titlebar::platform_titlebar::PlatformStyle;
@@ -38,7 +37,7 @@ pub struct WindowControlStyle {
 impl WindowControlStyle {
     pub fn default(cx: &App) -> Self {
         let ui_theme = cx.global::<crate::ui::Theme>();
-        
+
         Self {
             background: hsla(0.0, 0.0, 0.0, 0.0), // transparent
             background_hover: ui_theme.surface_hover,
@@ -46,12 +45,12 @@ impl WindowControlStyle {
             icon_hover: ui_theme.text,
         }
     }
-    
+
     pub fn close(cx: &App) -> Self {
         let ui_theme = cx.global::<crate::ui::Theme>();
-        
+
         Self {
-            background: hsla(0.0, 0.0, 0.0, 0.0), // transparent
+            background: hsla(0.0, 0.0, 0.0, 0.0),       // transparent
             background_hover: hsla(0.0, 0.7, 0.5, 1.0), // red
             icon: ui_theme.text_muted,
             icon_hover: hsla(0.0, 0.0, 1.0, 1.0), // white
@@ -67,16 +66,12 @@ pub struct WindowControl {
 }
 
 impl WindowControl {
-    pub fn new(
-        id: impl Into<gpui::ElementId>,
-        control_type: WindowControlType,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: impl Into<gpui::ElementId>, control_type: WindowControlType, cx: &App) -> Self {
         let style = match control_type {
             WindowControlType::Close => WindowControlStyle::close(cx),
             _ => WindowControlStyle::default(cx),
         };
-        
+
         Self {
             id: id.into(),
             control_type,
@@ -93,7 +88,7 @@ impl RenderOnce for WindowControl {
             .path(self.control_type.icon_path())
             .text_color(self.style.icon)
             .group_hover("", |this| this.text_color(self.style.icon_hover));
-        
+
         gpui::div()
             .flex()
             .flex_row()
@@ -139,7 +134,7 @@ impl WindowControls {
             window_control_area: None,
         }
     }
-    
+
     pub fn window_control_area(mut self, area: WindowControlArea) -> Self {
         self.window_control_area = Some(area);
         self
@@ -160,31 +155,37 @@ impl RenderOnce for WindowControls {
             .px_2()
             .gap_1()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-            
+
         if let Some(area) = self.window_control_area {
             controls = controls.window_control_area(area);
         }
-        
+
         // Add controls based on platform
         match self.platform_style {
-            PlatformStyle::Linux => {
-                controls
-                    .child(WindowControl::new("minimize", WindowControlType::Minimize, cx))
-                    .child(WindowControl::new(
-                        "maximize-or-restore",
-                        if window.is_maximized() {
-                            WindowControlType::Restore
-                        } else {
-                            WindowControlType::Maximize
-                        },
-                        cx,
-                    ))
-                    .child(WindowControl::new("close", WindowControlType::Close, cx))
-            }
+            PlatformStyle::Linux => controls
+                .child(WindowControl::new(
+                    "minimize",
+                    WindowControlType::Minimize,
+                    cx,
+                ))
+                .child(WindowControl::new(
+                    "maximize-or-restore",
+                    if window.is_maximized() {
+                        WindowControlType::Restore
+                    } else {
+                        WindowControlType::Maximize
+                    },
+                    cx,
+                ))
+                .child(WindowControl::new("close", WindowControlType::Close, cx)),
             PlatformStyle::Windows => {
                 // Windows order: minimize, maximize, close
                 controls
-                    .child(WindowControl::new("minimize", WindowControlType::Minimize, cx))
+                    .child(WindowControl::new(
+                        "minimize",
+                        WindowControlType::Minimize,
+                        cx,
+                    ))
                     .child(WindowControl::new(
                         "maximize-or-restore",
                         if window.is_maximized() {

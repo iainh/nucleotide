@@ -3,16 +3,11 @@ use std::{
     sync::Arc,
 };
 
+use crate::core::lsp_state::ServerStatus;
 use arc_swap::{access::Map, ArcSwap};
 use futures_util::FutureExt;
-use helix_core::{
-    diagnostic::Severity,
-    pos_at_coords, syntax, Position, Selection,
-};
-use helix_lsp::{
-    lsp, LanguageServerId, LspProgressMap,
-};
-use crate::core::lsp_state::ServerStatus;
+use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Position, Selection};
+use helix_lsp::{lsp, LanguageServerId, LspProgressMap};
 use helix_stdx::path::get_relative_path;
 use helix_term::ui::FilePickerData;
 
@@ -28,7 +23,6 @@ use helix_view::document::DocumentSavedEventResult;
 use helix_view::DocumentId;
 use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, Editor};
 
-
 // Helper function to find workspace root from a specific directory
 pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
     // Walk up the directory tree looking for VCS directories
@@ -42,7 +36,7 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
             return ancestor.to_path_buf();
         }
     }
-    
+
     // If no VCS directory found, use the start directory
     start_dir.to_path_buf()
 }
@@ -96,24 +90,26 @@ impl Application {
     pub fn sync_lsp_state(&self, cx: &mut gpui::App) {
         if let Some(lsp_state) = &self.lsp_state {
             // Check for active language servers
-            let active_servers: Vec<(LanguageServerId, String)> = self.editor.language_servers
+            let active_servers: Vec<(LanguageServerId, String)> = self
+                .editor
+                .language_servers
                 .iter_clients()
                 .map(|client| (client.id(), client.name().to_string()))
                 .collect();
-            
+
             log::info!("Syncing LSP state, active servers: {:?}", active_servers);
-            
+
             // Check which servers are progressing
             let progressing_servers: Vec<LanguageServerId> = active_servers
                 .iter()
                 .filter(|(id, _)| self.lsp_progress.is_progressing(*id))
                 .map(|(id, _)| *id)
                 .collect();
-            
+
             lsp_state.update(cx, |state, _cx| {
                 // Clear old progress state
                 state.progress.clear();
-                
+
                 // Update server info if we have new servers
                 for (id, name) in active_servers {
                     if !state.servers.contains_key(&id) {
@@ -121,7 +117,7 @@ impl Application {
                         state.update_server_status(id, ServerStatus::Running);
                     }
                 }
-                
+
                 // Extract actual progress information from LspProgressMap
                 for id in progressing_servers {
                     // Get the progress map for this server
@@ -129,7 +125,7 @@ impl Application {
                         // Only process if we have actual progress items
                         if !progress_map.is_empty() {
                             log::debug!("Server {} has {} progress items", id, progress_map.len());
-                            
+
                             // Add each progress operation
                             for (token, status) in progress_map {
                                 match status {
@@ -152,10 +148,10 @@ impl Application {
                                                 continue;
                                             }
                                         };
-                                        
-                                        log::info!("LSP progress active: {} - {:?} ({}%)", 
+
+                                        log::info!("LSP progress active: {} - {:?} ({}%)",
                                             title, message, percentage.unwrap_or(0));
-                                        
+
                                         state.progress.insert(key, crate::core::lsp_state::LspProgress {
                                             server_id: id,
                                             token: format!("{:?}", token),
@@ -169,14 +165,14 @@ impl Application {
                         }
                     }
                 }
-                
+
                 // Log current state for debugging
                 if !state.progress.is_empty() {
                     log::debug!("LSP servers with progress: {}", state.progress.len());
                     for progress in state.progress.values() {
-                        log::debug!("  - {}: {:?} ({}%)", 
-                            progress.title, 
-                            progress.message, 
+                        log::debug!("  - {}: {:?} ({}%)",
+                            progress.title,
+                            progress.message,
                             progress.percentage.unwrap_or(0));
                     }
                 }
@@ -186,7 +182,7 @@ impl Application {
             });
         }
     }
-    
+
     /// Safe document access API - read only
     pub fn with_document<F, R>(&self, doc_id: DocumentId, f: F) -> Option<R>
     where
@@ -195,7 +191,7 @@ impl Application {
         let doc_manager = crate::core::DocumentManager::new(&self.editor);
         doc_manager.with_document(doc_id, f)
     }
-    
+
     /// Safe document access API - mutable
     pub fn with_document_mut<F, R>(&mut self, doc_id: DocumentId, f: F) -> Option<R>
     where
@@ -204,7 +200,7 @@ impl Application {
         let mut doc_manager = crate::core::DocumentManagerMut::new(&mut self.editor);
         doc_manager.with_document_mut(doc_id, f)
     }
-    
+
     /// Safe document access API - returns Result instead of Option
     pub fn try_with_document<F, R, E>(&self, doc_id: DocumentId, f: F) -> Result<R, E>
     where
@@ -214,7 +210,7 @@ impl Application {
         let doc_manager = crate::core::DocumentManager::new(&self.editor);
         doc_manager.try_with_document(doc_id, f)
     }
-    
+
     /// Safe document access API - mutable with Result
     pub fn try_with_document_mut<F, R, E>(&mut self, doc_id: DocumentId, f: F) -> Result<R, E>
     where
@@ -229,19 +225,23 @@ impl Application {
         // They are handled via events now
         None
     }
-    
+
     /// Check if helix created a picker and emit the appropriate event
     pub fn check_for_picker_and_emit_event(&mut self, cx: &mut gpui::Context<crate::Core>) -> bool {
         use helix_term::ui::{overlay::Overlay, Picker};
-        
+
         // Check for file picker first
-        if self.compositor.find_id::<Overlay<Picker<PathBuf, FilePickerData>>>(helix_term::ui::picker::ID).is_some() {
+        if self
+            .compositor
+            .find_id::<Overlay<Picker<PathBuf, FilePickerData>>>(helix_term::ui::picker::ID)
+            .is_some()
+        {
             log::info!("Detected file picker in compositor, emitting ShowFilePicker event");
             self.compositor.remove(helix_term::ui::picker::ID);
             cx.emit(crate::Update::ShowFilePicker);
             return true;
         }
-        
+
         // Check for any picker - if we have multiple docs, it's likely buffer picker
         // We need to check if any picker exists by trying to remove it
         if self.compositor.remove(helix_term::ui::picker::ID).is_some() {
@@ -252,34 +252,33 @@ impl Application {
                 return true;
             }
         }
-        
+
         false
     }
-    
+
     /// Legacy method - no longer used for event-based prompts
-    pub fn check_for_prompt_and_emit_event(&mut self, _cx: &mut gpui::Context<crate::Core>) -> bool {
+    pub fn check_for_prompt_and_emit_event(
+        &mut self,
+        _cx: &mut gpui::Context<crate::Core>,
+    ) -> bool {
         // Disabled - prompts are now handled through the legacy Update::Prompt system
         false
     }
 
-
     // Native picker creation methods that demonstrate the new GPUI-native picker functionality
 
     pub fn create_sample_native_prompt(&self) -> crate::prompt::Prompt {
-        crate::prompt::Prompt::native(
-            "Search:",
-            "",
-            |_input| {
-                // For now, just show the input - we'll handle the actual search via a different mechanism
-            }
-        ).with_cancel(|| {
+        crate::prompt::Prompt::native("Search:", "", |_input| {
+            // For now, just show the input - we'll handle the actual search via a different mechanism
+        })
+        .with_cancel(|| {
             // Prompt cancelled
         })
     }
 
     pub fn create_sample_completion_items(&self) -> Vec<crate::completion::CompletionItem> {
         use crate::completion::{CompletionItem, CompletionItemKind};
-        
+
         // Create sample completion items
         vec![
             CompletionItem::new("println!", CompletionItemKind::Snippet)
@@ -305,7 +304,7 @@ impl Application {
                 .with_documentation("Create a formatted string"),
         ]
     }
-    
+
     pub fn open_file(&mut self, path: &Path) -> Result<(), anyhow::Error> {
         let mut doc_manager = crate::core::DocumentManagerMut::new(&mut self.editor);
         doc_manager.open_file(path)
@@ -314,59 +313,61 @@ impl Application {
     #[allow(dead_code)]
     fn create_file_picker_items(&self) -> Vec<crate::picker_view::PickerItem> {
         use crate::picker_view::PickerItem;
-        use std::sync::Arc;
         use ignore::WalkBuilder;
-        
+        use std::sync::Arc;
+
         let mut items = Vec::new();
-        
+
         // Find workspace root (similar to Helix)
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let workspace_root = find_workspace_root_from(&current_dir);
-        
+
         // Use WalkBuilder from the ignore crate to walk all files
         let mut walk_builder = WalkBuilder::new(&workspace_root);
         walk_builder
-            .hidden(false)  // Show hidden files (can be made configurable)
+            .hidden(false) // Show hidden files (can be made configurable)
             .follow_links(true)
-            .git_ignore(true)  // Respect .gitignore
-            .git_global(true)  // Respect global .gitignore
+            .git_ignore(true) // Respect .gitignore
+            .git_global(true) // Respect global .gitignore
             .git_exclude(true) // Respect .git/info/exclude
-            .sort_by_file_name(|a, b| a.cmp(b))  // Sort alphabetically
+            .sort_by_file_name(|a, b| a.cmp(b)) // Sort alphabetically
             .filter_entry(|entry| {
                 // Filter out VCS directories and common build directories
                 if let Some(name) = entry.file_name().to_str() {
-                    !matches!(name, ".git" | ".svn" | ".hg" | ".jj" | "target" | "node_modules")
+                    !matches!(
+                        name,
+                        ".git" | ".svn" | ".hg" | ".jj" | "target" | "node_modules"
+                    )
                 } else {
                     true
                 }
             });
-            
+
         // Walk the directory tree and collect files only
         for entry in walk_builder.build().flatten() {
             // Skip directories - we only want files
             if entry.file_type().is_some_and(|ft| ft.is_file()) {
-                    let path = entry.path().to_path_buf();
-                    
-                    // Get relative path from workspace root
-                    let relative_path = path.strip_prefix(&workspace_root)
-                        .unwrap_or(&path);
-                    
-                    // Format the label to show relative path like Helix
-                    let label = relative_path.display().to_string();
-                    
-                    items.push(PickerItem {
-                        label: label.into(),
-                        sublabel: None,  // No sublabel needed since full path is in label
-                        data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
-                    });
-                    
-                    // Limit to reasonable number of files
-                    if items.len() >= 10000 {
-                        break;
-                    }
+                let path = entry.path().to_path_buf();
+
+                // Get relative path from workspace root
+                let relative_path = path.strip_prefix(&workspace_root).unwrap_or(&path);
+
+                // Format the label to show relative path like Helix
+                let label = relative_path.display().to_string();
+
+                items.push(PickerItem {
+                    label: label.into(),
+                    sublabel: None, // No sublabel needed since full path is in label
+                    data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
+                });
+
+                // Limit to reasonable number of files
+                if items.len() >= 10000 {
+                    break;
+                }
             }
         }
-        
+
         // If no files found, add a placeholder
         if items.is_empty() {
             items.push(PickerItem {
@@ -375,16 +376,16 @@ impl Application {
                 data: Arc::new(std::path::PathBuf::new()) as Arc<dyn std::any::Any + Send + Sync>,
             });
         }
-        
+
         items
     }
 
     #[allow(dead_code)]
     fn create_buffer_picker(&self) -> Option<crate::picker::Picker> {
         use crate::picker_view::PickerItem;
-        use std::sync::Arc;
         use helix_view::DocumentId;
-        
+        use std::sync::Arc;
+
         // Structure to hold buffer metadata for sorting
         #[derive(Clone)]
         struct BufferMeta {
@@ -394,15 +395,15 @@ impl Application {
             is_current: bool,
             focused_at: std::time::Instant,
         }
-        
+
         // Get current document ID
         let current_doc_id = self.editor.tree.get(self.editor.tree.focus).doc;
-        
+
         // Collect buffer metadata
         let mut buffer_metas = Vec::new();
         for (doc_id, doc) in self.editor.documents.iter() {
             let focused_at = doc.focused_at;
-            
+
             buffer_metas.push(BufferMeta {
                 doc_id: *doc_id,
                 path: doc.path().map(|p| p.to_path_buf()),
@@ -411,17 +412,17 @@ impl Application {
                 focused_at,
             });
         }
-        
+
         // Sort by MRU (Most Recently Used) - most recent first
         buffer_metas.sort_by(|a, b| b.focused_at.cmp(&a.focused_at));
-        
+
         // Create picker items with terminal-like formatting
         let mut items = Vec::new();
-        
+
         for meta in buffer_metas {
             // Format like terminal: "ID  FLAGS  PATH"
             let id_str = format!("{:?}", meta.doc_id);
-            
+
             // Build flags column
             let mut flags = String::new();
             if meta.is_modified {
@@ -432,7 +433,7 @@ impl Application {
             }
             // Pad flags to consistent width
             let flags_str = format!("{:<2}", flags);
-            
+
             // Get path or [scratch] label
             let path_str = if let Some(path) = &meta.path {
                 // Show relative path if possible
@@ -447,10 +448,10 @@ impl Application {
             } else {
                 "[scratch]".to_string()
             };
-            
+
             // Combine into terminal-like format with proper spacing
             let label = format!("{:<4} {} {}", id_str, flags_str, path_str);
-            
+
             // Store the document ID in the picker item data
             items.push(PickerItem {
                 label: label.into(),
@@ -458,12 +459,12 @@ impl Application {
                 data: Arc::new(meta.doc_id),
             });
         }
-        
+
         if items.is_empty() {
             // No buffers open
             return None;
         }
-        
+
         // Create the picker
         Some(crate::picker::Picker::native(
             "Switch Buffer",
@@ -474,29 +475,32 @@ impl Application {
         ))
     }
 
-    fn create_native_prompt_from_helix(&mut self, _cx: &mut gpui::Context<crate::Core>) -> Option<crate::prompt::Prompt> {
+    fn create_native_prompt_from_helix(
+        &mut self,
+        _cx: &mut gpui::Context<crate::Core>,
+    ) -> Option<crate::prompt::Prompt> {
         use crate::prompt::Prompt;
         use std::sync::Arc;
-        
+
         // Check if there's a helix prompt in the compositor
         if let Some(_helix_prompt) = self.compositor.find::<helix_term::ui::Prompt>() {
             // To identify command prompts, we need to check the prompt text
             // Since the prompt field is private, we'll use a different approach:
             // 1. Get the current line (which we can access)
             // 2. Check if this is likely a command based on context
-            
+
             // We'll use a heuristic: if there's a prompt in the compositor and
             // we just pressed ':', it's likely a command prompt
             // This is checked by the workspace before calling this function
-            
+
             // For now, we'll only show native prompts for command mode
             // In the future, we might want to support other prompt types
             let prompt_text = ":";
-            
+
             // Command prompts should always start empty when first opened
             // Any text in the helix prompt is likely from before the prompt was opened
             let initial_input = String::new();
-            
+
             // Create native prompt with command execution through Update event
             let prompt = Prompt::Native {
                 prompt: prompt_text.into(),
@@ -509,28 +513,28 @@ impl Application {
                     // Command cancelled
                 })),
             };
-            
+
             Some(prompt)
         } else {
             None
         }
     }
-    
+
     #[allow(dead_code)]
     fn emit_overlays_except_prompt(&mut self, cx: &mut gpui::Context<crate::Core>) {
         // Check for picker events first
         if self.check_for_picker_and_emit_event(cx) {
             return;
         }
-        
+
         // Don't check for prompts here - this method specifically excludes prompts
-        
+
         // Legacy picker handling (for non-file/buffer pickers)
         let picker = self.try_create_picker_component();
         if let Some(picker) = picker {
             cx.emit(crate::Update::Picker(picker));
         }
-        
+
         // Don't take() the autoinfo - just clone it so it persists
         if let Some(info) = &self.editor.autoinfo {
             cx.emit(crate::Update::Info(helix_view::info::Info {
@@ -586,11 +590,11 @@ impl Application {
         match event {
             InputEvent::Key(key) => {
                 debug!("Handling key event: {key:?}");
-                
+
                 // Log cursor position before key handling
                 let view_id = comp_ctx.editor.tree.focus;
                 let doc_id = comp_ctx.editor.tree.get(view_id).doc;
-                
+
                 // Store before position
                 let before_cursor = if let Some(doc) = comp_ctx.editor.document(doc_id) {
                     let sel = doc.selection(view_id);
@@ -602,22 +606,20 @@ impl Application {
                 } else {
                     None
                 };
-                
-                
-                
+
                 let is_handled = self
                     .compositor
                     .handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
                 if !is_handled {
                     let event = &helix_view::input::Event::Key(key);
-                    
+
                     let res = self.view.handle_event(event, &mut comp_ctx);
-                    
+
                     if let EventResult::Consumed(Some(cb)) = res {
                         cb(&mut self.compositor, &mut comp_ctx);
                     }
                 }
-                
+
                 // Log cursor position after key handling
                 if let Some(doc) = comp_ctx.editor.document(doc_id) {
                     let sel = doc.selection(view_id);
@@ -625,7 +627,7 @@ impl Application {
                     let cursor_pos = sel.primary().cursor(text.slice(..));
                     let line = text.char_to_line(cursor_pos);
                     debug!("After key - cursor pos: {cursor_pos}, line: {line}");
-                    
+
                     // Check if we moved lines
                     if let Some((_before_pos, before_line)) = before_cursor {
                         if before_line != line {
@@ -633,16 +635,16 @@ impl Application {
                         }
                     }
                 }
-                
+
                 // Ensure cursor is visible after keyboard navigation
                 // Check if the view exists before trying to ensure cursor visibility
                 if comp_ctx.editor.tree.contains(view_id) {
                     comp_ctx.editor.ensure_cursor_in_view(view_id);
                 }
-                
+
                 // Emit overlays after key handling
                 self.emit_overlays(cx);
-                
+
                 cx.emit(crate::Update::Redraw);
             }
             InputEvent::ScrollLines {
@@ -665,7 +667,11 @@ impl Application {
                 // Set the viewport anchor for scrollbar integration
                 // For now, we'll use a simplified approach - just emit a redraw
                 // TODO: Implement proper viewport anchor setting through document API
-                log::debug!("SetViewportAnchor: view_id={:?}, anchor={}", view_id, anchor);
+                log::debug!(
+                    "SetViewportAnchor: view_id={:?}, anchor={}",
+                    view_id,
+                    anchor
+                );
                 cx.emit(crate::Update::Redraw);
             }
         }
@@ -723,7 +729,7 @@ impl Application {
         let _guard = handle.enter();
 
         self.step(cx).now_or_never();
-        
+
         // Sync LSP state periodically
         self.sync_lsp_state(cx);
         /*
@@ -778,19 +784,19 @@ impl Application {
                 } => {
                     // EVENT BATCHING: Collect all pending events to reduce UI update overhead
                     let mut events = vec![bridged_event];
-                    
+
                     // Drain any other pending events from the channel
                     if let Some(ref mut rx) = self.event_bridge_rx {
                         while let Ok(event) = rx.try_recv() {
                             events.push(event);
                         }
                     }
-                    
+
                     log::debug!("Processing {} batched events", events.len());
-                    
+
                     // Track if we need to request a redraw
                     let mut needs_redraw = false;
-                    
+
                     // Convert all bridged events to Update events and emit them
                     for bridged_event in events {
                         let update = match bridged_event {
@@ -828,7 +834,7 @@ impl Application {
                         cx.emit(update);
                         needs_redraw = true;
                     }
-                    
+
                     // Request a single redraw for all batched events
                     if needs_redraw {
                         helix_event::request_redraw();
@@ -929,7 +935,7 @@ pub fn init_editor(
     };
     // CRITICAL: Register events FIRST, before creating handlers
     helix_term::events::register();
-    
+
     let (completion_tx, _completion_rx) = tokio::sync::mpsc::channel(1);
     let (signature_tx, _signature_rx) = tokio::sync::mpsc::channel(1);
     let (auto_save_tx, _auto_save_rx) = tokio::sync::mpsc::channel(1);
@@ -941,20 +947,21 @@ pub fn init_editor(
         document_colors: doc_colors_tx,
         // TODO: Add word_index handler when available in new API
     };
-    
+
     // CRITICAL FIX: Register handler hooks to enable LSP features
     helix_view::handlers::register_hooks(&handlers);
-    
+
     // Initialize event bridge system for Helix -> GPUI event forwarding
     let (bridge_tx, bridge_rx) = crate::event_bridge::create_bridge_channel();
     crate::event_bridge::initialize_bridge(bridge_tx);
     crate::event_bridge::register_event_hooks();
-    
+
     // Initialize reverse event bridge system for GPUI -> Helix event forwarding
-    let (gpui_to_helix_tx, gpui_to_helix_rx) = crate::gpui_to_helix_bridge::create_gpui_to_helix_channel();
+    let (gpui_to_helix_tx, gpui_to_helix_rx) =
+        crate::gpui_to_helix_bridge::create_gpui_to_helix_channel();
     crate::gpui_to_helix_bridge::initialize_gpui_to_helix_bridge(gpui_to_helix_tx);
     crate::gpui_to_helix_bridge::register_gpui_event_handlers();
-    
+
     let mut editor = Editor::new(
         area,
         theme_loader.clone(),
@@ -991,7 +998,7 @@ pub fn init_editor(
             if file.is_dir() {
                 continue;
             }
-            
+
             let action = if first {
                 Action::VerticalSplit
             } else {
@@ -999,15 +1006,27 @@ pub fn init_editor(
                 // TODO: Support --vsplit and --hsplit arguments
                 Action::Load
             };
-            
-            log::info!("Opening file from command line: {:?} with action: {:?}", file, action);
+
+            log::info!(
+                "Opening file from command line: {:?} with action: {:?}",
+                file,
+                action
+            );
             match editor.open(&file, action) {
                 Ok(doc_id) => {
-                    log::info!("Successfully opened file from CLI: {:?} with doc_id: {:?}", file, doc_id);
-                    
+                    log::info!(
+                        "Successfully opened file from CLI: {:?} with doc_id: {:?}",
+                        file,
+                        doc_id
+                    );
+
                     // Log document info
                     if let Some(doc) = editor.document(doc_id) {
-                        log::info!("Document language: {:?}, path: {:?}", doc.language_name(), doc.path());
+                        log::info!(
+                            "Document language: {:?}, path: {:?}",
+                            doc.language_name(),
+                            doc.path()
+                        );
                     }
                     let view_id = editor.tree.focus;
                     if !pos.is_empty() {
@@ -1031,7 +1050,7 @@ pub fn init_editor(
                 }
             }
         }
-        
+
         // If no files were successfully opened, create a new file
         if first {
             editor.new_file(Action::VerticalSplit);
@@ -1073,30 +1092,30 @@ mod tests {
     use super::*;
     use crate::test_utils::test_support::*;
     use std::time::Duration;
-    
+
     #[ignore] // Temporarily disabled due to SIGBUS compiler crash
     #[tokio::test]
     async fn test_event_batching_reduces_update_calls() {
         // This test SHOULD FAIL initially
         // We're testing that multiple rapid events get batched into fewer updates
-        
+
         let (event_tx, mut event_rx, counter) = create_counting_channel();
-        
+
         // Send 10 rapid selection changed events
         let events = create_test_selection_events(10);
         for event in events {
             let _ = event_tx.send(event);
         }
-        
+
         // Small delay to let events accumulate
         tokio::time::sleep(Duration::from_millis(10)).await;
-        
+
         // Process events (simulating what Application::step would do)
         let mut update_count = 0;
         while let Ok(_) = event_rx.try_recv() {
             update_count += 1;
         }
-        
+
         // WITHOUT BATCHING: We expect 10 updates (one per event)
         // WITH BATCHING: We expect fewer updates (events batched together)
         assert!(
@@ -1105,29 +1124,29 @@ mod tests {
             update_count
         );
     }
-    
+
     #[ignore] // Temporarily disabled due to SIGBUS compiler crash
     #[tokio::test]
     async fn test_document_change_events_are_batched() {
         // Test that rapid document changes (like fast typing) are batched
-        
+
         let (event_tx, mut event_rx, _counter) = create_counting_channel();
-        
+
         // Simulate rapid typing - 20 document change events
         let events = create_test_document_events(20);
         for event in events {
             let _ = event_tx.send(event);
         }
-        
+
         tokio::time::sleep(Duration::from_millis(10)).await;
-        
+
         let mut doc_change_count = 0;
         while let Ok(update) = event_rx.try_recv() {
             if matches!(update, crate::Update::DocumentChanged { .. }) {
                 doc_change_count += 1;
             }
         }
-        
+
         // With batching, 20 rapid changes should result in very few updates
         assert!(
             doc_change_count <= 3,
@@ -1135,30 +1154,30 @@ mod tests {
             doc_change_count
         );
     }
-    
+
     #[ignore] // Temporarily disabled due to SIGBUS compiler crash
     #[tokio::test]
     async fn test_diagnostic_events_are_deduplicated() {
         // Test that multiple diagnostic events for the same document are deduplicated
-        
+
         let (event_tx, mut event_rx, _counter) = create_counting_channel();
-        
+
         // Send 5 diagnostic events for the same document
         let events = create_test_diagnostic_events(5);
         for event in events {
             let _ = event_tx.send(event);
         }
-        
+
         // Wait for potential deduplication delay
         tokio::time::sleep(Duration::from_millis(60)).await;
-        
+
         let mut diag_count = 0;
         while let Ok(update) = event_rx.try_recv() {
             if matches!(update, crate::Update::DiagnosticsChanged { .. }) {
                 diag_count += 1;
             }
         }
-        
+
         // With deduplication, we should see only 1 diagnostic update
         assert_eq!(
             diag_count, 1,

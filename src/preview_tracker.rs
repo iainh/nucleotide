@@ -16,21 +16,21 @@ impl PreviewTracker {
             active_previews: Arc::new(Mutex::new(Vec::new())),
         }
     }
-    
+
     /// Register a new preview document
     pub fn register(&self, doc_id: DocumentId, view_id: ViewId) {
         if let Ok(mut previews) = self.active_previews.lock() {
             previews.push((doc_id, view_id));
         }
     }
-    
+
     /// Unregister a preview document
     pub fn unregister(&self, doc_id: DocumentId, view_id: ViewId) {
         if let Ok(mut previews) = self.active_previews.lock() {
             previews.retain(|&(d, v)| d != doc_id || v != view_id);
         }
     }
-    
+
     /// Get all active preview documents
     pub fn get_active(&self) -> Vec<(DocumentId, ViewId)> {
         if let Ok(previews) = self.active_previews.lock() {
@@ -39,7 +39,7 @@ impl PreviewTracker {
             Vec::new()
         }
     }
-    
+
     /// Clean up all active preview documents
     pub fn cleanup_all(&self, editor: &mut helix_view::Editor) {
         if let Ok(mut previews) = self.active_previews.lock() {

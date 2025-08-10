@@ -32,19 +32,12 @@ pub fn get_file_icon(extension: Option<&str>, is_directory: bool, is_expanded: b
         folder_icon(is_expanded)
     } else {
         match extension {
-            Some("rs" | "js" | "ts" | "py" | "go" | "java" | "cpp" | "c" | "h" | "cs" |
-            "php" | "rb") => {
-                svg().path("icons/code.svg")
-            }
-            Some("json" | "yaml" | "yml" | "xml") => {
-                svg().path("icons/braces.svg")
-            }
-            Some("md" | "txt" | "doc" | "docx" | "pdf") => {
-                svg().path("icons/file-text.svg")
-            }
-            Some("toml" | "ini" | "conf" | "config" | "env") => {
-                svg().path("icons/settings.svg")
-            }
+            Some(
+                "rs" | "js" | "ts" | "py" | "go" | "java" | "cpp" | "c" | "h" | "cs" | "php" | "rb",
+            ) => svg().path("icons/code.svg"),
+            Some("json" | "yaml" | "yml" | "xml") => svg().path("icons/braces.svg"),
+            Some("md" | "txt" | "doc" | "docx" | "pdf") => svg().path("icons/file-text.svg"),
+            Some("toml" | "ini" | "conf" | "config" | "env") => svg().path("icons/settings.svg"),
             _ => file_icon(),
         }
     }

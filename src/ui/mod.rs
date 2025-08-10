@@ -20,7 +20,7 @@ use gpui::*;
 /// Standard spacing values following Zed's design system
 pub mod spacing {
     use gpui::px;
-    
+
     pub const NONE: gpui::Pixels = px(0.);
     pub const XS: gpui::Pixels = px(2.);
     pub const SM: gpui::Pixels = px(4.);
@@ -83,7 +83,7 @@ impl Theme {
             success: hsla(120.0 / 360.0, 0.6, 0.5, 1.0),
         }
     }
-    
+
     pub fn light() -> Self {
         Self {
             background: hsla(0.0, 0.0, 1.0, 1.0),

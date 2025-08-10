@@ -1,7 +1,7 @@
 // ABOUTME: Summary types for SumTree aggregation of file tree data
 // ABOUTME: Enables efficient queries like "how many files in this subtree"
 
-use sum_tree::{Summary, Dimension};
+use sum_tree::{Dimension, Summary};
 
 use std::path::PathBuf;
 

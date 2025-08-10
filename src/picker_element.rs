@@ -18,7 +18,7 @@ impl<D: PickerDelegate> Picker<D> {
     pub fn new(delegate: Entity<D>, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         // Focus will be handled in render
-        
+
         Self {
             delegate,
             focus_handle,
@@ -26,13 +26,13 @@ impl<D: PickerDelegate> Picker<D> {
             show_preview: true,
         }
     }
-    
+
     pub fn toggle_preview_pane(&mut self, _cx: &mut Context<Self>) {
         if self.delegate.read(_cx).supports_preview() {
             self.show_preview = !self.show_preview;
         }
     }
-    
+
     fn select_next(&mut self, cx: &mut Context<Self>) {
         self.delegate.update(cx, |delegate, cx| {
             let count = delegate.match_count();
@@ -45,7 +45,7 @@ impl<D: PickerDelegate> Picker<D> {
         self.autoscroll(cx);
         cx.notify();
     }
-    
+
     fn select_prev(&mut self, cx: &mut Context<Self>) {
         self.delegate.update(cx, |delegate, cx| {
             let count = delegate.match_count();
@@ -58,7 +58,7 @@ impl<D: PickerDelegate> Picker<D> {
         self.autoscroll(cx);
         cx.notify();
     }
-    
+
     fn select_first(&mut self, cx: &mut Context<Self>) {
         self.delegate.update(cx, |delegate, cx| {
             if delegate.match_count() > 0 {
@@ -68,7 +68,7 @@ impl<D: PickerDelegate> Picker<D> {
         self.autoscroll(cx);
         cx.notify();
     }
-    
+
     fn select_last(&mut self, cx: &mut Context<Self>) {
         self.delegate.update(cx, |delegate, cx| {
             let count = delegate.match_count();
@@ -79,23 +79,24 @@ impl<D: PickerDelegate> Picker<D> {
         self.autoscroll(cx);
         cx.notify();
     }
-    
+
     fn confirm(&mut self, cx: &mut Context<Self>) {
         let selected = self.delegate.read(cx).selected_index();
         self.delegate.update(cx, |delegate, cx| {
             delegate.confirm(selected, cx);
         });
     }
-    
+
     fn dismiss(&mut self, cx: &mut Context<Self>) {
         self.delegate.update(cx, |delegate, cx| {
             delegate.dismiss(cx);
         });
     }
-    
+
     fn autoscroll(&mut self, cx: &mut Context<Self>) {
         let selected = self.delegate.read(cx).selected_index();
-        self.scroll_handle.scroll_to_item(selected, ScrollStrategy::Center);
+        self.scroll_handle
+            .scroll_to_item(selected, ScrollStrategy::Center);
         cx.notify();
     }
 }
@@ -115,7 +116,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
         let selected_index = delegate.selected_index();
         let supports_preview = delegate.supports_preview();
         let show_preview = self.show_preview && supports_preview;
-        
+
         // Get theme colors from delegate if available, otherwise use defaults
         let (bg_color, border_color, _text_color, prompt_color) = {
             // Try to get theme colors through delegate
@@ -136,20 +137,20 @@ impl<D: PickerDelegate> Render for Picker<D> {
                 )
             }
         };
-        
+
         // Calculate dimensions
         let window_size = window.viewport_size();
         let window_width = window_size.width.0 as f64;
         let window_height = window_size.height.0 as f64;
         let total_width = px((window_width * 0.8).min(1000.0) as f32);
         let max_height = px((window_height * 0.7).min(600.0) as f32);
-        
+
         let (list_width, preview_width) = if show_preview {
             (total_width * 0.5, total_width * 0.5)
         } else {
             (total_width, px(0.0))
         };
-        
+
         div()
             .key_context("Picker")
             .track_focus(&self.focus_handle)
@@ -204,7 +205,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
                             .child(format!("🔍 {}", delegate.query()))
                             .when(delegate.query().is_empty(), |this| {
                                 this.child(delegate.placeholder_text())
-                            })
+                            }),
                     )
                     .when(supports_preview, |this| {
                         this.child(
@@ -212,9 +213,13 @@ impl<D: PickerDelegate> Render for Picker<D> {
                                 .ml_2()
                                 .text_size(px(12.))
                                 .text_color(prompt_color)
-                                .child(if show_preview { "⌘P: Hide Preview" } else { "⌘P: Show Preview" })
+                                .child(if show_preview {
+                                    "⌘P: Hide Preview"
+                                } else {
+                                    "⌘P: Show Preview"
+                                }),
                         )
-                    })
+                    }),
             )
             // Main content area
             .child(
@@ -230,37 +235,46 @@ impl<D: PickerDelegate> Render for Picker<D> {
                             .when(show_preview, |this| {
                                 this.border_r_1().border_color(border_color)
                             })
-                            .child(
-                                if match_count == 0 {
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .h_full()
-                                        .text_color(prompt_color)
-                                        .child("No matches found")
-                                        .into_element().into_any()
-                                } else {
-                                    let delegate = self.delegate.clone();
-                                    uniform_list(
-                                        "picker-items",
-                                        match_count,
-                                        move |range: std::ops::Range<usize>, window, cx| {
-                                            let delegate = delegate.read(cx);
-                                            let selected_index = delegate.selected_index();
-                                            range.map(|ix| {
+                            .child(if match_count == 0 {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .h_full()
+                                    .text_color(prompt_color)
+                                    .child("No matches found")
+                                    .into_element()
+                                    .into_any()
+                            } else {
+                                let delegate = self.delegate.clone();
+                                uniform_list(
+                                    "picker-items",
+                                    match_count,
+                                    move |range: std::ops::Range<usize>, window, cx| {
+                                        let delegate = delegate.read(cx);
+                                        let selected_index = delegate.selected_index();
+                                        range
+                                            .map(|ix| {
                                                 delegate
-                                                    .render_match(ix, ix == selected_index, window, cx)
+                                                    .render_match(
+                                                        ix,
+                                                        ix == selected_index,
+                                                        window,
+                                                        cx,
+                                                    )
                                                     .map(|el| el.into_element().into_any())
-                                                    .unwrap_or_else(|| div().into_element().into_any())
-                                            }).collect::<Vec<_>>()
-                                        }
-                                    )
-                                    .flex_1()
-                                    .track_scroll(self.scroll_handle.clone())
-                                    .into_element().into_any()
-                                }
-                            )
+                                                    .unwrap_or_else(|| {
+                                                        div().into_element().into_any()
+                                                    })
+                                            })
+                                            .collect::<Vec<_>>()
+                                    },
+                                )
+                                .flex_1()
+                                .track_scroll(self.scroll_handle.clone())
+                                .into_element()
+                                .into_any()
+                            }),
                     )
                     // Preview panel
                     .when(show_preview, |this| {
@@ -270,7 +284,9 @@ impl<D: PickerDelegate> Render for Picker<D> {
                                 .flex_1()
                                 .bg(hsla(0.0, 0.0, 0.05, 1.0))
                                 .child(
-                                    if let Some(preview) = delegate.render_preview(selected_index, window, cx) {
+                                    if let Some(preview) =
+                                        delegate.render_preview(selected_index, window, cx)
+                                    {
                                         preview.into_element().into_any()
                                     } else {
                                         div()
@@ -280,11 +296,12 @@ impl<D: PickerDelegate> Render for Picker<D> {
                                             .h_full()
                                             .text_color(prompt_color)
                                             .child("No preview available")
-                                            .into_element().into_any()
-                                    }
-                                )
+                                            .into_element()
+                                            .into_any()
+                                    },
+                                ),
                         )
-                    })
+                    }),
             )
             // Footer
             .when_some(delegate.render_footer(window, cx), |this, footer| {
@@ -292,4 +309,3 @@ impl<D: PickerDelegate> Render for Picker<D> {
             })
     }
 }
-

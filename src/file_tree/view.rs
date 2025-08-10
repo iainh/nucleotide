@@ -2,10 +2,13 @@
 // ABOUTME: Handles user interaction, selection, and rendering of file tree entries
 
 use crate::file_tree::{
-    get_file_icon, get_symlink_icon, icons::chevron_icon, DebouncedFileTreeWatcher, FileTree, FileTreeConfig, FileTreeEntry,
-    FileTreeEvent, GitStatus,
+    get_file_icon, get_symlink_icon, icons::chevron_icon, DebouncedFileTreeWatcher, FileTree,
+    FileTreeConfig, FileTreeEntry, FileTreeEvent, GitStatus,
 };
-use crate::ui::{scrollbar::{Scrollbar, ScrollbarState}, Theme};
+use crate::ui::{
+    scrollbar::{Scrollbar, ScrollbarState},
+    Theme,
+};
 use crate::utils::color_to_hsla;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -63,16 +66,16 @@ impl FileTreeView {
 
         instance
     }
-    
+
     /// Create a new file tree view with Tokio runtime handle for VCS operations
     pub fn new_with_runtime(
-        root_path: PathBuf, 
-        config: FileTreeConfig, 
+        root_path: PathBuf,
+        config: FileTreeConfig,
         tokio_handle: Option<tokio::runtime::Handle>,
-        cx: &mut Context<Self>
+        cx: &mut Context<Self>,
     ) -> Self {
         let mut tree = FileTree::new(root_path.clone(), config.clone());
-        
+
         // Load initial tree structure
         if let Err(e) = tree.load() {
             log::error!("Failed to load file tree: {}", e);
@@ -93,7 +96,7 @@ impl FileTreeView {
         } else {
             None
         };
-        
+
         let scroll_handle = UniformListScrollHandle::new();
         let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
 
@@ -251,12 +254,12 @@ impl FileTreeView {
                                 view.tree.unmark_directory_loading(&path_buf);
                             }
                         }
-                        
+
                         // Refresh VCS status after expanding directory
                         if view.tree.needs_vcs_refresh() {
                             view.start_vcs_refresh(cx);
                         }
-                        
+
                         cx.notify();
                     });
                 }
@@ -400,7 +403,7 @@ impl FileTreeView {
             cx.notify();
         }
     }
-    
+
     /// Handle VCS refresh request
     pub fn handle_vcs_refresh(&mut self, force: bool, cx: &mut Context<Self>) {
         if force || self.tree.needs_vcs_refresh() {
@@ -419,11 +422,11 @@ impl FileTreeView {
             log::debug!("VCS refresh skipped - not needed");
         }
     }
-    
+
     /// Handle file system change event (should trigger VCS refresh)
     pub fn handle_file_system_change(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
         log::debug!("File system change detected at: {:?}", path);
-        
+
         // Only refresh VCS if the change is within our repository
         let (_, root_path) = self.tree.get_vcs_info();
         if path.starts_with(&root_path) {
@@ -432,7 +435,7 @@ impl FileTreeView {
             self.handle_vcs_refresh(false, cx);
         }
     }
-    
+
     /// Trigger manual VCS refresh by emitting RefreshVcs event
     pub fn request_vcs_refresh(&mut self, force: bool, cx: &mut Context<Self>) {
         log::debug!("Manual VCS refresh requested (force: {})", force);
@@ -443,7 +446,7 @@ impl FileTreeView {
     pub fn stats(&self) -> crate::file_tree::tree::FileTreeStats {
         self.tree.stats()
     }
-    
+
     /// Start async VCS refresh
     fn start_vcs_refresh(&self, cx: &mut Context<Self>) {
         if let Some(ref handle) = self.tokio_handle {
@@ -452,7 +455,7 @@ impl FileTreeView {
             log::debug!("VCS refresh requested but no Tokio handle available");
         }
     }
-    
+
     /// Start async VCS refresh using the stored Tokio handle
     fn start_async_vcs_refresh(&self, cx: &mut Context<Self>) {
         if let Some(ref handle) = self.tokio_handle {
@@ -462,97 +465,109 @@ impl FileTreeView {
             log::debug!("VCS refresh requested but no Tokio handle available");
         }
     }
-    
+
     /// Start async VCS refresh using GPUI's background executor
-    fn start_async_vcs_refresh_with_handle(&self, _handle: tokio::runtime::Handle, cx: &mut Context<Self>) {
+    fn start_async_vcs_refresh_with_handle(
+        &self,
+        _handle: tokio::runtime::Handle,
+        cx: &mut Context<Self>,
+    ) {
         let (_, root_path) = self.tree.get_vcs_info();
-        
+
         log::debug!("VCS refresh starting for root path: {:?}", root_path);
-        
+
         // Emit VCS refresh started event
         cx.emit(FileTreeEvent::VcsRefreshStarted {
             repository_root: root_path.clone(),
         });
-        
+
         let root_path_for_event = root_path.clone();
         cx.spawn(async move |this, cx| {
             // Use GPUI's background executor instead of Tokio spawn_blocking
-            let vcs_result = cx.background_executor().spawn(async move {
-                // Directly call the git status implementation instead of using for_each_changed_file
-                
-                log::debug!("VCS: Background task started for path: {:?}", root_path);
-                
-                // Check if this is actually a git repository
-                let git_dir = root_path.join(".git");
-                
-                if !git_dir.exists() {
-                    return Vec::new();
-                }
-                
-                // Call git status to get changes
-                let mut changes = Vec::new();
-                
-                // Try to use helix-vcs git functions directly 
-                // Import the git status function
-                let result = std::panic::catch_unwind(|| {
-                    use helix_vcs::FileChange;
-                    
-                    // We can't use for_each_changed_file as it uses tokio::spawn_blocking
-                    // Instead, let's manually call git status
-                    match std::process::Command::new("git")
-                        .arg("status")
-                        .arg("--porcelain")
-                        .current_dir(&root_path)
-                        .output() {
-                        Ok(output) => {
-                            let git_status = String::from_utf8_lossy(&output.stdout);
-                            
-                            for line in git_status.lines() {
-                                if line.len() >= 3 {
-                                    let status_chars = &line[0..2];
-                                    let file_path = line[3..].trim();
-                                    let full_path = root_path.join(file_path);
-                                    
-                                    let change = match status_chars {
-                                        "??" => FileChange::Untracked { path: full_path },
-                                        " M" | "M " | "MM" => FileChange::Modified { path: full_path },
-                                        " D" | "D " => FileChange::Deleted { path: full_path },
-                                        "UU" | "AA" | "DD" => FileChange::Conflict { path: full_path },
-                                        _ => {
-                                            // For any other status, treat as modified
-                                            FileChange::Modified { path: full_path }
-                                        }
-                                    };
-                                    changes.push(change);
+            let vcs_result = cx
+                .background_executor()
+                .spawn(async move {
+                    // Directly call the git status implementation instead of using for_each_changed_file
+
+                    log::debug!("VCS: Background task started for path: {:?}", root_path);
+
+                    // Check if this is actually a git repository
+                    let git_dir = root_path.join(".git");
+
+                    if !git_dir.exists() {
+                        return Vec::new();
+                    }
+
+                    // Call git status to get changes
+                    let mut changes = Vec::new();
+
+                    // Try to use helix-vcs git functions directly
+                    // Import the git status function
+                    let result = std::panic::catch_unwind(|| {
+                        use helix_vcs::FileChange;
+
+                        // We can't use for_each_changed_file as it uses tokio::spawn_blocking
+                        // Instead, let's manually call git status
+                        match std::process::Command::new("git")
+                            .arg("status")
+                            .arg("--porcelain")
+                            .current_dir(&root_path)
+                            .output()
+                        {
+                            Ok(output) => {
+                                let git_status = String::from_utf8_lossy(&output.stdout);
+
+                                for line in git_status.lines() {
+                                    if line.len() >= 3 {
+                                        let status_chars = &line[0..2];
+                                        let file_path = line[3..].trim();
+                                        let full_path = root_path.join(file_path);
+
+                                        let change = match status_chars {
+                                            "??" => FileChange::Untracked { path: full_path },
+                                            " M" | "M " | "MM" => {
+                                                FileChange::Modified { path: full_path }
+                                            }
+                                            " D" | "D " => FileChange::Deleted { path: full_path },
+                                            "UU" | "AA" | "DD" => {
+                                                FileChange::Conflict { path: full_path }
+                                            }
+                                            _ => {
+                                                // For any other status, treat as modified
+                                                FileChange::Modified { path: full_path }
+                                            }
+                                        };
+                                        changes.push(change);
+                                    }
                                 }
+
+                                changes
                             }
-                            
-                            changes
-                        },
-                        Err(e) => {
-                            log::warn!("Failed to run git status: {}", e);
+                            Err(e) => {
+                                log::warn!("Failed to run git status: {}", e);
+                                Vec::new()
+                            }
+                        }
+                    });
+
+                    match result {
+                        Ok(changes) => changes,
+                        Err(_) => {
+                            log::error!("VCS: Panic occurred during git status parsing");
                             Vec::new()
                         }
                     }
-                });
-                
-                match result {
-                    Ok(changes) => changes,
-                    Err(_) => {
-                        log::error!("VCS: Panic occurred during git status parsing");
-                        Vec::new()
-                    }
-                }
-            }).await;
-            
+                })
+                .await;
+
             // Apply VCS status results to the UI
             if let Some(this) = this.upgrade() {
                 this.update(cx, |view, cx| {
                     let mut status_map = std::collections::HashMap::new();
-                    
+
                     for change in vcs_result {
                         use helix_vcs::FileChange;
-                        
+
                         let path = match &change {
                             FileChange::Untracked { path } => path.clone(),
                             FileChange::Modified { path } => path.clone(),
@@ -560,7 +575,7 @@ impl FileTreeView {
                             FileChange::Deleted { path } => path.clone(),
                             FileChange::Renamed { to_path, .. } => to_path.clone(),
                         };
-                        
+
                         let status = match &change {
                             FileChange::Untracked { .. } => GitStatus::Untracked,
                             FileChange::Modified { .. } => GitStatus::Modified,
@@ -568,68 +583,91 @@ impl FileTreeView {
                             FileChange::Deleted { .. } => GitStatus::Deleted,
                             FileChange::Renamed { .. } => GitStatus::Renamed,
                         };
-                        
+
                         status_map.insert(path, status);
                     }
-                    
-                    log::debug!("Successfully loaded {} VCS status entries", status_map.len());
+
+                    log::debug!(
+                        "Successfully loaded {} VCS status entries",
+                        status_map.len()
+                    );
                     for (path, status) in &status_map {
                         log::debug!("VCS status: {:?} -> {:?}", path.file_name(), status);
                     }
-                    
+
                     let affected_files: Vec<PathBuf> = status_map.keys().cloned().collect();
                     view.tree.apply_vcs_status(status_map);
-                    
+
                     // Emit VCS status changed event
                     cx.emit(FileTreeEvent::VcsStatusChanged {
                         repository_root: root_path_for_event.clone(),
                         affected_files,
                     });
-                    
+
                     cx.notify();
-                }).ok();
+                })
+                .ok();
             }
-        }).detach();
+        })
+        .detach();
     }
-    
+
     /// Apply test VCS statuses for demonstration
     pub fn apply_test_statuses(&mut self, cx: &mut Context<Self>) {
         // Create some test VCS statuses for demonstration
         let mut status_map = std::collections::HashMap::new();
-        
+
         // Get the root path to create test paths
         let (_, root_path) = self.tree.get_vcs_info();
         log::debug!("Root path for VCS test: {:?}", root_path);
-        
+
         // Get current visible entries to see what files actually exist
         let entries = self.tree.visible_entries();
         log::debug!("Current visible entries:");
         for entry in &entries {
-            log::debug!("  {:?} ({})", entry.path, if entry.is_directory() { "dir" } else { "file" });
+            log::debug!(
+                "  {:?} ({})",
+                entry.path,
+                if entry.is_directory() { "dir" } else { "file" }
+            );
         }
-        
+
         // Add test statuses for files that actually exist in the tree
         for entry in &entries {
             if !entry.is_directory() {
                 let filename = entry.path.file_name().unwrap_or_default().to_string_lossy();
                 match filename.as_ref() {
-                    "Cargo.toml" => { status_map.insert(entry.path.clone(), GitStatus::Modified); },
-                    "main.rs" => { status_map.insert(entry.path.clone(), GitStatus::Modified); },
-                    "view.rs" => { status_map.insert(entry.path.clone(), GitStatus::Modified); },
-                    "tree.rs" => { status_map.insert(entry.path.clone(), GitStatus::Modified); },
-                    "CLAUDE.md" => { status_map.insert(entry.path.clone(), GitStatus::Untracked); },
-                    name if name.ends_with(".md") => { status_map.insert(entry.path.clone(), GitStatus::Untracked); },
-                    name if name.ends_with(".rs") => { status_map.insert(entry.path.clone(), GitStatus::Modified); },
+                    "Cargo.toml" => {
+                        status_map.insert(entry.path.clone(), GitStatus::Modified);
+                    }
+                    "main.rs" => {
+                        status_map.insert(entry.path.clone(), GitStatus::Modified);
+                    }
+                    "view.rs" => {
+                        status_map.insert(entry.path.clone(), GitStatus::Modified);
+                    }
+                    "tree.rs" => {
+                        status_map.insert(entry.path.clone(), GitStatus::Modified);
+                    }
+                    "CLAUDE.md" => {
+                        status_map.insert(entry.path.clone(), GitStatus::Untracked);
+                    }
+                    name if name.ends_with(".md") => {
+                        status_map.insert(entry.path.clone(), GitStatus::Untracked);
+                    }
+                    name if name.ends_with(".rs") => {
+                        status_map.insert(entry.path.clone(), GitStatus::Modified);
+                    }
                     _ => {}
                 }
             }
         }
-        
+
         // Also add test statuses for common files in subdirectories that might exist
         // These will be applied even if the directories aren't currently expanded
         let common_test_files = vec![
             ("src/main.rs", GitStatus::Modified),
-            ("src/application.rs", GitStatus::Modified), 
+            ("src/application.rs", GitStatus::Modified),
             ("src/workspace.rs", GitStatus::Modified),
             ("src/file_tree/view.rs", GitStatus::Modified),
             ("src/file_tree/tree.rs", GitStatus::Modified),
@@ -644,27 +682,30 @@ impl FileTreeView {
             ("README.md", GitStatus::Untracked),
             ("docs/README.md", GitStatus::Untracked),
         ];
-        
+
         for (relative_path, status) in common_test_files {
             let full_path = root_path.join(relative_path);
             if full_path.exists() {
                 status_map.insert(full_path, status);
             }
         }
-        
+
         // Apply the test statuses immediately
-        log::debug!("Applying {} test VCS statuses to actual files", status_map.len());
+        log::debug!(
+            "Applying {} test VCS statuses to actual files",
+            status_map.len()
+        );
         for (path, status) in &status_map {
             log::debug!("  {:?} -> {:?}", path.file_name(), status);
         }
-        
+
         self.tree.apply_vcs_status(status_map);
-        
+
         // Debug the VCS status after applying
         self.tree.debug_vcs_status();
-        
+
         cx.notify();
-        
+
         log::debug!("Applied test VCS statuses to demonstrate indicators");
     }
 
@@ -675,8 +716,12 @@ impl FileTreeView {
 
         // Get ui.selection background color from Helix theme
         let selection_bg = {
-            let helix_theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
-            helix_theme.get("ui.selection").bg
+            let helix_theme = cx
+                .global::<crate::theme_manager::ThemeManager>()
+                .helix_theme();
+            helix_theme
+                .get("ui.selection")
+                .bg
                 .and_then(color_to_hsla)
                 .unwrap_or(theme.accent)
         };
@@ -727,7 +772,7 @@ impl FileTreeView {
                             .justify_center()
                             .when(entry.is_directory(), |div| {
                                 div.child(self.render_chevron(entry, cx))
-                            })
+                            }),
                     )
                     .child(self.render_icon_with_vcs_status(entry, cx))
                     .child(self.render_filename(entry, cx)),
@@ -744,7 +789,11 @@ impl FileTreeView {
     }
 
     /// Render the file/directory icon with VCS status overlay
-    fn render_icon_with_vcs_status(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_icon_with_vcs_status(
+        &self,
+        entry: &FileTreeEntry,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.global::<Theme>();
 
         let icon = match &entry.kind {
@@ -815,7 +864,11 @@ impl FileTreeView {
     }
 
     /// Render VCS status as an overlay dot positioned at bottom left of icon
-    fn render_vcs_status_overlay(&self, status: &GitStatus, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_vcs_status_overlay(
+        &self,
+        status: &GitStatus,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.global::<Theme>();
 
         let color = match status {
@@ -833,15 +886,14 @@ impl FileTreeView {
         div()
             .absolute()
             .bottom(px(-2.0)) // Slightly extend below the icon
-            .left(px(-2.0))   // Slightly extend to the left of the icon
-            .w(px(8.0))       // 8px diameter
+            .left(px(-2.0)) // Slightly extend to the left of the icon
+            .w(px(8.0)) // 8px diameter
             .h(px(8.0))
             .rounded_full()
             .bg(color)
             .border_1()
             .border_color(theme.background) // Add a small border to separate from icon
     }
-
 }
 
 impl EventEmitter<FileTreeEvent> for FileTreeView {}
@@ -861,16 +913,14 @@ impl Render for FileTreeView {
 
         // Get prompt background color for consistency
         let prompt_bg = {
-            let helix_theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
+            let helix_theme = cx
+                .global::<crate::theme_manager::ThemeManager>()
+                .helix_theme();
             let popup_style = helix_theme.get("ui.popup");
             popup_style
                 .bg
                 .and_then(color_to_hsla)
-                .or_else(|| {
-                    helix_theme.get("ui.background")
-                        .bg
-                        .and_then(color_to_hsla)
-                })
+                .or_else(|| helix_theme.get("ui.background").bg.and_then(color_to_hsla))
                 .unwrap_or(theme.background)
         };
 
@@ -950,9 +1000,10 @@ impl Render for FileTreeView {
                         .track_scroll(self.scroll_handle.clone())
                         .flex_1(),
                     )
-                    .when_some(Scrollbar::vertical(self.scrollbar_state.clone()), |div, scrollbar| {
-                        div.child(scrollbar)
-                    }),
+                    .when_some(
+                        Scrollbar::vertical(self.scrollbar_state.clone()),
+                        |div, scrollbar| div.child(scrollbar),
+                    ),
             )
     }
 }

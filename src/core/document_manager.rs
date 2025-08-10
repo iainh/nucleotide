@@ -26,9 +26,9 @@ impl<'a> DocumentManager<'a> {
     {
         self.editor.document(doc_id).map(f)
     }
-    
+
     // Removed current_document_id - can access directly via editor.tree.try_get(view_id).map(|v| v.doc)
-    
+
     /// Safe document access API - returns Result instead of Option
     pub fn try_with_document<F, R, E>(&self, doc_id: DocumentId, f: F) -> Result<R, E>
     where
@@ -40,8 +40,6 @@ impl<'a> DocumentManager<'a> {
             None => Err(E::from(format!("Document {doc_id} not found"))),
         }
     }
-    
-
 }
 
 impl<'a> DocumentManagerMut<'a> {
@@ -56,7 +54,7 @@ impl<'a> DocumentManagerMut<'a> {
     {
         self.editor.document_mut(doc_id).map(f)
     }
-    
+
     /// Safe document access API - mutable with Result
     pub fn try_with_document_mut<F, R, E>(&mut self, doc_id: DocumentId, f: F) -> Result<R, E>
     where
@@ -72,7 +70,8 @@ impl<'a> DocumentManagerMut<'a> {
     /// Open a file in the editor
     pub fn open_file(&mut self, path: &Path) -> Result<(), anyhow::Error> {
         use helix_view::editor::Action;
-        self.editor.open(path, Action::Replace)
+        self.editor
+            .open(path, Action::Replace)
             .map(|_| ())
             .map_err(anyhow::Error::new)
     }

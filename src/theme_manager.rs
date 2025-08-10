@@ -1,10 +1,10 @@
 // ABOUTME: Unified theme management for consistent styling across the application
 // ABOUTME: Bridges between Helix themes and GPUI styling requirements
 
-use gpui::*;
-use helix_view::Theme as HelixTheme;
 use crate::ui::Theme as UITheme;
 use crate::utils::color_to_hsla;
+use gpui::*;
+use helix_view::Theme as HelixTheme;
 
 /// Manages theme state and provides consistent access to theme colors
 #[derive(Clone)]
@@ -24,23 +24,23 @@ impl ThemeManager {
             ui_theme,
         }
     }
-    
+
     /// Update the theme
     pub fn set_theme(&mut self, helix_theme: HelixTheme) {
         self.ui_theme = Self::derive_ui_theme(&helix_theme);
         self.helix_theme = helix_theme;
     }
-    
+
     /// Get the current Helix theme
     pub fn helix_theme(&self) -> &HelixTheme {
         &self.helix_theme
     }
-    
+
     /// Get the UI theme
     pub fn ui_theme(&self) -> &UITheme {
         &self.ui_theme
     }
-    
+
     /// Derive a UI theme from a Helix theme
     fn derive_ui_theme(helix_theme: &HelixTheme) -> UITheme {
         // Extract colors from Helix theme with fallbacks
@@ -53,45 +53,53 @@ impl ThemeManager {
         let error_style = helix_theme.get("error");
         let warning_style = helix_theme.get("warning");
         let info_style = helix_theme.get("info");
-        
+
         // Convert to GPUI colors with sensible defaults
-        let background = ui_bg.bg
+        let background = ui_bg
+            .bg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.05, 1.0));
-            
-        let surface = ui_menu.bg
+
+        let surface = ui_menu
+            .bg
             .and_then(color_to_hsla)
             .or_else(|| ui_bg.bg.and_then(color_to_hsla))
             .map(|c| hsla(c.h, c.s, c.l + 0.05, c.a))
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.1, 1.0));
-            
-        let text = ui_text.fg
+
+        let text = ui_text
+            .fg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.9, 1.0));
-            
-        let border = ui_window.fg
+
+        let border = ui_window
+            .fg
             .and_then(color_to_hsla)
             .or_else(|| ui_text.fg.and_then(color_to_hsla))
             .map(|c| hsla(c.h, c.s * 0.5, c.l * 0.5, c.a * 0.8))
             .unwrap_or_else(|| hsla(0.0, 0.0, 0.2, 1.0));
-            
-        let accent = ui_selection.bg
+
+        let accent = ui_selection
+            .bg
             .and_then(color_to_hsla)
             .or_else(|| ui_cursor.bg.and_then(color_to_hsla))
             .unwrap_or_else(|| hsla(220.0 / 360.0, 0.6, 0.5, 1.0));
-            
-        let error = error_style.fg
+
+        let error = error_style
+            .fg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(0.0, 0.8, 0.5, 1.0));
-            
-        let warning = warning_style.fg
+
+        let warning = warning_style
+            .fg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(40.0 / 360.0, 0.8, 0.5, 1.0));
-            
-        let success = info_style.fg
+
+        let success = info_style
+            .fg
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(120.0 / 360.0, 0.6, 0.5, 1.0));
-        
+
         UITheme {
             background,
             surface,
@@ -126,11 +134,11 @@ impl ThemedContext for gpui::App {
     fn theme_manager(&self) -> &ThemeManager {
         self.global::<ThemeManager>()
     }
-    
+
     fn helix_theme(&self) -> &HelixTheme {
         &self.global::<ThemeManager>().helix_theme
     }
-    
+
     fn ui_theme(&self) -> &UITheme {
         &self.global::<ThemeManager>().ui_theme
     }
@@ -140,11 +148,11 @@ impl<V: 'static> ThemedContext for gpui::Context<'_, V> {
     fn theme_manager(&self) -> &ThemeManager {
         self.global::<ThemeManager>()
     }
-    
+
     fn helix_theme(&self) -> &HelixTheme {
         &self.global::<ThemeManager>().helix_theme
     }
-    
+
     fn ui_theme(&self) -> &UITheme {
         &self.global::<ThemeManager>().ui_theme
     }

@@ -1,4 +1,4 @@
-// ABOUTME: Label component following Zed's patterns  
+// ABOUTME: Label component following Zed's patterns
 // ABOUTME: Provides consistent text styling
 
 use crate::ui::Theme;
@@ -54,22 +54,22 @@ impl Label {
             muted: false,
         }
     }
-    
+
     pub fn size(mut self, size: LabelSize) -> Self {
         self.size = size;
         self
     }
-    
+
     pub fn weight(mut self, weight: LabelWeight) -> Self {
         self.weight = weight;
         self
     }
-    
+
     pub fn color(mut self, color: Hsla) -> Self {
         self.color = Some(color);
         self
     }
-    
+
     pub fn muted(mut self, muted: bool) -> Self {
         self.muted = muted;
         self
@@ -86,13 +86,13 @@ impl RenderOnce for Label {
         } else {
             theme.text
         };
-        
+
         let font_weight = match self.weight {
             LabelWeight::Regular => FontWeight::NORMAL,
             LabelWeight::Medium => FontWeight::MEDIUM,
             LabelWeight::Bold => FontWeight::BOLD,
         };
-        
+
         div()
             .text_size(self.size.text_size())
             .text_color(text_color)

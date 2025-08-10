@@ -22,14 +22,15 @@ impl StatusLineView {
     ) -> Self {
         // Get LSP state from core if available
         let lsp_state = core.read(cx).lsp_state.clone();
-        
+
         // Observe LSP state changes if available
         if let Some(lsp) = &lsp_state {
             cx.observe(lsp, |_, _, cx| {
                 cx.notify();
-            }).detach();
+            })
+            .detach();
         }
-        
+
         Self {
             core,
             doc_id,
@@ -38,7 +39,7 @@ impl StatusLineView {
             lsp_state,
         }
     }
-    
+
     pub fn update_doc(&mut self, doc_id: DocumentId, view_id: ViewId, focused: bool) {
         self.doc_id = doc_id;
         self.view_id = view_id;
@@ -46,7 +47,9 @@ impl StatusLineView {
     }
 
     fn style(&self, cx: &mut App) -> (Hsla, Hsla) {
-        let theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
+        let theme = cx
+            .global::<crate::theme_manager::ThemeManager>()
+            .helix_theme();
         let base_style = if self.focused {
             theme.get("ui.statusline")
         } else {
@@ -72,10 +75,10 @@ impl Render for StatusLineView {
         let ui_font_config = cx.global::<crate::UiFontConfig>();
         let font = gpui::font(&ui_font_config.family);
         let font_size = gpui::px(ui_font_config.size);
-        
+
         // Get theme colors
         let (fg_color, bg_color) = self.style(cx);
-        
+
         // Create divider color with reduced opacity
         let divider_color = Hsla {
             h: fg_color.h,
@@ -83,7 +86,7 @@ impl Render for StatusLineView {
             l: fg_color.l,
             a: 0.3,
         };
-        
+
         // Collect all data we need
         let core = self.core.read(cx);
         let editor = &core.editor;
@@ -110,7 +113,8 @@ impl Render for StatusLineView {
             helix_view::document::Mode::Select => "SEL",
         };
 
-        let file_name = doc.path()
+        let file_name = doc
+            .path()
             .map(|p| {
                 let path_str = p.to_string_lossy().to_string();
                 // Truncate long paths - keep filename and some parent directories
@@ -136,14 +140,14 @@ impl Render for StatusLineView {
             .unwrap_or_else(|| "[scratch]".to_string());
 
         let position_text = format!("{}:{}", position.row + 1, position.col + 1);
-        
+
         // Get LSP indicator if available
         let lsp_indicator = if let Some(lsp_state) = &self.lsp_state {
             lsp_state.update(cx, |state, _| state.get_lsp_indicator())
         } else {
             None
         };
-        
+
         // Build the status line layout
         let mut status_bar = div()
             .h(px(24.))
@@ -159,57 +163,38 @@ impl Render for StatusLineView {
             .text_color(fg_color)
             .child(
                 // Mode indicator
-                div()
-                    .child(mode_name)
-                    .min_w(px(24.))
+                div().child(mode_name).min_w(px(24.)),
             )
             .child(
                 // Divider
-                div()
-                    .w(px(1.))
-                    .h(px(16.))
-                    .bg(divider_color)
+                div().w(px(1.)).h(px(16.)).bg(divider_color),
             )
             .child(
                 // File name - takes up available space
-                div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .child(file_name)
+                div().flex_1().overflow_hidden().child(file_name),
             )
             .child(
                 // Divider
-                div()
-                    .w(px(1.))
-                    .h(px(16.))
-                    .bg(divider_color)
+                div().w(px(1.)).h(px(16.)).bg(divider_color),
             )
             .child(
                 // Position
-                div()
-                    .child(position_text)
-                    .min_w(px(80.))
+                div().child(position_text).min_w(px(80.)),
             );
-            
+
         // Add LSP indicator if available
         if let Some(indicator) = lsp_indicator {
             status_bar = status_bar
                 .child(
                     // Divider before LSP
-                    div()
-                        .w(px(1.))
-                        .h(px(16.))
-                        .bg(divider_color)
+                    div().w(px(1.)).h(px(16.)).bg(divider_color),
                 )
                 .child(
                     // LSP indicator
-                    div()
-                        .child(indicator)
-                        .min_w(px(16.))
+                    div().child(indicator).min_w(px(16.)),
                 );
         }
-        
+
         status_bar
     }
 }
-

@@ -14,7 +14,6 @@ pub enum Picker {
 }
 
 impl Picker {
-
     /// Create a new native GPUI picker
     pub fn native(
         title: impl Into<SharedString>,
@@ -27,7 +26,7 @@ impl Picker {
             on_select: Arc::new(on_select),
         }
     }
-    
+
     /// Create a native directory picker
     pub fn native_directory(
         title: impl Into<SharedString>,
@@ -59,7 +58,6 @@ impl std::fmt::Debug for Picker {
     }
 }
 
-
 #[derive(IntoElement)]
 pub struct PickerElement {
     pub picker: Picker,
@@ -86,7 +84,7 @@ impl RenderOnce for PickerElement {
                     let selected_bg = hsla(220.0 / 360.0, 0.6, 0.5, 1.0);
                     let selected_text = hsla(0.0, 0.0, 1.0, 1.0);
                     let prompt_text = hsla(0.0, 0.0, 0.7, 1.0);
-                    
+
                     div()
                         .track_focus(&self.focus)
                         .flex()

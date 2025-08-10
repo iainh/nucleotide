@@ -1,11 +1,11 @@
 // ABOUTME: Event bridge between Helix's event system and GPUI's Update events
 // ABOUTME: Provides a channel-based system to forward Helix events to GPUI UI updates
 
+use helix_view::document::Mode;
+use helix_view::DocumentId;
+use helix_view::ViewId;
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
-use helix_view::ViewId;
-use helix_view::DocumentId;
-use helix_view::document::Mode;
 
 /// Events that can be bridged from Helix to GPUI
 #[derive(Debug, Clone)]
@@ -81,9 +81,9 @@ pub fn send_bridged_event(event: BridgedEvent) {
 /// Register Helix event hooks that bridge to GPUI events
 pub fn register_event_hooks() {
     use helix_event::register_hook;
-    use helix_view::events::*;
     use helix_term::events::*;
-    
+    use helix_view::events::*;
+
     // Document change events
     register_hook!(move |event: &mut DocumentDidChange<'_>| {
         send_bridged_event(BridgedEvent::DocumentChanged {
@@ -91,7 +91,7 @@ pub fn register_event_hooks() {
         });
         Ok(())
     });
-    
+
     // Selection change events
     register_hook!(move |event: &mut SelectionDidChange<'_>| {
         send_bridged_event(BridgedEvent::SelectionChanged {
@@ -100,7 +100,7 @@ pub fn register_event_hooks() {
         });
         Ok(())
     });
-    
+
     // Mode switch events (from helix-term)
     register_hook!(move |event: &mut OnModeSwitch<'_, '_>| {
         send_bridged_event(BridgedEvent::ModeChanged {
@@ -109,23 +109,19 @@ pub fn register_event_hooks() {
         });
         Ok(())
     });
-    
+
     // Diagnostics change events
     register_hook!(move |event: &mut DiagnosticsDidChange<'_>| {
-        send_bridged_event(BridgedEvent::DiagnosticsChanged {
-            doc_id: event.doc,
-        });
+        send_bridged_event(BridgedEvent::DiagnosticsChanged { doc_id: event.doc });
         Ok(())
     });
-    
+
     // Document open events
     register_hook!(move |event: &mut DocumentDidOpen<'_>| {
-        send_bridged_event(BridgedEvent::DocumentOpened {
-            doc_id: event.doc,
-        });
+        send_bridged_event(BridgedEvent::DocumentOpened { doc_id: event.doc });
         Ok(())
     });
-    
+
     // Document close events
     register_hook!(move |event: &mut DocumentDidClose<'_>| {
         send_bridged_event(BridgedEvent::DocumentClosed {
@@ -133,7 +129,7 @@ pub fn register_event_hooks() {
         });
         Ok(())
     });
-    
+
     // Language server initialized events
     register_hook!(move |event: &mut LanguageServerInitialized<'_>| {
         send_bridged_event(BridgedEvent::LanguageServerInitialized {
@@ -141,7 +137,7 @@ pub fn register_event_hooks() {
         });
         Ok(())
     });
-    
+
     // Language server exited events
     register_hook!(move |event: &mut LanguageServerExited<'_>| {
         send_bridged_event(BridgedEvent::LanguageServerExited {
@@ -149,13 +145,13 @@ pub fn register_event_hooks() {
         });
         Ok(())
     });
-    
+
     // Post insert character events - trigger completion
     register_hook!(move |event: &mut PostInsertChar<'_, '_>| {
         // Get the current view and document
         let view_id = event.cx.editor.tree.focus;
         let doc_id = event.cx.editor.tree.get(view_id).doc;
-        
+
         send_bridged_event(BridgedEvent::CompletionRequested {
             doc_id,
             view_id,
@@ -163,7 +159,7 @@ pub fn register_event_hooks() {
         });
         Ok(())
     });
-    
+
     log::info!("Registered Helix event hooks for event bridge");
 }
 

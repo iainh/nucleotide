@@ -1,14 +1,14 @@
-// ABOUTME: GPUI-native picker component for fuzzy searching and selection  
+// ABOUTME: GPUI-native picker component for fuzzy searching and selection
 // ABOUTME: Uses proper GPUI uniform_list for scrollable content like Zed
 
+use crate::preview_tracker::PreviewTracker;
+use crate::ui::common::{FocusableModal, ModalStyle, SearchInput};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui::{Context, Window, ScrollStrategy};
+use gpui::{Context, ScrollStrategy, Window};
+use helix_view::DocumentId;
 use nucleo::Nucleo;
 use std::{ops::Range, sync::Arc};
-use helix_view::DocumentId;
-use crate::preview_tracker::PreviewTracker;
-use crate::ui::common::{ModalStyle, SearchInput, FocusableModal};
 
 #[derive(Clone, Debug)]
 pub struct PickerItem {
@@ -52,7 +52,7 @@ pub struct PickerView {
 
     // Styling
     style: PickerStyle,
-    
+
     // Cached dimensions to prevent resizing on key presses
     cached_dimensions: Option<CachedDimensions>,
 }
@@ -88,22 +88,26 @@ impl PickerStyle {
     /// Create PickerStyle from helix theme using appropriate theme keys
     pub fn from_theme(theme: &helix_view::Theme) -> Self {
         use crate::utils::color_to_hsla;
-        
+
         let modal_style = ModalStyle::from_theme(theme);
-        
+
         // Get preview background - slightly different from main background
-        let preview_background = theme.get("ui.background.separator").bg
+        let preview_background = theme
+            .get("ui.background.separator")
+            .bg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.background").bg.and_then(color_to_hsla))
             .unwrap_or(modal_style.background);
-        
+
         // Get cursor color from theme
-        let cursor = theme.get("ui.cursor").fg
+        let cursor = theme
+            .get("ui.cursor")
+            .fg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.cursor.primary").fg.and_then(color_to_hsla))
             .or_else(|| theme.get("ui.cursor").bg.and_then(color_to_hsla))
             .unwrap_or(modal_style.text);
-        
+
         Self {
             modal_style,
             preview_background,
@@ -137,11 +141,11 @@ impl PickerView {
             cached_dimensions: None,
         }
     }
-    
+
     /// Create a new PickerView with theme-based styling
     pub fn new_with_theme(theme: &helix_view::Theme, cx: &mut Context<Self>) -> Self {
         let style = PickerStyle::from_theme(theme);
-        
+
         Self {
             query: SharedString::default(),
             cursor_position: 0,
@@ -189,13 +193,16 @@ impl PickerView {
         self.style = style;
         self
     }
-    
+
     pub fn with_preview(mut self, show_preview: bool) -> Self {
         self.show_preview = show_preview;
         self
     }
 
-    pub fn on_select(mut self, callback: impl FnMut(&PickerItem, &mut Context<Self>) + 'static) -> Self {
+    pub fn on_select(
+        mut self,
+        callback: impl FnMut(&PickerItem, &mut Context<Self>) + 'static,
+    ) -> Self {
         self.on_select = Some(Box::new(callback));
         self
     }
@@ -211,7 +218,8 @@ impl PickerView {
         self.filter_items(cx);
         self.selected_index = 0;
         // Scroll to top when query changes
-        self.list_scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        self.list_scroll_handle
+            .scroll_to_item(0, ScrollStrategy::Top);
         self.load_preview_for_selected_item(cx);
         cx.notify();
     }
@@ -230,18 +238,18 @@ impl PickerView {
                     // Basic fuzzy matching: check if all query characters appear in order
                     let item_lower = item.label.to_lowercase();
                     let query_lower = self.query.to_lowercase();
-                    
+
                     if query_lower.is_empty() {
                         return true;
                     }
-                    
+
                     let mut query_chars = query_lower.chars();
                     let mut current_char = query_chars.next();
-                    
+
                     if current_char.is_none() {
                         return true;
                     }
-                    
+
                     for item_char in item_lower.chars() {
                         if let Some(q_char) = current_char {
                             if item_char == q_char {
@@ -252,7 +260,7 @@ impl PickerView {
                             }
                         }
                     }
-                    
+
                     current_char.is_none() // True if all chars were matched
                 })
                 .map(|(idx, _)| idx as u32)
@@ -275,7 +283,8 @@ impl PickerView {
         self.selected_index = new_index;
 
         // Scroll to keep selection visible - GPUI handles this automatically!
-        self.list_scroll_handle.scroll_to_item(self.selected_index, ScrollStrategy::Top);
+        self.list_scroll_handle
+            .scroll_to_item(self.selected_index, ScrollStrategy::Top);
 
         // Load preview for newly selected item
         self.load_preview_for_selected_item(cx);
@@ -284,10 +293,9 @@ impl PickerView {
     }
 
     fn confirm_selection(&mut self, cx: &mut Context<Self>) {
-        
         // Clean up preview document before confirming selection
         self.cleanup_preview_document(cx);
-        
+
         if let Some(idx) = self.filtered_indices.get(self.selected_index) {
             if let Some(item) = self.items.get(*idx as usize) {
                 if let Some(on_select) = &mut self.on_select {
@@ -300,16 +308,16 @@ impl PickerView {
     fn cancel(&mut self, cx: &mut Context<Self>) {
         // Clean up preview document before cancelling
         self.cleanup_preview_document(cx);
-        
+
         if let Some(on_cancel) = &mut self.on_cancel {
             on_cancel(cx);
         }
     }
-    
+
     fn insert_char(&mut self, ch: char, cx: &mut Context<Self>) {
         let mut query = self.query.to_string();
         let chars: Vec<char> = query.chars().collect();
-        
+
         // Calculate byte position from character position
         let mut byte_pos = 0;
         for (i, c) in chars.iter().enumerate() {
@@ -318,17 +326,18 @@ impl PickerView {
             }
             byte_pos += c.len_utf8();
         }
-        
+
         query.insert(byte_pos, ch);
         self.cursor_position += 1; // Move cursor by one character position
         self.query = query.into();
         self.filter_items(cx);
         self.selected_index = 0;
-        self.list_scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        self.list_scroll_handle
+            .scroll_to_item(0, ScrollStrategy::Top);
         self.load_preview_for_selected_item(cx);
         cx.notify();
     }
-    
+
     fn delete_char(&mut self, cx: &mut Context<Self>) {
         if self.cursor_position > 0 {
             let mut query = self.query.to_string();
@@ -354,47 +363,48 @@ impl PickerView {
                 self.cursor_position = char_pos;
                 self.filter_items(cx);
                 self.selected_index = 0;
-                self.list_scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+                self.list_scroll_handle
+                    .scroll_to_item(0, ScrollStrategy::Top);
                 self.load_preview_for_selected_item(cx);
                 cx.notify();
             }
         }
     }
-    
+
     fn calculate_dimensions(&self, window_size: Size<Pixels>) -> CachedDimensions {
         let min_width_for_preview = 800.0;
         let window_width = window_size.width.0 as f64;
         let window_height = window_size.height;
-        
+
         let show_preview = self.show_preview && window_width > min_width_for_preview;
-        
+
         // Calculate fixed dimensions to prevent size changes
         let total_width = px(800.0); // Fixed width
-        
+
         // Calculate height based on items with max 60% of window
         let item_height = px(32.0); // Approximate height per item (including padding)
         let header_footer_height = px(80.0); // Space for search bar, footer, etc.
-        
+
         // Use filtered items if available, otherwise use all items
         let item_count = if self.filtered_indices.is_empty() && self.query.is_empty() {
             self.items.len()
         } else {
             self.filtered_indices.len()
         };
-        
+
         let items_height = item_height * item_count.min(20) as f32; // Cap at 20 visible items
         let content_height = items_height + header_footer_height;
-        
+
         // Limit to 60% of window height
         let max_allowed_height = window_height * 0.6;
         let max_height = content_height.min(max_allowed_height).max(px(200.0)); // Min height of 200px
-        
+
         let (list_width, preview_width) = if show_preview {
             (px(400.0), px(400.0))
         } else {
             (total_width, px(0.0))
         };
-        
+
         CachedDimensions {
             window_size,
             total_width,
@@ -422,7 +432,10 @@ impl PickerView {
 
         // Try to extract path from item data
         // Handle buffer picker items (DocumentId, Option<PathBuf>) first
-        if let Some((doc_id, path_opt)) = item.data.downcast_ref::<(helix_view::DocumentId, Option<std::path::PathBuf>)>() {
+        if let Some((doc_id, path_opt)) = item
+            .data
+            .downcast_ref::<(helix_view::DocumentId, Option<std::path::PathBuf>)>()
+        {
             if let Some(path) = path_opt {
                 // Load file preview for buffers with paths
                 self.load_file_preview(path.clone(), cx);
@@ -430,7 +443,10 @@ impl PickerView {
                 // For scratch buffers, load content directly from the document
                 if let Some(core_weak) = &self.core {
                     if let Some(core) = core_weak.upgrade() {
-                        let content = core.read(cx).editor.document(*doc_id)
+                        let content = core
+                            .read(cx)
+                            .editor
+                            .document(*doc_id)
                             .map(|doc| {
                                 let text = doc.text();
                                 let content = text.to_string();
@@ -439,7 +455,7 @@ impl PickerView {
                                 lines.join("\n")
                             })
                             .unwrap_or_else(|| "Unable to load buffer content".to_string());
-                        
+
                         self.preview_content = Some(content);
                         self.preview_loading = false;
                         cx.notify();
@@ -450,10 +466,12 @@ impl PickerView {
         // Try standalone PathBuf (for file picker)
         else if let Some(path_buf) = item.data.downcast_ref::<std::path::PathBuf>() {
             self.load_file_preview(path_buf.clone(), cx);
-        } 
-        else {
+        } else {
             // Debug: check what type we actually have
-            log::warn!("Preview not available for item with type_id: {:?}", item.data.type_id());
+            log::warn!(
+                "Preview not available for item with type_id: {:?}",
+                item.data.type_id()
+            );
             self.preview_content = Some("Preview not available".to_string());
             cx.notify();
         }
@@ -479,8 +497,8 @@ impl PickerView {
                 match std::fs::read_dir(&path) {
                     Ok(entries) => {
                         let mut content = format!("Directory: {}\n\n", path.display());
-                        let mut items: Vec<_> = entries.collect::<Result<Vec<_>, _>>()
-                            .unwrap_or_default();
+                        let mut items: Vec<_> =
+                            entries.collect::<Result<Vec<_>, _>>().unwrap_or_default();
                         items.sort_by(|a, b| {
                             let a_is_dir = a.file_type().map(|t| t.is_dir()).unwrap_or(false);
                             let b_is_dir = b.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -490,7 +508,7 @@ impl PickerView {
                                 _ => a.file_name().cmp(&b.file_name()),
                             }
                         });
-                        
+
                         for entry in items.iter().take(100) {
                             let name = entry.file_name();
                             let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -501,7 +519,8 @@ impl PickerView {
                             ));
                         }
                         if items.len() > 100 {
-                            content.push_str(&format!("\n... and {} more items\n", items.len() - 100));
+                            content
+                                .push_str(&format!("\n... and {} more items\n", items.len() - 100));
                         }
                         content
                     }
@@ -512,8 +531,11 @@ impl PickerView {
                 match std::fs::read_to_string(&path) {
                     Ok(content) => {
                         if content.len() > 10000 {
-                            format!("{}\n\n[File truncated - showing first 10KB of {}KB total]", 
-                                &content[..10000], content.len() / 1024)
+                            format!(
+                                "{}\n\n[File truncated - showing first 10KB of {}KB total]",
+                                &content[..10000],
+                                content.len() / 1024
+                            )
                         } else {
                             content
                         }
@@ -547,48 +569,49 @@ impl PickerView {
                     if let Some(core) = core_weak.upgrade() {
                         let mut preview_doc_id = None;
                         let mut preview_view_id = None;
-                        
+
                         core.update(cx, |core, _cx| {
                             // Create a new document
                             let doc_id = core.editor.new_file(helix_view::editor::Action::Load);
-                            
+
                             // Create a view ID for the preview
                             let view_id = helix_view::ViewId::default();
-                            
+
                             // Get the syntax loader before we borrow the document mutably
                             let loader = core.editor.syn_loader.load();
-                            
+
                             // Set the content
                             if let Some(doc) = core.editor.document_mut(doc_id) {
                                 // Set the path for language detection
                                 doc.set_path(Some(&path));
-                                
+
                                 // Initialize the view in the document
                                 doc.ensure_view_init(view_id);
-                                
+
                                 // Apply the content
                                 let transaction = helix_core::Transaction::change(
                                     doc.text(),
-                                    vec![(0, doc.text().len_chars(), Some(content.into()))].into_iter()
+                                    vec![(0, doc.text().len_chars(), Some(content.into()))]
+                                        .into_iter(),
                                 );
-                                
+
                                 doc.apply(&transaction, view_id);
-                                
+
                                 // Detect language and enable syntax highlighting
                                 doc.detect_language(&loader);
                             }
-                            
+
                             // Store IDs for later use
                             preview_doc_id = Some(doc_id);
                             preview_view_id = Some(view_id);
                         });
-                        
+
                         // Update picker state and register with tracker
                         if let (Some(doc_id), Some(view_id)) = (preview_doc_id, preview_view_id) {
                             this.preview_doc_id = Some(doc_id);
                             this.preview_view_id = Some(view_id);
                             this.preview_content = None; // We'll use DocumentElement instead
-                            
+
                             // Register with preview tracker
                             if let Some(tracker) = cx.try_global::<PreviewTracker>() {
                                 tracker.register(doc_id, view_id);
@@ -596,7 +619,7 @@ impl PickerView {
                         }
                     }
                 }
-                
+
                 this.preview_loading = false;
                 cx.notify();
             });
@@ -607,12 +630,14 @@ impl PickerView {
     pub fn cleanup(&mut self, cx: &mut Context<Self>) {
         self.cleanup_preview_document(cx);
     }
-    
+
     fn cleanup_preview_document(&mut self, cx: &mut Context<Self>) {
         // Cancel any pending preview task
         self.preview_task = None;
-        
-        if let (Some(doc_id), Some(view_id)) = (self.preview_doc_id.take(), self.preview_view_id.take()) {
+
+        if let (Some(doc_id), Some(view_id)) =
+            (self.preview_doc_id.take(), self.preview_view_id.take())
+        {
             if let Some(core_weak) = &self.core {
                 if let Some(core) = core_weak.upgrade() {
                     core.update(cx, |core, _cx| {
@@ -622,10 +647,10 @@ impl PickerView {
                         }
                         // Then close the document without saving
                         let _ = core.editor.close_document(doc_id, false);
-                        
+
                         // Note: Unregistering from preview tracker happens in the outer scope
                     });
-                    
+
                     // Unregister from preview tracker
                     if let Some(tracker) = cx.try_global::<PreviewTracker>() {
                         tracker.unregister(doc_id, view_id);
@@ -634,7 +659,6 @@ impl PickerView {
             }
         }
     }
-
 }
 
 impl Focusable for PickerView {
@@ -656,19 +680,23 @@ impl Drop for PickerView {
 impl FocusableModal for PickerView {}
 
 impl PickerView {
-    fn render_picker_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_picker_content(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // Ensure the picker has focus when rendered
         self.ensure_focus(window, &self.focus_handle);
-        
+
         // Load initial preview if not already loaded
         if !self.initial_preview_loaded && !self.filtered_indices.is_empty() {
             self.initial_preview_loaded = true;
             self.load_preview_for_selected_item(cx);
         }
-        
+
         let font = cx.global::<crate::FontSettings>().var_font.clone();
         let window_size = window.viewport_size();
-        
+
         // Check if we need to recalculate dimensions
         let dimensions = if let Some(cached) = self.cached_dimensions {
             // Only recalculate if window size changed
@@ -680,10 +708,10 @@ impl PickerView {
         } else {
             self.calculate_dimensions(window_size)
         };
-        
+
         // Update cache
         self.cached_dimensions = Some(dimensions);
-        
+
         let total_width = dimensions.total_width;
         let max_height = dimensions.max_height;
         let list_width = dimensions.list_width;
@@ -806,7 +834,7 @@ impl PickerView {
                             .child(if self.filtered_indices.is_empty() {
                                 "0/0".to_string()
                             } else {
-                                format!("{}/{}", 
+                                format!("{}/{}",
                                     self.selected_index + 1,
                                     self.filtered_indices.len()
                                 )
@@ -914,7 +942,7 @@ impl PickerView {
                                                                     let id = parts[0].to_string();
                                                                     let flags = parts[1].to_string();
                                                                     let path = parts[2..].join(" ");
-                                                                    
+
                                                                     div()
                                                                         .flex()
                                                                         .gap_2()
@@ -998,7 +1026,7 @@ impl PickerView {
                                                             lines.join("\n")
                                                         })
                                                         .unwrap_or_else(|| "Unable to load file".to_string());
-                                                    
+
                                                     div()
                                                         .px_3()
                                                         .py_2()

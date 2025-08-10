@@ -3,12 +3,12 @@
 
 pub mod entry;
 pub mod icons;
-pub mod summary;  
+pub mod summary;
 pub mod tree;
 pub mod view;
 pub mod watcher;
 
-pub use entry::{FileTreeEntry, FileKind, GitStatus};
+pub use entry::{FileKind, FileTreeEntry, GitStatus};
 pub use icons::{get_file_icon, get_symlink_icon};
 pub use summary::FileTreeSummary;
 pub use tree::FileTree;
@@ -21,27 +21,18 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq)]
 pub enum FileTreeEvent {
     /// A file or directory was selected
-    SelectionChanged {
-        path: Option<PathBuf>,
-    },
+    SelectionChanged { path: Option<PathBuf> },
     /// A file should be opened
-    OpenFile {
-        path: PathBuf,
-    },
+    OpenFile { path: PathBuf },
     /// A directory was expanded or collapsed
-    DirectoryToggled {
-        path: PathBuf,
-        expanded: bool,
-    },
+    DirectoryToggled { path: PathBuf, expanded: bool },
     /// File system change detected
     FileSystemChanged {
         path: PathBuf,
         kind: FileSystemEventKind,
     },
     /// VCS status refresh has started
-    VcsRefreshStarted {
-        repository_root: PathBuf,
-    },
+    VcsRefreshStarted { repository_root: PathBuf },
     /// VCS status has been updated
     VcsStatusChanged {
         repository_root: PathBuf,
@@ -53,9 +44,7 @@ pub enum FileTreeEvent {
         error: String,
     },
     /// Request to refresh VCS status
-    RefreshVcs {
-        force: bool,
-    },
+    RefreshVcs { force: bool },
 }
 
 /// Types of file system events

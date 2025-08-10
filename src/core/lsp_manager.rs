@@ -1,9 +1,12 @@
 // ABOUTME: LSP (Language Server Protocol) management functionality
 // ABOUTME: Handles language server messages and progress tracking
 
-use helix_lsp::{Call, LanguageServerId, LspProgressMap, MethodCall, Notification, lsp::{self}};
-use helix_view::Editor;
 use helix_core::diagnostic::{DiagnosticProvider, Severity};
+use helix_lsp::{
+    lsp::{self},
+    Call, LanguageServerId, LspProgressMap, MethodCall, Notification,
+};
+use helix_view::Editor;
 use log::{error, info, warn};
 use std::collections::btree_map::Entry;
 
@@ -15,8 +18,8 @@ pub struct LspManager<'a> {
 
 impl<'a> LspManager<'a> {
     pub fn new(editor: &'a mut Editor, lsp_progress: &'a mut LspProgressMap) -> Self {
-        Self { 
-            editor, 
+        Self {
+            editor,
             lsp_progress,
         }
     }
@@ -30,7 +33,7 @@ impl<'a> LspManager<'a> {
         // Track that we've seen this server
         // Note: We'll need to pass the LspState entity down from Application
         // For now, just handle the messages
-        
+
         match call {
             Call::Notification(helix_lsp::jsonrpc::Notification { method, params, .. }) => {
                 let notification = match Notification::parse(&method, params) {
@@ -40,7 +43,10 @@ impl<'a> LspManager<'a> {
                         return;
                     }
                     Err(err) => {
-                        error!("Ignoring unknown notification from Language Server: {}", err);
+                        error!(
+                            "Ignoring unknown notification from Language Server: {}",
+                            err
+                        );
                         return;
                     }
                 };
@@ -83,7 +89,7 @@ impl<'a> LspManager<'a> {
     }
 
     fn handle_diagnostics_published(
-        &mut self, 
+        &mut self,
         mut params: helix_lsp::lsp::PublishDiagnosticsParams,
         server_id: LanguageServerId,
     ) {
@@ -94,7 +100,7 @@ impl<'a> LspManager<'a> {
                 return;
             }
         };
-        
+
         let language_server = match self.editor.language_server_by_id(server_id) {
             Some(ls) => ls,
             None => {
@@ -102,12 +108,15 @@ impl<'a> LspManager<'a> {
                 return;
             }
         };
-        
+
         if !language_server.is_initialized() {
-            error!("Discarding publishDiagnostic notification sent by an uninitialized server: {}", language_server.name());
+            error!(
+                "Discarding publishDiagnostic notification sent by an uninitialized server: {}",
+                language_server.name()
+            );
             return;
         }
-        
+
         // Find the document with this path
         let doc = self.editor.documents.values_mut()
             .find(|doc| doc.path().map(|p| p == &path).unwrap_or(false))
@@ -120,22 +129,27 @@ impl<'a> LspManager<'a> {
                 }
                 true
             });
-            
+
         let mut unchanged_diag_sources = Vec::new();
         if let Some(doc) = &doc {
             let lang_conf = doc.language.clone();
-            
+
             if let Some(lang_conf) = &lang_conf {
                 let uri = helix_core::Uri::from(path.clone());
                 if let Some(old_diagnostics) = self.editor.diagnostics.get(&uri) {
                     if !lang_conf.persistent_diagnostic_sources.is_empty() {
                         // Sort diagnostics first by severity and then by line numbers.
-                        params.diagnostics.sort_unstable_by_key(|d| (d.severity, d.range.start));
+                        params
+                            .diagnostics
+                            .sort_unstable_by_key(|d| (d.severity, d.range.start));
                     }
                     for source in &lang_conf.persistent_diagnostic_sources {
-                        let new_diagnostics = params.diagnostics.iter()
+                        let new_diagnostics = params
+                            .diagnostics
+                            .iter()
                             .filter(|d| d.source.as_ref() == Some(source));
-                        let old_diagnostics = old_diagnostics.iter()
+                        let old_diagnostics = old_diagnostics
+                            .iter()
                             .filter(|(d, d_server)| {
                                 d_server.language_server_id() == Some(server_id)
                                     && d.source.as_ref() == Some(source)
@@ -148,41 +162,42 @@ impl<'a> LspManager<'a> {
                 }
             }
         }
-        
+
         let provider = DiagnosticProvider::Lsp {
             server_id,
             identifier: None,
         };
-        let diagnostics = params.diagnostics.into_iter()
+        let diagnostics = params
+            .diagnostics
+            .into_iter()
             .map(|d| (d, provider.clone()));
-            
+
         // Insert the diagnostics
         let uri = helix_core::Uri::from(path.clone());
         let diagnostics = match self.editor.diagnostics.entry(uri) {
             Entry::Occupied(o) => {
                 let current_diagnostics = o.into_mut();
                 // there may be entries of other language servers, which is why we can't overwrite the whole entry
-                current_diagnostics.retain(|(_, provider)| {
-                    provider.language_server_id() != Some(server_id)
-                });
+                current_diagnostics
+                    .retain(|(_, provider)| provider.language_server_id() != Some(server_id));
                 current_diagnostics.extend(diagnostics);
                 current_diagnostics
             }
             Entry::Vacant(v) => v.insert(diagnostics.collect()),
         };
-        
+
         // Sort diagnostics first by severity and then by line numbers.
-        diagnostics.sort_unstable_by_key(|(d, server_id)| {
-            (d.severity, d.range.start, server_id.clone())
-        });
-        
+        diagnostics
+            .sort_unstable_by_key(|(d, server_id)| (d.severity, d.range.start, server_id.clone()));
+
         if let Some(doc) = doc {
             let diagnostic_of_language_server_and_not_in_unchanged_sources =
                 |diagnostic: &lsp::Diagnostic, provider: &DiagnosticProvider| {
                     provider.language_server_id() == Some(server_id)
-                        && diagnostic.source.as_ref().is_none_or(|source| {
-                            !unchanged_diag_sources.contains(source)
-                        })
+                        && diagnostic
+                            .source
+                            .as_ref()
+                            .is_none_or(|source| !unchanged_diag_sources.contains(source))
                 };
             let diagnostics = Editor::doc_diagnostics_with_filter(
                 &self.editor.language_servers,
@@ -207,17 +222,17 @@ impl<'a> LspManager<'a> {
         server_id: LanguageServerId,
     ) {
         use helix_lsp::lsp::ProgressParamsValue;
-        
+
         let token = params.token.clone();
 
         match params.value {
             ProgressParamsValue::WorkDone(progress) => {
                 use helix_lsp::lsp::WorkDoneProgress;
-                
+
                 match progress {
                     WorkDoneProgress::Begin(begin) => {
                         self.lsp_progress.create(server_id, token.clone());
-                        
+
                         if let Some(message) = begin.message {
                             self.editor.set_status(message);
                         }
@@ -229,7 +244,7 @@ impl<'a> LspManager<'a> {
                     }
                     WorkDoneProgress::End(end) => {
                         self.lsp_progress.end_progress(server_id, &token);
-                        
+
                         if let Some(message) = end.message {
                             self.editor.set_status(message);
                         }
@@ -245,7 +260,7 @@ impl<'a> LspManager<'a> {
         server_id: LanguageServerId,
     ) {
         use helix_lsp::lsp;
-        
+
         // First check if language server exists
         let (is_initialized, offset_encoding) = match self.editor.language_server_by_id(server_id) {
             Some(ls) => (ls.is_initialized(), ls.offset_encoding()),
@@ -254,7 +269,10 @@ impl<'a> LspManager<'a> {
 
         let reply = match MethodCall::parse(&method_call.method, method_call.params) {
             Err(helix_lsp::Error::Unhandled) => {
-                error!("Language Server: Method {} not found in request {}", method_call.method, method_call.id);
+                error!(
+                    "Language Server: Method {} not found in request {}",
+                    method_call.method, method_call.id
+                );
                 Err(helix_lsp::jsonrpc::Error {
                     code: helix_lsp::jsonrpc::ErrorCode::MethodNotFound,
                     message: format!("Method not found: {}", method_call.method),
@@ -262,7 +280,10 @@ impl<'a> LspManager<'a> {
                 })
             }
             Err(err) => {
-                error!("Language Server: Received malformed method call {} in request {}: {}", method_call.method, method_call.id, err);
+                error!(
+                    "Language Server: Received malformed method call {} in request {}: {}",
+                    method_call.method, method_call.id, err
+                );
                 Err(helix_lsp::jsonrpc::Error {
                     code: helix_lsp::jsonrpc::ErrorCode::ParseError,
                     message: format!("Malformed method call: {}", method_call.method),
@@ -275,8 +296,10 @@ impl<'a> LspManager<'a> {
             }
             Ok(MethodCall::ApplyWorkspaceEdit(params)) => {
                 if is_initialized {
-                    let res = self.editor.apply_workspace_edit(offset_encoding, &params.edit);
-                    
+                    let res = self
+                        .editor
+                        .apply_workspace_edit(offset_encoding, &params.edit);
+
                     Ok(serde_json::json!(lsp::ApplyWorkspaceEditResponse {
                         applied: res.is_ok(),
                         failure_reason: res.as_ref().err().map(|err| err.kind.to_string()),
@@ -285,7 +308,8 @@ impl<'a> LspManager<'a> {
                 } else {
                     Err(helix_lsp::jsonrpc::Error {
                         code: helix_lsp::jsonrpc::ErrorCode::InvalidRequest,
-                        message: "Server must be initialized to request workspace edits".to_string(),
+                        message: "Server must be initialized to request workspace edits"
+                            .to_string(),
                         data: None,
                     })
                 }
@@ -298,7 +322,7 @@ impl<'a> LspManager<'a> {
                         code: helix_lsp::jsonrpc::ErrorCode::InternalError,
                         message: "Language server not found".to_string(),
                         data: None,
-                    })
+                    }),
                 }
             }
             Ok(MethodCall::WorkspaceConfiguration(params)) => {
@@ -327,7 +351,7 @@ impl<'a> LspManager<'a> {
                         code: helix_lsp::jsonrpc::ErrorCode::InternalError,
                         message: "Language server not found".to_string(),
                         data: None,
-                    })
+                    }),
                 }
             }
             Ok(MethodCall::RegisterCapability(params)) => {
@@ -371,10 +395,16 @@ impl<'a> LspManager<'a> {
                 for unreg in params.unregisterations {
                     match unreg.method.as_str() {
                         "workspace/didChangeWatchedFiles" => {
-                            self.editor.language_servers.file_event_handler.unregister(server_id, unreg.id);
+                            self.editor
+                                .language_servers
+                                .file_event_handler
+                                .unregister(server_id, unreg.id);
                         }
                         _ => {
-                            warn!("Received unregistration request for unsupported method: {}", unreg.method);
+                            warn!(
+                                "Received unregistration request for unsupported method: {}",
+                                unreg.method
+                            );
                         }
                     }
                 }
@@ -408,7 +438,8 @@ impl<'a> LspManager<'a> {
             language_server.did_change_configuration(config.clone());
         }
 
-        let docs = self.editor
+        let docs = self
+            .editor
             .documents()
             .filter(|doc| doc.supports_language_server(server_id));
 
@@ -421,12 +452,7 @@ impl<'a> LspManager<'a> {
 
             let language_id = doc.language_id().map(ToOwned::to_owned).unwrap_or_default();
 
-            language_server.text_document_did_open(
-                url,
-                doc.version(),
-                doc.text(),
-                language_id,
-            );
+            language_server.text_document_did_open(url, doc.version(), doc.text(), language_id);
         }
     }
 
@@ -437,9 +463,7 @@ impl<'a> LspManager<'a> {
         // we need to clear those and remove the entries from the list if this leads to
         // an empty diagnostic list for said files
         for diags in self.editor.diagnostics.values_mut() {
-            diags.retain(|(_, provider)| {
-                provider.language_server_id() != Some(server_id)
-            });
+            diags.retain(|(_, provider)| provider.language_server_id() != Some(server_id));
         }
 
         self.editor.diagnostics.retain(|_, diags| !diags.is_empty());
