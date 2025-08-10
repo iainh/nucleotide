@@ -457,6 +457,10 @@ impl Workspace {
         // Execute the command through helix's command system
         let core = self.core.clone();
         let handle = self.handle.clone();
+        
+        // Store the current theme before executing the command
+        let theme_before = core.read(cx).editor.theme.name().to_string();
+        
         core.update(cx, move |core, cx| {
             let _guard = handle.enter();
 
@@ -475,6 +479,7 @@ impl Workspace {
             // Execute the command using helix's command system
             // Since execute_command_line is not public, we need to manually parse and execute
             let (cmd_name, args, _) = helix_core::command_line::split(command);
+            
 
             if !cmd_name.is_empty() {
                 // Check if it's a line number
@@ -504,8 +509,10 @@ impl Workspace {
                     }
                 } else {
                     // Execute regular command
+                    
                     match helix_term::commands::TYPABLE_COMMAND_MAP.get(cmd_name) {
                         Some(cmd) => {
+                            
                             // Parse args for the command
                             let parsed_args = helix_core::command_line::Args::parse(
                                 args,
@@ -519,11 +526,13 @@ impl Workspace {
 
                             match parsed_args {
                                 Ok(parsed_args) => {
-                                    if let Err(err) = (cmd.fun)(
+                                    let result = (cmd.fun)(
                                         &mut comp_ctx,
                                         parsed_args,
                                         helix_term::ui::PromptEvent::Validate,
-                                    ) {
+                                    );
+                                    
+                                    if let Err(err) = result {
                                         core.editor.set_error(format!("'{cmd_name}': {err}"));
                                     }
                                 }
@@ -542,10 +551,11 @@ impl Workspace {
 
             // Check if the theme has changed after command execution
             let current_theme = core.editor.theme.clone();
-            let theme_manager = cx.global::<crate::theme_manager::ThemeManager>();
+            let theme_name_after = current_theme.name().to_string();
 
             // If the theme has changed, update the ThemeManager and UI theme
-            if theme_manager.helix_theme().name() != current_theme.name() {
+            if theme_before != theme_name_after {
+                
                 // Update the global ThemeManager
                 cx.update_global(
                     |theme_manager: &mut crate::theme_manager::ThemeManager, _cx| {
@@ -558,6 +568,7 @@ impl Workspace {
                     .global::<crate::theme_manager::ThemeManager>()
                     .ui_theme()
                     .clone();
+                    
                 cx.update_global(|_ui_theme: &mut crate::ui::Theme, _cx| {
                     *_ui_theme = new_ui_theme;
                 });
@@ -568,9 +579,11 @@ impl Workspace {
                 // Send theme change event to Helix
                 crate::gpui_to_helix_bridge::send_gpui_event_to_helix(
                     crate::gpui_to_helix_bridge::GpuiToHelixEvent::ThemeChanged {
-                        theme_name: current_theme.name().to_string(),
+                        theme_name: theme_name_after.clone(),
                     },
                 );
+                
+            } else {
             }
 
             // Check if we should quit after command execution

@@ -43,6 +43,7 @@ impl ThemeManager {
 
     /// Derive a UI theme from a Helix theme
     fn derive_ui_theme(helix_theme: &HelixTheme) -> UITheme {
+        
         // Extract colors from Helix theme with fallbacks
         let ui_bg = helix_theme.get("ui.background");
         let ui_text = helix_theme.get("ui.text");
@@ -100,7 +101,7 @@ impl ThemeManager {
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(120.0 / 360.0, 0.6, 0.5, 1.0));
 
-        UITheme {
+        let ui_theme = UITheme {
             background,
             surface,
             surface_background: hsla(surface.h, surface.s, surface.l - 0.02, surface.a),
@@ -117,7 +118,8 @@ impl ThemeManager {
             error,
             warning,
             success,
-        }
+        };
+        ui_theme
     }
 }
 

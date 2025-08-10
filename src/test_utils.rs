@@ -4,12 +4,33 @@
 #[cfg(test)]
 pub mod test_support {
     use crate::event_bridge::{create_bridge_channel, BridgedEvent};
-    use crate::Update;
     use helix_view::document::Mode;
     use helix_view::{DocumentId, ViewId};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::sync::mpsc;
+    
+    // Test-only Update enum that doesn't include GPUI entities to avoid compilation issues
+    #[derive(Debug, Clone)]
+    pub enum TestUpdate {
+        DocumentChanged { doc_id: DocumentId },
+        SelectionChanged { doc_id: DocumentId, view_id: ViewId },
+        ModeChanged { old_mode: Mode, new_mode: Mode },
+        DiagnosticsChanged { doc_id: DocumentId },
+        DocumentOpened { doc_id: DocumentId },
+        DocumentClosed { doc_id: DocumentId },
+        ViewFocused { view_id: ViewId },
+        LanguageServerInitialized { server_id: helix_lsp::LanguageServerId },
+        LanguageServerExited { server_id: helix_lsp::LanguageServerId },
+        CompletionRequested { doc_id: DocumentId, view_id: ViewId, trigger: CompletionTrigger },
+    }
+    
+    #[derive(Debug, Clone)]
+    pub enum CompletionTrigger {
+        Character(char),
+        Invoked,
+        TriggerForIncompleteCompletions,
+    }
 
     /// Mock update counter for tracking how many updates are emitted
     pub struct UpdateCounter {
@@ -39,7 +60,7 @@ pub mod test_support {
     /// Create a channel with a mock receiver that counts updates
     pub fn create_counting_channel() -> (
         mpsc::UnboundedSender<BridgedEvent>,
-        mpsc::UnboundedReceiver<Update>,
+        mpsc::UnboundedReceiver<TestUpdate>,
         UpdateCounter,
     ) {
         let (tx, mut rx) = create_bridge_channel();
@@ -47,39 +68,48 @@ pub mod test_support {
         let counter = UpdateCounter::new();
         let counter_clone = counter.clone_counter();
 
-        // Spawn a task to convert BridgedEvents to Updates and count them
+        // Spawn a task to convert BridgedEvents to TestUpdates and count them
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 counter_clone.fetch_add(1, Ordering::SeqCst);
 
                 let update = match event {
-                    BridgedEvent::DocumentChanged { doc_id } => Update::DocumentChanged { doc_id },
+                    BridgedEvent::DocumentChanged { doc_id } => TestUpdate::DocumentChanged { doc_id },
                     BridgedEvent::SelectionChanged { doc_id, view_id } => {
-                        Update::SelectionChanged { doc_id, view_id }
+                        TestUpdate::SelectionChanged { doc_id, view_id }
                     }
                     BridgedEvent::ModeChanged { old_mode, new_mode } => {
-                        Update::ModeChanged { old_mode, new_mode }
+                        TestUpdate::ModeChanged { old_mode, new_mode }
                     }
                     BridgedEvent::DiagnosticsChanged { doc_id } => {
-                        Update::DiagnosticsChanged { doc_id }
+                        TestUpdate::DiagnosticsChanged { doc_id }
                     }
-                    BridgedEvent::DocumentOpened { doc_id } => Update::DocumentOpened { doc_id },
-                    BridgedEvent::DocumentClosed { doc_id } => Update::DocumentClosed { doc_id },
-                    BridgedEvent::ViewFocused { view_id } => Update::ViewFocused { view_id },
+                    BridgedEvent::DocumentOpened { doc_id } => TestUpdate::DocumentOpened { doc_id },
+                    BridgedEvent::DocumentClosed { doc_id } => TestUpdate::DocumentClosed { doc_id },
+                    BridgedEvent::ViewFocused { view_id } => TestUpdate::ViewFocused { view_id },
                     BridgedEvent::LanguageServerInitialized { server_id } => {
-                        Update::LanguageServerInitialized { server_id }
+                        TestUpdate::LanguageServerInitialized { server_id }
                     }
                     BridgedEvent::LanguageServerExited { server_id } => {
-                        Update::LanguageServerExited { server_id }
+                        TestUpdate::LanguageServerExited { server_id }
                     }
                     BridgedEvent::CompletionRequested {
                         doc_id,
                         view_id,
                         trigger,
-                    } => Update::CompletionRequested {
-                        doc_id,
-                        view_id,
-                        trigger,
+                    } => {
+                        let test_trigger = match trigger {
+                            crate::event_bridge::CompletionTrigger::Character(c) => CompletionTrigger::Character(c),
+                            crate::event_bridge::CompletionTrigger::Invoked => CompletionTrigger::Invoked,
+                            crate::event_bridge::CompletionTrigger::TriggerForIncompleteCompletions => {
+                                CompletionTrigger::TriggerForIncompleteCompletions
+                            }
+                        };
+                        TestUpdate::CompletionRequested {
+                            doc_id,
+                            view_id,
+                            trigger: test_trigger,
+                        }
                     },
                 };
 

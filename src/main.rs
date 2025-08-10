@@ -100,7 +100,46 @@ fn install_panic_handler() {
     }));
 }
 
+
+#[cfg(target_os = "macos")]
+pub fn detect_bundle_runtime() -> Option<std::path::PathBuf> {
+    if let Ok(mut exe) = std::env::current_exe() {
+        exe.pop(); // nucl or nucleotide-bin
+        exe.pop(); // MacOS
+        exe.push("Resources");
+        exe.push("runtime");
+        if exe.is_dir() {
+            return Some(exe);
+        }
+    }
+    None
+}
+
+// Use constructor to set environment variable before any static initialization
+#[cfg(target_os = "macos")]
+#[ctor::ctor]
+fn _early_runtime_init() {
+    let needs_override = match std::env::var("HELIX_RUNTIME") {
+        Ok(p) => p.contains("$(") || !std::path::Path::new(&p).join("themes").is_dir(),
+        Err(_) => true,
+    };
+
+    if needs_override {
+        if let Some(rt) = detect_bundle_runtime() {
+            std::env::set_var("HELIX_RUNTIME", &rt);
+        }
+    }
+}
+
 fn main() -> Result<()> {
+    // Set HELIX_RUNTIME for macOS bundles before any Helix code runs (backup)
+    #[cfg(target_os = "macos")]
+    if std::env::var("HELIX_RUNTIME").is_err() {
+        if let Some(rt) = detect_bundle_runtime() {
+            std::env::set_var("HELIX_RUNTIME", &rt);
+        }
+    }
+
     // Install panic handler to prevent data loss
     install_panic_handler();
 
@@ -253,7 +292,6 @@ pub struct EditorStatus {
     pub severity: Severity,
 }
 
-#[derive(Debug)]
 pub enum Update {
     Redraw,
     Prompt(prompt::Prompt),
@@ -308,6 +346,63 @@ pub enum Update {
     // Picker request events - emitted when helix wants to show a picker
     ShowFilePicker,
     ShowBufferPicker,
+}
+
+// Manual Debug implementation to avoid proc macro issues with Entity<T>
+impl std::fmt::Debug for Update {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Update::Redraw => write!(f, "Update::Redraw"),
+            Update::Prompt(p) => f.debug_tuple("Update::Prompt").field(p).finish(),
+            Update::Picker(p) => f.debug_tuple("Update::Picker").field(p).finish(),
+            Update::DirectoryPicker(p) => f.debug_tuple("Update::DirectoryPicker").field(p).finish(),
+            Update::Completion(_) => write!(f, "Update::Completion(<Entity>)"),
+            Update::Info(i) => f.debug_tuple("Update::Info").field(i).finish(),
+            Update::EditorEvent(e) => f.debug_tuple("Update::EditorEvent").field(e).finish(),
+            Update::EditorStatus(s) => f.debug_tuple("Update::EditorStatus").field(s).finish(),
+            Update::OpenFile(p) => f.debug_tuple("Update::OpenFile").field(p).finish(),
+            Update::OpenDirectory(p) => f.debug_tuple("Update::OpenDirectory").field(p).finish(),
+            Update::ShouldQuit => write!(f, "Update::ShouldQuit"),
+            Update::CommandSubmitted(c) => f.debug_tuple("Update::CommandSubmitted").field(c).finish(),
+            Update::DocumentChanged { doc_id } => f.debug_struct("Update::DocumentChanged")
+                .field("doc_id", doc_id)
+                .finish(),
+            Update::SelectionChanged { doc_id, view_id } => f.debug_struct("Update::SelectionChanged")
+                .field("doc_id", doc_id)
+                .field("view_id", view_id)
+                .finish(),
+            Update::ModeChanged { old_mode, new_mode } => f.debug_struct("Update::ModeChanged")
+                .field("old_mode", old_mode)
+                .field("new_mode", new_mode)
+                .finish(),
+            Update::DiagnosticsChanged { doc_id } => f.debug_struct("Update::DiagnosticsChanged")
+                .field("doc_id", doc_id)
+                .finish(),
+            Update::DocumentOpened { doc_id } => f.debug_struct("Update::DocumentOpened")
+                .field("doc_id", doc_id)
+                .finish(),
+            Update::DocumentClosed { doc_id } => f.debug_struct("Update::DocumentClosed")
+                .field("doc_id", doc_id)
+                .finish(),
+            Update::ViewFocused { view_id } => f.debug_struct("Update::ViewFocused")
+                .field("view_id", view_id)
+                .finish(),
+            Update::LanguageServerInitialized { server_id } => f.debug_struct("Update::LanguageServerInitialized")
+                .field("server_id", server_id)
+                .finish(),
+            Update::LanguageServerExited { server_id } => f.debug_struct("Update::LanguageServerExited")
+                .field("server_id", server_id)
+                .finish(),
+            Update::CompletionRequested { doc_id, view_id, trigger } => f.debug_struct("Update::CompletionRequested")
+                .field("doc_id", doc_id)
+                .field("view_id", view_id)
+                .field("trigger", trigger)
+                .finish(),
+            Update::FileTreeEvent(e) => f.debug_tuple("Update::FileTreeEvent").field(e).finish(),
+            Update::ShowFilePicker => write!(f, "Update::ShowFilePicker"),
+            Update::ShowBufferPicker => write!(f, "Update::ShowBufferPicker"),
+        }
+    }
 }
 
 struct FontSettings {

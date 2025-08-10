@@ -916,31 +916,7 @@ pub fn init_editor(
         }
     }
     
-    eprintln!("APPLICATION: Theme parent dirs: {:?}", theme_parent_dirs);
-    
-    // Debug: Write theme dirs to file
-    #[cfg(target_os = "macos")]
-    {
-        use std::io::Write;
-        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open("/tmp/nucleotide_debug.log") {
-            writeln!(file, "Theme parent dirs: {:?}", theme_parent_dirs).ok();
-            // Check what themes are actually available
-            for dir in &theme_parent_dirs {
-                let theme_dir = dir.join("themes");
-                if theme_dir.exists() {
-                    if let Ok(entries) = std::fs::read_dir(&theme_dir) {
-                        let count = entries.filter_map(|e| e.ok())
-                            .filter(|e| e.path().extension().map_or(false, |ext| ext == "toml"))
-                            .count();
-                        writeln!(file, "  {} has {} theme files", theme_dir.display(), count).ok();
-                    }
-                }
-            }
-        }
-    }
-    
     let theme_loader = std::sync::Arc::new(helix_view::theme::Loader::new(&theme_parent_dirs));
-    
 
     let true_color = true;
     
@@ -970,6 +946,12 @@ pub fn init_editor(
         .unwrap_or_else(|| theme_loader.default_theme(true_color));
 
     let syn_loader = Arc::new(ArcSwap::from_pointee(lang_loader));
+    
+    // CRITICAL: Enable true_color support for GUI mode before creating the editor
+    // This is required for themes to work correctly
+    let mut config = config;
+    config.editor.true_color = true;
+    
     let config = Arc::new(ArcSwap::from_pointee(config));
 
     let area = Rect {
