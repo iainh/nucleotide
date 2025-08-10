@@ -198,7 +198,7 @@
           <plist version="1.0">
           <dict>
             <key>CFBundleExecutable</key>
-            <string>Helix</string>
+            <string>${appName}</string>
             <key>CFBundleIdentifier</key>
             <string>${bundleId}</string>
             <key>CFBundleName</key>
@@ -356,7 +356,7 @@
           # Create desktop file
           cat > nucleotide-linux/share/applications/nucleotide.desktop <<EOF
           [Desktop Entry]
-          Name=Helix GPUI
+          Name=Nucleotide
           Comment=A post-modern text editor
           Exec=nucl %F
           Terminal=false
