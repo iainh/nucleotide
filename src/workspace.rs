@@ -589,7 +589,7 @@ impl Workspace {
             core.project_directory = Some(path.to_path_buf());
 
             // Find the workspace root from this directory
-            let workspace_root = find_workspace_root_from(&path);
+            let workspace_root = find_workspace_root_from(path);
             info!("Found workspace root: {workspace_root:?}");
 
             // Update the editor's working directory
@@ -649,7 +649,7 @@ impl Workspace {
             
             // Now open the file
             info!("About to open file from picker: {path:?} with action: {:?}", action);
-            match core.editor.open(&path, action) {
+            match core.editor.open(path, action) {
                 Err(e) => {
                     eprintln!("Failed to open file {path:?}: {e}");
                 }
@@ -1188,11 +1188,8 @@ impl Render for Workspace {
         };
         
         // Only set window title if using native decorations
-        match window.window_decorations() {
-            gpui::Decorations::Server => {
-                window.set_window_title(&window_title);
-            }
-            _ => {}
+        if window.window_decorations() == gpui::Decorations::Server {
+            window.set_window_title(&window_title);
         }
 
         let editor = &self.core.read(cx).editor;

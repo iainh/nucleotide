@@ -1408,12 +1408,8 @@ impl Element for DocumentElement {
                         let char_str: SharedString = RopeWrapper(char_slice).into();
                         
                         // Replace newlines with visible character for display
-                        let char_str = if char_str == "\n" {
+                        let char_str = if char_str == "\n" || char_str == "\r\n" || char_str == "\r" {
                             "⏎".into() // Use return symbol for newlines
-                        } else if char_str == "\r\n" {
-                            "⏎".into()
-                        } else if char_str == "\r" {
-                            "⏎".into()
                         } else {
                             char_str
                         };

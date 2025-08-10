@@ -465,12 +465,12 @@ impl FileTree {
         let root_path = self.root_path.clone();
 
         // Don't go above the root directory
-        if parent_path < &root_path {
+        if parent_path < root_path {
             return None;
         }
 
         // Use the root path itself if the parent would be outside the tree
-        let target_path = if parent_path == &root_path {
+        let target_path = if parent_path == root_path {
             root_path
         } else {
             parent_path.to_path_buf()

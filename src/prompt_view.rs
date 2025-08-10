@@ -11,6 +11,12 @@ pub struct CompletionItem {
     pub description: Option<SharedString>,
 }
 
+// Type aliases for callbacks
+type PromptSubmitCallback = Box<dyn FnMut(&str, &mut Context<PromptView>) + 'static>;
+type PromptCancelCallback = Box<dyn FnMut(&mut Context<PromptView>) + 'static>;
+type PromptChangeCallback = Box<dyn FnMut(&str, &mut Context<PromptView>) + 'static>;
+type PromptCompletionFn = Box<dyn Fn(&str) -> Vec<CompletionItem> + 'static>;
+
 pub struct PromptView {
     // Core prompt state
     prompt: SharedString,
@@ -32,10 +38,10 @@ pub struct PromptView {
     completion_scroll_offset: usize,
     
     // Callbacks
-    on_submit: Option<Box<dyn FnMut(&str, &mut Context<Self>) + 'static>>,
-    on_cancel: Option<Box<dyn FnMut(&mut Context<Self>) + 'static>>,
-    on_change: Option<Box<dyn FnMut(&str, &mut Context<Self>) + 'static>>,
-    completion_fn: Option<Box<dyn Fn(&str) -> Vec<CompletionItem> + 'static>>,
+    on_submit: Option<PromptSubmitCallback>,
+    on_cancel: Option<PromptCancelCallback>,
+    on_change: Option<PromptChangeCallback>,
+    completion_fn: Option<PromptCompletionFn>,
     
     // Styling
     style: PromptStyle,

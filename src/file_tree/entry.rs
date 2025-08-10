@@ -165,7 +165,7 @@ impl FileTreeEntry {
 
     /// Get the file name
     pub fn file_name(&self) -> Option<&str> {
-        self.path.file_name().map(|name| name.to_str()).flatten()
+        self.path.file_name().and_then(|name| name.to_str())
     }
 
     /// Check if this is a directory

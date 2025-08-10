@@ -170,7 +170,9 @@ fn window_options(_cx: &mut App) -> gpui::WindowOptions {
         _ => gpui::WindowDecorations::Client,  // Default to client decorations
     };
     
-    let options = WindowOptions {
+    
+    
+    WindowOptions {
         app_id: Some("nucleotide".to_string()),
         titlebar: Some(TitlebarOptions {
             title: None,  // We'll render our own title
@@ -189,9 +191,7 @@ fn window_options(_cx: &mut App) -> gpui::WindowOptions {
         window_background: WindowBackgroundAppearance::Opaque,
         window_decorations: Some(window_decorations),
         window_min_size: Some(gpui::size(px(400.0), px(300.0))),
-    };
-    
-    options
+    }
 }
 
 // Import actions from our centralized definitions
@@ -406,7 +406,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
         
         let options = window_options(cx);
 
-        let _ = cx.open_window(options, |window, cx| {
+        let _ = cx.open_window(options, |_window, cx| {
             // Set up window event handlers to send events to Helix
             log::info!("Setting up window event handlers");
             
@@ -493,8 +493,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
                     },
                 )
                 .detach();
-                mc.subscribe(&crank, move |this: &mut Application, _, ev, cx| {
-                    *ev;
+                mc.subscribe(&crank, move |this: &mut Application, _, _ev, cx| {
                     this.handle_crank_event((), cx, handle_2.clone());
                 })
                 .detach();
@@ -580,7 +579,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             
             // Spawn a task to handle file open requests from macOS
             let workspace_clone = workspace.clone();
-            cx.spawn(async move |mut cx| {
+            cx.spawn(async move |cx| {
                 while let Some(paths) = file_open_rx.recv().await {
                     log::info!("Processing file open request for paths: {:?}", paths);
                     

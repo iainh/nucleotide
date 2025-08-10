@@ -25,7 +25,7 @@ impl FileTreeWatcher {
         let (tx, rx) = mpsc::unbounded_channel();
         
         let mut watcher = notify::recommended_watcher(move |res| {
-            if let Err(_) = tx.send(res) {
+            if tx.send(res).is_err() {
                 // Channel closed, watcher is being dropped
             }
         })?;

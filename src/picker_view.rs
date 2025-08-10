@@ -17,6 +17,10 @@ pub struct PickerItem {
     pub data: Arc<dyn std::any::Any + Send + Sync>,
 }
 
+// Type aliases for callbacks
+type PickerSelectCallback = Box<dyn FnMut(&PickerItem, &mut Context<PickerView>) + 'static>;
+type PickerCancelCallback = Box<dyn FnMut(&mut Context<PickerView>) + 'static>;
+
 pub struct PickerView {
     // Core picker state
     query: SharedString,
@@ -43,8 +47,8 @@ pub struct PickerView {
     preview_task: Option<Task<()>>,
 
     // Callbacks
-    on_select: Option<Box<dyn FnMut(&PickerItem, &mut Context<Self>) + 'static>>,
-    on_cancel: Option<Box<dyn FnMut(&mut Context<Self>) + 'static>>,
+    on_select: Option<PickerSelectCallback>,
+    on_cancel: Option<PickerCancelCallback>,
 
     // Styling
     style: PickerStyle,
@@ -450,7 +454,7 @@ impl PickerView {
         else {
             // Debug: check what type we actually have
             log::warn!("Preview not available for item with type_id: {:?}", item.data.type_id());
-            self.preview_content = Some(format!("Preview not available"));
+            self.preview_content = Some("Preview not available".to_string());
             cx.notify();
         }
     }
@@ -814,7 +818,7 @@ impl PickerView {
                 // Check if this is a buffer picker by looking at the label format
                 let parts: Vec<&str> = item.label.split_whitespace().collect();
                 // Check if first part looks like an ID (numeric or starts with digit)
-                parts.len() >= 3 && parts[0].chars().next().map_or(false, |c| c.is_numeric())
+                parts.len() >= 3 && parts[0].chars().next().is_some_and(|c| c.is_numeric())
             }).unwrap_or(false), |this| {
                 this.child(
                     div()
@@ -905,7 +909,7 @@ impl PickerView {
                                                             // Parse the label to extract columns: "ID FLAGS PATH"
                                                             {
                                                                 let parts: Vec<&str> = item.label.split_whitespace().collect();
-                                                                if parts.len() >= 3 && parts[0].chars().next().map_or(false, |c| c.is_numeric()) {
+                                                                if parts.len() >= 3 && parts[0].chars().next().is_some_and(|c| c.is_numeric()) {
                                                                     // Format as columns for buffer picker
                                                                     let id = parts[0].to_string();
                                                                     let flags = parts[1].to_string();

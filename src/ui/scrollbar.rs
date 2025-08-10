@@ -334,7 +334,7 @@ impl Element for Scrollbar {
             
             // Use theme colors - fallback to simple grays if theme is not available
             let (thumb_bg, track_bg) = {
-                if let Some(theme) = cx.try_global::<crate::ui::Theme>() {
+                if let Some(_theme) = cx.try_global::<crate::ui::Theme>() {
                     let thumb_base_color = match thumb_state {
                         ThumbState::Dragging(_) => hsla(0.0, 0.0, 0.6, 0.9),
                         ThumbState::Hover => hsla(0.0, 0.0, 0.5, 0.7),
@@ -394,11 +394,8 @@ impl Element for Scrollbar {
                 BorderStyle::default(),
             ));
 
-            if thumb_state.is_dragging() {
-                window.set_cursor_style(CursorStyle::Arrow, hitbox);
-            } else {
-                window.set_cursor_style(CursorStyle::Arrow, hitbox);
-            }
+            // Always use arrow cursor for scrollbar
+            window.set_cursor_style(CursorStyle::Arrow, hitbox);
 
             enum ScrollbarMouseEvent {
                 GutterClick,
@@ -512,7 +509,7 @@ impl Element for Scrollbar {
             // Mouse up events
             window.on_mouse_event({
                 let state = self.state.clone();
-                move |event: &MouseUpEvent, phase, window, _| {
+                move |event: &MouseUpEvent, phase, _window, _| {
                     // Handle in capture phase if we were dragging
                     if phase.capture() && state.is_dragging() {
                         state.scroll_handle().drag_ended();

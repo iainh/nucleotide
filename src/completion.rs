@@ -77,6 +77,10 @@ impl CompletionItemKind {
     }
 }
 
+// Type aliases for callbacks
+type SelectCallback = Box<dyn FnMut(&CompletionItem, &mut Context<CompletionView>) + 'static>;
+type DismissCallback = Box<dyn FnMut(&mut Context<CompletionView>) + 'static>;
+
 pub struct CompletionView {
     // Core completion state
     items: Vec<CompletionItem>,
@@ -97,8 +101,8 @@ pub struct CompletionView {
     anchor_position: Point<Pixels>,
     
     // Callbacks
-    on_select: Option<Box<dyn FnMut(&CompletionItem, &mut Context<Self>) + 'static>>,
-    on_dismiss: Option<Box<dyn FnMut(&mut Context<Self>) + 'static>>,
+    on_select: Option<SelectCallback>,
+    on_dismiss: Option<DismissCallback>,
     
     // Styling
     style: CompletionStyle,

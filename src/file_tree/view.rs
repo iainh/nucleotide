@@ -175,13 +175,13 @@ impl FileTreeView {
     }
 
     /// Toggle directory expansion
-    pub fn toggle_directory(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
+    pub fn toggle_directory(&mut self, path: &Path, cx: &mut Context<Self>) {
         // Check if we're already loading this directory
         if self.tree.is_directory_loading(path) {
             return;
         }
 
-        let path_buf = path.clone();
+        let path_buf = path.to_path_buf();
         let is_expanded = self.tree.is_expanded(path);
 
         if is_expanded {
@@ -190,7 +190,7 @@ impl FileTreeView {
                 log::error!("Failed to collapse directory {}: {}", path.display(), e);
             } else {
                 cx.emit(FileTreeEvent::DirectoryToggled {
-                    path: path.clone(),
+                    path: path.to_path_buf(),
                     expanded: false,
                 });
                 cx.notify();
@@ -210,11 +210,9 @@ impl FileTreeView {
                         match std::fs::read_dir(&path_for_io) {
                             Ok(read_dir) => {
                                 let mut entries = Vec::new();
-                                for entry in read_dir {
-                                    if let Ok(entry) = entry {
-                                        if let Ok(metadata) = entry.metadata() {
-                                            entries.push((entry.path(), metadata));
-                                        }
+                                for entry in read_dir.flatten() {
+                                    if let Ok(metadata) = entry.metadata() {
+                                        entries.push((entry.path(), metadata));
                                     }
                                 }
                                 Ok(entries)
@@ -226,7 +224,7 @@ impl FileTreeView {
 
                 // Update the UI on the main thread
                 if let Some(this) = this.upgrade() {
-                    this.update(cx, |view, cx| {
+                    let _ = this.update(cx, |view, cx| {
                         match entries {
                             Ok(entries) => {
                                 if let Err(e) =
@@ -799,7 +797,7 @@ impl FileTreeView {
                     entry
                         .path
                         .components()
-                        .last()
+                        .next_back()
                         .and_then(|c| c.as_os_str().to_str())
                 })
                 .unwrap_or(".")

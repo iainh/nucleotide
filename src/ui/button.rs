@@ -40,6 +40,9 @@ impl ButtonSize {
     }
 }
 
+// Type alias for button click handler
+type ButtonClickHandler = Box<dyn Fn(&MouseDownEvent, &mut App) + 'static>;
+
 /// A reusable button component
 #[derive(IntoElement)]
 pub struct Button {
@@ -50,7 +53,7 @@ pub struct Button {
     disabled: bool,
     icon: Option<SharedString>,
     icon_position: IconPosition,
-    on_click: Option<Box<dyn Fn(&MouseDownEvent, &mut App) + 'static>>,
+    on_click: Option<ButtonClickHandler>,
     tooltip: Option<SharedString>,
 }
 

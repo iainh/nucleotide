@@ -93,13 +93,16 @@ pub trait PickerDelegate: Sized + 'static {
     }
 }
 
+// Type alias for file picker select handler
+type FilePickerSelectHandler = Arc<dyn Fn(std::path::PathBuf, &mut App) + Send + Sync>;
+
 /// File picker delegate implementation
 pub struct FilePickerDelegate {
     items: Vec<FilePickerItem>,
     filtered_indices: Vec<usize>,
     selected_index: usize,
     query: SharedString,
-    on_select: Option<Arc<dyn Fn(std::path::PathBuf, &mut App) + Send + Sync>>,
+    on_select: Option<FilePickerSelectHandler>,
     theme_colors: Option<PickerThemeColors>,
 }
 

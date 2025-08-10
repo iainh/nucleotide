@@ -23,6 +23,9 @@ impl ListItemSpacing {
     }
 }
 
+// Type alias for click handlers
+type ListItemClickHandler = Box<dyn Fn(&MouseDownEvent, &mut App) + 'static>;
+
 /// A reusable list item component following Zed's pattern
 #[derive(IntoElement)]
 pub struct ListItem {
@@ -30,8 +33,8 @@ pub struct ListItem {
     spacing: ListItemSpacing,
     selected: bool,
     disabled: bool,
-    on_click: Option<Box<dyn Fn(&MouseDownEvent, &mut App) + 'static>>,
-    on_secondary_click: Option<Box<dyn Fn(&MouseDownEvent, &mut App) + 'static>>,
+    on_click: Option<ListItemClickHandler>,
+    on_secondary_click: Option<ListItemClickHandler>,
     children: SmallVec<[AnyElement; 2]>,
     start_slot: Option<AnyElement>,
     end_slot: Option<AnyElement>,
