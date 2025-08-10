@@ -123,21 +123,7 @@ impl HelixEditorScrollHandle {
 
 impl ScrollableHandle for HelixEditorScrollHandle {
     fn max_offset(&self) -> Size<Pixels> {
-        // Calculate based on actual document lines and viewport
-        // TODO: Fix this when we need the HelixEditorScrollHandle
-        /*if let Ok(core) = self.core.try_read() {
-            let editor = &core.editor;
-            if let Some(document) = editor.document(self.doc_id) {
-                let total_lines = document.text().len_lines();
-                let line_height = px(20.0); // TODO: Get from theme/config
-                let content_height = px(total_lines as f32 * line_height.0);
-                let viewport_height = self.viewport_size.get().height;
-
-                // Max offset is content height minus viewport height
-                let max_y = (content_height - viewport_height).max(px(0.0));
-                return size(px(0.0), max_y);
-            }
-        }*/
+        // TODO: Calculate based on actual document lines and viewport when needed
 
         // Fallback to default for now
         size(px(0.0), px(2000.0)) // Large vertical scrollable area for testing

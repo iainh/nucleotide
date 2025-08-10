@@ -251,30 +251,3 @@ where
 pub type PickerOverlay = Overlay<crate::picker_view::PickerView>;
 pub type PromptOverlay = Overlay<crate::prompt_view::PromptView>;
 pub type CompletionOverlay = Overlay<crate::completion::CompletionView>;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Mock view for testing
-    struct TestView;
-
-    impl Render for TestView {
-        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            div().child("Test Content")
-        }
-    }
-
-    impl EventEmitter<DismissEvent> for TestView {}
-    impl Focusable for TestView {
-        fn focus_handle(&self, cx: &App) -> FocusHandle {
-            cx.focus_handle()
-        }
-    }
-
-    #[test]
-    fn test_overlay_creation() {
-        // Test that we can create overlays with different positioning
-        // Note: Full rendering tests would require a test context
-    }
-}
