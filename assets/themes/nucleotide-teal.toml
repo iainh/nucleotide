@@ -1,0 +1,131 @@
+# Nucleotide Teal Theme - A WCAG-compliant teal variant of the default Helix theme
+# Based on the default purple theme but with teal as the dominant color
+
+attribute = "aqua"
+keyword = "almond"
+"keyword.directive" = "aqua" # -- preprocessor comments (#if in C)
+namespace = "aqua"
+punctuation = "seafoam"
+"punctuation.delimiter" = "seafoam"
+operator = "aqua"
+special = "honey"
+"variable.other.member" = "white"
+variable = "seafoam"
+# variable = "almond" # TODO: metavariables only
+# "variable.parameter" = { fg = "seafoam", modifiers = ["underlined"] }
+"variable.parameter" = { fg = "seafoam" }
+"variable.builtin" = "mint"
+type = "white"
+"type.builtin" = "white" # TODO: distinguish?
+constructor = "aqua"
+function = "white"
+"function.macro" = "aqua"
+"function.builtin" = "white"
+tag = "almond"
+comment = "sirocco"
+constant = "white"
+"constant.builtin" = "white"
+string = "silver"
+"constant.numeric" = "chamois"
+"constant.character.escape" = "honey"
+# used for lifetimes
+label = "honey"
+tabstop = { modifiers = ["italic"], bg = "forest" }
+
+"markup.heading" = "aqua"
+"markup.bold" = { modifiers = ["bold"] }
+"markup.italic" = { modifiers = ["italic"] }
+"markup.strikethrough" = { modifiers = ["crossed_out"] }
+"markup.link.url" = { fg = "silver", modifiers = ["underlined"] }
+"markup.link.text" = "almond"
+"markup.raw" = "almond"
+
+"diff.plus" = "#35bf86"
+"diff.minus" = "#f22c86"
+"diff.delta" = "#14b8a6"
+
+# TODO: differentiate doc comment
+# concat (ERROR) @error.syntax and "MISSING ;" selectors for errors
+
+"ui.background" = { bg = "ocean" }
+"ui.background.separator" = { fg = "mist" }
+"ui.linenr" = { fg = "mist" }
+"ui.linenr.selected" = { fg = "aqua" }
+"ui.statusline" = { fg = "aqua", bg = "abyss" }
+"ui.statusline.inactive" = { fg = "seafoam", bg = "abyss" }
+"ui.popup" = { bg = "abyss" }
+"ui.window" = { fg = "forest" }
+"ui.help" = { bg = "#14b8a6", fg = "#0a1918" }
+"ui.text" = { fg = "seafoam" }
+"ui.text.focus" = { fg = "white" }
+"ui.text.inactive" = "sirocco"
+"ui.text.directory" = { fg = "aqua" }
+"ui.virtual" = { fg = "mist" }
+"ui.virtual.ruler" = { bg = "forest" }
+"ui.virtual.jump-label" = { fg = "apricot", modifiers = ["bold"] }
+
+"ui.virtual.indent-guide" = { fg = "mist" }
+
+"ui.selection" = { bg = "#0e7490" }
+"ui.selection.primary" = { bg = "#0e7490" }
+# TODO: namespace ui.cursor as ui.selection.cursor?
+"ui.cursor.select" = { bg = "teal-bright" }
+"ui.cursor.insert" = { bg = "white" }
+"ui.cursor.primary.select" = { bg = "teal-bright" }
+"ui.cursor.primary.insert" = { bg = "white" }
+"ui.cursor.match" = { fg = "#0a1918", bg = "#5eaaa8" }
+"ui.cursor" = { modifiers = ["reversed"] }
+"ui.cursorline.primary" = { bg = "forest" }
+"ui.highlight" = { bg = "forest" }
+"ui.highlight.frameline" = { bg = "#2d5951" }
+"ui.debug" = { fg = "#2d5951" }
+"ui.debug.breakpoint" = { fg = "apricot" }
+"ui.menu" = { fg = "seafoam", bg = "abyss" }
+"ui.menu.selected" = { fg = "abyss", bg = "white" }
+"ui.menu.scroll" = { fg = "seafoam", bg = "mist" }
+
+"diagnostic.hint" = { underline = { color = "silver", style = "curl" } }
+"diagnostic.info" = { underline = { color = "teal-bright", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "lightning", style = "curl" } }
+"diagnostic.error" = { underline = { color = "apricot", style = "curl" } }
+"diagnostic.unnecessary" = { modifiers = ["dim"] }
+"diagnostic.deprecated" = { modifiers = ["crossed_out"] }
+
+warning = "lightning"
+error = "apricot"
+info = "teal-bright"
+hint = "silver"
+
+[palette]
+# Core colors (unchanged)
+white = "#ffffff"
+silver = "#cccccc"
+sirocco = "#697C81"
+mint = "#9ff28f"
+almond = "#eccdba"
+chamois = "#E8DCA0"
+honey = "#efba5d"
+apricot = "#f47868"
+lightning = "#ffcd1c"
+
+# Teal color palette with improved readability
+# Bright teal for highlights and accents (replacing lilac #dbbfef)
+aqua = "#5eead4"
+
+# Light grey for main text (WCAG AA compliant on dark bg)
+seafoam = "#c1c9d2"
+
+# Medium grey (replacing comet #5a5977)
+mist = "#7a8491"
+
+# Dark teal (replacing bossanova #452859)
+forest = "#134e4a"
+
+# Very dark teal (replacing midnight #3b224c)
+ocean = "#0f2e2c"
+
+# Darkest teal (replacing revolver #281733)
+abyss = "#0a1918"
+
+# Bright teal (replacing delta #6F44F0)
+teal-bright = "#14b8a6"

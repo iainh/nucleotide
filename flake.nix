@@ -191,6 +191,12 @@
           # Ensure proper permissions
           chmod -R u+w Nucleotide.app/Contents/MacOS/runtime
           
+          # Copy custom Nucleotide themes if available
+          if [ -d "assets/themes" ]; then
+            echo "Copying custom Nucleotide themes..."
+            cp -r assets/themes/*.toml Nucleotide.app/Contents/MacOS/runtime/themes/ 2>/dev/null || true
+          fi
+          
           # Create Info.plist with full document type support
           cat > Nucleotide.app/Contents/Info.plist <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -352,6 +358,12 @@
           
           # Ensure proper permissions
           chmod -R u+w nucleotide-linux/share/nucleotide/runtime
+          
+          # Copy custom Nucleotide themes if available
+          if [ -d "assets/themes" ]; then
+            echo "Copying custom Nucleotide themes..."
+            cp -r assets/themes/*.toml nucleotide-linux/share/nucleotide/runtime/themes/ 2>/dev/null || true
+          fi
           
           # Create desktop file
           cat > nucleotide-linux/share/applications/nucleotide.desktop <<EOF

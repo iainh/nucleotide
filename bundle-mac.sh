@@ -86,28 +86,34 @@ if [ -z "${HELIX_RUNTIME_SOURCE}" ] || [ ! -d "${HELIX_RUNTIME_SOURCE}" ]; then
     exit 1
 fi
 
-# Copy runtime files to both Resources (macOS standard) and MacOS (where Helix expects)
+# Copy runtime files to Resources (macOS standard location)
 echo -e "${GREEN}Copying runtime files...${NC}"
 # Use rsync to handle symlinks and missing files gracefully
 rsync -a --exclude='grammars/sources' "${HELIX_RUNTIME_SOURCE}/" "${BUNDLE_NAME}/Contents/Resources/runtime/"
-rsync -a --exclude='grammars/sources' "${HELIX_RUNTIME_SOURCE}/" "${BUNDLE_NAME}/Contents/MacOS/runtime/"
+
+# Copy custom Nucleotide themes
+if [ -d "assets/themes" ]; then
+    echo -e "${GREEN}Copying custom Nucleotide themes...${NC}"
+    cp -r assets/themes/*.toml "${BUNDLE_NAME}/Contents/Resources/runtime/themes/" 2>/dev/null || true
+    CUSTOM_THEME_COUNT=$(find assets/themes -name "*.toml" 2>/dev/null | wc -l)
+    if [ "${CUSTOM_THEME_COUNT}" -gt 0 ]; then
+        echo -e "${GREEN}  - ${CUSTOM_THEME_COUNT} custom theme(s) copied${NC}"
+    fi
+fi
 
 # Verify runtime files were copied
 RUNTIME_DEST="${BUNDLE_NAME}/Contents/Resources/runtime"
-RUNTIME_MACOS_DEST="${BUNDLE_NAME}/Contents/MacOS/runtime"
-if [ -d "${RUNTIME_DEST}/grammars" ] && [ -d "${RUNTIME_DEST}/themes" ] && [ -d "${RUNTIME_DEST}/queries" ] && \
-   [ -d "${RUNTIME_MACOS_DEST}/grammars" ] && [ -d "${RUNTIME_MACOS_DEST}/themes" ] && [ -d "${RUNTIME_MACOS_DEST}/queries" ]; then
+if [ -d "${RUNTIME_DEST}/grammars" ] && [ -d "${RUNTIME_DEST}/themes" ] && [ -d "${RUNTIME_DEST}/queries" ]; then
     GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -name "*.so" | wc -l)
     THEME_COUNT=$(find "${RUNTIME_DEST}/themes" -name "*.toml" | wc -l)
     QUERY_COUNT=$(find "${RUNTIME_DEST}/queries" -mindepth 1 -type d | wc -l)
-    echo -e "${GREEN}Runtime files copied successfully to both locations:${NC}"
+    echo -e "${GREEN}Runtime files copied successfully:${NC}"
     echo "  - ${GRAMMAR_COUNT} grammar files"
     echo "  - ${THEME_COUNT} theme files"
     echo "  - Query files: ${QUERY_COUNT} languages"
     echo "  - Tutor file: $([ -f "${RUNTIME_DEST}/tutor" ] && echo "✓" || echo "✗")"
-    echo "  - MacOS location: $([ -d "${RUNTIME_MACOS_DEST}" ] && echo "✓" || echo "✗")"
 else
-    echo -e "${RED}Error: Runtime files not copied correctly to both locations${NC}"
+    echo -e "${RED}Error: Runtime files not copied correctly${NC}"
     exit 1
 fi
 
