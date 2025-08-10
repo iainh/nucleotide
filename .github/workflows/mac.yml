@@ -202,8 +202,16 @@ jobs:
       
       - name: Create universal binary
         run: |
+          # Debug: List extracted apps
+          echo "Listing current directory:"
+          ls -la
+          echo "Checking x86_64 app:"
+          ls -la Nucleotide-x86_64.app/Contents/MacOS/ || echo "x86_64 app not found"
+          echo "Checking aarch64 app:"
+          ls -la Nucleotide-aarch64.app/Contents/MacOS/ || echo "aarch64 app not found"
+          
           # Create universal app
-          cp -r Nucleotide-x86_64.app Nucleotide-Universal.app
+          cp -r Nucleotide-aarch64.app Nucleotide-Universal.app
           
           # Create universal binary using lipo
           lipo -create \
