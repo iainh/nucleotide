@@ -50,12 +50,12 @@ impl ParsedCommand {
     }
 
     /// Check if this command exists in Helix's command map
-    #[cfg(not(test_disabled))]
+    #[cfg(not(test))]
     pub fn exists(&self) -> bool {
         helix_term::commands::TYPABLE_COMMAND_MAP.contains_key(self.name.as_str())
     }
 
-    #[cfg(test_disabled)]
+    #[cfg(test)]
     pub fn exists(&self) -> bool {
         // For tests, just check against a known set of commands
         matches!(
@@ -83,7 +83,7 @@ impl ParsedCommand {
     }
 
     /// Get the command description if it exists
-    #[cfg(not(test_disabled))]
+    #[cfg(not(test))]
     #[allow(dead_code)]
     pub fn description(&self) -> Option<&'static str> {
         helix_term::commands::TYPABLE_COMMAND_MAP
@@ -91,7 +91,7 @@ impl ParsedCommand {
             .map(|cmd| cmd.doc)
     }
 
-    #[cfg(test_disabled)]
+    #[cfg(test)]
     #[allow(dead_code)]
     pub fn description(&self) -> Option<&'static str> {
         match self.name.as_str() {
@@ -207,7 +207,7 @@ impl Command {
             _ => {
                 // For commands we haven't categorized yet, return generic
                 // For commands we haven't categorized yet, check if it's known
-                #[cfg(not(test_disabled))]
+                #[cfg(not(test))]
                 {
                     if parsed.exists() {
                         Ok(Command::Generic(parsed))
@@ -215,7 +215,7 @@ impl Command {
                         Err(anyhow!("Unknown command: {}", parsed.name))
                     }
                 }
-                #[cfg(test_disabled)]
+                #[cfg(test)]
                 {
                     // In tests, just return error for unknown commands
                     Err(anyhow!("Unknown command: {}", parsed.name))
@@ -298,7 +298,8 @@ impl Command {
     }
 }
 
-#[cfg(test_disabled)]
+#[cfg(test)]
+#[allow(dead_code)]
 mod tests {
     use super::*;
 

@@ -46,7 +46,7 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 // Removed unused Tag-related structs and enums
 
 use anyhow::Error;
-use log::{debug, info, warn};
+use log::{debug, warn};
 
 use tokio_stream::StreamExt;
 
@@ -1117,7 +1117,8 @@ pub fn init_editor(
 // Tests moved to tests/integration_test.rs to avoid GPUI proc macro compilation issues
 // The issue: When compiling with --test, GPUI proc macros cause stack overflow
 // when processing certain patterns in our codebase
-#[cfg(test_disabled)]
+#[cfg(test)]
+#[allow(dead_code)]
 mod tests {
     use super::*;
     use crate::test_utils::test_support::*;

@@ -579,7 +579,6 @@ impl Workspace {
                         theme_name: theme_name_after.clone(),
                     },
                 );
-            } else {
             }
 
             // Check if we should quit after command execution

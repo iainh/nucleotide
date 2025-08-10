@@ -183,7 +183,8 @@ fn load_gui_config(dir: &Path) -> anyhow::Result<GuiConfig> {
 /// weight = "medium"
 /// size = 14.0
 /// ```
-#[cfg(test_disabled)]
+#[cfg(test)]
+#[allow(dead_code)]
 mod tests {
     use super::*;
 

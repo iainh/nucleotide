@@ -204,7 +204,8 @@ impl DebouncedFileTreeWatcher {
     }
 }
 
-#[cfg(test_disabled)]
+#[cfg(test)]
+#[allow(dead_code)]
 mod tests {
     use super::*;
     use std::fs;
