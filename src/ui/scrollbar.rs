@@ -3,9 +3,7 @@
 
 use std::{any::Any, cell::Cell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
 
-use crate::Core;
 use gpui::*;
-use helix_view::{DocumentId, ViewId};
 
 /// A scrollbar component that can be attached to scrollable content
 pub struct Scrollbar {
@@ -87,67 +85,6 @@ impl ScrollableHandle for UniformListScrollHandle {
 
     fn viewport(&self) -> Bounds<Pixels> {
         self.0.borrow().base_handle.bounds()
-    }
-}
-
-/// A scroll handle that integrates with the Helix editor
-#[derive(Clone, Debug)]
-pub struct HelixEditorScrollHandle {
-    core: Entity<Core>,
-    doc_id: DocumentId,
-    view_id: ViewId,
-    viewport_size: Rc<Cell<Size<Pixels>>>,
-    input: Entity<crate::Input>,
-}
-
-impl HelixEditorScrollHandle {
-    pub fn new(
-        core: Entity<Core>,
-        doc_id: DocumentId,
-        view_id: ViewId,
-        input: Entity<crate::Input>,
-    ) -> Self {
-        Self {
-            core,
-            doc_id,
-            view_id,
-            viewport_size: Rc::new(Cell::new(size(px(800.0), px(600.0)))), // Default size
-            input,
-        }
-    }
-
-    pub fn set_viewport_size(&self, size: Size<Pixels>) {
-        self.viewport_size.set(size);
-    }
-}
-
-impl ScrollableHandle for HelixEditorScrollHandle {
-    fn max_offset(&self) -> Size<Pixels> {
-        // TODO: Calculate based on actual document lines and viewport when needed
-
-        // Fallback to default for now
-        size(px(0.0), px(2000.0)) // Large vertical scrollable area for testing
-    }
-
-    fn set_offset(&self, point: Point<Pixels>) {
-        // Convert pixel offset to line-based scrolling for Helix
-        let line_height = px(20.0);
-        let lines_offset = (-point.y / line_height) as usize;
-
-        // This would need to emit a scroll event to the helix editor
-        // For now, we'll leave this as a placeholder
-        log::debug!("Scrollbar setting offset to {} lines", lines_offset);
-    }
-
-    fn offset(&self) -> Point<Pixels> {
-        // Return current scroll offset in pixels
-        // This would need to be calculated from the helix editor's current position
-        point(px(0.0), px(0.0)) // Placeholder
-    }
-
-    fn viewport(&self) -> Bounds<Pixels> {
-        let size = self.viewport_size.get();
-        Bounds::new(point(px(0.0), px(0.0)), size)
     }
 }
 

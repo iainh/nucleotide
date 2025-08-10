@@ -16,13 +16,10 @@ use gpui::*;
 pub mod spacing {
     use gpui::px;
 
-    pub const NONE: gpui::Pixels = px(0.);
     pub const XS: gpui::Pixels = px(2.);
     pub const SM: gpui::Pixels = px(4.);
     pub const MD: gpui::Pixels = px(8.);
     pub const LG: gpui::Pixels = px(12.);
-    pub const XL: gpui::Pixels = px(16.);
-    pub const XXL: gpui::Pixels = px(24.);
 }
 
 /// Theme trait for consistent styling

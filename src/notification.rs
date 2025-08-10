@@ -7,14 +7,6 @@ use helix_lsp::{
     LanguageServerId,
 };
 use helix_view::document::DocumentSavedEvent;
-use log::info;
-
-enum LspStatusEvent {
-    Begin,
-    Progress,
-    End,
-    Ignore,
-}
 
 #[derive(Default, Debug)]
 struct LspStatus {
@@ -109,99 +101,6 @@ impl NotificationView {
             lsp_status: HashMap::new(),
             popup_bg_color,
             popup_text_color,
-        }
-    }
-
-    fn handle_lsp_call(&mut self, id: LanguageServerId, call: &helix_lsp::Call) -> LspStatusEvent {
-        use helix_lsp::{Call, Notification};
-        let mut ev = LspStatusEvent::Ignore;
-
-        let status = self.lsp_status.entry(id).or_default();
-
-        if let Call::Notification(notification) = call {
-            if let Ok(Notification::ProgressMessage(ref msg)) =
-                Notification::parse(&notification.method, notification.params.clone())
-            {
-                let token = match msg.token.clone() {
-                    NumberOrString::String(s) => s,
-                    NumberOrString::Number(num) => num.to_string(),
-                };
-                status.token = token;
-                let ProgressParamsValue::WorkDone(value) = msg.value.clone();
-                match value {
-                    WorkDoneProgress::Begin(begin) => {
-                        status.title = begin.title;
-                        status.message = begin.message;
-                        status.percentage = begin.percentage;
-                        ev = LspStatusEvent::Begin;
-                    }
-                    WorkDoneProgress::Report(report) => {
-                        if let Some(msg) = report.message {
-                            status.message = Some(msg);
-                        }
-                        status.percentage = report.percentage;
-
-                        ev = LspStatusEvent::Progress;
-                    }
-                    WorkDoneProgress::End(end) => {
-                        if let Some(msg) = end.message {
-                            status.message = Some(msg);
-                        }
-                        ev = LspStatusEvent::End;
-                    }
-                }
-            }
-        }
-        // println!("{:?}", status);
-        ev
-    }
-
-    pub fn subscribe(&self, editor: &Entity<crate::Core>, cx: &mut Context<Self>) {
-        cx.subscribe(editor, |this, _, ev, cx| {
-            this.handle_event(ev, cx);
-        })
-        .detach()
-    }
-
-    fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
-        use helix_view::editor::EditorEvent;
-
-        info!("handling event {ev:?}");
-        if let crate::Update::EditorStatus(status) = ev {
-            self.editor_status = Some(status.clone());
-            cx.notify();
-        }
-        if let crate::Update::EditorEvent(EditorEvent::DocumentSaved(ev)) = ev {
-            self.saved = Some(ev.as_ref().map_err(|e| e.to_string()).cloned());
-            cx.notify();
-        }
-        if let crate::Update::EditorEvent(EditorEvent::LanguageServerMessage((id, call))) = ev {
-            let ev = self.handle_lsp_call(*id, call);
-            match ev {
-                LspStatusEvent::Begin => {
-                    let id = *id;
-                    cx.spawn(async move |this, cx| {
-                        loop {
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(5000))
-                                .await;
-                            this.update(cx, |this, _cx| {
-                                if this.lsp_status.contains_key(&id) {
-                                    // TODO: this call causes workspace redraw for some reason
-                                    //cx.notify();
-                                }
-                            })
-                            .ok();
-                        }
-                    })
-                    .detach();
-                }
-                LspStatusEvent::Progress => {}
-                LspStatusEvent::Ignore => {}
-                LspStatusEvent::End => {
-                    self.lsp_status.remove(id);
-                }
-            }
         }
     }
 }

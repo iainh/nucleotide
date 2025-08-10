@@ -100,7 +100,7 @@ impl ThemeManager {
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(120.0 / 360.0, 0.6, 0.5, 1.0));
 
-        let ui_theme = UITheme {
+        UITheme {
             background,
             surface,
             surface_background: hsla(surface.h, surface.s, surface.l - 0.02, surface.a),
@@ -117,8 +117,7 @@ impl ThemeManager {
             error,
             warning,
             success,
-        };
-        ui_theme
+        }
     }
 }
 

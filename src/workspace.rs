@@ -1107,7 +1107,7 @@ impl Workspace {
         let mut font_config = cx.global::<crate::EditorFontConfig>().clone();
 
         // Adjust size with bounds checking
-        font_config.size = (font_config.size + delta).max(8.0).min(72.0);
+        font_config.size = (font_config.size + delta).clamp(8.0, 72.0);
 
         // Update global font config
         cx.set_global(font_config);
