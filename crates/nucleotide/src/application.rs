@@ -3,13 +3,13 @@ use std::{
     sync::Arc,
 };
 
-use crate::core::lsp_state::ServerStatus;
 use arc_swap::{access::Map, ArcSwap};
 use futures_util::FutureExt;
 use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Position, Selection};
 use helix_lsp::{lsp, LanguageServerId, LspProgressMap};
 use helix_stdx::path::get_relative_path;
 use helix_term::ui::FilePickerData;
+use nucleotide_lsp::ServerStatus;
 
 use helix_term::{
     args::Args,
@@ -56,7 +56,7 @@ pub struct Application {
     pub view: EditorView,
     pub jobs: Jobs,
     pub lsp_progress: LspProgressMap,
-    pub lsp_state: Option<gpui::Entity<crate::core::lsp_state::LspState>>,
+    pub lsp_state: Option<gpui::Entity<nucleotide_lsp::LspState>>,
     pub project_directory: Option<PathBuf>,
     pub event_bridge_rx: Option<crate::event_bridge::BridgedEventReceiver>,
     pub gpui_to_helix_rx: Option<crate::gpui_to_helix_bridge::GpuiToHelixEventReceiver>,
@@ -153,7 +153,7 @@ impl Application {
                                         log::info!("LSP progress active: {} - {:?} ({}%)",
                                             title, message, percentage.unwrap_or(0));
 
-                                        state.progress.insert(key, crate::core::lsp_state::LspProgress {
+                                        state.progress.insert(key, nucleotide_lsp::LspProgress {
                                             server_id: id,
                                             token: format!("{:?}", token),
                                             title: title.clone(),
@@ -189,7 +189,7 @@ impl Application {
     where
         F: FnOnce(&helix_view::Document) -> R,
     {
-        let doc_manager = crate::core::DocumentManager::new(&self.editor);
+        let doc_manager = nucleotide_lsp::DocumentManager::new(&self.editor);
         doc_manager.with_document(doc_id, f)
     }
 
@@ -198,7 +198,7 @@ impl Application {
     where
         F: FnOnce(&mut helix_view::Document) -> R,
     {
-        let mut doc_manager = crate::core::DocumentManagerMut::new(&mut self.editor);
+        let mut doc_manager = nucleotide_lsp::DocumentManagerMut::new(&mut self.editor);
         doc_manager.with_document_mut(doc_id, f)
     }
 
@@ -208,7 +208,7 @@ impl Application {
         F: FnOnce(&helix_view::Document) -> Result<R, E>,
         E: From<String>,
     {
-        let doc_manager = crate::core::DocumentManager::new(&self.editor);
+        let doc_manager = nucleotide_lsp::DocumentManager::new(&self.editor);
         doc_manager.try_with_document(doc_id, f)
     }
 
@@ -218,7 +218,7 @@ impl Application {
         F: FnOnce(&mut helix_view::Document) -> Result<R, E>,
         E: From<String>,
     {
-        let mut doc_manager = crate::core::DocumentManagerMut::new(&mut self.editor);
+        let mut doc_manager = nucleotide_lsp::DocumentManagerMut::new(&mut self.editor);
         doc_manager.try_with_document_mut(doc_id, f)
     }
     fn try_create_picker_component(&mut self) -> Option<crate::picker::Picker> {
@@ -307,7 +307,7 @@ impl Application {
     }
 
     pub fn open_file(&mut self, path: &Path) -> Result<(), anyhow::Error> {
-        let mut doc_manager = crate::core::DocumentManagerMut::new(&mut self.editor);
+        let mut doc_manager = nucleotide_lsp::DocumentManagerMut::new(&mut self.editor);
         doc_manager.open_file(path)
     }
 
@@ -882,7 +882,7 @@ impl Application {
                         EditorEvent::LanguageServerMessage((id, call)) => {
                             // We need cx here but it's not available in the async context
                             // For now, handle without UI updates
-                            let mut lsp_manager = crate::core::LspManager::new(&mut self.editor, &mut self.lsp_progress);
+                            let mut lsp_manager = nucleotide_lsp::LspManager::new(&mut self.editor, &mut self.lsp_progress);
                             lsp_manager.handle_language_server_message(call, id).await;
                         }
                         EditorEvent::DebuggerEvent(_) => {

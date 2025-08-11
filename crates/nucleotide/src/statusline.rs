@@ -9,7 +9,7 @@ pub struct StatusLineView {
     doc_id: DocumentId,
     view_id: ViewId,
     focused: bool,
-    lsp_state: Option<Entity<crate::core::lsp_state::LspState>>,
+    lsp_state: Option<Entity<nucleotide_lsp::LspState>>,
 }
 
 impl StatusLineView {

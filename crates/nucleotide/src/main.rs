@@ -22,7 +22,6 @@ mod assets;
 mod command_system;
 mod completion;
 mod config;
-mod core;
 mod document;
 mod event_bridge;
 mod file_tree;
@@ -30,7 +29,6 @@ mod gpui_to_helix_bridge;
 mod info_box;
 mod key_hint_view;
 mod line_cache;
-mod lsp_status;
 mod notification;
 mod overlay;
 mod picker;
@@ -566,7 +564,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             let input_1 = input.clone();
             let handle_1 = handle.clone();
             // Create LSP state entity
-            let lsp_state = cx.new(|_| crate::core::lsp_state::LspState::new());
+            let lsp_state = cx.new(|_| nucleotide_lsp::LspState::new());
 
             // Create a separate timer for LSP spinner updates
             struct SpinnerTimer;

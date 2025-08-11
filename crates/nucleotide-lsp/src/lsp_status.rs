@@ -1,7 +1,7 @@
 // ABOUTME: LSP status indicator component for the status bar
 // ABOUTME: Displays language server status, progress, and diagnostic counts
 
-use crate::core::lsp_state::LspState;
+use crate::lsp_state::LspState;
 use gpui::*;
 
 /// LSP status indicator for the status bar

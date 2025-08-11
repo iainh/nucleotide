@@ -4402,6 +4402,7 @@ dependencies = [
  "notify",
  "nucleo 0.2.1",
  "nucleotide-core",
+ "nucleotide-lsp",
  "nucleotide-ui",
  "once_cell",
  "open",
@@ -4442,6 +4443,27 @@ dependencies = [
  "parking_lot",
  "signal-hook",
  "signal-hook-tokio",
+ "tokio",
+]
+
+[[package]]
+name = "nucleotide-lsp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "futures",
+ "gpui",
+ "helix-core",
+ "helix-loader",
+ "helix-lsp",
+ "helix-stdx",
+ "helix-view",
+ "log",
+ "nucleotide-core",
+ "parking_lot",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
