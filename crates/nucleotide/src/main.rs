@@ -49,6 +49,9 @@ mod workspace;
 
 pub type Core = Application;
 
+// Re-export Update enum for use in other modules
+pub use self::Update;
+
 fn setup_logging(verbosity: u64) -> Result<()> {
     let mut base_config = fern::Dispatch::new();
 

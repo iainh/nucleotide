@@ -87,7 +87,7 @@ impl Default for PickerStyle {
 impl PickerStyle {
     /// Create PickerStyle from helix theme using appropriate theme keys
     pub fn from_theme(theme: &helix_view::Theme) -> Self {
-        use crate::utils::color_to_hsla;
+        use nucleotide_ui::theme_utils::color_to_hsla;
 
         let modal_style = ModalStyle::from_theme(theme);
 

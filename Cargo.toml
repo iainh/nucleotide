@@ -5,7 +5,6 @@ members = [
     "crates/nucleotide-ui",
     "crates/nucleotide-lsp",
     # TODO: Add these crates when they are implemented
-    # "crates/nucleotide-widgets",
     # "crates/nucleotide-editor",
     # "crates/nucleotide-lsp",
     # "crates/nucleotide-workspace",
@@ -78,7 +77,6 @@ nucleotide-core = { path = "crates/nucleotide-core" }
 nucleotide-ui = { path = "crates/nucleotide-ui" }
 nucleotide-lsp = { path = "crates/nucleotide-lsp" }
 # TODO: Add these crates when they are implemented
-# nucleotide-widgets = { path = "crates/nucleotide-widgets" }
 # nucleotide-editor = { path = "crates/nucleotide-editor" }
 # nucleotide-lsp = { path = "crates/nucleotide-lsp" }
 # nucleotide-workspace = { path = "crates/nucleotide-workspace" }

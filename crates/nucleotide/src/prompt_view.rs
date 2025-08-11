@@ -64,7 +64,7 @@ impl Default for PromptStyle {
 
 impl PromptStyle {
     pub fn from_helix_theme(theme: &helix_view::Theme) -> Self {
-        use crate::utils::color_to_hsla;
+        use nucleotide_ui::theme_utils::color_to_hsla;
 
         let modal_style = ModalStyle::from_theme(theme);
         let ui_menu = theme.get("ui.menu");

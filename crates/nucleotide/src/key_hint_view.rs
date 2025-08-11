@@ -34,7 +34,7 @@ impl KeyHintView {
     }
 
     fn get_theme_color(&self, key: &str) -> Hsla {
-        use crate::utils::color_to_hsla;
+        use nucleotide_ui::theme_utils::color_to_hsla;
 
         if let Some(theme) = &self.theme {
             let style = theme.get(key);

@@ -5,9 +5,9 @@ use crate::file_tree::{
     get_file_icon, get_symlink_icon, icons::chevron_icon, DebouncedFileTreeWatcher, FileTree,
     FileTreeConfig, FileTreeEntry, FileTreeEvent, GitStatus,
 };
-use crate::utils::color_to_hsla;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use nucleotide_ui::theme_utils::color_to_hsla;
 use nucleotide_ui::{
     scrollbar::{Scrollbar, ScrollbarState},
     Theme,

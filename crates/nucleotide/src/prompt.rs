@@ -1,7 +1,7 @@
 use gpui::*;
 use std::sync::Arc;
 
-use crate::utils::TextWithStyle;
+use crate::TextWithStyle;
 
 #[derive(Clone)]
 pub enum Prompt {

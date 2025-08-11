@@ -1,37 +1,5 @@
-// ABOUTME: GPUI action definitions following Zed's idiomatic pattern
-// ABOUTME: Centralizes all actions for proper event handling and key contexts
-
-// Define action namespaces as modules
-pub mod editor {
-    use gpui::actions;
-
-    actions!(
-        editor,
-        [
-            MoveUp,
-            MoveDown,
-            MoveLeft,
-            MoveRight,
-            PageUp,
-            PageDown,
-            Confirm,
-            Cancel,
-            Escape,
-            Copy,
-            Paste,
-            Undo,
-            Redo,
-            Save,
-            SaveAs,
-            OpenFile,
-            OpenDirectory,
-            CloseFile,
-            Quit,
-            IncreaseFontSize,
-            DecreaseFontSize,
-        ]
-    );
-}
+// ABOUTME: Action definitions for nucleotide-widgets components
+// ABOUTME: Provides GPUI actions for picker, prompt, and file tree interactions
 
 pub mod picker {
     use gpui::actions;
@@ -55,74 +23,19 @@ pub mod prompt {
 
     actions!(
         prompt,
-        [SubmitPrompt, CancelPrompt, HistoryNext, HistoryPrev,]
-    );
-}
-
-pub mod completion {
-    use gpui::actions;
-
-    actions!(
-        completion,
         [
-            CompletionSelectNext,
-            CompletionSelectPrev,
-            CompletionSelectFirst,
-            CompletionSelectLast,
-            CompletionConfirm,
-            CompletionDismiss,
+            Confirm,
+            Cancel,
+            DeleteWord,
+            DeleteChar,
+            MoveToStart,
+            MoveToEnd,
+            MoveCursorLeft,
+            MoveCursorRight,
+            NextCompletion,
+            PrevCompletion,
         ]
     );
-}
-
-pub mod window {
-    use gpui::actions;
-
-    actions!(
-        window,
-        [Hide, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen,]
-    );
-}
-
-pub mod workspace {
-    use gpui::actions;
-
-    actions!(
-        workspace,
-        [
-            NewFile,
-            NewWindow,
-            CloseWindow,
-            SplitVertically,
-            SplitHorizontally,
-            ToggleSidebar,
-            ShowCommandPalette,
-            ShowFileFinder,
-            ShowSymbolFinder,
-            ShowBufferPicker,
-            ToggleFileTree,
-        ]
-    );
-}
-
-pub mod help {
-    use gpui::actions;
-
-    actions!(
-        help,
-        [
-            About,
-            ShowDocumentation,
-            ShowKeyboardShortcuts,
-            OpenTutorial,
-        ]
-    );
-}
-
-pub mod test {
-    use gpui::actions;
-
-    actions!(test, [TestPrompt, TestCompletion, TestPicker,]);
 }
 
 pub mod file_tree {
@@ -131,11 +44,11 @@ pub mod file_tree {
     actions!(
         file_tree,
         [
+            ToggleExpanded,
             SelectNext,
             SelectPrev,
-            ExpandCollapse,
             OpenFile,
-            FocusFileTree,
+            RefreshTree,
         ]
     );
 }
