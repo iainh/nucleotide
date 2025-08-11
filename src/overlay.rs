@@ -269,6 +269,14 @@ impl OverlayView {
                 cx.notify();
             }
             crate::Update::Picker(picker) => {
+                // Clean up any existing picker before creating a new one
+                if let Some(existing_picker) = &self.native_picker_view {
+                    existing_picker.update(cx, |picker, cx| {
+                        picker.cleanup(cx);
+                    });
+                    self.native_picker_view = None;
+                }
+
                 match picker {
                     Picker::Native {
                         title: _,

@@ -661,6 +661,8 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             cx.bind_keys([
                 gpui::KeyBinding::new("up", SelectPrev, Some("Picker")),
                 gpui::KeyBinding::new("down", SelectNext, Some("Picker")),
+                gpui::KeyBinding::new("ctrl-p", SelectPrev, Some("Picker")),
+                gpui::KeyBinding::new("ctrl-n", SelectNext, Some("Picker")),
                 gpui::KeyBinding::new("enter", ConfirmSelection, Some("Picker")),
                 gpui::KeyBinding::new("escape", DismissPicker, Some("Picker")),
                 gpui::KeyBinding::new("cmd-p", TogglePreview, Some("Picker")),

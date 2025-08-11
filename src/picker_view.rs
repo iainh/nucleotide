@@ -436,30 +436,28 @@ impl PickerView {
             .data
             .downcast_ref::<(helix_view::DocumentId, Option<std::path::PathBuf>)>()
         {
-            if let Some(path) = path_opt {
-                // Load file preview for buffers with paths
-                self.load_file_preview(path.clone(), cx);
-            } else {
-                // For scratch buffers, load content directly from the document
-                if let Some(core_weak) = &self.core {
-                    if let Some(core) = core_weak.upgrade() {
-                        let content = core
-                            .read(cx)
-                            .editor
-                            .document(*doc_id)
-                            .map(|doc| {
-                                let text = doc.text();
-                                let content = text.to_string();
-                                // Limit preview to first 500 lines for performance
-                                let lines: Vec<&str> = content.lines().take(500).collect();
-                                lines.join("\n")
-                            })
-                            .unwrap_or_else(|| "Unable to load buffer content".to_string());
+            // For buffer picker items, always use the existing document content
+            // Don't create a new document for preview
+            if let Some(core_weak) = &self.core {
+                if let Some(core) = core_weak.upgrade() {
+                    let content = core
+                        .read(cx)
+                        .editor
+                        .document(*doc_id)
+                        .map(|doc| {
+                            let text = doc.text();
+                            let content = text.to_string();
+                            // Limit preview to first 500 lines for performance
+                            let lines: Vec<&str> = content.lines().take(500).collect();
+                            lines.join("\n")
+                        })
+                        .unwrap_or_else(|| "Unable to load buffer content".to_string());
 
-                        self.preview_content = Some(content);
-                        self.preview_loading = false;
-                        cx.notify();
-                    }
+                    self.preview_content = Some(content);
+                    self.preview_loading = false;
+                    // Store the doc_id so we can use syntax highlighting
+                    self.preview_doc_id = Some(*doc_id);
+                    cx.notify();
                 }
             }
         }
@@ -635,6 +633,8 @@ impl PickerView {
         // Cancel any pending preview task
         self.preview_task = None;
 
+        // Only clean up if we have both doc_id and view_id
+        // (view_id indicates we created a new document for preview)
         if let (Some(doc_id), Some(view_id)) =
             (self.preview_doc_id.take(), self.preview_view_id.take())
         {
@@ -657,6 +657,10 @@ impl PickerView {
                     }
                 }
             }
+        } else {
+            // If we only have doc_id (no view_id), it means we're showing an existing buffer
+            // Just clear the reference, don't close the document
+            self.preview_doc_id = None;
         }
     }
 }
@@ -747,6 +751,12 @@ impl PickerView {
                             // Clear the query instead of cancelling
                             this.set_query("", cx);
                         }
+                    }
+                    "up" => {
+                        this.move_selection(-1, cx);
+                    }
+                    "down" => {
+                        this.move_selection(1, cx);
                     }
                     "left" => {
                         if this.cursor_position > 0 {
