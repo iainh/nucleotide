@@ -595,6 +595,7 @@ impl Application {
     ) {
         let _guard = handle.enter();
         use helix_term::compositor::{Component, EventResult};
+
         let mut comp_ctx = compositor::Context {
             editor: &mut self.editor,
             scroll: None,
@@ -603,7 +604,6 @@ impl Application {
         match event {
             InputEvent::Key(key) => {
                 debug!("Handling key event: {key:?}");
-
                 // Log cursor position before key handling
                 let view_id = comp_ctx.editor.tree.focus;
                 let doc_id = comp_ctx.editor.tree.get(view_id).doc;
@@ -642,9 +642,12 @@ impl Application {
                     debug!("After key - cursor pos: {cursor_pos}, line: {line}");
 
                     // Check if we moved lines
-                    if let Some((_before_pos, before_line)) = before_cursor {
-                        if before_line != line {
-                            debug!("Moved from line {before_line} to line {line}");
+                    if let Some((before_pos, before_line)) = before_cursor {
+                        if before_line != line || before_pos != cursor_pos {
+                            debug!(
+                                "Cursor moved from pos {} (line {}) to pos {} (line {})",
+                                before_pos, before_line, cursor_pos, line
+                            );
                         }
                     }
                 }

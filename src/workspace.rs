@@ -367,14 +367,20 @@ impl Workspace {
         // Execute the search in Helix
         info!("Search submitted: {}", search_text);
 
+        // Clear the overlay first to hide the prompt
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.clear(cx);
+        });
+
         // We need to execute the search directly in Helix since we've replaced the prompt
         self.core.update(cx, |core, cx| {
             let _guard = self.handle.enter();
 
             // First, remove any existing Helix prompt from the compositor
+            // This ensures the EditorView will handle subsequent keys
             core.compositor.remove("prompt");
 
-            // Store the search pattern in the register
+            // Store the search pattern in the register (raw pattern, not regex)
             core.editor.registers.last_search_register = '/';
             let _ = core.editor.registers.push('/', search_text.to_string());
 
@@ -385,16 +391,22 @@ impl Workspace {
             let case_insensitive = core.editor.config().search.smart_case
                 && search_text.chars().all(|c| c.is_lowercase());
 
-            let pattern = if case_insensitive {
-                format!("(?i){}", search_text)
+            // Build regex the same way Helix does it in search_next_or_prev_impl
+            let regex = if let Ok(regex) = rope::RegexBuilder::new()
+                .syntax(
+                    rope::Config::new()
+                        .case_insensitive(case_insensitive)
+                        .multi_line(true),
+                )
+                .build(search_text)
+            {
+                Ok(regex)
             } else {
-                search_text.to_string()
+                Err(format!("Failed to compile regex: {}", search_text))
             };
 
-            let regex = rope::Regex::new(&pattern);
-
             match regex {
-                Ok(regex) => {
+                Ok(ref regex) => {
                     // Get current state
                     let view_id = core.editor.tree.focus;
                     let doc_id = core.editor.tree.get(view_id).doc;
@@ -424,12 +436,6 @@ impl Workspace {
                     let match_range = if let Some(mat) =
                         regex.find(text.regex_input_at_bytes(search_start_byte..))
                     {
-                        info!(
-                            "Found match at absolute positions [{}, {}), searched from byte: {}",
-                            mat.start(),
-                            mat.end(),
-                            search_start_byte
-                        );
                         // The positions are already absolute in the document
                         Some((mat.start(), mat.end()))
                     } else if wrap_around {
@@ -486,6 +492,11 @@ impl Workspace {
     }
 
     fn handle_command_submitted(&mut self, command: &str, cx: &mut Context<Self>) {
+        // Clear the overlay first to hide the prompt
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.clear(cx);
+        });
+
         // Parse the command using our typed system
         match crate::command_system::ParsedCommand::parse(command) {
             Ok(parsed) => {
@@ -1282,6 +1293,7 @@ impl Workspace {
             }
 
             let key = utils::translate_key(&ev.keystroke);
+
             self.input.update(cx, |_, cx| {
                 cx.emit(InputEvent::Key(key));
             });
