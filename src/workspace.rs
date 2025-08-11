@@ -957,40 +957,47 @@ impl Workspace {
             .font(font)
             .text_size(font_size)
             .text_color(fg_color)
+            .child(
+                // Toggle button container - fixed width regardless of file tree state
+                div()
+                    .w(px(32.0)) // Fixed width for button container
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .rounded_md()
+                            .hover(|style| style.bg(ui_theme.surface_hover))
+                            .cursor(gpui::CursorStyle::PointingHand)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|workspace, _event, _window, cx| {
+                                    log::info!("Status bar file tree toggle clicked");
+                                    workspace.show_file_tree = !workspace.show_file_tree;
+                                    cx.notify();
+                                }),
+                            )
+                            .child(svg().path("icons/folder-tree.svg").size_4().text_color(
+                                if self.show_file_tree {
+                                    fg_color
+                                } else {
+                                    ui_theme.text_muted
+                                },
+                            )),
+                    ),
+            )
             .when(self.show_file_tree, |status_bar| {
                 status_bar
                     .child(
-                        // File tree section
+                        // File tree width spacer (minus button width)
                         div()
-                            .w(px(self.file_tree_width)) // Match file tree width exactly
-                            .flex()
-                            .items_center()
-                            .justify_start()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(24.0))
-                                    .h(px(24.0))
-                                    .rounded_md()
-                                    .hover(|style| style.bg(ui_theme.surface_hover))
-                                    .cursor(gpui::CursorStyle::PointingHand)
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|workspace, _event, _window, cx| {
-                                            log::info!("Status bar file tree toggle clicked");
-                                            workspace.show_file_tree = !workspace.show_file_tree;
-                                            cx.notify();
-                                        }),
-                                    )
-                                    .child(
-                                        svg()
-                                            .path("icons/folder-tree.svg")
-                                            .size_4()
-                                            .text_color(fg_color),
-                                    ),
-                            ),
+                            .w(px(self.file_tree_width - 32.0)) // File tree width minus button
+                            .h_full(),
                     )
                     .child(
                         // Resize handle spacer
@@ -998,40 +1005,6 @@ impl Workspace {
                             .w(px(4.0)) // Resize handle width
                             .h_full(),
                     )
-            })
-            .when(!self.show_file_tree, |status_bar| {
-                status_bar.child(
-                    div()
-                        .w(px(28.0)) // Just button width with minimal padding
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .w(px(24.0))
-                                .h(px(24.0))
-                                .rounded_md()
-                                .hover(|style| style.bg(ui_theme.surface_hover))
-                                .cursor(gpui::CursorStyle::PointingHand)
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|workspace, _event, _window, cx| {
-                                        log::info!("Status bar file tree toggle clicked");
-                                        workspace.show_file_tree = !workspace.show_file_tree;
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(
-                                    svg()
-                                        .path("icons/folder-tree.svg")
-                                        .size_4()
-                                        .text_color(ui_theme.text_muted),
-                                ),
-                        ),
-                )
             })
             .child(
                 // Main status content - fills remaining space
