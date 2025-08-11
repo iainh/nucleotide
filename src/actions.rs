@@ -100,6 +100,7 @@ pub mod workspace {
             ShowFileFinder,
             ShowSymbolFinder,
             ShowBufferPicker,
+            ToggleFileTree,
         ]
     );
 }

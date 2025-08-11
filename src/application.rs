@@ -892,6 +892,16 @@ pub fn init_editor(
 ) -> Result<Application, Error> {
     use helix_view::editor::Action;
 
+    // Determine project directory from args before consuming args.files
+    let project_directory = if let Some(path) = &args.working_directory {
+        Some(path.clone())
+    } else if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
+        // If the first file is a directory, use it as the project directory
+        Some(path.clone())
+    } else {
+        None
+    };
+
     let mut theme_parent_dirs = vec![helix_loader::config_dir()];
     theme_parent_dirs.extend(helix_loader::runtime_dirs().iter().cloned());
 
@@ -1094,7 +1104,7 @@ pub fn init_editor(
         jobs,
         lsp_progress: LspProgressMap::new(),
         lsp_state: None,
-        project_directory: None,
+        project_directory,
         event_bridge_rx: Some(bridge_rx),
         gpui_to_helix_rx: Some(gpui_to_helix_rx),
     })

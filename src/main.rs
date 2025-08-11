@@ -24,7 +24,6 @@ mod completion;
 mod config;
 mod core;
 mod document;
-// Removed error_boundary - using GPUI's error handling instead
 mod event_bridge;
 mod file_tree;
 mod gpui_to_helix_bridge;
@@ -234,7 +233,9 @@ fn window_options(_cx: &mut App) -> gpui::WindowOptions {
 }
 
 // Import actions from our centralized definitions
-use crate::actions::{completion::*, editor::*, help::*, picker::*, test::*, window::*};
+use crate::actions::{
+    completion::*, editor::*, help::*, picker::*, test::*, window::*, workspace::*,
+};
 
 fn app_menus() -> Vec<Menu> {
     vec![
@@ -265,6 +266,10 @@ fn app_menus() -> Vec<Menu> {
                 MenuItem::action("Copy", Copy),
                 MenuItem::action("Paste", Paste),
             ],
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![MenuItem::action("Toggle File Tree", ToggleFileTree)],
         },
         Menu {
             name: "Window".into(),

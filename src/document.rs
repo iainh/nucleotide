@@ -277,17 +277,6 @@ impl Render for DocumentView {
             )
             .when_some(scrollbar_opt, |div, scrollbar| div.child(scrollbar));
 
-        // Create or update the status line view
-        let status_view = cx.new(|cx| {
-            crate::statusline::StatusLineView::new(
-                self.core.clone(),
-                doc_id,
-                self.view_id,
-                self.is_focused,
-                cx,
-            )
-        });
-
         let diags = {
             let _theme = cx
                 .global::<crate::theme_manager::ThemeManager>()
@@ -306,7 +295,6 @@ impl Render for DocumentView {
             .flex()
             .flex_col()
             .child(editor_content)
-            .child(status_view)
             .child(
                 div()
                     .flex()

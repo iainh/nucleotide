@@ -45,6 +45,8 @@ pub enum FileTreeEvent {
     },
     /// Request to refresh VCS status
     RefreshVcs { force: bool },
+    /// Toggle file tree visibility
+    ToggleVisibility,
 }
 
 /// Types of file system events

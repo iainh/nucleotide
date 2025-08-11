@@ -930,11 +930,6 @@ impl Render for FileTreeView {
             .w_full()
             .h_full()
             .bg(prompt_bg)
-            .border_r_1()
-            .border_color(theme.border)
-            .when(self.focus_handle.is_focused(_window), |style| {
-                style.border_color(theme.border_focused)
-            })
             .flex()
             .flex_col()
             .track_focus(&self.focus_handle)

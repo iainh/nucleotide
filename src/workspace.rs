@@ -91,13 +91,8 @@ impl Workspace {
 
         let key_hints = cx.new(|_cx| KeyHintView::new());
 
-        // Initialize file tree if we can find a workspace root
-        let root_path = core.read(cx).project_directory.clone().or_else(|| {
-            // Try to find workspace root from current working directory
-            std::env::current_dir()
-                .ok()
-                .map(|cwd| find_workspace_root_from(&cwd))
-        });
+        // Initialize file tree only if project directory is explicitly set
+        let root_path = core.read(cx).project_directory.clone();
 
         let file_tree = root_path.map(|root_path| {
             let handle_clone = handle.clone();
@@ -864,6 +859,210 @@ impl Workspace {
         }
     }
 
+    /// Render unified status bar with file tree toggle and status information
+    fn render_unified_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui_theme = cx.global::<crate::ui::Theme>();
+        let helix_theme = cx
+            .global::<crate::theme_manager::ThemeManager>()
+            .helix_theme();
+
+        // Use statusline theme colors
+        let statusline_style = helix_theme.get("ui.statusline");
+        let bg_color = statusline_style
+            .bg
+            .and_then(crate::utils::color_to_hsla)
+            .unwrap_or_else(|| {
+                let base = helix_theme
+                    .get("ui.background")
+                    .bg
+                    .and_then(crate::utils::color_to_hsla)
+                    .unwrap_or(ui_theme.background);
+                hsla(base.h, base.s, base.l * 0.9, base.a)
+            });
+        let fg_color = statusline_style
+            .fg
+            .and_then(crate::utils::color_to_hsla)
+            .unwrap_or(ui_theme.text);
+
+        // Get UI font configuration
+        let ui_font_config = cx.global::<crate::UiFontConfig>();
+        let font = gpui::font(&ui_font_config.family);
+        let font_size = gpui::px(ui_font_config.size);
+
+        // Get current document info
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+
+        let mut mode_name = "NOR";
+        let mut file_name = "[no file]".to_string();
+        let mut position_text = "1:1".to_string();
+
+        // Get info from focused view if available
+        if let Some(view_id) = self.focused_view_id {
+            if let Some((view, doc)) = editor
+                .tree
+                .try_get(view_id)
+                .and_then(|v| editor.document(v.doc).map(|d| (v, d)))
+            {
+                mode_name = match editor.mode() {
+                    helix_view::document::Mode::Normal => "NOR",
+                    helix_view::document::Mode::Insert => "INS",
+                    helix_view::document::Mode::Select => "SEL",
+                };
+
+                file_name = doc
+                    .path()
+                    .map(|p| {
+                        let path_str = p.to_string_lossy().to_string();
+                        // Truncate long paths
+                        if path_str.len() > 50 {
+                            if let Some(file_name) = p.file_name() {
+                                format!(".../{}", file_name.to_string_lossy())
+                            } else {
+                                "...".to_string()
+                            }
+                        } else {
+                            path_str
+                        }
+                    })
+                    .unwrap_or_else(|| "[scratch]".to_string());
+
+                let position = helix_core::coords_at_pos(
+                    doc.text().slice(..),
+                    doc.selection(view.id)
+                        .primary()
+                        .cursor(doc.text().slice(..)),
+                );
+                position_text = format!("{}:{}", position.row + 1, position.col + 1);
+            }
+        }
+
+        // Create divider color
+        let divider_color = Hsla {
+            h: fg_color.h,
+            s: fg_color.s,
+            l: fg_color.l,
+            a: 0.3,
+        };
+
+        div()
+            .h(px(28.0))
+            .w_full()
+            .bg(bg_color)
+            .border_t_1()
+            .border_color(ui_theme.border)
+            .flex()
+            .flex_row()
+            .items_center()
+            .font(font)
+            .text_size(font_size)
+            .text_color(fg_color)
+            .when(self.show_file_tree, |status_bar| {
+                status_bar
+                    .child(
+                        // File tree section
+                        div()
+                            .w(px(self.file_tree_width)) // Match file tree width exactly
+                            .flex()
+                            .items_center()
+                            .justify_start()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(24.0))
+                                    .h(px(24.0))
+                                    .rounded_md()
+                                    .hover(|style| style.bg(ui_theme.surface_hover))
+                                    .cursor(gpui::CursorStyle::PointingHand)
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|workspace, _event, _window, cx| {
+                                            log::info!("Status bar file tree toggle clicked");
+                                            workspace.show_file_tree = !workspace.show_file_tree;
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child(
+                                        svg()
+                                            .path("icons/folder-tree.svg")
+                                            .size_4()
+                                            .text_color(fg_color),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        // Resize handle spacer
+                        div()
+                            .w(px(4.0)) // Resize handle width
+                            .h_full(),
+                    )
+            })
+            .when(!self.show_file_tree, |status_bar| {
+                status_bar.child(
+                    div()
+                        .w(px(28.0)) // Just button width with minimal padding
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .w(px(24.0))
+                                .h(px(24.0))
+                                .rounded_md()
+                                .hover(|style| style.bg(ui_theme.surface_hover))
+                                .cursor(gpui::CursorStyle::PointingHand)
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|workspace, _event, _window, cx| {
+                                        log::info!("Status bar file tree toggle clicked");
+                                        workspace.show_file_tree = !workspace.show_file_tree;
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(
+                                    svg()
+                                        .path("icons/folder-tree.svg")
+                                        .size_4()
+                                        .text_color(ui_theme.text_muted),
+                                ),
+                        ),
+                )
+            })
+            .child(
+                // Main status content - fills remaining space
+                div()
+                    .flex()
+                    .flex_1()
+                    .flex_row()
+                    .items_center()
+                    .child(
+                        // Mode indicator - absolutely no padding
+                        div().child(mode_name).min_w(px(50.)),
+                    )
+                    .child(
+                        // Divider
+                        div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2(),
+                    )
+                    .child(
+                        // File name - takes up available space
+                        div().flex_1().overflow_hidden().child(file_name),
+                    )
+                    .child(
+                        // Divider
+                        div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2(),
+                    )
+                    .child(
+                        // Position
+                        div().child(position_text).min_w(px(80.)).pr_2(),
+                    ),
+            )
+    }
+
     fn handle_file_tree_event(&mut self, event: &FileTreeEvent, cx: &mut Context<Self>) {
         match event {
             FileTreeEvent::OpenFile { path } => {
@@ -928,6 +1127,11 @@ impl Workspace {
                         tree.handle_vcs_refresh(*force, tree_cx);
                     });
                 }
+                cx.notify();
+            }
+            FileTreeEvent::ToggleVisibility => {
+                info!("Toggle file tree visibility requested");
+                self.show_file_tree = !self.show_file_tree;
                 cx.notify();
             }
         }
@@ -1393,10 +1597,16 @@ impl Render for Workspace {
             .on_mouse_move(
                 cx.listener(|workspace, event: &MouseMoveEvent, _window, cx| {
                     if workspace.is_resizing_file_tree {
-                        let delta = event.position.x.0 - workspace.resize_start_x;
+                        // Mouse events in GPUI are already in logical pixels, no scale correction needed
+                        let mouse_x = event.position.x.0;
+                        let delta = mouse_x - workspace.resize_start_x;
                         let new_width = (workspace.resize_start_width + delta).clamp(150.0, 600.0);
-                        workspace.file_tree_width = new_width;
-                        cx.notify();
+
+                        // Update width if changed
+                        if (workspace.file_tree_width - new_width).abs() > 0.1 {
+                            workspace.file_tree_width = new_width;
+                            cx.notify();
+                        }
                     }
                 }),
             )
@@ -1510,6 +1720,15 @@ impl Render for Workspace {
             },
         ));
 
+        // Toggle file tree action
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::ToggleFileTree, _window, cx| {
+                log::info!("ToggleFileTree action triggered from menu");
+                workspace.show_file_tree = !workspace.show_file_tree;
+                cx.notify();
+            },
+        ));
+
         // File finder action
         let handle = self.handle.clone();
         let core = self.core.clone();
@@ -1591,21 +1810,35 @@ impl Render for Workspace {
         ));
 
         // Create content area that will hold file tree and main content
-        let mut content_area = div().flex().flex_row().w_full().flex_1(); // Should use flex_1 in a flex column parent
+        // Using relative positioning for better control over resize behavior
+        let mut content_area = div().relative().w_full().flex_1();
 
-        // Add file tree panel if needed
-        if self.show_file_tree && self.file_tree.is_some() {
+        // Add file tree panel if needed, or show "Open a project" message
+        if self.show_file_tree {
+            let file_tree_left_offset = 0.0;
+            let resize_handle_width = 4.0;
+            let main_content_offset = self.file_tree_width + resize_handle_width;
+
             if let Some(file_tree) = &self.file_tree {
-                // Create file tree panel
+                // Create file tree panel with absolute positioning
+                let ui_theme = cx.global::<crate::ui::Theme>();
                 let file_tree_panel = div()
+                    .absolute()
+                    .left(px(file_tree_left_offset))
+                    .top_0()
+                    .bottom_0()
                     .w(px(self.file_tree_width))
-                    .h_full()
+                    .border_r_1()
+                    .border_color(ui_theme.border)
                     .child(file_tree.clone());
 
-                // Create resize handle
+                // Create resize handle with absolute positioning
                 let resize_handle = div()
-                    .w(px(4.0))
-                    .h_full()
+                    .absolute()
+                    .left(px(self.file_tree_width))
+                    .top_0()
+                    .bottom_0()
+                    .w(px(resize_handle_width))
                     .bg(transparent_black())
                     .hover(|style| style.bg(hsla(0.0, 0.0, 0.5, 0.3)))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
@@ -1621,17 +1854,121 @@ impl Render for Workspace {
                         }),
                     );
 
-                content_area = content_area.child(file_tree_panel).child(resize_handle);
+                content_area = content_area
+                    .child(file_tree_panel)
+                    .child(resize_handle)
+                    .child(
+                        // Main content with absolute positioning
+                        div()
+                            .absolute()
+                            .left(px(main_content_offset))
+                            .right_0()
+                            .top_0()
+                            .bottom_0()
+                            .child(main_content),
+                    );
+            } else {
+                // No project directory set - show placeholder message
+                let ui_theme = cx.global::<crate::ui::Theme>();
+                let resize_handle_width = 4.0;
+                let main_content_offset = self.file_tree_width + resize_handle_width;
+
+                // Get the same background color as the file tree
+                let prompt_bg = {
+                    let helix_theme = cx
+                        .global::<crate::theme_manager::ThemeManager>()
+                        .helix_theme();
+                    let popup_style = helix_theme.get("ui.popup");
+                    popup_style
+                        .bg
+                        .and_then(crate::utils::color_to_hsla)
+                        .or_else(|| {
+                            helix_theme
+                                .get("ui.background")
+                                .bg
+                                .and_then(crate::utils::color_to_hsla)
+                        })
+                        .unwrap_or(ui_theme.background)
+                };
+
+                let placeholder_panel = div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(self.file_tree_width))
+                    .bg(prompt_bg)
+                    .border_r_1()
+                    .border_color(ui_theme.border)
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .w_full()
+                            .flex_1()
+                            .flex()
+                            .justify_center()
+                            .p(px(12.0))
+                            .child(
+                                div()
+                                    .text_color(ui_theme.text_muted)
+                                    .child("Open a directory"),
+                            ),
+                    );
+
+                // Add resize handle with absolute positioning
+                let resize_handle = div()
+                    .absolute()
+                    .left(px(self.file_tree_width))
+                    .top_0()
+                    .bottom_0()
+                    .w(px(resize_handle_width))
+                    .bg(transparent_black())
+                    .hover(|style| style.bg(hsla(0.0, 0.0, 0.5, 0.3)))
+                    .cursor(gpui::CursorStyle::ResizeLeftRight)
+                    .id("file-tree-resize-handle-placeholder")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|workspace, event: &MouseDownEvent, _window, cx| {
+                            workspace.is_resizing_file_tree = true;
+                            workspace.resize_start_x = event.position.x.0;
+                            workspace.resize_start_width = workspace.file_tree_width;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    );
+
+                content_area = content_area
+                    .child(placeholder_panel)
+                    .child(resize_handle)
+                    .child(
+                        // Main content with absolute positioning
+                        div()
+                            .absolute()
+                            .left(px(main_content_offset))
+                            .right_0()
+                            .top_0()
+                            .bottom_0()
+                            .child(main_content),
+                    );
             }
+        } else {
+            // File tree not shown - main content takes full width
+            content_area = content_area.child(main_content);
         }
 
-        // Add main content area to content area
-        content_area = content_area.child(main_content);
-
-        // Build final workspace - just like Zed, render titlebar if it exists
+        // Build final workspace with unified bottom status bar
         workspace_div
             .children(self.titlebar.clone()) // Render titlebar if present
-            .child(content_area) // Then add content
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .h_full()
+                    .child(content_area) // Main content area
+                    .child(self.render_unified_status_bar(cx)), // Unified bottom status bar
+            )
     }
 }
 
