@@ -478,6 +478,7 @@ impl Application {
 
     fn create_native_prompt_from_helix(
         &mut self,
+        last_key: Option<helix_view::input::KeyEvent>,
         _cx: &mut gpui::Context<crate::Core>,
     ) -> Option<crate::prompt::Prompt> {
         use crate::prompt::Prompt;
@@ -485,21 +486,28 @@ impl Application {
 
         // Check if there's a helix prompt in the compositor
         if let Some(_helix_prompt) = self.compositor.find::<helix_term::ui::Prompt>() {
-            // To identify command prompts, we need to check the prompt text
-            // Since the prompt field is private, we'll use a different approach:
-            // 1. Get the current line (which we can access)
-            // 2. Check if this is likely a command based on context
+            // Determine prompt type based on the key that triggered it
+            let prompt_text = if let Some(key) = last_key {
+                match key.code {
+                    helix_view::keyboard::KeyCode::Char('/') if key.modifiers.is_empty() => {
+                        "search:"
+                    }
+                    helix_view::keyboard::KeyCode::Char('?') if key.modifiers.is_empty() => {
+                        "rsearch:"
+                    }
+                    helix_view::keyboard::KeyCode::Char(':') if key.modifiers.is_empty() => ":",
+                    _ => {
+                        // For other keys, don't show a native prompt
+                        // This prevents all keys from opening search
+                        return None;
+                    }
+                }
+            } else {
+                // No key info, default to command prompt
+                ":"
+            };
 
-            // We'll use a heuristic: if there's a prompt in the compositor and
-            // we just pressed ':', it's likely a command prompt
-            // This is checked by the workspace before calling this function
-
-            // For now, we'll only show native prompts for command mode
-            // In the future, we might want to support other prompt types
-            let prompt_text = ":";
-
-            // Command prompts should always start empty when first opened
-            // Any text in the helix prompt is likely from before the prompt was opened
+            // Prompts should always start empty when first opened
             let initial_input = String::new();
 
             // Create native prompt with command execution through Update event
@@ -507,11 +515,11 @@ impl Application {
                 prompt: prompt_text.into(),
                 initial_input: initial_input.into(),
                 on_submit: Arc::new(move |_input: &str| {
-                    // The actual command execution will be handled by workspace
-                    // through a CommandSubmitted event
+                    // The actual command/search execution will be handled by workspace
+                    // through a CommandSubmitted or SearchSubmitted event
                 }),
                 on_cancel: Some(Arc::new(|| {
-                    // Command cancelled
+                    // Prompt cancelled
                 })),
             };
 
@@ -547,14 +555,18 @@ impl Application {
         }
     }
 
-    fn emit_overlays(&mut self, cx: &mut gpui::Context<crate::Core>) {
+    fn emit_overlays(
+        &mut self,
+        last_key: Option<helix_view::input::KeyEvent>,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
         // Check for picker events first
         if self.check_for_picker_and_emit_event(cx) {
             return;
         }
 
         // Handle prompts through legacy system
-        if let Some(prompt) = self.create_native_prompt_from_helix(cx) {
+        if let Some(prompt) = self.create_native_prompt_from_helix(last_key, cx) {
             cx.emit(crate::Update::Prompt(prompt));
             return;
         }
@@ -643,8 +655,8 @@ impl Application {
                     comp_ctx.editor.ensure_cursor_in_view(view_id);
                 }
 
-                // Emit overlays after key handling
-                self.emit_overlays(cx);
+                // Emit overlays after key handling, passing the key that was just processed
+                self.emit_overlays(Some(key), cx);
 
                 cx.emit(crate::Update::Redraw);
             }

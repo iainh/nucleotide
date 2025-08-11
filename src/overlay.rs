@@ -79,7 +79,10 @@ impl OverlayView {
                             .clone();
 
                         let prompt_view = cx.new(|cx| {
-                            let mut view = PromptView::new(prompt_text, cx);
+                            let is_search_prompt = prompt_text.starts_with("search")
+                                || prompt_text.starts_with("rsearch");
+
+                            let mut view = PromptView::new(prompt_text.clone(), cx);
 
                             // Apply theme styling
                             let style =
@@ -90,102 +93,115 @@ impl OverlayView {
                                 view.set_text(&initial_input, cx);
                             }
 
-                            // Set up completion function for command mode using helix's completions
-                            let core_weak_completion = self.core.clone();
-                            view = view.with_completion_fn(move |input| {
-                                // Get completions from our Core
-                                // Since we're in a closure without cx, we need to access core directly
-                                // The completion function runs outside of the GPUI event loop
-                                core_weak_completion
-                                    .upgrade()
-                                    .map(|_core| {
-                                        // We need to access the Core directly since we don't have cx here
-                                        // This is safe because we're just reading theme names
-                                        use helix_core::fuzzy::fuzzy_match;
-                                        use helix_term::commands::TYPABLE_COMMAND_LIST;
+                            // Only set up completion for command prompts, not search prompts
+                            if !is_search_prompt {
+                                // Set up completion function for command mode using helix's completions
+                                let core_weak_completion = self.core.clone();
+                                view = view.with_completion_fn(move |input| {
+                                    // Get completions from our Core
+                                    // Since we're in a closure without cx, we need to access core directly
+                                    // The completion function runs outside of the GPUI event loop
+                                    core_weak_completion
+                                        .upgrade()
+                                        .map(|_core| {
+                                            // We need to access the Core directly since we don't have cx here
+                                            // This is safe because we're just reading theme names
+                                            use helix_core::fuzzy::fuzzy_match;
+                                            use helix_term::commands::TYPABLE_COMMAND_LIST;
 
-                                        // Split input to see if we're completing a command or arguments
-                                        let parts: Vec<&str> = input.split_whitespace().collect();
+                                            // Split input to see if we're completing a command or arguments
+                                            let parts: Vec<&str> =
+                                                input.split_whitespace().collect();
 
-                                        if parts.is_empty()
-                                            || (parts.len() == 1 && !input.ends_with(' '))
-                                        {
-                                            // Complete command names
-                                            let pattern =
-                                                if parts.is_empty() { "" } else { parts[0] };
+                                            if parts.is_empty()
+                                                || (parts.len() == 1 && !input.ends_with(' '))
+                                            {
+                                                // Complete command names
+                                                let pattern =
+                                                    if parts.is_empty() { "" } else { parts[0] };
 
-                                            fuzzy_match(
-                                                pattern,
-                                                TYPABLE_COMMAND_LIST.iter().flat_map(|cmd| {
-                                                    // Include both the command name and aliases
-                                                    std::iter::once(cmd.name)
-                                                        .chain(cmd.aliases.iter().copied())
-                                                }),
-                                                false,
-                                            )
-                                            .into_iter()
-                                            .map(|(name, _score)| {
-                                                // Find the command to get its description
-                                                let desc = TYPABLE_COMMAND_LIST
-                                                    .iter()
-                                                    .find(|cmd| {
-                                                        cmd.name == name
-                                                            || cmd.aliases.contains(&name)
-                                                    })
-                                                    .map(|cmd| cmd.doc.to_string());
-                                                crate::prompt_view::CompletionItem {
-                                                    text: name.to_string().into(),
-                                                    description: desc.map(|d| d.into()),
-                                                }
-                                            })
-                                            .collect()
-                                        } else if !parts.is_empty() && parts[0] == "theme" {
-                                            // Get available themes - inline the theme completion logic
-                                            let theme_prefix =
-                                                if parts.len() > 1 { parts[1] } else { "" };
-
-                                            let mut names = helix_view::theme::Loader::read_names(
-                                                &helix_loader::config_dir().join("themes"),
-                                            );
-
-                                            for rt_dir in helix_loader::runtime_dirs() {
-                                                let rt_names =
-                                                    helix_view::theme::Loader::read_names(
-                                                        &rt_dir.join("themes"),
-                                                    );
-                                                names.extend(rt_names);
-                                            }
-                                            names.push("default".into());
-                                            names.push("base16_default".into());
-                                            names.sort();
-                                            names.dedup();
-
-                                            fuzzy_match(theme_prefix, names, false)
+                                                fuzzy_match(
+                                                    pattern,
+                                                    TYPABLE_COMMAND_LIST.iter().flat_map(|cmd| {
+                                                        // Include both the command name and aliases
+                                                        std::iter::once(cmd.name)
+                                                            .chain(cmd.aliases.iter().copied())
+                                                    }),
+                                                    false,
+                                                )
                                                 .into_iter()
                                                 .map(|(name, _score)| {
+                                                    // Find the command to get its description
+                                                    let desc = TYPABLE_COMMAND_LIST
+                                                        .iter()
+                                                        .find(|cmd| {
+                                                            cmd.name == name
+                                                                || cmd.aliases.contains(&name)
+                                                        })
+                                                        .map(|cmd| cmd.doc.to_string());
                                                     crate::prompt_view::CompletionItem {
-                                                        text: format!("theme {name}").into(),
-                                                        description: Some(
-                                                            format!("Switch to {name} theme")
-                                                                .into(),
-                                                        ),
+                                                        text: name.to_string().into(),
+                                                        description: desc.map(|d| d.into()),
                                                     }
                                                 })
                                                 .collect()
-                                        } else {
-                                            Vec::new()
-                                        }
-                                    })
-                                    .unwrap_or_default()
-                            });
+                                            } else if !parts.is_empty() && parts[0] == "theme" {
+                                                // Get available themes - inline the theme completion logic
+                                                let theme_prefix =
+                                                    if parts.len() > 1 { parts[1] } else { "" };
 
-                            // Set up the submit callback with command execution
+                                                let mut names =
+                                                    helix_view::theme::Loader::read_names(
+                                                        &helix_loader::config_dir().join("themes"),
+                                                    );
+
+                                                for rt_dir in helix_loader::runtime_dirs() {
+                                                    let rt_names =
+                                                        helix_view::theme::Loader::read_names(
+                                                            &rt_dir.join("themes"),
+                                                        );
+                                                    names.extend(rt_names);
+                                                }
+                                                names.push("default".into());
+                                                names.push("base16_default".into());
+                                                names.sort();
+                                                names.dedup();
+
+                                                fuzzy_match(theme_prefix, names, false)
+                                                    .into_iter()
+                                                    .map(|(name, _score)| {
+                                                        crate::prompt_view::CompletionItem {
+                                                            text: format!("theme {name}").into(),
+                                                            description: Some(
+                                                                format!("Switch to {name} theme")
+                                                                    .into(),
+                                                            ),
+                                                        }
+                                                    })
+                                                    .collect()
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        })
+                                        .unwrap_or_default()
+                                });
+                            }
+
+                            // Set up the submit callback with command/search execution
                             let core_weak_submit = self.core.clone();
                             view = view.on_submit(move |input: &str, cx| {
-                                // Emit CommandSubmitted event to be handled by workspace
+                                // Emit appropriate event based on prompt type
                                 if let Some(core) = core_weak_submit.upgrade() {
                                     core.update(cx, |_core, cx| {
-                                        cx.emit(crate::Update::CommandSubmitted(input.to_string()));
+                                        if is_search_prompt {
+                                            cx.emit(crate::Update::SearchSubmitted(
+                                                input.to_string(),
+                                            ));
+                                        } else {
+                                            cx.emit(crate::Update::CommandSubmitted(
+                                                input.to_string(),
+                                            ));
+                                        }
                                     });
                                 }
 

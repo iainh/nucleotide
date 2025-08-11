@@ -308,6 +308,7 @@ pub enum Update {
     OpenDirectory(std::path::PathBuf),
     ShouldQuit,
     CommandSubmitted(String),
+    SearchSubmitted(String),
     // Helix event bridge - these allow UI to respond to Helix events
     DocumentChanged {
         doc_id: helix_view::DocumentId,
@@ -422,6 +423,7 @@ impl std::fmt::Debug for Update {
             Update::FileTreeEvent(e) => f.debug_tuple("Update::FileTreeEvent").field(e).finish(),
             Update::ShowFilePicker => write!(f, "Update::ShowFilePicker"),
             Update::ShowBufferPicker => write!(f, "Update::ShowBufferPicker"),
+            Update::SearchSubmitted(_) => write!(f, "Update::SearchSubmitted"),
         }
     }
 }

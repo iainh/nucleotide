@@ -363,6 +363,128 @@ impl Workspace {
         cx.notify();
     }
 
+    fn handle_search_submitted(&mut self, search_text: &str, cx: &mut Context<Self>) {
+        // Execute the search in Helix
+        info!("Search submitted: {}", search_text);
+
+        // We need to execute the search directly in Helix since we've replaced the prompt
+        self.core.update(cx, |core, cx| {
+            let _guard = self.handle.enter();
+
+            // First, remove any existing Helix prompt from the compositor
+            core.compositor.remove("prompt");
+
+            // Store the search pattern in the register
+            core.editor.registers.last_search_register = '/';
+            let _ = core.editor.registers.push('/', search_text.to_string());
+
+            // Compile the regex pattern
+            use helix_core::graphemes;
+            use helix_stdx::rope::{self, RopeSliceExt};
+
+            let case_insensitive = core.editor.config().search.smart_case
+                && search_text.chars().all(|c| c.is_lowercase());
+
+            let pattern = if case_insensitive {
+                format!("(?i){}", search_text)
+            } else {
+                search_text.to_string()
+            };
+
+            let regex = rope::Regex::new(&pattern);
+
+            match regex {
+                Ok(regex) => {
+                    // Get current state
+                    let view_id = core.editor.tree.focus;
+                    let doc_id = core.editor.tree.get(view_id).doc;
+                    let wrap_around = core.editor.config().search.wrap_around;
+                    let scrolloff = core.editor.config().scrolloff;
+
+                    // Get text and current selection
+                    let (text, current_selection, search_start_byte) = {
+                        let doc = core.editor.documents.get(&doc_id).unwrap();
+                        let text = doc.text().slice(..);
+                        let selection = doc.selection(view_id);
+
+                        // For forward search, start from the end of the primary selection
+                        // and ensure we're on a grapheme boundary
+                        let search_start_char = graphemes::ensure_grapheme_boundary_next(
+                            text,
+                            selection.primary().to(),
+                        );
+                        let search_start_byte = text.char_to_byte(search_start_char);
+
+                        (text, selection.clone(), search_start_byte)
+                    };
+
+                    // Find the next match
+                    // IMPORTANT: The regex_input_at_bytes returns a cursor that produces
+                    // absolute byte positions, NOT relative to the start offset!
+                    let match_range = if let Some(mat) =
+                        regex.find(text.regex_input_at_bytes(search_start_byte..))
+                    {
+                        info!(
+                            "Found match at absolute positions [{}, {}), searched from byte: {}",
+                            mat.start(),
+                            mat.end(),
+                            search_start_byte
+                        );
+                        // The positions are already absolute in the document
+                        Some((mat.start(), mat.end()))
+                    } else if wrap_around {
+                        // When searching from the beginning, positions are also absolute
+                        regex
+                            .find(text.regex_input())
+                            .map(|mat| (mat.start(), mat.end()))
+                    } else {
+                        None
+                    };
+
+                    // Apply the match if found
+                    if let Some((start_byte, end_byte)) = match_range {
+                        // Skip empty matches
+                        if start_byte == end_byte {
+                            core.editor.set_error("Empty match");
+                            return;
+                        }
+
+                        let start_char = text.byte_to_char(start_byte);
+                        let end_char = text.byte_to_char(end_byte);
+
+                        // Create a range for the match - exactly as Helix does it
+                        use helix_core::Range;
+                        let range = Range::new(start_char, end_char);
+
+                        // Replace the primary selection with the new range
+                        let primary_index = current_selection.primary_index();
+                        let new_selection = current_selection.replace(primary_index, range);
+
+                        let doc = core.editor.documents.get_mut(&doc_id).unwrap();
+                        doc.set_selection(view_id, new_selection);
+
+                        // Ensure the cursor is visible and centered
+                        let view = core.editor.tree.get_mut(view_id);
+                        view.ensure_cursor_in_view_center(doc, scrolloff);
+
+                        // Show wrapped message if we wrapped
+                        if wrap_around && start_byte < search_start_byte {
+                            core.editor.set_status("Wrapped around document");
+                        }
+                    } else {
+                        core.editor
+                            .set_error(format!("Pattern not found: {}", search_text));
+                    }
+                }
+                Err(e) => {
+                    core.editor.set_error(format!("Invalid regex: {}", e));
+                }
+            }
+
+            cx.notify();
+        });
+    }
+
     fn handle_command_submitted(&mut self, command: &str, cx: &mut Context<Self>) {
         // Parse the command using our typed system
         match crate::command_system::ParsedCommand::parse(command) {
@@ -831,6 +953,9 @@ impl Workspace {
                 cx.quit();
             }
             crate::Update::CommandSubmitted(command) => self.handle_command_submitted(command, cx),
+            crate::Update::SearchSubmitted(search_text) => {
+                self.handle_search_submitted(search_text, cx)
+            }
             // Helix event bridge - respond to automatic Helix events
             crate::Update::DocumentChanged { doc_id } => self.handle_document_changed(*doc_id, cx),
             crate::Update::SelectionChanged { doc_id, view_id } => {

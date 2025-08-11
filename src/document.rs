@@ -520,9 +520,24 @@ impl DocumentElement {
         debug!("Document has syntax support for: {:?}", doc.language_name());
 
         let text = doc.text().slice(..);
-        let row = text.char_to_line(anchor.min(text.len_chars()));
+
+        // Ensure anchor is within bounds
+        let anchor = anchor.min(text.len_chars().saturating_sub(1));
+        let row = text.char_to_line(anchor);
+
+        // Get a valid viewport range
         let range = Self::viewport_byte_range(text, row, height);
-        let range = range.start as u32..range.end as u32;
+
+        // Ensure the range is valid for u32 conversion
+        let start = (range.start as u32).min(text.len_bytes() as u32);
+        let end = (range.end as u32).min(text.len_bytes() as u32);
+
+        if start >= end {
+            // No valid range for highlighting
+            return None;
+        }
+
+        let range = start..end;
         debug!("Creating highlighter for range: {range:?}");
 
         let highlighter = syntax.highlighter(text, syn_loader, range);
@@ -530,10 +545,19 @@ impl DocumentElement {
     }
 
     fn viewport_byte_range(text: RopeSlice, row: usize, height: u16) -> std::ops::Range<usize> {
+        // Ensure row is within bounds
+        let row = row.min(text.len_lines().saturating_sub(1));
         let start = text.line_to_byte(row);
         let end_row = (row + height as usize).min(text.len_lines());
         let end = text.line_to_byte(end_row);
-        start..end
+
+        // Ensure we have a valid range
+        if start >= end {
+            // Return a minimal valid range
+            0..text.len_bytes().min(1)
+        } else {
+            start..end
+        }
     }
 
     #[allow(dead_code)]
