@@ -28,6 +28,7 @@ impl WindowControlType {
 }
 
 pub struct WindowControlStyle {
+    #[allow(dead_code)]
     pub background: Hsla,
     pub background_hover: Hsla,
     pub icon: Hsla,
@@ -36,7 +37,7 @@ pub struct WindowControlStyle {
 
 impl WindowControlStyle {
     pub fn default(cx: &App) -> Self {
-        let ui_theme = cx.global::<nucleotide_ui::Theme>();
+        let ui_theme = cx.global::<crate::Theme>();
 
         Self {
             background: hsla(0.0, 0.0, 0.0, 0.0), // transparent
@@ -47,7 +48,7 @@ impl WindowControlStyle {
     }
 
     pub fn close(cx: &App) -> Self {
-        let ui_theme = cx.global::<nucleotide_ui::Theme>();
+        let ui_theme = cx.global::<crate::Theme>();
 
         Self {
             background: hsla(0.0, 0.0, 0.0, 0.0),       // transparent
@@ -134,6 +135,7 @@ impl WindowControls {
         }
     }
 
+    #[allow(dead_code)]
     pub fn window_control_area(mut self, area: WindowControlArea) -> Self {
         self.window_control_area = Some(area);
         self

@@ -1,13 +1,13 @@
 // ABOUTME: GPUI-native picker component for fuzzy searching and selection
 // ABOUTME: Uses proper GPUI uniform_list for scrollable content like Zed
 
-use crate::preview_tracker::PreviewTracker;
+use crate::common::{FocusableModal, ModalStyle, SearchInput};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;
 use nucleo::Nucleo;
-use nucleotide_ui::common::{FocusableModal, ModalStyle, SearchInput};
+use nucleotide_core::preview_tracker::PreviewTracker;
 use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Debug)]
@@ -42,7 +42,8 @@ pub struct PickerView {
     preview_loading: bool,
     preview_doc_id: Option<DocumentId>,
     preview_view_id: Option<helix_view::ViewId>,
-    core: Option<WeakEntity<crate::Core>>,
+    // TODO: Replace with capability trait
+    // core: Option<WeakEntity<crate::Core>>,
     initial_preview_loaded: bool,
     preview_task: Option<Task<()>>,
 
@@ -87,7 +88,7 @@ impl Default for PickerStyle {
 impl PickerStyle {
     /// Create PickerStyle from helix theme using appropriate theme keys
     pub fn from_theme(theme: &helix_view::Theme) -> Self {
-        use nucleotide_ui::theme_utils::color_to_hsla;
+        use crate::theme_utils::color_to_hsla;
 
         let modal_style = ModalStyle::from_theme(theme);
 
@@ -132,7 +133,7 @@ impl PickerView {
             preview_loading: false,
             preview_doc_id: None,
             preview_view_id: None,
-            core: None,
+            // core: None, // TODO: Replace with capability trait
             initial_preview_loaded: false,
             preview_task: None,
             on_select: None,
@@ -160,7 +161,7 @@ impl PickerView {
             preview_loading: false,
             preview_doc_id: None,
             preview_view_id: None,
-            core: None,
+            // core: None, // TODO: Replace with capability trait
             initial_preview_loaded: false,
             preview_task: None,
             on_select: None,
@@ -170,10 +171,11 @@ impl PickerView {
         }
     }
 
-    pub fn with_core(mut self, core: WeakEntity<crate::Core>) -> Self {
-        self.core = Some(core);
-        self
-    }
+    // TODO: Replace with capability trait
+    // pub fn with_core(mut self, core: WeakEntity<crate::Core>) -> Self {
+    //     self.core = Some(core);
+    //     self
+    // }
 
     pub fn with_items(mut self, items: Vec<PickerItem>) -> Self {
         self.items = items;
@@ -432,34 +434,35 @@ impl PickerView {
 
         // Try to extract path from item data
         // Handle buffer picker items (DocumentId, Option<PathBuf>) first
-        if let Some((doc_id, path_opt)) = item
+        if let Some((_doc_id, _path_opt)) = item
             .data
             .downcast_ref::<(helix_view::DocumentId, Option<std::path::PathBuf>)>()
         {
             // For buffer picker items, always use the existing document content
             // Don't create a new document for preview
-            if let Some(core_weak) = &self.core {
-                if let Some(core) = core_weak.upgrade() {
-                    let content = core
-                        .read(cx)
-                        .editor
-                        .document(*doc_id)
-                        .map(|doc| {
-                            let text = doc.text();
-                            let content = text.to_string();
-                            // Limit preview to first 500 lines for performance
-                            let lines: Vec<&str> = content.lines().take(500).collect();
-                            lines.join("\n")
-                        })
-                        .unwrap_or_else(|| "Unable to load buffer content".to_string());
+            // TODO: Replace with capability trait
+            // if let Some(core_weak) = &self.core {
+            //     if let Some(core) = core_weak.upgrade() {
+            //         let content = core
+            //             .read(cx)
+            //             .editor
+            //             .document(*doc_id)
+            //             .map(|doc| {
+            //                 let text = doc.text();
+            //                 let content = text.to_string();
+            //                 // Limit preview to first 500 lines for performance
+            //                 let lines: Vec<&str> = content.lines().take(500).collect();
+            //                 lines.join("\n")
+            //             })
+            //             .unwrap_or_else(|| "Unable to load buffer content".to_string());
 
-                    self.preview_content = Some(content);
-                    self.preview_loading = false;
-                    // Store the doc_id so we can use syntax highlighting
-                    self.preview_doc_id = Some(*doc_id);
-                    cx.notify();
-                }
-            }
+            //         self.preview_content = Some(content);
+            //         self.preview_loading = false;
+            //         // Store the doc_id so we can use syntax highlighting
+            //         self.preview_doc_id = Some(*doc_id);
+            //         cx.notify();
+            //     }
+            // }
         }
         // Try standalone PathBuf (for file picker)
         else if let Some(path_buf) = item.data.downcast_ref::<std::path::PathBuf>() {
@@ -487,7 +490,9 @@ impl PickerView {
         self.preview_content = Some("Loading...".to_string());
         cx.notify();
 
-        let core_weak = self.core.clone();
+        // TODO: Replace with capability trait
+        // let core_weak = self.core.clone();
+        let _core_weak = None::<gpui::WeakEntity<()>>;
         // When spawning from Context<T>, the closure gets WeakEntity<T> as first param
         self.preview_task = Some(cx.spawn(async move |view_weak, cx| {
             let content = if path.is_dir() {
@@ -562,61 +567,10 @@ impl PickerView {
                     return;
                 }
 
-                // For files, try to create a document for syntax highlighting
-                if let Some(core_weak) = &core_weak {
-                    if let Some(core) = core_weak.upgrade() {
-                        let mut preview_doc_id = None;
-                        let mut preview_view_id = None;
-
-                        core.update(cx, |core, _cx| {
-                            // Create a new document
-                            let doc_id = core.editor.new_file(helix_view::editor::Action::Load);
-
-                            // Create a view ID for the preview
-                            let view_id = helix_view::ViewId::default();
-
-                            // Get the syntax loader before we borrow the document mutably
-                            let loader = core.editor.syn_loader.load();
-
-                            // Set the content
-                            if let Some(doc) = core.editor.document_mut(doc_id) {
-                                // Set the path for language detection
-                                doc.set_path(Some(&path));
-
-                                // Initialize the view in the document
-                                doc.ensure_view_init(view_id);
-
-                                // Apply the content
-                                let transaction = helix_core::Transaction::change(
-                                    doc.text(),
-                                    vec![(0, doc.text().len_chars(), Some(content.into()))]
-                                        .into_iter(),
-                                );
-
-                                doc.apply(&transaction, view_id);
-
-                                // Detect language and enable syntax highlighting
-                                doc.detect_language(&loader);
-                            }
-
-                            // Store IDs for later use
-                            preview_doc_id = Some(doc_id);
-                            preview_view_id = Some(view_id);
-                        });
-
-                        // Update picker state and register with tracker
-                        if let (Some(doc_id), Some(view_id)) = (preview_doc_id, preview_view_id) {
-                            this.preview_doc_id = Some(doc_id);
-                            this.preview_view_id = Some(view_id);
-                            this.preview_content = None; // We'll use DocumentElement instead
-
-                            // Register with preview tracker
-                            if let Some(tracker) = cx.try_global::<PreviewTracker>() {
-                                tracker.register(doc_id, view_id);
-                            }
-                        }
-                    }
-                }
+                // TODO: Replace with capability trait
+                // For files, we would normally create a document for syntax highlighting
+                // but that requires Core access which we don't have in the UI crate
+                // For now, just display the plain text
 
                 this.preview_loading = false;
                 cx.notify();
@@ -638,24 +592,30 @@ impl PickerView {
         if let (Some(doc_id), Some(view_id)) =
             (self.preview_doc_id.take(), self.preview_view_id.take())
         {
-            if let Some(core_weak) = &self.core {
-                if let Some(core) = core_weak.upgrade() {
-                    core.update(cx, |core, _cx| {
-                        // Close the view first, but only if it still exists
-                        if core.editor.tree.contains(view_id) {
-                            core.editor.close(view_id);
-                        }
-                        // Then close the document without saving
-                        let _ = core.editor.close_document(doc_id, false);
+            // TODO: Replace with capability trait
+            // if let Some(core_weak) = &self.core {
+            //     if let Some(core) = core_weak.upgrade() {
+            //         core.update(cx, |core, _cx| {
+            //             // Close the view first, but only if it still exists
+            //             if core.editor.tree.contains(view_id) {
+            //                 core.editor.close(view_id);
+            //             }
+            //             // Then close the document without saving
+            //             let _ = core.editor.close_document(doc_id, false);
+            //
+            //             // Note: Unregistering from preview tracker happens in the outer scope
+            //         });
+            //
+            //         // Unregister from preview tracker
+            //         if let Some(tracker) = cx.try_global::<PreviewTracker>() {
+            //             tracker.unregister(doc_id, view_id);
+            //         }
+            //     }
+            // }
 
-                        // Note: Unregistering from preview tracker happens in the outer scope
-                    });
-
-                    // Unregister from preview tracker
-                    if let Some(tracker) = cx.try_global::<PreviewTracker>() {
-                        tracker.unregister(doc_id, view_id);
-                    }
-                }
+            // Unregister from preview tracker even without Core
+            if let Some(tracker) = cx.try_global::<PreviewTracker>() {
+                tracker.unregister(doc_id, view_id);
             }
         } else {
             // If we only have doc_id (no view_id), it means we're showing an existing buffer
@@ -698,7 +658,10 @@ impl PickerView {
             self.load_preview_for_selected_item(cx);
         }
 
-        let font = cx.global::<crate::FontSettings>().var_font.clone();
+        let font = cx
+            .global::<nucleotide_core::shared_types::FontSettings>()
+            .var_font
+            .clone();
         let window_size = window.viewport_size();
 
         // Check if we need to recalculate dimensions
@@ -722,17 +685,21 @@ impl PickerView {
         let preview_width = dimensions.preview_width;
         let show_preview = dimensions.show_preview;
 
-        div().flex().flex_col()
-            .key_context("Picker")  // Set proper key context for picker
+        div()
+            .flex()
+            .flex_col()
+            .key_context("Picker") // Set proper key context for picker
             .w(total_width)
-            .h(max_height)  // Use fixed height instead of max_h to prevent size changes
+            .h(max_height) // Use fixed height instead of max_h to prevent size changes
             .bg(self.style.modal_style.background)
             .border_1()
             .border_color(self.style.modal_style.border)
             .rounded_md()
             .shadow_lg()
             .font(font)
-            .text_size(px(cx.global::<crate::UiFontConfig>().size))
+            .text_size(px(cx
+                .global::<nucleotide_core::shared_types::UiFontConfig>()
+                .size))
             .overflow_hidden()
             .track_focus(&self.focus_handle)
             // Handle keyboard input for filtering
@@ -781,7 +748,14 @@ impl PickerView {
                     }
                     key if key.len() == 1 => {
                         if let Some(ch) = key.chars().next() {
-                            if ch.is_alphanumeric() || ch.is_ascii_punctuation() || ch == ' ' || ch == '/' || ch == '.' || ch == '-' || ch == '_' {
+                            if ch.is_alphanumeric()
+                                || ch.is_ascii_punctuation()
+                                || ch == ' '
+                                || ch == '/'
+                                || ch == '.'
+                                || ch == '-'
+                                || ch == '_'
+                            {
                                 this.insert_char(ch, cx);
                             }
                         }
@@ -792,33 +766,45 @@ impl PickerView {
                 }
             }))
             // Use GPUI actions instead of direct key handling
-            .on_action(cx.listener(|this, _: &crate::actions::picker::SelectPrev, _window, cx| {
-                this.move_selection(-1, cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::picker::SelectNext, _window, cx| {
-                this.move_selection(1, cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::picker::SelectFirst, _window, cx| {
-                this.move_selection(-(this.selected_index as isize), cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::picker::SelectLast, _window, cx| {
-                let last_index = this.filtered_indices.len().saturating_sub(1);
-                let delta = last_index as isize - this.selected_index as isize;
-                this.move_selection(delta, cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::picker::ConfirmSelection, _window, cx| {
-                this.confirm_selection(cx);
-            }))
-            .on_action(cx.listener(|this, _: &crate::actions::picker::DismissPicker, _window, cx| {
-                this.cancel(cx);
-            }))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::picker::SelectPrev, _window, cx| {
+                    this.move_selection(-1, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::picker::SelectNext, _window, cx| {
+                    this.move_selection(1, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::picker::SelectFirst, _window, cx| {
+                    this.move_selection(-(this.selected_index as isize), cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::picker::SelectLast, _window, cx| {
+                    let last_index = this.filtered_indices.len().saturating_sub(1);
+                    let delta = last_index as isize - this.selected_index as isize;
+                    this.move_selection(delta, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::picker::ConfirmSelection, _window, cx| {
+                    this.confirm_selection(cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::actions::picker::DismissPicker, _window, cx| {
+                    this.cancel(cx);
+                },
+            ))
             .child(
                 // Search input with file count display
                 div()
                     .flex()
                     .items_center()
                     .px_3()
-                    .h_10()  // Fixed height for search input
+                    .h_10() // Fixed height for search input
                     .border_b_1()
                     .border_color(self.style.modal_style.border)
                     .child(
@@ -826,15 +812,13 @@ impl PickerView {
                             .flex_1()
                             .flex()
                             .items_center()
-                            .child(
-                                SearchInput::render(
-                                    &self.query,
-                                    self.cursor_position,
-                                    self.style.cursor,
-                                    self.style.modal_style.prompt_text,
-                                    self.focus_handle.is_focused(window),
-                                )
-                            )
+                            .child(SearchInput::render(
+                                &self.query,
+                                self.cursor_position,
+                                self.style.cursor,
+                                self.style.modal_style.prompt_text,
+                                self.focus_handle.is_focused(window),
+                            )),
                     )
                     .child(
                         // File count display
@@ -844,69 +828,75 @@ impl PickerView {
                             .child(if self.filtered_indices.is_empty() {
                                 "0/0".to_string()
                             } else {
-                                format!("{}/{}",
+                                format!(
+                                    "{}/{}",
                                     self.selected_index + 1,
                                     self.filtered_indices.len()
                                 )
-                            })
-                    )
+                            }),
+                    ),
             )
             // Add column headers for buffer picker
-            .when(self.items.first().map(|item| {
-                // Check if this is a buffer picker by looking at the label format
-                let parts: Vec<&str> = item.label.split_whitespace().collect();
-                // Check if first part looks like an ID (numeric or starts with digit)
-                parts.len() >= 3 && parts[0].chars().next().is_some_and(|c| c.is_numeric())
-            }).unwrap_or(false), |this| {
-                this.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .px_3()
-                        .py_1()
-                        .border_b_1()
-                        .border_color(self.style.modal_style.border)
-                        .text_color(self.style.modal_style.prompt_text)
-                        .font_family("monospace")
-                        .text_size(px(12.))
-                        .child(
-                            div()
-                                .flex()
-                                .gap_2()
-                                .child(
-                                    // ID header
-                                    div()
-                                        .w(px(50.0))
-                                        .child("id")
-                                )
-                                .child(
-                                    // Flags header
-                                    div()
-                                        .w(px(30.0))
-                                        .text_center()
-                                        .child("flags")
-                                )
-                                .child(
-                                    // Path header
-                                    div()
-                                        .flex_1()
-                                        .child("path")
-                                )
-                        )
-                )
-            })
+            .when(
+                self.items
+                    .first()
+                    .map(|item| {
+                        // Check if this is a buffer picker by looking at the label format
+                        let parts: Vec<&str> = item.label.split_whitespace().collect();
+                        // Check if first part looks like an ID (numeric or starts with digit)
+                        parts.len() >= 3 && parts[0].chars().next().is_some_and(|c| c.is_numeric())
+                    })
+                    .unwrap_or(false),
+                |this| {
+                    this.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .px_3()
+                            .py_1()
+                            .border_b_1()
+                            .border_color(self.style.modal_style.border)
+                            .text_color(self.style.modal_style.prompt_text)
+                            .font_family("monospace")
+                            .text_size(px(12.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(
+                                        // ID header
+                                        div().w(px(50.0)).child("id"),
+                                    )
+                                    .child(
+                                        // Flags header
+                                        div().w(px(30.0)).text_center().child("flags"),
+                                    )
+                                    .child(
+                                        // Path header
+                                        div().flex_1().child("path"),
+                                    ),
+                            ),
+                    )
+                },
+            )
             .child(
                 // Main content area - horizontal split
-                div().flex()
-                    .h_full()  // Use full height of remaining space
+                div()
+                    .flex()
+                    .h_full() // Use full height of remaining space
                     .overflow_hidden()
                     .child(
                         // File list using proper GPUI uniform_list
-                        div().flex().flex_col()
+                        div()
+                            .flex()
+                            .flex_col()
                             .w(list_width)
-                            .h_full()  // Use fixed height instead of flex_1
-                            .overflow_hidden()  // Ensure overflow is hidden
-                            .when(show_preview, |this| this.border_r_1().border_color(self.style.modal_style.border))
+                            .h_full() // Use fixed height instead of flex_1
+                            .overflow_hidden() // Ensure overflow is hidden
+                            .when(show_preview, |this| {
+                                this.border_r_1()
+                                    .border_color(self.style.modal_style.border)
+                            })
                             .when(self.filtered_indices.is_empty(), |this| {
                                 this.child(
                                     div()
@@ -915,7 +905,7 @@ impl PickerView {
                                         .justify_center()
                                         .h_24()
                                         .text_color(self.style.modal_style.prompt_text)
-                                        .child("No matches found")
+                                        .child("No matches found"),
                                 )
                             })
                             .when(!self.filtered_indices.is_empty(), |this| {
@@ -923,37 +913,69 @@ impl PickerView {
                                     uniform_list(
                                         "picker-items",
                                         self.filtered_indices.len(),
-                                        cx.processor(move |picker, visible_range: Range<usize>, _window, _cx| {
-                                            visible_range
-                                                .map(|visible_idx| {
-                                                    let item_idx = picker.filtered_indices[visible_idx] as usize;
-                                                    let item = &picker.items[item_idx];
-                                                    let is_selected = visible_idx == picker.selected_index;
+                                        cx.processor(
+                                            move |picker,
+                                                  visible_range: Range<usize>,
+                                                  _window,
+                                                  _cx| {
+                                                visible_range
+                                                    .map(|visible_idx| {
+                                                        let item_idx = picker.filtered_indices
+                                                            [visible_idx]
+                                                            as usize;
+                                                        let item = &picker.items[item_idx];
+                                                        let is_selected =
+                                                            visible_idx == picker.selected_index;
 
-                                                    div()
-                                                        .id(("picker-item", visible_idx))
-                                                        .flex()
-                                                        .flex_col()
-                                                        .px_3()
-                                                        .min_h_8()  // Ensure minimum height for items
-                                                        .justify_center()
-                                                        .cursor_pointer()
-                                                        .when(is_selected, |this| {
-                                                            this.bg(picker.style.modal_style.selected_background)
-                                                                .text_color(picker.style.modal_style.selected_text)
-                                                        })
-                                                        .when(!is_selected, |this| this.text_color(picker.style.modal_style.text))
-                                                        .child(
-                                                            // Parse the label to extract columns: "ID FLAGS PATH"
-                                                            {
-                                                                let parts: Vec<&str> = item.label.split_whitespace().collect();
-                                                                if parts.len() >= 3 && parts[0].chars().next().is_some_and(|c| c.is_numeric()) {
-                                                                    // Format as columns for buffer picker
-                                                                    let id = parts[0].to_string();
-                                                                    let flags = parts[1].to_string();
-                                                                    let path = parts[2..].join(" ");
+                                                        div()
+                                                            .id(("picker-item", visible_idx))
+                                                            .flex()
+                                                            .flex_col()
+                                                            .px_3()
+                                                            .min_h_8() // Ensure minimum height for items
+                                                            .justify_center()
+                                                            .cursor_pointer()
+                                                            .when(is_selected, |this| {
+                                                                this.bg(picker
+                                                                    .style
+                                                                    .modal_style
+                                                                    .selected_background)
+                                                                    .text_color(
+                                                                        picker
+                                                                            .style
+                                                                            .modal_style
+                                                                            .selected_text,
+                                                                    )
+                                                            })
+                                                            .when(!is_selected, |this| {
+                                                                this.text_color(
+                                                                    picker.style.modal_style.text,
+                                                                )
+                                                            })
+                                                            .child(
+                                                                // Parse the label to extract columns: "ID FLAGS PATH"
+                                                                {
+                                                                    let parts: Vec<&str> = item
+                                                                        .label
+                                                                        .split_whitespace()
+                                                                        .collect();
+                                                                    if parts.len() >= 3
+                                                                        && parts[0]
+                                                                            .chars()
+                                                                            .next()
+                                                                            .is_some_and(|c| {
+                                                                                c.is_numeric()
+                                                                            })
+                                                                    {
+                                                                        // Format as columns for buffer picker
+                                                                        let id =
+                                                                            parts[0].to_string();
+                                                                        let flags =
+                                                                            parts[1].to_string();
+                                                                        let path =
+                                                                            parts[2..].join(" ");
 
-                                                                    div()
+                                                                        div()
                                                                         .flex()
                                                                         .gap_2()
                                                                         .font_family("monospace")
@@ -980,110 +1002,83 @@ impl PickerView {
                                                                                 .text_ellipsis()
                                                                                 .child(path)
                                                                         )
-                                                                } else {
-                                                                    // Fallback for items that don't match the pattern
-                                                                    div()
-                                                                        .overflow_hidden()
-                                                                        .text_ellipsis()
-                                                                        .font_family("monospace")
-                                                                        .child(item.label.clone())
-                                                                }
-                                                            }
-                                                        )
-                                                        .when_some(item.sublabel.as_ref(), |this, sublabel| {
-                                                            this.child(
-                                                                div()
-                                                                    .overflow_hidden()
-                                                                    .text_ellipsis()
-                                                                    .text_size(px(12.))
-                                                                    .text_color(picker.style.modal_style.prompt_text)
-                                                                    .child(sublabel.clone())
+                                                                    } else {
+                                                                        // Fallback for items that don't match the pattern
+                                                                        div()
+                                                                            .overflow_hidden()
+                                                                            .text_ellipsis()
+                                                                            .font_family(
+                                                                                "monospace",
+                                                                            )
+                                                                            .child(
+                                                                                item.label.clone(),
+                                                                            )
+                                                                    }
+                                                                },
                                                             )
-                                                        })
-                                                })
-                                                .collect()
-                                        })
+                                                            .when_some(
+                                                                item.sublabel.as_ref(),
+                                                                |this, sublabel| {
+                                                                    this.child(
+                                                                        div()
+                                                                            .overflow_hidden()
+                                                                            .text_ellipsis()
+                                                                            .text_size(px(12.))
+                                                                            .text_color(
+                                                                                picker
+                                                                                    .style
+                                                                                    .modal_style
+                                                                                    .prompt_text,
+                                                                            )
+                                                                            .child(
+                                                                                sublabel.clone(),
+                                                                            ),
+                                                                    )
+                                                                },
+                                                            )
+                                                    })
+                                                    .collect()
+                                            },
+                                        ),
                                     )
-                                    .h_full()  // Use fixed height instead of flex_1
-                                    .track_scroll(self.list_scroll_handle.clone())
+                                    .h_full() // Use fixed height instead of flex_1
+                                    .track_scroll(self.list_scroll_handle.clone()),
                                 )
-                            })
+                            }),
                     )
                     .when(show_preview, |this| {
                         this.child(
                             // Preview panel (right side)
-                            div().flex().flex_col()
+                            div()
+                                .flex()
+                                .flex_col()
                                 .w(preview_width)
-                                .h_full()  // Use full height instead of flex_1
-                                .overflow_hidden()  // Ensure overflow is hidden
+                                .h_full() // Use full height instead of flex_1
+                                .overflow_hidden() // Ensure overflow is hidden
                                 .bg(self.style.preview_background)
                                 .child(
                                     // Preview content
                                     div()
-                                        .h_full()  // Use full height instead of flex_1
-                                        .overflow_y_hidden()  // Hide overflow for preview content
+                                        .h_full() // Use full height instead of flex_1
+                                        .overflow_y_hidden() // Hide overflow for preview content
                                         .child({
-                                            if let (Some(doc_id), Some(_view_id), Some(core_weak)) = (self.preview_doc_id, self.preview_view_id, &self.core) {
-                                                if let Some(core) = core_weak.upgrade() {
-                                                    // Use a simpler approach: render the document text with basic styling
-                                                    // This avoids the DocumentElement complexity while still showing content
-                                                    let content = core.read(cx).editor.document(doc_id)
-                                                        .map(|doc| {
-                                                            let text = doc.text();
-                                                            let content = text.to_string();
-                                                            // Limit preview to first 500 lines for performance
-                                                            let lines: Vec<&str> = content.lines().take(500).collect();
-                                                            lines.join("\n")
-                                                        })
-                                                        .unwrap_or_else(|| "Unable to load file".to_string());
-
-                                                    div()
-                                                        .px_3()
-                                                        .py_2()
-                                                        .text_size(px(12.))
-                                                        .text_color(self.style.modal_style.text)
-                                                        .font(cx.global::<crate::FontSettings>().fixed_font.clone())
-                                                        .overflow_y_hidden()
-                                                        .w_full()
-                                                        .h_full()
-                                                        .child(content)
-                                                        .into_any_element()
-                                                } else {
-                                                    // Fallback to text preview
-                                                    div()
-                                                        .px_3()
-                                                        .py_2()
-                                                        .text_size(px(12.))
-                                                        .text_color(self.style.modal_style.text)
-                                                        .font(cx.global::<crate::FontSettings>().fixed_font.clone())
-                                                        .child(
-                                                            match &self.preview_content {
-                                                                Some(content) => content.clone(),
-                                                                None => "Select a file to preview".to_string()
-                                                            }
-                                                        )
-                                                        .into_any_element()
-                                                }
-                                            } else {
-                                                // Regular text preview for directories or when no document
-                                                div()
-                                                    .px_3()
-                                                    .py_2()
-                                                    .text_size(px(12.))
-                                                    .text_color(self.style.modal_style.text)
-                                                    .font_family("monospace")
-                                                    .child(
-                                                        match &self.preview_content {
-                                                            Some(content) => content.clone(),
-                                                            None => "Select a file to preview".to_string()
-                                                        }
-                                                    )
-                                                    .into_any_element()
-                                            }
-                                        })
-                                )
+                                            // TODO: Replace with capability trait - for now just show text preview
+                                            // Regular text preview for directories or when no document
+                                            div()
+                                                .px_3()
+                                                .py_2()
+                                                .text_size(px(12.))
+                                                .text_color(self.style.modal_style.text)
+                                                .font_family("monospace")
+                                                .child(match &self.preview_content {
+                                                    Some(content) => content.clone(),
+                                                    None => "Select a file to preview".to_string(),
+                                                })
+                                                .into_any_element()
+                                        }),
+                                ),
                         )
-                    })
+                    }),
             )
     }
 }

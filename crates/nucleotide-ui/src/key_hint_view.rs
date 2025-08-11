@@ -13,6 +13,12 @@ pub struct KeyHintView {
     theme: Option<Theme>,
 }
 
+impl Default for KeyHintView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeyHintView {
     pub fn new() -> Self {
         Self {
@@ -34,7 +40,7 @@ impl KeyHintView {
     }
 
     fn get_theme_color(&self, key: &str) -> Hsla {
-        use nucleotide_ui::theme_utils::color_to_hsla;
+        use crate::theme_utils::color_to_hsla;
 
         if let Some(theme) = &self.theme {
             let style = theme.get(key);
@@ -145,8 +151,15 @@ impl Render for KeyHintView {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .font(cx.global::<crate::FontSettings>().var_font.clone())
-                .text_size(px(cx.global::<crate::UiFontConfig>().size - 1.0))
+                .font(
+                    cx.global::<nucleotide_core::shared_types::FontSettings>()
+                        .var_font
+                        .clone(),
+                )
+                .text_size(px(cx
+                    .global::<nucleotide_core::shared_types::UiFontConfig>()
+                    .size
+                    - 1.0))
                 .children(
                     // Title if present
                     if !clean_title.is_empty() {

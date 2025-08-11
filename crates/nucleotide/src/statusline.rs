@@ -47,9 +47,7 @@ impl StatusLineView {
     }
 
     fn style(&self, cx: &mut App) -> (Hsla, Hsla) {
-        let theme = cx
-            .global::<crate::theme_manager::ThemeManager>()
-            .helix_theme();
+        let theme = cx.global::<crate::ThemeManager>().helix_theme();
         let base_style = if self.focused {
             theme.get("ui.statusline")
         } else {
@@ -72,7 +70,7 @@ impl EventEmitter<()> for StatusLineView {}
 impl Render for StatusLineView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Get UI font configuration
-        let ui_font_config = cx.global::<crate::UiFontConfig>();
+        let ui_font_config = cx.global::<crate::types::UiFontConfig>();
         let font = gpui::font(&ui_font_config.family);
         let font_size = gpui::px(ui_font_config.size);
 

@@ -23,6 +23,9 @@ path = "src/main.rs"
 nucleotide-ui.workspace = true
 nucleotide-core.workspace = true
 nucleotide-lsp.workspace = true
+nucleotide-editor.workspace = true
+# nucleotide-workspace has circular dependencies
+# Its modules are kept in this crate for now
 
 # External dependencies
 gpui.workspace = true

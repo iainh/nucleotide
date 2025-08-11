@@ -74,7 +74,10 @@ impl RenderOnce for PickerElement {
                 on_select: _,
             } => {
                 // Native GPUI picker rendering
-                let font = cx.global::<crate::FontSettings>().var_font.clone();
+                let font = cx
+                    .global::<nucleotide_core::shared_types::FontSettings>()
+                    .var_font
+                    .clone();
 
                 {
                     // Create default theme colors for fallback
@@ -97,7 +100,7 @@ impl RenderOnce for PickerElement {
                         .rounded_md()
                         .shadow_lg()
                         .font(font)
-                        .text_size(px(cx.global::<crate::UiFontConfig>().size))
+                        .text_size(px(cx.global::<nucleotide_core::shared_types::UiFontConfig>().size))
                         .child(
                             // Title bar
                             div()

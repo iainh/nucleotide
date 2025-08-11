@@ -46,16 +46,8 @@ pub enum BridgedEvent {
     },
 }
 
-/// Triggers for completion requests
-#[derive(Debug, Clone)]
-pub enum CompletionTrigger {
-    /// Manual completion trigger (e.g., Ctrl+Space)
-    Manual,
-    /// Automatic completion after character insertion
-    CharacterTyped(char),
-    /// Completion re-trigger after filtering
-    Filter,
-}
+// Use the CompletionTrigger from shared_types
+pub use crate::shared_types::CompletionTrigger;
 
 /// Global event bridge sender - initialized once when application starts
 static EVENT_BRIDGE_SENDER: OnceLock<mpsc::UnboundedSender<BridgedEvent>> = OnceLock::new();
@@ -155,7 +147,7 @@ pub fn register_event_hooks() {
         send_bridged_event(BridgedEvent::CompletionRequested {
             doc_id,
             view_id,
-            trigger: CompletionTrigger::CharacterTyped(event.c),
+            trigger: CompletionTrigger::Character(event.c),
         });
         Ok(())
     });

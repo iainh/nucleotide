@@ -1,9 +1,9 @@
 // ABOUTME: GPUI-native prompt component for text input with completion support
 // ABOUTME: Replaces dependency on helix_term::ui::Prompt with a proper GPUI implementation
 
+use crate::common::ModalStyle;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use nucleotide_ui::common::ModalStyle;
 
 #[derive(Clone, Debug)]
 pub struct CompletionItem {
@@ -64,7 +64,7 @@ impl Default for PromptStyle {
 
 impl PromptStyle {
     pub fn from_helix_theme(theme: &helix_view::Theme) -> Self {
-        use nucleotide_ui::theme_utils::color_to_hsla;
+        use crate::theme_utils::color_to_hsla;
 
         let modal_style = ModalStyle::from_theme(theme);
         let ui_menu = theme.get("ui.menu");
@@ -345,7 +345,10 @@ impl EventEmitter<DismissEvent> for PromptView {}
 
 impl Render for PromptView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let font = cx.global::<crate::FontSettings>().var_font.clone();
+        let font = cx
+            .global::<nucleotide_core::shared_types::FontSettings>()
+            .var_font
+            .clone();
         let input_display = self.input.to_string();
 
         // Get the ghost text (completion suggestion after cursor)
@@ -381,7 +384,9 @@ impl Render for PromptView {
             .rounded_md()
             .shadow_lg()
             .font(font)
-            .text_size(px(cx.global::<crate::UiFontConfig>().size))
+            .text_size(px(cx
+                .global::<nucleotide_core::shared_types::UiFontConfig>()
+                .size))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 match event.keystroke.key.as_str() {

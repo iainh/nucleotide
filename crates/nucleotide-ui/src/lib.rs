@@ -1,14 +1,31 @@
 // ABOUTME: Reusable UI components library following Zed's patterns
 // ABOUTME: Provides consistent, styled components for the application
 
+pub mod actions;
+pub mod assets;
 pub mod button;
 pub mod common;
+pub mod completion;
+pub mod info_box;
+pub mod key_hint_view;
 pub mod list_item;
-pub mod overlay;
+pub mod notification;
+pub mod picker;
+pub mod picker_delegate;
+pub mod picker_element;
+pub mod picker_view;
+pub mod prompt;
+pub mod prompt_view;
 pub mod scrollbar;
+pub mod text_utils;
+pub mod theme_manager;
 pub mod theme_utils;
+pub mod titlebar;
 
+pub use assets::Assets;
 pub use list_item::*;
+pub use picker::Picker;
+pub use prompt::{Prompt, PromptElement};
 
 use gpui::*;
 

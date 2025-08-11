@@ -2,7 +2,7 @@
 // ABOUTME: Converts between pixel-based scrolling (GPUI) and line-based anchors (Helix)
 
 use gpui::*;
-use helix_view::{Document, DocumentId, ViewId};
+use helix_view::Document;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -20,10 +20,6 @@ pub struct ViewOffset {
 pub struct ScrollManager {
     /// Unique ID for debugging
     id: usize,
-    /// The document being scrolled
-    doc_id: DocumentId,
-    /// The view of the document
-    view_id: ViewId,
     /// Cached line height in pixels
     pub line_height: Rc<Cell<Pixels>>,
     /// Total number of lines in the document
@@ -37,14 +33,12 @@ pub struct ScrollManager {
 }
 
 impl ScrollManager {
-    pub fn new(doc_id: DocumentId, view_id: ViewId, line_height: Pixels) -> Self {
+    pub fn new(line_height: Pixels) -> Self {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
         Self {
             id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
-            doc_id,
-            view_id,
             line_height: Rc::new(Cell::new(line_height)),
             total_lines: Rc::new(Cell::new(1)),
             scroll_offset: Rc::new(Cell::new(point(px(0.0), px(0.0)))),

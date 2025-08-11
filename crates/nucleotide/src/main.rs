@@ -4,7 +4,6 @@ use std::panic;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use helix_core::diagnostic::Severity;
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
 
@@ -13,40 +12,12 @@ use gpui::{
     WindowKind, WindowOptions,
 };
 
-pub use application::Input;
-use application::{Application, InputEvent};
+// Import from the library crate instead of re-declaring modules
+use nucleotide::application::Application;
+use nucleotide::*;
 
-mod actions;
-mod application;
-mod assets;
-mod command_system;
-mod completion;
-mod config;
-mod document;
-mod event_bridge;
-mod file_tree;
-mod gpui_to_helix_bridge;
-mod info_box;
-mod key_hint_view;
-mod line_cache;
-mod notification;
-mod overlay;
-mod picker;
-mod picker_delegate;
-mod picker_element;
-mod picker_view;
-mod preview_tracker;
-mod prompt;
-mod prompt_view;
-mod scroll_manager;
-mod statusline;
+// Only declare modules that are not in lib.rs (binary-specific modules)
 mod test_utils;
-mod theme_manager;
-mod titlebar;
-mod types;
-// UI components are now provided by nucleotide_ui crate
-mod utils;
-mod workspace;
 
 pub type Core = Application;
 
@@ -102,20 +73,6 @@ fn install_panic_handler() {
     }));
 }
 
-#[cfg(target_os = "macos")]
-pub fn detect_bundle_runtime() -> Option<std::path::PathBuf> {
-    if let Ok(mut exe) = std::env::current_exe() {
-        exe.pop(); // nucl or nucleotide-bin
-        exe.pop(); // MacOS
-        exe.push("Resources");
-        exe.push("runtime");
-        if exe.is_dir() {
-            return Some(exe);
-        }
-    }
-    None
-}
-
 // Use constructor to set environment variable before any static initialization
 #[cfg(target_os = "macos")]
 #[ctor::ctor]
@@ -126,7 +83,7 @@ fn _early_runtime_init() {
     };
 
     if needs_override {
-        if let Some(rt) = detect_bundle_runtime() {
+        if let Some(rt) = nucleotide::utils::detect_bundle_runtime() {
             std::env::set_var("HELIX_RUNTIME", &rt);
         }
     }
@@ -136,7 +93,7 @@ fn main() -> Result<()> {
     // Set HELIX_RUNTIME for macOS bundles before any Helix code runs (backup)
     #[cfg(target_os = "macos")]
     if std::env::var("HELIX_RUNTIME").is_err() {
-        if let Some(rt) = detect_bundle_runtime() {
+        if let Some(rt) = nucleotide::utils::detect_bundle_runtime() {
             std::env::set_var("HELIX_RUNTIME", &rt);
         }
     }
@@ -235,8 +192,9 @@ fn window_options(_cx: &mut App) -> gpui::WindowOptions {
 }
 
 // Import actions from our centralized definitions
-use crate::actions::{
-    completion::*, editor::*, help::*, picker::*, test::*, window::*, workspace::*,
+use nucleotide::actions::{
+    completion::*, editor::*, help::*, picker::*, test::*, window::*, workspace::*, Cancel,
+    Confirm, MoveDown, MoveLeft, MoveRight, MoveUp,
 };
 
 fn app_menus() -> Vec<Menu> {
@@ -291,7 +249,6 @@ fn app_menus() -> Vec<Menu> {
     ]
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 // Update and EditorStatus are now in types module
 
 // This section previously contained Update enum which is now in types.rs
@@ -346,10 +303,10 @@ pub enum Update {
     CompletionRequested {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
-        trigger: crate::event_bridge::CompletionTrigger,
+        trigger: nucleotide::event_bridge::CompletionTrigger,
     },
     // File tree events
-    FileTreeEvent(crate::file_tree::FileTreeEvent),
+    FileTreeEvent(nucleotide::file_tree::FileTreeEvent),
     // Picker request events - emitted when helix wants to show a picker
     ShowFilePicker,
     ShowBufferPicker,
@@ -432,36 +389,18 @@ impl std::fmt::Debug for Update {
 }
 */
 
-struct FontSettings {
-    fixed_font: gpui::Font,
-    var_font: gpui::Font,
-}
+// Font types are now exported from nucleotide::types
+use nucleotide::{EditorFontConfig, FontSettings, UiFontConfig};
 
-impl gpui::Global for FontSettings {}
-
-#[derive(Clone)]
-pub struct EditorFontConfig {
-    pub family: String,
-    pub size: f32,
-    pub weight: gpui::FontWeight,
-}
-
-impl gpui::Global for EditorFontConfig {}
-
-#[derive(Clone)]
-pub struct UiFontConfig {
-    pub family: String,
-    pub size: f32,
-    pub weight: gpui::FontWeight,
-}
-
-impl gpui::Global for UiFontConfig {}
-
-fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::runtime::Handle) {
+fn gui_main(
+    mut app: Application,
+    config: nucleotide::config::Config,
+    handle: tokio::runtime::Handle,
+) {
     // Store a channel for sending file open requests from macOS
     let (file_open_tx, mut file_open_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<String>>();
 
-    let gpui_app = gpui::Application::new().with_assets(crate::assets::Assets);
+    let gpui_app = gpui::Application::new().with_assets(nucleotide_ui::Assets);
 
     // Register handler for macOS file open events (dock drops and Finder "Open With")
     gpui_app.on_open_urls({
@@ -491,7 +430,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
     gpui_app.run(move |cx| {
         // Set up theme manager with Helix theme
         let helix_theme = app.editor.theme.clone();
-        let theme_manager = theme_manager::ThemeManager::new(helix_theme);
+        let theme_manager = crate::ThemeManager::new(helix_theme);
         let ui_theme = theme_manager.ui_theme().clone();
         cx.set_global(theme_manager);
         cx.set_global(ui_theme);
@@ -511,6 +450,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             family: editor_font_config.family,
             size: editor_font_config.size,
             weight: editor_font_config.weight.into(),
+            line_height: 1.4, // Default line height
         });
 
         // Store UI font config for UI components
@@ -521,11 +461,11 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
         });
 
         // Initialize preview tracker
-        cx.set_global(crate::preview_tracker::PreviewTracker::new());
+        cx.set_global(nucleotide_core::preview_tracker::PreviewTracker::new());
 
         let options = window_options(cx);
 
-        let _ = cx.open_window(options, |window, cx| {
+        let _ = cx.open_window(options, |_window, cx| {
             // Set up window event handlers to send events to Helix
             log::info!("Setting up window event handlers");
 
@@ -534,8 +474,8 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             // would be handled differently depending on the GPUI version
             cx.spawn(async move |_cx| {
                 // This would be triggered by actual GPUI window events
-                crate::gpui_to_helix_bridge::send_gpui_event_to_helix(
-                    crate::gpui_to_helix_bridge::GpuiToHelixEvent::WindowResized {
+                nucleotide::gpui_to_helix_bridge::send_gpui_event_to_helix(
+                    nucleotide::gpui_to_helix_bridge::GpuiToHelixEvent::WindowResized {
                         width: 120,
                         height: 40,
                     },
@@ -543,7 +483,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             })
             .detach();
 
-            let input = cx.new(|_| crate::application::Input);
+            let input = cx.new(|_| nucleotide::application::Input);
             let crank = cx.new(|mc| {
                 mc.spawn(async move |crank, cx| {
                     loop {
@@ -562,7 +502,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
                     }
                 })
                 .detach();
-                crate::application::Crank
+                nucleotide::application::Crank
             });
             let crank_1 = crank.clone();
             std::mem::forget(crank_1);
@@ -627,7 +567,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             // Set up keybindings with proper key contexts
 
             // Import workspace actions for global bindings
-            use crate::actions::workspace::*;
+            use nucleotide::actions::workspace::*;
 
             // Global actions - work regardless of focus (no context specified)
             cx.bind_keys([
@@ -689,48 +629,56 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             ]);
 
             // FileTree-specific keybindings
-            use crate::actions::file_tree::*;
+            use nucleotide::actions::file_tree::*;
             cx.bind_keys([
                 gpui::KeyBinding::new(
                     "up",
-                    crate::actions::file_tree::SelectPrev,
+                    nucleotide::actions::file_tree::SelectPrev,
                     Some("FileTree"),
                 ),
                 gpui::KeyBinding::new(
                     "down",
-                    crate::actions::file_tree::SelectNext,
+                    nucleotide::actions::file_tree::SelectNext,
                     Some("FileTree"),
                 ),
-                gpui::KeyBinding::new("k", crate::actions::file_tree::SelectPrev, Some("FileTree")),
-                gpui::KeyBinding::new("j", crate::actions::file_tree::SelectNext, Some("FileTree")),
+                gpui::KeyBinding::new(
+                    "k",
+                    nucleotide::actions::file_tree::SelectPrev,
+                    Some("FileTree"),
+                ),
+                gpui::KeyBinding::new(
+                    "j",
+                    nucleotide::actions::file_tree::SelectNext,
+                    Some("FileTree"),
+                ),
                 gpui::KeyBinding::new(
                     "left",
-                    crate::actions::file_tree::ExpandCollapse,
+                    nucleotide::actions::file_tree::ToggleExpanded,
                     Some("FileTree"),
                 ),
                 gpui::KeyBinding::new(
                     "right",
-                    crate::actions::file_tree::ExpandCollapse,
+                    nucleotide::actions::file_tree::ToggleExpanded,
                     Some("FileTree"),
                 ),
                 gpui::KeyBinding::new(
                     "h",
-                    crate::actions::file_tree::ExpandCollapse,
+                    nucleotide::actions::file_tree::ToggleExpanded,
                     Some("FileTree"),
                 ),
                 gpui::KeyBinding::new(
                     "l",
-                    crate::actions::file_tree::ExpandCollapse,
+                    nucleotide::actions::file_tree::ToggleExpanded,
                     Some("FileTree"),
                 ),
                 gpui::KeyBinding::new(
                     "space",
-                    crate::actions::file_tree::ExpandCollapse,
+                    nucleotide::actions::file_tree::ToggleExpanded,
                     Some("FileTree"),
                 ),
                 gpui::KeyBinding::new(
                     "enter",
-                    crate::actions::file_tree::OpenFile,
+                    nucleotide::actions::file_tree::OpenFile,
                     Some("FileTree"),
                 ),
             ]);
@@ -816,7 +764,13 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
                                         workspace.set_project_directory(dir.clone(), cx);
                                         log::info!("Updated project directory to: {:?}", dir);
                                         // Emit OpenDirectory event to update file tree
-                                        cx.emit(Update::OpenDirectory(dir.clone()));
+                                        cx.emit(Update::Event(
+                                            nucleotide::types::AppEvent::Workspace(
+                                                nucleotide::types::WorkspaceEvent::OpenDirectory {
+                                                    path: dir.clone(),
+                                                },
+                                            ),
+                                        ));
                                     })
                                 }) {
                                     log::error!("Failed to update project directory: {}", e);
@@ -832,7 +786,11 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
                             // Send OpenFile update to the workspace
                             if let Err(e) = cx.update(|cx| {
                                 workspace_clone.update(cx, |_workspace, cx| {
-                                    cx.emit(Update::OpenFile(path.clone()));
+                                    cx.emit(Update::Event(nucleotide::types::AppEvent::Workspace(
+                                        nucleotide::types::WorkspaceEvent::OpenFile {
+                                            path: path.clone(),
+                                        },
+                                    )));
                                 })
                             }) {
                                 log::error!("Failed to open file {}: {}", path.display(), e);
@@ -858,8 +816,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
             };
 
             if should_create_titlebar {
-                let titlebar =
-                    cx.new(|cx| crate::titlebar::TitleBar::new("titlebar", &workspace, cx));
+                let titlebar = cx.new(|cx| nucleotide_ui::titlebar::TitleBar::new("titlebar", cx));
 
                 workspace.update(cx, |workspace, cx| {
                     workspace.set_titlebar(titlebar.into());
@@ -971,9 +928,9 @@ FLAGS:
         Err(err) => {
             eprintln!("Failed to load configuration: {err}");
             eprintln!("Using default configuration");
-            crate::config::Config {
+            nucleotide::config::Config {
                 helix: helix_term::config::Config::default(),
-                gui: crate::config::GuiConfig::default(),
+                gui: nucleotide::config::GuiConfig::default(),
             }
         }
     };

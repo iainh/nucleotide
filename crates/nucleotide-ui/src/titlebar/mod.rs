@@ -6,27 +6,25 @@ mod window_controls;
 
 pub use platform_titlebar::PlatformTitleBar;
 
-use crate::workspace::Workspace;
-use gpui::AppContext;
-use gpui::{px, Context, Entity, IntoElement, Render, WeakEntity, Window};
+use gpui::{px, AppContext, Context, Entity, IntoElement, Render, Window};
 
 pub struct TitleBar {
     platform_titlebar: Entity<PlatformTitleBar>,
-    workspace: WeakEntity<Workspace>,
+    filename: String,
 }
 
 impl TitleBar {
-    pub fn new(
-        id: impl Into<gpui::ElementId>,
-        workspace: &Entity<Workspace>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(id: impl Into<gpui::ElementId>, cx: &mut Context<Self>) -> Self {
         let platform_titlebar = cx.new(|_cx| PlatformTitleBar::new(id));
 
         Self {
             platform_titlebar,
-            workspace: workspace.downgrade(),
+            filename: "Nucleotide".to_string(),
         }
+    }
+
+    pub fn set_filename(&mut self, filename: String) {
+        self.filename = filename;
     }
 
     pub fn height(window: &Window) -> gpui::Pixels {
@@ -41,16 +39,9 @@ impl TitleBar {
 
 impl Render for TitleBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Get the current filename from workspace
-        let filename = self
-            .workspace
-            .upgrade()
-            .and_then(|workspace| workspace.read(cx).current_filename(cx))
-            .unwrap_or_else(|| "Nucleotide".to_string());
-
         // Update platform titlebar with content
         self.platform_titlebar.update(cx, |titlebar, _cx| {
-            titlebar.set_title(filename);
+            titlebar.set_title(self.filename.clone());
         });
 
         self.platform_titlebar.clone()

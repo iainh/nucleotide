@@ -1,10 +1,10 @@
 // ABOUTME: Unified theme management for consistent styling across the application
 // ABOUTME: Bridges between Helix themes and GPUI styling requirements
 
-use crate::utils::color_to_hsla;
+use crate::theme_utils::color_to_hsla;
+use crate::Theme as UITheme;
 use gpui::*;
 use helix_view::Theme as HelixTheme;
-use nucleotide_ui::Theme as UITheme;
 
 /// Manages theme state and provides consistent access to theme colors
 #[derive(Clone)]

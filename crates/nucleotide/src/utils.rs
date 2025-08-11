@@ -1,4 +1,18 @@
-use gpui::{rgb, HighlightStyle, Hsla, Keystroke, SharedString, StyledText, TextStyle};
+use gpui::{rgb, Hsla, Keystroke};
+
+#[cfg(target_os = "macos")]
+pub fn detect_bundle_runtime() -> Option<std::path::PathBuf> {
+    if let Ok(mut exe) = std::env::current_exe() {
+        exe.pop(); // nucl or nucleotide-bin
+        exe.pop(); // MacOS
+        exe.push("Resources");
+        exe.push("runtime");
+        if exe.is_dir() {
+            return Some(exe);
+        }
+    }
+    None
+}
 
 pub fn color_to_hsla(color: helix_view::graphics::Color) -> Option<Hsla> {
     use gpui::{black, blue, green, red, white, yellow};
@@ -136,27 +150,6 @@ pub fn handle_key_result(
         KeymapResult::NotFound | KeymapResult::Cancelled(_) => return Some(key_result),
     }
     None
-}
-
-#[derive(Debug, Clone)]
-pub struct TextWithStyle {
-    text: SharedString,
-    highlights: Vec<(std::ops::Range<usize>, HighlightStyle)>,
-}
-
-impl TextWithStyle {
-    pub fn is_empty(&self) -> bool {
-        self.text.is_empty()
-    }
-
-    pub fn into_styled_text(self, _default_style: &TextStyle) -> StyledText {
-        // Default style is applied by StyledText itself, not in with_highlights
-        StyledText::new(self.text).with_highlights(self.highlights)
-    }
-
-    pub fn style(&self, idx: usize) -> Option<&HighlightStyle> {
-        self.highlights.get(idx).map(|(_, style)| style)
-    }
 }
 
 pub fn load_tutor(editor: &mut helix_view::editor::Editor) -> Result<(), anyhow::Error> {

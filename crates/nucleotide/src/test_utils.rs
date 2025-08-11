@@ -38,6 +38,7 @@ pub mod test_support {
         },
         LanguageServerInitialized {
             server_id: helix_lsp::LanguageServerId,
+            server_name: String,
         },
         LanguageServerExited {
             server_id: helix_lsp::LanguageServerId,
@@ -118,7 +119,10 @@ pub mod test_support {
                     }
                     BridgedEvent::ViewFocused { view_id } => TestUpdate::ViewFocused { view_id },
                     BridgedEvent::LanguageServerInitialized { server_id } => {
-                        TestUpdate::LanguageServerInitialized { server_id }
+                        TestUpdate::LanguageServerInitialized {
+                            server_id,
+                            server_name: format!("LSP-{:?}", server_id),
+                        }
                     }
                     BridgedEvent::LanguageServerExited { server_id } => {
                         TestUpdate::LanguageServerExited { server_id }

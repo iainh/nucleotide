@@ -48,6 +48,8 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 use anyhow::Error;
 use log::{debug, warn};
 
+use crate::types::{AppEvent, CoreEvent, LspEvent, MessageSeverity, PickerType, UiEvent, Update};
+use gpui::EventEmitter;
 use tokio_stream::StreamExt;
 
 pub struct Application {
@@ -78,9 +80,9 @@ pub enum InputEvent {
 
 pub struct Input;
 
-impl gpui::EventEmitter<InputEvent> for Input {}
+impl EventEmitter<Update> for Application {}
 
-impl gpui::EventEmitter<crate::Update> for Application {}
+impl gpui::EventEmitter<InputEvent> for Input {}
 
 pub struct Crank;
 
@@ -239,7 +241,10 @@ impl Application {
         {
             log::info!("Detected file picker in compositor, emitting ShowFilePicker event");
             self.compositor.remove(helix_term::ui::picker::ID);
-            cx.emit(crate::Update::ShowFilePicker);
+            cx.emit(Update::Event(AppEvent::Ui(UiEvent::ShowPicker {
+                picker_type: PickerType::File,
+                picker_object: None,
+            })));
             return true;
         }
 
@@ -249,7 +254,10 @@ impl Application {
             log::info!("Found and removed picker from compositor");
             if self.editor.documents.len() > 1 {
                 log::info!("Multiple documents open, assuming buffer picker, emitting ShowBufferPicker event");
-                cx.emit(crate::Update::ShowBufferPicker);
+                cx.emit(Update::Event(AppEvent::Ui(UiEvent::ShowPicker {
+                    picker_type: PickerType::Buffer,
+                    picker_object: None,
+                })));
                 return true;
             }
         }
@@ -661,7 +669,9 @@ impl Application {
                 // Emit overlays after key handling, passing the key that was just processed
                 self.emit_overlays(Some(key), cx);
 
-                cx.emit(crate::Update::Redraw);
+                cx.emit(crate::Update::Event(AppEvent::Core(
+                    CoreEvent::RedrawRequested,
+                )));
             }
             InputEvent::ScrollLines {
                 line_count,
@@ -677,7 +687,9 @@ impl Application {
                     jobs: &mut self.jobs,
                 };
                 helix_term::commands::scroll(&mut ctx, line_count, direction, false);
-                cx.emit(crate::Update::Redraw);
+                cx.emit(crate::Update::Event(AppEvent::Core(
+                    CoreEvent::RedrawRequested,
+                )));
             }
             InputEvent::SetViewportAnchor { view_id, anchor } => {
                 // Set the viewport anchor for scrollbar integration
@@ -688,7 +700,9 @@ impl Application {
                     view_id,
                     anchor
                 );
-                cx.emit(crate::Update::Redraw);
+                cx.emit(crate::Update::Event(AppEvent::Core(
+                    CoreEvent::RedrawRequested,
+                )));
             }
         }
     }
@@ -754,7 +768,7 @@ impl Application {
         loop {
             // Check if all views are closed and we should quit
             if self.editor.tree.views().count() == 0 {
-                cx.emit(crate::Update::ShouldQuit);
+                cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::ShouldQuit)));
                 break;
             }
 
@@ -771,8 +785,16 @@ impl Application {
                         helix_event::status::Severity::Warning => Severity::Warning,
                         helix_event::status::Severity::Error => Severity::Error,
                     };
-                    let status = crate::EditorStatus { status: msg.message.to_string(), severity };
-                    cx.emit(crate::Update::EditorStatus(status));
+                    let status = crate::types::EditorStatus { status: msg.message.to_string(), severity };
+                    cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::StatusChanged {
+                        message: status.status,
+                        severity: match status.severity {
+                            helix_core::diagnostic::Severity::Hint => MessageSeverity::Info,
+                            helix_core::diagnostic::Severity::Info => MessageSeverity::Info,
+                            helix_core::diagnostic::Severity::Warning => MessageSeverity::Warning,
+                            helix_core::diagnostic::Severity::Error => MessageSeverity::Error,
+                        }
+                    })));
                     // TODO: show multiple status messages at once to avoid clobbering
                     self.editor.status_msg = Some((msg.message, severity));
                     helix_event::request_redraw();
@@ -804,34 +826,34 @@ impl Application {
                     for bridged_event in events {
                         let update = match bridged_event {
                             crate::event_bridge::BridgedEvent::DocumentChanged { doc_id } => {
-                                crate::Update::DocumentChanged { doc_id }
+                                crate::Update::Event(AppEvent::Core(CoreEvent::DocumentChanged { doc_id }))
                             }
                             crate::event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
-                                crate::Update::SelectionChanged { doc_id, view_id }
+                                crate::Update::Event(AppEvent::Core(CoreEvent::SelectionChanged { doc_id, view_id }))
                             }
                             crate::event_bridge::BridgedEvent::ModeChanged { old_mode, new_mode } => {
-                                crate::Update::ModeChanged { old_mode, new_mode }
+                                crate::Update::Event(AppEvent::Core(CoreEvent::ModeChanged { old_mode, new_mode }))
                             }
                             crate::event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
-                                crate::Update::DiagnosticsChanged { doc_id }
+                                crate::Update::Event(AppEvent::Core(CoreEvent::DiagnosticsChanged { doc_id }))
                             }
                             crate::event_bridge::BridgedEvent::DocumentOpened { doc_id } => {
-                                crate::Update::DocumentOpened { doc_id }
+                                crate::Update::Event(AppEvent::Core(CoreEvent::DocumentOpened { doc_id }))
                             }
                             crate::event_bridge::BridgedEvent::DocumentClosed { doc_id } => {
-                                crate::Update::DocumentClosed { doc_id }
+                                crate::Update::Event(AppEvent::Core(CoreEvent::DocumentClosed { doc_id }))
                             }
                             crate::event_bridge::BridgedEvent::ViewFocused { view_id } => {
-                                crate::Update::ViewFocused { view_id }
+                                crate::Update::Event(AppEvent::Core(CoreEvent::ViewFocused { view_id }))
                             }
                             crate::event_bridge::BridgedEvent::LanguageServerInitialized { server_id } => {
-                                crate::Update::LanguageServerInitialized { server_id }
+                                crate::Update::Event(AppEvent::Lsp(LspEvent::ServerInitialized { server_id }))
                             }
                             crate::event_bridge::BridgedEvent::LanguageServerExited { server_id } => {
-                                crate::Update::LanguageServerExited { server_id }
+                                crate::Update::Event(AppEvent::Lsp(LspEvent::ServerExited { server_id }))
                             }
                             crate::event_bridge::BridgedEvent::CompletionRequested { doc_id, view_id, trigger } => {
-                                crate::Update::CompletionRequested { doc_id, view_id, trigger }
+                                crate::Update::Event(AppEvent::Core(CoreEvent::CompletionRequested { doc_id, view_id, trigger }))
                             }
                         };
                         cx.emit(update);
@@ -862,7 +884,16 @@ impl Application {
                     match event {
                         EditorEvent::DocumentSaved(event) => {
                             self.handle_document_write(&event);
-                            cx.emit(crate::Update::EditorEvent(EditorEvent::DocumentSaved(event)));
+                            // Convert to CoreEvent if save was successful
+                            if let Ok(event) = event {
+                                let path = self.editor.document(event.doc_id)
+                                    .and_then(|doc| doc.path())
+                                    .map(|p| p.to_string_lossy().to_string());
+                                cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::DocumentSaved {
+                                    doc_id: event.doc_id,
+                                    path,
+                                })));
+                            }
                         }
                         EditorEvent::IdleTimer => {
                             self.editor.clear_idle_timer();
@@ -871,10 +902,10 @@ impl Application {
                         EditorEvent::Redraw => {
                             // Check if all views are closed after redraw
                             if self.editor.tree.views().count() == 0 {
-                                cx.emit(crate::Update::ShouldQuit);
+                                cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::ShouldQuit)));
                                 break;
                             }
-                             cx.emit(crate::Update::EditorEvent(EditorEvent::Redraw));
+                             cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::RedrawRequested)));
                         }
                         EditorEvent::ConfigEvent(_) => {
                             /* TODO */
@@ -900,6 +931,25 @@ impl Application {
     // Removed unused handle_language_server_message - now handled via events
 }
 
+// Implement capability traits for Application
+impl nucleotide_core::EditorReadAccess for Application {
+    fn editor(&self) -> &Editor {
+        &self.editor
+    }
+}
+
+impl nucleotide_core::EditorWriteAccess for Application {
+    fn editor_mut(&mut self) -> &mut Editor {
+        &mut self.editor
+    }
+}
+
+impl nucleotide_core::JobSystemAccess for Application {
+    fn jobs_mut(&mut self) -> &mut Jobs {
+        &mut self.jobs
+    }
+}
+
 pub fn init_editor(
     args: Args,
     config: Config,
@@ -922,7 +972,7 @@ pub fn init_editor(
 
     // Add bundle runtime as a backup for macOS
     #[cfg(target_os = "macos")]
-    if let Some(rt) = crate::detect_bundle_runtime() {
+    if let Some(rt) = crate::utils::detect_bundle_runtime() {
         if !theme_parent_dirs.contains(&rt) {
             theme_parent_dirs.push(rt);
         }

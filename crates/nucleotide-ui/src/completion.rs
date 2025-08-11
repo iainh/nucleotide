@@ -12,6 +12,14 @@ pub struct CompletionView {
     visible: bool,
 }
 
+impl EventEmitter<DismissEvent> for CompletionView {}
+
+impl Focusable for CompletionView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CompletionItem {
     pub label: SharedString,
@@ -19,6 +27,33 @@ pub struct CompletionItem {
     pub detail: Option<SharedString>,
     pub documentation: Option<SharedString>,
     pub insert_text: Option<SharedString>,
+}
+
+impl CompletionItem {
+    pub fn new(label: impl Into<SharedString>, kind: CompletionItemKind) -> Self {
+        Self {
+            label: label.into(),
+            kind,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+        }
+    }
+
+    pub fn with_detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn with_documentation(mut self, documentation: impl Into<SharedString>) -> Self {
+        self.documentation = Some(documentation.into());
+        self
+    }
+
+    pub fn with_insert_text(mut self, insert_text: impl Into<SharedString>) -> Self {
+        self.insert_text = Some(insert_text.into());
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -97,7 +132,7 @@ impl CompletionView {
 }
 
 impl Render for CompletionView {
-    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         if !self.is_visible() {
             return div().id("completion-hidden");
         }
@@ -106,9 +141,9 @@ impl Render for CompletionView {
             .id("completion-popup")
             .key_context("CompletionView")
             .track_focus(&self.focus_handle)
-            .bg(gpui::white())
+            .bg(white())
             .border_1()
-            .border_color(gpui::gray())
+            .border_color(hsla(0.0, 0.0, 0.5, 1.0))
             .rounded_md()
             .shadow_lg()
             .max_h_48()
@@ -123,13 +158,13 @@ impl Render for CompletionView {
                             div()
                                 .px_2()
                                 .py_1()
-                                .when(is_selected, |div| div.bg(gpui::blue().with_alpha(0.2)))
+                                .when(is_selected, |div| div.bg(blue().opacity(0.2)))
                                 .child(div().text_sm().child(item.label.clone()))
-                                .when_some(item.detail.as_ref(), |div, detail| {
-                                    div.child(
+                                .when_some(item.detail.as_ref(), |el, detail| {
+                                    el.child(
                                         div()
                                             .text_xs()
-                                            .text_color(gpui::gray())
+                                            .text_color(hsla(0.0, 0.0, 0.5, 1.0))
                                             .child(detail.clone()),
                                     )
                                 })

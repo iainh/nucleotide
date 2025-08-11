@@ -1,10 +1,10 @@
 use gpui::*;
 
-use crate::completion::CompletionView;
-use crate::picker::Picker;
-use crate::picker_view::{PickerItem, PickerView};
-use crate::prompt::{Prompt, PromptElement};
-use crate::prompt_view::PromptView;
+use nucleotide_ui::completion::CompletionView;
+use nucleotide_ui::picker::Picker;
+use nucleotide_ui::picker_view::{PickerItem, PickerView};
+use nucleotide_ui::prompt::{Prompt, PromptElement};
+use nucleotide_ui::prompt_view::PromptView;
 
 pub struct OverlayView {
     prompt: Option<Prompt>,
@@ -73,10 +73,7 @@ impl OverlayView {
                         let on_cancel = on_cancel.clone();
 
                         // Get theme from ThemeManager
-                        let helix_theme = cx
-                            .global::<crate::theme_manager::ThemeManager>()
-                            .helix_theme()
-                            .clone();
+                        let helix_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
 
                         let prompt_view = cx.new(|cx| {
                             let is_search_prompt = prompt_text.starts_with("search")
@@ -85,8 +82,9 @@ impl OverlayView {
                             let mut view = PromptView::new(prompt_text.clone(), cx);
 
                             // Apply theme styling
-                            let style =
-                                crate::prompt_view::PromptStyle::from_helix_theme(&helix_theme);
+                            let style = nucleotide_ui::prompt_view::PromptStyle::from_helix_theme(
+                                &helix_theme,
+                            );
                             view = view.with_style(style);
 
                             if !initial_input.is_empty() {
@@ -139,7 +137,7 @@ impl OverlayView {
                                                                 || cmd.aliases.contains(&name)
                                                         })
                                                         .map(|cmd| cmd.doc.to_string());
-                                                    crate::prompt_view::CompletionItem {
+                                                    nucleotide_ui::prompt_view::CompletionItem {
                                                         text: name.to_string().into(),
                                                         description: desc.map(|d| d.into()),
                                                     }
@@ -170,7 +168,7 @@ impl OverlayView {
                                                 fuzzy_match(theme_prefix, names, false)
                                                     .into_iter()
                                                     .map(|(name, _score)| {
-                                                        crate::prompt_view::CompletionItem {
+                                                        nucleotide_ui::prompt_view::CompletionItem {
                                                             text: format!("theme {name}").into(),
                                                             description: Some(
                                                                 format!("Switch to {name} theme")
@@ -289,10 +287,7 @@ impl OverlayView {
                         let _items_count = items.len();
 
                         // Get theme from ThemeManager
-                        let helix_theme = cx
-                            .global::<crate::theme_manager::ThemeManager>()
-                            .helix_theme()
-                            .clone();
+                        let helix_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
 
                         let picker_view = cx.new(|cx| {
                             // Use theme-aware constructor
@@ -302,7 +297,7 @@ impl OverlayView {
                             // Enable preview by default, especially for buffer picker
                             view = view.with_preview(true);
 
-                            view = view.with_core(core_weak.clone()).with_items(items);
+                            view = view.with_items(items);
 
                             // Set up the selection callback
                             view = view.on_select(move |selected_item: &PickerItem, picker_cx| {

@@ -1,0 +1,25 @@
+[package]
+name = "nucleotide-workspace"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nucleotide-core = { path = "../nucleotide-core" }
+nucleotide-ui = { path = "../nucleotide-ui" }
+# TODO: Remove this circular dependency by using capability traits
+
+# GPUI
+gpui = { workspace = true }
+
+# Helix dependencies
+helix-core = { workspace = true }
+helix-view = { workspace = true }
+helix-term = { workspace = true }
+helix-vcs = { workspace = true, features = ["git"] }
+
+# Standard dependencies
+anyhow = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+notify = { workspace = true }
+sum_tree = { workspace = true }

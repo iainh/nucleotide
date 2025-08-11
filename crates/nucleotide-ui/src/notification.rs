@@ -1,12 +1,9 @@
 use std::collections::HashMap;
 
-use crate::EditorStatus;
 use gpui::{prelude::FluentBuilder, *};
-use helix_lsp::{
-    lsp::{NumberOrString, ProgressParamsValue, WorkDoneProgress},
-    LanguageServerId,
-};
+use helix_lsp::LanguageServerId;
 use helix_view::document::DocumentSavedEvent;
+use nucleotide_core::shared_types::EditorStatus;
 
 #[derive(Default, Debug)]
 struct LspStatus {
@@ -87,7 +84,7 @@ impl Notification {
 
 pub struct NotificationView {
     lsp_status: HashMap<LanguageServerId, LspStatus>,
-    editor_status: Option<crate::EditorStatus>,
+    editor_status: Option<EditorStatus>,
     saved: Option<Result<DocumentSavedEvent, String>>,
     popup_bg_color: Hsla,
     popup_text_color: Hsla,
@@ -159,8 +156,15 @@ impl RenderOnce for Notification {
             .text_color(self.text)
             .shadow_sm()
             .rounded_sm()
-            .font(cx.global::<crate::FontSettings>().var_font.clone())
-            .text_size(px(cx.global::<crate::UiFontConfig>().size - 1.0))
+            .font(
+                cx.global::<nucleotide_core::shared_types::FontSettings>()
+                    .var_font
+                    .clone(),
+            )
+            .text_size(px(cx
+                .global::<nucleotide_core::shared_types::UiFontConfig>()
+                .size
+                - 1.0))
             .child(
                 div()
                     .flex()

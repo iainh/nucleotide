@@ -19,19 +19,18 @@ use helix_view::{
 };
 use log::debug;
 
-use crate::line_cache::LineLayoutCache;
-use crate::scroll_manager::ScrollManager;
-use crate::utils::color_to_hsla;
-use crate::{Core, Input};
+use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
+use nucleotide_editor::LineLayoutCache;
+use nucleotide_editor::ScrollManager;
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
+use nucleotide_ui::theme_utils::color_to_hsla;
 
 /// Custom scroll handle for DocumentView that integrates with ScrollManager
 #[derive(Clone)]
 pub struct DocumentScrollHandle {
     scroll_manager: ScrollManager,
     on_change: Option<Rc<dyn Fn()>>,
-    core: Option<WeakEntity<Core>>,
     view_id: ViewId,
 }
 
@@ -46,11 +45,10 @@ impl std::fmt::Debug for DocumentScrollHandle {
 }
 
 impl DocumentScrollHandle {
-    pub fn new(scroll_manager: ScrollManager, core: Entity<Core>, view_id: ViewId) -> Self {
+    pub fn new(scroll_manager: ScrollManager, view_id: ViewId) -> Self {
         Self {
             scroll_manager,
             on_change: None,
-            core: Some(core.downgrade()),
             view_id,
         }
     }
@@ -59,7 +57,6 @@ impl DocumentScrollHandle {
         Self {
             scroll_manager,
             on_change: Some(Rc::new(on_change)),
-            core: None,
             view_id: ViewId::default(),
         }
     }
@@ -94,7 +91,6 @@ impl ScrollableHandle for DocumentScrollHandle {
 
 pub struct DocumentView {
     core: Entity<Core>,
-    input: Entity<Input>,
     view_id: ViewId,
     style: TextStyle,
     focus: FocusHandle,
@@ -107,7 +103,6 @@ pub struct DocumentView {
 impl DocumentView {
     pub fn new(
         core: Entity<Core>,
-        input: Entity<Input>,
         view_id: ViewId,
         style: TextStyle,
         focus: &FocusHandle,
@@ -115,16 +110,14 @@ impl DocumentView {
     ) -> Self {
         // Create scroll manager with placeholder doc_id (will be updated in render)
         let line_height = px(20.0); // Default, will be updated
-        let scroll_manager = ScrollManager::new(DocumentId::default(), view_id, line_height);
+        let scroll_manager = ScrollManager::new(line_height);
 
         // Create custom scroll handle that wraps our scroll manager
-        let scroll_handle =
-            DocumentScrollHandle::new(scroll_manager.clone(), core.clone(), view_id);
+        let scroll_handle = DocumentScrollHandle::new(scroll_manager.clone(), view_id);
         let scrollbar_state = ScrollbarState::new(scroll_handle);
 
         Self {
             core,
-            input,
             view_id,
             style,
             focus: focus.clone(),
@@ -146,12 +139,14 @@ impl DocumentView {
     }
 
     /// Convert a Helix anchor (character position) to scroll pixels
+    #[allow(dead_code)]
     fn anchor_to_scroll_px(&self, anchor_char: usize, document: &helix_view::Document) -> Pixels {
         let row = document.text().char_to_line(anchor_char);
         px(row as f32 * self.line_height.0)
     }
 
     /// Convert scroll pixels to a Helix anchor (character position)
+    #[allow(dead_code)]
     fn scroll_px_to_anchor(&self, y: Pixels, document: &helix_view::Document) -> usize {
         let row = (y.0 / self.line_height.0).floor() as usize;
         let text = document.text();
@@ -278,10 +273,7 @@ impl Render for DocumentView {
             .when_some(scrollbar_opt, |div, scrollbar| div.child(scrollbar));
 
         let diags = {
-            let _theme = cx
-                .global::<crate::theme_manager::ThemeManager>()
-                .helix_theme()
-                .clone();
+            let _theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
 
             self.get_diagnostics(cx).into_iter().map(move |_diag| {
                 // TODO: Fix new_view API - DiagnosticView disabled for now
@@ -382,11 +374,10 @@ impl DocumentElement {
     ) -> Self {
         // Create scroll manager for this element
         let line_height = px(20.0); // Default, will be updated
-        let scroll_manager = ScrollManager::new(doc_id, view_id, line_height);
+        let scroll_manager = ScrollManager::new(line_height);
 
         // Create a default scrollbar state
-        let scroll_handle =
-            DocumentScrollHandle::new(scroll_manager.clone(), core.clone(), view_id);
+        let scroll_handle = DocumentScrollHandle::new(scroll_manager.clone(), view_id);
         let scrollbar_state = ScrollbarState::new(scroll_handle);
 
         Self {
@@ -476,9 +467,7 @@ impl DocumentElement {
         };
         let view = editor.tree.get(self.view_id);
 
-        let theme = cx
-            .global::<crate::theme_manager::ThemeManager>()
-            .helix_theme();
+        let theme = cx.global::<crate::ThemeManager>().helix_theme();
         let line_runs = Self::highlight_line_with_params(
             document,
             view,
@@ -1349,7 +1338,7 @@ impl Element for DocumentElement {
                 let view = editor.tree.get(self.view_id);
                 let _viewport = view.area;
 
-                let theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
+                let theme = cx.global::<crate::ThemeManager>().helix_theme();
                 let default_style = theme.get("ui.background");
                 let bg_color = default_style.bg
                     .and_then(color_to_hsla)
@@ -1523,7 +1512,7 @@ impl Element for DocumentElement {
                 let text_origin_x = bounds.origin.x + px(2.) + (after_layout.cell_width * gutter_width as f32);
 
                 // Extract necessary values before the loop to avoid borrowing issues
-                let editor_theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme().clone();
+                let editor_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
                 let editor_mode = editor.mode();
                 let cursor_shape = editor.config().cursor_shape.clone();
                 let syn_loader = editor.syn_loader.clone();
@@ -1669,7 +1658,7 @@ impl Element for DocumentElement {
                         }
 
                         // Try to get cached shaped line first
-                        let cache_key = crate::line_cache::ShapedLineKey {
+                        let cache_key = nucleotide_editor::ShapedLineKey {
                             line_text: line_str.to_string(),
                             font_size: self.style.font_size.to_pixels(px(16.0)).0 as u32,
                             viewport_width: bounds.size.width.0 as u32,
@@ -1691,7 +1680,7 @@ impl Element for DocumentElement {
                         shaped
                     } else {
                         // Create an empty shaped line for cursor positioning
-                        let cache_key = crate::line_cache::ShapedLineKey {
+                        let cache_key = nucleotide_editor::ShapedLineKey {
                             line_text: String::new(),
                             font_size: self.style.font_size.to_pixels(px(16.0)).0 as u32,
                             viewport_width: bounds.size.width.0 as u32,
@@ -1708,7 +1697,7 @@ impl Element for DocumentElement {
                     };
 
                     // Always store the line layout for cursor positioning
-                    let layout = crate::line_cache::LineLayout {
+                    let layout = nucleotide_editor::LineLayout {
                         line_idx,
                         shaped_line,
                         origin: text_origin,
@@ -1880,7 +1869,7 @@ impl Element for DocumentElement {
                     // Re-read core for gutter rendering
                     let core = self.core.read(cx);
                     let editor = &core.editor;
-                    let theme = cx.global::<crate::theme_manager::ThemeManager>().helix_theme();
+                    let theme = cx.global::<crate::ThemeManager>().helix_theme();
                     let view = editor.tree.get(self.view_id);
                     let document = match editor.document(self.doc_id) {
                     Some(doc) => doc,

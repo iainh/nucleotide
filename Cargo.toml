@@ -4,10 +4,8 @@ members = [
     "crates/nucleotide-core",
     "crates/nucleotide-ui",
     "crates/nucleotide-lsp",
-    # TODO: Add these crates when they are implemented
-    # "crates/nucleotide-editor",
-    # "crates/nucleotide-lsp",
-    # "crates/nucleotide-workspace",
+    "crates/nucleotide-workspace",
+    "crates/nucleotide-editor",
 ]
 resolver = "2"
 
@@ -71,15 +69,14 @@ smallvec = "1.13"
 fern = "0.6"
 ctor = "0.2"
 tokio-stream = "0.1"
+rust-embed = "8.5"
 
 # Inter-crate dependencies
 nucleotide-core = { path = "crates/nucleotide-core" }
 nucleotide-ui = { path = "crates/nucleotide-ui" }
 nucleotide-lsp = { path = "crates/nucleotide-lsp" }
-# TODO: Add these crates when they are implemented
-# nucleotide-editor = { path = "crates/nucleotide-editor" }
-# nucleotide-lsp = { path = "crates/nucleotide-lsp" }
-# nucleotide-workspace = { path = "crates/nucleotide-workspace" }
+nucleotide-workspace = { path = "crates/nucleotide-workspace" }
+nucleotide-editor = { path = "crates/nucleotide-editor" }
 
 [profile.dev]
 opt-level = 1

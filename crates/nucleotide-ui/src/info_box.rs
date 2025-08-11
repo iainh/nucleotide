@@ -1,6 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use helix_view::info::Info;
+use nucleotide_core::events::{AppEvent, UiEvent};
 
 #[derive(Debug)]
 pub struct InfoBoxView {
@@ -18,19 +19,20 @@ impl InfoBoxView {
         }
     }
 
-    fn handle_event(&mut self, ev: &crate::types::Update, cx: &mut Context<Self>) {
-        if let crate::types::Update::Info(info) = ev {
-            self.set_info(info);
+    fn handle_event(&mut self, ev: &AppEvent, cx: &mut Context<Self>) {
+        if let AppEvent::Ui(UiEvent::ShowInfo { title, body }) = ev {
+            self.title = Some(title.clone().into());
+            self.text = Some(body.join("\n").into());
             cx.notify();
         }
     }
 
-    pub fn subscribe(&self, editor: &Entity<crate::Core>, cx: &mut Context<Self>) {
-        cx.subscribe(editor, |this, _, ev, cx| {
-            this.handle_event(ev, cx);
-        })
-        .detach()
-    }
+    // TODO: Replace with event bus subscription
+    // pub fn subscribe(&self, event_bus: &EventBus, cx: &mut Context<Self>) {
+    //     event_bus.subscribe_ui(|this, event| {
+    //         this.handle_event(event, cx);
+    //     })
+    // }
 
     pub fn is_empty(&self) -> bool {
         self.title.is_none()
@@ -56,7 +58,10 @@ impl Render for InfoBoxView {
                 div()
                     .rounded_sm()
                     .shadow_sm()
-                    .text_size(px(cx.global::<crate::UiFontConfig>().size - 1.0))
+                    .text_size(px(cx
+                        .global::<nucleotide_core::shared_types::UiFontConfig>()
+                        .size
+                        - 1.0))
                     .when_some(self.style.text.color, |this, color| this.text_color(color))
                     .bg(gpui::rgb(0x2a2a3e))
                     .p_2()

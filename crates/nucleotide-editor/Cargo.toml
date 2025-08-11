@@ -1,0 +1,23 @@
+[package]
+name = "nucleotide-editor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nucleotide-core = { path = "../nucleotide-core" }
+nucleotide-ui = { path = "../nucleotide-ui" }
+# TODO: Use capability traits instead of direct dependency
+
+# GPUI
+gpui = { workspace = true }
+
+# Helix dependencies
+helix-core = { workspace = true }
+helix-view = { workspace = true }
+helix-term = { workspace = true }
+helix-tui = { workspace = true }
+
+# Standard dependencies
+anyhow = { workspace = true }
+log = { workspace = true }
+arc-swap = { workspace = true }

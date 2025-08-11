@@ -7,7 +7,7 @@ use rust_embed::RustEmbed;
 use std::borrow::Cow;
 
 #[derive(RustEmbed)]
-#[folder = "assets"]
+#[folder = "../nucleotide/assets"]
 #[include = "icons/**/*"]
 #[exclude = "*.DS_Store"]
 pub struct Assets;

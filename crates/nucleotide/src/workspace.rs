@@ -285,6 +285,18 @@ impl Workspace {
         info!("View focused: {:?}", view_id);
         self.focused_view_id = Some(view_id);
 
+        // TODO: Update titlebar with current filename
+        // AnyView doesn't have update method, need to refactor titlebar storage
+        // if let Some(titlebar) = &self.titlebar {
+        //     if let Some(filename) = self.current_filename(cx) {
+        //         titlebar.update(cx, |titlebar, _cx| {
+        //             if let Some(titlebar) = titlebar.downcast_mut::<nucleotide_ui::titlebar::TitleBar>() {
+        //                 titlebar.set_filename(filename);
+        //             }
+        //         });
+        //     }
+        // }
+
         // Sync file tree selection with the newly focused view
         let doc_path = {
             let core = self.core.read(cx);
@@ -344,17 +356,17 @@ impl Workspace {
 
         // Only show completion for certain triggers (not every character)
         match trigger {
-            crate::event_bridge::CompletionTrigger::Manual => {
+            crate::types::CompletionTrigger::Manual => {
                 // Always show for manual triggers
                 self.trigger_completion(cx);
             }
-            crate::event_bridge::CompletionTrigger::CharacterTyped(c) => {
+            crate::types::CompletionTrigger::Character(c) => {
                 // Only trigger for certain characters that typically start identifiers
                 if c.is_alphabetic() || *c == '_' || *c == '.' {
                     self.trigger_completion(cx);
                 }
             }
-            crate::event_bridge::CompletionTrigger::Filter => {
+            crate::types::CompletionTrigger::Automatic => {
                 // Re-filter existing completion
                 self.trigger_completion(cx);
             }
@@ -498,13 +510,13 @@ impl Workspace {
         });
 
         // Parse the command using our typed system
-        match crate::command_system::ParsedCommand::parse(command) {
+        match nucleotide_core::ParsedCommand::parse(command) {
             Ok(parsed) => {
                 // Log the parsed command for debugging
                 info!("Parsed command: {:?}", parsed);
 
                 // Convert to typed command if possible
-                match crate::command_system::Command::from_parsed(parsed.clone()) {
+                match nucleotide_core::Command::from_parsed(parsed.clone()) {
                     Ok(typed_cmd) => {
                         info!("Typed command: {:?}", typed_cmd);
                         // Execute the typed command
@@ -526,12 +538,8 @@ impl Workspace {
         }
     }
 
-    fn execute_typed_command(
-        &mut self,
-        command: crate::command_system::Command,
-        cx: &mut Context<Self>,
-    ) {
-        use crate::command_system::{Command, SplitDirection};
+    fn execute_typed_command(&mut self, command: nucleotide_core::Command, cx: &mut Context<Self>) {
+        use nucleotide_core::{command_system::SplitDirection, Command};
 
         match command {
             Command::Quit { force } => {
@@ -687,17 +695,12 @@ impl Workspace {
             // If the theme has changed, update the ThemeManager and UI theme
             if theme_before != theme_name_after {
                 // Update the global ThemeManager
-                cx.update_global(
-                    |theme_manager: &mut crate::theme_manager::ThemeManager, _cx| {
-                        theme_manager.set_theme(current_theme.clone());
-                    },
-                );
+                cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
+                    theme_manager.set_theme(current_theme.clone());
+                });
 
                 // Update the global UI theme
-                let new_ui_theme = cx
-                    .global::<crate::theme_manager::ThemeManager>()
-                    .ui_theme()
-                    .clone();
+                let new_ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
 
                 cx.update_global(|_ui_theme: &mut nucleotide_ui::Theme, _cx| {
                     *_ui_theme = new_ui_theme;
@@ -716,7 +719,9 @@ impl Workspace {
 
             // Check if we should quit after command execution
             if core.editor.should_close() {
-                cx.emit(crate::Update::ShouldQuit);
+                cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
+                    crate::types::CoreEvent::ShouldQuit,
+                )));
             }
 
             cx.notify();
@@ -861,7 +866,9 @@ impl Workspace {
                     }
 
                     // Emit an editor redraw event which should trigger various checks
-                    cx.emit(crate::Update::EditorEvent(helix_view::editor::EditorEvent::Redraw));
+                    cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
+                        crate::types::CoreEvent::RedrawRequested
+                    )));
 
                     // Set cursor to beginning of file without selecting content
                     let view_id = editor.tree.focus;
@@ -981,7 +988,7 @@ impl Workspace {
             crate::Update::DocumentOpened { doc_id } => self.handle_document_opened(*doc_id, cx),
             crate::Update::DocumentClosed { doc_id } => self.handle_document_closed(*doc_id, cx),
             crate::Update::ViewFocused { view_id } => self.handle_view_focused(*view_id, cx),
-            crate::Update::LanguageServerInitialized { server_id } => {
+            crate::Update::LanguageServerInitialized { server_id, .. } => {
                 self.handle_language_server_initialized(*server_id, cx)
             }
             crate::Update::LanguageServerExited { server_id } => {
@@ -992,15 +999,116 @@ impl Workspace {
                 view_id,
                 trigger,
             } => self.handle_completion_requested(*doc_id, *view_id, trigger, cx),
+            // Handle new event-based updates (during migration)
+            crate::Update::Event(event) => {
+                match event {
+                    crate::types::AppEvent::Core(core_event) => {
+                        match core_event {
+                            crate::types::CoreEvent::ShouldQuit => {
+                                info!("ShouldQuit event received via Event system");
+                                cx.quit();
+                            }
+                            crate::types::CoreEvent::RedrawRequested => {
+                                self.handle_redraw(cx);
+                            }
+                            crate::types::CoreEvent::CommandSubmitted { command } => {
+                                self.handle_command_submitted(command, cx);
+                            }
+                            crate::types::CoreEvent::SearchSubmitted { query } => {
+                                self.handle_search_submitted(query, cx);
+                            }
+                            crate::types::CoreEvent::DocumentChanged { doc_id } => {
+                                self.handle_document_changed(*doc_id, cx);
+                            }
+                            crate::types::CoreEvent::SelectionChanged { doc_id, view_id } => {
+                                self.handle_selection_changed(*doc_id, *view_id, cx);
+                            }
+                            crate::types::CoreEvent::ModeChanged { old_mode, new_mode } => {
+                                self.handle_mode_changed(old_mode, new_mode, cx);
+                            }
+                            crate::types::CoreEvent::DiagnosticsChanged { doc_id } => {
+                                self.handle_diagnostics_changed(*doc_id, cx);
+                            }
+                            crate::types::CoreEvent::DocumentOpened { doc_id } => {
+                                self.handle_document_opened(*doc_id, cx);
+                            }
+                            crate::types::CoreEvent::DocumentClosed { doc_id } => {
+                                self.handle_document_closed(*doc_id, cx);
+                            }
+                            crate::types::CoreEvent::ViewFocused { view_id } => {
+                                self.handle_view_focused(*view_id, cx);
+                            }
+                            crate::types::CoreEvent::CompletionRequested {
+                                doc_id,
+                                view_id,
+                                trigger,
+                            } => {
+                                self.handle_completion_requested(*doc_id, *view_id, trigger, cx);
+                            }
+                            _ => {
+                                // Other core events not yet handled
+                            }
+                        }
+                    }
+                    crate::types::AppEvent::Workspace(workspace_event) => {
+                        match workspace_event {
+                            crate::types::WorkspaceEvent::OpenFile { path } => {
+                                self.handle_open_file(path, cx);
+                            }
+                            crate::types::WorkspaceEvent::OpenDirectory { path } => {
+                                self.handle_open_directory(path, cx);
+                            }
+                            _ => {
+                                // Other workspace events not yet handled
+                            }
+                        }
+                    }
+                    crate::types::AppEvent::Ui(ui_event) => {
+                        match ui_event {
+                            crate::types::UiEvent::ShowPicker { picker_type, .. } => {
+                                match picker_type {
+                                    crate::types::PickerType::File => {
+                                        let handle = self.handle.clone();
+                                        let core = self.core.clone();
+                                        open(core, handle, cx);
+                                    }
+                                    crate::types::PickerType::Buffer => {
+                                        let handle = self.handle.clone();
+                                        let core = self.core.clone();
+                                        show_buffer_picker(core, handle, cx);
+                                    }
+                                    _ => {
+                                        // Other picker types not yet implemented
+                                    }
+                                }
+                            }
+                            _ => {
+                                // Other UI events not yet handled
+                            }
+                        }
+                    }
+                    crate::types::AppEvent::Lsp(lsp_event) => {
+                        match lsp_event {
+                            crate::types::LspEvent::ServerInitialized { server_id } => {
+                                self.handle_language_server_initialized(*server_id, cx);
+                            }
+                            crate::types::LspEvent::ServerExited { server_id } => {
+                                self.handle_language_server_exited(*server_id, cx);
+                            }
+                            _ => {
+                                // Other LSP events not yet handled
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
     /// Render unified status bar with file tree toggle and status information
     fn render_unified_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
-        let helix_theme = cx
-            .global::<crate::theme_manager::ThemeManager>()
-            .helix_theme();
+        let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
 
         // Use statusline theme colors
         let statusline_style = helix_theme.get("ui.statusline");
@@ -1021,7 +1129,7 @@ impl Workspace {
             .unwrap_or(ui_theme.text);
 
         // Get UI font configuration
-        let ui_font_config = cx.global::<crate::UiFontConfig>();
+        let ui_font_config = cx.global::<crate::types::UiFontConfig>();
         let font = gpui::font(&ui_font_config.family);
         let font_size = gpui::px(ui_font_config.size);
 
@@ -1314,10 +1422,7 @@ impl Workspace {
             width: info.width,
             height: info.height,
         });
-        let theme = cx
-            .global::<crate::theme_manager::ThemeManager>()
-            .helix_theme()
-            .clone();
+        let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
 
         self.key_hints.update(cx, |key_hints, cx| {
             key_hints.set_info(editor_info);
@@ -1382,11 +1487,14 @@ impl Workspace {
         self.core.update(cx, |core, cx| {
             let items = core.create_sample_completion_items();
             // Create the completion view with a default anchor position
-            let anchor_position = gpui::Point::new(gpui::Pixels(100.0), gpui::Pixels(100.0));
+            let _anchor_position = gpui::Point::new(gpui::Pixels(100.0), gpui::Pixels(100.0));
 
             // Create completion view as an entity
-            let completion_view =
-                cx.new(|cx| crate::completion::CompletionView::new(items, anchor_position, cx));
+            let completion_view = cx.new(|cx| {
+                let mut view = crate::completion::CompletionView::new(cx);
+                view.set_items(items);
+                view
+            });
 
             cx.emit(crate::Update::Completion(completion_view));
         });
@@ -1418,7 +1526,7 @@ impl Workspace {
     /// Adjust the editor font size
     fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
         // Get current font config
-        let mut font_config = cx.global::<crate::EditorFontConfig>().clone();
+        let mut font_config = cx.global::<crate::types::EditorFontConfig>().clone();
 
         // Adjust size with bounds checking
         font_config.size = (font_config.size + delta).clamp(8.0, 72.0);
@@ -1497,15 +1605,18 @@ impl Workspace {
         for view_id in view_ids.iter() {
             let view_id = *view_id;
             let is_focused = self.focused_view_id == Some(view_id);
-            let editor_font = cx.global::<crate::EditorFontConfig>();
+            let editor_font = cx.global::<crate::types::EditorFontConfig>();
             let style = TextStyle {
-                font_family: cx.global::<crate::FontSettings>().fixed_font.family.clone(),
+                font_family: cx
+                    .global::<crate::types::FontSettings>()
+                    .fixed_font
+                    .family
+                    .clone(),
                 font_size: px(editor_font.size).into(),
                 font_weight: editor_font.weight,
                 ..Default::default()
             };
             let core = self.core.clone();
-            let input = self.input.clone();
 
             // Check if view exists and update its style if it does
             if let Some(view) = self.documents.get(&view_id) {
@@ -1517,14 +1628,7 @@ impl Workspace {
                 // Create new view if it doesn't exist
                 let view = cx.new(|cx| {
                     let doc_focus_handle = cx.focus_handle();
-                    DocumentView::new(
-                        core,
-                        input,
-                        view_id,
-                        style.clone(),
-                        &doc_focus_handle,
-                        is_focused,
-                    )
+                    DocumentView::new(core, view_id, style.clone(), &doc_focus_handle, is_focused)
                 });
                 self.documents.insert(view_id, view);
             }
@@ -1600,9 +1704,7 @@ impl Render for Workspace {
         let editor = &self.core.read(cx).editor;
 
         // Get theme from ThemeManager instead of editor directly
-        let theme = cx
-            .global::<crate::theme_manager::ThemeManager>()
-            .helix_theme();
+        let theme = cx.global::<crate::ThemeManager>().helix_theme();
         let default_style = theme.get("ui.background");
         let default_ui_text = theme.get("ui.text");
         let bg_color = default_style
@@ -1985,9 +2087,7 @@ impl Render for Workspace {
 
                 // Get the same background color as the file tree
                 let prompt_bg = {
-                    let helix_theme = cx
-                        .global::<crate::theme_manager::ThemeManager>()
-                        .helix_theme();
+                    let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
                     let popup_style = helix_theme.get("ui.popup");
                     popup_style
                         .bg
@@ -2337,11 +2437,14 @@ fn test_completion(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
     let items = core.read(cx).create_sample_completion_items();
 
     // Position the completion near the top-left (simulating cursor position)
-    let anchor_position = gpui::point(gpui::px(200.0), gpui::px(300.0));
+    let _anchor_position = gpui::point(gpui::px(200.0), gpui::px(300.0));
 
     // Create completion view
-    let completion_view =
-        cx.new(|cx| crate::completion::CompletionView::new(items, anchor_position, cx));
+    let completion_view = cx.new(|cx| {
+        let mut view = crate::completion::CompletionView::new(cx);
+        view.set_items(items);
+        view
+    });
 
     // Emit completion event to show it in the overlay
     core.update(cx, |_core, cx| {

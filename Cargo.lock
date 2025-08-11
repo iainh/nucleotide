@@ -4402,6 +4402,7 @@ dependencies = [
  "notify",
  "nucleo 0.2.1",
  "nucleotide-core",
+ "nucleotide-editor",
  "nucleotide-lsp",
  "nucleotide-ui",
  "once_cell",
@@ -4447,6 +4448,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleotide-editor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "gpui",
+ "helix-core",
+ "helix-term",
+ "helix-tui",
+ "helix-view",
+ "log",
+ "nucleotide-core",
+ "nucleotide-ui",
+]
+
+[[package]]
 name = "nucleotide-lsp"
 version = "0.1.0"
 dependencies = [
@@ -4471,11 +4488,37 @@ dependencies = [
 name = "nucleotide-ui"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "gpui",
+ "helix-core",
+ "helix-loader",
+ "helix-lsp",
+ "helix-term",
  "helix-view",
  "log",
+ "nucleo 0.5.0",
+ "nucleotide-core",
+ "rust-embed",
  "serde",
  "smallvec",
+]
+
+[[package]]
+name = "nucleotide-workspace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "helix-core",
+ "helix-term",
+ "helix-vcs",
+ "helix-view",
+ "log",
+ "notify",
+ "nucleotide-core",
+ "nucleotide-ui",
+ "sum_tree",
+ "tokio",
 ]
 
 [[package]]

@@ -715,6 +715,7 @@ impl FileTree {
     }
 
     /// Convert helix_vcs FileChange to our GitStatus
+    #[allow(dead_code)]
     fn file_change_to_git_status(change: &FileChange) -> GitStatus {
         match change {
             FileChange::Untracked { .. } => GitStatus::Untracked,

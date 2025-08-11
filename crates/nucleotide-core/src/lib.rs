@@ -1,8 +1,38 @@
 // ABOUTME: Core event bridges between Helix and GPUI
 // ABOUTME: Provides the fundamental event translation layer
 
+pub mod capabilities;
+pub mod command_system;
+pub mod document_manager;
+pub mod editor_capabilities;
+pub mod event_aggregator;
 pub mod event_bridge;
+pub mod events;
 pub mod gpui_to_helix_bridge;
+pub mod preview_tracker;
+pub mod shared_types;
+
+// Capability traits exports
+pub use capabilities::{
+    BufferStore, CapabilityProvider, CommandExecutor, EditorReadAccess, EditorState,
+    EditorWriteAccess, EventEmitter, EventSubscriber, JobSystemAccess, LineCache, LineLayoutInfo,
+    OverlayProvider, ScrollManager, SubscriptionId, ThemeProvider, ViewStore,
+};
+
+// Extended editor capabilities exports
+pub use editor_capabilities::{
+    CommandExecution, DocumentAccess, EditorAccess, EditorCapabilities, StatusInfo, ViewManagement,
+    WeakEditorCapabilities,
+};
+
+// Event types exports
+pub use events::{
+    AppEvent, CoreEvent, EventBus, EventHandler, LspEvent, MessageSeverity, PanelType, PickerType,
+    SplitDirection, UiEvent, WorkspaceEvent,
+};
+
+// Event aggregator exports
+pub use event_aggregator::{EventAggregator, EventAggregatorHandle};
 
 // Event bridge exports
 pub use event_bridge::{
@@ -15,3 +45,9 @@ pub use gpui_to_helix_bridge::{
     create_gpui_to_helix_channel, handle_gpui_event_in_helix, initialize_gpui_to_helix_bridge,
     register_gpui_event_handlers, send_gpui_event_to_helix, GpuiToHelixEvent, MemoryPressureLevel,
 };
+
+// Document manager exports
+pub use document_manager::{DocumentManager, DocumentManagerMut};
+
+// Command system exports
+pub use command_system::{Command, ParsedCommand};

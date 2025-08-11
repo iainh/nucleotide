@@ -716,9 +716,7 @@ impl FileTreeView {
 
         // Get ui.selection background color from Helix theme
         let selection_bg = {
-            let helix_theme = cx
-                .global::<crate::theme_manager::ThemeManager>()
-                .helix_theme();
+            let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
             helix_theme
                 .get("ui.selection")
                 .bg
@@ -913,9 +911,7 @@ impl Render for FileTreeView {
 
         // Get prompt background color for consistency
         let prompt_bg = {
-            let helix_theme = cx
-                .global::<crate::theme_manager::ThemeManager>()
-                .helix_theme();
+            let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
             let popup_style = helix_theme.get("ui.popup");
             popup_style
                 .bg
@@ -950,7 +946,7 @@ impl Render for FileTreeView {
                 },
             ))
             .on_action(cx.listener(
-                |view, _: &crate::actions::file_tree::ExpandCollapse, _window, cx| {
+                |view, _: &crate::actions::file_tree::ToggleExpanded, _window, cx| {
                     // For left/right arrow keys, handle expand/collapse
                     if let Some(selected_path) = view.selected_path.clone() {
                         if let Some(entry) = view.tree.entry_by_path(&selected_path) {

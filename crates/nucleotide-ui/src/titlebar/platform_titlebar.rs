@@ -3,13 +3,14 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, App, Context, Decorations, ElementId, Hsla, InteractiveElement, IntoElement,
+    div, hsla, px, App, Context, Decorations, ElementId, Hsla, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Pixels, Render, Styled, Window, WindowControlArea,
 };
 
 use crate::titlebar::window_controls::WindowControls;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum PlatformStyle {
     Linux,
     Mac,
@@ -57,17 +58,10 @@ impl PlatformTitleBar {
         return (1.75 * window.rem_size()).max(px(34.0));
     }
 
-    pub fn title_bar_color(&self, _window: &Window, cx: &App) -> Hsla {
-        // Use the same background color as the workspace
-        let theme = cx
-            .global::<crate::theme_manager::ThemeManager>()
-            .helix_theme();
-        let default_style = theme.get("ui.background");
-
-        default_style
-            .bg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(gpui::black())
+    pub fn title_bar_color(&self, _window: &Window, _cx: &App) -> Hsla {
+        // Default dark background for now
+        // TODO: Get from theme manager when available
+        hsla(0.0, 0.0, 0.05, 1.0)
     }
 }
 
@@ -76,9 +70,8 @@ impl Render for PlatformTitleBar {
         let decorations = window.window_decorations();
         let height = Self::height(window);
         let titlebar_color = self.title_bar_color(window, cx);
-        // Get the border color from Helix theme via our UI theme conversion
-        // This ensures we use the same border color that's derived from ui.window
-        let ui_theme = cx.global::<nucleotide_ui::Theme>();
+        // Get the border color from UI theme
+        let ui_theme = cx.global::<crate::Theme>();
         let border_color = ui_theme.border;
 
         // macOS traffic light padding

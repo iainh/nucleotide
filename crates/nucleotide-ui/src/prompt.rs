@@ -1,7 +1,7 @@
 use gpui::*;
 use std::sync::Arc;
 
-use crate::TextWithStyle;
+use crate::text_utils::TextWithStyle;
 
 #[derive(Clone)]
 pub enum Prompt {
@@ -106,15 +106,15 @@ impl RenderOnce for PromptElement {
 
                     let bg = ui_bg
                         .bg
-                        .and_then(crate::utils::color_to_hsla)
+                        .and_then(crate::theme_utils::color_to_hsla)
                         .unwrap_or(hsla(0.0, 0.0, 0.1, 1.0));
                     let text = ui_text
                         .fg
-                        .and_then(crate::utils::color_to_hsla)
+                        .and_then(crate::theme_utils::color_to_hsla)
                         .unwrap_or(hsla(0.0, 0.0, 0.9, 1.0));
                     let border = ui_window
                         .fg
-                        .and_then(crate::utils::color_to_hsla)
+                        .and_then(crate::theme_utils::color_to_hsla)
                         .unwrap_or(hsla(0.0, 0.0, 0.3, 1.0));
 
                     (bg, text, border)
@@ -148,9 +148,17 @@ impl RenderOnce for PromptElement {
                     .rounded_md()
                     .shadow_lg()
                     .text_color(text_color)
-                    .font(cx.global::<crate::FontSettings>().var_font.clone())
-                    .text_size(px(cx.global::<crate::UiFontConfig>().size))
-                    .line_height(px(1.3 * cx.global::<crate::UiFontConfig>().size))
+                    .font(
+                        cx.global::<nucleotide_core::shared_types::FontSettings>()
+                            .var_font
+                            .clone(),
+                    )
+                    .text_size(px(cx
+                        .global::<nucleotide_core::shared_types::UiFontConfig>()
+                        .size))
+                    .line_height(px(1.3
+                        * cx.global::<nucleotide_core::shared_types::UiFontConfig>()
+                            .size))
                     .child(text)
             }
             Prompt::Native { .. } => {
