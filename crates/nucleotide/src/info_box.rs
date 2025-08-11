@@ -18,8 +18,8 @@ impl InfoBoxView {
         }
     }
 
-    fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
-        if let crate::Update::Info(info) = ev {
+    fn handle_event(&mut self, ev: &crate::types::Update, cx: &mut Context<Self>) {
+        if let crate::types::Update::Info(info) = ev {
             self.set_info(info);
             cx.notify();
         }

@@ -43,14 +43,15 @@ mod statusline;
 mod test_utils;
 mod theme_manager;
 mod titlebar;
+mod types;
 // UI components are now provided by nucleotide_ui crate
 mod utils;
 mod workspace;
 
 pub type Core = Application;
 
-// Re-export Update enum for use in other modules
-pub use self::Update;
+// Re-export shared types
+pub use types::{EditorStatus, Update};
 
 fn setup_logging(verbosity: u64) -> Result<()> {
     let mut base_config = fern::Dispatch::new();
@@ -291,11 +292,12 @@ fn app_menus() -> Vec<Menu> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EditorStatus {
-    pub status: String,
-    pub severity: Severity,
-}
+// Update and EditorStatus are now in types module
 
+// This section previously contained Update enum which is now in types.rs
+// Keeping this comment to maintain line numbers for now
+
+/*
 pub enum Update {
     Redraw,
     Prompt(prompt::Prompt),
@@ -428,6 +430,7 @@ impl std::fmt::Debug for Update {
         }
     }
 }
+*/
 
 struct FontSettings {
     fixed_font: gpui::Font,
