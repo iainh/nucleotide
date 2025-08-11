@@ -21,10 +21,10 @@ use log::debug;
 
 use crate::line_cache::LineLayoutCache;
 use crate::scroll_manager::ScrollManager;
-use crate::ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use crate::utils::color_to_hsla;
 use crate::{Core, Input};
 use helix_stdx::rope::RopeSliceExt;
+use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 
 /// Custom scroll handle for DocumentView that integrates with ScrollManager
 #[derive(Clone)]

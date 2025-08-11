@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use crate::ui::common::{ModalContainer, ModalStyle};
+use crate::common::{ModalContainer, ModalStyle};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
@@ -249,7 +249,8 @@ where
     }
 }
 
-/// Type aliases for common overlay types
-pub type PickerOverlay = Overlay<crate::picker_view::PickerView>;
-pub type PromptOverlay = Overlay<crate::prompt_view::PromptView>;
-pub type CompletionOverlay = Overlay<crate::completion::CompletionView>;
+// Note: These type aliases reference components in the main crate
+// They will be available when imported from nucleotide crate
+// pub type PickerOverlay = Overlay<nucleotide::picker_view::PickerView>;
+// pub type PromptOverlay = Overlay<nucleotide::prompt_view::PromptView>;
+// pub type CompletionOverlay = Overlay<nucleotide::completion::CompletionView>;

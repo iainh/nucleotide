@@ -62,7 +62,7 @@ impl Default for ModalStyle {
 impl ModalStyle {
     /// Create ModalStyle from helix theme
     pub fn from_theme(theme: &helix_view::Theme) -> Self {
-        use crate::utils::color_to_hsla;
+        use crate::theme_utils::color_to_hsla;
 
         let background = theme
             .get("ui.popup")

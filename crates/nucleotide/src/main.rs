@@ -45,7 +45,7 @@ mod statusline;
 mod test_utils;
 mod theme_manager;
 mod titlebar;
-mod ui;
+// UI components are now provided by nucleotide_ui crate
 mod utils;
 mod workspace;
 
@@ -741,7 +741,7 @@ fn gui_main(mut app: Application, config: crate::config::Config, handle: tokio::
 
             // Create notifications view with theme colors
             let notifications = cx.new(|cx| {
-                let ui_theme = cx.global::<ui::Theme>();
+                let ui_theme = cx.global::<nucleotide_ui::Theme>();
                 notification::NotificationView::new(ui_theme.background, ui_theme.text)
             });
 

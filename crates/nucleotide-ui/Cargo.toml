@@ -1,0 +1,13 @@
+[package]
+name = "nucleotide-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui.workspace = true
+serde.workspace = true
+log.workspace = true
+helix-view.workspace = true
+smallvec.workspace = true

@@ -1,7 +1,7 @@
 // ABOUTME: Button component following Zed's design patterns
 // ABOUTME: Provides consistent button styling and behavior
 
-use crate::ui::spacing;
+use crate::spacing;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
@@ -123,7 +123,7 @@ impl Button {
 
 impl RenderOnce for Button {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = cx.global::<crate::ui::Theme>();
+        let theme = cx.global::<crate::Theme>();
         let (py, px) = self.size.padding();
         let text_size = self.size.text_size();
 

@@ -36,7 +36,7 @@ pub struct WindowControlStyle {
 
 impl WindowControlStyle {
     pub fn default(cx: &App) -> Self {
-        let ui_theme = cx.global::<crate::ui::Theme>();
+        let ui_theme = cx.global::<nucleotide_ui::Theme>();
 
         Self {
             background: hsla(0.0, 0.0, 0.0, 0.0), // transparent
@@ -47,7 +47,7 @@ impl WindowControlStyle {
     }
 
     pub fn close(cx: &App) -> Self {
-        let ui_theme = cx.global::<crate::ui::Theme>();
+        let ui_theme = cx.global::<nucleotide_ui::Theme>();
 
         Self {
             background: hsla(0.0, 0.0, 0.0, 0.0),       // transparent

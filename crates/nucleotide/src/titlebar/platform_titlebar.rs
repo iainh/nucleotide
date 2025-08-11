@@ -78,7 +78,7 @@ impl Render for PlatformTitleBar {
         let titlebar_color = self.title_bar_color(window, cx);
         // Get the border color from Helix theme via our UI theme conversion
         // This ensures we use the same border color that's derived from ui.window
-        let ui_theme = cx.global::<crate::ui::Theme>();
+        let ui_theme = cx.global::<nucleotide_ui::Theme>();
         let border_color = ui_theme.border;
 
         // macOS traffic light padding

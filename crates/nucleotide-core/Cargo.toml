@@ -1,0 +1,32 @@
+[package]
+name = "nucleotide-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Helix dependencies
+helix-core.workspace = true
+helix-event.workspace = true
+helix-loader.workspace = true
+helix-term.workspace = true
+helix-view.workspace = true
+helix-lsp.workspace = true
+helix-vcs.workspace = true
+helix-stdx.workspace = true
+
+# GPUI
+gpui.workspace = true
+
+# Common dependencies
+tokio.workspace = true
+futures.workspace = true
+anyhow.workspace = true
+log.workspace = true
+arc-swap.workspace = true
+crossterm.workspace = true
+signal-hook.workspace = true
+signal-hook-tokio.workspace = true
+parking_lot.workspace = true
+once_cell.workspace = true

@@ -699,7 +699,7 @@ impl Workspace {
                     .ui_theme()
                     .clone();
 
-                cx.update_global(|_ui_theme: &mut crate::ui::Theme, _cx| {
+                cx.update_global(|_ui_theme: &mut nucleotide_ui::Theme, _cx| {
                     *_ui_theme = new_ui_theme;
                 });
 
@@ -997,7 +997,7 @@ impl Workspace {
 
     /// Render unified status bar with file tree toggle and status information
     fn render_unified_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui_theme = cx.global::<crate::ui::Theme>();
+        let ui_theme = cx.global::<nucleotide_ui::Theme>();
         let helix_theme = cx
             .global::<crate::theme_manager::ThemeManager>()
             .helix_theme();
@@ -1931,7 +1931,7 @@ impl Render for Workspace {
 
             if let Some(file_tree) = &self.file_tree {
                 // Create file tree panel with absolute positioning
-                let ui_theme = cx.global::<crate::ui::Theme>();
+                let ui_theme = cx.global::<nucleotide_ui::Theme>();
                 let file_tree_panel = div()
                     .absolute()
                     .left(px(file_tree_left_offset))
@@ -1979,7 +1979,7 @@ impl Render for Workspace {
                     );
             } else {
                 // No project directory set - show placeholder message
-                let ui_theme = cx.global::<crate::ui::Theme>();
+                let ui_theme = cx.global::<nucleotide_ui::Theme>();
                 let resize_handle_width = 4.0;
                 let main_content_offset = self.file_tree_width + resize_handle_width;
 

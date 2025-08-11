@@ -1,7 +1,7 @@
 // ABOUTME: List item component following Zed's pattern
 // ABOUTME: Reusable component for consistent list rendering
 
-use crate::ui::spacing;
+use crate::spacing;
 use gpui::*;
 use smallvec::SmallVec;
 
@@ -132,7 +132,7 @@ impl ListItem {
 
 impl RenderOnce for ListItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = cx.global::<crate::ui::Theme>();
+        let theme = cx.global::<crate::Theme>();
         let (py, px) = self.spacing.padding();
 
         let mut base = div()

@@ -2,12 +2,12 @@
 // ABOUTME: Uses proper GPUI uniform_list for scrollable content like Zed
 
 use crate::preview_tracker::PreviewTracker;
-use crate::ui::common::{FocusableModal, ModalStyle, SearchInput};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;
 use nucleo::Nucleo;
+use nucleotide_ui::common::{FocusableModal, ModalStyle, SearchInput};
 use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Debug)]

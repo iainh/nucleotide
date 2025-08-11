@@ -265,7 +265,7 @@ impl Element for Scrollbar {
 
             // Use theme colors - fallback to simple grays if theme is not available
             let (thumb_bg, track_bg) = {
-                if let Some(_theme) = cx.try_global::<crate::ui::Theme>() {
+                if let Some(_theme) = cx.try_global::<crate::Theme>() {
                     let thumb_base_color = match thumb_state {
                         ThumbState::Dragging(_) => hsla(0.0, 0.0, 0.6, 0.9),
                         ThumbState::Hover => hsla(0.0, 0.0, 0.5, 0.7),

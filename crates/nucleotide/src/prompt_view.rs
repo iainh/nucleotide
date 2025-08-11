@@ -1,9 +1,9 @@
 // ABOUTME: GPUI-native prompt component for text input with completion support
 // ABOUTME: Replaces dependency on helix_term::ui::Prompt with a proper GPUI implementation
 
-use crate::ui::common::ModalStyle;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use nucleotide_ui::common::ModalStyle;
 
 #[derive(Clone, Debug)]
 pub struct CompletionItem {

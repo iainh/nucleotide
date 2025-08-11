@@ -147,7 +147,7 @@ impl EventEmitter<DismissEvent> for FilePickerDelegate {}
 
 impl PickerDelegate for FilePickerDelegate {
     type Item = FilePickerItem;
-    type ListItem = crate::ui::ListItem;
+    type ListItem = nucleotide_ui::ListItem;
     type Preview = Div;
 
     fn match_count(&self) -> usize {
@@ -200,7 +200,8 @@ impl PickerDelegate for FilePickerDelegate {
         let item_idx = *self.filtered_indices.get(ix)?;
         let item = self.items.get(item_idx)?;
 
-        let mut list_item = crate::ui::ListItem::new(("file-picker-item", ix)).selected(selected);
+        let mut list_item =
+            nucleotide_ui::ListItem::new(("file-picker-item", ix)).selected(selected);
 
         if let Some(icon) = &item.icon {
             list_item = list_item.start_slot(div().child(icon.clone()));
