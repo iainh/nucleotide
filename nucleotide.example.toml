@@ -1,0 +1,46 @@
+# Example Nucleotide Configuration
+# Place this file in ~/.config/helix/nucleotide.toml
+
+# Theme configuration for automatic light/dark mode switching
+[theme]
+# Mode can be "system", "light", or "dark"
+# - "system": Automatically switch between light and dark themes based on OS appearance
+# - "light": Always use light theme
+# - "dark": Always use dark theme
+mode = "system"
+
+# Theme to use when system is in light mode
+# If not specified, defaults to "acme"
+# light_theme = "acme"
+
+# Theme to use when system is in dark mode
+# If not specified, defaults to "nucleotide-teal"
+# dark_theme = "nucleotide-teal"
+
+# Window appearance configuration
+[window]
+# Enable blur/vibrancy for dark themes (macOS only)
+# When true, dark themes will use a blurred/translucent window background
+blur_dark_themes = false
+
+# Automatically adjust window appearance based on theme
+# When true, the window will update its appearance when themes change
+appearance_follows_theme = true
+
+# UI configuration
+[ui]
+# Font settings for UI elements (menus, dialogs, etc.)
+[ui.font]
+family = "SF Pro Display"
+weight = "normal"
+size = 13.0
+line_height = 1.5
+
+# Editor configuration
+[editor]
+# Font settings for the editor
+[editor.font]
+family = "JetBrains Mono"
+weight = "normal"
+size = 14.0
+line_height = 1.4

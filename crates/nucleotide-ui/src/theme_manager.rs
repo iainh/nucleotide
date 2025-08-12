@@ -6,6 +6,19 @@ use crate::Theme as UITheme;
 use gpui::*;
 use helix_view::Theme as HelixTheme;
 
+/// System appearance state
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SystemAppearance {
+    Light,
+    Dark,
+}
+
+impl Default for SystemAppearance {
+    fn default() -> Self {
+        SystemAppearance::Light
+    }
+}
+
 /// Manages theme state and provides consistent access to theme colors
 #[derive(Clone)]
 pub struct ThemeManager {
@@ -13,6 +26,8 @@ pub struct ThemeManager {
     helix_theme: HelixTheme,
     /// Cached UI theme derived from the Helix theme
     ui_theme: UITheme,
+    /// Current system appearance
+    system_appearance: SystemAppearance,
 }
 
 impl ThemeManager {
@@ -22,6 +37,7 @@ impl ThemeManager {
         Self {
             helix_theme,
             ui_theme,
+            system_appearance: SystemAppearance::default(),
         }
     }
 
@@ -39,6 +55,24 @@ impl ThemeManager {
     /// Get the UI theme
     pub fn ui_theme(&self) -> &UITheme {
         &self.ui_theme
+    }
+
+    /// Get the current system appearance
+    pub fn system_appearance(&self) -> SystemAppearance {
+        self.system_appearance
+    }
+
+    /// Set the system appearance
+    pub fn set_system_appearance(&mut self, appearance: SystemAppearance) {
+        self.system_appearance = appearance;
+    }
+
+    /// Check if the current theme is dark based on background luminance
+    pub fn is_dark_theme(&self) -> bool {
+        // HSLA uses lightness directly, so we can check that
+        // A theme is considered dark if its background lightness is below 0.5
+        let bg = self.ui_theme.background;
+        bg.l < 0.5
     }
 
     /// Derive a UI theme from a Helix theme

@@ -162,11 +162,20 @@ fn parse_file_url(url: &str) -> Option<String> {
     None
 }
 
-fn window_options(_cx: &mut App) -> gpui::WindowOptions {
+fn window_options(cx: &mut App, config: &nucleotide::config::Config) -> gpui::WindowOptions {
     let window_decorations = match std::env::var("HELIX_WINDOW_DECORATIONS") {
         Ok(val) if val == "server" => gpui::WindowDecorations::Server,
         Ok(val) if val == "client" => gpui::WindowDecorations::Client,
         _ => gpui::WindowDecorations::Client, // Default to client decorations
+    };
+
+    // Determine window background appearance based on theme and configuration
+    let theme_manager = cx.global::<crate::ThemeManager>();
+    let is_dark = theme_manager.is_dark_theme();
+    let window_background = if is_dark && config.gui.window.blur_dark_themes {
+        WindowBackgroundAppearance::Blurred
+    } else {
+        WindowBackgroundAppearance::Opaque
     };
 
     WindowOptions {
@@ -185,7 +194,7 @@ fn window_options(_cx: &mut App) -> gpui::WindowOptions {
         kind: WindowKind::Normal,
         is_movable: true,
         display_id: None,
-        window_background: WindowBackgroundAppearance::Opaque,
+        window_background,
         window_decorations: Some(window_decorations),
         window_min_size: Some(gpui::size(px(400.0), px(300.0))),
     }
@@ -429,7 +438,20 @@ fn gui_main(
     gpui_app.run(move |cx| {
         // Set up theme manager with Helix theme
         let helix_theme = app.editor.theme.clone();
-        let theme_manager = crate::ThemeManager::new(helix_theme);
+        let mut theme_manager = crate::ThemeManager::new(helix_theme);
+
+        // Detect initial system appearance
+        #[cfg(target_os = "macos")]
+        {
+            // Get current system appearance from window
+            // This will be properly detected when we create the window
+            // For now, we'll use a default based on theme darkness
+            if theme_manager.is_dark_theme() {
+                theme_manager
+                    .set_system_appearance(nucleotide_ui::theme_manager::SystemAppearance::Dark);
+            }
+        }
+
         let ui_theme = theme_manager.ui_theme().clone();
         cx.set_global(theme_manager);
         cx.set_global(ui_theme);
@@ -470,7 +492,7 @@ fn gui_main(
         // Initialize preview tracker
         cx.set_global(nucleotide_core::preview_tracker::PreviewTracker::new());
 
-        let options = window_options(cx);
+        let options = window_options(cx, &config);
 
         let _ = cx.open_window(options, |_window, cx| {
             // Set up window event handlers to send events to Helix
@@ -952,7 +974,7 @@ FLAGS:
     });
 
     // TODO: use the thread local executor to spawn the application task separately from the work pool
-    let app = application::init_editor(args, config.helix.clone(), lang_loader)
+    let app = application::init_editor(args, config.helix.clone(), config.clone(), lang_loader)
         .context("unable to create new application")?;
 
     Ok(Some((app, config)))

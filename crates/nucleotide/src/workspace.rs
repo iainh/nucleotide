@@ -37,6 +37,8 @@ pub struct Workspace {
     resize_start_x: f32,
     resize_start_width: f32,
     titlebar: Option<gpui::AnyView>,
+    appearance_observer_set: bool,
+    needs_appearance_update: bool,
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -90,6 +92,9 @@ impl Workspace {
         })
         .detach();
 
+        // Note: Window appearance observation needs to be set up after window creation
+        // It will be handled in the render method when window is available
+
         let key_hints = cx.new(|_cx| KeyHintView::new());
 
         // Initialize file tree only if project directory is explicitly set
@@ -135,6 +140,8 @@ impl Workspace {
             resize_start_x: 0.0,
             resize_start_width: 0.0,
             titlebar: None,
+            appearance_observer_set: false,
+            needs_appearance_update: false,
         };
         // Initialize document views
         workspace.update_document_views(cx);
@@ -172,6 +179,103 @@ impl Workspace {
 
     pub fn theme(editor: &Entity<Core>, cx: &mut Context<Self>) -> helix_view::Theme {
         editor.read(cx).editor.theme.clone()
+    }
+
+    fn handle_appearance_change(
+        &mut self,
+        appearance: WindowAppearance,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::config::ThemeMode;
+        use nucleotide_ui::theme_manager::SystemAppearance;
+
+        // Update system appearance in theme manager
+        let system_appearance = match appearance {
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => SystemAppearance::Dark,
+            WindowAppearance::Light | WindowAppearance::VibrantLight => SystemAppearance::Light,
+        };
+
+        cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
+            theme_manager.set_system_appearance(system_appearance);
+        });
+
+        // Check if we should switch themes based on configuration
+        let config = self.core.read(cx).config.clone();
+        if config.gui.theme.mode == ThemeMode::System {
+            // Determine which theme to use
+            let theme_name = match system_appearance {
+                SystemAppearance::Light => Some(config.gui.theme.get_light_theme()),
+                SystemAppearance::Dark => Some(config.gui.theme.get_dark_theme()),
+            };
+
+            // Switch to the appropriate theme if specified
+            if let Some(theme_name) = theme_name {
+                self.switch_theme_by_name(&theme_name, window, cx);
+            }
+        }
+
+        // Update window appearance if configured
+        if config.gui.window.appearance_follows_theme {
+            self.update_window_appearance(window, cx);
+        }
+    }
+
+    fn switch_theme_by_name(
+        &mut self,
+        theme_name: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Load the theme using the existing theme loader from the editor
+        let theme_result = self.core.read(cx).editor.theme_loader.load(theme_name);
+        match theme_result {
+            Ok(theme) => {
+                // Update editor theme
+                self.core.update(cx, |core, _cx| {
+                    core.editor.set_theme(theme.clone());
+                });
+
+                // Update theme manager
+                cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
+                    theme_manager.set_theme(theme);
+                });
+
+                // Update global UI theme
+                let new_ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
+                cx.update_global(|ui_theme: &mut nucleotide_ui::Theme, _cx| {
+                    *ui_theme = new_ui_theme;
+                });
+
+                // Clear caches and redraw
+                self.clear_shaped_lines_cache(cx);
+                cx.notify();
+            }
+            Err(e) => {
+                error!("Failed to load theme '{}': {}", theme_name, e);
+            }
+        }
+    }
+
+    fn update_window_appearance(&self, window: &mut Window, cx: &Context<Self>) {
+        let config = self.core.read(cx).config.clone();
+        let theme_manager = cx.global::<crate::ThemeManager>();
+        let is_dark = theme_manager.is_dark_theme();
+
+        // Set window background appearance based on theme
+        let appearance = if is_dark && config.gui.window.blur_dark_themes {
+            WindowBackgroundAppearance::Blurred
+        } else {
+            WindowBackgroundAppearance::Opaque
+        };
+
+        window.set_background_appearance(appearance);
+    }
+
+    fn clear_shaped_lines_cache(&self, cx: &Context<Self>) {
+        if let Some(line_cache) = cx.try_global::<nucleotide_editor::LineLayoutCache>() {
+            line_cache.clear_shaped_lines();
+        }
     }
 
     // Event handler methods extracted from the main handle_event
@@ -1652,6 +1756,30 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Set up window appearance observer on first render
+        if !self.appearance_observer_set {
+            self.appearance_observer_set = true;
+
+            // Get initial appearance and trigger theme switch if needed
+            let initial_appearance = cx.window_appearance();
+            self.handle_appearance_change(initial_appearance, window, cx);
+
+            // Set up observer for future changes
+            cx.observe_window_appearance(window, |workspace: &mut Workspace, _appearance, cx| {
+                // Handle the appearance change in a separate method that can access window
+                workspace.needs_appearance_update = true;
+                cx.notify();
+            })
+            .detach();
+        }
+
+        // Handle appearance update if needed
+        if self.needs_appearance_update {
+            self.needs_appearance_update = false;
+            let appearance = cx.window_appearance();
+            self.handle_appearance_change(appearance, window, cx);
+        }
+
         // Handle focus restoration if needed
         if self.needs_focus_restore {
             if let Some(view_id) = self.focused_view_id {

@@ -7,6 +7,12 @@ use nucleotide_types::{FontConfig, FontWeight};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Default theme for light mode
+pub const DEFAULT_LIGHT_THEME: &str = "acme";
+
+/// Default theme for dark mode
+pub const DEFAULT_DARK_THEME: &str = "nucleotide-teal";
+
 /// UI-specific configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UiConfig {
@@ -23,6 +29,67 @@ pub struct EditorGuiConfig {
     pub font: Option<FontConfig>,
 }
 
+/// Theme mode selection
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    /// Follow system appearance
+    #[default]
+    System,
+    /// Always use light theme
+    Light,
+    /// Always use dark theme
+    Dark,
+}
+
+/// Theme configuration for automatic switching
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ThemeConfig {
+    /// Theme mode selection
+    #[serde(default)]
+    pub mode: ThemeMode,
+
+    /// Theme to use in light mode (defaults to "acme" if not specified)
+    #[serde(default)]
+    pub light_theme: Option<String>,
+
+    /// Theme to use in dark mode (defaults to "nucleotide-teal" if not specified)
+    #[serde(default)]
+    pub dark_theme: Option<String>,
+}
+
+impl ThemeConfig {
+    /// Get the light theme name with default fallback
+    pub fn get_light_theme(&self) -> String {
+        self.light_theme
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LIGHT_THEME.to_string())
+    }
+
+    /// Get the dark theme name with default fallback
+    pub fn get_dark_theme(&self) -> String {
+        self.dark_theme
+            .clone()
+            .unwrap_or_else(|| DEFAULT_DARK_THEME.to_string())
+    }
+}
+
+/// Window appearance configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WindowConfig {
+    /// Enable blur for dark themes
+    #[serde(default)]
+    pub blur_dark_themes: bool,
+
+    /// Automatically adjust window appearance based on theme
+    #[serde(default = "default_true")]
+    pub appearance_follows_theme: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// GUI-specific configuration that extends Helix configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GuiConfig {
@@ -33,6 +100,14 @@ pub struct GuiConfig {
     /// Editor GUI settings
     #[serde(default)]
     pub editor: EditorGuiConfig,
+
+    /// Theme configuration
+    #[serde(default)]
+    pub theme: ThemeConfig,
+
+    /// Window appearance configuration
+    #[serde(default)]
+    pub window: WindowConfig,
 }
 
 /// Combined configuration merging GUI and Helix configs

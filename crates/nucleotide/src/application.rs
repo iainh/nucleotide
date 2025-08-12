@@ -63,6 +63,7 @@ pub struct Application {
     pub project_directory: Option<PathBuf>,
     pub event_bridge_rx: Option<event_bridge::BridgedEventReceiver>,
     pub gpui_to_helix_rx: Option<gpui_to_helix_bridge::GpuiToHelixEventReceiver>,
+    pub config: crate::config::Config,
 }
 
 #[derive(Debug, Clone)]
@@ -959,7 +960,8 @@ impl nucleotide_core::JobSystemAccess for Application {
 
 pub fn init_editor(
     args: Args,
-    config: Config,
+    helix_config: Config,
+    gui_config: crate::config::Config,
     lang_loader: syntax::Loader,
 ) -> Result<Application, Error> {
     use helix_view::editor::Action;
@@ -989,12 +991,24 @@ pub fn init_editor(
 
     let true_color = true;
 
-    let theme = config
-        .theme
-        .as_ref()
+    // Load initial theme - will be corrected based on system appearance after window creation
+    // For non-system modes, load the appropriate theme directly
+    let theme_name = match gui_config.gui.theme.mode {
+        crate::config::ThemeMode::Light => Some(gui_config.gui.theme.get_light_theme()),
+        crate::config::ThemeMode::Dark => Some(gui_config.gui.theme.get_dark_theme()),
+        crate::config::ThemeMode::System => {
+            // For system mode, load a default and let the window appearance observer correct it
+            helix_config
+                .theme
+                .clone()
+                .or_else(|| Some(crate::config::DEFAULT_DARK_THEME.to_string()))
+        }
+    };
+
+    let theme = theme_name
         .and_then(|theme_name| {
             theme_loader
-                .load(theme_name)
+                .load(&theme_name)
                 .map_err(|e| {
                     log::warn!("failed to load theme `{theme_name}` - {e}");
                     e
@@ -1002,26 +1016,16 @@ pub fn init_editor(
                 .ok()
                 .filter(|theme| (true_color || theme.is_16_color()))
         })
-        .or_else(|| {
-            // Try to load nucleotide-teal as the default theme
-            theme_loader
-                .load("nucleotide-teal")
-                .map_err(|e| {
-                    log::info!("nucleotide-teal theme not found, falling back to default - {e}");
-                    e
-                })
-                .ok()
-        })
         .unwrap_or_else(|| theme_loader.default_theme(true_color));
 
     let syn_loader = Arc::new(ArcSwap::from_pointee(lang_loader));
 
     // CRITICAL: Enable true_color support for GUI mode before creating the editor
     // This is required for themes to work correctly
-    let mut config = config;
-    config.editor.true_color = true;
+    let mut helix_config = helix_config;
+    helix_config.editor.true_color = true;
 
-    let config = Arc::new(ArcSwap::from_pointee(config));
+    let config = Arc::new(ArcSwap::from_pointee(helix_config));
 
     let area = Rect {
         x: 0,
@@ -1178,6 +1182,7 @@ pub fn init_editor(
         project_directory,
         event_bridge_rx: Some(bridge_rx),
         gpui_to_helix_rx: Some(gpui_to_helix_rx),
+        config: gui_config,
     })
 }
 
