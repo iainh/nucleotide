@@ -46,7 +46,7 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 // Removed unused Tag-related structs and enums
 
 use anyhow::Error;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 
 use crate::types::{AppEvent, CoreEvent, LspEvent, MessageSeverity, PickerType, UiEvent, Update};
@@ -64,6 +64,7 @@ pub struct Application {
     pub event_bridge_rx: Option<event_bridge::BridgedEventReceiver>,
     pub gpui_to_helix_rx: Option<gpui_to_helix_bridge::GpuiToHelixEventReceiver>,
     pub config: crate::config::Config,
+    pub helix_config_arc: Arc<ArcSwap<helix_term::config::Config>>,
 }
 
 #[derive(Debug, Clone)]
@@ -915,8 +916,39 @@ impl Application {
                             }
                              cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::RedrawRequested)));
                         }
-                        EditorEvent::ConfigEvent(_) => {
-                            /* TODO */
+                        EditorEvent::ConfigEvent(config_event) => {
+                            // Handle config updates
+                            let old_config = self.editor.config();
+
+                            match config_event {
+                                helix_view::editor::ConfigEvent::Update(new_editor_config) => {
+                                    // The toggle command sent us a new config
+                                    // We detect what changed and store it as overrides
+                                    self.config.apply_helix_config_update(&new_editor_config);
+
+                                    // Update the ArcSwap with the new config so the editor sees it
+                                    let updated_helix_config = self.config.to_helix_config();
+                                    self.helix_config_arc.store(Arc::new(updated_helix_config));
+
+                                    info!("Config updated via generic patching system");
+                                }
+                                helix_view::editor::ConfigEvent::Refresh => {
+                                    // Reload config from files
+                                    info!("Config refresh requested - reloading from files");
+                                    if let Ok(fresh_config) = crate::config::Config::load() {
+                                        self.config = fresh_config;
+                                        let updated_helix_config = self.config.to_helix_config();
+                                        self.helix_config_arc.store(Arc::new(updated_helix_config));
+                                    }
+                                }
+                            }
+
+                            // Refresh the editor's config-dependent state
+                            self.editor.refresh_config(&old_config);
+
+                            // Trigger a redraw to reflect changes
+                            cx.emit(crate::Update::Redraw);
+                            cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::RedrawRequested)));
                         }
                         EditorEvent::LanguageServerMessage((id, call)) => {
                             // We need cx here but it's not available in the async context
@@ -1183,6 +1215,7 @@ pub fn init_editor(
         event_bridge_rx: Some(bridge_rx),
         gpui_to_helix_rx: Some(gpui_to_helix_rx),
         config: gui_config,
+        helix_config_arc: config,
     })
 }
 

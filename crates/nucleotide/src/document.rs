@@ -1339,8 +1339,22 @@ impl Element for DocumentElement {
 
                 let view = editor.tree.get(self.view_id);
                 let _viewport = view.area;
+                // Check if cursorline is enabled and view is focused
+                // Use the effective config value which includes runtime overrides
+                let config_cursorline = editor.config().cursorline;
+                let cursorline_enabled = config_cursorline && is_focused;
+                debug!("Cursorline check - config value: {}, focused: {}, enabled: {}", 
+                    config_cursorline, is_focused, cursorline_enabled);
 
                 let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                // Get cursorline style
+                let cursorline_style = if cursorline_enabled {
+                    let style = theme.get("ui.cursorline.primary");
+                    debug!("Cursorline style found: bg={:?}, fg={:?}", style.bg, style.fg);
+                    style.bg.and_then(color_to_hsla)
+                } else {
+                    None
+                };
                 let default_style = theme.get("ui.background");
                 let bg_color = default_style.bg
                     .and_then(color_to_hsla)
@@ -1477,6 +1491,9 @@ impl Element for DocumentElement {
                     .selection(self.view_id)
                     .primary()
                     .cursor(text.slice(..));
+                // Get the line number where the cursor is located
+                let cursor_line_num = text.char_to_line(cursor_char_idx);
+                debug!("Cursor is at line: {}, char_idx: {}", cursor_line_num, cursor_char_idx);
 
                 // Use the last row from scroll manager
                 let mut last_row = last_row_from_scroll;
@@ -1638,6 +1655,17 @@ impl Element for DocumentElement {
                     // core goes out of scope here
 
                     let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
+                    // Paint cursorline background if this is the cursor's line
+                    if let Some(cursorline_bg) = cursorline_style {
+                        if line_idx == cursor_line_num || (is_phantom_line && cursor_at_end && file_ends_with_newline) {
+                            debug!("Painting cursorline for line {} (cursor at line {})", line_idx, cursor_line_num);
+                            let cursorline_bounds = Bounds {
+                                origin: point(bounds.origin.x, bounds.origin.y + px(1.) + y_offset),
+                                size: size(bounds.size.width, after_layout.line_height),
+                            };
+                            window.paint_quad(fill(cursorline_bounds, cursorline_bg));
+                        }
+                    }
 
                     // Always create a shaped line, even for empty lines (needed for cursor positioning)
                     let shaped_line = if !line_str.is_empty() {

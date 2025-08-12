@@ -113,7 +113,7 @@ pub struct GuiConfig {
 /// Combined configuration merging GUI and Helix configs
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Base Helix configuration
+    /// Current Helix configuration (includes both file config and runtime changes)
     pub helix: HelixConfig,
 
     /// GUI-specific configuration
@@ -139,6 +139,17 @@ impl Config {
             helix: helix_config,
             gui: gui_config,
         })
+    }
+
+    /// Apply a config update from Helix (e.g., from toggle command)
+    /// We don't need to know what the config keys mean - we just store the new config
+    pub fn apply_helix_config_update(&mut self, new_editor_config: &helix_view::editor::Config) {
+        self.helix.editor = new_editor_config.clone();
+    }
+
+    /// Get the current Helix config
+    pub fn to_helix_config(&self) -> HelixConfig {
+        self.helix.clone()
     }
 
     /// Get the editor font configuration
