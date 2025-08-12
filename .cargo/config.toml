@@ -1,0 +1,9 @@
+[build]
+# Enable tokio_unstable for helix-event crate
+rustflags = ["--cfg", "tokio_unstable"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=/stack:10000000"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=-Wl,--stack,10000000"]
