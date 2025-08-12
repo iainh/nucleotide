@@ -6,9 +6,11 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui::{point, size, TextRun};
 use helix_core::{
+    doc_formatter::{DocumentFormatter, TextFormat},
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     ropey::RopeSlice,
     syntax::{self, HighlightEvent},
+    text_annotations::TextAnnotations,
     Selection, Uri,
 };
 use helix_lsp::lsp::Diagnostic;
@@ -418,6 +420,125 @@ impl DocumentElement {
             scrollbar_state,
         }
         .track_focus(focus)
+    }
+
+    /// Get the TextFormat for soft wrap support
+    #[allow(dead_code)]
+    fn get_text_format(
+        &self,
+        document: &Document,
+        viewport_width: u16,
+        theme: &Theme,
+    ) -> TextFormat {
+        document.text_format(viewport_width, Some(theme))
+    }
+
+    /// Render lines with soft wrap support using DocumentFormatter
+    #[allow(dead_code)]
+    fn render_with_softwrap(
+        &self,
+        document: &Document,
+        view: &View,
+        text_format: &TextFormat,
+        viewport_height: usize,
+        bounds: Bounds<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+        window: &mut Window,
+        _cx: &mut App,
+    ) -> Vec<nucleotide_editor::LineLayout> {
+        let mut line_layouts = Vec::new();
+        let text = document.text().slice(..);
+        let view_offset = document.view_offset(self.view_id);
+
+        // Create text annotations (empty for now, can be extended later)
+        let annotations = TextAnnotations::default();
+
+        // Create DocumentFormatter starting at the viewport anchor
+        let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
+            text,
+            text_format,
+            &annotations,
+            view_offset.anchor,
+        );
+
+        let mut visual_line = 0;
+        let mut current_doc_line = text.char_to_line(view_offset.anchor);
+        let mut line_graphemes = Vec::new();
+
+        // Skip lines before the viewport
+        for _ in 0..view_offset.vertical_offset {
+            if let Some(grapheme) = formatter.next() {
+                if grapheme.visual_pos.row > visual_line {
+                    visual_line = grapheme.visual_pos.row;
+                }
+            }
+        }
+
+        let text_origin_x = bounds.origin.x + (view.gutter_offset(document) as f32 * cell_width);
+        let mut y_offset = px(0.0);
+
+        // Render visible lines
+        while visual_line < view_offset.vertical_offset + viewport_height {
+            line_graphemes.clear();
+            let line_y = bounds.origin.y + px(1.0) + y_offset;
+
+            // Collect all graphemes for this visual line
+            while let Some(grapheme) = formatter.next() {
+                if grapheme.visual_pos.row > visual_line {
+                    // We've moved to the next visual line
+                    break;
+                }
+                line_graphemes.push(grapheme);
+            }
+
+            if line_graphemes.is_empty() {
+                // End of document
+                break;
+            }
+
+            // Build the line string from graphemes
+            let mut line_str = String::new();
+            for grapheme in &line_graphemes {
+                if !grapheme.is_virtual() {
+                    // Handle the Grapheme enum properly
+                    match &grapheme.raw {
+                        helix_core::graphemes::Grapheme::Tab { .. } => line_str.push('\t'),
+                        helix_core::graphemes::Grapheme::Other { g } => line_str.push_str(g),
+                        helix_core::graphemes::Grapheme::Newline => {} // Skip newlines in visual lines
+                    }
+                }
+            }
+
+            // Create shaped line for this visual line
+            let shaped_line = window.text_system().shape_line(
+                SharedString::from(line_str),
+                self.style.font_size.to_pixels(px(16.0)),
+                &[],
+                None,
+            );
+
+            // Store line layout for interaction
+            let layout = nucleotide_editor::LineLayout {
+                line_idx: current_doc_line,
+                shaped_line,
+                origin: point(text_origin_x, line_y),
+            };
+            line_layouts.push(layout);
+
+            // Update document line if we've crossed a line boundary
+            if let Some(last_grapheme) = line_graphemes.last() {
+                let new_doc_line = last_grapheme.line_idx;
+                if new_doc_line != current_doc_line {
+                    current_doc_line = new_doc_line;
+                }
+            }
+
+            visual_line += 1;
+            y_offset += line_height;
+        }
+
+        line_layouts
     }
 
     /// Create a shaped line for a specific line, used for cursor positioning and mouse interaction
@@ -1042,6 +1163,28 @@ impl Element for DocumentElement {
         };
         let _gutter_width_px = cell_width * gutter_width_cells as f32;
 
+        // Check if soft wrap is enabled early for mouse handlers
+        let soft_wrap_enabled = {
+            let core = self.core.read(cx);
+            let editor = &core.editor;
+            if let Some(document) = editor.document(self.doc_id) {
+                let view = editor.tree.get(self.view_id);
+                let gutter_offset = view.gutter_offset(document);
+                let theme = cx.global::<crate::ThemeManager>().helix_theme();
+
+                // Calculate viewport width accounting for gutter and some padding
+                let gutter_width_px = gutter_offset as f32 * after_layout.cell_width;
+                let right_padding = after_layout.cell_width * 2.0; // 2 characters of padding
+                let text_area_width = bounds.size.width - gutter_width_px - right_padding;
+                let viewport_width = (text_area_width / after_layout.cell_width).max(10.0) as u16;
+
+                let text_format = document.text_format(viewport_width, Some(theme));
+                text_format.soft_wrap
+            } else {
+                false
+            }
+        };
+
         // Store line layouts in element state for mouse interaction
         // Using LineLayoutCache instead of RefCell for thread safety
         // Get or create the LineLayoutCache
@@ -1056,6 +1199,7 @@ impl Element for DocumentElement {
 
         let line_cache_mouse = line_cache.clone();
         let scrollbar_state_mouse = self.scrollbar_state.clone();
+        let _soft_wrap_for_mouse = soft_wrap_enabled;
         self.interactivity
             .on_mouse_down(MouseButton::Left, move |ev, window, cx| {
                 // Don't start selection if scrollbar is being dragged
@@ -1343,7 +1487,7 @@ impl Element for DocumentElement {
                 // Use the effective config value which includes runtime overrides
                 let config_cursorline = editor.config().cursorline;
                 let cursorline_enabled = config_cursorline && is_focused;
-                debug!("Cursorline check - config value: {}, focused: {}, enabled: {}", 
+                debug!("Cursorline check - config value: {}, focused: {}, enabled: {}",
                     config_cursorline, is_focused, cursorline_enabled);
 
                 let theme = cx.global::<crate::ThemeManager>().helix_theme();
@@ -1461,10 +1605,10 @@ impl Element for DocumentElement {
                                     // For block cursor, use cursor.fg for text color
                                     // The cursor block itself will use cursor.bg
                                     let text_color = if let Some(fg) = cursor_style.fg {
-                                        color_to_hsla(fg).unwrap_or(black())
+                                        color_to_hsla(fg).unwrap_or(white())
                                     } else {
-                                        // If no cursor fg defined, fallback to black
-                                        black()
+                                        // If no cursor fg defined, use white as default text color
+                                        white()
                                     };
 
                                     let _run = TextRun {
@@ -1601,7 +1745,485 @@ impl Element for DocumentElement {
                 let text = doc_text.slice(..);
 
                 // Update the shared line layouts for mouse interaction
+                if soft_wrap_enabled {
+                    // Use DocumentFormatter for soft wrap rendering
 
+                    // Get text format and create DocumentFormatter
+                    let theme = cx.global::<crate::ThemeManager>().helix_theme();
+
+                    // Re-read core to get document and view - extract what we need and drop the borrow
+                    let (text_format, view_offset, gutter_offset) = {
+                        let core = self.core.read(cx);
+                        let editor = &core.editor;
+                        let document = match editor.document(self.doc_id) {
+                            Some(doc) => doc,
+                            None => return,
+                        };
+                        let view = editor.tree.get(self.view_id);
+                        let view_offset = document.view_offset(self.view_id);
+                        let gutter_offset = view.gutter_offset(document);
+
+                        // Calculate viewport width accounting for gutter and some padding
+                        // The text area width is the total width minus the gutter width
+                        // We also subtract a small amount for right padding to prevent text cutoff
+                        let gutter_width_px = gutter_offset as f32 * after_layout.cell_width;
+                        let right_padding = after_layout.cell_width * 2.0; // 2 characters of padding
+                        let text_area_width = bounds.size.width - gutter_width_px - right_padding;
+                        let viewport_width = (text_area_width / after_layout.cell_width).max(10.0) as u16;
+
+                        let text_format = document.text_format(viewport_width, Some(theme));
+                        (text_format, view_offset, gutter_offset)
+                    };
+
+                    let annotations = TextAnnotations::default();
+
+                    // Create DocumentFormatter starting at the viewport anchor
+                    let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
+                        text,
+                        &text_format,
+                        &annotations,
+                        view_offset.anchor,
+                    );
+
+                    let text_origin_x = bounds.origin.x + (gutter_offset as f32 * after_layout.cell_width);
+                    let mut y_offset = px(0.0);
+                    let mut visual_line = 0;
+                    let mut current_doc_line = text.char_to_line(view_offset.anchor);
+                    let viewport_height = (bounds.size.height / after_layout.line_height) as usize;
+
+                    // Skip lines before the viewport - need to consume all graphemes for skipped lines
+                    let mut pending_grapheme = None;
+                    while visual_line < view_offset.vertical_offset {
+                        while let Some(grapheme) = formatter.next() {
+                            if grapheme.visual_pos.row > visual_line {
+                                // We've moved to the next visual line
+                                visual_line = grapheme.visual_pos.row;
+                                if visual_line >= view_offset.vertical_offset {
+                                    // This grapheme is part of the first visible line
+                                    pending_grapheme = Some(grapheme);
+                                    break;
+                                }
+                            }
+                        }
+                        if visual_line < view_offset.vertical_offset {
+                            // Move to next line if we haven't reached viewport yet
+                            visual_line += 1;
+                        }
+                    }
+
+                    // Render visible lines with DocumentFormatter
+                    while visual_line < view_offset.vertical_offset + viewport_height {
+                        let mut line_graphemes = Vec::new();
+                        let line_y = bounds.origin.y + px(1.0) + y_offset;
+
+                        // Add any pending grapheme from previous iteration
+                        if let Some(grapheme) = pending_grapheme.take() {
+                            if grapheme.visual_pos.row == visual_line {
+                                line_graphemes.push(grapheme);
+                            } else if grapheme.visual_pos.row > visual_line {
+                                // This grapheme is for a future line, put it back
+                                pending_grapheme = Some(grapheme);
+                                // This visual line is empty, but we still need to render it
+                            }
+                            // If grapheme.visual_pos.row < visual_line, we've somehow skipped it (shouldn't happen)
+                        }
+
+                        // Collect all graphemes for this visual line
+                        let mut has_content = !line_graphemes.is_empty();
+                        while let Some(grapheme) = formatter.next() {
+                            if grapheme.visual_pos.row > visual_line {
+                                // This grapheme belongs to the next visual line
+                                pending_grapheme = Some(grapheme);
+                                break;
+                            } else if grapheme.visual_pos.row == visual_line {
+                                line_graphemes.push(grapheme);
+                                has_content = true;
+                            }
+                            // If grapheme.visual_pos.row < visual_line, skip it (shouldn't happen)
+                        }
+
+                        // Check if this might be an empty line that needs rendering
+                        // Empty lines still need to be displayed even if they have no graphemes
+                        if !has_content && line_graphemes.is_empty() {
+                            if let Some(ref pending) = pending_grapheme {
+                                // We have a pending grapheme - check if it's for a future line
+                                // If so, this current visual line is empty and should be rendered
+                                if pending.visual_pos.row > visual_line {
+                                    // This is an empty visual line - render it
+                                }
+                            } else {
+                                // No more content - end of document
+                                break;
+                            }
+                        }
+
+                        // Build the line string from graphemes
+                        let mut line_str = String::new();
+
+                        // Check if this is a wrapped line (continuation of previous document line)
+                        // A wrapped line is when the first grapheme's document line matches the current tracked line
+                        // and we're not at column 0 in the document (meaning it's a continuation)
+                        let is_wrapped_line = if let Some(first_grapheme) = line_graphemes.first() {
+                            // If this visual line starts with a grapheme from the same document line
+                            // but not at the beginning of that line, it's a wrapped continuation
+                            first_grapheme.line_idx == current_doc_line && first_grapheme.visual_pos.col > 0
+                        } else {
+                            false
+                        };
+
+                        // Add wrap indicator if this is a wrapped line
+                        if is_wrapped_line && !text_format.wrap_indicator.is_empty() {
+                            line_str.push_str(&text_format.wrap_indicator);
+                        }
+
+                        for grapheme in &line_graphemes {
+                            if !grapheme.is_virtual() {
+                                // Handle the Grapheme enum properly
+                                match &grapheme.raw {
+                                    helix_core::graphemes::Grapheme::Tab { .. } => line_str.push('\t'),
+                                    helix_core::graphemes::Grapheme::Other { g } => line_str.push_str(g),
+                                    helix_core::graphemes::Grapheme::Newline => {}, // Skip newlines in visual lines
+                                }
+                            }
+                        }
+
+                        // Get highlights for this line
+                        let line_runs = if let Some(first_grapheme) = line_graphemes.first() {
+                            let line_start = first_grapheme.char_idx;
+                            let line_end = line_graphemes.last().map(|g| g.char_idx + g.doc_chars()).unwrap_or(line_start);
+
+                            // Re-read core to get highlights and immediately drop the borrow
+                            {
+                                let core = self.core.read(cx);
+                                let editor = &core.editor;
+                                if let Some(document) = editor.document(self.doc_id) {
+                                    let view = editor.tree.get(self.view_id);
+                                    Self::highlight_line_with_params(
+                                        document,
+                                        view,
+                                        &editor_theme,
+                                        editor_mode,
+                                        &cursor_shape,
+                                        &syn_loader,
+                                        self.is_focused,
+                                        line_start,
+                                        line_end,
+                                        fg_color,
+                                        self.style.font(),
+                                    )
+                                } else {
+                                    Vec::new()
+                                }
+                            }
+                        } else {
+                            Vec::new()
+                        };
+
+                        // Paint the line
+                        if !line_str.is_empty() {
+                            let shaped_line = window.text_system()
+                                .shape_line(SharedString::from(line_str.clone()), self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
+
+                            if let Err(e) = shaped_line.paint(point(text_origin_x, line_y), after_layout.line_height, window, cx) {
+                                log::error!("Failed to paint text: {e:?}");
+                            }
+
+                            // Store line layout for mouse interaction
+                            let layout = nucleotide_editor::LineLayout {
+                                line_idx: current_doc_line,
+                                shaped_line,
+                                origin: point(text_origin_x, line_y),
+                            };
+                            line_cache.push(layout);
+                        }
+
+                        // Update document line based on the first grapheme of this visual line
+                        if let Some(first_grapheme) = line_graphemes.first() {
+                            current_doc_line = first_grapheme.line_idx;
+                        }
+
+                        // Always move to the next visual line
+                        // We should never skip visual lines, even if they're empty
+                        visual_line += 1;
+                        y_offset += after_layout.line_height;
+                    }
+
+                    // Render gutter for soft wrap mode
+                    // We need a different approach for the gutter - we'll track actual document lines
+                    // and match them with visual lines
+                    {
+                        let mut gutter_origin = bounds.origin;
+                        gutter_origin.x += px(2.);
+                        gutter_origin.y += px(1.);
+
+                        // Calculate viewport dimensions
+                        let _viewport_height_in_lines = (bounds.size.height / after_layout.line_height) as usize;
+
+                        // We need to figure out the mapping between document lines and visual lines
+                        // For now, let's use a simpler approach: render line numbers based on
+                        // the actual document lines we rendered in the main loop
+
+                        // Track which document lines we've seen and at what visual positions
+                        let mut doc_line_positions = Vec::new();
+                        let mut current_y = px(0.0);
+
+                        // Re-create formatter to match what we did in the main rendering loop
+                        let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
+                            text,
+                            &text_format,
+                            &annotations,
+                            view_offset.anchor,
+                        );
+
+                        // Skip to viewport (same as main loop)
+                        let mut visual_line = 0;
+                        let mut pending_grapheme = None;
+                        while visual_line < view_offset.vertical_offset {
+                            while let Some(grapheme) = formatter.next() {
+                                if grapheme.visual_pos.row > visual_line {
+                                    visual_line = grapheme.visual_pos.row;
+                                    if visual_line >= view_offset.vertical_offset {
+                                        pending_grapheme = Some(grapheme);
+                                        break;
+                                    }
+                                }
+                            }
+                            if visual_line < view_offset.vertical_offset {
+                                visual_line += 1;
+                            }
+                        }
+
+                        // Track document lines as we iterate through visual lines
+                        let mut last_doc_line = None;
+                        while visual_line < view_offset.vertical_offset + viewport_height {
+                            let mut line_graphemes = Vec::new();
+
+                            // Add pending grapheme
+                            if let Some(grapheme) = pending_grapheme.take() {
+                                if grapheme.visual_pos.row == visual_line {
+                                    line_graphemes.push(grapheme);
+                                } else if grapheme.visual_pos.row > visual_line {
+                                    pending_grapheme = Some(grapheme);
+                                }
+                            }
+
+                            // Collect graphemes for this visual line
+                            while let Some(grapheme) = formatter.next() {
+                                if grapheme.visual_pos.row > visual_line {
+                                    pending_grapheme = Some(grapheme);
+                                    break;
+                                } else if grapheme.visual_pos.row == visual_line {
+                                    line_graphemes.push(grapheme);
+                                }
+                            }
+
+                            // Determine the document line for this visual line
+                            if let Some(first_grapheme) = line_graphemes.first() {
+                                let doc_line = first_grapheme.line_idx;
+                                // Only add line number for the first visual line of each document line
+                                if last_doc_line != Some(doc_line) {
+                                    doc_line_positions.push((doc_line, current_y));
+                                    last_doc_line = Some(doc_line);
+                                }
+                            } else if line_graphemes.is_empty() && pending_grapheme.is_none() {
+                                // End of document
+                                break;
+                            } else if line_graphemes.is_empty() {
+                                // Empty line - we need to figure out its document line number
+                                // This is tricky because DocumentFormatter doesn't give us empty lines
+                                // For now, increment the line number if we have a gap
+                                if let Some(last) = last_doc_line {
+                                    let next_line = last + 1;
+                                    if next_line < text.len_lines() {
+                                        doc_line_positions.push((next_line, current_y));
+                                        last_doc_line = Some(next_line);
+                                    }
+                                }
+                            }
+
+                            visual_line += 1;
+                            current_y += after_layout.line_height;
+                        }
+
+                        // Now render the line numbers
+                        let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                        let style = theme.get("ui.linenr");
+                        let color = style.fg.and_then(color_to_hsla).unwrap_or(hsla(0.5, 0., 0.5, 1.));
+
+                        for (doc_line, y_pos) in doc_line_positions {
+                            let line_num_str = format!("{:>4} ", doc_line + 1);
+                            let y = gutter_origin.y + y_pos;
+
+                            let run = TextRun {
+                                len: line_num_str.len(),
+                                font: self.style.font(),
+                                color,
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            };
+
+                            let shaped = window.text_system()
+                                .shape_line(line_num_str.into(), self.style.font_size.to_pixels(px(16.0)), &[run], None);
+
+                            let _ = shaped.paint(point(gutter_origin.x, y), after_layout.line_height, window, cx);
+                        }
+                    }
+
+                    // Render cursor for soft wrap mode
+                    let element_focused = self.focus.is_focused(window);
+                    if self.is_focused || element_focused {
+                        // Get cursor position and text under cursor for block mode
+                        let (cursor_char_idx, cursor_style, cursor_kind, cursor_text) = {
+                            let core = self.core.read(cx);
+                            let editor = &core.editor;
+                            if let Some(document) = editor.document(self.doc_id) {
+                                let selection = document.selection(self.view_id);
+                                let cursor_char_idx = selection.primary().cursor(text);
+                                let (_, cursor_kind) = editor.cursor();
+
+                                // Get the character under the cursor for block cursor mode
+                                let cursor_text = if matches!(cursor_kind, CursorKind::Block) && self.is_focused {
+                                    if cursor_char_idx < text.len_chars() {
+                                        let grapheme_end = next_grapheme_boundary(text, cursor_char_idx);
+                                        let char_slice = text.slice(cursor_char_idx..grapheme_end);
+                                        let char_str: SharedString = RopeWrapper(char_slice).into();
+
+                                        // Replace newlines with visible character for display
+                                        let char_str = if char_str == "\n" || char_str == "\r\n" || char_str == "\r" {
+                                            "⏎".into()
+                                        } else {
+                                            char_str
+                                        };
+
+                                        Some(char_str)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                // Get cursor style
+                                let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                                let mode = editor.mode();
+                                let base_primary_cursor_style = theme.get("ui.cursor.primary");
+                                let cursor_style = match mode {
+                                    helix_view::document::Mode::Insert => {
+                                        let style = theme.get("ui.cursor.primary.insert");
+                                        if style.fg.is_some() || style.bg.is_some() {
+                                            style
+                                        } else {
+                                            base_primary_cursor_style
+                                        }
+                                    }
+                                    helix_view::document::Mode::Select => {
+                                        let style = theme.get("ui.cursor.primary.select");
+                                        if style.fg.is_some() || style.bg.is_some() {
+                                            style
+                                        } else {
+                                            base_primary_cursor_style
+                                        }
+                                    }
+                                    helix_view::document::Mode::Normal => {
+                                        let style = theme.get("ui.cursor.primary.normal");
+                                        if style.fg.is_some() || style.bg.is_some() {
+                                            style
+                                        } else {
+                                            base_primary_cursor_style
+                                        }
+                                    }
+                                };
+
+                                (cursor_char_idx, cursor_style, cursor_kind, cursor_text)
+                            } else {
+                                return;
+                            }
+                        };
+
+                        // Find the cursor position in the visual lines
+                        // We need to re-create the formatter to find the cursor
+                        let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
+                            text,
+                            &text_format,
+                            &annotations,
+                            view_offset.anchor,
+                        );
+
+                        let mut _visual_line = 0;
+                        let mut cursor_visual_line = None;
+                        let mut cursor_visual_col = 0;
+
+                        // Iterate through graphemes to find cursor position
+                        while let Some(grapheme) = formatter.next() {
+                            if grapheme.char_idx <= cursor_char_idx && cursor_char_idx < grapheme.char_idx + grapheme.doc_chars() {
+                                cursor_visual_line = Some(grapheme.visual_pos.row);
+                                cursor_visual_col = grapheme.visual_pos.col;
+                                break;
+                            }
+                            _visual_line = grapheme.visual_pos.row;
+                        }
+
+                        // If cursor is in viewport, render it
+                        if let Some(cursor_line) = cursor_visual_line {
+                            if cursor_line >= view_offset.vertical_offset &&
+                               cursor_line < view_offset.vertical_offset + viewport_height {
+                                // Calculate cursor position
+                                let relative_line = cursor_line - view_offset.vertical_offset;
+                                let cursor_y = bounds.origin.y + px(1.0) + (after_layout.line_height * relative_line as f32);
+                                let cursor_x = text_origin_x + (after_layout.cell_width * cursor_visual_col as f32);
+
+                                // Get cursor color
+                                let cursor_color = cursor_style
+                                    .bg
+                                    .and_then(color_to_hsla)
+                                    .or_else(|| cursor_style.fg.and_then(color_to_hsla))
+                                    .unwrap_or(fg_color);
+
+                                // Shape cursor text if available
+                                let cursor_text_shaped = cursor_text.map(|char_str| {
+                                    // For block cursor, text color should be cursor.fg (foreground)
+                                    // If cursor.fg is not set, use the theme's background color as text color
+                                    let text_color = if let Some(fg) = cursor_style.fg {
+                                        color_to_hsla(fg).unwrap_or(white())
+                                    } else {
+                                        // No cursor.fg defined, use white as default text color
+                                        white()
+                                    };
+
+                                    let run = TextRun {
+                                        len: char_str.len(),
+                                        font: self.style.font(),
+                                        color: text_color,
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    };
+
+                                    window.text_system()
+                                        .shape_line(char_str, self.style.font_size.to_pixels(px(16.0)), &[run], None)
+                                });
+
+                                // Create and paint cursor
+                                let mut cursor = Cursor {
+                                    origin: point(px(0.0), px(0.0)),  // No offset needed, will be applied in paint
+                                    kind: cursor_kind,
+                                    color: cursor_color,
+                                    block_width: after_layout.cell_width,
+                                    line_height: after_layout.line_height,
+                                    text: cursor_text_shaped,
+                                };
+
+                                cursor.paint(point(cursor_x, cursor_y), window, cx);
+                            }
+                        }
+                    }
+
+                    // Skip the regular rendering loop when soft wrap is enabled
+                    return;
+                }
+
+                // Original rendering loop (without soft wrap)
                 for (loop_index, line_idx) in (first_row..last_row).enumerate() {
                     debug!("Rendering line {line_idx} (loop index {loop_index}), y_offset: {y_offset:?}");
                     // Handle phantom line (empty line at EOF when file ends with newline)
@@ -2139,13 +2761,14 @@ impl Cursor {
     pub fn paint(&mut self, origin: gpui::Point<Pixels>, window: &mut Window, cx: &mut App) {
         let bounds = self.bounds(origin);
 
-        // Paint the cursor quad
+        // Paint the cursor quad first
         window.paint_quad(fill(bounds, self.color));
 
+        // Then paint text on top of the cursor block
         if let Some(text) = &self.text {
-            // Paint text at the same baseline as normal text
-            // The origin already includes the line's y position, just need to add x offset
-            let text_origin = origin + self.origin;
+            // For block cursor, text should be painted at the cursor position
+            // Use the bounds origin to ensure text aligns with the cursor block
+            let text_origin = bounds.origin;
             if let Err(e) = text.paint(text_origin, self.line_height, window, cx) {
                 log::error!("Failed to paint cursor text: {e:?}");
             }
