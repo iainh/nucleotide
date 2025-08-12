@@ -1442,12 +1442,12 @@ impl Element for DocumentElement {
                         };
 
                         if !char_str.is_empty() {
-                                    // For block cursor, invert colors: use cursor background as text color
-                                    // and render on transparent background (cursor will provide the bg)
-                                    let text_color = if let Some(bg) = cursor_style.bg {
-                                        color_to_hsla(bg).unwrap_or(black())
+                                    // For block cursor, use cursor.fg for text color
+                                    // The cursor block itself will use cursor.bg
+                                    let text_color = if let Some(fg) = cursor_style.fg {
+                                        color_to_hsla(fg).unwrap_or(black())
                                     } else {
-                                        // If no cursor bg defined, use inverse of foreground
+                                        // If no cursor fg defined, fallback to black
                                         black()
                                     };
 
@@ -1830,10 +1830,12 @@ impl Element for DocumentElement {
                                     px(0.0) // Relative to line origin
                                 );
 
+                                // Use cursor background color for the cursor block
+                                // This ensures the cursor is visible with the theme's cursor background
                                 let cursor_color = cursor_style
-                                    .fg
+                                    .bg
                                     .and_then(color_to_hsla)
-                                    .or_else(|| cursor_style.bg.and_then(color_to_hsla))
+                                    .or_else(|| cursor_style.fg.and_then(color_to_hsla))
                                     .unwrap_or(fg_color);
 
                                 let mut cursor = Cursor {

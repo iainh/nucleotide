@@ -707,6 +707,11 @@ impl Workspace {
                     *_ui_theme = new_ui_theme;
                 });
 
+                // Clear the shaped lines cache to force re-rendering with new theme colors
+                if let Some(line_cache) = cx.try_global::<nucleotide_editor::LineLayoutCache>() {
+                    line_cache.clear_shaped_lines();
+                }
+
                 // Force a full redraw to update all components
                 cx.notify();
 
