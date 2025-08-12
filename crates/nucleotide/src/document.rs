@@ -1975,6 +1975,23 @@ impl Element for DocumentElement {
                             let shaped_line = window.text_system()
                                 .shape_line(SharedString::from(line_str.clone()), self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
 
+                            // Paint background highlights using the shaped line for accurate positioning
+                            let mut byte_offset = 0;
+                            for run in &line_runs {
+                                if let Some(bg_color) = run.background_color {
+                                    // Calculate the x positions using the shaped line
+                                    let start_x = shaped_line.x_for_index(byte_offset);
+                                    let end_x = shaped_line.x_for_index(byte_offset + run.len);
+
+                                    let bg_bounds = Bounds {
+                                        origin: point(text_origin_x + start_x, line_y),
+                                        size: size(end_x - start_x, after_layout.line_height),
+                                    };
+                                    window.paint_quad(fill(bg_bounds, bg_color));
+                                }
+                                byte_offset += run.len;
+                            }
+
                             if let Err(e) = shaped_line.paint(point(text_origin_x, line_y), after_layout.line_height, window, cx) {
                                 log::error!("Failed to paint text: {e:?}");
                             }
@@ -2415,24 +2432,6 @@ impl Element for DocumentElement {
 
                     // Always create a shaped line, even for empty lines (needed for cursor positioning)
                     let shaped_line = if !line_str.is_empty() {
-                        // First, paint any background highlights
-                        let mut char_offset = 0;
-                        for run in &line_runs {
-                            if let Some(bg_color) = run.background_color {
-                                let run_width = after_layout.cell_width * run.len as f32;
-                                let bg_origin = point(
-                                    text_origin_x + (after_layout.cell_width * char_offset as f32),
-                                    bounds.origin.y + px(1.) + y_offset
-                                );
-                                let bg_bounds = Bounds {
-                                    origin: bg_origin,
-                                    size: size(run_width, after_layout.line_height),
-                                };
-                                window.paint_quad(fill(bg_bounds, bg_color));
-                            }
-                            char_offset += run.len;
-                        }
-
                         // Try to get cached shaped line first
                         let cache_key = nucleotide_editor::ShapedLineKey {
                             line_text: line_str.to_string(),
@@ -2449,6 +2448,23 @@ impl Element for DocumentElement {
                             line_cache.store_shaped_line(cache_key, shaped.clone());
                             shaped
                         };
+
+                        // Paint background highlights using the shaped line for accurate positioning
+                        let mut byte_offset = 0;
+                        for run in &line_runs {
+                            if let Some(bg_color) = run.background_color {
+                                // Calculate the x positions using the shaped line
+                                let start_x = shaped.x_for_index(byte_offset);
+                                let end_x = shaped.x_for_index(byte_offset + run.len);
+
+                                let bg_bounds = Bounds {
+                                    origin: point(text_origin.x + start_x, text_origin.y),
+                                    size: size(end_x - start_x, after_layout.line_height),
+                                };
+                                window.paint_quad(fill(bg_bounds, bg_color));
+                            }
+                            byte_offset += run.len;
+                        }
 
                         if let Err(e) = shaped.paint(text_origin, after_layout.line_height, window, cx) {
                             log::error!("Failed to paint text: {e:?}");
