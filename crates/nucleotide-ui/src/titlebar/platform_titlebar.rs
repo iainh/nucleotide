@@ -3,7 +3,7 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, hsla, px, App, Context, Decorations, ElementId, Hsla, InteractiveElement, IntoElement,
+    div, px, App, Context, Decorations, ElementId, Hsla, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Pixels, Render, Styled, Window, WindowControlArea,
 };
 
@@ -58,10 +58,10 @@ impl PlatformTitleBar {
         return (1.75 * window.rem_size()).max(px(34.0));
     }
 
-    pub fn title_bar_color(&self, _window: &Window, _cx: &App) -> Hsla {
-        // Default dark background for now
-        // TODO: Get from theme manager when available
-        hsla(0.0, 0.0, 0.05, 1.0)
+    pub fn title_bar_color(&self, _window: &Window, cx: &App) -> Hsla {
+        // Get color from theme manager
+        let ui_theme = cx.global::<crate::Theme>();
+        ui_theme.surface
     }
 }
 

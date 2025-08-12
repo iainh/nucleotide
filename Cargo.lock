@@ -949,6 +949,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
+name = "convert_case"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb402b8d4c85569410425650ce3eddc7d698ed96d39a73f941b08fb63082f1e7"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1107,12 +1116,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cov-mark"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ffa3d3e0138386cd4361f63537765cac7ee40698028844635a54495a92f67f3"
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1178,6 +1181,26 @@ dependencies = [
  "mio 1.0.4",
  "parking_lot",
  "rustix 0.38.44",
+ "signal-hook",
+ "signal-hook-mio",
+ "winapi",
+]
+
+[[package]]
+name = "crossterm"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
+dependencies = [
+ "bitflags 2.9.1",
+ "crossterm_winapi",
+ "derive_more 2.0.1",
+ "document-features",
+ "filedescriptor",
+ "futures-core",
+ "mio 1.0.4",
+ "parking_lot",
+ "rustix 1.0.8",
  "signal-hook",
  "signal-hook-mio",
  "winapi",
@@ -1267,10 +1290,31 @@ version = "0.99.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6edb4b64a43d977b8e99788fe3a04d483834fba1215a7e02caa415b626497f7f"
 dependencies = [
- "convert_case",
+ "convert_case 0.4.0",
  "proc-macro2",
  "quote",
  "rustc_version",
+ "syn 2.0.104",
+]
+
+[[package]]
+name = "derive_more"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "093242cf7570c207c83073cf82f79706fe7b8317e98620a47d5be7c3d8497678"
+dependencies = [
+ "derive_more-impl",
+]
+
+[[package]]
+name = "derive_more-impl"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bda628edc44c4bb645fbe0f758797143e4e07926f7ebf4e9bdfbd3d2ce621df3"
+dependencies = [
+ "convert_case 0.7.1",
+ "proc-macro2",
+ "quote",
  "syn 2.0.104",
 ]
 
@@ -1371,6 +1415,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330c60081dcc4c72131f8eb70510f1ac07223e5d4163db481a04a0befcffa412"
 dependencies = [
  "libloading",
+]
+
+[[package]]
+name = "document-features"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95249b50c6c185bee49034bcb378a49dc2b5dff0be90ff6616d31d64febab05d"
+dependencies = [
+ "litrs",
 ]
 
 [[package]]
@@ -2886,7 +2939,7 @@ dependencies = [
  "core-video",
  "cosmic-text",
  "ctor 0.4.3",
- "derive_more",
+ "derive_more 0.99.20",
  "embed-resource",
  "etagere",
  "filedescriptor",
@@ -3087,7 +3140,7 @@ dependencies = [
  "helix-stdx",
  "imara-diff 0.2.0",
  "log",
- "nucleo 0.5.0",
+ "nucleo",
  "once_cell",
  "parking_lot",
  "regex",
@@ -3226,7 +3279,7 @@ dependencies = [
  "arc-swap",
  "chrono",
  "content_inspector",
- "crossterm",
+ "crossterm 0.28.1",
  "fern 0.7.1",
  "futures-util",
  "grep-regex",
@@ -3244,7 +3297,7 @@ dependencies = [
  "indexmap",
  "libc",
  "log",
- "nucleo 0.5.0",
+ "nucleo",
  "once_cell",
  "open",
  "pulldown-cmark 0.13.0",
@@ -3267,7 +3320,7 @@ source = "git+https://github.com/helix-editor/helix?tag=25.07.1#a05c151bb6e8e9c6
 dependencies = [
  "bitflags 2.9.1",
  "cassowary",
- "crossterm",
+ "crossterm 0.28.1",
  "helix-core",
  "helix-view",
  "log",
@@ -3302,7 +3355,7 @@ dependencies = [
  "bitflags 2.9.1",
  "chardetng",
  "clipboard-win",
- "crossterm",
+ "crossterm 0.28.1",
  "futures-util",
  "helix-core",
  "helix-dap",
@@ -3411,7 +3464,7 @@ source = "git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7e
 dependencies = [
  "anyhow",
  "bytes",
- "derive_more",
+ "derive_more 0.99.20",
  "futures",
  "http",
  "http-body",
@@ -3997,6 +4050,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "241eaef5fd12c88705a01fc1066c48c4b36e0dd4377dcdc7ec3942cea7a69956"
 
 [[package]]
+name = "litrs"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5e54036fe321fd421e10d732f155734c4e4afd610dd556d9a82833ab3ee0bed"
+
+[[package]]
 name = "lock_api"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4334,35 +4393,13 @@ dependencies = [
 
 [[package]]
 name = "nucleo"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae5331f4bcce475cf28cb29c95366c3091af4b0aa7703f1a6bc858f29718fdf3"
-dependencies = [
- "nucleo-matcher 0.2.0",
- "parking_lot",
- "rayon",
-]
-
-[[package]]
-name = "nucleo"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5262af4c94921c2646c5ac6ff7900c2af9cbb08dc26a797e18130a7019c039d4"
 dependencies = [
- "nucleo-matcher 0.3.1",
+ "nucleo-matcher",
  "parking_lot",
  "rayon",
-]
-
-[[package]]
-name = "nucleo-matcher"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b702b402fe286162d1f00b552a046ce74365d2ac473a2607ff36ba650f9bd57"
-dependencies = [
- "cov-mark",
- "memchr",
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -4400,7 +4437,7 @@ dependencies = [
  "ignore",
  "log",
  "notify",
- "nucleo 0.2.1",
+ "nucleo",
  "nucleotide-core",
  "nucleotide-editor",
  "nucleotide-events",
@@ -4431,7 +4468,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arc-swap",
- "crossterm",
+ "crossterm 0.29.0",
  "futures",
  "gpui",
  "helix-core",
@@ -4519,7 +4556,7 @@ dependencies = [
  "helix-term",
  "helix-view",
  "log",
- "nucleo 0.5.0",
+ "nucleo",
  "nucleotide-core",
  "nucleotide-events",
  "nucleotide-types",
