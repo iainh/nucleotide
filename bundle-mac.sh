@@ -50,10 +50,10 @@ chmod +x "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
 
 # Copy the icon file
 echo -e "${GREEN}Copying icon...${NC}"
-if [ -f "assets/nucleotide.icns" ]; then
-    cp "assets/nucleotide.icns" "${BUNDLE_NAME}/Contents/Resources/"
+if [ -f "crates/nucleotide/assets/nucleotide.icns" ]; then
+    cp "crates/nucleotide/assets/nucleotide.icns" "${BUNDLE_NAME}/Contents/Resources/"
 else
-    echo -e "${YELLOW}Warning: Icon file not found at assets/nucleotide.icns${NC}"
+    echo -e "${YELLOW}Warning: Icon file not found at crates/nucleotide/assets/nucleotide.icns${NC}"
 fi
 
 # Find Helix runtime directory
@@ -92,10 +92,10 @@ echo -e "${GREEN}Copying runtime files...${NC}"
 rsync -a --exclude='grammars/sources' "${HELIX_RUNTIME_SOURCE}/" "${BUNDLE_NAME}/Contents/Resources/runtime/"
 
 # Copy custom Nucleotide themes
-if [ -d "assets/themes" ]; then
+if [ -d "crates/nucleotide/assets/themes" ]; then
     echo -e "${GREEN}Copying custom Nucleotide themes...${NC}"
-    cp -r assets/themes/*.toml "${BUNDLE_NAME}/Contents/Resources/runtime/themes/" 2>/dev/null || true
-    CUSTOM_THEME_COUNT=$(find assets/themes -name "*.toml" 2>/dev/null | wc -l)
+    cp -r crates/nucleotide/assets/themes/*.toml "${BUNDLE_NAME}/Contents/Resources/runtime/themes/" 2>/dev/null || true
+    CUSTOM_THEME_COUNT=$(find crates/nucleotide/assets/themes -name "*.toml" 2>/dev/null | wc -l)
     if [ "${CUSTOM_THEME_COUNT}" -gt 0 ]; then
         echo -e "${GREEN}  - ${CUSTOM_THEME_COUNT} custom theme(s) copied${NC}"
     fi
