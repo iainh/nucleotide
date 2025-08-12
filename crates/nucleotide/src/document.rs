@@ -134,7 +134,9 @@ impl DocumentView {
 
     pub fn update_text_style(&mut self, style: TextStyle) {
         // Recalculate line height with new font size
-        self.line_height = style.line_height_in_pixels(px(16.0));
+        // Use the actual font size as rem base for proper line height calculation
+        let font_size = style.font_size.to_pixels(px(16.0));
+        self.line_height = style.line_height_in_pixels(font_size);
         self.style = style;
     }
 
@@ -939,7 +941,7 @@ impl Element for DocumentElement {
                 {
                     let font_id = cx.text_system().resolve_font(&self.style.font());
                     let font_size = self.style.font_size.to_pixels(px(16.0));
-                    let line_height = self.style.line_height_in_pixels(px(16.0));
+                    let line_height = self.style.line_height_in_pixels(font_size);
                     let em_width = cx
                         .text_system()
                         .typographic_bounds(font_id, font_size, 'm')
@@ -2080,7 +2082,10 @@ impl Cursor {
         window.paint_quad(fill(bounds, self.color));
 
         if let Some(text) = &self.text {
-            if let Err(e) = text.paint(self.origin + origin, self.line_height, window, cx) {
+            // Paint text at the same baseline as normal text
+            // The origin already includes the line's y position, just need to add x offset
+            let text_origin = origin + self.origin;
+            if let Err(e) = text.paint(text_origin, self.line_height, window, cx) {
                 log::error!("Failed to paint cursor text: {e:?}");
             }
         }

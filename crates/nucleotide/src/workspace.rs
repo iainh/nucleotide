@@ -1717,15 +1717,26 @@ impl Workspace {
             let is_focused = self.focused_view_id == Some(view_id);
             let editor_font = cx.global::<crate::types::EditorFontConfig>();
             let style = TextStyle {
+                color: gpui::black(),
                 font_family: cx
                     .global::<crate::types::FontSettings>()
                     .fixed_font
                     .family
                     .clone()
                     .into(),
+                font_features: Default::default(),
+                font_fallbacks: None,
                 font_size: px(editor_font.size).into(),
+                line_height: gpui::phi(), // Use golden ratio for optimal line height
                 font_weight: editor_font.weight.into(),
-                ..Default::default()
+                font_style: gpui::FontStyle::Normal,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+                white_space: gpui::WhiteSpace::Normal,
+                text_overflow: None,
+                text_align: gpui::TextAlign::default(),
+                line_clamp: None,
             };
             let core = self.core.clone();
 

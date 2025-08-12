@@ -115,7 +115,8 @@ impl Element for LspStatusElement {
 
         let mut style = Style::default();
         style.size.width = width.into();
-        style.size.height = self.style.line_height_in_pixels(px(16.0)).into();
+        let font_size = self.style.font_size.to_pixels(px(16.0));
+        style.size.height = self.style.line_height_in_pixels(font_size).into();
 
         let layout_id = window.request_layout(style, None, cx);
         (layout_id, ())
@@ -176,12 +177,13 @@ impl Element for LspStatusElement {
                 None,
             );
 
-            let y_center = bounds.origin.y
-                + Pixels((bounds.size.height - self.style.line_height_in_pixels(px(16.0))).0 / 2.0);
+            let font_size = self.style.font_size.to_pixels(px(16.0));
+            let line_height = self.style.line_height_in_pixels(font_size);
+            let y_center = bounds.origin.y + Pixels((bounds.size.height - line_height).0 / 2.0);
 
             if let Err(e) = shaped.paint(
                 gpui::Point::new(bounds.origin.x, y_center),
-                self.style.line_height_in_pixels(px(16.0)),
+                line_height,
                 window,
                 cx,
             ) {
