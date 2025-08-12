@@ -370,39 +370,25 @@ impl DocumentElement {
 
         syntax_hl.style
     }
-    /// Convert a character index within a line to a grapheme index
-    /// This is needed because GPUI's shaped line works with UTF-8 character indices
-    /// but Helix works with grapheme cluster indices
-    fn char_idx_to_grapheme_idx(line_text: &str, char_idx: usize) -> usize {
+    /// Convert a byte index within a line to a grapheme index
+    /// GPUI's shaped line works with UTF-8 byte indices
+    /// but Helix works with grapheme cluster indices (visual units)
+    fn byte_idx_to_grapheme_idx(line_text: &str, byte_idx: usize) -> usize {
         use unicode_segmentation::UnicodeSegmentation;
 
         let mut grapheme_idx = 0;
-        let mut current_char_idx = 0;
+        let mut current_byte_idx = 0;
 
         for grapheme in line_text.graphemes(true) {
-            if current_char_idx >= char_idx {
+            if current_byte_idx >= byte_idx {
                 break;
             }
-            current_char_idx += grapheme.len();
+            // Count UTF-8 bytes in this grapheme cluster
+            current_byte_idx += grapheme.len();
             grapheme_idx += 1;
         }
 
         grapheme_idx
-    }
-
-    /// Convert a grapheme index within a line to a character index for GPUI
-    fn grapheme_idx_to_char_idx(line_text: &str, grapheme_idx: usize) -> usize {
-        use unicode_segmentation::UnicodeSegmentation;
-
-        let mut char_idx = 0;
-        for (idx, grapheme) in line_text.graphemes(true).enumerate() {
-            if idx >= grapheme_idx {
-                break;
-            }
-            char_idx += grapheme.len();
-        }
-
-        char_idx
     }
 
     pub fn new(
@@ -787,6 +773,9 @@ impl DocumentElement {
         let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
         let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, theme);
 
+        // Get the line text slice to convert character positions to byte lengths
+        let line_slice = text.slice(line_start..line_end);
+
         let mut position = line_start;
         while position < line_end {
             // Advance highlighters to current position
@@ -800,10 +789,17 @@ impl DocumentElement {
             // Calculate next position where style might change
             let next_pos = std::cmp::min(std::cmp::min(syntax_hl.pos, overlay_hl.pos), line_end);
 
-            let len = next_pos - position;
-            if len == 0 {
+            let char_len = next_pos - position;
+            if char_len == 0 {
                 break;
             }
+
+            // Convert character length to byte length for this segment
+            // Get the text slice for this run and measure its byte length
+            let run_start_in_line = position - line_start;
+            let run_end_in_line = next_pos - line_start;
+            let run_slice = line_slice.slice(run_start_in_line..run_end_in_line);
+            let byte_len = run_slice.len_bytes();
 
             // Combine syntax and overlay styles
             let style = syntax_hl.style.patch(overlay_hl.style);
@@ -818,7 +814,8 @@ impl DocumentElement {
                 .and_then(color_to_hsla)
                 .unwrap_or(black());
 
-            let run = create_styled_text_run(len, &font, &style, fg, bg, default_bg, underline);
+            let run =
+                create_styled_text_run(byte_len, &font, &style, fg, bg, default_bg, underline);
             runs.push(run);
             position = next_pos;
         }
@@ -869,6 +866,9 @@ impl DocumentElement {
         let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
         let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, theme);
 
+        // Get the line text slice to convert character positions to byte lengths
+        let line_slice = text.slice(line_start..line_end);
+
         let mut position = line_start;
         while position < line_end {
             // Advance highlighters to current position
@@ -882,10 +882,16 @@ impl DocumentElement {
             // Calculate next position where style might change
             let next_pos = std::cmp::min(std::cmp::min(syntax_hl.pos, overlay_hl.pos), line_end);
 
-            let len = next_pos - position;
-            if len == 0 {
+            let char_len = next_pos - position;
+            if char_len == 0 {
                 break;
             }
+
+            // Convert character length to byte length for this segment
+            let run_start_in_line = position - line_start;
+            let run_end_in_line = next_pos - line_start;
+            let run_slice = line_slice.slice(run_start_in_line..run_end_in_line);
+            let byte_len = run_slice.len_bytes();
 
             // Combine syntax and overlay styles
             let style = syntax_hl.style.patch(overlay_hl.style);
@@ -900,7 +906,8 @@ impl DocumentElement {
                 .and_then(color_to_hsla)
                 .unwrap_or(black());
 
-            let run = create_styled_text_run(len, &font, &style, fg, bg, default_bg, underline);
+            let run =
+                create_styled_text_run(byte_len, &font, &style, fg, bg, default_bg, underline);
             runs.push(run);
             position = next_pos;
         }
@@ -955,6 +962,9 @@ impl DocumentElement {
         let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
         let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, theme);
 
+        // Get the text slice to convert character positions to byte lengths
+        let text_slice = text.slice(anchor..end_char);
+
         let mut position = anchor;
         while position < end_char {
             // Advance highlighters to current position
@@ -968,10 +978,16 @@ impl DocumentElement {
             // Calculate next position where style might change
             let next_pos = std::cmp::min(std::cmp::min(syntax_hl.pos, overlay_hl.pos), end_char);
 
-            let len = next_pos - position;
-            if len == 0 {
+            let char_len = next_pos - position;
+            if char_len == 0 {
                 break;
             }
+
+            // Convert character length to byte length for this segment
+            let run_start_in_text = position - anchor;
+            let run_end_in_text = next_pos - anchor;
+            let run_slice = text_slice.slice(run_start_in_text..run_end_in_text);
+            let byte_len = run_slice.len_bytes();
 
             // Combine syntax and overlay styles
             let style = syntax_hl.style.patch(overlay_hl.style);
@@ -994,7 +1010,8 @@ impl DocumentElement {
                 .and_then(color_to_hsla)
                 .unwrap_or(black());
 
-            let run = create_styled_text_run(len, &font, &style, fg, bg, default_bg, underline);
+            let run =
+                create_styled_text_run(byte_len, &font, &style, fg, bg, default_bg, underline);
             runs.push(run);
             position = next_pos;
         }
@@ -1268,8 +1285,8 @@ impl Element for DocumentElement {
                         };
                         let line_text = text.slice(line_start..line_end).to_string();
 
-                        // Convert GPUI char index to grapheme index
-                        let grapheme_idx = Self::char_idx_to_grapheme_idx(&line_text, char_idx);
+                        // Convert GPUI byte index to grapheme index
+                        let grapheme_idx = Self::byte_idx_to_grapheme_idx(&line_text, char_idx);
 
                         // Convert line index and grapheme offset to document position
                         let pos = line_start + grapheme_idx;
@@ -1346,8 +1363,8 @@ impl Element for DocumentElement {
                     };
                     let line_text = text.slice(line_start..line_end).to_string();
 
-                    // Convert GPUI char index to grapheme index
-                    let grapheme_idx = Self::char_idx_to_grapheme_idx(&line_text, char_idx);
+                    // Convert GPUI byte index to grapheme index
+                    let grapheme_idx = Self::byte_idx_to_grapheme_idx(&line_text, char_idx);
 
                     // Convert line index and grapheme offset to document position
                     let pos = line_start + grapheme_idx;
@@ -1756,10 +1773,11 @@ impl Element for DocumentElement {
                 // cursor_char_idx was already extracted earlier for phantom line check
                 let _tab_width = document.tab_width() as u16;
 
-                // Shape cursor text before dropping core borrow
-                let cursor_text_shaped = cursor_text.map(|(char_str, text_color)| {
+                // Shape cursor text before dropping core borrow and keep its length
+                let (cursor_text_shaped, cursor_text_len) = cursor_text.map(|(char_str, text_color)| {
+                    let text_len = char_str.len();
                     let run = TextRun {
-                        len: char_str.len(),
+                        len: text_len,
                         font: self.style.font(),
                         color: text_color,
                         background_color: None,
@@ -1767,9 +1785,10 @@ impl Element for DocumentElement {
                         strikethrough: None,
                     };
 
-                    window.text_system()
-                        .shape_line(char_str, self.style.font_size.to_pixels(px(16.0)), &[run], None)
-                });
+                    let shaped = window.text_system()
+                        .shape_line(char_str, self.style.font_size.to_pixels(px(16.0)), &[run], None);
+                    (Some(shaped), text_len)
+                }).unwrap_or((None, 0));
 
                 // Drop the core borrow before the loop
                 // core goes out of scope here
@@ -2235,8 +2254,10 @@ impl Element for DocumentElement {
                                         .unwrap_or(fg_color)
                                 };
 
-                                // Shape cursor text if available
-                                let cursor_text_shaped = cursor_text.map(|char_str| {
+                                // Shape cursor text if available and calculate its width
+                                let (cursor_text_shaped, cursor_text_len) = cursor_text.map(|char_str| {
+                                    let text_len = char_str.len();
+
                                     // For block cursor, text should contrast with cursor background
                                     let text_color = if has_reversed {
                                         // For reversed cursor: text should use the document background for contrast
@@ -2251,7 +2272,7 @@ impl Element for DocumentElement {
                                     };
 
                                     let run = TextRun {
-                                        len: char_str.len(),
+                                        len: text_len,
                                         font: self.style.font(),
                                         color: text_color,
                                         background_color: None,
@@ -2259,16 +2280,27 @@ impl Element for DocumentElement {
                                         strikethrough: None,
                                     };
 
-                                    window.text_system()
-                                        .shape_line(char_str, self.style.font_size.to_pixels(px(16.0)), &[run], None)
-                                });
+                                    let shaped = window.text_system()
+                                        .shape_line(char_str, self.style.font_size.to_pixels(px(16.0)), &[run], None);
+                                    (Some(shaped), text_len)
+                                }).unwrap_or((None, 0));
+
+                                // Calculate cursor width based on the actual character width
+                                let cursor_width = if let Some(ref shaped_text) = cursor_text_shaped {
+                                    // Get the width of the shaped text by measuring to the end
+                                    // x_for_index gives us the x position at the end of the text
+                                    shaped_text.x_for_index(cursor_text_len)
+                                } else {
+                                    // Default to cell width for empty cursor
+                                    after_layout.cell_width
+                                };
 
                                 // Create and paint cursor
                                 let mut cursor = Cursor {
                                     origin: point(px(0.0), px(0.0)),  // No offset needed, will be applied in paint
                                     kind: cursor_kind,
                                     color: cursor_color,
-                                    block_width: after_layout.cell_width,
+                                    block_width: cursor_width,
                                     line_height: after_layout.line_height,
                                     text: cursor_text_shaped,
                                 };
@@ -2537,36 +2569,58 @@ impl Element for DocumentElement {
                                 // Special handling for phantom line
                                 let is_phantom_line = layout_line_idx >= text.len_lines();
 
-                                let (_line_start, cursor_grapheme_offset, line_text) = if is_phantom_line {
+                                let (_line_start, cursor_char_offset, cursor_byte_offset, line_text) = if is_phantom_line {
                                     // Phantom line: cursor is at end of file
-                                    (text.len_chars(), 0, String::new())
+                                    (text.len_chars(), 0, 0, String::new())
                                 } else {
                                     // Normal line
                                     let line_start = text.line_to_char(cursor_line);
-                                    let cursor_grapheme_offset = cursor_char_idx.saturating_sub(line_start);
+                                    let cursor_char_offset = cursor_char_idx.saturating_sub(line_start);
 
-                                    // Get the line text to convert grapheme offset to char offset
+                                    // Get the line text for debugging
                                     let line_end = if cursor_line + 1 < text.len_lines() {
                                         text.line_to_char(cursor_line + 1)
                                     } else {
                                         text.len_chars()
                                     };
-                                    let line_text = text.slice(line_start..line_end).to_string();
-                                    (line_start, cursor_grapheme_offset, line_text)
+                                    let mut line_text = text.slice(line_start..line_end).to_string();
+                                    // Remove trailing newlines to match how the line was shaped
+                                    while line_text.ends_with('\n') || line_text.ends_with('\r') {
+                                        line_text.pop();
+                                    }
+                                    // Clamp cursor offset to line character count (without newline)
+                                    let cursor_char_offset = cursor_char_offset.min(line_text.chars().count());
+
+                                    // Convert char offset to byte offset for GPUI's x_for_index
+                                    let cursor_byte_offset = line_text.chars().take(cursor_char_offset).map(|c| c.len_utf8()).sum::<usize>();
+
+                                    (line_start, cursor_char_offset, cursor_byte_offset, line_text)
                                 };
 
-                                // Convert grapheme offset to char offset for GPUI
-                                let cursor_char_offset = Self::grapheme_idx_to_char_idx(&line_text, cursor_grapheme_offset);
-
-                                // Get the x position from the shaped line
-                                let cursor_x = line_layout.shaped_line.x_for_index(cursor_char_offset);
+                                // Get the x position from the shaped line using byte offset
+                                let cursor_x = line_layout.shaped_line.x_for_index(cursor_byte_offset);
 
                                 // Debug logging
-                                debug!("Cursor rendering - line: {cursor_line}, grapheme_offset: {cursor_grapheme_offset}, char_offset: {cursor_char_offset}, x: {cursor_x:?}, viewport_row: {viewport_row}");
+                                debug!("Cursor rendering - line: {cursor_line}, char_offset: {cursor_char_offset}, byte_offset: {cursor_byte_offset}, x: {cursor_x:?}, viewport_row: {viewport_row}");
 
                                 // Debug info about the line content
-                                debug!("Line content: {:?}, cursor at grapheme offset {} (char offset {}) in line, is_phantom: {}",
-                                    &line_text, cursor_grapheme_offset, cursor_char_offset, is_phantom_line);
+                                debug!("Line content: {:?}, cursor at char offset {} (byte offset {}), is_phantom: {}",
+                                    &line_text, cursor_char_offset, cursor_byte_offset, is_phantom_line);
+
+                                // Additional debug for emoji detection
+                                if !line_text.is_empty() {
+                                    use unicode_segmentation::UnicodeSegmentation;
+                                    let chars: Vec<char> = line_text.chars().collect();
+                                    debug!("Line has {} chars, {} bytes, {} graphemes",
+                                        chars.len(),
+                                        line_text.len(),
+                                        line_text.graphemes(true).count());
+                                    if cursor_char_offset < chars.len() {
+                                        let ch = chars[cursor_char_offset];
+                                        debug!("Char at cursor offset {}: {:?} (U+{:04X})",
+                                            cursor_char_offset, ch, ch as u32);
+                                    }
+                                }
 
                                 // Cursor origin is relative to the line's origin
                                 let cursor_origin = gpui::Point::new(
@@ -2610,11 +2664,21 @@ impl Element for DocumentElement {
                                         .unwrap_or(fg_color)
                                 };
 
+                                // Calculate cursor width based on the actual character width
+                                let cursor_width = if let Some(ref shaped_text) = cursor_text_shaped {
+                                    // Get the width of the shaped text by measuring to the end
+                                    // x_for_index gives us the x position at the end of the text
+                                    shaped_text.x_for_index(cursor_text_len)
+                                } else {
+                                    // Default to cell width for empty cursor
+                                    after_layout.cell_width
+                                };
+
                                 let mut cursor = Cursor {
                                     origin: cursor_origin,
                                     kind: cursor_kind,
                                     color: cursor_color,
-                                    block_width: after_layout.cell_width,
+                                    block_width: cursor_width,
                                     line_height: after_layout.line_height,
                                     text: cursor_text_shaped,
                                 };
