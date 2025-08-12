@@ -17,6 +17,7 @@ pub mod picker_view;
 pub mod prompt;
 pub mod prompt_view;
 pub mod scrollbar;
+pub mod style_utils;
 pub mod text_utils;
 pub mod theme_manager;
 pub mod theme_utils;

@@ -26,6 +26,9 @@ use helix_stdx::rope::RopeSliceExt;
 use nucleotide_editor::LineLayoutCache;
 use nucleotide_editor::ScrollManager;
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
+use nucleotide_ui::style_utils::{
+    apply_color_modifiers, apply_font_modifiers, create_styled_text_run,
+};
 use nucleotide_ui::theme_utils::color_to_hsla;
 
 /// Custom scroll handle for DocumentView that integrates with ScrollManager
@@ -333,6 +336,40 @@ impl IntoElement for DocumentElement {
 }
 
 impl DocumentElement {
+    /// Get the text style (with syntax highlighting) at a specific character position
+    fn get_text_style_at_position(
+        doc: &Document,
+        view_id: ViewId,
+        theme: &Theme,
+        syn_loader: &std::sync::Arc<arc_swap::ArcSwap<helix_core::syntax::Loader>>,
+        position: usize,
+    ) -> helix_view::graphics::Style {
+        let loader = syn_loader.load();
+        let text = doc.text().slice(..);
+        let anchor = doc.view_offset(view_id).anchor;
+        let height = (text.len_lines() - text.char_to_line(anchor)) as u16;
+
+        // Get syntax highlighter
+        let syntax_highlighter = Self::doc_syntax_highlights(doc, anchor, height, theme, &loader);
+
+        // Get default style
+        let default_style = theme.get("ui.text");
+        let text_style = helix_view::graphics::Style {
+            fg: default_style.fg,
+            bg: default_style.bg,
+            ..Default::default()
+        };
+
+        // Create syntax highlighter and advance to position
+        let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
+
+        // Advance to the position
+        while position >= syntax_hl.pos {
+            syntax_hl.advance();
+        }
+
+        syntax_hl.style
+    }
     /// Convert a character index within a line to a grapheme index
     /// This is needed because GPUI's shaped line works with UTF-8 character indices
     /// but Helix works with grapheme cluster indices
@@ -774,20 +811,14 @@ impl DocumentElement {
             let fg = style.fg.and_then(color_to_hsla).unwrap_or(fg_color);
             let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
-            let underline = underline.map(|color| UnderlineStyle {
-                thickness: px(1.),
-                color: Some(color),
-                wavy: true,
-            });
+            // Get default background color from theme for reversed modifier
+            let default_bg = theme
+                .get("ui.background")
+                .bg
+                .and_then(color_to_hsla)
+                .unwrap_or(black());
 
-            let run = TextRun {
-                len,
-                font: font.clone(),
-                color: fg,
-                background_color: bg,
-                underline,
-                strikethrough: None,
-            };
+            let run = create_styled_text_run(len, &font, &style, fg, bg, default_bg, underline);
             runs.push(run);
             position = next_pos;
         }
@@ -862,20 +893,14 @@ impl DocumentElement {
             let fg = style.fg.and_then(color_to_hsla).unwrap_or(fg_color);
             let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
-            let underline = underline.map(|color| UnderlineStyle {
-                thickness: px(1.),
-                color: Some(color),
-                wavy: true,
-            });
+            // Get default background color from theme for reversed modifier
+            let default_bg = theme
+                .get("ui.background")
+                .bg
+                .and_then(color_to_hsla)
+                .unwrap_or(black());
 
-            let run = TextRun {
-                len,
-                font: font.clone(),
-                color: fg,
-                background_color: bg,
-                underline,
-                strikethrough: None,
-            };
+            let run = create_styled_text_run(len, &font, &style, fg, bg, default_bg, underline);
             runs.push(run);
             position = next_pos;
         }
@@ -962,20 +987,14 @@ impl DocumentElement {
             let fg = style.fg.and_then(color_to_hsla).unwrap_or(fg_color);
             let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
-            let underline = underline.map(|color| UnderlineStyle {
-                thickness: px(1.),
-                color: Some(color),
-                wavy: true,
-            });
+            // Get default background color from theme for reversed modifier
+            let default_bg = theme
+                .get("ui.background")
+                .bg
+                .and_then(color_to_hsla)
+                .unwrap_or(black());
 
-            let run = TextRun {
-                len,
-                font: font.clone(),
-                color: fg,
-                background_color: bg,
-                underline,
-                strikethrough: None,
-            };
+            let run = create_styled_text_run(len, &font, &style, fg, bg, default_bg, underline);
             runs.push(run);
             position = next_pos;
         }
@@ -1481,6 +1500,7 @@ impl Element for DocumentElement {
                 let core = self.core.read(cx);
                 let editor = &core.editor;
 
+
                 let view = editor.tree.get(self.view_id);
                 let _viewport = view.area;
                 // Check if cursorline is enabled and view is focused
@@ -1505,33 +1525,37 @@ impl Element for DocumentElement {
                     .unwrap_or(black());
                 // Get mode-specific cursor theme like terminal version
                 let mode = editor.mode();
-                let _base_cursor_style = theme.get("ui.cursor");
+                let base_cursor_style = theme.get("ui.cursor");
                 let base_primary_cursor_style = theme.get("ui.cursor.primary");
 
                 // Try to get mode-specific cursor style, fallback to base
+                // Important: we need to patch styles to combine colors with modifiers
                 let cursor_style = match mode {
                     helix_view::document::Mode::Insert => {
                         let style = theme.get("ui.cursor.primary.insert");
                         if style.fg.is_some() || style.bg.is_some() {
-                            style
+                            // Patch with base cursor to get modifiers
+                            base_cursor_style.patch(style)
                         } else {
-                            base_primary_cursor_style
+                            base_cursor_style.patch(base_primary_cursor_style)
                         }
                     }
                     helix_view::document::Mode::Select => {
                         let style = theme.get("ui.cursor.primary.select");
                         if style.fg.is_some() || style.bg.is_some() {
-                            style
+                            // Patch with base cursor to get modifiers
+                            base_cursor_style.patch(style)
                         } else {
-                            base_primary_cursor_style
+                            base_cursor_style.patch(base_primary_cursor_style)
                         }
                     }
                     helix_view::document::Mode::Normal => {
                         let style = theme.get("ui.cursor.primary.normal");
                         if style.fg.is_some() || style.bg.is_some() {
-                            style
+                            // Patch with base cursor to get modifiers
+                            base_cursor_style.patch(style)
                         } else {
-                            base_primary_cursor_style
+                            base_cursor_style.patch(base_primary_cursor_style)
                         }
                     }
                 };
@@ -1602,12 +1626,20 @@ impl Element for DocumentElement {
                         };
 
                         if !char_str.is_empty() {
-                                    // For block cursor, use cursor.fg for text color
-                                    // The cursor block itself will use cursor.bg
-                                    let text_color = if let Some(fg) = cursor_style.fg {
+                                    // Check if cursor has reversed modifier
+                                    let has_reversed = cursor_style.add_modifier.contains(helix_view::graphics::Modifier::REVERSED) &&
+                                                       !cursor_style.sub_modifier.contains(helix_view::graphics::Modifier::REVERSED);
+
+                                    // For block cursor, determine text color based on reversed state
+                                    let text_color = if has_reversed {
+                                        // For reversed cursor: text should use the document background for contrast
+                                        // since the cursor is now using the text's foreground color
+                                        bg_color
+                                    } else if let Some(fg) = cursor_style.fg {
+                                        // Normal cursor with explicit foreground
                                         color_to_hsla(fg).unwrap_or(white())
                                     } else {
-                                        // If no cursor fg defined, use white as default text color
+                                        // No cursor.fg defined, use white as default text color
                                         white()
                                     };
 
@@ -2074,7 +2106,7 @@ impl Element for DocumentElement {
                     let element_focused = self.focus.is_focused(window);
                     if self.is_focused || element_focused {
                         // Get cursor position and text under cursor for block mode
-                        let (cursor_char_idx, cursor_style, cursor_kind, cursor_text) = {
+                        let (cursor_char_idx, cursor_style, cursor_kind, cursor_text, text_style_at_cursor) = {
                             let core = self.core.read(cx);
                             let editor = &core.editor;
                             if let Some(document) = editor.document(self.doc_id) {
@@ -2107,35 +2139,49 @@ impl Element for DocumentElement {
                                 // Get cursor style
                                 let theme = cx.global::<crate::ThemeManager>().helix_theme();
                                 let mode = editor.mode();
+                                let base_cursor_style = theme.get("ui.cursor");
                                 let base_primary_cursor_style = theme.get("ui.cursor.primary");
+                                // Important: we need to patch styles to combine colors with modifiers
                                 let cursor_style = match mode {
                                     helix_view::document::Mode::Insert => {
                                         let style = theme.get("ui.cursor.primary.insert");
                                         if style.fg.is_some() || style.bg.is_some() {
-                                            style
+                                            // Patch with base cursor to get modifiers
+                                            base_cursor_style.patch(style)
                                         } else {
-                                            base_primary_cursor_style
+                                            base_cursor_style.patch(base_primary_cursor_style)
                                         }
                                     }
                                     helix_view::document::Mode::Select => {
                                         let style = theme.get("ui.cursor.primary.select");
                                         if style.fg.is_some() || style.bg.is_some() {
-                                            style
+                                            // Patch with base cursor to get modifiers
+                                            base_cursor_style.patch(style)
                                         } else {
-                                            base_primary_cursor_style
+                                            base_cursor_style.patch(base_primary_cursor_style)
                                         }
                                     }
                                     helix_view::document::Mode::Normal => {
                                         let style = theme.get("ui.cursor.primary.normal");
                                         if style.fg.is_some() || style.bg.is_some() {
-                                            style
+                                            // Patch with base cursor to get modifiers
+                                            base_cursor_style.patch(style)
                                         } else {
-                                            base_primary_cursor_style
+                                            base_cursor_style.patch(base_primary_cursor_style)
                                         }
                                     }
                                 };
 
-                                (cursor_char_idx, cursor_style, cursor_kind, cursor_text)
+                                // Get text style at cursor for reversed modifier
+                                let text_style_at_cursor = Self::get_text_style_at_position(
+                                    document,
+                                    self.view_id,
+                                    theme,
+                                    &editor.syn_loader,
+                                    cursor_char_idx,
+                                );
+
+                                (cursor_char_idx, cursor_style, cursor_kind, cursor_text, text_style_at_cursor)
                             } else {
                                 return;
                             }
@@ -2173,18 +2219,31 @@ impl Element for DocumentElement {
                                 let cursor_y = bounds.origin.y + px(1.0) + (after_layout.line_height * relative_line as f32);
                                 let cursor_x = text_origin_x + (after_layout.cell_width * cursor_visual_col as f32);
 
-                                // Get cursor color
-                                let cursor_color = cursor_style
-                                    .bg
-                                    .and_then(color_to_hsla)
-                                    .or_else(|| cursor_style.fg.and_then(color_to_hsla))
-                                    .unwrap_or(fg_color);
+                                // Check if cursor has reversed modifier
+                                let has_reversed = cursor_style.add_modifier.contains(helix_view::graphics::Modifier::REVERSED) &&
+                                                   !cursor_style.sub_modifier.contains(helix_view::graphics::Modifier::REVERSED);
+
+                                let cursor_color = if has_reversed {
+                                    // For reversed cursor: use the text color at cursor position as cursor background
+                                    // Use the pre-calculated text style
+                                    text_style_at_cursor.fg.and_then(color_to_hsla)
+                                        .unwrap_or(fg_color)
+                                } else {
+                                    // Normal cursor: use cursor's background color
+                                    cursor_style.bg.and_then(color_to_hsla)
+                                        .or_else(|| cursor_style.fg.and_then(color_to_hsla))
+                                        .unwrap_or(fg_color)
+                                };
 
                                 // Shape cursor text if available
                                 let cursor_text_shaped = cursor_text.map(|char_str| {
-                                    // For block cursor, text color should be cursor.fg (foreground)
-                                    // If cursor.fg is not set, use the theme's background color as text color
-                                    let text_color = if let Some(fg) = cursor_style.fg {
+                                    // For block cursor, text should contrast with cursor background
+                                    let text_color = if has_reversed {
+                                        // For reversed cursor: text should use the document background for contrast
+                                        // since the cursor is now using the text's foreground color
+                                        bg_color
+                                    } else if let Some(fg) = cursor_style.fg {
+                                        // Normal cursor with explicit foreground
                                         color_to_hsla(fg).unwrap_or(white())
                                     } else {
                                         // No cursor.fg defined, use white as default text color
@@ -2515,13 +2574,41 @@ impl Element for DocumentElement {
                                     px(0.0) // Relative to line origin
                                 );
 
-                                // Use cursor background color for the cursor block
-                                // This ensures the cursor is visible with the theme's cursor background
-                                let cursor_color = cursor_style
-                                    .bg
-                                    .and_then(color_to_hsla)
-                                    .or_else(|| cursor_style.fg.and_then(color_to_hsla))
-                                    .unwrap_or(fg_color);
+                                // Check if cursor has reversed modifier
+                                let has_reversed = cursor_style.add_modifier.contains(helix_view::graphics::Modifier::REVERSED) &&
+                                                   !cursor_style.sub_modifier.contains(helix_view::graphics::Modifier::REVERSED);
+
+                                // For reversed cursor, we need to get the text style at cursor position
+                                let cursor_color = if has_reversed {
+                                    // Get the styled text color at cursor position
+                                    // We need to access core again to get the document
+                                    let text_style_at_cursor = {
+                                        let core = self.core.read(cx);
+                                        let editor = &core.editor;
+                                        let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                                        if let Some(doc) = editor.document(self.doc_id) {
+                                            Self::get_text_style_at_position(
+                                                doc,
+                                                self.view_id,
+                                                theme,
+                                                &editor.syn_loader,
+                                                cursor_char_idx,
+                                            )
+                                        } else {
+                                            // Default style if document not found
+                                            helix_view::graphics::Style::default()
+                                        }
+                                    };
+
+                                    // Use the text's foreground color as cursor background
+                                    text_style_at_cursor.fg.and_then(color_to_hsla)
+                                        .unwrap_or(fg_color)
+                                } else {
+                                    // Normal cursor: use cursor's background color
+                                    cursor_style.bg.and_then(color_to_hsla)
+                                        .or_else(|| cursor_style.fg.and_then(color_to_hsla))
+                                        .unwrap_or(fg_color)
+                                };
 
                                 let mut cursor = Cursor {
                                     origin: cursor_origin,
@@ -2698,19 +2785,27 @@ impl<'a> GutterRenderer for Gutter<'a> {
         let origin_y = self.origin.y + self.after_layout.line_height * y as f32;
         let origin_x = self.origin.x + self.after_layout.cell_width * x as f32;
 
-        let fg_color = style
+        let base_fg = style
             .fg
             .and_then(color_to_hsla)
             .unwrap_or(hsla(0., 0., 1., 1.));
+        let base_bg = style.bg.and_then(color_to_hsla);
+
         if let Some(text) = text {
-            let run = TextRun {
-                len: text.len(),
-                font: self.style.font(),
-                color: fg_color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
+            // Apply modifiers to font and colors
+            let font = apply_font_modifiers(&self.style.font(), &style);
+            let default_bg = black(); // Default background for gutters
+            let (fg_color, bg_color) = apply_color_modifiers(base_fg, base_bg, &style, default_bg);
+
+            let run = create_styled_text_run(
+                text.len(),
+                &font,
+                &style,
+                fg_color,
+                bg_color,
+                default_bg,
+                None, // No underline for gutter text
+            );
             let shaped = self.text_system.shape_line(
                 text.to_string().into(),
                 self.after_layout.font_size,
