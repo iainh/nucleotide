@@ -1,0 +1,21 @@
+[package]
+name = "nucleotide-events"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Event system definitions for Nucleotide editor (Layer 2)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
+
+[dependencies]
+# Lower layer dependencies
+nucleotide-types = { path = "../nucleotide-types" }
+
+# External dependencies
+serde = { version = "1.0", features = ["derive"] }
+helix-view = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
+helix-lsp = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }

@@ -1,0 +1,109 @@
+[package]
+name = "nucleotide"
+version.workspace = true
+edition.workspace = true
+authors = ["Iain H. <iain@spiralpoint.org>", "Alexander Polakov <alex@plhk.dev>", "Blaž Hrastnik <blaz@mxxn.io>"]
+license = "MPL-2.0"
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "A native GUI for the Helix editor - main application (Layer 6)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
+include = ["src/**/*", "README.md"]
+default-run = "nucl"
+
+[features]
+default = ["git"]
+unicode-lines = ["helix-core/unicode-lines"]
+integration = ["helix-event/integration_test"]
+git = ["helix-vcs/git"]
+
+[[bin]]
+name = "nucl"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+nucleotide-types = { workspace = true, features = ["gpui-bridge", "helix-bridge"] }
+nucleotide-events.workspace = true
+nucleotide-ui.workspace = true
+nucleotide-core.workspace = true
+nucleotide-lsp.workspace = true
+nucleotide-editor.workspace = true
+nucleotide-workspace.workspace = true
+
+# External dependencies
+gpui.workspace = true
+sum_tree.workspace = true
+
+helix-stdx.workspace = true
+helix-core.workspace = true
+helix-event.workspace = true
+helix-view.workspace = true
+helix-lsp.workspace = true
+helix-vcs = { workspace = true, features = ["git"] }
+helix-loader.workspace = true
+helix-term.workspace = true
+
+# Dependencies used by extracted code
+anyhow.workspace = true
+arc-swap.workspace = true
+ctor.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+futures-util.workspace = true
+unicode-segmentation.workspace = true
+smallvec.workspace = true
+fern.workspace = true
+
+chrono.workspace = true
+log.workspace = true
+once_cell.workspace = true
+
+# File picker
+nucleo = "0.2"
+ignore.workspace = true
+# markdown doc rendering
+pulldown-cmark = { version = "0.10", default-features = false }
+# file type detection
+content_inspector = "0.2.4"
+# file system watching
+notify.workspace = true
+# embed assets
+rust-embed = "8.5"
+
+# opening URLs
+open = "5.1.2"
+url.workspace = true
+
+# config
+toml.workspace = true
+
+serde_json.workspace = true
+serde.workspace = true
+
+# ripgrep for global search
+grep-regex = "0.1.12"
+grep-searcher = "0.1.13"
+
+# Unicode handling
+unicode-width.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[package.metadata.bundle]
+name = "Nucleotide"
+identifier = "org.spiralpoint.nucleotide"
+icon = ["assets/nucleotide.icns"]
+version = "0.1.0"
+copyright = "Copyright © 2025 Iain H. All rights reserved."
+category = "public.app-category.developer-tools"
+short_description = "A native GUI for the Helix editor"
+long_description = """
+Nucleotide is a native GUI implementation of the Helix text editor,
+built with GPUI (the UI framework from Zed editor). It brings modal
+editing to a native GUI application.
+"""
+

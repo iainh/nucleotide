@@ -1,0 +1,29 @@
+[package]
+name = "nucleotide-editor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Text rendering and editing logic for Nucleotide editor (Layer 4)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
+
+[dependencies]
+nucleotide-core = { path = "../nucleotide-core" }
+
+# GPUI
+gpui = { workspace = true }
+
+# Helix dependencies
+helix-core = { workspace = true }
+helix-view = { workspace = true }
+helix-term = { workspace = true }
+helix-tui = { workspace = true }
+
+# Standard dependencies
+anyhow = { workspace = true }
+log = { workspace = true }
+arc-swap = { workspace = true }

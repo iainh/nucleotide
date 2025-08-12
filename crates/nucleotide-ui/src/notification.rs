@@ -1,0 +1,177 @@
+use std::collections::HashMap;
+
+use gpui::{prelude::FluentBuilder, *};
+use helix_lsp::LanguageServerId;
+use helix_view::document::DocumentSavedEvent;
+use nucleotide_types::EditorStatus;
+
+#[derive(Default, Debug)]
+struct LspStatus {
+    token: String,
+    title: String,
+    message: Option<String>,
+    percentage: Option<u32>,
+}
+
+impl LspStatus {
+    fn is_empty(&self) -> bool {
+        self.token.is_empty() && self.title.is_empty() && self.message.is_none()
+    }
+}
+
+#[derive(IntoElement)]
+struct Notification {
+    title: String,
+    message: Option<String>,
+    bg: Hsla,
+    text: Hsla,
+}
+
+impl Notification {
+    fn from_save_event(event: &Result<DocumentSavedEvent, String>, bg: Hsla, text: Hsla) -> Self {
+        let (title, message) = match event {
+            Ok(saved) => (
+                "Saved".to_string(),
+                format!("saved to {}", saved.path.display()),
+            ),
+            Err(err) => ("Error".to_string(), format!("error saving: {err}")),
+        };
+
+        Notification {
+            title,
+            message: Some(message),
+            bg,
+            text,
+        }
+    }
+
+    fn from_editor_status(status: &EditorStatus, bg: Hsla, text: Hsla) -> Self {
+        use nucleotide_types::Severity;
+        let title = match status.severity {
+            Severity::Info => "info",
+            Severity::Hint => "hint",
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        }
+        .to_string();
+
+        Notification {
+            title,
+            message: Some(status.status.clone()),
+            bg,
+            text,
+        }
+    }
+
+    fn from_lsp(status: &LspStatus, bg: Hsla, text: Hsla) -> Self {
+        let title = format!(
+            "{}: {} {}",
+            status.token,
+            status.title,
+            status
+                .percentage
+                .map(|s| format!("{s}%"))
+                .unwrap_or_default()
+        );
+        Notification {
+            title,
+            message: status.message.clone(),
+            bg,
+            text,
+        }
+    }
+}
+
+pub struct NotificationView {
+    lsp_status: HashMap<LanguageServerId, LspStatus>,
+    editor_status: Option<EditorStatus>,
+    saved: Option<Result<DocumentSavedEvent, String>>,
+    popup_bg_color: Hsla,
+    popup_text_color: Hsla,
+}
+
+impl NotificationView {
+    pub fn new(popup_bg_color: Hsla, popup_text_color: Hsla) -> Self {
+        Self {
+            saved: None,
+            editor_status: None,
+            lsp_status: HashMap::new(),
+            popup_bg_color,
+            popup_text_color,
+        }
+    }
+}
+
+impl Render for NotificationView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let mut notifications = vec![];
+        for status in self.lsp_status.values() {
+            if status.is_empty() {
+                continue;
+            }
+            notifications.push(Notification::from_lsp(
+                status,
+                self.popup_bg_color,
+                self.popup_text_color,
+            ));
+        }
+        if let Some(status) = &self.editor_status {
+            notifications.push(Notification::from_editor_status(
+                status,
+                self.popup_bg_color,
+                self.popup_text_color,
+            ));
+        }
+        if let Some(saved) = self.saved.take() {
+            notifications.push(Notification::from_save_event(
+                &saved,
+                self.popup_bg_color,
+                self.popup_text_color,
+            ));
+        }
+        div()
+            .absolute()
+            .w(DefiniteLength::Fraction(0.33))
+            .top_8()
+            .right_5()
+            .flex_col()
+            .gap_8()
+            .justify_start()
+            .items_center()
+            .children(notifications)
+    }
+}
+
+impl RenderOnce for Notification {
+    fn render(mut self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let message = self.message.take();
+        div()
+            .flex()
+            .flex_col()
+            .flex()
+            .p_2()
+            .gap_4()
+            .min_h(px(100.))
+            .bg(self.bg)
+            .text_color(self.text)
+            .shadow_sm()
+            .rounded_sm()
+            .font(
+                cx.global::<nucleotide_types::FontSettings>()
+                    .var_font
+                    .clone()
+                    .into(),
+            )
+            .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size - 1.0))
+            .child(
+                div()
+                    .flex()
+                    .font_weight(FontWeight::BOLD)
+                    .flex_none()
+                    .justify_center()
+                    .items_center()
+                    .child(self.title),
+            )
+            .when_some(message, |this, msg| this.child(msg))
+    }
+}

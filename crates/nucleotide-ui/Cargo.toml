@@ -1,0 +1,23 @@
+[package]
+name = "nucleotide-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+nucleotide-types = { workspace = true, features = ["gpui-bridge"] }
+nucleotide-events.workspace = true
+nucleotide-core = { path = "../nucleotide-core" }
+gpui.workspace = true
+serde.workspace = true
+log.workspace = true
+helix-view.workspace = true
+helix-lsp.workspace = true
+helix-core.workspace = true
+helix-term.workspace = true
+helix-loader.workspace = true
+smallvec.workspace = true
+nucleo.workspace = true
+anyhow.workspace = true
+rust-embed.workspace = true

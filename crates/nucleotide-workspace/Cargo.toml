@@ -1,0 +1,33 @@
+[package]
+name = "nucleotide-workspace"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Workspace management for Nucleotide editor (Layer 5)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
+
+[dependencies]
+nucleotide-core = { path = "../nucleotide-core" }
+nucleotide-ui = { path = "../nucleotide-ui" }
+# TODO: Remove this circular dependency by using capability traits
+
+# GPUI
+gpui = { workspace = true }
+
+# Helix dependencies
+helix-core = { workspace = true }
+helix-view = { workspace = true }
+helix-term = { workspace = true }
+helix-vcs = { workspace = true, features = ["git"] }
+
+# Standard dependencies
+anyhow = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+notify = { workspace = true }
+sum_tree = { workspace = true }

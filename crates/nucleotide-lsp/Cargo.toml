@@ -1,0 +1,36 @@
+[package]
+name = "nucleotide-lsp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Language Server Protocol support for Nucleotide editor (Layer 5)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
+
+[dependencies]
+# Internal crates
+nucleotide-core.workspace = true
+
+# Helix dependencies
+helix-core.workspace = true
+helix-lsp.workspace = true
+helix-view.workspace = true
+helix-loader.workspace = true
+helix-stdx.workspace = true
+
+# GPUI
+gpui.workspace = true
+
+# Common dependencies
+tokio.workspace = true
+futures.workspace = true
+anyhow.workspace = true
+log.workspace = true
+arc-swap.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
