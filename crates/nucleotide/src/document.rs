@@ -1530,6 +1530,39 @@ impl Element for DocumentElement {
                 let mut y_offset = px(0.);
                 let text_origin_x = bounds.origin.x + px(2.) + (after_layout.cell_width * gutter_width as f32);
 
+                // Render rulers before text
+                let ruler_style = theme.get("ui.virtual.ruler");
+                let ruler_color = ruler_style.bg
+                    .and_then(color_to_hsla)
+                    .unwrap_or_else(|| hsla(0.0, 0.0, 0.3, 0.2)); // Default to subtle gray
+
+                // Get rulers configuration - try language-specific first, then fall back to editor config
+                let editor_config = editor.config();
+                let rulers = document.language_config()
+                    .and_then(|config| config.rulers.as_ref())
+                    .unwrap_or(&editor_config.rulers);
+
+                // Get horizontal scroll offset from view
+                let view_offset = document.view_offset(view.id);
+                let horizontal_offset = view_offset.horizontal_offset as f32;
+
+                // Render each ruler as a vertical line
+                for &ruler_col in rulers {
+                    // Calculate x position based on column (account for horizontal scroll)
+                    // Rulers are at absolute column positions in the text, not including the gutter
+                    // We need to account for 0-based vs 1-based column indexing
+                    let ruler_x = text_origin_x + (after_layout.cell_width * ((ruler_col - 1) as f32 - horizontal_offset));
+
+                    // Only render if the ruler is within our visible bounds
+                    if ruler_x >= text_origin_x && ruler_x < bounds.origin.x + bounds.size.width {
+                        let ruler_bounds = Bounds {
+                            origin: point(ruler_x, bounds.origin.y),
+                            size: size(px(1.0), bounds.size.height),
+                        };
+                        window.paint_quad(fill(ruler_bounds, ruler_color));
+                    }
+                }
+
                 // Extract necessary values before the loop to avoid borrowing issues
                 let editor_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
                 let editor_mode = editor.mode();
