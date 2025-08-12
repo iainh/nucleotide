@@ -1,0 +1,13 @@
+[package]
+name = "nucleotide-events"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Lower layer dependencies
+nucleotide-types = { path = "../nucleotide-types" }
+
+# External dependencies
+serde = { version = "1.0", features = ["derive"] }
+helix-view = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
+helix-lsp = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }

@@ -75,7 +75,7 @@ impl RenderOnce for PickerElement {
             } => {
                 // Native GPUI picker rendering
                 let font = cx
-                    .global::<nucleotide_core::shared_types::FontSettings>()
+                    .global::<nucleotide_types::FontSettings>()
                     .var_font
                     .clone();
 
@@ -100,7 +100,7 @@ impl RenderOnce for PickerElement {
                         .rounded_md()
                         .shadow_lg()
                         .font(font)
-                        .text_size(px(cx.global::<nucleotide_core::shared_types::UiFontConfig>().size))
+                        .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size))
                         .child(
                             // Title bar
                             div()

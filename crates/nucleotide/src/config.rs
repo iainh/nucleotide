@@ -3,63 +3,9 @@
 
 use helix_loader::config_dir;
 use helix_term::config::Config as HelixConfig;
+use nucleotide_types::{FontConfig, FontWeight};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-
-/// Font weight enumeration matching common font weights
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-#[derive(Default)]
-pub enum FontWeight {
-    Thin,
-    ExtraLight,
-    Light,
-    #[default]
-    Normal,
-    Medium,
-    SemiBold,
-    Bold,
-    ExtraBold,
-    Black,
-}
-
-impl From<FontWeight> for gpui::FontWeight {
-    fn from(weight: FontWeight) -> Self {
-        match weight {
-            FontWeight::Thin => gpui::FontWeight::THIN,
-            FontWeight::ExtraLight => gpui::FontWeight::EXTRA_LIGHT,
-            FontWeight::Light => gpui::FontWeight::LIGHT,
-            FontWeight::Normal => gpui::FontWeight::NORMAL,
-            FontWeight::Medium => gpui::FontWeight::MEDIUM,
-            FontWeight::SemiBold => gpui::FontWeight::SEMIBOLD,
-            FontWeight::Bold => gpui::FontWeight::BOLD,
-            FontWeight::ExtraBold => gpui::FontWeight::EXTRA_BOLD,
-            FontWeight::Black => gpui::FontWeight::BLACK,
-        }
-    }
-}
-
-/// Font configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FontConfig {
-    /// Font family name
-    pub family: String,
-    /// Font weight
-    #[serde(default)]
-    pub weight: FontWeight,
-    /// Font size in pixels
-    pub size: f32,
-}
-
-impl Default for FontConfig {
-    fn default() -> Self {
-        Self {
-            family: "SF Mono".to_string(),
-            weight: FontWeight::Normal,
-            size: 14.0,
-        }
-    }
-}
 
 /// UI-specific configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -136,6 +82,7 @@ impl Config {
                 family: "SF Pro Display".to_string(),
                 weight: FontWeight::Normal,
                 size: 13.0,
+                line_height: 1.5,
             }
         })
     }

@@ -6,6 +6,8 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+nucleotide-types.workspace = true
+nucleotide-events.workspace = true
 nucleotide-core = { path = "../nucleotide-core" }
 gpui.workspace = true
 serde.workspace = true

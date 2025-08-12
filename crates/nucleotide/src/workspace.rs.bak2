@@ -711,8 +711,8 @@ impl Workspace {
                 cx.notify();
 
                 // Send theme change event to Helix
-                gpui_to_helix_bridge::send_gpui_event_to_helix(
-                    gpui_to_helix_bridge::GpuiToHelixEvent::ThemeChanged {
+                crate::gpui_to_helix_bridge::send_gpui_event_to_helix(
+                    crate::gpui_to_helix_bridge::GpuiToHelixEvent::ThemeChanged {
                         theme_name: theme_name_after.clone(),
                     },
                 );

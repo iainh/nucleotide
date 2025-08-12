@@ -4403,7 +4403,9 @@ dependencies = [
  "nucleo 0.2.1",
  "nucleotide-core",
  "nucleotide-editor",
+ "nucleotide-events",
  "nucleotide-lsp",
+ "nucleotide-types",
  "nucleotide-ui",
  "once_cell",
  "open",
@@ -4440,6 +4442,8 @@ dependencies = [
  "helix-vcs",
  "helix-view",
  "log",
+ "nucleotide-events",
+ "nucleotide-types",
  "once_cell",
  "parking_lot",
  "signal-hook",
@@ -4464,6 +4468,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleotide-events"
+version = "0.1.0"
+dependencies = [
+ "helix-lsp",
+ "helix-view",
+ "nucleotide-types",
+ "serde",
+]
+
+[[package]]
 name = "nucleotide-lsp"
 version = "0.1.0"
 dependencies = [
@@ -4485,6 +4499,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleotide-types"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "helix-core",
+ "serde",
+]
+
+[[package]]
 name = "nucleotide-ui"
 version = "0.1.0"
 dependencies = [
@@ -4498,6 +4521,8 @@ dependencies = [
  "log",
  "nucleo 0.5.0",
  "nucleotide-core",
+ "nucleotide-events",
+ "nucleotide-types",
  "rust-embed",
  "serde",
  "smallvec",

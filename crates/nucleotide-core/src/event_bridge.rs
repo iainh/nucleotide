@@ -46,8 +46,8 @@ pub enum BridgedEvent {
     },
 }
 
-// Use the CompletionTrigger from shared_types
-pub use crate::shared_types::CompletionTrigger;
+// Use the CompletionTrigger from nucleotide-types
+pub use nucleotide_types::CompletionTrigger;
 
 /// Global event bridge sender - initialized once when application starts
 static EVENT_BRIDGE_SENDER: OnceLock<mpsc::UnboundedSender<BridgedEvent>> = OnceLock::new();

@@ -1,7 +1,7 @@
 // ABOUTME: Event aggregator that collects events from different crates and dispatches them
 // ABOUTME: Implements the event bus pattern to break circular dependencies
 
-use crate::events::{
+use nucleotide_events::{
     AppEvent, CoreEvent, EventBus, EventHandler, LspEvent, UiEvent, WorkspaceEvent,
 };
 use std::sync::{Arc, Mutex};

@@ -874,7 +874,7 @@ impl Application {
                     }
                 } => {
                     // Handle GPUI events that affect Helix
-                    gpui_to_helix_bridge::handle_gpui_event_in_helix(&gpui_event, &mut self.editor);
+                    crate::gpui_to_helix_bridge::handle_gpui_event_in_helix(&gpui_event, &mut self.editor);
                     helix_event::request_redraw();
                 }
                 Some(callback) = self.jobs.wait_futures.next() => {
@@ -1047,9 +1047,10 @@ pub fn init_editor(
     event_bridge::register_event_hooks();
 
     // Initialize reverse event bridge system for GPUI -> Helix event forwarding
-    let (gpui_to_helix_tx, gpui_to_helix_rx) = gpui_to_helix_bridge::create_gpui_to_helix_channel();
-    gpui_to_helix_bridge::initialize_gpui_to_helix_bridge(gpui_to_helix_tx);
-    gpui_to_helix_bridge::register_gpui_event_handlers();
+    let (gpui_to_helix_tx, gpui_to_helix_rx) =
+        crate::gpui_to_helix_bridge::create_gpui_to_helix_channel();
+    crate::gpui_to_helix_bridge::initialize_gpui_to_helix_bridge(gpui_to_helix_tx);
+    crate::gpui_to_helix_bridge::register_gpui_event_handlers();
 
     let mut editor = Editor::new(
         area,
@@ -1183,8 +1184,8 @@ pub fn init_editor(
 mod tests {
     use super::*;
     use crate::test_utils::test_support::{
-        create_counting_channel, create_test_diagnostic_events, create_test_document_events,
-        create_test_selection_events, TestUpdate,
+        create_counting_channel, create_test_selection_events, create_test_document_events,
+        create_test_diagnostic_events, TestUpdate,
     };
     use std::time::Duration;
 

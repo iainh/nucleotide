@@ -1,13 +1,13 @@
 // ABOUTME: Application-specific type re-exports
 // ABOUTME: Re-exports shared types from nucleotide-core
 
-// Re-export shared types from core
-pub use nucleotide_core::shared_types::{
+// Re-export shared types from core (now from nucleotide-types via nucleotide-core)
+pub use nucleotide_core::{
     CompletionTrigger, EditorFontConfig, EditorStatus, FontSettings, UiFontConfig,
 };
 
-// Re-export event types
-pub use nucleotide_core::events::{
+// Re-export event types (now from nucleotide-events via nucleotide-core)
+pub use nucleotide_core::{
     AppEvent, CoreEvent, LspEvent, MessageSeverity, PanelType, PickerType, SplitDirection, UiEvent,
     WorkspaceEvent,
 };

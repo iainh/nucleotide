@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use gpui::{prelude::FluentBuilder, *};
 use helix_lsp::LanguageServerId;
 use helix_view::document::DocumentSavedEvent;
-use nucleotide_core::shared_types::EditorStatus;
+use nucleotide_types::EditorStatus;
 
 #[derive(Default, Debug)]
 struct LspStatus {
@@ -157,14 +157,11 @@ impl RenderOnce for Notification {
             .shadow_sm()
             .rounded_sm()
             .font(
-                cx.global::<nucleotide_core::shared_types::FontSettings>()
+                cx.global::<nucleotide_types::FontSettings>()
                     .var_font
                     .clone(),
             )
-            .text_size(px(cx
-                .global::<nucleotide_core::shared_types::UiFontConfig>()
-                .size
-                - 1.0))
+            .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size - 1.0))
             .child(
                 div()
                     .flex()

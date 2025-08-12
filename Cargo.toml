@@ -1,11 +1,13 @@
 [workspace]
 members = [
-    "crates/nucleotide",
+    "crates/nucleotide-types",
+    "crates/nucleotide-events",
     "crates/nucleotide-core",
-    "crates/nucleotide-ui",
-    "crates/nucleotide-lsp",
-    "crates/nucleotide-workspace",
     "crates/nucleotide-editor",
+    "crates/nucleotide-ui",
+    "crates/nucleotide-workspace",
+    "crates/nucleotide-lsp",
+    "crates/nucleotide",
 ]
 resolver = "2"
 
@@ -72,11 +74,13 @@ tokio-stream = "0.1"
 rust-embed = "8.5"
 
 # Inter-crate dependencies
+nucleotide-types = { path = "crates/nucleotide-types" }
+nucleotide-events = { path = "crates/nucleotide-events" }
 nucleotide-core = { path = "crates/nucleotide-core" }
-nucleotide-ui = { path = "crates/nucleotide-ui" }
-nucleotide-lsp = { path = "crates/nucleotide-lsp" }
-nucleotide-workspace = { path = "crates/nucleotide-workspace" }
 nucleotide-editor = { path = "crates/nucleotide-editor" }
+nucleotide-ui = { path = "crates/nucleotide-ui" }
+nucleotide-workspace = { path = "crates/nucleotide-workspace" }
+nucleotide-lsp = { path = "crates/nucleotide-lsp" }
 
 [profile.dev]
 opt-level = 1

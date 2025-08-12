@@ -3,9 +3,9 @@
 
 #[cfg(test)]
 pub mod test_support {
-    use crate::event_bridge::{create_bridge_channel, BridgedEvent};
     use helix_view::document::Mode;
     use helix_view::{DocumentId, ViewId};
+    use nucleotide_core::event_bridge::{create_bridge_channel, BridgedEvent};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -133,13 +133,13 @@ pub mod test_support {
                         trigger,
                     } => {
                         let test_trigger = match trigger {
-                            crate::event_bridge::CompletionTrigger::CharacterTyped(c) => {
+                            nucleotide_core::CompletionTrigger::Character(c) => {
                                 CompletionTrigger::Character(c)
                             }
-                            crate::event_bridge::CompletionTrigger::Manual => {
+                            nucleotide_core::CompletionTrigger::Manual => {
                                 CompletionTrigger::Invoked
                             }
-                            crate::event_bridge::CompletionTrigger::Filter => {
+                            nucleotide_core::CompletionTrigger::Automatic => {
                                 CompletionTrigger::TriggerForIncompleteCompletions
                             }
                         };

@@ -149,16 +149,12 @@ impl RenderOnce for PromptElement {
                     .shadow_lg()
                     .text_color(text_color)
                     .font(
-                        cx.global::<nucleotide_core::shared_types::FontSettings>()
+                        cx.global::<nucleotide_types::FontSettings>()
                             .var_font
                             .clone(),
                     )
-                    .text_size(px(cx
-                        .global::<nucleotide_core::shared_types::UiFontConfig>()
-                        .size))
-                    .line_height(px(1.3
-                        * cx.global::<nucleotide_core::shared_types::UiFontConfig>()
-                            .size))
+                    .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size))
+                    .line_height(px(1.3 * cx.global::<nucleotide_types::UiFontConfig>().size))
                     .child(text)
             }
             Prompt::Native { .. } => {

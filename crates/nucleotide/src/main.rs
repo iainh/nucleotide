@@ -193,8 +193,7 @@ fn window_options(_cx: &mut App) -> gpui::WindowOptions {
 
 // Import actions from our centralized definitions
 use nucleotide::actions::{
-    completion::*, editor::*, help::*, picker::*, test::*, window::*, workspace::*, Cancel,
-    Confirm, MoveDown, MoveLeft, MoveRight, MoveUp,
+    common::*, completion::*, editor::*, help::*, picker::*, test::*, window::*, workspace::*,
 };
 
 fn app_menus() -> Vec<Menu> {
@@ -474,8 +473,8 @@ fn gui_main(
             // would be handled differently depending on the GPUI version
             cx.spawn(async move |_cx| {
                 // This would be triggered by actual GPUI window events
-                nucleotide::gpui_to_helix_bridge::send_gpui_event_to_helix(
-                    nucleotide::gpui_to_helix_bridge::GpuiToHelixEvent::WindowResized {
+                nucleotide_core::gpui_to_helix_bridge::send_gpui_event_to_helix(
+                    nucleotide_core::gpui_to_helix_bridge::GpuiToHelixEvent::WindowResized {
                         width: 120,
                         height: 40,
                     },

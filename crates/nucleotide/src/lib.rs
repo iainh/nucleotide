@@ -7,11 +7,11 @@ pub mod config;
 pub mod document;
 pub mod editor_capabilities_impl;
 pub mod editor_provider;
-pub mod event_bridge;
 pub mod file_tree;
-pub mod gpui_to_helix_bridge;
 pub mod overlay;
 pub mod statusline;
+#[cfg(test)]
+pub mod test_utils;
 pub mod types;
 pub mod utils;
 pub mod workspace;

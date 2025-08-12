@@ -7,10 +7,9 @@ pub mod document_manager;
 pub mod editor_capabilities;
 pub mod event_aggregator;
 pub mod event_bridge;
-pub mod events;
 pub mod gpui_to_helix_bridge;
 pub mod preview_tracker;
-pub mod shared_types;
+pub mod utils;
 
 // Capability traits exports
 pub use capabilities::{
@@ -25,8 +24,8 @@ pub use editor_capabilities::{
     WeakEditorCapabilities,
 };
 
-// Event types exports
-pub use events::{
+// Re-export event types from nucleotide-events
+pub use nucleotide_events::{
     AppEvent, CoreEvent, EventBus, EventHandler, LspEvent, MessageSeverity, PanelType, PickerType,
     SplitDirection, UiEvent, WorkspaceEvent,
 };
@@ -51,3 +50,8 @@ pub use document_manager::{DocumentManager, DocumentManagerMut};
 
 // Command system exports
 pub use command_system::{Command, ParsedCommand};
+
+// Re-export types from nucleotide-types for backward compatibility
+pub use nucleotide_types::{
+    CoreEntity, EditorFontConfig, EditorStatus, FontSettings, UiFontConfig,
+};

@@ -246,7 +246,7 @@ impl PickerDelegate for FilePickerDelegate {
         let item = self.items.get(item_idx)?;
 
         let font = cx
-            .global::<nucleotide_core::shared_types::FontSettings>()
+            .global::<nucleotide_types::FontSettings>()
             .fixed_font
             .clone();
 

@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+# Lower layer dependencies
+nucleotide-types.workspace = true
+nucleotide-events.workspace = true
+
 # Helix dependencies
 helix-core.workspace = true
 helix-event.workspace = true

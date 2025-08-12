@@ -346,7 +346,7 @@ impl EventEmitter<DismissEvent> for PromptView {}
 impl Render for PromptView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let font = cx
-            .global::<nucleotide_core::shared_types::FontSettings>()
+            .global::<nucleotide_types::FontSettings>()
             .var_font
             .clone();
         let input_display = self.input.to_string();
@@ -384,9 +384,7 @@ impl Render for PromptView {
             .rounded_md()
             .shadow_lg()
             .font(font)
-            .text_size(px(cx
-                .global::<nucleotide_core::shared_types::UiFontConfig>()
-                .size))
+            .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 match event.keystroke.key.as_str() {

@@ -152,14 +152,11 @@ impl Render for KeyHintView {
                 .flex_col()
                 .gap_1()
                 .font(
-                    cx.global::<nucleotide_core::shared_types::FontSettings>()
+                    cx.global::<nucleotide_types::FontSettings>()
                         .var_font
                         .clone(),
                 )
-                .text_size(px(cx
-                    .global::<nucleotide_core::shared_types::UiFontConfig>()
-                    .size
-                    - 1.0))
+                .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size - 1.0))
                 .children(
                     // Title if present
                     if !clean_title.is_empty() {
