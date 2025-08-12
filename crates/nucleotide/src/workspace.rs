@@ -2115,17 +2115,38 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .child(
-                        div()
-                            .w_full()
-                            .flex_1()
-                            .flex()
-                            .justify_center()
-                            .p(px(12.0))
-                            .child(
-                                div()
-                                    .text_color(ui_theme.text_muted)
-                                    .child("Open a directory"),
-                            ),
+                        div().w_full().p(px(12.0)).child(
+                            div()
+                                .px(px(16.0))
+                                .py(px(8.0))
+                                .bg(ui_theme.surface)
+                                .border_1()
+                                .border_color(ui_theme.border)
+                                .rounded_md()
+                                .cursor(gpui::CursorStyle::PointingHand)
+                                .hover(|style| style.bg(ui_theme.surface_hover))
+                                .text_color(ui_theme.text)
+                                .text_align(gpui::TextAlign::Center)
+                                .child("Open Directory")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|workspace, _event, _window, cx| {
+                                        // Create and show directory picker
+                                        let directory_picker =
+                                            crate::picker::Picker::native_directory(
+                                                "Select Project Directory",
+                                                |_path| {
+                                                    // Callback handled through events
+                                                },
+                                            );
+                                        workspace.core.update(cx, |_core, cx| {
+                                            cx.emit(crate::Update::DirectoryPicker(
+                                                directory_picker,
+                                            ));
+                                        });
+                                    }),
+                                ),
+                        ),
                     );
 
                 // Add resize handle with absolute positioning
