@@ -93,95 +93,34 @@ impl OverlayView {
 
                             // Only set up completion for command prompts, not search prompts
                             if !is_search_prompt {
-                                // Set up completion function for command mode using helix's completions
-                                let core_weak_completion = self.core.clone();
+                                // Set up completion function for command mode using our centralized completions module
+                                // Try to get actual settings from the editor
+                                let settings_cache = if let Some(core) = self.core.upgrade() {
+                                    // Use the Helix setting completer to get all available settings
+                                    // Pass an empty string to get all settings
+                                    let all_settings = helix_term::ui::completers::setting(
+                                        &core.read(cx).editor,
+                                        "",
+                                    );
+                                    let settings: Vec<String> = all_settings
+                                        .into_iter()
+                                        .map(|(_, span)| span.content.to_string())
+                                        .collect();
+                                    settings
+                                } else {
+                                    // Fallback to hardcoded list
+                                    crate::completions::SETTINGS_KEYS.to_vec()
+                                };
+
                                 view = view.with_completion_fn(move |input| {
-                                    // Get completions from our Core
-                                    // Since we're in a closure without cx, we need to access core directly
-                                    // The completion function runs outside of the GPUI event loop
-                                    core_weak_completion
-                                        .upgrade()
-                                        .map(|_core| {
-                                            // We need to access the Core directly since we don't have cx here
-                                            // This is safe because we're just reading theme names
-                                            use helix_core::fuzzy::fuzzy_match;
-                                            use helix_term::commands::TYPABLE_COMMAND_LIST;
+                                    // Strip leading colon if present
+                                    let input = input.strip_prefix(':').unwrap_or(input);
 
-                                            // Split input to see if we're completing a command or arguments
-                                            let parts: Vec<&str> =
-                                                input.split_whitespace().collect();
-
-                                            if parts.is_empty()
-                                                || (parts.len() == 1 && !input.ends_with(' '))
-                                            {
-                                                // Complete command names
-                                                let pattern =
-                                                    if parts.is_empty() { "" } else { parts[0] };
-
-                                                fuzzy_match(
-                                                    pattern,
-                                                    TYPABLE_COMMAND_LIST.iter().flat_map(|cmd| {
-                                                        // Include both the command name and aliases
-                                                        std::iter::once(cmd.name)
-                                                            .chain(cmd.aliases.iter().copied())
-                                                    }),
-                                                    false,
-                                                )
-                                                .into_iter()
-                                                .map(|(name, _score)| {
-                                                    // Find the command to get its description
-                                                    let desc = TYPABLE_COMMAND_LIST
-                                                        .iter()
-                                                        .find(|cmd| {
-                                                            cmd.name == name
-                                                                || cmd.aliases.contains(&name)
-                                                        })
-                                                        .map(|cmd| cmd.doc.to_string());
-                                                    nucleotide_ui::prompt_view::CompletionItem {
-                                                        text: name.to_string().into(),
-                                                        description: desc.map(|d| d.into()),
-                                                    }
-                                                })
-                                                .collect()
-                                            } else if !parts.is_empty() && parts[0] == "theme" {
-                                                // Get available themes - inline the theme completion logic
-                                                let theme_prefix =
-                                                    if parts.len() > 1 { parts[1] } else { "" };
-
-                                                let mut names =
-                                                    helix_view::theme::Loader::read_names(
-                                                        &helix_loader::config_dir().join("themes"),
-                                                    );
-
-                                                for rt_dir in helix_loader::runtime_dirs() {
-                                                    let rt_names =
-                                                        helix_view::theme::Loader::read_names(
-                                                            &rt_dir.join("themes"),
-                                                        );
-                                                    names.extend(rt_names);
-                                                }
-                                                names.push("default".into());
-                                                names.push("base16_default".into());
-                                                names.sort();
-                                                names.dedup();
-
-                                                fuzzy_match(theme_prefix, names, false)
-                                                    .into_iter()
-                                                    .map(|(name, _score)| {
-                                                        nucleotide_ui::prompt_view::CompletionItem {
-                                                            text: format!("theme {name}").into(),
-                                                            description: Some(
-                                                                format!("Switch to {name} theme")
-                                                                    .into(),
-                                                            ),
-                                                        }
-                                                    })
-                                                    .collect()
-                                            } else {
-                                                Vec::new()
-                                            }
-                                        })
-                                        .unwrap_or_default()
+                                    // Use cached settings for better completions
+                                    crate::completions::get_command_completions_with_cache(
+                                        input,
+                                        Some(settings_cache.to_vec()),
+                                    )
                                 });
                             }
 

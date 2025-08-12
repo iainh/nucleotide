@@ -3,6 +3,7 @@
 
 pub mod actions;
 pub mod application;
+pub mod completions;
 pub mod config;
 pub mod document;
 pub mod editor_capabilities_impl;

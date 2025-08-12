@@ -9,6 +9,9 @@ use gpui::*;
 pub struct CompletionItem {
     pub text: SharedString,
     pub description: Option<SharedString>,
+    /// Optional display text that's shown in the completion list but not inserted
+    /// If None, the `text` field is used for both display and insertion
+    pub display_text: Option<SharedString>,
 }
 
 // Type aliases for callbacks
@@ -556,7 +559,13 @@ impl Render for PromptView {
                                                     } else {
                                                         self.style.modal_style.text
                                                     })
-                                                    .child(completion.text.clone()),
+                                                    .child(
+                                                        completion
+                                                            .display_text
+                                                            .as_ref()
+                                                            .unwrap_or(&completion.text)
+                                                            .clone(),
+                                                    ),
                                             )
                                             .when_some(
                                                 completion.description.as_ref(),
