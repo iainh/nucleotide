@@ -77,7 +77,8 @@ impl RenderOnce for PickerElement {
                 let font = cx
                     .global::<nucleotide_types::FontSettings>()
                     .var_font
-                    .clone();
+                    .clone()
+                    .into();
 
                 {
                     // Create default theme colors for fallback

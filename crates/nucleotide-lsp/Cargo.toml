@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Language Server Protocol support for Nucleotide editor (Layer 5)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
 
 [dependencies]
 # Internal crates

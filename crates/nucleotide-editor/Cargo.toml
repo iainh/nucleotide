@@ -1,12 +1,18 @@
 [package]
 name = "nucleotide-editor"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Text rendering and editing logic for Nucleotide editor (Layer 4)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
 
 [dependencies]
 nucleotide-core = { path = "../nucleotide-core" }
-nucleotide-ui = { path = "../nucleotide-ui" }
-# TODO: Use capability traits instead of direct dependency
 
 # GPUI
 gpui = { workspace = true }

@@ -154,7 +154,8 @@ impl Render for KeyHintView {
                 .font(
                     cx.global::<nucleotide_types::FontSettings>()
                         .var_font
-                        .clone(),
+                        .clone()
+                        .into(),
                 )
                 .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size - 1.0))
                 .children(

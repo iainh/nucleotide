@@ -92,20 +92,21 @@ This document defines the canonical layer structure for the Nucleotide codebase 
 3. **No Circular Dependencies**: Strict hierarchy must be maintained
 4. **External Dependencies**: Only specified external crates allowed per layer
 
-## Current Status
+## Current Status (Phase 2.5 Complete)
 
-- ✅ nucleotide-core: Exists with proper abstractions
-- ✅ nucleotide-ui: Exists with UI components
-- ✅ nucleotide-editor: Exists with editing logic
-- ✅ nucleotide-workspace: Shell exists, needs population
-- ✅ nucleotide-lsp: Exists with LSP logic
-- ❌ nucleotide-types: Needs to be created and populated
-- ❌ nucleotide-events: Needs to be created and extracted from nucleotide-core
+- ✅ nucleotide-types: Pure type definitions with optional feature flags for external deps
+- ✅ nucleotide-events: Event system definitions
+- ✅ nucleotide-core: Event bridges and capabilities without circular deps
+- ✅ nucleotide-editor: Text rendering logic (no longer depends on nucleotide-ui)
+- ✅ nucleotide-ui: UI components
+- ✅ nucleotide-workspace: Workspace management logic
+- ✅ nucleotide-lsp: LSP integration
+- ✅ nucleotide: Main application glue
 
-## Next Steps
+## Achievements
 
-1. Create nucleotide-types crate (Phase 2)
-2. Create nucleotide-events crate (Phase 2) 
-3. Move pure types to nucleotide-types (Phase 3)
-4. Extract events to nucleotide-events (Phase 4)
-5. Clean up circular dependencies (Phases 5-6)
+- ✅ Unidirectional dependency graph maintained
+- ✅ nucleotide-editor → nucleotide-ui dependency removed
+- ✅ nucleotide-types compiles with zero heavy dependencies (gpui/helix optional)
+- ✅ All crates use standardized workspace metadata
+- ✅ Clean layered architecture established

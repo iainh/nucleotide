@@ -1,12 +1,17 @@
 [package]
 name = "nucleotide"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["Iain H. <iain@spiralpoint.org>", "Alexander Polakov <alex@plhk.dev>", "Blaž Hrastnik <blaz@mxxn.io>"]
-description = "A native GUI for the Helix editor"
+license = "MPL-2.0"
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "A native GUI for the Helix editor - main application (Layer 6)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
 include = ["src/**/*", "README.md"]
 default-run = "nucl"
-version = "0.1.0"
-license = "MPL-2.0"
 
 [features]
 default = ["git"]
@@ -20,14 +25,13 @@ path = "src/main.rs"
 
 [dependencies]
 # Internal crates
-nucleotide-types.workspace = true
+nucleotide-types = { workspace = true, features = ["gpui-bridge", "helix-bridge"] }
 nucleotide-events.workspace = true
 nucleotide-ui.workspace = true
 nucleotide-core.workspace = true
 nucleotide-lsp.workspace = true
 nucleotide-editor.workspace = true
-# nucleotide-workspace has circular dependencies
-# Its modules are kept in this crate for now
+nucleotide-workspace.workspace = true
 
 # External dependencies
 gpui.workspace = true

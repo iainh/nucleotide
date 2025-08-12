@@ -1,7 +1,15 @@
 [package]
 name = "nucleotide-workspace"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Workspace management for Nucleotide editor (Layer 5)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
 
 [dependencies]
 nucleotide-core = { path = "../nucleotide-core" }

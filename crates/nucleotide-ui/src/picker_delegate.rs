@@ -248,7 +248,8 @@ impl PickerDelegate for FilePickerDelegate {
         let font = cx
             .global::<nucleotide_types::FontSettings>()
             .fixed_font
-            .clone();
+            .clone()
+            .into();
 
         // Simple preview - in real implementation would load file content
         Some(

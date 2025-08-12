@@ -439,8 +439,16 @@ fn gui_main(
         let ui_font_config = config.ui_font();
 
         let font_settings = FontSettings {
-            fixed_font: gpui::font(&editor_font_config.family),
-            var_font: gpui::font(&ui_font_config.family),
+            fixed_font: nucleotide_types::Font {
+                family: editor_font_config.family.clone(),
+                weight: editor_font_config.weight,
+                style: nucleotide_types::FontStyle::Normal,
+            },
+            var_font: nucleotide_types::Font {
+                family: ui_font_config.family.clone(),
+                weight: ui_font_config.weight,
+                style: nucleotide_types::FontStyle::Normal,
+            },
         };
         cx.set_global(font_settings);
 

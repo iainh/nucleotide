@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Core event bridges and capabilities for Nucleotide editor (Layer 3)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
 
 [dependencies]
 # Lower layer dependencies

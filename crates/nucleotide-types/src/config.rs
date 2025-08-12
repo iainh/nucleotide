@@ -20,6 +20,7 @@ pub enum FontWeight {
     Black,
 }
 
+#[cfg(feature = "gpui-bridge")]
 impl From<FontWeight> for gpui::FontWeight {
     fn from(weight: FontWeight) -> Self {
         match weight {

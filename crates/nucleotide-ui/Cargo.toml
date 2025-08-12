@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-nucleotide-types.workspace = true
+nucleotide-types = { workspace = true, features = ["gpui-bridge"] }
 nucleotide-events.workspace = true
 nucleotide-core = { path = "../nucleotide-core" }
 gpui.workspace = true

@@ -3,7 +3,7 @@
 
 // Re-export shared types from core (now from nucleotide-types via nucleotide-core)
 pub use nucleotide_core::{
-    CompletionTrigger, EditorFontConfig, EditorStatus, FontSettings, UiFontConfig,
+    CompletionTrigger, EditorFontConfig, EditorStatus, FontSettings, Severity, UiFontConfig,
 };
 
 // Re-export event types (now from nucleotide-events via nucleotide-core)

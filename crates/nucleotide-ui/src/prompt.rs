@@ -151,7 +151,8 @@ impl RenderOnce for PromptElement {
                     .font(
                         cx.global::<nucleotide_types::FontSettings>()
                             .var_font
-                            .clone(),
+                            .clone()
+                            .into(),
                     )
                     .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size))
                     .line_height(px(1.3 * cx.global::<nucleotide_types::UiFontConfig>().size))

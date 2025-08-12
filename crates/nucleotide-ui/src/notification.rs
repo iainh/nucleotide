@@ -46,7 +46,7 @@ impl Notification {
     }
 
     fn from_editor_status(status: &EditorStatus, bg: Hsla, text: Hsla) -> Self {
-        use helix_core::diagnostic::Severity;
+        use nucleotide_types::Severity;
         let title = match status.severity {
             Severity::Info => "info",
             Severity::Hint => "hint",
@@ -159,7 +159,8 @@ impl RenderOnce for Notification {
             .font(
                 cx.global::<nucleotide_types::FontSettings>()
                     .var_font
-                    .clone(),
+                    .clone()
+                    .into(),
             )
             .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size - 1.0))
             .child(

@@ -4407,6 +4407,7 @@ dependencies = [
  "nucleotide-lsp",
  "nucleotide-types",
  "nucleotide-ui",
+ "nucleotide-workspace",
  "once_cell",
  "open",
  "pulldown-cmark 0.10.3",
@@ -4464,7 +4465,6 @@ dependencies = [
  "helix-view",
  "log",
  "nucleotide-core",
- "nucleotide-ui",
 ]
 
 [[package]]

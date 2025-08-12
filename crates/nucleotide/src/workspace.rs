@@ -1612,9 +1612,10 @@ impl Workspace {
                     .global::<crate::types::FontSettings>()
                     .fixed_font
                     .family
-                    .clone(),
+                    .clone()
+                    .into(),
                 font_size: px(editor_font.size).into(),
-                font_weight: editor_font.weight,
+                font_weight: editor_font.weight.into(),
                 ..Default::default()
             };
             let core = self.core.clone();

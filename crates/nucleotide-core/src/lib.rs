@@ -53,5 +53,5 @@ pub use command_system::{Command, ParsedCommand};
 
 // Re-export types from nucleotide-types for backward compatibility
 pub use nucleotide_types::{
-    CoreEntity, EditorFontConfig, EditorStatus, FontSettings, UiFontConfig,
+    CoreEntity, EditorFontConfig, EditorStatus, FontSettings, Severity, UiFontConfig,
 };

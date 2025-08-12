@@ -661,7 +661,8 @@ impl PickerView {
         let font = cx
             .global::<nucleotide_types::FontSettings>()
             .var_font
-            .clone();
+            .clone()
+            .into();
         let window_size = window.viewport_size();
 
         // Check if we need to recalculate dimensions

@@ -348,7 +348,8 @@ impl Render for PromptView {
         let font = cx
             .global::<nucleotide_types::FontSettings>()
             .var_font
-            .clone();
+            .clone()
+            .into();
         let input_display = self.input.to_string();
 
         // Get the ghost text (completion suggestion after cursor)

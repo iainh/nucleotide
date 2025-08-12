@@ -5,7 +5,7 @@ use std::{
 
 use arc_swap::{access::Map, ArcSwap};
 use futures_util::FutureExt;
-use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Position, Selection};
+use helix_core::{pos_at_coords, syntax, Position, Selection};
 use helix_lsp::{lsp, LanguageServerId, LspProgressMap};
 use helix_stdx::path::get_relative_path;
 use helix_term::ui::FilePickerData;
@@ -781,23 +781,29 @@ impl Application {
                 }
                 Some(msg) = self.jobs.status_messages.recv() => {
                     let severity = match msg.severity{
-                        helix_event::status::Severity::Hint => Severity::Hint,
-                        helix_event::status::Severity::Info => Severity::Info,
-                        helix_event::status::Severity::Warning => Severity::Warning,
-                        helix_event::status::Severity::Error => Severity::Error,
+                        helix_event::status::Severity::Hint => crate::types::Severity::Hint,
+                        helix_event::status::Severity::Info => crate::types::Severity::Info,
+                        helix_event::status::Severity::Warning => crate::types::Severity::Warning,
+                        helix_event::status::Severity::Error => crate::types::Severity::Error,
                     };
                     let status = crate::types::EditorStatus { status: msg.message.to_string(), severity };
                     cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::StatusChanged {
                         message: status.status,
                         severity: match status.severity {
-                            helix_core::diagnostic::Severity::Hint => MessageSeverity::Info,
-                            helix_core::diagnostic::Severity::Info => MessageSeverity::Info,
-                            helix_core::diagnostic::Severity::Warning => MessageSeverity::Warning,
-                            helix_core::diagnostic::Severity::Error => MessageSeverity::Error,
+                            crate::types::Severity::Hint => MessageSeverity::Info,
+                            crate::types::Severity::Info => MessageSeverity::Info,
+                            crate::types::Severity::Warning => MessageSeverity::Warning,
+                            crate::types::Severity::Error => MessageSeverity::Error,
                         }
                     })));
                     // TODO: show multiple status messages at once to avoid clobbering
-                    self.editor.status_msg = Some((msg.message, severity));
+                    let helix_severity = match msg.severity {
+                        helix_event::status::Severity::Hint => helix_view::editor::Severity::Hint,
+                        helix_event::status::Severity::Info => helix_view::editor::Severity::Info,
+                        helix_event::status::Severity::Warning => helix_view::editor::Severity::Warning,
+                        helix_event::status::Severity::Error => helix_view::editor::Severity::Error,
+                    };
+                    self.editor.status_msg = Some((msg.message, helix_severity));
                     helix_event::request_redraw();
                 }
                 Some(bridged_event) = async {
