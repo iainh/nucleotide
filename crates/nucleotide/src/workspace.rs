@@ -2048,13 +2048,13 @@ impl Render for Workspace {
         // Font size actions
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::editor::IncreaseFontSize, _window, cx| {
-                workspace.adjust_font_size(2.0, cx);
+                workspace.adjust_font_size(1.0, cx);
             },
         ));
 
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::editor::DecreaseFontSize, _window, cx| {
-                workspace.adjust_font_size(-2.0, cx);
+                workspace.adjust_font_size(-1.0, cx);
             },
         ));
 
