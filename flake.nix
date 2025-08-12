@@ -403,6 +403,7 @@
             cargo-watch
             cargo-edit
             cargo-outdated
+            cargo-deny
 
             # For running the application
             ripgrep
