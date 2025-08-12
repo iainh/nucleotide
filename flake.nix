@@ -405,6 +405,9 @@
             cargo-outdated
             cargo-deny
 
+            # Build performance tools
+            sccache
+
             # For running the application
             ripgrep
             tree-sitter
@@ -418,6 +421,8 @@
           ] ++ lib.optionals stdenv.isDarwin [
             darwin.DarwinTools
             xcbuild
+          ] ++ lib.optionals stdenv.isLinux [
+            mold  # Fast linker for Linux
           ];
 
           buildInputs = allBuildInputs;
@@ -427,22 +432,46 @@
           HELIX_RUNTIME = "${helixRuntime}";
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
           OPENSSL_NO_VENDOR = 1;
+          
+          # Build performance settings
+          # Default to incremental compilation (better for iterative development)
+          CARGO_INCREMENTAL = "1";
+          # RUSTC_WRAPPER is not set by default - use aliases below
 
           shellHook = ''
+            # Define build mode aliases
+            alias build-cached='CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build'
+            alias build-incremental='unset RUSTC_WRAPPER && CARGO_INCREMENTAL=1 cargo build'
+            alias build-release-cached='CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build --release'
+            alias build-release-incremental='unset RUSTC_WRAPPER && cargo build --release'
+            
             echo "╔════════════════════════════════════════════════════════════════╗"
             echo "║         Welcome to Nucleotide development environment!         ║"
             echo "╚════════════════════════════════════════════════════════════════╝"
             echo ""
-            echo "Available commands:"
-            echo "  cargo build --release        - Build for native platform"
+            echo "Standard commands:"
+            echo "  cargo build --release        - Build with incremental compilation (default)"
             echo "  cargo run                    - Run debug version"
             echo "  cargo test                   - Run tests"
             echo "  cargo clippy                 - Run linter"
             echo "  cargo fmt                    - Format code"
             echo ""
+            echo "Optimized build commands:"
+            echo "  build-incremental            - Dev build with incremental compilation (best for iterative dev)"
+            echo "  build-cached                 - Dev build with sccache (best for branch switches)"
+            echo "  build-release-incremental    - Release build with incremental"
+            echo "  build-release-cached         - Release build with sccache"
+            echo ""
             echo "Bundle creation:"
             echo "  make-macos-bundle            - Create macOS .app bundle"
             echo "  make-linux-package           - Create Linux distribution"
+            echo ""
+            echo "Build optimizations enabled:"
+            echo "  • Thin LTO for release builds (faster than full LTO)"
+            echo "  • Split debuginfo for macOS (faster linking)"
+            echo "  • Optimized debug builds (line-tables-only)"
+            echo "  • Incremental compilation (default) or sccache (use aliases)"
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''echo "  • mold linker available for Linux (automatic)"''}
             echo ""
             echo "Nix packages:"
             echo "  nix build .#runtime          - Build runtime files"

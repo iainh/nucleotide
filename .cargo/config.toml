@@ -2,6 +2,23 @@
 # Enable tokio_unstable for helix-event crate
 rustflags = ["--cfg", "tokio_unstable"]
 
+# macOS targets - use faster linking options
+[target.x86_64-apple-darwin]
+rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=-Wl,-dead_strip"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=-Wl,-dead_strip"]
+
+# Linux targets - use mold for even faster linking when available
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=-fuse-ld=mold"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=-fuse-ld=mold"]
+
+# Windows targets
 [target.x86_64-pc-windows-msvc]
 rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=/stack:10000000"]
 

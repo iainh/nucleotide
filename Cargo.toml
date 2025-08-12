@@ -84,10 +84,14 @@ nucleotide-lsp = { path = "crates/nucleotide-lsp" }
 
 [profile.dev]
 opt-level = 1
-debug = true
+debug = "line-tables-only"  # Faster builds with minimal debug info
+split-debuginfo = "unpacked"  # Faster linking on macOS
+incremental = true
 
 [profile.release]
 opt-level = 3
-lto = true
+lto = "thin"  # Much faster linking than "true", slightly larger binary
 codegen-units = 1
 strip = "debuginfo"
+split-debuginfo = "packed"  # Faster linking on macOS
+incremental = false  # Disable for release builds for maximum optimization
