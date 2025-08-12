@@ -754,8 +754,21 @@ impl Workspace {
                     }
                 } else {
                     // Execute regular command
+                    // First, check if the command exists directly in the map (not an alias)
+                    let resolved_cmd_name =
+                        if helix_term::commands::TYPABLE_COMMAND_MAP.contains_key(cmd_name) {
+                            // Command exists directly, use it as-is
+                            cmd_name
+                        } else {
+                            // Command might be an alias, try to resolve it
+                            helix_term::commands::TYPABLE_COMMAND_LIST
+                                .iter()
+                                .find(|cmd| cmd.aliases.contains(&cmd_name))
+                                .map(|cmd| cmd.name)
+                                .unwrap_or(cmd_name)
+                        };
 
-                    match helix_term::commands::TYPABLE_COMMAND_MAP.get(cmd_name) {
+                    match helix_term::commands::TYPABLE_COMMAND_MAP.get(resolved_cmd_name) {
                         Some(cmd) => {
                             // Parse args for the command
                             let parsed_args = helix_core::command_line::Args::parse(
@@ -796,6 +809,9 @@ impl Workspace {
             // Check if the theme has changed after command execution
             let current_theme = core.editor.theme.clone();
             let theme_name_after = current_theme.name().to_string();
+
+            // Always trigger a redraw after command execution to reflect any config changes
+            cx.emit(crate::Update::Redraw);
 
             // If the theme has changed, update the ThemeManager and UI theme
             if theme_before != theme_name_after {
