@@ -9,12 +9,11 @@ use helix_core::{
     doc_formatter::{DocumentFormatter, TextFormat},
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     ropey::RopeSlice,
-    syntax::{self, HighlightEvent},
+    syntax::{self, Highlight, HighlightEvent, OverlayHighlights},
     text_annotations::TextAnnotations,
     Selection, Uri,
 };
 use helix_lsp::lsp::Diagnostic;
-use helix_term::ui::EditorView;
 // Import helix's syntax highlighting system
 use helix_view::{
     graphics::CursorKind, view::ViewPosition, Document, DocumentId, Editor, Theme, View, ViewId,
@@ -715,18 +714,91 @@ impl DocumentElement {
         view: &View,
         theme: &Theme,
         cursor_shape_config: &helix_view::editor::CursorShapeConfig,
-        is_window_focused: bool,
+        _is_window_focused: bool,
         _is_view_focused: bool,
     ) -> helix_core::syntax::OverlayHighlights {
-        // Get selection highlights from helix-term EditorView
-        EditorView::doc_selection_highlights(
-            mode,
-            doc,
-            view,
-            theme,
-            cursor_shape_config,
-            is_window_focused,
-        )
+        // In GUI mode, we need to handle selections but not cursor highlights
+        // since we render the cursor separately as a block overlay.
+
+        let text = doc.text().slice(..);
+        let selection = doc.selection(view.id);
+        let primary_idx = selection.primary_index();
+
+        let cursorkind = cursor_shape_config.from_mode(mode);
+        let cursor_is_block = cursorkind == CursorKind::Block;
+
+        let selection_scope = theme
+            .find_highlight_exact("ui.selection")
+            .expect("could not find `ui.selection` scope in the theme!");
+        let primary_selection_scope = theme
+            .find_highlight_exact("ui.selection.primary")
+            .unwrap_or(selection_scope);
+
+        let mut spans = Vec::new();
+        for (i, range) in selection.iter().enumerate() {
+            let selection_is_primary = i == primary_idx;
+            let selection_scope = if selection_is_primary {
+                primary_selection_scope
+            } else {
+                selection_scope
+            };
+
+            // Skip single-character "cursor" selections in block mode for primary selection
+            // since we render the cursor separately in GUI
+            if range.head == range.anchor {
+                // This is just a cursor position, not a real selection
+                // We don't add any highlight for this in GUI mode
+                continue;
+            }
+
+            // Use min_width_1 to handle the selection properly
+            let range = range.min_width_1(text);
+
+            if range.head > range.anchor {
+                // Forward selection
+                let cursor_start = prev_grapheme_boundary(text, range.head);
+                // For selections, we want to show the full selection minus the cursor position
+                // if it's the primary selection in block mode
+                let selection_end = if selection_is_primary
+                    && cursor_is_block
+                    && mode != helix_view::document::Mode::Insert
+                {
+                    cursor_start
+                } else {
+                    range.head
+                };
+
+                if range.anchor < selection_end {
+                    spans.push((selection_scope, range.anchor..selection_end));
+                }
+            } else {
+                // Reverse selection
+                let cursor_end = next_grapheme_boundary(text, range.head);
+                // For selections, show from cursor end to anchor
+                let selection_start = if selection_is_primary
+                    && cursor_is_block
+                    && mode != helix_view::document::Mode::Insert
+                {
+                    cursor_end
+                } else {
+                    range.head
+                };
+
+                if selection_start < range.anchor {
+                    spans.push((selection_scope, selection_start..range.anchor));
+                }
+            }
+        }
+
+        if spans.is_empty() {
+            // Return empty highlights using Homogeneous with empty ranges
+            OverlayHighlights::Homogeneous {
+                highlight: Highlight::new(0), // Default highlight (won't be used with empty ranges)
+                ranges: Vec::new(),
+            }
+        } else {
+            OverlayHighlights::Heterogenous { highlights: spans }
+        }
     }
 
     fn highlight_line_with_params(
@@ -1908,28 +1980,35 @@ impl Element for DocumentElement {
                             }
                         }
 
-                        // Build the line string from graphemes
+                        // Build the line string from graphemes including wrap indicators and indentation
                         let mut line_str = String::new();
+                        let mut wrap_indicator_len = 0usize; // Track wrap indicator byte length
 
-                        // Check if this is a wrapped line (continuation of previous document line)
-                        // A wrapped line is when the first grapheme's document line matches the current tracked line
-                        // and we're not at column 0 in the document (meaning it's a continuation)
-                        let is_wrapped_line = if let Some(first_grapheme) = line_graphemes.first() {
-                            // If this visual line starts with a grapheme from the same document line
-                            // but not at the beginning of that line, it's a wrapped continuation
-                            first_grapheme.line_idx == current_doc_line && first_grapheme.visual_pos.col > 0
-                        } else {
-                            false
-                        };
+                        // Track the starting column position for wrapped lines with indentation
+                        let line_start_col = line_graphemes.first().map(|g| g.visual_pos.col).unwrap_or(0);
 
-                        // Add wrap indicator if this is a wrapped line
-                        if is_wrapped_line && !text_format.wrap_indicator.is_empty() {
-                            line_str.push_str(&text_format.wrap_indicator);
+                        // If the line starts at a column > 0, we need to add leading spaces
+                        // This happens for wrapped lines with indentation carry-over
+                        if line_start_col > 0 {
+                            // Add spaces for the indentation
+                            for _ in 0..line_start_col {
+                                line_str.push(' ');
+                            }
                         }
 
+                        // Process graphemes
                         for grapheme in &line_graphemes {
-                            if !grapheme.is_virtual() {
-                                // Handle the Grapheme enum properly
+                            if grapheme.is_virtual() {
+                                // This is virtual text (likely wrap indicator)
+                                match &grapheme.raw {
+                                    helix_core::graphemes::Grapheme::Other { g } => {
+                                        wrap_indicator_len += g.len(); // Track byte length
+                                        line_str.push_str(g);
+                                    }
+                                    _ => {}
+                                }
+                            } else {
+                                // Real text content
                                 match &grapheme.raw {
                                     helix_core::graphemes::Grapheme::Tab { .. } => line_str.push('\t'),
                                     helix_core::graphemes::Grapheme::Other { g } => line_str.push_str(g),
@@ -1939,9 +2018,14 @@ impl Element for DocumentElement {
                         }
 
                         // Get highlights for this line
-                        let line_runs = if let Some(first_grapheme) = line_graphemes.first() {
+                        let mut line_runs = if let Some(first_grapheme) = line_graphemes.iter().find(|g| !g.is_virtual()) {
+                            // Use the first non-virtual grapheme for the start position
                             let line_start = first_grapheme.char_idx;
-                            let line_end = line_graphemes.last().map(|g| g.char_idx + g.doc_chars()).unwrap_or(line_start);
+                            let line_end = line_graphemes.iter()
+                                .filter(|g| !g.is_virtual())
+                                .last()
+                                .map(|g| g.char_idx + g.doc_chars())
+                                .unwrap_or(line_start);
 
                             // Re-read core to get highlights and immediately drop the borrow
                             {
@@ -1969,6 +2053,27 @@ impl Element for DocumentElement {
                         } else {
                             Vec::new()
                         };
+
+                        // Adjust text runs to account for leading spaces and wrap indicator
+                        let mut prefix_len = line_start_col; // Indentation spaces
+                        if wrap_indicator_len > 0 {
+                            prefix_len += wrap_indicator_len;
+                        }
+
+                        if prefix_len > 0 && !line_runs.is_empty() {
+                            // Add a default-styled run for the prefix (indentation + wrap indicator)
+                            let prefix_run = TextRun {
+                                len: prefix_len,
+                                font: self.style.font(),
+                                color: fg_color,
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            };
+
+                            // Prepend the prefix run
+                            line_runs.insert(0, prefix_run);
+                        }
 
                         // Paint the line
                         if !line_str.is_empty() {
@@ -2236,9 +2341,14 @@ impl Element for DocumentElement {
                         let mut cursor_visual_line = None;
                         let mut cursor_visual_col = 0;
 
-                        // Iterate through graphemes to find cursor position
+                        // Iterate through graphemes to find cursor position (following Helix's approach)
                         while let Some(grapheme) = formatter.next() {
-                            if grapheme.char_idx <= cursor_char_idx && cursor_char_idx < grapheme.char_idx + grapheme.doc_chars() {
+                            // Check if the cursor position is before the next grapheme
+                            // This matches Helix's logic: formatter.next_char_pos() > pos
+                            let next_char_pos = grapheme.char_idx + grapheme.doc_chars();
+                            if next_char_pos > cursor_char_idx {
+                                // Cursor is at this grapheme's visual position
+                                // The DocumentFormatter already accounts for wrap indicators in visual_pos.col
                                 cursor_visual_line = Some(grapheme.visual_pos.row);
                                 cursor_visual_col = grapheme.visual_pos.col;
                                 break;
