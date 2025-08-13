@@ -76,6 +76,97 @@ Nucleotide looks for configuration in this order:
 1. `~/.config/helix/nucleotide.toml` - GUI-specific settings (fonts, UI preferences)
 2. `~/.config/helix/config.toml` - Falls back to standard Helix configuration
 
+## Logging System
+
+Nucleotide uses a centralized structured logging system built on `tokio-tracing` instead of the standard `log` crate. This provides better observability, performance monitoring, and debugging capabilities.
+
+### Architecture
+
+- **`nucleotide-logging` crate**: Centralized logging infrastructure with structured tracing
+- **File logging**: Daily rotating logs with configurable retention
+- **Console output**: Pretty-printed structured logs for development
+- **Hot reloading**: Runtime log level updates without restart
+- **Performance monitoring**: Built-in timing and profiling capabilities
+
+### Log File Locations
+
+Logs are written to platform-specific directories:
+- **macOS**: `~/Library/Application Support/nucleotide/nucleotide.log.YYYY-MM-DD`
+- **Linux**: `~/.config/nucleotide/nucleotide.log.YYYY-MM-DD`
+- **Windows**: `%APPDATA%/nucleotide/nucleotide.log.YYYY-MM-DD`
+
+Note: Files include date suffixes due to daily rotation (e.g., `nucleotide.log.2025-08-13`).
+
+### Usage in Code
+
+**Always use structured logging with fields instead of format strings:**
+
+```rust
+// ✅ Correct - structured logging
+use nucleotide_logging::{debug, info, warn, error, instrument};
+
+info!(file_path = %path.display(), "Opening document");
+warn!(error = %e, retry_count = retries, "Failed to connect, retrying");
+error!(doc_id = ?doc_id, line = line_num, "Invalid cursor position");
+
+// ✅ Function instrumentation for automatic tracing
+#[instrument(skip(self, large_param))]
+pub fn process_document(&self, doc_id: DocumentId, large_param: &LargeStruct) {
+    // Function entry/exit automatically logged with arguments
+}
+
+// ❌ Incorrect - avoid format strings
+info!("Opening document: {}", path.display()); // Don't do this
+```
+
+**Field formatting guidelines:**
+- `%` for Display formatting: `%path.display()`, `%error`
+- `?` for Debug formatting: `?doc_id`, `?selection`
+- Direct values for primitives: `count = 42`, `enabled = true`
+
+### Performance Monitoring
+
+Use the built-in performance monitoring for critical operations:
+
+```rust
+use nucleotide_logging::{timed, PerfTimer};
+
+// Automatic timing with warning threshold
+fn process_large_file(&self, path: &Path) -> Result<()> {
+    timed!("process_large_file", warn_threshold: Duration::from_millis(100), {
+        // Your code here
+        self.do_expensive_operation(path)
+    })
+}
+
+// Manual timing with custom fields
+fn complex_operation(&self) -> Result<()> {
+    let _timer = PerfTimer::new("complex_operation")
+        .with_field("items", self.items.len())
+        .start();
+    
+    // Your code here
+    Ok(())
+}
+```
+
+### Environment Configuration
+
+Control logging behavior with environment variables:
+- `NUCLEOTIDE_LOG=debug` - Set global log level
+- `RUST_LOG=nucleotide_core=trace,nucleotide_lsp=debug` - Module-specific levels
+- `NUCLEOTIDE_LOG_NO_FILE=1` - Disable file logging
+- `NUCLEOTIDE_LOG_NO_CONSOLE=1` - Disable console output
+- `NUCLEOTIDE_LOG_JSON=1` - Output structured JSON logs
+
+### Migration from log:: crate
+
+When updating existing code:
+1. Replace `log::{debug, info, warn, error}` imports with `nucleotide_logging::{debug, info, warn, error}`
+2. Convert format strings to structured fields
+3. Add `#[instrument]` to important functions
+4. Use performance monitoring for expensive operations
+
 ## Critical Implementation Details
 
 ### Modal Editing Flow

@@ -44,6 +44,9 @@ fn setup_logging(verbosity: u64) -> Result<()> {
     // Initialize the new logging system with hot-reload support
     init_logging_with_reload(config).context("Failed to initialize nucleotide logging")?;
 
+    // Log startup message
+    nucleotide_logging::info!("Nucleotide logging system initialized");
+
     Ok(())
 }
 
