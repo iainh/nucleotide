@@ -43,8 +43,9 @@ pub fn init_subscriber(config: LoggingConfig) -> Result<()> {
             .context("Log file path has no parent directory")?;
 
         let file_appender = tracing_appender::rolling::daily(directory, file_name);
-        let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
-        std::mem::forget(_guard); // Keep the guard alive
+        let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+        // Keep the guard alive by leaking it - this ensures the background thread stays alive
+        Box::leak(Box::new(guard));
 
         // Console + File setup
         if config.output.console {
@@ -127,8 +128,9 @@ pub fn init_subscriber_with_reload(config: LoggingConfig) -> Result<LoggingReloa
             .context("Log file path has no parent directory")?;
 
         let file_appender = tracing_appender::rolling::daily(directory, file_name);
-        let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
-        std::mem::forget(_guard); // Keep the guard alive
+        let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+        // Keep the guard alive by leaking it - this ensures the background thread stays alive
+        Box::leak(Box::new(guard));
 
         // Console + File setup
         if config.output.console {
