@@ -289,12 +289,23 @@ impl Workspace {
         match ev {
             EditorEvent::Redraw => cx.notify(),
             EditorEvent::ConfigEvent(config_event) => {
+                use nucleotide_logging::info;
                 // Handle configuration changes
-                info!("Workspace received ConfigEvent: {:?}", config_event);
+                info!(config_event = ?config_event, "Workspace received ConfigEvent");
+
+                // Log current bufferline config when we receive a config event
+                let current_bufferline = &self.core.read(cx).editor.config().bufferline;
+                info!(bufferline_config = ?current_bufferline, "Current bufferline config during ConfigEvent");
+
                 match config_event {
                     ConfigEvent::Refresh | ConfigEvent::Update(_) => {
                         // Configuration has changed, refresh the UI
                         info!("Config changed, refreshing UI - calling cx.notify()");
+
+                        // Force a complete workspace refresh by clearing render state
+                        // This ensures that changes like bufferline visibility are properly applied
+                        self.update_document_views(cx);
+
                         cx.notify();
                     }
                 }
@@ -722,12 +733,19 @@ impl Workspace {
     }
 
     fn execute_raw_command(&mut self, command: &str, cx: &mut Context<Self>) {
+        use nucleotide_logging::info;
         // Execute the command through helix's command system
         let core = self.core.clone();
         let handle = self.handle.clone();
 
+        info!(command = %command, "Executing raw command");
+
         // Store the current theme before executing the command
         let theme_before = core.read(cx).editor.theme.name().to_string();
+
+        // Log current bufferline config before execution
+        let bufferline_before = core.read(cx).editor.config().bufferline.clone();
+        info!(bufferline_config = ?bufferline_before, "Bufferline config before command execution");
 
         core.update(cx, move |core, cx| {
             let _guard = handle.enter();
@@ -872,8 +890,32 @@ impl Workspace {
                 )));
             }
 
+            // Log bufferline config after execution
+            let bufferline_after = core.editor.config().bufferline.clone();
+            info!(bufferline_config = ?bufferline_after, "Bufferline config after command execution");
+
+            // Manual trigger: if bufferline config changed, force a workspace refresh
+            // This is a workaround since ConfigEvent might not always be triggered properly
+            let changed = if bufferline_before != bufferline_after {
+                info!(old_config = ?bufferline_before, new_config = ?bufferline_after, "Bufferline config changed - forcing workspace refresh");
+                true
+            } else {
+                false
+            };
+
             cx.notify();
+
+            if changed {
+                // Force workspace to refresh by emitting a fake ConfigEvent
+                cx.emit(crate::Update::EditorEvent(helix_view::editor::EditorEvent::ConfigEvent(
+                    helix_view::editor::ConfigEvent::Refresh
+                )));
+            }
         });
+
+        // Log bufferline config in workspace context after command execution
+        let bufferline_after_workspace = &core.read(cx).editor.config().bufferline;
+        info!(bufferline_config = ?bufferline_after_workspace, "Bufferline config after command (workspace context)");
     }
 
     fn handle_open_directory(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
@@ -1276,10 +1318,22 @@ impl Workspace {
             BufferLine::Multiple => editor.documents.len() > 1,
         };
 
-        // If tabs shouldn't be shown, return an empty div
+        info!(
+            should_show_tabs = should_show_tabs,
+            match_result = ?bufferline_config,
+            "Tab bar visibility decision"
+        );
+
+        // If tabs shouldn't be shown, return an empty div with a unique ID
         if !should_show_tabs {
-            return div().into_any_element();
+            info!("Tab bar hidden, returning empty div");
+            return div()
+                .id("tab-bar-hidden")
+                .h(px(0.0)) // Explicitly set height to 0 to ensure no space is taken
+                .into_any_element();
         }
+
+        info!("Tab bar visible, rendering tabs");
 
         // Get the currently active document ID
         let active_doc_id = if let Some(focused_view_id) = self.focused_view_id {

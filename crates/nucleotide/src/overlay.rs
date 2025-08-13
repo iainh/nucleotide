@@ -127,6 +127,8 @@ impl OverlayView {
                             // Set up the submit callback with command/search execution
                             let core_weak_submit = self.core.clone();
                             view = view.on_submit(move |input: &str, cx| {
+                                use nucleotide_logging::info;
+                                info!(input = %input, input_len = input.len(), is_search = is_search_prompt, "Overlay on_submit received input");
                                 // Emit appropriate event based on prompt type
                                 if let Some(core) = core_weak_submit.upgrade() {
                                     core.update(cx, |_core, cx| {
@@ -135,6 +137,7 @@ impl OverlayView {
                                                 input.to_string(),
                                             ));
                                         } else {
+                                            info!(command = %input, "Emitting CommandSubmitted event");
                                             cx.emit(crate::Update::CommandSubmitted(
                                                 input.to_string(),
                                             ));

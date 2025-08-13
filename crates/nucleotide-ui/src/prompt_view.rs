@@ -279,13 +279,42 @@ impl PromptView {
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
-        // Accept completion first if showing
+        use nucleotide_logging::info;
+        info!(
+            input_before = %self.input,
+            show_completions = self.show_completions,
+            completion_count = self.completions.len(),
+            completion_selection = self.completion_selection,
+            "PromptView submit called"
+        );
+
+        // Accept completion first if showing - but only if the user hasn't typed beyond the completion
         if self.show_completions && !self.completions.is_empty() {
             if let Some(completion) = self.completions.get(self.completion_selection) {
-                self.input = completion.text.clone();
-                self.cursor_position = self.input.chars().count();
+                let input_str = self.input.to_string();
+                let completion_str = completion.text.to_string();
+
+                // Only replace input with completion if:
+                // 1. The current input is a prefix of the completion, OR
+                // 2. The completion is longer and starts with the current input
+                let should_accept_completion = input_str.len() <= completion_str.len()
+                    && completion_str.starts_with(&input_str);
+
+                if should_accept_completion {
+                    info!(completion_text = %completion.text, "Replacing input with completion");
+                    self.input = completion.text.clone();
+                    self.cursor_position = self.input.chars().count();
+                } else {
+                    info!(
+                        input_text = %input_str,
+                        completion_text = %completion.text,
+                        "Not accepting completion - user input is beyond completion"
+                    );
+                }
             }
         }
+
+        info!(input_final = %self.input, "Final input being submitted");
 
         // Add to history if not empty
         if !self.input.is_empty() {
