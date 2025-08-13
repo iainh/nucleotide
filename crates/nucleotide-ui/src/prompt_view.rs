@@ -4,7 +4,7 @@
 use crate::common::ModalStyle;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, hsla, px, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla,
+    div, hsla, px, svg, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla,
     InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
     Window,
 };
@@ -84,6 +84,17 @@ impl PromptStyle {
                 .unwrap_or(hsla(0.0, 0.0, 0.15, 1.0)),
         }
     }
+}
+
+// Helper function to create an icon element
+fn create_icon(icon_path: String, size: f32, color: Option<Hsla>) -> impl IntoElement {
+    let mut icon = svg().path(icon_path).size(gpui::px(size)).flex_shrink_0();
+
+    if let Some(color) = color {
+        icon = icon.text_color(color);
+    }
+
+    icon
 }
 
 impl PromptView {
@@ -506,7 +517,18 @@ impl Render for PromptView {
                         div()
                             .text_color(self.style.modal_style.prompt_text)
                             .font_weight(gpui::FontWeight::BOLD)
-                            .child(self.prompt.clone()),
+                            .child(
+                                // Show search icon for search prompts, otherwise show text
+                                if self.prompt == "search:" || self.prompt == "rsearch:" {
+                                    div().child(create_icon(
+                                        "icons/search.svg".to_string(),
+                                        16.0,
+                                        Some(self.style.modal_style.prompt_text),
+                                    ))
+                                } else {
+                                    div().child(self.prompt.clone())
+                                },
+                            ),
                     )
                     .child(
                         div()
