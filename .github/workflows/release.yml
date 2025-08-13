@@ -35,7 +35,8 @@ jobs:
             libgl1-mesa-dev \
             libvulkan-dev \
             libfreetype6-dev \
-            libfontconfig1-dev
+            libfontconfig1-dev \
+            mold
       
       - name: Build release
         run: cargo build --release
