@@ -22,6 +22,13 @@ Nucleotide is built on the shoulders of giants. This file acknowledges the proje
 - **License**: MPL-2.0
 - **Role**: The original GUI implementation that Nucleotide was forked from
 
+### Lucide Icons
+- **Project**: https://github.com/lucide-icons/lucide
+- **Website**: https://lucide.dev
+- **License**: ISC
+- **Role**: Provides the icon set used throughout the interface
+- **Maintainers**: Lucide Icons team
+
 ## Special Thanks
 
 - The Helix community for creating an amazing modal editor

@@ -110,17 +110,19 @@ impl FileIcon {
             }
         } else {
             match self.extension.as_deref() {
-                Some("rs") => svg().path("icons/code.svg"),
-                Some("js" | "ts" | "jsx" | "tsx") => svg().path("icons/code.svg"),
-                Some("py") => svg().path("icons/code.svg"),
-                Some("go") => svg().path("icons/code.svg"),
-                Some("java" | "kt") => svg().path("icons/code.svg"),
-                Some("cpp" | "cc" | "cxx" | "c" | "h" | "hpp") => svg().path("icons/code.svg"),
-                Some("cs") => svg().path("icons/code.svg"),
-                Some("php") => svg().path("icons/code.svg"),
-                Some("rb") => svg().path("icons/code.svg"),
-                Some("swift") => svg().path("icons/code.svg"),
-                Some("json") => svg().path("icons/braces.svg"),
+                Some("rs") => svg().path("icons/file-code-2.svg"),
+                Some("js" | "ts" | "jsx" | "tsx") => svg().path("icons/file-code-2.svg"),
+                Some("py") => svg().path("icons/file-code-2.svg"),
+                Some("go") => svg().path("icons/file-code-2.svg"),
+                Some("java" | "kt") => svg().path("icons/file-code-2.svg"),
+                Some("cpp" | "cc" | "cxx" | "c" | "h" | "hpp") => {
+                    svg().path("icons/file-code-2.svg")
+                }
+                Some("cs") => svg().path("icons/file-code-2.svg"),
+                Some("php") => svg().path("icons/file-code-2.svg"),
+                Some("rb") => svg().path("icons/file-code-2.svg"),
+                Some("swift") => svg().path("icons/file-code-2.svg"),
+                Some("json") => svg().path("icons/file-json.svg"),
                 Some("yaml" | "yml") => svg().path("icons/braces.svg"),
                 Some("xml" | "html" | "htm") => svg().path("icons/braces.svg"),
                 Some("md" | "markdown") => svg().path("icons/file-text.svg"),
@@ -129,6 +131,15 @@ impl FileIcon {
                 Some("toml") => svg().path("icons/settings.svg"),
                 Some("ini" | "conf" | "config") => svg().path("icons/settings.svg"),
                 Some("env") => svg().path("icons/settings.svg"),
+                Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "ico" | "webp") => {
+                    svg().path("icons/file-image.svg")
+                }
+                Some("zip" | "tar" | "gz" | "rar" | "7z" | "bz2" | "xz") => {
+                    svg().path("icons/file-archive.svg")
+                }
+                Some("sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd") => {
+                    svg().path("icons/file-terminal.svg")
+                }
                 Some("lock") => svg().path("icons/file-text.svg"), // Lock files are text-like documents
                 Some("git" | "gitignore" | "gitattributes") => svg().path("icons/git-branch.svg"),
                 Some("link") => svg().path("icons/link.svg"),
