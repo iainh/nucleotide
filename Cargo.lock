@@ -4543,6 +4543,7 @@ dependencies = [
  "helix-view",
  "log",
  "nucleotide-core",
+ "nucleotide-logging",
 ]
 
 [[package]]
@@ -4616,6 +4617,7 @@ dependencies = [
  "nucleo",
  "nucleotide-core",
  "nucleotide-events",
+ "nucleotide-logging",
  "nucleotide-types",
  "rust-embed",
  "serde",
@@ -4635,6 +4637,7 @@ dependencies = [
  "log",
  "notify",
  "nucleotide-core",
+ "nucleotide-logging",
  "nucleotide-ui",
  "sum_tree",
  "tokio",

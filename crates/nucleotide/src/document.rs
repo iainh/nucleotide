@@ -18,7 +18,7 @@ use helix_lsp::lsp::Diagnostic;
 use helix_view::{
     graphics::CursorKind, view::ViewPosition, Document, DocumentId, Editor, Theme, View, ViewId,
 };
-use nucleotide_logging::debug;
+use nucleotide_logging::{debug, error};
 
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
@@ -2132,7 +2132,7 @@ impl Element for DocumentElement {
                             }
 
                             if let Err(e) = shaped_line.paint(point(text_origin_x, line_y), after_layout.line_height, window, cx) {
-                                log::error!("Failed to paint text: {e:?}");
+                                error!(error = ?e, "Failed to paint text");
                             }
 
                             // Store line layout for mouse interaction
@@ -2614,7 +2614,7 @@ impl Element for DocumentElement {
                         }
 
                         if let Err(e) = shaped.paint(text_origin, after_layout.line_height, window, cx) {
-                            log::error!("Failed to paint text: {e:?}");
+                            error!(error = ?e, "Failed to paint text");
                         }
                         shaped
                     } else {
@@ -2929,7 +2929,7 @@ impl Element for DocumentElement {
                     // Now paint the gutter lines
                     for (origin, line) in gutter.lines {
                         if let Err(e) = line.paint(origin, after_layout.line_height, window, cx) {
-                            log::error!("Failed to paint gutter line: {e:?}");
+                            error!(error = ?e, "Failed to paint gutter line");
                         }
                     }
                 }
@@ -3095,7 +3095,7 @@ impl Cursor {
             // Use the bounds origin to ensure text aligns with the cursor block
             let text_origin = bounds.origin;
             if let Err(e) = text.paint(text_origin, self.line_height, window, cx) {
-                log::error!("Failed to paint cursor text: {e:?}");
+                error!(error = ?e, "Failed to paint cursor text");
             }
         }
     }
@@ -3143,7 +3143,7 @@ fn safe_highlight(theme: &Theme, highlight: syntax::Highlight) -> helix_view::gr
     match catch_unwind(AssertUnwindSafe(|| theme.highlight(highlight))) {
         Ok(style) => style,
         Err(_) => {
-            log::debug!("Highlight index out of bounds for current theme, using default style");
+            debug!("Highlight index out of bounds for current theme, using default style");
             helix_view::graphics::Style::default()
         }
     }

@@ -3,6 +3,7 @@
 
 use gpui::*;
 use helix_view::Document;
+use nucleotide_logging::debug;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -101,12 +102,12 @@ impl ScrollManager {
         self.scroll_offset.set(clamped_offset);
 
         if old_offset != clamped_offset {
-            log::debug!(
-                "ScrollManager[{}]: offset changed from {:?} to {:?} (from_scrollbar: {})",
-                self.id,
-                old_offset,
-                clamped_offset,
-                from_scrollbar
+            debug!(
+                scroll_manager_id = self.id,
+                old_offset = ?old_offset,
+                new_offset = ?clamped_offset,
+                from_scrollbar = from_scrollbar,
+                "ScrollManager offset changed"
             );
             if from_scrollbar {
                 // Mark that scrollbar changed the position (needs sync to Helix)
@@ -176,12 +177,12 @@ impl ScrollManager {
 
         let total_lines = self.total_lines.get();
         let result = (first_line, last_line.min(total_lines));
-        log::debug!(
-            "ScrollManager[{}]: visible_line_range: offset={:?}, viewport={:?}, range={:?}",
-            self.id,
-            offset,
-            viewport,
-            result
+        debug!(
+            scroll_manager_id = self.id,
+            offset = ?offset,
+            viewport = ?viewport,
+            line_range = ?result,
+            "ScrollManager visible line range calculated"
         );
         result
     }

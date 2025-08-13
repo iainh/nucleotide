@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use helix_vcs::{DiffProviderRegistry, FileChange};
+use nucleotide_logging::debug;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -769,22 +770,25 @@ impl FileTree {
 
     /// Debug: Print all entries with their VCS status
     pub fn debug_vcs_status(&self) {
-        log::debug!("=== VCS Status Debug ===");
-        log::debug!("Cache has {} entries", self.git_status_cache.len());
+        debug!("=== VCS Status Debug ===");
+        debug!(
+            cache_size = self.git_status_cache.len(),
+            "Git status cache entries"
+        );
         for (path, status) in &self.git_status_cache {
-            log::debug!("  Cache: {:?} -> {:?}", path.file_name(), status);
+            debug!(file_name = ?path.file_name(), git_status = ?status, "Cache entry");
         }
 
         let entries = self.entries.iter().collect::<Vec<_>>();
-        log::debug!("Tree has {} entries", entries.len());
+        debug!(tree_size = entries.len(), "File tree entries");
         for entry in entries {
             if let Some(status) = &entry.git_status {
-                log::debug!("  Tree: {:?} -> {:?}", entry.path.file_name(), status);
+                debug!(file_name = ?entry.path.file_name(), git_status = ?status, "Tree entry with status");
             } else {
-                log::debug!("  Tree: {:?} -> None", entry.path.file_name());
+                debug!(file_name = ?entry.path.file_name(), "Tree entry without status");
             }
         }
-        log::debug!("=== End VCS Status Debug ===");
+        debug!("=== End VCS Status Debug ===");
     }
 }
 

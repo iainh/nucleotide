@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
+use nucleotide_logging::warn;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -57,7 +58,7 @@ impl FileTreeWatcher {
                     }
                 }
                 Err(e) => {
-                    log::warn!("File system watcher error: {}", e);
+                    warn!(error = %e, "File system watcher error");
                 }
             }
         }

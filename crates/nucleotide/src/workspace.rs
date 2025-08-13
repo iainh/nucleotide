@@ -5,7 +5,7 @@ use gpui::*;
 use helix_core::Selection;
 use helix_view::ViewId;
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
-use nucleotide_logging::{debug, error, info, instrument, perf_span, warn};
+use nucleotide_logging::{debug, error, info, instrument, warn};
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;

@@ -234,10 +234,10 @@ impl FileTreeView {
                                 if let Err(e) =
                                     view.tree.expand_directory_with_entries(&path_buf, entries)
                                 {
-                                    log::error!(
-                                        "Failed to expand directory {}: {}",
-                                        path_buf.display(),
-                                        e
+                                    error!(
+                                        directory = %path_buf.display(),
+                                        error = %e,
+                                        "Failed to expand directory"
                                     );
                                 } else {
                                     cx.emit(FileTreeEvent::DirectoryToggled {
@@ -247,10 +247,10 @@ impl FileTreeView {
                                 }
                             }
                             Err(e) => {
-                                log::error!(
-                                    "Failed to read directory {}: {}",
-                                    path_buf.display(),
-                                    e
+                                error!(
+                                    directory = %path_buf.display(),
+                                    error = %e,
+                                    "Failed to read directory"
                                 );
                                 view.tree.unmark_directory_loading(&path_buf);
                             }
@@ -308,15 +308,18 @@ impl FileTreeView {
     /// Select previous entry
     pub fn select_previous(&mut self, cx: &mut Context<Self>) {
         let entries = self.tree.visible_entries();
-        log::debug!("select_previous: {} visible entries", entries.len());
+        debug!(
+            entry_count = entries.len(),
+            "select_previous: visible entries"
+        );
         if entries.is_empty() {
-            log::debug!("select_previous: No entries available");
+            debug!("select_previous: No entries available");
             return;
         }
 
         // If no selection, start with first entry
         if self.selected_path.is_none() {
-            log::debug!("select_previous: No selection, selecting first entry");
+            debug!("select_previous: No selection, selecting first entry");
             self.select_path(Some(entries[0].path.clone()), cx);
             return;
         }
@@ -327,16 +330,16 @@ impl FileTreeView {
             .and_then(|path| entries.iter().position(|e| &e.path == path))
             .unwrap_or(0);
 
-        log::debug!(
-            "select_previous: current_index={}, selected_path={:?}",
-            current_index,
-            self.selected_path
+        debug!(
+            current_index = current_index,
+            selected_path = ?self.selected_path,
+            "select_previous: current state"
         );
         let prev_index = current_index.saturating_sub(1);
-        log::debug!(
-            "select_previous: moving from index {} to {}",
-            current_index,
-            prev_index
+        debug!(
+            from_index = current_index,
+            to_index = prev_index,
+            "select_previous: moving selection"
         );
         self.select_path(Some(entries[prev_index].path.clone()), cx);
     }
@@ -397,7 +400,7 @@ impl FileTreeView {
     /// Refresh the tree
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if let Err(e) = self.tree.refresh() {
-            log::error!("Failed to refresh file tree: {}", e);
+            error!(error = %e, "Failed to refresh file tree");
         } else {
             // Apply test VCS statuses for demonstration
             self.apply_test_statuses(cx);
@@ -409,10 +412,10 @@ impl FileTreeView {
     pub fn handle_vcs_refresh(&mut self, force: bool, cx: &mut Context<Self>) {
         if force || self.tree.needs_vcs_refresh() {
             if let Some(ref handle) = self.tokio_handle {
-                log::debug!("VCS refresh requested (force: {})", force);
+                debug!(force = force, "VCS refresh requested");
                 self.start_async_vcs_refresh_with_handle(handle.clone(), cx);
             } else {
-                log::warn!("VCS refresh requested but no Tokio handle available");
+                warn!("VCS refresh requested but no Tokio handle available");
                 let (_, root_path) = self.tree.get_vcs_info();
                 cx.emit(FileTreeEvent::VcsRefreshFailed {
                     repository_root: root_path,
@@ -420,18 +423,18 @@ impl FileTreeView {
                 });
             }
         } else {
-            log::debug!("VCS refresh skipped - not needed");
+            debug!("VCS refresh skipped - not needed");
         }
     }
 
     /// Handle file system change event (should trigger VCS refresh)
     pub fn handle_file_system_change(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
-        log::debug!("File system change detected at: {:?}", path);
+        debug!(path = ?path, "File system change detected");
 
         // Only refresh VCS if the change is within our repository
         let (_, root_path) = self.tree.get_vcs_info();
         if path.starts_with(&root_path) {
-            log::debug!("File system change is within repository, triggering VCS refresh");
+            debug!("File system change is within repository, triggering VCS refresh");
             // Trigger a VCS refresh after a file system change
             self.handle_vcs_refresh(false, cx);
         }
@@ -439,7 +442,7 @@ impl FileTreeView {
 
     /// Trigger manual VCS refresh by emitting RefreshVcs event
     pub fn request_vcs_refresh(&mut self, force: bool, cx: &mut Context<Self>) {
-        log::debug!("Manual VCS refresh requested (force: {})", force);
+        debug!(force = force, "Manual VCS refresh requested");
         cx.emit(FileTreeEvent::RefreshVcs { force });
     }
 
@@ -453,17 +456,17 @@ impl FileTreeView {
         if let Some(ref handle) = self.tokio_handle {
             self.start_async_vcs_refresh_with_handle(handle.clone(), cx);
         } else {
-            log::debug!("VCS refresh requested but no Tokio handle available");
+            debug!("VCS refresh requested but no Tokio handle available");
         }
     }
 
     /// Start async VCS refresh using the stored Tokio handle
     fn start_async_vcs_refresh(&self, cx: &mut Context<Self>) {
         if let Some(ref handle) = self.tokio_handle {
-            log::debug!("Starting VCS refresh with handle");
+            debug!("Starting VCS refresh with handle");
             self.start_async_vcs_refresh_with_handle(handle.clone(), cx);
         } else {
-            log::debug!("VCS refresh requested but no Tokio handle available");
+            debug!("VCS refresh requested but no Tokio handle available");
         }
     }
 
@@ -475,7 +478,7 @@ impl FileTreeView {
     ) {
         let (_, root_path) = self.tree.get_vcs_info();
 
-        log::debug!("VCS refresh starting for root path: {:?}", root_path);
+        debug!(root_path = ?root_path, "VCS refresh starting");
 
         // Emit VCS refresh started event
         cx.emit(FileTreeEvent::VcsRefreshStarted {
@@ -490,7 +493,7 @@ impl FileTreeView {
                 .spawn(async move {
                     // Directly call the git status implementation instead of using for_each_changed_file
 
-                    log::debug!("VCS: Background task started for path: {:?}", root_path);
+                    debug!(root_path = ?root_path, "VCS: Background task started");
 
                     // Check if this is actually a git repository
                     let git_dir = root_path.join(".git");
@@ -545,7 +548,7 @@ impl FileTreeView {
                                 changes
                             }
                             Err(e) => {
-                                log::warn!("Failed to run git status: {}", e);
+                                warn!(error = %e, "Failed to run git status");
                                 Vec::new()
                             }
                         }
@@ -554,7 +557,7 @@ impl FileTreeView {
                     match result {
                         Ok(changes) => changes,
                         Err(_) => {
-                            log::error!("VCS: Panic occurred during git status parsing");
+                            error!("VCS: Panic occurred during git status parsing");
                             Vec::new()
                         }
                     }
@@ -588,12 +591,12 @@ impl FileTreeView {
                         status_map.insert(path, status);
                     }
 
-                    log::debug!(
-                        "Successfully loaded {} VCS status entries",
-                        status_map.len()
+                    debug!(
+                        status_count = status_map.len(),
+                        "Successfully loaded VCS status entries"
                     );
                     for (path, status) in &status_map {
-                        log::debug!("VCS status: {:?} -> {:?}", path.file_name(), status);
+                        debug!(file_name = ?path.file_name(), status = ?status, "VCS status");
                     }
 
                     let affected_files: Vec<PathBuf> = status_map.keys().cloned().collect();
@@ -620,16 +623,16 @@ impl FileTreeView {
 
         // Get the root path to create test paths
         let (_, root_path) = self.tree.get_vcs_info();
-        log::debug!("Root path for VCS test: {:?}", root_path);
+        debug!(root_path = ?root_path, "Root path for VCS test");
 
         // Get current visible entries to see what files actually exist
         let entries = self.tree.visible_entries();
-        log::debug!("Current visible entries:");
+        debug!("Current visible entries:");
         for entry in &entries {
-            log::debug!(
-                "  {:?} ({})",
-                entry.path,
-                if entry.is_directory() { "dir" } else { "file" }
+            debug!(
+                path = ?entry.path,
+                entry_type = if entry.is_directory() { "dir" } else { "file" },
+                "Visible entry"
             );
         }
 
@@ -692,12 +695,12 @@ impl FileTreeView {
         }
 
         // Apply the test statuses immediately
-        log::debug!(
-            "Applying {} test VCS statuses to actual files",
-            status_map.len()
+        debug!(
+            status_count = status_map.len(),
+            "Applying test VCS statuses to actual files"
         );
         for (path, status) in &status_map {
-            log::debug!("  {:?} -> {:?}", path.file_name(), status);
+            debug!(file_name = ?path.file_name(), status = ?status, "Test VCS status");
         }
 
         self.tree.apply_vcs_status(status_map);
@@ -707,7 +710,7 @@ impl FileTreeView {
 
         cx.notify();
 
-        log::debug!("Applied test VCS statuses to demonstrate indicators");
+        debug!("Applied test VCS statuses to demonstrate indicators");
     }
 
     /// Render a single file tree entry
@@ -744,7 +747,7 @@ impl FileTreeView {
                 let is_dir = entry.is_directory();
                 cx.listener(move |view, _event, window, cx| {
                     // Focus the tree view when any entry is clicked
-                    log::debug!("File tree entry clicked, focusing tree view");
+                    debug!("File tree entry clicked, focusing tree view");
                     view.focus_handle.focus(window);
                     view.select_path(Some(path.clone()), cx);
 
@@ -932,7 +935,7 @@ impl Render for FileTreeView {
             .track_focus(&self.focus_handle)
             .on_click(cx.listener(|view, _event, window, _cx| {
                 // Focus the tree view when clicked anywhere on it
-                log::debug!("File tree container clicked, focusing");
+                debug!("File tree container clicked, focusing");
                 view.focus_handle.focus(window);
             }))
             // Handle FileTree actions

@@ -12,6 +12,7 @@ nucleotide-core = { path = "../nucleotide-core" }
 gpui.workspace = true
 serde.workspace = true
 log.workspace = true
+nucleotide-logging.workspace = true
 helix-view.workspace = true
 helix-lsp.workspace = true
 helix-core.workspace = true

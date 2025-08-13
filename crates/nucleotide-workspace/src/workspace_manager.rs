@@ -3,6 +3,7 @@
 
 use gpui::*;
 use nucleotide_core::{CoreEvent, EditorState, EventBus, EventHandler, WorkspaceEvent};
+use nucleotide_logging::{debug, info};
 use std::sync::{Arc, RwLock};
 
 /// Workspace manager that coordinates UI without depending on concrete Application
@@ -139,15 +140,15 @@ impl<S: EditorState> EventHandler for WorkspaceManager<S> {
         match event {
             CoreEvent::DocumentOpened { doc_id } => {
                 // Handle document opened
-                log::info!("Document opened: {:?}", doc_id);
+                info!(doc_id = ?doc_id, "Document opened");
             }
             CoreEvent::DocumentClosed { doc_id } => {
                 // Handle document closed
-                log::info!("Document closed: {:?}", doc_id);
+                info!(doc_id = ?doc_id, "Document closed");
             }
             CoreEvent::RedrawRequested => {
                 // Request UI redraw
-                log::debug!("Redraw requested");
+                debug!("Redraw requested");
             }
             _ => {}
         }

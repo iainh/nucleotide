@@ -4,6 +4,7 @@
 use gpui::*;
 use helix_view::{DocumentId, ViewId};
 use nucleotide_core::{CoreEvent, EditorState, EventHandler};
+use nucleotide_logging::debug;
 use std::sync::{Arc, RwLock};
 
 /// Editor view that renders documents without depending on concrete Application
@@ -111,18 +112,18 @@ impl<S: EditorState> EventHandler for EditorView<S> {
             CoreEvent::DocumentChanged { doc_id } => {
                 if Some(*doc_id) == self.current_doc {
                     // Document changed, may need to adjust scroll
-                    log::debug!("Document {:?} changed", doc_id);
+                    debug!(doc_id = ?doc_id, "Document changed");
                 }
             }
             CoreEvent::SelectionChanged { doc_id, view_id } => {
                 if Some(*doc_id) == self.current_doc && Some(*view_id) == self.current_view {
                     // Selection changed, ensure cursor is visible
-                    log::debug!("Selection changed in view {:?}", view_id);
+                    debug!(view_id = ?view_id, "Selection changed in view");
                 }
             }
             CoreEvent::ViewFocused { view_id } => {
                 if Some(*view_id) == self.current_view {
-                    log::debug!("View {:?} focused", view_id);
+                    debug!(view_id = ?view_id, "View focused");
                 }
             }
             _ => {}

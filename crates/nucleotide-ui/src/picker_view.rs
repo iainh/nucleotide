@@ -8,6 +8,7 @@ use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;
 use nucleo::Nucleo;
 use nucleotide_core::preview_tracker::PreviewTracker;
+use nucleotide_logging::warn;
 use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Debug)]
@@ -359,7 +360,10 @@ impl PickerView {
                     let ch_len = ch.len_utf8();
                     query.drain(byte_pos..byte_pos + ch_len);
                 } else {
-                    log::warn!("Attempted to delete character at invalid position {char_pos}");
+                    warn!(
+                        char_pos = char_pos,
+                        "Attempted to delete character at invalid position"
+                    );
                 }
                 self.query = query.into();
                 self.cursor_position = char_pos;
@@ -469,9 +473,9 @@ impl PickerView {
             self.load_file_preview(path_buf.clone(), cx);
         } else {
             // Debug: check what type we actually have
-            log::warn!(
-                "Preview not available for item with type_id: {:?}",
-                item.data.type_id()
+            warn!(
+                type_id = ?item.data.type_id(),
+                "Preview not available for item with type_id"
             );
             self.preview_content = Some("Preview not available".to_string());
             cx.notify();

@@ -48,7 +48,7 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 
 use anyhow::Error;
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
-use nucleotide_logging::{debug, error, info, instrument, timed, warn, PerfTimer};
+use nucleotide_logging::{debug, error, info, instrument, timed, warn};
 
 use crate::types::{AppEvent, CoreEvent, LspEvent, MessageSeverity, PickerType, UiEvent, Update};
 use gpui::EventEmitter;

@@ -26,4 +26,5 @@ helix-tui = { workspace = true }
 # Standard dependencies
 anyhow = { workspace = true }
 log = { workspace = true }
+nucleotide-logging = { workspace = true }
 arc-swap = { workspace = true }

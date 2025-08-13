@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
-use nucleotide_logging::{info, instrument};
+use nucleotide_logging::{error, info, instrument, warn};
 
 use gpui::{
     px, App, AppContext, Menu, MenuItem, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
@@ -466,7 +466,7 @@ fn gui_main(
 
             if !paths.is_empty() {
                 if let Err(e) = file_open_tx.send(paths) {
-                    log::error!("Failed to send file open request: {}", e);
+                    error!(error = %e, "Failed to send file open request");
                 }
             }
         }
@@ -533,7 +533,7 @@ fn gui_main(
 
         let _ = cx.open_window(options, |_window, cx| {
             // Set up window event handlers to send events to Helix
-            log::info!("Setting up window event handlers");
+            info!("Setting up window event handlers");
 
             // Example: Send window resize events to Helix
             // Note: This is a conceptual example - actual GPUI window resize events
@@ -562,7 +562,7 @@ fn gui_main(
                         if let Err(e) = crank.update(cx, |_crank, cx| {
                             cx.emit(());
                         }) {
-                            log::warn!("Failed to emit crank event: {e:?}");
+                            warn!(error = ?e, "Failed to emit crank event");
                             // Continue the loop even if update fails
                         }
                     }
@@ -599,7 +599,7 @@ fn gui_main(
                                 cx.notify();
                             });
                         }) {
-                            log::warn!("Failed to update LSP indicator: {e:?}");
+                            warn!(error = ?e, "Failed to update LSP indicator");
                         }
                     }
                 })
@@ -792,7 +792,7 @@ fn gui_main(
             let workspace_clone = workspace.clone();
             cx.spawn(async move |cx| {
                 while let Some(paths) = file_open_rx.recv().await {
-                    log::info!("Processing file open request for paths: {:?}", paths);
+                    info!(paths = ?paths, "Processing file open request");
 
                     // If we have files to open, change working directory to the parent of the first file
                     let mut should_change_dir = false;
@@ -806,7 +806,7 @@ fn gui_main(
                                 if let Some(parent) = path.parent() {
                                     new_working_dir = Some(parent.to_path_buf());
                                     should_change_dir = true;
-                                    log::info!("Will change working directory to: {:?}", parent);
+                                    info!(directory = ?parent, "Will change working directory");
                                 }
                             }
                         }
@@ -816,19 +816,19 @@ fn gui_main(
                     if should_change_dir {
                         if let Some(dir) = new_working_dir.clone() {
                             if let Err(e) = helix_stdx::env::set_current_working_dir(&dir) {
-                                log::error!(
-                                    "Failed to change working directory to {:?}: {}",
-                                    dir,
-                                    e
+                                error!(
+                                    directory = ?dir,
+                                    error = %e,
+                                    "Failed to change working directory"
                                 );
                             } else {
-                                log::info!("Changed working directory to: {:?}", dir);
+                                info!(directory = ?dir, "Changed working directory");
 
                                 // Update the core's project directory and emit OpenDirectory event
                                 if let Err(e) = cx.update(|cx| {
                                     workspace_clone.update(cx, |workspace, cx| {
                                         workspace.set_project_directory(dir.clone(), cx);
-                                        log::info!("Updated project directory to: {:?}", dir);
+                                        info!(directory = ?dir, "Updated project directory");
                                         // Emit OpenDirectory event to update file tree
                                         cx.emit(Update::Event(
                                             nucleotide::types::AppEvent::Workspace(
@@ -839,7 +839,7 @@ fn gui_main(
                                         ));
                                     })
                                 }) {
-                                    log::error!("Failed to update project directory: {}", e);
+                                    error!(error = %e, "Failed to update project directory");
                                 }
                             }
                         }
@@ -859,10 +859,10 @@ fn gui_main(
                                     )));
                                 })
                             }) {
-                                log::error!("Failed to open file {}: {}", path.display(), e);
+                                error!(file = %path.display(), error = %e, "Failed to open file");
                             }
                         } else {
-                            log::warn!("File does not exist: {}", path.display());
+                            warn!(file = %path.display(), "File does not exist");
                         }
                     }
                 }
