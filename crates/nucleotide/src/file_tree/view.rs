@@ -3,9 +3,9 @@
 
 use crate::file_tree::watcher::FileTreeWatcher;
 use crate::file_tree::{
-    get_file_icon, get_symlink_icon, icons::chevron_icon, FileTree, FileTreeConfig, FileTreeEntry,
-    FileTreeEvent, GitStatus,
+    icons::chevron_icon, FileTree, FileTreeConfig, FileTreeEntry, FileTreeEvent,
 };
+use crate::vcs_service::VcsServiceHandle;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, uniform_list, App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
@@ -16,7 +16,7 @@ use nucleotide_logging::{debug, error, warn};
 use nucleotide_ui::theme_utils::color_to_hsla;
 use nucleotide_ui::{
     scrollbar::{Scrollbar, ScrollbarState},
-    Theme,
+    FileIcon, Theme, VcsIndicator, VcsStatus,
 };
 use std::path::{Path, PathBuf};
 
@@ -431,23 +431,34 @@ impl FileTreeView {
         }
     }
 
-    /// Handle VCS refresh request
+    /// Handle VCS refresh request - now uses centralized VCS service
     pub fn handle_vcs_refresh(&mut self, force: bool, cx: &mut Context<Self>) {
-        if force || self.tree.needs_vcs_refresh() {
-            if let Some(ref handle) = self.tokio_handle {
-                debug!(force = force, "VCS refresh requested");
-                self.start_async_vcs_refresh_with_handle(handle.clone(), cx);
-            } else {
-                warn!("VCS refresh requested but no Tokio handle available");
-                let (_, root_path) = self.tree.get_vcs_info();
-                cx.emit(FileTreeEvent::VcsRefreshFailed {
-                    repository_root: root_path,
-                    error: "No Tokio runtime handle available".to_string(),
-                });
+        debug!(force = force, "VCS refresh requested");
+
+        // Use centralized VCS service instead of file tree's own VCS logic
+        let root_path = self.tree.root_path().to_path_buf();
+        let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
+
+        vcs_handle.update(cx, |service, cx| {
+            // Start monitoring if not already
+            if service.root_path() != Some(&root_path) {
+                service.start_monitoring(root_path.clone(), cx);
+            } else if force {
+                // Force refresh the VCS status
+                service.force_refresh(cx);
             }
-        } else {
-            debug!("VCS refresh skipped - not needed");
-        }
+        });
+
+        // Update file tree entries with current VCS status
+        self.update_entries_with_vcs_status(cx);
+    }
+
+    /// Update file tree entries with VCS status from the centralized service
+    fn update_entries_with_vcs_status(&mut self, cx: &mut Context<Self>) {
+        // Now that we use the centralized VCS service, we don't need to update entries directly
+        // Instead, entries will query VCS status during rendering via get_vcs_status_for_entry
+        debug!("VCS status update requested - will be handled during render");
+        cx.notify(); // Trigger re-render to pick up new VCS status
     }
 
     /// Handle file system change event (should trigger VCS refresh)
@@ -604,11 +615,11 @@ impl FileTreeView {
                         };
 
                         let status = match &change {
-                            FileChange::Untracked { .. } => GitStatus::Untracked,
-                            FileChange::Modified { .. } => GitStatus::Modified,
-                            FileChange::Conflict { .. } => GitStatus::Conflicted,
-                            FileChange::Deleted { .. } => GitStatus::Deleted,
-                            FileChange::Renamed { .. } => GitStatus::Renamed,
+                            FileChange::Untracked { .. } => VcsStatus::Untracked,
+                            FileChange::Modified { .. } => VcsStatus::Modified,
+                            FileChange::Conflict { .. } => VcsStatus::Conflicted,
+                            FileChange::Deleted { .. } => VcsStatus::Deleted,
+                            FileChange::Renamed { .. } => VcsStatus::Renamed,
                         };
 
                         status_map.insert(path, status);
@@ -665,25 +676,25 @@ impl FileTreeView {
                 let filename = entry.path.file_name().unwrap_or_default().to_string_lossy();
                 match filename.as_ref() {
                     "Cargo.toml" => {
-                        status_map.insert(entry.path.clone(), GitStatus::Modified);
+                        status_map.insert(entry.path.clone(), VcsStatus::Modified);
                     }
                     "main.rs" => {
-                        status_map.insert(entry.path.clone(), GitStatus::Modified);
+                        status_map.insert(entry.path.clone(), VcsStatus::Modified);
                     }
                     "view.rs" => {
-                        status_map.insert(entry.path.clone(), GitStatus::Modified);
+                        status_map.insert(entry.path.clone(), VcsStatus::Modified);
                     }
                     "tree.rs" => {
-                        status_map.insert(entry.path.clone(), GitStatus::Modified);
+                        status_map.insert(entry.path.clone(), VcsStatus::Modified);
                     }
                     "CLAUDE.md" => {
-                        status_map.insert(entry.path.clone(), GitStatus::Untracked);
+                        status_map.insert(entry.path.clone(), VcsStatus::Untracked);
                     }
                     name if name.ends_with(".md") => {
-                        status_map.insert(entry.path.clone(), GitStatus::Untracked);
+                        status_map.insert(entry.path.clone(), VcsStatus::Untracked);
                     }
                     name if name.ends_with(".rs") => {
-                        status_map.insert(entry.path.clone(), GitStatus::Modified);
+                        status_map.insert(entry.path.clone(), VcsStatus::Modified);
                     }
                     _ => {}
                 }
@@ -693,21 +704,21 @@ impl FileTreeView {
         // Also add test statuses for common files in subdirectories that might exist
         // These will be applied even if the directories aren't currently expanded
         let common_test_files = vec![
-            ("src/main.rs", GitStatus::Modified),
-            ("src/application.rs", GitStatus::Modified),
-            ("src/workspace.rs", GitStatus::Modified),
-            ("src/file_tree/view.rs", GitStatus::Modified),
-            ("src/file_tree/tree.rs", GitStatus::Modified),
-            ("src/file_tree/entry.rs", GitStatus::Modified),
-            ("src/file_tree/mod.rs", GitStatus::Modified),
-            ("src/document.rs", GitStatus::Modified),
-            ("src/ui/mod.rs", GitStatus::Modified),
-            ("src/ui/theme.rs", GitStatus::Modified),
-            ("CLAUDE.md", GitStatus::Untracked),
-            ("AGENTS.md", GitStatus::Untracked),
-            ("PROJECT_DIRECTORY_DESIGN.md", GitStatus::Untracked),
-            ("README.md", GitStatus::Untracked),
-            ("docs/README.md", GitStatus::Untracked),
+            ("src/main.rs", VcsStatus::Modified),
+            ("src/application.rs", VcsStatus::Modified),
+            ("src/workspace.rs", VcsStatus::Modified),
+            ("src/file_tree/view.rs", VcsStatus::Modified),
+            ("src/file_tree/tree.rs", VcsStatus::Modified),
+            ("src/file_tree/entry.rs", VcsStatus::Modified),
+            ("src/file_tree/mod.rs", VcsStatus::Modified),
+            ("src/document.rs", VcsStatus::Modified),
+            ("src/ui/mod.rs", VcsStatus::Modified),
+            ("src/ui/theme.rs", VcsStatus::Modified),
+            ("CLAUDE.md", VcsStatus::Untracked),
+            ("AGENTS.md", VcsStatus::Untracked),
+            ("PROJECT_DIRECTORY_DESIGN.md", VcsStatus::Untracked),
+            ("README.md", VcsStatus::Untracked),
+            ("docs/README.md", VcsStatus::Untracked),
         ];
 
         for (relative_path, status) in common_test_files {
@@ -911,12 +922,16 @@ impl FileTreeView {
         entry.depth = parent_depth + 1;
         entry.is_visible = true;
 
-        // Set VCS status if available
-        if let Some(status) = self.tree.get_vcs_status(path) {
-            entry.git_status = Some(status);
-        }
+        // VCS status will be retrieved during rendering from centralized service
+        entry.git_status = None;
 
         entry
+    }
+
+    /// Get VCS status for a specific file path using the centralized service
+    fn get_vcs_status_for_entry(&self, path: &Path, cx: &Context<Self>) -> Option<VcsStatus> {
+        let vcs_service = cx.global::<VcsServiceHandle>();
+        vcs_service.get_status(path, cx)
     }
 
     /// Handle file/directory deletion  
@@ -1087,19 +1102,17 @@ impl FileTreeView {
         let theme = cx.global::<Theme>();
 
         let icon = match &entry.kind {
-            crate::file_tree::FileKind::Directory { .. } => {
-                get_file_icon(None, true, entry.is_expanded)
-                    .size_4()
-                    .text_color(theme.text)
-            }
+            crate::file_tree::FileKind::Directory { .. } => FileIcon::directory(entry.is_expanded)
+                .size(16.0)
+                .text_color(theme.text),
             crate::file_tree::FileKind::File { extension } => {
-                get_file_icon(extension.as_deref(), false, false)
-                    .size_4()
+                FileIcon::from_extension(extension.as_deref())
+                    .size(16.0)
                     .text_color(theme.text)
             }
             crate::file_tree::FileKind::Symlink { target_exists, .. } => {
-                get_symlink_icon(*target_exists)
-                    .size_4()
+                FileIcon::symlink(*target_exists)
+                    .size(16.0)
                     .text_color(if *target_exists {
                         theme.accent
                     } else {
@@ -1117,9 +1130,11 @@ impl FileTreeView {
             .items_center()
             .justify_center()
             .child(icon)
-            .when_some(entry.git_status.as_ref(), |div, status| {
-                div.child(self.render_vcs_status_overlay(status, cx))
-            })
+            .when_some(
+                // Always get VCS status from centralized service during rendering
+                self.get_vcs_status_for_entry(&entry.path, cx).as_ref(),
+                |div, status| div.child(self.render_vcs_status_overlay(status, cx)),
+            )
     }
 
     /// Render the filename
@@ -1156,19 +1171,19 @@ impl FileTreeView {
     /// Render VCS status as an overlay dot positioned at bottom left of icon
     fn render_vcs_status_overlay(
         &self,
-        status: &GitStatus,
+        status: &VcsStatus,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>();
 
         let color = match status {
-            GitStatus::Modified => theme.warning,
-            GitStatus::Added => theme.success,
-            GitStatus::Deleted => theme.error,
-            GitStatus::Untracked => theme.text_muted,
-            GitStatus::Renamed => theme.accent,
-            GitStatus::Conflicted => theme.error,
-            GitStatus::UpToDate => return div(), // Don't show anything for up-to-date files
+            VcsStatus::Modified => theme.warning,
+            VcsStatus::Added => theme.success,
+            VcsStatus::Deleted => theme.error,
+            VcsStatus::Untracked => theme.text_muted,
+            VcsStatus::Renamed => theme.accent,
+            VcsStatus::Conflicted => theme.error,
+            VcsStatus::UpToDate => return div(), // Don't show anything for up-to-date files
         };
 
         // Position at bottom left of the icon (absolute positioning)

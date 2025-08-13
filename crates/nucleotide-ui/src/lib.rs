@@ -6,6 +6,7 @@ pub mod assets;
 pub mod button;
 pub mod common;
 pub mod completion;
+pub mod file_icon;
 pub mod info_box;
 pub mod key_hint_view;
 pub mod list_item;
@@ -22,11 +23,14 @@ pub mod text_utils;
 pub mod theme_manager;
 pub mod theme_utils;
 pub mod titlebar;
+pub mod vcs_indicator;
 
 pub use assets::Assets;
+pub use file_icon::FileIcon;
 pub use list_item::*;
 pub use picker::Picker;
 pub use prompt::{Prompt, PromptElement};
+pub use vcs_indicator::{VcsIndicator, VcsStatus};
 
 use gpui::{hsla, App, Hsla};
 

@@ -511,6 +511,11 @@ fn gui_main(
         cx.set_global(theme_manager);
         cx.set_global(ui_theme);
 
+        // Initialize VCS service
+        let vcs_config = nucleotide::vcs_service::VcsConfig::default();
+        let vcs_service = nucleotide::vcs_service::VcsServiceHandle::new(vcs_config, cx);
+        cx.set_global(vcs_service);
+
         // Set up fonts from configuration
         let editor_font_config = config.editor_font();
         let ui_font_config = config.ui_font();

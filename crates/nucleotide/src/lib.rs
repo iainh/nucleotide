@@ -17,6 +17,7 @@ pub mod tab_bar;
 pub mod test_utils;
 pub mod types;
 pub mod utils;
+pub mod vcs_service;
 pub mod workspace;
 
 // Re-export preview_tracker from nucleotide-core

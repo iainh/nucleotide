@@ -4,8 +4,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
-    fenix = {
-      url = "github:nix-community/fenix";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -24,22 +24,37 @@
     };
   };
 
-  outputs = { self, nixpkgs, fenix, flake-utils, helix, zed }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, helix, zed }:
     flake-utils.lib.eachSystem [ "x86_64-darwin" "aarch64-darwin" "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = import nixpkgs {
           inherit system;
+          overlays = [ rust-overlay.overlays.default ];
           config = {
             allowUnfree = true;
           };
         };
 
 
-        # Native Rust toolchain
-        rustToolchain = fenix.packages.${system}.stable.toolchain;
+        # Native Rust toolchain with extensions
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [ "rust-analyzer" "rust-src" ];
+        };
 
-        # Platform-specific dependencies
-        darwinDeps = with pkgs; lib.optionals stdenv.isDarwin [
+        # Dependency management following Helix patterns
+        inherit (pkgs) lib stdenv;
+        
+        # Common build inputs
+        commonBuildInputs = with pkgs; [
+          openssl
+          pkg-config
+          git
+          curl
+          sqlite
+        ];
+
+        # Platform-specific build inputs
+        darwinBuildInputs = with pkgs; lib.optionals stdenv.isDarwin [
           libiconv
           darwin.apple_sdk.frameworks.Foundation
           darwin.apple_sdk.frameworks.AppKit
@@ -54,7 +69,7 @@
           darwin.apple_sdk.frameworks.VideoToolbox
         ];
 
-        linuxDeps = with pkgs; lib.optionals stdenv.isLinux [
+        linuxBuildInputs = with pkgs; lib.optionals stdenv.isLinux [
           libxkbcommon
           xorg.libxcb
           xorg.libX11
@@ -68,17 +83,8 @@
           fontconfig
         ];
 
-        # Common dependencies
-        commonDeps = with pkgs; [
-          openssl
-          pkg-config
-          git
-          curl
-          sqlite
-        ];
-
-        # Build inputs for development and building
-        allBuildInputs = commonDeps ++ darwinDeps ++ linuxDeps;
+        # Combined build inputs
+        allBuildInputs = commonBuildInputs ++ darwinBuildInputs ++ linuxBuildInputs;
 
         # Version info
         version = "0.1.0";
@@ -130,11 +136,11 @@
           export HELIX_RUNTIME="${helixRuntime}"
           
           # Platform-specific setup
-          ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-            export DYLD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath darwinDeps}:$DYLD_LIBRARY_PATH"
+          ${lib.optionalString stdenv.isDarwin ''
+            export DYLD_LIBRARY_PATH="${lib.makeLibraryPath darwinBuildInputs}:$DYLD_LIBRARY_PATH"
           ''}
-          ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath linuxDeps}:$LD_LIBRARY_PATH"
+          ${lib.optionalString stdenv.isLinux ''
+            export LD_LIBRARY_PATH="${lib.makeLibraryPath linuxBuildInputs}:$LD_LIBRARY_PATH"
           ''}
           
           # Set up build environment
@@ -395,18 +401,19 @@
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
-            # Rust toolchain
+            # Rust toolchain (includes rust-analyzer and rust-src)
             rustToolchain
-            rust-analyzer
 
             # Development tools
             cargo-watch
             cargo-edit
             cargo-outdated
             cargo-deny
+            cargo-flamegraph
 
             # Build performance tools
             sccache
+            lld
 
             # For running the application
             ripgrep
@@ -421,8 +428,11 @@
           ] ++ lib.optionals stdenv.isDarwin [
             darwin.DarwinTools
             xcbuild
+            lldb  # Debugging on macOS
           ] ++ lib.optionals stdenv.isLinux [
             mold  # Fast linker for Linux
+            cargo-tarpaulin  # Test coverage
+            gdb  # Debugging on Linux
           ];
 
           buildInputs = allBuildInputs;
@@ -433,11 +443,27 @@
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
           OPENSSL_NO_VENDOR = 1;
           
-          # Build performance settings
-          # Default to incremental compilation (better for iterative development)
-          CARGO_INCREMENTAL = "1";
-          # RUSTC_WRAPPER is not set by default - use aliases below
-
+          # Build performance settings following Helix patterns
+          CARGO_INCREMENTAL = "1";  # Default to incremental for dev builds
+          RUSTFLAGS = lib.concatStringsSep " " ([
+            # Use LLD linker for faster linking
+            "-C link-arg=-fuse-ld=lld"
+          ] ++ lib.optionals stdenv.isLinux [
+            # Linux-specific optimizations
+            "-C link-arg=-Wl,--no-rosegment"
+          ] ++ lib.optionals stdenv.isDarwin [
+            # macOS-specific optimizations
+            "-C link-arg=-Wl,-dead_strip"
+          ]);
+          
+          # Linker selection (conditional assignment)
+        } // lib.optionalAttrs stdenv.isLinux {
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "${pkgs.lld}/bin/lld";
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "${pkgs.lld}/bin/lld";
+        } // lib.optionalAttrs stdenv.isDarwin {
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER = "${pkgs.lld}/bin/lld";
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER = "${pkgs.lld}/bin/lld";
+        } // {
           shellHook = ''
             # Define build mode aliases
             alias build-cached='CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build'
@@ -445,38 +471,47 @@
             alias build-release-cached='CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build --release'
             alias build-release-incremental='unset RUSTC_WRAPPER && cargo build --release'
             
-            echo "╔════════════════════════════════════════════════════════════════╗"
-            echo "║         Welcome to Nucleotide development environment!         ║"
-            echo "╚════════════════════════════════════════════════════════════════╝"
-            echo ""
-            echo "Standard commands:"
-            echo "  cargo build --release        - Build with incremental compilation (default)"
-            echo "  cargo run                    - Run debug version"
-            echo "  cargo test                   - Run tests"
-            echo "  cargo clippy                 - Run linter"
-            echo "  cargo fmt                    - Format code"
-            echo ""
-            echo "Optimized build commands:"
-            echo "  build-incremental            - Dev build with incremental compilation (best for iterative dev)"
-            echo "  build-cached                 - Dev build with sccache (best for branch switches)"
-            echo "  build-release-incremental    - Release build with incremental"
-            echo "  build-release-cached         - Release build with sccache"
-            echo ""
-            echo "Bundle creation:"
-            echo "  make-macos-bundle            - Create macOS .app bundle"
-            echo "  make-linux-package           - Create Linux distribution"
-            echo ""
-            echo "Build optimizations enabled:"
-            echo "  • Thin LTO for release builds (faster than full LTO)"
-            echo "  • Split debuginfo for macOS (faster linking)"
-            echo "  • Optimized debug builds (line-tables-only)"
-            echo "  • Incremental compilation (default) or sccache (use aliases)"
-            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''echo "  • mold linker available for Linux (automatic)"''}
-            echo ""
-            echo "Nix packages:"
-            echo "  nix build .#runtime          - Build runtime files"
-            echo ""
-            echo "Runtime files available at: $HELIX_RUNTIME"
+            # Always show welcome message to stderr (visible even in non-interactive mode)
+            echo "╔════════════════════════════════════════════════════════════════╗" >&2
+            echo "║         Welcome to Nucleotide development environment!         ║" >&2
+            echo "╚════════════════════════════════════════════════════════════════╝" >&2
+            echo "" >&2
+            echo "Standard commands:" >&2
+            echo "  cargo build --release        - Build with incremental compilation (default)" >&2
+            echo "  cargo run                    - Run debug version" >&2
+            echo "  cargo test                   - Run tests" >&2
+            echo "  cargo clippy                 - Run linter" >&2
+            echo "  cargo fmt                    - Format code" >&2
+            echo "" >&2
+            echo "Optimized build commands:" >&2
+            echo "  build-incremental            - Dev build with incremental compilation (best for iterative dev)" >&2
+            echo "  build-cached                 - Dev build with sccache (best for branch switches)" >&2
+            echo "  build-release-incremental    - Release build with incremental" >&2
+            echo "  build-release-cached         - Release build with sccache" >&2
+            echo "" >&2
+            echo "Bundle creation:" >&2
+            echo "  make-macos-bundle            - Create macOS .app bundle" >&2
+            echo "  make-linux-package           - Create Linux distribution" >&2
+            echo "" >&2
+            echo "Build optimizations enabled (following Helix patterns):" >&2
+            echo "  • LLD linker for faster linking (automatic)" >&2
+            echo "  • Thin LTO for release builds (faster than full LTO)" >&2
+            echo "  • Split debuginfo for macOS (faster linking)" >&2
+            echo "  • Platform-specific link optimizations" >&2
+            echo "  • Incremental compilation (default) or sccache (use aliases)" >&2
+            ${lib.optionalString stdenv.isLinux ''echo "  • mold linker available for Linux builds" >&2''}
+            ${lib.optionalString stdenv.isDarwin ''echo "  • LLDB debugging available on macOS" >&2''}
+            echo "" >&2
+            echo "Development tools added from Helix:" >&2
+            echo "  • cargo-flamegraph (performance profiling)" >&2
+            ${lib.optionalString stdenv.isLinux ''echo "  • cargo-tarpaulin (test coverage)" >&2''}
+            ${lib.optionalString stdenv.isDarwin ''echo "  • lldb (debugging)" >&2''}
+            ${lib.optionalString stdenv.isLinux ''echo "  • gdb (debugging)" >&2''}
+            echo "" >&2
+            echo "Nix packages:" >&2
+            echo "  nix build .#runtime          - Build runtime files" >&2
+            echo "" >&2
+            echo "Runtime files available at: $HELIX_RUNTIME" >&2
           '';
         };
       });

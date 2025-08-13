@@ -7,6 +7,7 @@ use gpui::{
     ParentElement, RenderOnce, SharedString, Styled, Window,
 };
 use helix_view::DocumentId;
+use nucleotide_ui::{VcsIndicator, VcsStatus};
 
 /// Type alias for mouse event handlers in tabs
 type MouseEventHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
@@ -18,8 +19,12 @@ pub struct Tab {
     pub doc_id: DocumentId,
     /// Display label for the tab
     pub label: String,
+    /// File path for determining icon
+    pub file_path: Option<std::path::PathBuf>,
     /// Whether the document has unsaved changes
     pub is_modified: bool,
+    /// Git status for VCS indicator
+    pub git_status: Option<VcsStatus>,
     /// Whether this tab is currently active
     pub is_active: bool,
     /// Callback when tab is clicked
@@ -32,7 +37,9 @@ impl Tab {
     pub fn new(
         doc_id: DocumentId,
         label: String,
+        file_path: Option<std::path::PathBuf>,
         is_modified: bool,
+        git_status: Option<VcsStatus>,
         is_active: bool,
         on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
         on_close: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
@@ -40,7 +47,9 @@ impl Tab {
         Self {
             doc_id,
             label,
+            file_path,
             is_modified,
+            git_status,
             is_active,
             on_click: Box::new(on_click),
             on_close: Box::new(on_close),
@@ -54,27 +63,43 @@ impl RenderOnce for Tab {
         let helix_theme = theme_manager.helix_theme();
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
 
-        // Get theme colors
-        let statusline_style = if self.is_active {
-            helix_theme.get("ui.statusline.active")
+        // Extract values we need before moving self
+        let git_status = self.git_status.clone();
+
+        // Get theme colors for visual continuity with editor
+        let (bg_color, text_color, hover_bg) = if self.is_active {
+            // Active tab should match editor background for visual continuity
+            let editor_bg_style = helix_theme.get("ui.background");
+            let editor_text_style = helix_theme.get("ui.text");
+
+            let bg_color = editor_bg_style
+                .bg
+                .and_then(crate::utils::color_to_hsla)
+                .unwrap_or(ui_theme.background);
+
+            let text_color = editor_text_style
+                .fg
+                .and_then(crate::utils::color_to_hsla)
+                .unwrap_or(ui_theme.text);
+
+            (bg_color, text_color, bg_color)
         } else {
-            helix_theme.get("ui.statusline")
-        };
+            // Inactive tabs use statusline styling for background but same text color as active
+            let statusline_style = helix_theme.get("ui.statusline");
+            let editor_text_style = helix_theme.get("ui.text");
 
-        let bg_color = statusline_style
-            .bg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.surface);
+            let bg_color = statusline_style
+                .bg
+                .and_then(crate::utils::color_to_hsla)
+                .unwrap_or(ui_theme.surface_background);
 
-        let text_color = statusline_style
-            .fg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.text);
+            // Use same text color as active tabs for consistency
+            let text_color = editor_text_style
+                .fg
+                .and_then(crate::utils::color_to_hsla)
+                .unwrap_or(ui_theme.text);
 
-        let hover_bg = if self.is_active {
-            bg_color
-        } else {
-            ui_theme.surface_hover
+            (bg_color, text_color, ui_theme.surface_hover)
         };
 
         // Build the tab
@@ -84,7 +109,8 @@ impl RenderOnce for Tab {
             .flex()
             .flex_none() // Don't grow or shrink
             .items_center()
-            .px(px(16.0)) // Horizontal padding for the tab
+            .pl(px(16.0)) // Left padding for the tab
+            .pr(px(4.0)) // Minimal right padding so close button sits at edge
             .h(px(32.0)) // Slightly taller for better click targets
             .min_w(px(120.0)) // Minimum width to ensure readability
             // No max width - let it size to content
@@ -94,7 +120,12 @@ impl RenderOnce for Tab {
             .border_r_1()
             .border_color(ui_theme.border)
             .when(self.is_active, |this| {
-                this.border_b_2().border_color(ui_theme.accent)
+                // Active tabs: no borders to create complete visual continuity with editor
+                this
+            })
+            .when(!self.is_active, |this| {
+                // Inactive tabs get bottom border to separate from editor
+                this.border_b_1().border_color(ui_theme.border)
             })
             .on_mouse_down(MouseButton::Left, {
                 let on_click = self.on_click;
@@ -107,20 +138,29 @@ impl RenderOnce for Tab {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.0)) // Better spacing between elements
+                    .gap(px(4.0)) // Match file tree spacing (gap_1 ≈ 4px)
                     .child(
-                        // Modified indicator
+                        // File icon with VCS overlay
                         div()
-                            .when(self.is_modified, |this| {
-                                this.child(
-                                    div()
-                                        .text_color(text_color)
-                                        .text_size(px(16.0)) // Larger bullet
-                                        .child("•"),
-                                )
+                            .relative() // Needed for absolute positioning of the overlay
+                            .w(px(16.0))
+                            .h(px(16.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(if let Some(ref path) = self.file_path {
+                                nucleotide_ui::FileIcon::from_path(path, false)
+                                    .size(16.0)
+                                    .text_color(text_color)
+                            } else {
+                                nucleotide_ui::FileIcon::scratch()
+                                    .size(16.0)
+                                    .text_color(text_color)
                             })
-                            .when(!self.is_modified, |this| {
-                                this.w(px(10.0)) // Space placeholder
+                            .when_some(git_status.as_ref(), |div, status| {
+                                let indicator =
+                                    VcsIndicator::new(status.clone()).size(8.0).overlay();
+                                div.child(indicator)
                             }),
                     )
                     .child(
@@ -128,6 +168,14 @@ impl RenderOnce for Tab {
                         div()
                             .text_color(text_color)
                             .text_size(px(14.0)) // Slightly larger text
+                            .when(self.is_active, |this| {
+                                // Active tab labels are slightly bolder/more prominent
+                                this.font_weight(gpui::FontWeight::MEDIUM)
+                            })
+                            .when(self.is_modified, |this| {
+                                // Modified files show with underline
+                                this.underline()
+                            })
                             .child(self.label.clone()),
                     )
                     .child(

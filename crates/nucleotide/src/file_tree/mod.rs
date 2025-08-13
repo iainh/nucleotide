@@ -8,7 +8,7 @@ pub mod tree;
 pub mod view;
 pub mod watcher;
 
-pub use entry::{FileKind, FileTreeEntry, GitStatus};
+pub use entry::{FileKind, FileTreeEntry};
 pub use icons::{get_file_icon, get_symlink_icon};
 pub use summary::FileTreeSummary;
 pub use tree::FileTree;

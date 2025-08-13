@@ -22,6 +22,7 @@ use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
 use crate::utils;
+use crate::vcs_service::VcsServiceHandle;
 use crate::{Core, Input, InputEvent};
 
 pub struct Workspace {
@@ -107,6 +108,15 @@ impl Workspace {
         // Initialize file tree only if project directory is explicitly set
         let root_path = core.read(cx).project_directory.clone();
 
+        // Start VCS monitoring if we have a root path
+        if let Some(root_path) = &root_path {
+            let root_path_clone = root_path.clone();
+            let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
+            vcs_handle.update(cx, |service, cx| {
+                service.start_monitoring(root_path_clone, cx);
+            });
+        }
+
         let file_tree = root_path.map(|root_path| {
             let handle_clone = handle.clone();
             cx.new(|cx| {
@@ -177,7 +187,13 @@ impl Workspace {
     #[instrument(skip(self, cx))]
     pub fn set_project_directory(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
         self.core.update(cx, |core, _cx| {
-            core.project_directory = Some(dir);
+            core.project_directory = Some(dir.clone());
+        });
+
+        // Start VCS monitoring for the new directory
+        let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
+        vcs_handle.update(cx, |service, cx| {
+            service.start_monitoring(dir, cx);
         });
     }
 
@@ -1348,7 +1364,10 @@ impl Workspace {
             .and_then(|focused_view_id| editor.tree.try_get(focused_view_id))
             .map(|view| view.doc);
 
-        // Collect document information
+        // Get project directory for relative paths first
+        let project_directory = core.project_directory.clone();
+
+        // Collect document information first
         let mut documents = Vec::new();
         for (&doc_id, doc) in &editor.documents {
             documents.push(DocumentInfo {
@@ -1356,11 +1375,34 @@ impl Workspace {
                 path: doc.path().map(|p| p.to_path_buf()),
                 is_modified: doc.is_modified(),
                 focused_at: doc.focused_at,
+                git_status: None, // Will be filled in after releasing core borrow
             });
         }
 
-        // Get project directory for relative paths
-        let project_directory = core.project_directory.clone();
+        // Release the core borrow
+        let _ = core;
+
+        // Ensure VCS service is monitoring the current project directory
+        if let Some(ref project_dir) = project_directory {
+            let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
+            vcs_handle.update(cx, |service, cx| {
+                // Only start monitoring if we're not already monitoring this directory
+                if service.root_path() != Some(project_dir.as_path()) {
+                    service.start_monitoring(project_dir.clone(), cx);
+                }
+                // Always refresh to get current status
+                service.force_refresh(cx);
+            });
+        }
+
+        // Update documents with VCS status
+        for doc_info in &mut documents {
+            if let Some(ref path) = doc_info.path {
+                let status = cx.global::<VcsServiceHandle>().get_status(path, cx);
+                debug!(file = %path.display(), vcs_status = ?status, "VCS status for tab");
+                doc_info.git_status = status;
+            }
+        }
 
         // Create tab bar with callbacks
         TabBar::new(

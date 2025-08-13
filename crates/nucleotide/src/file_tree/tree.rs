@@ -11,7 +11,8 @@ use std::sync::Arc;
 use sum_tree::SumTree;
 
 use crate::file_tree::entry::FileTreeEntryId;
-use crate::file_tree::{FileKind, FileTreeConfig, FileTreeEntry, GitStatus};
+use crate::file_tree::{FileKind, FileTreeConfig, FileTreeEntry};
+use nucleotide_ui::VcsStatus;
 
 /// Core file tree data structure
 pub struct FileTree {
@@ -36,7 +37,7 @@ pub struct FileTree {
     /// VCS provider for git status
     vcs_registry: Arc<DiffProviderRegistry>,
     /// Map from path to git status
-    git_status_cache: HashMap<PathBuf, GitStatus>,
+    git_status_cache: HashMap<PathBuf, VcsStatus>,
 }
 
 impl FileTree {
@@ -717,13 +718,13 @@ impl FileTree {
 
     /// Convert helix_vcs FileChange to our GitStatus
     #[allow(dead_code)]
-    fn file_change_to_git_status(change: &FileChange) -> GitStatus {
+    fn file_change_to_git_status(change: &FileChange) -> VcsStatus {
         match change {
-            FileChange::Untracked { .. } => GitStatus::Untracked,
-            FileChange::Modified { .. } => GitStatus::Modified,
-            FileChange::Conflict { .. } => GitStatus::Conflicted,
-            FileChange::Deleted { .. } => GitStatus::Deleted,
-            FileChange::Renamed { .. } => GitStatus::Renamed,
+            FileChange::Untracked { .. } => VcsStatus::Untracked,
+            FileChange::Modified { .. } => VcsStatus::Modified,
+            FileChange::Conflict { .. } => VcsStatus::Conflicted,
+            FileChange::Deleted { .. } => VcsStatus::Deleted,
+            FileChange::Renamed { .. } => VcsStatus::Renamed,
         }
     }
 
@@ -738,7 +739,7 @@ impl FileTree {
     }
 
     /// Apply VCS status results
-    pub fn apply_vcs_status(&mut self, status_map: HashMap<PathBuf, GitStatus>) {
+    pub fn apply_vcs_status(&mut self, status_map: HashMap<PathBuf, VcsStatus>) {
         self.git_status_cache = status_map;
         self.update_entries_vcs_status();
         self.invalidate_cache();
@@ -764,7 +765,7 @@ impl FileTree {
     }
 
     /// Get VCS status for a specific path
-    pub fn get_vcs_status(&self, path: &Path) -> Option<GitStatus> {
+    pub fn get_vcs_status(&self, path: &Path) -> Option<VcsStatus> {
         self.git_status_cache.get(path).cloned()
     }
 

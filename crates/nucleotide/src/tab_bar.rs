@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::tab::Tab;
+use nucleotide_ui::VcsStatus;
 
 /// Type alias for tab event handlers
 type TabEventHandler = Arc<dyn Fn(DocumentId, &mut Window, &mut App) + 'static>;
@@ -22,6 +23,7 @@ pub struct DocumentInfo {
     pub path: Option<PathBuf>,
     pub is_modified: bool,
     pub focused_at: std::time::Instant,
+    pub git_status: Option<VcsStatus>,
 }
 
 /// Tab bar that displays all open documents
@@ -115,7 +117,9 @@ impl RenderOnce for TabBar {
             let tab = Tab::new(
                 doc_id,
                 label,
+                doc_info.path.clone(),
                 doc_info.is_modified,
+                doc_info.git_status.clone(),
                 is_active,
                 move |_event, window, cx| {
                     on_tab_click(doc_id, window, cx);
@@ -138,8 +142,7 @@ impl RenderOnce for TabBar {
             .w_full()
             .h(px(32.0)) // Match tab height
             .bg(bg_color)
-            .border_b_1()
-            .border_color(ui_theme.border)
+            // Removed border_b_1() for seamless active tab integration
             .overflow_x_scroll()
             .when(has_tabs, |this| this.children(tabs))
             .when(!has_tabs, |this| {

@@ -18,8 +18,8 @@ pub struct FileTreeEntry {
     pub size: u64,
     /// Last modified time
     pub mtime: Option<SystemTime>,
-    /// Git status if available
-    pub git_status: Option<GitStatus>,
+    /// VCS status if available
+    pub git_status: Option<nucleotide_ui::VcsStatus>,
     /// Whether this entry should be visible
     pub is_visible: bool,
     /// Whether this directory is expanded (only for directories)
@@ -56,25 +56,7 @@ pub enum FileKind {
     },
 }
 
-/// Git status for a file
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
-pub enum GitStatus {
-    /// File is untracked
-    Untracked,
-    /// File has been modified
-    Modified,
-    /// File has been added to index
-    Added,
-    /// File has been deleted
-    Deleted,
-    /// File has been renamed
-    Renamed,
-    /// File is up to date
-    UpToDate,
-    /// File has conflicts
-    Conflicted,
-}
+// GitStatus moved to nucleotide_ui::VcsStatus for centralized VCS handling
 
 impl FileTreeEntry {
     /// Create a new file entry
@@ -206,9 +188,9 @@ impl FileTreeEntry {
         }
     }
 
-    /// Set git status
+    /// Set VCS status
     #[allow(dead_code)]
-    pub fn set_git_status(&mut self, status: GitStatus) {
+    pub fn set_git_status(&mut self, status: nucleotide_ui::VcsStatus) {
         self.git_status = Some(status);
     }
 
