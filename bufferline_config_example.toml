@@ -1,0 +1,15 @@
+# Example Helix configuration for controlling the tab bar (bufferline)
+# Place this in ~/.config/helix/config.toml
+
+[editor]
+# Control when the tab bar is shown:
+# - "never"    = Never show the tab bar
+# - "always"   = Always show the tab bar
+# - "multiple" = Only show when multiple buffers are open (default)
+bufferline = "multiple"
+
+# You can also set it to always show:
+# bufferline = "always"
+
+# Or never show:
+# bufferline = "never"

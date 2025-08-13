@@ -409,7 +409,20 @@ impl Application {
         }
 
         // Get current document ID
-        let current_doc_id = self.editor.tree.get(self.editor.tree.focus).doc;
+        let current_doc_id = self
+            .editor
+            .tree
+            .try_get(self.editor.tree.focus)
+            .map(|view| view.doc)
+            .unwrap_or_else(|| {
+                // Fallback to the first document if no view exists
+                self.editor
+                    .documents
+                    .keys()
+                    .next()
+                    .copied()
+                    .unwrap_or_default()
+            });
 
         // Collect buffer metadata
         let mut buffer_metas = Vec::new();
@@ -617,7 +630,12 @@ impl Application {
                 debug!("Handling key event: {key:?}");
                 // Log cursor position before key handling
                 let view_id = comp_ctx.editor.tree.focus;
-                let doc_id = comp_ctx.editor.tree.get(view_id).doc;
+                let doc_id = comp_ctx
+                    .editor
+                    .tree
+                    .try_get(view_id)
+                    .map(|view| view.doc)
+                    .unwrap_or_default();
 
                 // Store before position
                 let before_cursor = if let Some(doc) = comp_ctx.editor.document(doc_id) {
@@ -917,17 +935,21 @@ impl Application {
                              cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::RedrawRequested)));
                         }
                         EditorEvent::ConfigEvent(config_event) => {
+                            info!("Application received ConfigEvent: {:?}", config_event);
                             // Handle config updates
                             let old_config = self.editor.config();
+                            info!("Old bufferline config: {:?}", old_config.bufferline);
 
-                            match config_event {
+                            match &config_event {
                                 helix_view::editor::ConfigEvent::Update(new_editor_config) => {
+                                    info!("New bufferline config in Update event: {:?}", new_editor_config.bufferline);
                                     // The toggle command sent us a new config
                                     // We detect what changed and store it as overrides
                                     self.config.apply_helix_config_update(&new_editor_config);
 
                                     // Update the ArcSwap with the new config so the editor sees it
                                     let updated_helix_config = self.config.to_helix_config();
+                                    info!("Updated helix config bufferline: {:?}", updated_helix_config.editor.bufferline);
                                     self.helix_config_arc.store(Arc::new(updated_helix_config));
 
                                     info!("Config updated via generic patching system");
@@ -945,8 +967,13 @@ impl Application {
 
                             // Refresh the editor's config-dependent state
                             self.editor.refresh_config(&old_config);
+                            info!("After refresh_config, editor bufferline: {:?}", self.editor.config().bufferline);
 
-                            // Trigger a redraw to reflect changes
+                            // Forward the ConfigEvent to the workspace so it knows config changed
+                            info!("Forwarding ConfigEvent to workspace");
+                            cx.emit(crate::Update::EditorEvent(EditorEvent::ConfigEvent(config_event)));
+
+                            // Also trigger a redraw to reflect changes
                             cx.emit(crate::Update::Redraw);
                             cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::RedrawRequested)));
                         }

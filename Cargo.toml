@@ -2,6 +2,7 @@
 members = [
     "crates/nucleotide-types",
     "crates/nucleotide-events",
+    "crates/nucleotide-logging",
     "crates/nucleotide-core",
     "crates/nucleotide-editor",
     "crates/nucleotide-ui",
@@ -72,10 +73,15 @@ fern = "0.6"
 ctor = "0.2"
 tokio-stream = "0.1"
 rust-embed = "8.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+tracing-appender = "0.2"
+dirs = "5.0"
 
 # Inter-crate dependencies
 nucleotide-types = { path = "crates/nucleotide-types" }
 nucleotide-events = { path = "crates/nucleotide-events" }
+nucleotide-logging = { path = "crates/nucleotide-logging" }
 nucleotide-core = { path = "crates/nucleotide-core" }
 nucleotide-editor = { path = "crates/nucleotide-editor" }
 nucleotide-ui = { path = "crates/nucleotide-ui" }

@@ -284,9 +284,20 @@ impl Workspace {
         ev: &helix_view::editor::EditorEvent,
         cx: &mut Context<Self>,
     ) {
-        use helix_view::editor::EditorEvent;
+        use helix_view::editor::{ConfigEvent, EditorEvent};
         match ev {
             EditorEvent::Redraw => cx.notify(),
+            EditorEvent::ConfigEvent(config_event) => {
+                // Handle configuration changes
+                info!("Workspace received ConfigEvent: {:?}", config_event);
+                match config_event {
+                    ConfigEvent::Refresh | ConfigEvent::Update(_) => {
+                        // Configuration has changed, refresh the UI
+                        info!("Config changed, refreshing UI - calling cx.notify()");
+                        cx.notify();
+                    }
+                }
+            }
             EditorEvent::LanguageServerMessage(_) => { /* handled by notifications */ }
             _ => {
                 info!("editor event {ev:?} not handled");
@@ -531,7 +542,12 @@ impl Workspace {
                 Ok(ref regex) => {
                     // Get current state
                     let view_id = core.editor.tree.focus;
-                    let doc_id = core.editor.tree.get(view_id).doc;
+                    let doc_id = core
+                        .editor
+                        .tree
+                        .try_get(view_id)
+                        .map(|view| view.doc)
+                        .unwrap_or_default();
                     let wrap_around = core.editor.config().search.wrap_around;
                     let scrolloff = core.editor.config().scrolloff;
 
@@ -1005,9 +1021,9 @@ impl Workspace {
                     let view_id = editor.tree.focus;
 
                     // Check if the view exists before attempting operations
-                    if editor.tree.contains(view_id) {
+                    if let Some(view) = editor.tree.try_get(view_id) {
                         // Get the current document id from the view
-                        let view_doc_id = editor.tree.get(view_id).doc;
+                        let view_doc_id = view.doc;
                         info!("View {:?} has document ID: {:?}, opened doc_id: {:?}", view_id, view_doc_id, doc_id);
 
                         // Make sure the view is showing the document we just opened
@@ -1234,6 +1250,132 @@ impl Workspace {
                 }
             }
         }
+    }
+
+    /// Render the tab bar showing all open documents
+    fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::tab_bar::{DocumentInfo, TabBar};
+        use helix_view::editor::BufferLine;
+
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+
+        // Check bufferline configuration
+        let bufferline_config = &editor.config().bufferline;
+        info!(
+            "render_tab_bar: bufferline config = {:?}, doc count = {}",
+            bufferline_config,
+            editor.documents.len()
+        );
+
+        let should_show_tabs = match bufferline_config {
+            BufferLine::Never => false,
+            BufferLine::Always => true,
+            BufferLine::Multiple => editor.documents.len() > 1,
+        };
+
+        // If tabs shouldn't be shown, return an empty div
+        if !should_show_tabs {
+            return div().into_any_element();
+        }
+
+        // Get the currently active document ID
+        let active_doc_id = if let Some(focused_view_id) = self.focused_view_id {
+            if let Some(view) = editor.tree.try_get(focused_view_id) {
+                Some(view.doc)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Collect document information
+        let mut documents = Vec::new();
+        for (&doc_id, doc) in &editor.documents {
+            documents.push(DocumentInfo {
+                id: doc_id,
+                path: doc.path().map(|p| p.to_path_buf()),
+                is_modified: doc.is_modified(),
+                focused_at: doc.focused_at,
+            });
+        }
+
+        // Get project directory for relative paths
+        let project_directory = core.project_directory.clone();
+
+        // Create tab bar with callbacks
+        TabBar::new(
+            documents,
+            active_doc_id,
+            project_directory,
+            {
+                let workspace = cx.entity().clone();
+                let core = self.core.clone();
+                let handle = self.handle.clone();
+                move |doc_id, _window, cx| {
+                    // Switch the current view to display this document
+                    core.update(cx, |core, cx| {
+                        let _guard = handle.enter();
+
+                        // Use Helix's switch method to change which document is displayed
+                        core.editor
+                            .switch(doc_id, helix_view::editor::Action::Replace);
+
+                        // Emit a redraw event so the UI updates
+                        cx.emit(crate::Update::Redraw);
+                    });
+
+                    // Update workspace to refresh the view
+                    workspace.update(cx, |workspace, cx| {
+                        // Update document views to reflect the change
+                        workspace.update_document_views(cx);
+                    });
+                }
+            },
+            {
+                let workspace = cx.entity().clone();
+                let core = self.core.clone();
+                let handle = self.handle.clone();
+                move |doc_id, _window, cx| {
+                    // Handle tab close - close the buffer/document
+                    core.update(cx, |core, cx| {
+                        let _guard = handle.enter();
+
+                        // Close the document (buffer), not the view
+                        // This allows other buffers to remain open
+                        match core.editor.close_document(doc_id, false) {
+                            Ok(()) => {
+                                // Document closed successfully
+                                cx.emit(crate::Update::Redraw);
+                            }
+                            Err(helix_view::editor::CloseError::BufferModified(_)) => {
+                                // Document has unsaved changes - could show a dialog here
+                                // For now, just log it
+                                info!("Cannot close document {:?}: has unsaved changes", doc_id);
+                            }
+                            Err(helix_view::editor::CloseError::DoesNotExist) => {
+                                // Document doesn't exist anymore
+                                info!("Document {:?} does not exist", doc_id);
+                            }
+                            Err(_) => {
+                                // Other error
+                                info!("Failed to close document {:?}", doc_id);
+                            }
+                        }
+
+                        // Update the workspace
+                        cx.notify();
+                    });
+
+                    // Update workspace to refresh the view
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.update_document_views(cx);
+                    });
+                }
+            },
+        )
+        .into_any_element()
     }
 
     /// Render unified status bar with file tree toggle and status information
@@ -1890,13 +2032,12 @@ impl Render for Workspace {
 
         let editor_rect = editor.tree.area();
 
-        let editor = &self.core.read(cx).editor;
         let mut docs_root = div().flex().w_full().h_full();
 
-        for (view, _) in editor.tree.views() {
-            let view_id = view.id;
-            if let Some(doc_view) = self.documents.get(&view_id) {
-                let has_border = right_borders.contains(&view_id);
+        // Only render the focused view, not all views
+        if let Some(focused_view_id) = self.focused_view_id {
+            if let Some(doc_view) = self.documents.get(&focused_view_id) {
+                let has_border = right_borders.contains(&focused_view_id);
                 let doc_element = div()
                     .flex()
                     .size_full()
@@ -1928,23 +2069,31 @@ impl Render for Workspace {
 
         let has_overlay = !self.overlay.read(cx).is_empty();
 
-        // Create main content area (documents + notifications + overlays)
+        // Create main content area (documents + notifications + overlays) with tab bar
         let main_content = div()
             .flex()
             .flex_col()
             .w_full()
-            .h_full() // Back to h_full since properly wrapped
-            .when_some(Some(docs_root), |this, docs| this.child(docs))
-            .child(self.notifications.clone())
-            .when(!self.overlay.read(cx).is_empty(), |this| {
-                let view = &self.overlay;
-                this.child(view.clone())
-            })
-            .when(
-                !self.info_hidden && !self.info.read(cx).is_empty(),
-                |this| this.child(self.info.clone()),
-            )
-            .child(self.key_hints.clone());
+            .h_full()
+            .child(self.render_tab_bar(cx)) // Tab bar at the top of editor area
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .flex_1() // Take remaining height after tab bar
+                    .when_some(Some(docs_root), |this, docs| this.child(docs))
+                    .child(self.notifications.clone())
+                    .when(!self.overlay.read(cx).is_empty(), |this| {
+                        let view = &self.overlay;
+                        this.child(view.clone())
+                    })
+                    .when(
+                        !self.info_hidden && !self.info.read(cx).is_empty(),
+                        |this| this.child(self.info.clone()),
+                    )
+                    .child(self.key_hints.clone()),
+            );
 
         // Create the main workspace div with basic styling first
         let mut workspace_div = div()
@@ -2364,7 +2513,7 @@ impl Render for Workspace {
                     .flex_col()
                     .w_full()
                     .h_full()
-                    .child(content_area) // Main content area
+                    .child(content_area) // Main content area (file tree + editor with tab bar)
                     .child(self.render_unified_status_bar(cx)), // Unified bottom status bar
             )
     }

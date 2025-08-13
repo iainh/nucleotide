@@ -1,0 +1,28 @@
+[package]
+name = "nucleotide-logging"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Centralized logging infrastructure for Nucleotide editor"
+categories = ["text-editors", "development-tools"]
+rust-version = "1.88"
+
+[dependencies]
+# Core tracing infrastructure
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+tracing-appender = "0.2"
+
+# Configuration and serialization
+serde = { workspace = true, features = ["derive"] }
+
+# Utilities
+dirs = "5.0"
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

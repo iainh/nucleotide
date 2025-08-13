@@ -43,7 +43,10 @@ impl ViewManagement for Application {
 
     fn update_viewport(&mut self, view_id: ViewId, _offset: usize) {
         // Store doc_id first to avoid borrow checker issues
-        let doc_id = self.editor.tree.get(view_id).doc;
+        let doc_id = match self.editor.tree.try_get(view_id) {
+            Some(view) => view.doc,
+            None => return,
+        };
         if let Some(doc) = self.editor.documents.get_mut(&doc_id) {
             let view = self.editor.tree.get_mut(view_id);
             view.ensure_cursor_in_view(doc, 0);

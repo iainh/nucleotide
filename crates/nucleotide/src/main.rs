@@ -25,37 +25,30 @@ pub type Core = Application;
 pub use types::{EditorStatus, Update};
 
 fn setup_logging(verbosity: u64) -> Result<()> {
-    let mut base_config = fern::Dispatch::new();
+    use nucleotide_logging::{init_logging_with_config, LoggingConfig};
 
-    base_config = match verbosity {
-        0 => base_config.level(log::LevelFilter::Warn),
-        1 => base_config.level(log::LevelFilter::Info),
-        2 => base_config.level(log::LevelFilter::Debug),
-        _3_or_more => base_config.level(log::LevelFilter::Trace),
+    // Create configuration based on verbosity level
+    let mut config =
+        LoggingConfig::from_env().context("Failed to create logging config from environment")?;
+
+    // Override log level based on command line verbosity
+    let level = match verbosity {
+        0 => nucleotide_logging::Level::WARN,
+        1 => nucleotide_logging::Level::INFO,
+        2 => nucleotide_logging::Level::DEBUG,
+        _3_or_more => nucleotide_logging::Level::TRACE,
     };
+    config.level = level.into();
 
-    // Separate file config so we can include year, month and day in file logs
-    let file_config = fern::Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "{} {} [{}] {}",
-                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-                record.target(),
-                record.level(),
-                message
-            ))
-        })
-        .chain(std::io::stdout())
-        .chain(fern::log_file(helix_loader::log_file())?);
-
-    base_config.chain(file_config).apply()?;
+    // Initialize the new logging system
+    init_logging_with_config(config).context("Failed to initialize nucleotide logging")?;
 
     Ok(())
 }
 
 fn install_panic_handler() {
     panic::set_hook(Box::new(|info| {
-        log::error!("Application panic: {info}");
+        nucleotide_logging::error!("Application panic: {info}");
 
         // Log backtrace if enabled
         if let Ok(backtrace) = std::env::var("RUST_BACKTRACE") {

@@ -169,7 +169,10 @@ impl DocumentView {
         let editor = &core.editor;
 
         let (cursor_pos, doc_id, first_row) = {
-            let view = editor.tree.get(self.view_id);
+            let view = match editor.tree.try_get(self.view_id) {
+                Some(v) => v,
+                None => return Vec::new(),
+            };
             let doc_id = view.doc;
             let document = match editor.document(doc_id) {
                 Some(doc) => doc,
@@ -216,8 +219,13 @@ impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let doc_id = {
             let editor = &self.core.read(cx).editor;
-            let view = editor.tree.get(self.view_id);
-            view.doc
+            match editor.tree.try_get(self.view_id) {
+                Some(view) => view.doc,
+                None => {
+                    // View no longer exists, render empty div
+                    return div().id(SharedString::from(format!("doc-view-{:?}", self.view_id)));
+                }
+            }
         };
 
         // Update scroll manager with document info
@@ -288,6 +296,7 @@ impl Render for DocumentView {
         };
 
         div()
+            .id(SharedString::from(format!("doc-view-{:?}", self.view_id)))
             .w_full()
             .h_full()
             .flex()
@@ -610,7 +619,10 @@ impl DocumentElement {
                 return None;
             }
         };
-        let view = editor.tree.get(self.view_id);
+        let view = match editor.tree.try_get(self.view_id) {
+            Some(v) => v,
+            None => return None,
+        };
 
         let theme = cx.global::<crate::ThemeManager>().helix_theme();
         let line_runs = Self::highlight_line_with_params(
@@ -1246,7 +1258,10 @@ impl Element for DocumentElement {
 
         let gutter_width_cells = {
             let editor = &core.read(cx).editor;
-            let view = editor.tree.get(view_id);
+            let view = match editor.tree.try_get(view_id) {
+                Some(v) => v,
+                None => return,
+            };
             let doc = match editor.document(self.doc_id) {
                 Some(doc) => doc,
                 None => return, // Document was closed
@@ -1276,18 +1291,22 @@ impl Element for DocumentElement {
             let core = self.core.read(cx);
             let editor = &core.editor;
             if let Some(document) = editor.document(self.doc_id) {
-                let view = editor.tree.get(self.view_id);
-                let gutter_offset = view.gutter_offset(document);
-                let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                if let Some(view) = editor.tree.try_get(self.view_id) {
+                    let gutter_offset = view.gutter_offset(document);
+                    let theme = cx.global::<crate::ThemeManager>().helix_theme();
 
-                // Calculate viewport width accounting for gutter and some padding
-                let gutter_width_px = gutter_offset as f32 * after_layout.cell_width;
-                let right_padding = after_layout.cell_width * 2.0; // 2 characters of padding
-                let text_area_width = bounds.size.width - gutter_width_px - right_padding;
-                let viewport_width = (text_area_width / after_layout.cell_width).max(10.0) as u16;
+                    // Calculate viewport width accounting for gutter and some padding
+                    let gutter_width_px = gutter_offset as f32 * after_layout.cell_width;
+                    let right_padding = after_layout.cell_width * 2.0; // 2 characters of padding
+                    let text_area_width = bounds.size.width - gutter_width_px - right_padding;
+                    let viewport_width =
+                        (text_area_width / after_layout.cell_width).max(10.0) as u16;
 
-                let text_format = document.text_format(viewport_width, Some(theme));
-                text_format.soft_wrap
+                    let text_format = document.text_format(viewport_width, Some(theme));
+                    text_format.soft_wrap
+                } else {
+                    false
+                }
             } else {
                 false
             }
@@ -1337,7 +1356,10 @@ impl Element for DocumentElement {
                     // Update cursor position in the editor
                     core.update(cx, |core, cx| {
                         let editor = &mut core.editor;
-                        let view = editor.tree.get(view_id);
+                        let view = match editor.tree.try_get(view_id) {
+                            Some(v) => v,
+                            None => return,
+                        };
                         let doc_id = view.doc;
                         let doc = match editor.document(doc_id) {
                             Some(doc) => doc,
@@ -1415,7 +1437,10 @@ impl Element for DocumentElement {
                 // Update selection end position in the editor
                 core_drag.update(cx, |core, cx| {
                     let editor = &mut core.editor;
-                    let view = editor.tree.get(view_id_drag);
+                    let view = match editor.tree.try_get(view_id_drag) {
+                        Some(v) => v,
+                        None => return,
+                    };
                     let doc_id = view.doc;
                     let doc = match editor.document(doc_id) {
                         Some(doc) => doc,
@@ -1590,7 +1615,10 @@ impl Element for DocumentElement {
                 let editor = &core.editor;
 
 
-                let view = editor.tree.get(self.view_id);
+                let view = match editor.tree.try_get(self.view_id) {
+                    Some(v) => v,
+                    None => return,
+                };
                 let _viewport = view.area;
                 // Check if cursorline is enabled and view is focused
                 // Use the effective config value which includes runtime overrides
@@ -1882,7 +1910,10 @@ impl Element for DocumentElement {
                             Some(doc) => doc,
                             None => return,
                         };
-                        let view = editor.tree.get(self.view_id);
+                        let view = match editor.tree.try_get(self.view_id) {
+                            Some(v) => v,
+                            None => return,
+                        };
                         let view_offset = document.view_offset(self.view_id);
                         let gutter_offset = view.gutter_offset(document);
 
@@ -2032,7 +2063,10 @@ impl Element for DocumentElement {
                                 let core = self.core.read(cx);
                                 let editor = &core.editor;
                                 if let Some(document) = editor.document(self.doc_id) {
-                                    let view = editor.tree.get(self.view_id);
+                                    let view = match editor.tree.try_get(self.view_id) {
+                                        Some(v) => v,
+                                        None => return,
+                                    };
                                     Self::highlight_line_with_params(
                                         document,
                                         view,
@@ -2505,7 +2539,10 @@ impl Element for DocumentElement {
                             Some(doc) => doc,
                             None => return,
                         };
-                        let view = editor.tree.get(view_id);
+                        let view = match editor.tree.try_get(view_id) {
+                            Some(v) => v,
+                            None => return,
+                        };
 
                         let line_runs = Self::highlight_line_with_params(
                             document,
@@ -2834,7 +2871,10 @@ impl Element for DocumentElement {
                     let core = self.core.read(cx);
                     let editor = &core.editor;
                     let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                    let view = editor.tree.get(self.view_id);
+                    let view = match editor.tree.try_get(self.view_id) {
+                        Some(v) => v,
+                        None => return,
+                    };
                     let document = match editor.document(self.doc_id) {
                     Some(doc) => doc,
                     None => return,

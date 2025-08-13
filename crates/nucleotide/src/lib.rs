@@ -11,6 +11,8 @@ pub mod editor_provider;
 pub mod file_tree;
 pub mod overlay;
 pub mod statusline;
+pub mod tab;
+pub mod tab_bar;
 #[cfg(test)]
 pub mod test_utils;
 pub mod types;

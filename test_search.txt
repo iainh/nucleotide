@@ -1,6 +1,0 @@
-This is a test file for searching.
-We want to test the search feature.
-The word test appears multiple times.
-Let's test if we can navigate between test matches.
-Another test here.
-Final test at the end.
