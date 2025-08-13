@@ -27,7 +27,6 @@ helix-vcs = { workspace = true, features = ["git"] }
 
 # Standard dependencies
 anyhow = { workspace = true }
-log = { workspace = true }
 nucleotide-logging = { workspace = true }
 tokio = { workspace = true }
 notify = { workspace = true }
