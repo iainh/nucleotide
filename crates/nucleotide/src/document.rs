@@ -18,7 +18,7 @@ use helix_lsp::lsp::Diagnostic;
 use helix_view::{
     graphics::CursorKind, view::ViewPosition, Document, DocumentId, Editor, Theme, View, ViewId,
 };
-use log::debug;
+use nucleotide_logging::debug;
 
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
@@ -663,7 +663,7 @@ impl DocumentElement {
         syn_loader: &'d helix_core::syntax::Loader,
     ) -> Option<syntax::Highlighter<'d>> {
         let syntax = doc.syntax()?;
-        debug!("Document has syntax support for: {:?}", doc.language_name());
+        debug!(language = ?doc.language_name(), "Document has syntax support");
 
         let text = doc.text().slice(..);
 
@@ -684,7 +684,7 @@ impl DocumentElement {
         }
 
         let range = start..end;
-        debug!("Creating highlighter for range: {range:?}");
+        debug!(range = ?range, "Creating highlighter for range");
 
         let highlighter = syntax.highlighter(text, syn_loader, range);
         Some(highlighter)
@@ -1168,7 +1168,7 @@ impl Element for DocumentElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        debug!("editor bounds {bounds:?}");
+        debug!(bounds = ?bounds, "Editor bounds");
         let _core = self.core.clone();
         self.interactivity.prepaint(
             _global_id,

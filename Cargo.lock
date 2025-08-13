@@ -4495,6 +4495,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml 0.8.23",
+ "tracing",
  "unicode-segmentation",
  "unicode-width 0.2.1",
  "url",

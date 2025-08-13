@@ -24,6 +24,7 @@ use helix_view::DocumentId;
 use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, Editor};
 
 // Helper function to find workspace root from a specific directory
+#[instrument]
 pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
     // Walk up the directory tree looking for VCS directories
     for ancestor in start_dir.ancestors() {
@@ -46,8 +47,8 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 // Removed unused Tag-related structs and enums
 
 use anyhow::Error;
-use log::{debug, info, warn};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
+use nucleotide_logging::{debug, error, info, instrument, warn};
 
 use crate::types::{AppEvent, CoreEvent, LspEvent, MessageSeverity, PickerType, UiEvent, Update};
 use gpui::EventEmitter;
@@ -93,6 +94,7 @@ impl gpui::EventEmitter<()> for Crank {}
 
 impl Application {
     /// Sync LSP state from the editor and progress map
+    #[instrument(skip(self, cx))]
     pub fn sync_lsp_state(&self, cx: &mut gpui::App) {
         if let Some(lsp_state) = &self.lsp_state {
             // Check for active language servers
@@ -103,7 +105,7 @@ impl Application {
                 .map(|client| (client.id(), client.name().to_string()))
                 .collect();
 
-            log::info!("Syncing LSP state, active servers: {:?}", active_servers);
+            info!(active_servers = ?active_servers, "Syncing LSP state");
 
             // Check which servers are progressing
             let progressing_servers: Vec<LanguageServerId> = active_servers
@@ -130,14 +132,14 @@ impl Application {
                     if let Some(progress_map) = self.lsp_progress.progress_map(id) {
                         // Only process if we have actual progress items
                         if !progress_map.is_empty() {
-                            log::debug!("Server {} has {} progress items", id, progress_map.len());
+                            debug!(server_id = ?id, progress_items = progress_map.len(), "LSP server has progress items");
 
                             // Add each progress operation
                             for (token, status) in progress_map {
                                 match status {
                                     helix_lsp::ProgressStatus::Created => {
                                         // Progress created but not started yet - skip these
-                                        log::info!("Skipping LSP progress token {:?} - in Created state (not started yet)", token);
+                                        info!(token = ?token, "Skipping LSP progress token - in Created state (not started yet)");
                                         continue;
                                     }
                                     helix_lsp::ProgressStatus::Started { title, progress } => {
@@ -155,8 +157,12 @@ impl Application {
                                             }
                                         };
 
-                                        log::info!("LSP progress active: {} - {:?} ({}%)",
-                                            title, message, percentage.unwrap_or(0));
+                                        info!(
+                                            title = ?title,
+                                            message = ?message,
+                                            percentage = percentage.unwrap_or(0),
+                                            "LSP progress active"
+                                        );
 
                                         state.progress.insert(key, nucleotide_lsp::LspProgress {
                                             server_id: id,
@@ -174,16 +180,18 @@ impl Application {
 
                 // Log current state for debugging
                 if !state.progress.is_empty() {
-                    log::debug!("LSP servers with progress: {}", state.progress.len());
+                    debug!(progress_count = state.progress.len(), "LSP servers with progress");
                     for progress in state.progress.values() {
-                        log::debug!("  - {}: {:?} ({}%)",
-                            progress.title,
-                            progress.message,
-                            progress.percentage.unwrap_or(0));
+                        debug!(
+                            title = ?progress.title,
+                            message = ?progress.message,
+                            percentage = progress.percentage.unwrap_or(0),
+                            "LSP progress item"
+                        );
                     }
                 }
                 if !state.servers.is_empty() {
-                    log::debug!("Active LSP servers: {}", state.servers.len());
+                    debug!(server_count = state.servers.len(), "Active LSP servers");
                 }
             });
         }
@@ -233,6 +241,7 @@ impl Application {
     }
 
     /// Check if helix created a picker and emit the appropriate event
+    #[instrument(skip(self, cx))]
     pub fn check_for_picker_and_emit_event(&mut self, cx: &mut gpui::Context<crate::Core>) -> bool {
         use helix_term::ui::{overlay::Overlay, Picker};
 
@@ -242,7 +251,7 @@ impl Application {
             .find_id::<Overlay<Picker<PathBuf, FilePickerData>>>(helix_term::ui::picker::ID)
             .is_some()
         {
-            log::info!("Detected file picker in compositor, emitting ShowFilePicker event");
+            info!("Detected file picker in compositor, emitting ShowFilePicker event");
             self.compositor.remove(helix_term::ui::picker::ID);
             cx.emit(Update::Event(AppEvent::Ui(UiEvent::ShowPicker {
                 picker_type: PickerType::File,
@@ -254,9 +263,9 @@ impl Application {
         // Check for any picker - if we have multiple docs, it's likely buffer picker
         // We need to check if any picker exists by trying to remove it
         if self.compositor.remove(helix_term::ui::picker::ID).is_some() {
-            log::info!("Found and removed picker from compositor");
+            info!("Found and removed picker from compositor");
             if self.editor.documents.len() > 1 {
-                log::info!("Multiple documents open, assuming buffer picker, emitting ShowBufferPicker event");
+                info!("Multiple documents open, assuming buffer picker, emitting ShowBufferPicker event");
                 cx.emit(Update::Event(AppEvent::Ui(UiEvent::ShowPicker {
                     picker_type: PickerType::Buffer,
                     picker_object: None,
@@ -317,6 +326,7 @@ impl Application {
         ]
     }
 
+    #[instrument(skip(self))]
     pub fn open_file(&mut self, path: &Path) -> Result<(), anyhow::Error> {
         let mut doc_manager = nucleotide_lsp::DocumentManagerMut::new(&mut self.editor);
         doc_manager.open_file(path)
@@ -716,10 +726,10 @@ impl Application {
                 // Set the viewport anchor for scrollbar integration
                 // For now, we'll use a simplified approach - just emit a redraw
                 // TODO: Implement proper viewport anchor setting through document API
-                log::debug!(
-                    "SetViewportAnchor: view_id={:?}, anchor={}",
-                    view_id,
-                    anchor
+                debug!(
+                    view_id = ?view_id,
+                    anchor = anchor,
+                    "SetViewportAnchor"
                 );
                 cx.emit(crate::Update::Event(AppEvent::Core(
                     CoreEvent::RedrawRequested,
@@ -844,7 +854,7 @@ impl Application {
                         }
                     }
 
-                    log::debug!("Processing {} batched events", events.len());
+                    debug!(event_count = events.len(), "Processing batched events");
 
                     // Track if we need to request a redraw
                     let mut needs_redraw = false;
@@ -1069,7 +1079,7 @@ pub fn init_editor(
             theme_loader
                 .load(&theme_name)
                 .map_err(|e| {
-                    log::warn!("failed to load theme `{theme_name}` - {e}");
+                    warn!(theme_name = %theme_name, error = %e, "Failed to load theme");
                     e
                 })
                 .ok()
@@ -1164,25 +1174,25 @@ pub fn init_editor(
                 Action::Load
             };
 
-            log::info!(
-                "Opening file from command line: {:?} with action: {:?}",
-                file,
-                action
+            info!(
+                file = ?file,
+                action = ?action,
+                "Opening file from command line"
             );
             match editor.open(&file, action) {
                 Ok(doc_id) => {
-                    log::info!(
-                        "Successfully opened file from CLI: {:?} with doc_id: {:?}",
-                        file,
-                        doc_id
+                    info!(
+                        file = ?file,
+                        doc_id = ?doc_id,
+                        "Successfully opened file from CLI"
                     );
 
                     // Log document info
                     if let Some(doc) = editor.document(doc_id) {
-                        log::info!(
-                            "Document language: {:?}, path: {:?}",
-                            doc.language_name(),
-                            doc.path()
+                        info!(
+                            language = ?doc.language_name(),
+                            path = ?doc.path(),
+                            "Document information"
                         );
                     }
                     let view_id = editor.tree.focus;
@@ -1203,7 +1213,7 @@ pub fn init_editor(
                     first = false;
                 }
                 Err(e) => {
-                    log::error!("Failed to open file {:?}: {}", file, e);
+                    error!(file = ?file, error = %e, "Failed to open file");
                 }
             }
         }

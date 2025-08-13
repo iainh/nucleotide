@@ -4,8 +4,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use helix_core::Selection;
 use helix_view::ViewId;
-use log::{error, info, warn};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
+use nucleotide_logging::{debug, error, info, instrument, warn};
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;
@@ -167,6 +167,7 @@ impl Workspace {
         self.titlebar = Some(titlebar);
     }
 
+    #[instrument(skip(self, cx))]
     pub fn set_project_directory(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
         self.core.update(cx, |core, _cx| {
             core.project_directory = Some(dir);
@@ -1080,6 +1081,7 @@ impl Workspace {
         cx.notify();
     }
 
+    #[instrument(skip(self, cx), fields(event = ?ev))]
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         info!("handling event {ev:?}");
         match ev {
@@ -1494,7 +1496,7 @@ impl Workspace {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|workspace, _event, _window, cx| {
-                                    log::info!("Status bar file tree toggle clicked");
+                                    info!("Status bar file tree toggle clicked");
                                     workspace.show_file_tree = !workspace.show_file_tree;
                                     cx.notify();
                                 }),
@@ -1633,7 +1635,7 @@ impl Workspace {
             // Check if the file tree has focus - if so, don't consume the event
             if let Some(file_tree) = &self.file_tree {
                 if file_tree.focus_handle(cx).is_focused(window) {
-                    log::debug!("File tree has focus, not forwarding key to editor");
+                    debug!("File tree has focus, not forwarding key to editor");
                     return; // Let the file tree handle its own key events
                 }
             }
@@ -1682,7 +1684,7 @@ impl Workspace {
             // Update key hints after processing the key
             self.update_key_hints(cx);
         })) {
-            log::error!("Panic in key handler: {e:?}");
+            error!(error = ?e, "Panic in key handler");
         }
     }
 
@@ -2251,7 +2253,7 @@ impl Render for Workspace {
         // Toggle file tree action
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::workspace::ToggleFileTree, _window, cx| {
-                log::info!("ToggleFileTree action triggered from menu");
+                info!("ToggleFileTree action triggered from menu");
                 workspace.show_file_tree = !workspace.show_file_tree;
                 cx.notify();
             },
@@ -2794,7 +2796,7 @@ fn quit(core: Entity<Core>, rt: tokio::runtime::Handle, cx: &mut App) {
         let editor = &mut core.editor;
         let _guard = rt.enter();
         if let Err(e) = rt.block_on(async { editor.flush_writes().await }) {
-            log::error!("Failed to flush writes: {e}");
+            error!(error = %e, "Failed to flush writes");
         }
         let views: Vec<_> = editor.tree.views().map(|(view, _)| view.id).collect();
         for view_id in views {
