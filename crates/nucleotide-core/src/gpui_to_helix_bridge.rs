@@ -2,6 +2,7 @@
 // ABOUTME: Provides a way for GUI events to influence editor behavior
 
 use helix_view::DocumentId;
+use nucleotide_logging::{debug, info, instrument, warn};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
@@ -45,29 +46,40 @@ pub enum MemoryPressureLevel {
 static GPUI_TO_HELIX_SENDER: OnceLock<mpsc::UnboundedSender<GpuiToHelixEvent>> = OnceLock::new();
 
 /// Initialize the GPUI->Helix event bridge
+#[instrument(skip(sender))]
 pub fn initialize_gpui_to_helix_bridge(sender: mpsc::UnboundedSender<GpuiToHelixEvent>) {
     if GPUI_TO_HELIX_SENDER.set(sender).is_err() {
-        log::warn!("GPUI->Helix event bridge was already initialized");
+        warn!("GPUI->Helix event bridge was already initialized");
+    } else {
+        info!("GPUI->Helix event bridge initialized successfully");
     }
 }
 
 /// Send a GPUI event to Helix
 pub fn send_gpui_event_to_helix(event: GpuiToHelixEvent) {
     if let Some(sender) = GPUI_TO_HELIX_SENDER.get() {
+        debug!(
+            event.type = ?std::mem::discriminant(&event),
+            "Sending GPUI event to Helix"
+        );
         if let Err(e) = sender.send(event) {
-            log::warn!("Failed to send GPUI event to Helix: {}", e);
+            warn!(
+                error = %e,
+                "Failed to send GPUI event to Helix"
+            );
         }
     } else {
-        log::warn!(
-            "GPUI->Helix event bridge not initialized, dropping event: {:?}",
-            event
+        warn!(
+            event = ?event,
+            "GPUI->Helix event bridge not initialized, dropping event"
         );
     }
 }
 
 /// Register handlers for common GPUI events
+#[instrument]
 pub fn register_gpui_event_handlers() {
-    log::info!("Registering GPUI event handlers for Helix integration");
+    info!("Registering GPUI event handlers for Helix integration");
     // Note: Actual GPUI event registration would happen in the main window setup
     // This is a placeholder for the registration logic
 }
@@ -84,10 +96,15 @@ pub fn create_gpui_to_helix_channel() -> (
 }
 
 /// Handle a GPUI event within Helix editor
+#[instrument(skip(editor))]
 pub fn handle_gpui_event_in_helix(event: &GpuiToHelixEvent, editor: &mut helix_view::Editor) {
     match event {
         GpuiToHelixEvent::WindowResized { width, height } => {
-            log::info!("Window resized to {}x{}", width, height);
+            info!(
+                width = %width,
+                height = %height,
+                "Window resized"
+            );
             // Update editor area size
             let area = helix_view::graphics::Rect {
                 x: 0,
@@ -98,47 +115,65 @@ pub fn handle_gpui_event_in_helix(event: &GpuiToHelixEvent, editor: &mut helix_v
             editor.resize(area);
         }
         GpuiToHelixEvent::WindowFocusChanged { focused } => {
-            log::info!("Window focus changed: {}", focused);
+            info!(
+                focused = %focused,
+                "Window focus changed"
+            );
             if !focused {
                 // When window loses focus, save all modified documents
                 for doc in editor.documents() {
                     if doc.is_modified() {
-                        log::info!("Auto-saving document {:?} on focus loss", doc.id());
+                        info!(
+                            doc_id = ?doc.id(),
+                            "Auto-saving document on focus loss"
+                        );
                         // Could trigger auto-save here if enabled
                     }
                 }
             }
         }
         GpuiToHelixEvent::ThemeChanged { theme_name } => {
-            log::info!("Theme changed to: {}", theme_name);
+            info!(
+                theme_name = %theme_name,
+                "Theme changed"
+            );
             // Reload theme - this would need access to theme loader
             // For now, just log the event
         }
         GpuiToHelixEvent::FontSizeChanged { size } => {
-            log::info!("Font size changed to: {}", size);
+            info!(
+                size = %size,
+                "Font size changed"
+            );
             // Update editor display settings
             // This would need integration with the renderer
         }
         GpuiToHelixEvent::ExternalFileChanged { doc_id, path } => {
-            log::info!(
-                "External file change detected: {:?} for doc {:?}",
-                path,
-                doc_id
+            info!(
+                doc_id = ?doc_id,
+                path = ?path,
+                "External file change detected"
             );
             if let Some(doc) = editor.document(*doc_id) {
                 if !doc.is_modified() {
                     // Only reload if document isn't modified locally
-                    log::info!("Reloading externally modified file: {:?}", path);
+                    info!(
+                        path = ?path,
+                        "Reloading externally modified file"
+                    );
                     // Would trigger file reload here
                 }
             }
         }
         GpuiToHelixEvent::MemoryPressure { level } => {
-            log::info!("Memory pressure detected: {:?}", level);
+            info!(
+                level = ?level,
+                "Memory pressure detected"
+            );
             match level {
                 MemoryPressureLevel::High | MemoryPressureLevel::Critical => {
                     // Reduce memory usage by clearing caches
-                    log::info!("Reducing memory usage due to pressure");
+                    info!("Reducing memory usage due to pressure");
                     // Could clear syntax highlighting cache, completion cache, etc.
                 }
                 _ => {}
@@ -148,10 +183,10 @@ pub fn handle_gpui_event_in_helix(event: &GpuiToHelixEvent, editor: &mut helix_v
             high_contrast,
             screen_reader,
         } => {
-            log::info!(
-                "Accessibility changed: high_contrast={}, screen_reader={}",
-                high_contrast,
-                screen_reader
+            info!(
+                high_contrast = %high_contrast,
+                screen_reader = %screen_reader,
+                "Accessibility settings changed"
             );
             // Adjust editor features for accessibility
             if *screen_reader {
@@ -159,10 +194,13 @@ pub fn handle_gpui_event_in_helix(event: &GpuiToHelixEvent, editor: &mut helix_v
             }
         }
         GpuiToHelixEvent::PerformanceDegraded { severe } => {
-            log::info!("Performance degradation detected: severe={}", severe);
+            info!(
+                severe = %severe,
+                "Performance degradation detected"
+            );
             if *severe {
                 // Disable expensive features like real-time syntax highlighting
-                log::info!("Disabling expensive features due to performance issues");
+                info!("Disabling expensive features due to performance issues");
             }
         }
     }

@@ -4,6 +4,7 @@
 use helix_view::document::Mode;
 use helix_view::DocumentId;
 use helix_view::ViewId;
+use nucleotide_logging::{debug, info, instrument, warn};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
@@ -53,88 +54,134 @@ pub use nucleotide_types::CompletionTrigger;
 static EVENT_BRIDGE_SENDER: OnceLock<mpsc::UnboundedSender<BridgedEvent>> = OnceLock::new();
 
 /// Initialize the event bridge system with a sender
+#[instrument(skip(sender))]
 pub fn initialize_bridge(sender: mpsc::UnboundedSender<BridgedEvent>) {
     if EVENT_BRIDGE_SENDER.set(sender).is_err() {
-        log::warn!("Event bridge was already initialized");
+        warn!("Event bridge was already initialized");
+    } else {
+        info!("Event bridge initialized successfully");
     }
 }
 
 /// Send a bridged event - used by Helix event hooks
 pub fn send_bridged_event(event: BridgedEvent) {
     if let Some(sender) = EVENT_BRIDGE_SENDER.get() {
+        debug!(
+            event.type = ?std::mem::discriminant(&event),
+            "Sending bridged event"
+        );
         if let Err(e) = sender.send(event) {
-            log::warn!("Failed to send bridged event: {}", e);
+            warn!(
+                error = %e,
+                "Failed to send bridged event"
+            );
         }
     } else {
-        log::warn!("Event bridge not initialized, dropping event: {:?}", event);
+        warn!(
+            event = ?event,
+            "Event bridge not initialized, dropping event"
+        );
     }
 }
 
 /// Register Helix event hooks that bridge to GPUI events
+#[instrument]
 pub fn register_event_hooks() {
     use helix_event::register_hook;
     use helix_term::events::*;
     use helix_view::events::*;
 
+    info!("Registering Helix event hooks for event bridge");
+
     // Document change events
     register_hook!(move |event: &mut DocumentDidChange<'_>| {
-        send_bridged_event(BridgedEvent::DocumentChanged {
-            doc_id: event.doc.id(),
-        });
+        let doc_id = event.doc.id();
+        debug!(
+            doc_id = ?doc_id,
+            "Document changed event"
+        );
+        send_bridged_event(BridgedEvent::DocumentChanged { doc_id });
         Ok(())
     });
 
     // Selection change events
     register_hook!(move |event: &mut SelectionDidChange<'_>| {
-        send_bridged_event(BridgedEvent::SelectionChanged {
-            doc_id: event.doc.id(),
-            view_id: event.view,
-        });
+        let doc_id = event.doc.id();
+        let view_id = event.view;
+        debug!(
+            doc_id = ?doc_id,
+            view_id = ?view_id,
+            "Selection changed event"
+        );
+        send_bridged_event(BridgedEvent::SelectionChanged { doc_id, view_id });
         Ok(())
     });
 
     // Mode switch events (from helix-term)
     register_hook!(move |event: &mut OnModeSwitch<'_, '_>| {
-        send_bridged_event(BridgedEvent::ModeChanged {
-            old_mode: event.old_mode,
-            new_mode: event.new_mode,
-        });
+        let old_mode = event.old_mode;
+        let new_mode = event.new_mode;
+        info!(
+            old_mode = ?old_mode,
+            new_mode = ?new_mode,
+            "Mode switch event"
+        );
+        send_bridged_event(BridgedEvent::ModeChanged { old_mode, new_mode });
         Ok(())
     });
 
     // Diagnostics change events
     register_hook!(move |event: &mut DiagnosticsDidChange<'_>| {
-        send_bridged_event(BridgedEvent::DiagnosticsChanged { doc_id: event.doc });
+        let doc_id = event.doc;
+        debug!(
+            doc_id = ?doc_id,
+            "Diagnostics changed event"
+        );
+        send_bridged_event(BridgedEvent::DiagnosticsChanged { doc_id });
         Ok(())
     });
 
     // Document open events
     register_hook!(move |event: &mut DocumentDidOpen<'_>| {
-        send_bridged_event(BridgedEvent::DocumentOpened { doc_id: event.doc });
+        let doc_id = event.doc;
+        info!(
+            doc_id = ?doc_id,
+            "Document opened event"
+        );
+        send_bridged_event(BridgedEvent::DocumentOpened { doc_id });
         Ok(())
     });
 
     // Document close events
     register_hook!(move |event: &mut DocumentDidClose<'_>| {
-        send_bridged_event(BridgedEvent::DocumentClosed {
-            doc_id: event.doc.id(),
-        });
+        let doc_id = event.doc.id();
+        info!(
+            doc_id = ?doc_id,
+            "Document closed event"
+        );
+        send_bridged_event(BridgedEvent::DocumentClosed { doc_id });
         Ok(())
     });
 
     // Language server initialized events
     register_hook!(move |event: &mut LanguageServerInitialized<'_>| {
-        send_bridged_event(BridgedEvent::LanguageServerInitialized {
-            server_id: event.server_id,
-        });
+        let server_id = event.server_id;
+        info!(
+            server_id = ?server_id,
+            "Language server initialized event"
+        );
+        send_bridged_event(BridgedEvent::LanguageServerInitialized { server_id });
         Ok(())
     });
 
     // Language server exited events
     register_hook!(move |event: &mut LanguageServerExited<'_>| {
-        send_bridged_event(BridgedEvent::LanguageServerExited {
-            server_id: event.server_id,
-        });
+        let server_id = event.server_id;
+        info!(
+            server_id = ?server_id,
+            "Language server exited event"
+        );
+        send_bridged_event(BridgedEvent::LanguageServerExited { server_id });
         Ok(())
     });
 
@@ -144,6 +191,13 @@ pub fn register_event_hooks() {
         let view_id = event.cx.editor.tree.focus;
         let doc_id = event.cx.editor.tree.get(view_id).doc;
 
+        debug!(
+            doc_id = ?doc_id,
+            view_id = ?view_id,
+            character = %event.c,
+            "Completion requested after character insert"
+        );
+
         send_bridged_event(BridgedEvent::CompletionRequested {
             doc_id,
             view_id,
@@ -152,7 +206,7 @@ pub fn register_event_hooks() {
         Ok(())
     });
 
-    log::info!("Registered Helix event hooks for event bridge");
+    info!("Successfully registered all Helix event hooks for event bridge");
 }
 
 /// Receiver type for bridged events

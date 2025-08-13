@@ -4519,12 +4519,14 @@ dependencies = [
  "helix-view",
  "log",
  "nucleotide-events",
+ "nucleotide-logging",
  "nucleotide-types",
  "once_cell",
  "parking_lot",
  "signal-hook",
  "signal-hook-tokio",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
