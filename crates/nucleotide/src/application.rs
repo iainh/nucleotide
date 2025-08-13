@@ -48,7 +48,7 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 
 use anyhow::Error;
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
-use nucleotide_logging::{debug, error, info, instrument, warn};
+use nucleotide_logging::{debug, error, info, instrument, timed, warn, PerfTimer};
 
 use crate::types::{AppEvent, CoreEvent, LspEvent, MessageSeverity, PickerType, UiEvent, Update};
 use gpui::EventEmitter;
@@ -328,8 +328,10 @@ impl Application {
 
     #[instrument(skip(self))]
     pub fn open_file(&mut self, path: &Path) -> Result<(), anyhow::Error> {
-        let mut doc_manager = nucleotide_lsp::DocumentManagerMut::new(&mut self.editor);
-        doc_manager.open_file(path)
+        timed!("open_file", warn_threshold: std::time::Duration::from_millis(500), {
+            let mut doc_manager = nucleotide_lsp::DocumentManagerMut::new(&mut self.editor);
+            doc_manager.open_file(path)
+        })
     }
 
     #[allow(dead_code)]

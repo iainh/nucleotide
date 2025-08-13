@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::args::Args;
+use nucleotide_logging::{info, instrument};
 
 use gpui::{
     px, App, AppContext, Menu, MenuItem, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
@@ -25,7 +26,7 @@ pub type Core = Application;
 pub use types::{EditorStatus, Update};
 
 fn setup_logging(verbosity: u64) -> Result<()> {
-    use nucleotide_logging::{init_logging_with_config, LoggingConfig};
+    use nucleotide_logging::{init_logging_with_reload, LoggingConfig};
 
     // Create configuration based on verbosity level
     let mut config =
@@ -40,26 +41,62 @@ fn setup_logging(verbosity: u64) -> Result<()> {
     };
     config.level = level.into();
 
-    // Initialize the new logging system
-    init_logging_with_config(config).context("Failed to initialize nucleotide logging")?;
+    // Initialize the new logging system with hot-reload support
+    init_logging_with_reload(config).context("Failed to initialize nucleotide logging")?;
 
     Ok(())
 }
 
+#[instrument]
 fn install_panic_handler() {
     panic::set_hook(Box::new(|info| {
-        nucleotide_logging::error!("Application panic: {info}");
+        // Extract structured panic information
+        let payload = info.payload();
+        let location = info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()));
+
+        let panic_message = if let Some(s) = payload.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Box<dyn Any>".to_string()
+        };
+
+        nucleotide_logging::error!(
+            panic_message = %panic_message,
+            location = ?location,
+            thread = ?std::thread::current().name(),
+            "Application panic occurred"
+        );
 
         // Log backtrace if enabled
         if let Ok(backtrace) = std::env::var("RUST_BACKTRACE") {
             if backtrace == "1" || backtrace == "full" {
-                eprintln!("Backtrace:\n{:?}", std::backtrace::Backtrace::capture());
+                let bt = std::backtrace::Backtrace::capture();
+                nucleotide_logging::error!(
+                    backtrace = %format!("{:?}", bt),
+                    "Panic backtrace"
+                );
+                eprintln!("Backtrace:\n{:?}", bt);
             }
         }
 
+        // Log system information for debugging
+        nucleotide_logging::error!(
+            os = std::env::consts::OS,
+            arch = std::env::consts::ARCH,
+            version = env!("CARGO_PKG_VERSION"),
+            "System information at panic time"
+        );
+
         // Try to save any unsaved work would go here if we had access to the app state
         // For now, just log and exit gracefully
-        eprintln!("Fatal error: {info}");
+        eprintln!("Fatal error: {panic_message}");
+        if let Some(loc) = &location {
+            eprintln!("Location: {loc}");
+        }
 
         // Exit gracefully
         std::process::exit(1);
@@ -82,6 +119,7 @@ fn _early_runtime_init() {
     }
 }
 
+#[instrument]
 fn main() -> Result<()> {
     // Set HELIX_RUNTIME for macOS bundles before any Helix code runs (backup)
     #[cfg(target_os = "macos")]
@@ -104,7 +142,10 @@ fn main() -> Result<()> {
     let handle = rt.handle();
     let _guard = handle.enter();
     let (app, config) = match init_editor() {
-        Ok(Some((app, config))) => (app, config),
+        Ok(Some((app, config))) => {
+            info!("Editor initialized successfully");
+            (app, config)
+        }
         Ok(None) => {
             eprintln!("Editor initialization returned None");
             return Err(anyhow::anyhow!("Editor initialization failed"));
@@ -115,7 +156,9 @@ fn main() -> Result<()> {
         }
     };
     drop(_guard);
+    info!("Starting GUI main loop");
     gui_main(app, config, handle.clone());
+    info!("Application shutting down");
     Ok(())
 }
 
@@ -393,6 +436,7 @@ impl std::fmt::Debug for Update {
 // Font types are now exported from nucleotide::types
 use nucleotide::{EditorFontConfig, FontSettings, UiFontConfig};
 
+#[instrument(skip(app, config, handle))]
 fn gui_main(
     mut app: Application,
     config: nucleotide::config::Config,
@@ -407,7 +451,7 @@ fn gui_main(
     gpui_app.on_open_urls({
         let file_open_tx = file_open_tx.clone();
         move |urls| {
-            log::info!("Received open URLs request: {:?}", urls);
+            info!(urls = ?urls, "Received open URLs request");
 
             // Parse URLs and send file paths to the main app
             let mut paths = Vec::new();

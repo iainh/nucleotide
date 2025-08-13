@@ -7,7 +7,7 @@ use helix_lsp::{
     Call, LanguageServerId, LspProgressMap, MethodCall, Notification,
 };
 use helix_view::Editor;
-use nucleotide_logging::{error, info, instrument, warn};
+use nucleotide_logging::{error, info, instrument, timed, warn};
 use std::collections::btree_map::Entry;
 
 /// Manages LSP operations and message handling
@@ -31,6 +31,7 @@ impl<'a> LspManager<'a> {
         call: Call,
         server_id: LanguageServerId,
     ) {
+        let _timer = timed!("lsp_message_handling", warn_threshold: std::time::Duration::from_millis(100), {
         // Track that we've seen this server
         // Note: We'll need to pass the LspState entity down from Application
         // For now, just handle the messages
@@ -87,6 +88,7 @@ impl<'a> LspManager<'a> {
                 error!(id = ?id, "LSP invalid method call");
             }
         }
+        }); // Close the timed block
     }
 
     #[instrument(skip(self), fields(uri = %params.uri))]
