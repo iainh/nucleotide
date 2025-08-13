@@ -1,4 +1,7 @@
-use gpui::*;
+use gpui::{
+    div, App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Render, Styled, Window,
+};
 
 use nucleotide_ui::completion::CompletionView;
 use nucleotide_ui::picker::Picker;

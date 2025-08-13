@@ -1,7 +1,7 @@
 // ABOUTME: Line layout cache for mouse interaction in document view
 // ABOUTME: Provides thread-safe storage of line layouts without RefCell
 
-use gpui::*;
+use gpui::{size, Bounds, Pixels, ShapedLine};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

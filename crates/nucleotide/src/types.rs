@@ -79,40 +79,36 @@ pub enum Update {
 impl std::fmt::Debug for Update {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Update::Event(event) => write!(f, "Event({:?})", event),
+            Update::Event(event) => write!(f, "Event({event:?})"),
             Update::Prompt(_) => write!(f, "Prompt(...)"),
             Update::Picker(_) => write!(f, "Picker(...)"),
             Update::DirectoryPicker(_) => write!(f, "DirectoryPicker(...)"),
             Update::Completion(_) => write!(f, "Completion(...)"),
             Update::Info(_) => write!(f, "Info(...)"),
             Update::EditorEvent(_) => write!(f, "EditorEvent(...)"),
-            Update::EditorStatus(status) => write!(f, "EditorStatus({:?})", status),
+            Update::EditorStatus(status) => write!(f, "EditorStatus({status:?})"),
             Update::Redraw => write!(f, "Redraw"),
-            Update::OpenFile(path) => write!(f, "OpenFile({:?})", path),
-            Update::OpenDirectory(path) => write!(f, "OpenDirectory({:?})", path),
+            Update::OpenFile(path) => write!(f, "OpenFile({path:?})"),
+            Update::OpenDirectory(path) => write!(f, "OpenDirectory({path:?})"),
             Update::ShouldQuit => write!(f, "ShouldQuit"),
-            Update::CommandSubmitted(cmd) => write!(f, "CommandSubmitted({:?})", cmd),
-            Update::SearchSubmitted(query) => write!(f, "SearchSubmitted({:?})", query),
-            Update::DocumentChanged { doc_id } => write!(f, "DocumentChanged({:?})", doc_id),
+            Update::CommandSubmitted(cmd) => write!(f, "CommandSubmitted({cmd:?})"),
+            Update::SearchSubmitted(query) => write!(f, "SearchSubmitted({query:?})"),
+            Update::DocumentChanged { doc_id } => write!(f, "DocumentChanged({doc_id:?})"),
             Update::SelectionChanged { doc_id, view_id } => {
-                write!(
-                    f,
-                    "SelectionChanged(doc: {:?}, view: {:?})",
-                    doc_id, view_id
-                )
+                write!(f, "SelectionChanged(doc: {doc_id:?}, view: {view_id:?})")
             }
             Update::ModeChanged { old_mode, new_mode } => {
-                write!(f, "ModeChanged({:?} -> {:?})", old_mode, new_mode)
+                write!(f, "ModeChanged({old_mode:?} -> {new_mode:?})")
             }
-            Update::DiagnosticsChanged { doc_id } => write!(f, "DiagnosticsChanged({:?})", doc_id),
-            Update::DocumentOpened { doc_id } => write!(f, "DocumentOpened({:?})", doc_id),
-            Update::DocumentClosed { doc_id } => write!(f, "DocumentClosed({:?})", doc_id),
-            Update::ViewFocused { view_id } => write!(f, "ViewFocused({:?})", view_id),
+            Update::DiagnosticsChanged { doc_id } => write!(f, "DiagnosticsChanged({doc_id:?})"),
+            Update::DocumentOpened { doc_id } => write!(f, "DocumentOpened({doc_id:?})"),
+            Update::DocumentClosed { doc_id } => write!(f, "DocumentClosed({doc_id:?})"),
+            Update::ViewFocused { view_id } => write!(f, "ViewFocused({view_id:?})"),
             Update::LanguageServerInitialized { server_id } => {
-                write!(f, "LanguageServerInitialized({:?})", server_id)
+                write!(f, "LanguageServerInitialized({server_id:?})")
             }
             Update::LanguageServerExited { server_id } => {
-                write!(f, "LanguageServerExited({:?})", server_id)
+                write!(f, "LanguageServerExited({server_id:?})")
             }
             Update::CompletionRequested {
                 doc_id,
@@ -121,8 +117,7 @@ impl std::fmt::Debug for Update {
             } => {
                 write!(
                     f,
-                    "CompletionRequested(doc: {:?}, view: {:?}, trigger: {:?})",
-                    doc_id, view_id, trigger
+                    "CompletionRequested(doc: {doc_id:?}, view: {view_id:?}, trigger: {trigger:?})"
                 )
             }
             Update::FileTreeEvent(_) => write!(f, "FileTreeEvent(...)"),

@@ -2,7 +2,11 @@
 // ABOUTME: Displays and manages completion suggestions in a popup
 
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    blue, div, hsla, white, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window,
+};
 
 /// LSP completion view component
 pub struct CompletionView {

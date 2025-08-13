@@ -88,8 +88,11 @@ pub fn send_bridged_event(event: BridgedEvent) {
 #[instrument]
 pub fn register_event_hooks() {
     use helix_event::register_hook;
-    use helix_term::events::*;
-    use helix_view::events::*;
+    use helix_term::events::{OnModeSwitch, PostInsertChar};
+    use helix_view::events::{
+        DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen,
+        LanguageServerExited, LanguageServerInitialized, SelectionDidChange,
+    };
 
     info!("Registering Helix event hooks for event bridge");
 

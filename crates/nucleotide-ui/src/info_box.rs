@@ -1,5 +1,8 @@
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    div, px, Context, DismissEvent, EventEmitter, FontWeight, IntoElement, ParentElement, Render,
+    SharedString, Style, Styled, Window,
+};
 use helix_view::info::Info;
 use nucleotide_events::{AppEvent, UiEvent};
 
@@ -60,7 +63,7 @@ impl Render for InfoBoxView {
                     .rounded_sm()
                     .shadow_sm()
                     .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size - 1.0))
-                    .when_some(self.style.text.color, |this, color| this.text_color(color))
+                    .when_some(self.style.text.color, gpui::Styled::text_color)
                     .bg(gpui::rgb(0x2a2a3e))
                     .p_2()
                     .flex()

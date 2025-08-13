@@ -2,7 +2,10 @@
 // ABOUTME: Reusable component for consistent list rendering
 
 use crate::spacing;
-use gpui::*;
+use gpui::{
+    div, white, AnyElement, App, ElementId, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, Pixels, RenderOnce, SharedString, Styled, TextOverflow, Window,
+};
 use smallvec::SmallVec;
 
 /// List item spacing options
@@ -100,8 +103,11 @@ impl ListItem {
 
     /// Add multiple children
     pub fn children(mut self, children: impl IntoIterator<Item = impl IntoElement>) -> Self {
-        self.children
-            .extend(children.into_iter().map(|child| child.into_any_element()));
+        self.children.extend(
+            children
+                .into_iter()
+                .map(gpui::IntoElement::into_any_element),
+        );
         self
     }
 

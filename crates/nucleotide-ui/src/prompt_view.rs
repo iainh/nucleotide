@@ -3,7 +3,11 @@
 
 use crate::common::ModalStyle;
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    div, hsla, px, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
+    Window,
+};
 
 #[derive(Clone, Debug)]
 pub struct CompletionItem {
@@ -167,7 +171,7 @@ impl PromptView {
     }
 
     fn byte_position_from_char_position(&self, s: &str, char_pos: usize) -> usize {
-        s.chars().take(char_pos).map(|c| c.len_utf8()).sum()
+        s.chars().take(char_pos).map(char::len_utf8).sum()
     }
 
     fn recalculate_completions(&mut self, cx: &mut Context<Self>) {
@@ -219,9 +223,11 @@ impl PromptView {
     fn move_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
         let input_len = self.input.chars().count();
         if delta > 0 {
-            self.cursor_position = (self.cursor_position + delta as usize).min(input_len);
+            let delta_usize = usize::try_from(delta).unwrap_or(0);
+            self.cursor_position = (self.cursor_position + delta_usize).min(input_len);
         } else {
-            self.cursor_position = self.cursor_position.saturating_sub((-delta) as usize);
+            let delta_usize = usize::try_from(-delta).unwrap_or(0);
+            self.cursor_position = self.cursor_position.saturating_sub(delta_usize);
         }
         cx.notify();
     }
@@ -236,10 +242,13 @@ impl PromptView {
 
         // Move selection
         if delta > 0 {
-            self.completion_selection =
-                (self.completion_selection + delta as usize).min(self.completions.len() - 1);
+            self.completion_selection = {
+                let delta_usize = usize::try_from(delta).unwrap_or(0);
+                (self.completion_selection + delta_usize).min(self.completions.len() - 1)
+            };
         } else {
-            self.completion_selection = self.completion_selection.saturating_sub((-delta) as usize);
+            let delta_usize = usize::try_from(-delta).unwrap_or(0);
+            self.completion_selection = self.completion_selection.saturating_sub(delta_usize);
         }
 
         // Adjust scroll offset based on selection movement

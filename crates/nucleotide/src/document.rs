@@ -3,7 +3,14 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    black, div, fill, hsla, px, relative, white, App, Bounds, Context, DefiniteLength,
+    DismissEvent, Element, ElementId, Entity, EventEmitter, FocusHandle, Focusable, Font,
+    GlobalElementId, Hitbox, Hsla, InspectorElementId, InteractiveElement, Interactivity,
+    IntoElement, LayoutId, MouseButton, ParentElement, Pixels, Point, Render, ShapedLine,
+    SharedString, Size, StatefulInteractiveElement, Style, Styled, TextStyle, Window,
+    WindowTextSystem,
+};
 use gpui::{point, size, TextRun};
 use helix_core::{
     doc_formatter::{DocumentFormatter, TextFormat},
@@ -91,6 +98,46 @@ impl ScrollableHandle for DocumentScrollHandle {
         let size = self.scroll_manager.viewport_size.get();
         Bounds::new(point(px(0.0), px(0.0)), size)
     }
+}
+
+/// Parameters for render_with_softwrap
+#[allow(dead_code)]
+struct SoftwrapRenderParams<'a> {
+    document: &'a Document,
+    view: &'a View,
+    text_format: &'a TextFormat,
+    viewport_height: usize,
+    bounds: Bounds<Pixels>,
+    cell_width: Pixels,
+    line_height: Pixels,
+    window: &'a mut Window,
+}
+
+/// Parameters for create_shaped_line
+#[allow(dead_code)]
+struct ShapedLineParams<'a> {
+    line_idx: usize,
+    text: RopeSlice<'a>,
+    first_row: usize,
+    end_char: usize,
+    fg_color: Hsla,
+    window: &'a mut Window,
+    cx: &'a mut App,
+}
+
+/// Parameters for highlight_line_with_params
+struct HighlightLineParams<'a> {
+    doc: &'a Document,
+    view: &'a View,
+    theme: &'a Theme,
+    editor_mode: helix_view::document::Mode,
+    cursor_shape: &'a helix_view::editor::CursorShapeConfig,
+    syn_loader: &'a std::sync::Arc<arc_swap::ArcSwap<helix_core::syntax::Loader>>,
+    is_view_focused: bool,
+    line_start: usize,
+    line_end: usize,
+    fg_color: Hsla,
+    font: Font,
 }
 
 pub struct DocumentView {
@@ -255,16 +302,18 @@ impl Render for DocumentView {
 
         // Create the DocumentElement that will handle the actual rendering
         // Pass the same scroll manager and scrollbar state to ensure state is shared
-        let document_element = DocumentElement::with_scroll_manager(
-            self.core.clone(),
+        // TODO: Fix DocumentElement::with_scroll_manager method resolution issue
+        let document_element = DocumentElement {
+            core: self.core.clone(),
             doc_id,
-            self.view_id,
-            self.style.clone(),
-            &self.focus,
-            self.is_focused,
-            self.scroll_manager.clone(),
-            self.scrollbar_state.clone(),
-        );
+            view_id: self.view_id,
+            style: self.style.clone(),
+            interactivity: Interactivity::default(),
+            focus: self.focus.clone(),
+            is_focused: self.is_focused,
+            scroll_manager: self.scroll_manager.clone(),
+            scrollbar_state: self.scrollbar_state.clone(),
+        };
 
         // Create the scrollbar
         let scrollbar_opt = Scrollbar::vertical(self.scrollbar_state.clone());
@@ -284,7 +333,7 @@ impl Render for DocumentView {
                     .flex_1()
                     .child(document_element),
             )
-            .when_some(scrollbar_opt, |div, scrollbar| div.child(scrollbar));
+            .when_some(scrollbar_opt, gpui::ParentElement::child);
 
         let diags = {
             let _theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
@@ -355,7 +404,8 @@ impl DocumentElement {
         let loader = syn_loader.load();
         let text = doc.text().slice(..);
         let anchor = doc.view_offset(view_id).anchor;
-        let height = (text.len_lines() - text.char_to_line(anchor)) as u16;
+        let lines_from_anchor = text.len_lines() - text.char_to_line(anchor);
+        let height = u16::try_from(lines_from_anchor).unwrap_or(u16::MAX);
 
         // Get syntax highlighter
         let syntax_highlighter = Self::doc_syntax_highlights(doc, anchor, height, theme, &loader);
@@ -429,30 +479,6 @@ impl DocumentElement {
         .track_focus(focus)
     }
 
-    pub fn with_scroll_manager(
-        core: Entity<Core>,
-        doc_id: DocumentId,
-        view_id: ViewId,
-        style: TextStyle,
-        focus: &FocusHandle,
-        is_focused: bool,
-        scroll_manager: ScrollManager,
-        scrollbar_state: ScrollbarState,
-    ) -> Self {
-        Self {
-            core,
-            doc_id,
-            view_id,
-            style,
-            interactivity: Interactivity::default(),
-            focus: focus.clone(),
-            is_focused,
-            scroll_manager,
-            scrollbar_state,
-        }
-        .track_focus(focus)
-    }
-
     /// Get the TextFormat for soft wrap support
     #[allow(dead_code)]
     fn get_text_format(
@@ -468,19 +494,12 @@ impl DocumentElement {
     #[allow(dead_code)]
     fn render_with_softwrap(
         &self,
-        document: &Document,
-        view: &View,
-        text_format: &TextFormat,
-        viewport_height: usize,
-        bounds: Bounds<Pixels>,
-        cell_width: Pixels,
-        line_height: Pixels,
-        window: &mut Window,
+        params: SoftwrapRenderParams,
         _cx: &mut App,
     ) -> Vec<nucleotide_editor::LineLayout> {
         let mut line_layouts = Vec::new();
-        let text = document.text().slice(..);
-        let view_offset = document.view_offset(self.view_id);
+        let text = params.document.text().slice(..);
+        let view_offset = params.document.view_offset(self.view_id);
 
         // Create text annotations (empty for now, can be extended later)
         let annotations = TextAnnotations::default();
@@ -488,7 +507,7 @@ impl DocumentElement {
         // Create DocumentFormatter starting at the viewport anchor
         let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
             text,
-            text_format,
+            params.text_format,
             &annotations,
             view_offset.anchor,
         );
@@ -506,16 +525,17 @@ impl DocumentElement {
             }
         }
 
-        let text_origin_x = bounds.origin.x + (view.gutter_offset(document) as f32 * cell_width);
+        let text_origin_x = params.bounds.origin.x
+            + (f32::from(params.view.gutter_offset(params.document)) * params.cell_width);
         let mut y_offset = px(0.0);
 
         // Render visible lines
-        while visual_line < view_offset.vertical_offset + viewport_height {
+        while visual_line < view_offset.vertical_offset + params.viewport_height {
             line_graphemes.clear();
-            let line_y = bounds.origin.y + px(1.0) + y_offset;
+            let line_y = params.bounds.origin.y + px(1.0) + y_offset;
 
             // Collect all graphemes for this visual line
-            while let Some(grapheme) = formatter.next() {
+            for grapheme in formatter.by_ref() {
                 if grapheme.visual_pos.row > visual_line {
                     // We've moved to the next visual line
                     break;
@@ -542,7 +562,7 @@ impl DocumentElement {
             }
 
             // Create shaped line for this visual line
-            let shaped_line = window.text_system().shape_line(
+            let shaped_line = params.window.text_system().shape_line(
                 SharedString::from(line_str),
                 self.style.font_size.to_pixels(px(16.0)),
                 &[],
@@ -566,7 +586,7 @@ impl DocumentElement {
             }
 
             visual_line += 1;
-            y_offset += line_height;
+            y_offset += params.line_height;
         }
 
         line_layouts
@@ -574,43 +594,37 @@ impl DocumentElement {
 
     /// Create a shaped line for a specific line, used for cursor positioning and mouse interaction
     #[allow(dead_code)]
-    fn create_shaped_line(
-        &self,
-        line_idx: usize,
-        text: RopeSlice,
-        first_row: usize,
-        end_char: usize,
-        fg_color: Hsla,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<ShapedLine> {
-        let line_start = text.line_to_char(line_idx);
-        let line_end = if line_idx + 1 < text.len_lines() {
-            text.line_to_char(line_idx + 1).saturating_sub(1) // Exclude newline
+    fn create_shaped_line(&self, params: ShapedLineParams) -> Option<ShapedLine> {
+        let line_start = params.text.line_to_char(params.line_idx);
+        let line_end = if params.line_idx + 1 < params.text.len_lines() {
+            params
+                .text
+                .line_to_char(params.line_idx + 1)
+                .saturating_sub(1) // Exclude newline
         } else {
-            text.len_chars()
+            params.text.len_chars()
         };
 
         // Check if line is within our view
-        let anchor_char = text.line_to_char(first_row);
-        if line_start >= end_char || line_end < anchor_char {
+        let anchor_char = params.text.line_to_char(params.first_row);
+        if line_start >= params.end_char || line_end < anchor_char {
             return None;
         }
 
         // Adjust line bounds to our view
         let line_start = line_start.max(anchor_char);
-        let line_end = line_end.min(end_char);
+        let line_end = line_end.min(params.end_char);
 
         // For empty lines, line_start may equal line_end, which is valid
         if line_start > line_end {
             return None;
         }
 
-        let line_slice = text.slice(line_start..line_end);
+        let line_slice = params.text.slice(line_start..line_end);
         let line_str: SharedString = RopeWrapper(line_slice).into();
 
         // Get highlights for this line (re-read core)
-        let core = self.core.read(cx);
+        let core = self.core.read(params.cx);
         let editor = &core.editor;
         let document = match editor.document(self.doc_id) {
             Some(doc) => doc,
@@ -619,28 +633,25 @@ impl DocumentElement {
                 return None;
             }
         };
-        let view = match editor.tree.try_get(self.view_id) {
-            Some(v) => v,
-            None => return None,
-        };
+        let view = editor.tree.try_get(self.view_id)?;
 
-        let theme = cx.global::<crate::ThemeManager>().helix_theme();
-        let line_runs = Self::highlight_line_with_params(
-            document,
+        let theme = params.cx.global::<crate::ThemeManager>().helix_theme();
+        let line_runs = Self::highlight_line_with_params(HighlightLineParams {
+            doc: document,
             view,
             theme,
-            editor.mode(),
-            &editor.config().cursor_shape,
-            &editor.syn_loader,
-            self.is_focused,
+            editor_mode: editor.mode(),
+            cursor_shape: &editor.config().cursor_shape,
+            syn_loader: &editor.syn_loader,
+            is_view_focused: self.is_focused,
             line_start,
             line_end,
-            fg_color,
-            self.style.font(),
-        );
+            fg_color: params.fg_color,
+            font: self.style.font(),
+        });
 
         // Create the shaped line
-        let shaped_line = window.text_system().shape_line(
+        let shaped_line = params.window.text_system().shape_line(
             line_str,
             self.style.font_size.to_pixels(px(16.0)),
             &line_runs,
@@ -813,40 +824,30 @@ impl DocumentElement {
         }
     }
 
-    fn highlight_line_with_params(
-        doc: &Document,
-        view: &View,
-        theme: &Theme,
-        editor_mode: helix_view::document::Mode,
-        cursor_shape: &helix_view::editor::CursorShapeConfig,
-        syn_loader: &std::sync::Arc<arc_swap::ArcSwap<helix_core::syntax::Loader>>,
-        is_view_focused: bool,
-        line_start: usize,
-        line_end: usize,
-        fg_color: Hsla,
-        font: Font,
-    ) -> Vec<TextRun> {
+    fn highlight_line_with_params(params: HighlightLineParams) -> Vec<TextRun> {
         let mut runs = vec![];
-        let loader = syn_loader.load();
+        let loader = params.syn_loader.load();
 
         // Get syntax highlighter for the entire document view
-        let text = doc.text().slice(..);
-        let anchor = doc.view_offset(view.id).anchor;
-        let height = (text.len_lines() - text.char_to_line(anchor)) as u16;
-        let syntax_highlighter = Self::doc_syntax_highlights(doc, anchor, height, theme, &loader);
+        let text = params.doc.text().slice(..);
+        let anchor = params.doc.view_offset(params.view.id).anchor;
+        let lines_from_anchor = text.len_lines() - text.char_to_line(anchor);
+        let height = u16::try_from(lines_from_anchor).unwrap_or(u16::MAX);
+        let syntax_highlighter =
+            Self::doc_syntax_highlights(params.doc, anchor, height, params.theme, &loader);
 
         // Get overlay highlights
         let overlay_highlights = Self::overlay_highlights(
-            editor_mode,
-            doc,
-            view,
-            theme,
-            cursor_shape,
+            params.editor_mode,
+            params.doc,
+            params.view,
+            params.theme,
+            params.cursor_shape,
             true,
-            is_view_focused,
+            params.is_view_focused,
         );
 
-        let default_style = theme.get("ui.text");
+        let default_style = params.theme.get("ui.text");
         let text_style = helix_view::graphics::Style {
             fg: default_style.fg,
             bg: default_style.bg,
@@ -854,14 +855,15 @@ impl DocumentElement {
         };
 
         // Create syntax and overlay highlighters
-        let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
-        let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, theme);
+        let mut syntax_hl =
+            SyntaxHighlighter::new(syntax_highlighter, text, params.theme, text_style);
+        let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, params.theme);
 
         // Get the line text slice to convert character positions to byte lengths
-        let line_slice = text.slice(line_start..line_end);
+        let line_slice = text.slice(params.line_start..params.line_end);
 
-        let mut position = line_start;
-        while position < line_end {
+        let mut position = params.line_start;
+        while position < params.line_end {
             // Advance highlighters to current position
             while position >= syntax_hl.pos {
                 syntax_hl.advance();
@@ -871,7 +873,10 @@ impl DocumentElement {
             }
 
             // Calculate next position where style might change
-            let next_pos = std::cmp::min(std::cmp::min(syntax_hl.pos, overlay_hl.pos), line_end);
+            let next_pos = std::cmp::min(
+                std::cmp::min(syntax_hl.pos, overlay_hl.pos),
+                params.line_end,
+            );
 
             let char_len = next_pos - position;
             if char_len == 0 {
@@ -880,222 +885,34 @@ impl DocumentElement {
 
             // Convert character length to byte length for this segment
             // Get the text slice for this run and measure its byte length
-            let run_start_in_line = position - line_start;
-            let run_end_in_line = next_pos - line_start;
+            let run_start_in_line = position - params.line_start;
+            let run_end_in_line = next_pos - params.line_start;
             let run_slice = line_slice.slice(run_start_in_line..run_end_in_line);
             let byte_len = run_slice.len_bytes();
 
             // Combine syntax and overlay styles
             let style = syntax_hl.style.patch(overlay_hl.style);
 
-            let fg = style.fg.and_then(color_to_hsla).unwrap_or(fg_color);
+            let fg = style.fg.and_then(color_to_hsla).unwrap_or(params.fg_color);
             let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
             // Get default background color from theme for reversed modifier
-            let default_bg = theme
+            let default_bg = params
+                .theme
                 .get("ui.background")
                 .bg
                 .and_then(color_to_hsla)
                 .unwrap_or(black());
 
-            let run =
-                create_styled_text_run(byte_len, &font, &style, fg, bg, default_bg, underline);
-            runs.push(run);
-            position = next_pos;
-        }
-
-        runs
-    }
-
-    #[allow(dead_code)]
-    fn highlight_line(
-        editor: &Editor,
-        doc: &Document,
-        view: &View,
-        theme: &Theme,
-        is_view_focused: bool,
-        line_start: usize,
-        line_end: usize,
-        fg_color: Hsla,
-        font: Font,
-    ) -> Vec<TextRun> {
-        let mut runs = vec![];
-        let loader = editor.syn_loader.load();
-
-        // Get syntax highlighter for the entire document view
-        let text = doc.text().slice(..);
-        let anchor = doc.view_offset(view.id).anchor;
-        let height = (text.len_lines() - text.char_to_line(anchor)) as u16;
-        let syntax_highlighter = Self::doc_syntax_highlights(doc, anchor, height, theme, &loader);
-
-        // Get overlay highlights
-        let overlay_highlights = Self::overlay_highlights(
-            editor.mode(),
-            doc,
-            view,
-            theme,
-            &editor.config().cursor_shape,
-            true,
-            is_view_focused,
-        );
-
-        let default_style = theme.get("ui.text");
-        let text_style = helix_view::graphics::Style {
-            fg: default_style.fg,
-            bg: default_style.bg,
-            ..Default::default()
-        };
-
-        // Create syntax and overlay highlighters
-        let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
-        let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, theme);
-
-        // Get the line text slice to convert character positions to byte lengths
-        let line_slice = text.slice(line_start..line_end);
-
-        let mut position = line_start;
-        while position < line_end {
-            // Advance highlighters to current position
-            while position >= syntax_hl.pos {
-                syntax_hl.advance();
-            }
-            while position >= overlay_hl.pos {
-                overlay_hl.advance();
-            }
-
-            // Calculate next position where style might change
-            let next_pos = std::cmp::min(std::cmp::min(syntax_hl.pos, overlay_hl.pos), line_end);
-
-            let char_len = next_pos - position;
-            if char_len == 0 {
-                break;
-            }
-
-            // Convert character length to byte length for this segment
-            let run_start_in_line = position - line_start;
-            let run_end_in_line = next_pos - line_start;
-            let run_slice = line_slice.slice(run_start_in_line..run_end_in_line);
-            let byte_len = run_slice.len_bytes();
-
-            // Combine syntax and overlay styles
-            let style = syntax_hl.style.patch(overlay_hl.style);
-
-            let fg = style.fg.and_then(color_to_hsla).unwrap_or(fg_color);
-            let bg = style.bg.and_then(color_to_hsla);
-            let underline = style.underline_color.and_then(color_to_hsla);
-            // Get default background color from theme for reversed modifier
-            let default_bg = theme
-                .get("ui.background")
-                .bg
-                .and_then(color_to_hsla)
-                .unwrap_or(black());
-
-            let run =
-                create_styled_text_run(byte_len, &font, &style, fg, bg, default_bg, underline);
-            runs.push(run);
-            position = next_pos;
-        }
-
-        runs
-    }
-
-    #[allow(dead_code)]
-    fn highlight(
-        editor: &Editor,
-        doc: &Document,
-        view: &View,
-        theme: &Theme,
-        is_view_focused: bool,
-        anchor: usize,
-        lines: u16,
-        end_char: usize,
-        fg_color: Hsla,
-        font: Font,
-    ) -> Vec<TextRun> {
-        let mut runs = vec![];
-        let loader = editor.syn_loader.load();
-
-        // Get syntax highlighter
-        let syntax_highlighter = Self::doc_syntax_highlights(doc, anchor, lines, theme, &loader);
-
-        debug!(
-            "Syntax highlighter created: {}",
-            syntax_highlighter.is_some()
-        );
-
-        // Get overlay highlights
-        let overlay_highlights = Self::overlay_highlights(
-            editor.mode(),
-            doc,
-            view,
-            theme,
-            &editor.config().cursor_shape,
-            true,
-            is_view_focused,
-        );
-
-        let text = doc.text().slice(..);
-        let default_style = theme.get("ui.text");
-        let text_style = helix_view::graphics::Style {
-            fg: default_style.fg,
-            bg: default_style.bg,
-            ..Default::default()
-        };
-
-        // Create syntax and overlay highlighters
-        let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
-        let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, theme);
-
-        // Get the text slice to convert character positions to byte lengths
-        let text_slice = text.slice(anchor..end_char);
-
-        let mut position = anchor;
-        while position < end_char {
-            // Advance highlighters to current position
-            while position >= syntax_hl.pos {
-                syntax_hl.advance();
-            }
-            while position >= overlay_hl.pos {
-                overlay_hl.advance();
-            }
-
-            // Calculate next position where style might change
-            let next_pos = std::cmp::min(std::cmp::min(syntax_hl.pos, overlay_hl.pos), end_char);
-
-            let char_len = next_pos - position;
-            if char_len == 0 {
-                break;
-            }
-
-            // Convert character length to byte length for this segment
-            let run_start_in_text = position - anchor;
-            let run_end_in_text = next_pos - anchor;
-            let run_slice = text_slice.slice(run_start_in_text..run_end_in_text);
-            let byte_len = run_slice.len_bytes();
-
-            // Combine syntax and overlay styles
-            let style = syntax_hl.style.patch(overlay_hl.style);
-
-            // Debug log style changes
-            if style.fg != text_style.fg {
-                debug!(
-                    "Style change at pos {}: {:?} -> {:?}",
-                    position, text_style.fg, style.fg
-                );
-            }
-
-            let fg = style.fg.and_then(color_to_hsla).unwrap_or(fg_color);
-            let bg = style.bg.and_then(color_to_hsla);
-            let underline = style.underline_color.and_then(color_to_hsla);
-            // Get default background color from theme for reversed modifier
-            let default_bg = theme
-                .get("ui.background")
-                .bg
-                .and_then(color_to_hsla)
-                .unwrap_or(black());
-
-            let run =
-                create_styled_text_run(byte_len, &font, &style, fg, bg, default_bg, underline);
+            let run = create_styled_text_run(
+                byte_len,
+                &params.font,
+                &style,
+                fg,
+                bg,
+                default_bg,
+                underline,
+            );
             runs.push(run);
             position = next_pos;
         }
@@ -1284,7 +1101,7 @@ impl Element for DocumentElement {
 
             view.gutter_offset(doc)
         };
-        let _gutter_width_px = cell_width * gutter_width_cells as f32;
+        let _gutter_width_px = cell_width * f32::from(gutter_width_cells);
 
         // Check if soft wrap is enabled early for mouse handlers
         let soft_wrap_enabled = {
@@ -1296,7 +1113,7 @@ impl Element for DocumentElement {
                     let theme = cx.global::<crate::ThemeManager>().helix_theme();
 
                     // Calculate viewport width accounting for gutter and some padding
-                    let gutter_width_px = gutter_offset as f32 * after_layout.cell_width;
+                    let gutter_width_px = f32::from(gutter_offset) * after_layout.cell_width;
                     let right_padding = after_layout.cell_width * 2.0; // 2 characters of padding
                     let text_area_width = bounds.size.width - gutter_width_px - right_padding;
                     let viewport_width =
@@ -1821,7 +1638,7 @@ impl Element for DocumentElement {
 
                 // Render text line by line to avoid newline issues
                 let mut y_offset = px(0.);
-                let text_origin_x = bounds.origin.x + px(2.) + (after_layout.cell_width * gutter_width as f32);
+                let text_origin_x = bounds.origin.x + px(2.) + (after_layout.cell_width * f32::from(gutter_width));
 
                 // Render rulers before text
                 let ruler_style = theme.get("ui.virtual.ruler");
@@ -1844,7 +1661,7 @@ impl Element for DocumentElement {
                     // Calculate x position based on column (account for horizontal scroll)
                     // Rulers are at absolute column positions in the text, not including the gutter
                     // We need to account for 0-based vs 1-based column indexing
-                    let ruler_x = text_origin_x + (after_layout.cell_width * ((ruler_col - 1) as f32 - horizontal_offset));
+                    let ruler_x = text_origin_x + (after_layout.cell_width * (f32::from(ruler_col - 1) - horizontal_offset));
 
                     // Only render if the ruler is within our visible bounds
                     if ruler_x >= text_origin_x && ruler_x < bounds.origin.x + bounds.size.width {
@@ -1920,7 +1737,7 @@ impl Element for DocumentElement {
                         // Calculate viewport width accounting for gutter and some padding
                         // The text area width is the total width minus the gutter width
                         // We also subtract a small amount for right padding to prevent text cutoff
-                        let gutter_width_px = gutter_offset as f32 * after_layout.cell_width;
+                        let gutter_width_px = f32::from(gutter_offset) * after_layout.cell_width;
                         let right_padding = after_layout.cell_width * 2.0; // 2 characters of padding
                         let text_area_width = bounds.size.width - gutter_width_px - right_padding;
                         let viewport_width = (text_area_width / after_layout.cell_width).max(10.0) as u16;
@@ -1939,7 +1756,7 @@ impl Element for DocumentElement {
                         view_offset.anchor,
                     );
 
-                    let text_origin_x = bounds.origin.x + (gutter_offset as f32 * after_layout.cell_width);
+                    let text_origin_x = bounds.origin.x + (f32::from(gutter_offset) * after_layout.cell_width);
                     let mut y_offset = px(0.0);
                     let mut visual_line = 0;
                     let mut current_doc_line = text.char_to_line(view_offset.anchor);
@@ -1948,7 +1765,7 @@ impl Element for DocumentElement {
                     // Skip lines before the viewport - need to consume all graphemes for skipped lines
                     let mut pending_grapheme = None;
                     while visual_line < view_offset.vertical_offset {
-                        while let Some(grapheme) = formatter.next() {
+                        for grapheme in formatter.by_ref() {
                             if grapheme.visual_pos.row > visual_line {
                                 // We've moved to the next visual line
                                 visual_line = grapheme.visual_pos.row;
@@ -1984,7 +1801,7 @@ impl Element for DocumentElement {
 
                         // Collect all graphemes for this visual line
                         let mut has_content = !line_graphemes.is_empty();
-                        while let Some(grapheme) = formatter.next() {
+                        for grapheme in formatter.by_ref() {
                             if grapheme.visual_pos.row > visual_line {
                                 // This grapheme belongs to the next visual line
                                 pending_grapheme = Some(grapheme);
@@ -2031,12 +1848,9 @@ impl Element for DocumentElement {
                         for grapheme in &line_graphemes {
                             if grapheme.is_virtual() {
                                 // This is virtual text (likely wrap indicator)
-                                match &grapheme.raw {
-                                    helix_core::graphemes::Grapheme::Other { g } => {
-                                        wrap_indicator_len += g.len(); // Track byte length
-                                        line_str.push_str(g);
-                                    }
-                                    _ => {}
+                                if let helix_core::graphemes::Grapheme::Other { g } = &grapheme.raw {
+                                    wrap_indicator_len += g.len(); // Track byte length
+                                    line_str.push_str(g);
                                 }
                             } else {
                                 // Real text content
@@ -2054,7 +1868,7 @@ impl Element for DocumentElement {
                             let line_start = first_grapheme.char_idx;
                             let line_end = line_graphemes.iter()
                                 .filter(|g| !g.is_virtual())
-                                .last()
+                                .next_back()
                                 .map(|g| g.char_idx + g.doc_chars())
                                 .unwrap_or(line_start);
 
@@ -2067,19 +1881,19 @@ impl Element for DocumentElement {
                                         Some(v) => v,
                                         None => return,
                                     };
-                                    Self::highlight_line_with_params(
-                                        document,
+                                    Self::highlight_line_with_params(HighlightLineParams {
+                                        doc: document,
                                         view,
-                                        &editor_theme,
+                                        theme: &editor_theme,
                                         editor_mode,
-                                        &cursor_shape,
-                                        &syn_loader,
-                                        self.is_focused,
+                                        cursor_shape: &cursor_shape,
+                                        syn_loader: &syn_loader,
+                                        is_view_focused: self.is_focused,
                                         line_start,
                                         line_end,
                                         fg_color,
-                                        self.style.font(),
-                                    )
+                                        font: self.style.font(),
+                                    })
                                 } else {
                                     Vec::new()
                                 }
@@ -2186,7 +2000,7 @@ impl Element for DocumentElement {
                         let mut visual_line = 0;
                         let mut pending_grapheme = None;
                         while visual_line < view_offset.vertical_offset {
-                            while let Some(grapheme) = formatter.next() {
+                            for grapheme in formatter.by_ref() {
                                 if grapheme.visual_pos.row > visual_line {
                                     visual_line = grapheme.visual_pos.row;
                                     if visual_line >= view_offset.vertical_offset {
@@ -2215,7 +2029,7 @@ impl Element for DocumentElement {
                             }
 
                             // Collect graphemes for this visual line
-                            while let Some(grapheme) = formatter.next() {
+                            for grapheme in formatter.by_ref() {
                                 if grapheme.visual_pos.row > visual_line {
                                     pending_grapheme = Some(grapheme);
                                     break;
@@ -2364,7 +2178,7 @@ impl Element for DocumentElement {
 
                         // Find the cursor position in the visual lines
                         // We need to re-create the formatter to find the cursor
-                        let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
+                        let formatter = DocumentFormatter::new_at_prev_checkpoint(
                             text,
                             &text_format,
                             &annotations,
@@ -2376,7 +2190,7 @@ impl Element for DocumentElement {
                         let mut cursor_visual_col = 0;
 
                         // Iterate through graphemes to find cursor position (following Helix's approach)
-                        while let Some(grapheme) = formatter.next() {
+                        for grapheme in formatter {
                             // Check if the cursor position is before the next grapheme
                             // This matches Helix's logic: formatter.next_char_pos() > pos
                             let next_char_pos = grapheme.char_idx + grapheme.doc_chars();
@@ -2544,19 +2358,19 @@ impl Element for DocumentElement {
                             None => return,
                         };
 
-                        let line_runs = Self::highlight_line_with_params(
-                            document,
+                        let line_runs = Self::highlight_line_with_params(HighlightLineParams {
+                            doc: document,
                             view,
-                            &editor_theme,
+                            theme: &editor_theme,
                             editor_mode,
-                            &cursor_shape,
-                            &syn_loader,
-                            self.is_focused,
+                            cursor_shape: &cursor_shape,
+                            syn_loader: &syn_loader,
+                            is_view_focused: self.is_focused,
                             line_start,
                             line_end,
                             fg_color,
-                            self.style.font(),
-                        );
+                            font: self.style.font(),
+                        });
 
                         (line_str, line_runs)
                     };
@@ -2755,7 +2569,7 @@ impl Element for DocumentElement {
                                     let cursor_char_offset = cursor_char_offset.min(line_text.chars().count());
 
                                     // Convert char offset to byte offset for GPUI's x_for_index
-                                    let cursor_byte_offset = line_text.chars().take(cursor_char_offset).map(|c| c.len_utf8()).sum::<usize>();
+                                    let cursor_byte_offset = line_text.chars().take(cursor_char_offset).map(char::len_utf8).sum::<usize>();
 
                                     (line_start, cursor_char_offset, cursor_byte_offset, line_text)
                                 };
@@ -3012,8 +2826,8 @@ impl<'a> GutterRenderer for Gutter<'a> {
         style: helix_view::graphics::Style,
         text: Option<&str>,
     ) {
-        let origin_y = self.origin.y + self.after_layout.line_height * y as f32;
-        let origin_x = self.origin.x + self.after_layout.cell_width * x as f32;
+        let origin_y = self.origin.y + self.after_layout.line_height * f32::from(y);
+        let origin_x = self.origin.x + self.after_layout.cell_width * f32::from(x);
 
         let base_fg = style
             .fg

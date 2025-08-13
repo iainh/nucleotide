@@ -282,8 +282,8 @@ fn complete_themes(prefix: &str) -> Vec<CompletionItem> {
     fuzzy_match(prefix, names, false)
         .into_iter()
         .map(|(name, _score)| CompletionItem {
-            text: format!("theme {}", name).into(),
-            description: Some(format!("Switch to {} theme", name).into()),
+            text: format!("theme {name}").into(),
+            description: Some(format!("Switch to {name} theme").into()),
             display_text: None,
         })
         .collect()
@@ -326,8 +326,11 @@ fn complete_command_arguments_with_cache(
                 // Use cached settings if available
                 if let Some(settings) = cached_settings {
                     use helix_core::fuzzy::fuzzy_match;
-                    let matches =
-                        fuzzy_match(current_arg, settings.iter().map(|s| s.as_str()), false);
+                    let matches = fuzzy_match(
+                        current_arg,
+                        settings.iter().map(std::string::String::as_str),
+                        false,
+                    );
 
                     // Use the command that was actually typed (which might be an alias)
                     let typed_command = command_name;
@@ -335,7 +338,7 @@ fn complete_command_arguments_with_cache(
                     matches
                         .into_iter()
                         .map(|(setting, _score)| CompletionItem {
-                            text: format!("{} {}", typed_command, setting).into(),
+                            text: format!("{typed_command} {setting}").into(),
                             description: Some(
                                 format!(
                                     "{} the {} setting",

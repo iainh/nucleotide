@@ -1,7 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::FontFeatures;
+use gpui::{
+    black, div, hsla, px, svg, transparent_black, white, App, AppContext, BorrowAppContext,
+    Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Render, StatefulInteractiveElement, Styled, TextStyle, Window, WindowAppearance,
+    WindowBackgroundAppearance,
+};
 use helix_core::Selection;
 use helix_view::ViewId;
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
@@ -54,7 +61,7 @@ impl Workspace {
                     return doc.path().map(|p| {
                         p.file_name()
                             .and_then(|name| name.to_str())
-                            .map(|s| s.to_string())
+                            .map(std::string::ToString::to_string)
                             .unwrap_or_else(|| p.display().to_string())
                     });
                 }
@@ -534,7 +541,7 @@ impl Workspace {
             use helix_stdx::rope::{self, RopeSliceExt};
 
             let case_insensitive = core.editor.config().search.smart_case
-                && search_text.chars().all(|c| c.is_lowercase());
+                && search_text.chars().all(char::is_lowercase);
 
             // Build regex the same way Helix does it in search_next_or_prev_impl
             let regex = if let Ok(regex) = rope::RegexBuilder::new()
@@ -547,7 +554,7 @@ impl Workspace {
             {
                 Ok(regex)
             } else {
-                Err(format!("Failed to compile regex: {}", search_text))
+                Err(format!("Failed to compile regex: {search_text}"))
             };
 
             match regex {
@@ -629,11 +636,11 @@ impl Workspace {
                         }
                     } else {
                         core.editor
-                            .set_error(format!("Pattern not found: {}", search_text));
+                            .set_error(format!("Pattern not found: {search_text}"));
                     }
                 }
                 Err(e) => {
-                    core.editor.set_error(format!("Invalid regex: {}", e));
+                    core.editor.set_error(format!("Invalid regex: {e}"));
                 }
             }
 
@@ -669,7 +676,7 @@ impl Workspace {
             Err(e) => {
                 // Show error to user
                 self.core.update(cx, |core, cx| {
-                    core.editor.set_error(format!("Invalid command: {}", e));
+                    core.editor.set_error(format!("Invalid command: {e}"));
                     cx.notify();
                 });
             }
@@ -685,7 +692,7 @@ impl Workspace {
             }
             Command::Write { path } => {
                 let cmd = match path {
-                    Some(p) => format!("write {}", p),
+                    Some(p) => format!("write {p}"),
                     None => "write".to_string(),
                 };
                 self.execute_raw_command(&cmd, cx);
@@ -694,13 +701,13 @@ impl Workspace {
                 self.execute_raw_command(if force { "wq !" } else { "wq" }, cx);
             }
             Command::Goto { line } => {
-                self.execute_raw_command(&format!("goto {}", line), cx);
+                self.execute_raw_command(&format!("goto {line}"), cx);
             }
             Command::Theme { name } => {
-                self.execute_raw_command(&format!("theme {}", name), cx);
+                self.execute_raw_command(&format!("theme {name}"), cx);
             }
             Command::Open { path } => {
-                self.execute_raw_command(&format!("open {}", path), cx);
+                self.execute_raw_command(&format!("open {path}"), cx);
             }
             Command::Split { direction } => match direction {
                 SplitDirection::Horizontal => self.execute_raw_command("split", cx),
@@ -711,23 +718,23 @@ impl Workspace {
             }
             Command::Help { topic } => {
                 let cmd = match topic {
-                    Some(t) => format!("help {}", t),
+                    Some(t) => format!("help {t}"),
                     None => "help".to_string(),
                 };
                 self.execute_raw_command(&cmd, cx);
             }
             Command::Search { pattern } => {
-                self.execute_raw_command(&format!("search {}", pattern), cx);
+                self.execute_raw_command(&format!("search {pattern}"), cx);
             }
             Command::Replace {
                 pattern,
                 replacement,
             } => {
-                self.execute_raw_command(&format!("replace {} {}", pattern, replacement), cx);
+                self.execute_raw_command(&format!("replace {pattern} {replacement}"), cx);
             }
             Command::Generic(parsed) => {
                 // Execute generic commands
-                self.execute_raw_command(&format!("{}", parsed), cx);
+                self.execute_raw_command(&format!("{parsed}"), cx);
             }
         }
     }
@@ -817,7 +824,7 @@ impl Workspace {
                                 true,
                                 |token| {
                                     helix_view::expansion::expand(comp_ctx.editor, token)
-                                        .map_err(|err| err.into())
+                                        .map_err(std::convert::Into::into)
                                 },
                             );
 
@@ -1336,15 +1343,10 @@ impl Workspace {
         info!("Tab bar visible, rendering tabs");
 
         // Get the currently active document ID
-        let active_doc_id = if let Some(focused_view_id) = self.focused_view_id {
-            if let Some(view) = editor.tree.try_get(focused_view_id) {
-                Some(view.doc)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let active_doc_id = self
+            .focused_view_id
+            .and_then(|focused_view_id| editor.tree.try_get(focused_view_id))
+            .map(|view| view.doc);
 
         // Collect document information
         let mut documents = Vec::new();
@@ -1943,7 +1945,7 @@ impl Workspace {
                     .family
                     .clone()
                     .into(),
-                font_features: Default::default(),
+                font_features: FontFeatures::default(),
                 font_fallbacks: None,
                 font_size: px(editor_font.size).into(),
                 line_height: gpui::phi(), // Use golden ratio for optimal line height
@@ -2046,7 +2048,7 @@ impl Render for Workspace {
                         focused_file_name = doc.path().map(|p| {
                             p.file_name()
                                 .and_then(|name| name.to_str())
-                                .map(|s| s.to_string())
+                                .map(std::string::ToString::to_string)
                                 .unwrap_or_else(|| p.display().to_string())
                         });
                     }
@@ -2138,7 +2140,7 @@ impl Render for Workspace {
                     .flex_col()
                     .w_full()
                     .flex_1() // Take remaining height after tab bar
-                    .when_some(Some(docs_root), |this, docs| this.child(docs))
+                    .when_some(Some(docs_root), gpui::ParentElement::child)
                     .child(self.notifications.clone())
                     .when(!self.overlay.read(cx).is_empty(), |this| {
                         let view = &self.overlay;
@@ -2606,7 +2608,7 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     walker.add_custom_ignore_filename(".helix/ignore");
     walker.hidden(false); // Show hidden files like .gitignore
 
-    for entry in walker.build().filter_map(|e| e.ok()) {
+    for entry in walker.build().filter_map(std::result::Result::ok) {
         let path = entry.path().to_path_buf();
 
         // Skip directories
@@ -2743,7 +2745,7 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
             } else {
                 display_str[start + 1..].trim().to_string()
             }
-        } else if display_str.chars().all(|c| c.is_numeric()) {
+        } else if display_str.chars().all(char::is_numeric) {
             // If it's already just a number, use it
             display_str
         } else {
@@ -2764,7 +2766,7 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
             flags.push('*');
         }
         // Pad flags to consistent width
-        let flags_str = format!("{:<2}", flags);
+        let flags_str = format!("{flags:<2}");
 
         // Get path or [scratch] label
         let path_str = if let Some(path) = &meta.path {
@@ -2783,7 +2785,7 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
 
         // Combine into terminal-like format with proper spacing
         // Pad ID to 4 characters for consistent alignment
-        let label = format!("{:<4} {} {}", id_str, flags_str, path_str);
+        let label = format!("{id_str:<4} {flags_str} {path_str}");
 
         // Create data that includes both doc_id and path for preview functionality
         // We'll store a tuple of (DocumentId, Option<PathBuf>) for all items

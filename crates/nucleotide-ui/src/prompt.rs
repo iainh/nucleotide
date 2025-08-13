@@ -1,4 +1,7 @@
-use gpui::*;
+use gpui::{
+    div, hsla, px, App, FocusHandle, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, Styled, TextStyle, Window,
+};
 use std::sync::Arc;
 
 use crate::text_utils::TextWithStyle;

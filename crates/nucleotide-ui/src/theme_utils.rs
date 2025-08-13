@@ -11,9 +11,9 @@ pub fn color_to_hsla(color: Color) -> Option<Hsla> {
     match color {
         Color::Rgb(r, g, b) => {
             let rgba = Rgba {
-                r: r as f32 / 255.0,
-                g: g as f32 / 255.0,
-                b: b as f32 / 255.0,
+                r: f32::from(r) / 255.0,
+                g: f32::from(g) / 255.0,
+                b: f32::from(b) / 255.0,
                 a: 1.0,
             };
             Some(Hsla::from(rgba))

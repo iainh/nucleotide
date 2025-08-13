@@ -2,12 +2,18 @@
 // ABOUTME: Manages tab layout and provides callbacks for tab interactions
 
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    div, px, App, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    StatefulInteractiveElement, Styled, Window,
+};
 use helix_view::DocumentId;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::tab::Tab;
+
+/// Type alias for tab event handlers
+type TabEventHandler = Arc<dyn Fn(DocumentId, &mut Window, &mut App) + 'static>;
 
 /// Information about a document for tab display
 #[derive(Clone)]
@@ -28,9 +34,9 @@ pub struct TabBar {
     /// Project directory for relative paths
     project_directory: Option<PathBuf>,
     /// Callback when a tab is clicked
-    on_tab_click: Arc<dyn Fn(DocumentId, &mut Window, &mut App) + 'static>,
+    on_tab_click: TabEventHandler,
     /// Callback when a tab close button is clicked
-    on_tab_close: Arc<dyn Fn(DocumentId, &mut Window, &mut App) + 'static>,
+    on_tab_close: TabEventHandler,
 }
 
 impl TabBar {
@@ -62,7 +68,7 @@ impl TabBar {
             // Otherwise use filename
             path.file_name()
                 .and_then(|name| name.to_str())
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .unwrap_or_else(|| path.display().to_string())
         } else {
             // Unnamed buffer
@@ -135,9 +141,7 @@ impl RenderOnce for TabBar {
             .border_b_1()
             .border_color(ui_theme.border)
             .overflow_x_scroll()
-            .when(has_tabs, |this| {
-                this.children(tabs.into_iter().map(|tab| tab))
-            })
+            .when(has_tabs, |this| this.children(tabs))
             .when(!has_tabs, |this| {
                 // Show placeholder when no tabs
                 this.child(

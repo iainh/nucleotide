@@ -15,7 +15,9 @@ use gpui::{
 
 // Import from the library crate instead of re-declaring modules
 use nucleotide::application::Application;
-use nucleotide::*;
+use nucleotide::{
+    application, config, info_box, notification, overlay, types, workspace, ThemeManager,
+};
 
 // Only declare modules that are not in lib.rs (binary-specific modules)
 mod test_utils;
@@ -82,7 +84,7 @@ fn install_panic_handler() {
                     backtrace = %format!("{:?}", bt),
                     "Panic backtrace"
                 );
-                eprintln!("Backtrace:\n{:?}", bt);
+                eprintln!("Backtrace:\n{bt:?}");
             }
         }
 
@@ -241,7 +243,20 @@ fn window_options(cx: &mut App, config: &nucleotide::config::Config) -> gpui::Wi
 
 // Import actions from our centralized definitions
 use nucleotide::actions::{
-    common::*, completion::*, editor::*, help::*, picker::*, test::*, window::*, workspace::*,
+    common::{Cancel, Confirm, MoveDown, MoveLeft, MoveRight, MoveUp},
+    completion::{
+        CompletionConfirm, CompletionDismiss, CompletionSelectFirst, CompletionSelectLast,
+        CompletionSelectNext, CompletionSelectPrev,
+    },
+    editor::{
+        CloseFile, Copy, DecreaseFontSize, IncreaseFontSize, OpenDirectory, OpenFile, Paste, Quit,
+        Redo, Save, SaveAs, Undo,
+    },
+    help::{About, OpenTutorial},
+    picker::{ConfirmSelection, DismissPicker, SelectFirst, SelectLast, TogglePreview},
+    test::{TestCompletion, TestPrompt},
+    window::{Hide, HideOthers, Minimize, ShowAll, Zoom},
+    workspace::ToggleFileTree,
 };
 
 fn app_menus() -> Vec<Menu> {
@@ -518,7 +533,7 @@ fn gui_main(
         cx.set_global(EditorFontConfig {
             family: editor_font_config.family,
             size: editor_font_config.size,
-            weight: editor_font_config.weight.into(),
+            weight: editor_font_config.weight,
             line_height: 1.4, // Default line height
         });
 
@@ -526,7 +541,7 @@ fn gui_main(
         cx.set_global(UiFontConfig {
             family: ui_font_config.family,
             size: ui_font_config.size,
-            weight: ui_font_config.weight.into(),
+            weight: ui_font_config.weight,
         });
 
         // Initialize preview tracker
@@ -636,7 +651,9 @@ fn gui_main(
             // Set up keybindings with proper key contexts
 
             // Import workspace actions for global bindings
-            use nucleotide::actions::workspace::*;
+            use nucleotide::actions::workspace::{
+                NewFile, NewWindow, ShowBufferPicker, ShowCommandPalette, ShowFileFinder,
+            };
 
             // Global actions - work regardless of focus (no context specified)
             cx.bind_keys([
@@ -698,7 +715,7 @@ fn gui_main(
             ]);
 
             // FileTree-specific keybindings
-            use nucleotide::actions::file_tree::*;
+            use nucleotide::actions::file_tree::{OpenFile, SelectNext, SelectPrev};
             cx.bind_keys([
                 gpui::KeyBinding::new(
                     "up",

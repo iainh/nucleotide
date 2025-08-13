@@ -3,7 +3,11 @@
 
 use crate::common::{FocusableModal, ModalStyle, SearchInput};
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    div, hsla, px, uniform_list, App, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, Result,
+    SharedString, Size, Styled, Task, UniformListScrollHandle,
+};
 use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;
 use nucleo::Nucleo;
@@ -180,7 +184,9 @@ impl PickerView {
 
     pub fn with_items(mut self, items: Vec<PickerItem>) -> Self {
         self.items = items;
-        self.filtered_indices = (0..self.items.len() as u32).collect();
+        // Reasonable assumption: pickers won't have more than u32::MAX items
+        let item_count = u32::try_from(self.items.len()).unwrap_or(u32::MAX);
+        self.filtered_indices = (0..item_count).collect();
         // Reset matcher when items change
         self.matcher = None;
         // Reset initial preview flag so preview loads for new items
@@ -229,7 +235,9 @@ impl PickerView {
 
     fn filter_items(&mut self, _cx: &mut Context<Self>) {
         if self.query.is_empty() {
-            self.filtered_indices = (0..self.items.len() as u32).collect();
+            // Reasonable assumption: pickers won't have more than u32::MAX items
+            let item_count = u32::try_from(self.items.len()).unwrap_or(u32::MAX);
+            self.filtered_indices = (0..item_count).collect();
         } else {
             // Simple fuzzy matching for now
             // TODO: Properly integrate nucleo when API is stable
@@ -266,7 +274,7 @@ impl PickerView {
 
                     current_char.is_none() // True if all chars were matched
                 })
-                .map(|(idx, _)| idx as u32)
+                .filter_map(|(idx, _)| u32::try_from(idx).ok())
                 .collect();
         }
     }
@@ -278,9 +286,11 @@ impl PickerView {
 
         let _old_index = self.selected_index;
         let new_index = if delta > 0 {
-            (self.selected_index + delta as usize).min(self.filtered_indices.len() - 1)
+            let delta_usize = usize::try_from(delta).unwrap_or(0);
+            (self.selected_index + delta_usize).min(self.filtered_indices.len() - 1)
         } else {
-            self.selected_index.saturating_sub((-delta) as usize)
+            let delta_usize = usize::try_from(-delta).unwrap_or(0);
+            self.selected_index.saturating_sub(delta_usize)
         };
 
         self.selected_index = new_index;
@@ -379,7 +389,7 @@ impl PickerView {
 
     fn calculate_dimensions(&self, window_size: Size<Pixels>) -> CachedDimensions {
         let min_width_for_preview = 800.0;
-        let window_width = window_size.width.0 as f64;
+        let window_width = f64::from(window_size.width.0);
         let window_height = window_size.height;
 
         let show_preview = self.show_preview && window_width > min_width_for_preview;
@@ -847,7 +857,7 @@ impl PickerView {
                         // Check if this is a buffer picker by looking at the label format
                         let parts: Vec<&str> = item.label.split_whitespace().collect();
                         // Check if first part looks like an ID (numeric or starts with digit)
-                        parts.len() >= 3 && parts[0].chars().next().is_some_and(|c| c.is_numeric())
+                        parts.len() >= 3 && parts[0].chars().next().is_some_and(char::is_numeric)
                     })
                     .unwrap_or(false),
                 |this| {

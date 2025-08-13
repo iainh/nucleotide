@@ -3,7 +3,11 @@
 
 use crate::spacing;
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    div, hsla, px, white, App, ElementId, FontWeight, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement,
+    Styled, Window,
+};
 
 /// Button variant styles
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -57,6 +57,8 @@ impl PerfTimer {
 impl Drop for PerfTimer {
     fn drop(&mut self) {
         let elapsed = self.start.elapsed();
+        // Note: Precision loss is acceptable for logging milliseconds
+        #[allow(clippy::cast_precision_loss)]
         let elapsed_ms = elapsed.as_millis() as f64;
 
         // Record the elapsed time in the span
@@ -65,10 +67,13 @@ impl Drop for PerfTimer {
         // Check if we should warn about slow operations
         if let Some(threshold) = self.warn_threshold {
             if elapsed > threshold {
+                // Note: Precision loss is acceptable for logging milliseconds
+                #[allow(clippy::cast_precision_loss)]
+                let threshold_ms = threshold.as_millis() as f64;
                 warn!(
                     operation = %self.operation,
                     elapsed_ms = elapsed_ms,
-                    threshold_ms = threshold.as_millis() as f64,
+                    threshold_ms = threshold_ms,
                     "Slow operation detected"
                 );
             }
@@ -117,7 +122,7 @@ impl PerfStats {
     pub fn get_stats(&self, operation: &str) -> Option<(u64, Duration, Duration)> {
         let count = *self.operation_counts.get(operation)?;
         let total = *self.total_time.get(operation)?;
-        let average = total / count as u32;
+        let average = total / u32::try_from(count).unwrap_or(u32::MAX);
         Some((count, total, average))
     }
 

@@ -2,8 +2,14 @@
 // ABOUTME: Displays buffer name, modified indicator, and handles click events
 
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    div, px, App, CursorStyle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement, RenderOnce, SharedString, Styled, Window,
+};
 use helix_view::DocumentId;
+
+/// Type alias for mouse event handlers in tabs
+type MouseEventHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
 
 /// A single tab in the tab bar
 #[derive(IntoElement)]
@@ -17,9 +23,9 @@ pub struct Tab {
     /// Whether this tab is currently active
     pub is_active: bool,
     /// Callback when tab is clicked
-    pub on_click: Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>,
+    pub on_click: MouseEventHandler,
     /// Callback when close button is clicked
-    pub on_close: Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>,
+    pub on_close: MouseEventHandler,
 }
 
 impl Tab {

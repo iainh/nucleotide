@@ -1,7 +1,7 @@
 // ABOUTME: Document rendering logic that converts Helix document state to GPUI elements
 // ABOUTME: Depends on capability traits rather than concrete types to avoid circular deps
 
-use gpui::*;
+use gpui::{div, px, rgb, Div, IntoElement, ParentElement, Pixels, Styled};
 use helix_core::Rope;
 use helix_view::DocumentId;
 use nucleotide_core::EditorState;
@@ -58,7 +58,7 @@ impl<S: EditorState> DocumentRenderer<S> {
                     .pr(px(10.0))
                     .text_right()
                     .text_color(rgb(0x6c7086))
-                    .child(format!("{}", line_number)),
+                    .child(format!("{line_number}")),
             )
             .child(
                 // Line content

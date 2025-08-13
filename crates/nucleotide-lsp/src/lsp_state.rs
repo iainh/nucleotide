@@ -143,7 +143,7 @@ impl LspState {
 
     /// Start a progress operation
     pub fn start_progress(&mut self, server_id: LanguageServerId, token: String, title: String) {
-        let key = format!("{}-{}", server_id, token);
+        let key = format!("{server_id}-{token}");
         self.progress.insert(
             key,
             LspProgress {
@@ -164,7 +164,7 @@ impl LspState {
         message: Option<String>,
         percentage: Option<u32>,
     ) {
-        let key = format!("{}-{}", server_id, token);
+        let key = format!("{server_id}-{token}");
         if let Some(progress) = self.progress.get_mut(&key) {
             if let Some(msg) = message {
                 progress.message = Some(msg);
@@ -177,7 +177,7 @@ impl LspState {
 
     /// End a progress operation
     pub fn end_progress(&mut self, server_id: LanguageServerId, token: String) {
-        let key = format!("{}-{}", server_id, token);
+        let key = format!("{server_id}-{token}");
         self.progress.remove(&key);
     }
 
@@ -230,7 +230,7 @@ impl LspState {
                         status.push_str(msg);
                     }
                     if let Some(pct) = p.percentage {
-                        status.push_str(&format!(" ({}%)", pct));
+                        status.push_str(&format!(" ({pct}%)"));
                     }
                     status
                 })
@@ -290,7 +290,7 @@ impl LspState {
                     message.push_str(msg);
                 }
                 if let Some(pct) = progress.percentage {
-                    message.push_str(&format!(" ({}%)", pct));
+                    message.push_str(&format!(" ({pct}%)"));
                 }
 
                 // Truncate if too long (max 40 chars for the message part)

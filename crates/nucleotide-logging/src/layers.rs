@@ -190,8 +190,10 @@ mod tests {
         use crate::config::LogLevel;
         use tracing::Level;
 
-        let mut config = LoggingConfig::default();
-        config.level = LogLevel(Level::DEBUG);
+        let mut config = LoggingConfig {
+            level: LogLevel(Level::DEBUG),
+            ..Default::default()
+        };
         config
             .module_levels
             .insert("nucleotide_core".to_string(), LogLevel(Level::TRACE));

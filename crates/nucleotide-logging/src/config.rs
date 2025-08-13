@@ -174,8 +174,7 @@ impl LoggingConfig {
 
             if let Some((module, level_str)) = directive.split_once('=') {
                 let level = parse_log_level(level_str).context(format!(
-                    "Invalid log level '{}' for module '{}'",
-                    level_str, module
+                    "Invalid log level '{level_str}' for module '{module}'"
                 ))?;
                 self.module_levels
                     .insert(module.to_string(), LogLevel(level));
@@ -183,7 +182,7 @@ impl LoggingConfig {
                 // Global level
                 self.level = LogLevel(
                     parse_log_level(directive)
-                        .context(format!("Invalid global log level '{}'", directive))?,
+                        .context(format!("Invalid global log level '{directive}'"))?,
                 );
             }
         }

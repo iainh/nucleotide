@@ -3,20 +3,15 @@
 
 use crate::theme_utils::color_to_hsla;
 use crate::Theme as UITheme;
-use gpui::*;
+use gpui::hsla;
 use helix_view::Theme as HelixTheme;
 
 /// System appearance state
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum SystemAppearance {
+    #[default]
     Light,
     Dark,
-}
-
-impl Default for SystemAppearance {
-    fn default() -> Self {
-        SystemAppearance::Light
-    }
 }
 
 /// Manages theme state and provides consistent access to theme colors

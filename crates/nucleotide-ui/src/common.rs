@@ -4,7 +4,10 @@
 #![allow(dead_code)]
 
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    black, div, hsla, px, Div, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Stateful, Styled, Window,
+};
 
 /// Common modal container styling
 pub struct ModalContainer;

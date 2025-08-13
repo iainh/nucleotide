@@ -31,7 +31,7 @@ impl<'a> LspManager<'a> {
         call: Call,
         server_id: LanguageServerId,
     ) {
-        let _timer = timed!("lsp_message_handling", warn_threshold: std::time::Duration::from_millis(100), {
+        timed!("lsp_message_handling", warn_threshold: std::time::Duration::from_millis(100), {
         // Track that we've seen this server
         // Note: We'll need to pass the LspState entity down from Application
         // For now, just handle the messages

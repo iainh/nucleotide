@@ -2,6 +2,7 @@
 // ABOUTME: Pure data structures for font settings
 
 use crate::config::FontWeight;
+use gpui::FontFeatures;
 use serde::{Deserialize, Serialize};
 
 /// Font descriptor - lightweight representation of a font
@@ -64,7 +65,7 @@ impl From<Font> for gpui::Font {
                 FontStyle::Italic => gpui::FontStyle::Italic,
                 FontStyle::Oblique => gpui::FontStyle::Oblique,
             },
-            features: Default::default(),
+            features: FontFeatures::default(),
             fallbacks: None,
         }
     }

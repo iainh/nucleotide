@@ -4,7 +4,10 @@
 #![allow(dead_code)]
 
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    div, hsla, px, AnyElement, App, Context, DismissEvent, Div, EventEmitter, FontWeight, Hsla,
+    IntoElement, ParentElement, SharedString, Styled, Task, Window,
+};
 use std::sync::Arc;
 
 /// Theme colors for picker UI elements

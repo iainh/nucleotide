@@ -2,7 +2,11 @@
 // ABOUTME: Displays language server status, progress, and diagnostic counts
 
 use crate::lsp_state::LspState;
-use gpui::*;
+use gpui::{
+    div, hsla, px, App, Bounds, Context, Element, ElementId, Entity, GlobalElementId,
+    InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Render, SharedString, Style,
+    Styled, TextRun, TextStyle, Window,
+};
 use nucleotide_logging::error;
 
 /// LSP status indicator for the status bar
@@ -26,7 +30,7 @@ impl Render for LspStatus {
         // Show server count if any are running
         let running_count = state.running_servers_count();
         if running_count > 0 {
-            status_parts.push(format!("LSP:{}", running_count));
+            status_parts.push(format!("LSP:{running_count}"));
         }
 
         // Show progress indicator if busy
@@ -37,9 +41,9 @@ impl Render for LspStatus {
         }
 
         // Show diagnostic count summary
-        let total_diagnostics: usize = state.diagnostics.values().map(|diags| diags.len()).sum();
+        let total_diagnostics: usize = state.diagnostics.values().map(std::vec::Vec::len).sum();
         if total_diagnostics > 0 {
-            status_parts.push(format!("⚠ {}", total_diagnostics));
+            status_parts.push(format!("⚠ {total_diagnostics}"));
         }
 
         // If nothing to show, return empty
@@ -102,7 +106,7 @@ impl Element for LspStatusElement {
         let mut status = String::new();
         let running = state.running_servers_count();
         if running > 0 {
-            status.push_str(&format!("LSP:{} ", running));
+            status.push_str(&format!("LSP:{running} "));
         }
         if state.is_busy() {
             status.push_str("⟳ ");
@@ -138,7 +142,7 @@ impl Element for LspStatusElement {
         let mut status = String::new();
         let running = state.running_servers_count();
         if running > 0 {
-            status.push_str(&format!("LSP:{} ", running));
+            status.push_str(&format!("LSP:{running} "));
         }
         if state.is_busy() {
             status.push_str("⟳ ");

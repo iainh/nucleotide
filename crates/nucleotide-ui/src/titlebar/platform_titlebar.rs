@@ -106,8 +106,8 @@ impl Render for PlatformTitleBar {
             .map(|el| match decorations {
                 Decorations::Server => el,
                 Decorations::Client { tiling } => el
-                    .when(!(tiling.top || tiling.right), |el| el.rounded_tr_md())
-                    .when(!(tiling.top || tiling.left), |el| el.rounded_tl_md()),
+                    .when(!(tiling.top || tiling.right), gpui::Styled::rounded_tr_md)
+                    .when(!(tiling.top || tiling.left), gpui::Styled::rounded_tl_md),
             })
             .content_stretch()
             .child(

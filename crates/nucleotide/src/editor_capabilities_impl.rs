@@ -4,7 +4,9 @@
 use crate::application::Application;
 use helix_core::Rope;
 use helix_view::{Document, DocumentId, Editor, Theme, ViewId};
-use nucleotide_core::editor_capabilities::*;
+use nucleotide_core::editor_capabilities::{
+    CommandExecution, DocumentAccess, EditorAccess, EditorCapabilities, StatusInfo, ViewManagement,
+};
 use std::path::Path;
 
 impl DocumentAccess for Application {
@@ -17,18 +19,25 @@ impl DocumentAccess for Application {
     }
 
     fn get_document_rope(&self, id: DocumentId) -> Option<&Rope> {
-        self.editor.documents.get(&id).map(|doc| doc.text())
+        self.editor
+            .documents
+            .get(&id)
+            .map(helix_view::Document::text)
     }
 
     fn get_document_path(&self, id: DocumentId) -> Option<&Path> {
-        self.editor.documents.get(&id)?.path().map(|p| p.as_path())
+        self.editor
+            .documents
+            .get(&id)?
+            .path()
+            .map(std::path::PathBuf::as_path)
     }
 
     fn get_document_language(&self, id: DocumentId) -> Option<String> {
         self.editor
             .documents
             .get(&id)
-            .and_then(|doc| doc.language_name().map(|s| s.to_string()))
+            .and_then(|doc| doc.language_name().map(std::string::ToString::to_string))
     }
 }
 
@@ -108,7 +117,7 @@ impl StatusInfo for Application {
 
             let modified = if doc.is_modified() { "[+]" } else { "" };
 
-            format!("{}{}", path, modified)
+            format!("{path}{modified}")
         } else {
             String::new()
         }
@@ -154,7 +163,10 @@ impl EditorCapabilities for Application {
     }
 
     fn has_unsaved_changes(&self) -> bool {
-        self.editor.documents.values().any(|doc| doc.is_modified())
+        self.editor
+            .documents
+            .values()
+            .any(helix_view::Document::is_modified)
     }
 
     fn save_all(&mut self) -> Result<(), String> {

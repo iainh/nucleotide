@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use gpui::{prelude::FluentBuilder, *};
+use gpui::{
+    div, prelude::FluentBuilder, px, App, Context, DefiniteLength, FontWeight, Hsla, IntoElement,
+    ParentElement, Render, RenderOnce, Result, Styled, Window,
+};
 use helix_lsp::LanguageServerId;
 use helix_view::document::DocumentSavedEvent;
 use nucleotide_types::EditorStatus;
@@ -172,6 +175,6 @@ impl RenderOnce for Notification {
                     .items_center()
                     .child(self.title),
             )
-            .when_some(message, |this, msg| this.child(msg))
+            .when_some(message, gpui::ParentElement::child)
     }
 }

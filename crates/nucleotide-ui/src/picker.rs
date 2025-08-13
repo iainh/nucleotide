@@ -1,5 +1,8 @@
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    div, hsla, px, App, FocusHandle, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    RenderOnce, SharedString, Styled, Window,
+};
 use std::sync::Arc;
 
 use crate::picker_view::PickerItem;

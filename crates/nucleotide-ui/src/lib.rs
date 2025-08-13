@@ -28,7 +28,7 @@ pub use list_item::*;
 pub use picker::Picker;
 pub use prompt::{Prompt, PromptElement};
 
-use gpui::*;
+use gpui::{hsla, App, Hsla};
 
 /// Standard spacing values following Zed's design system
 pub mod spacing {

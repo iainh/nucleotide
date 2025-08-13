@@ -3,7 +3,13 @@
 
 use std::{any::Any, cell::Cell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
 
-use gpui::*;
+use gpui::{
+    fill, hsla, px, quad, relative, Along, App, Axis, BorderStyle, Bounds, ContentMask, Corners,
+    CursorStyle, Edges, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior,
+    InspectorElementId, IntoElement, IsZero, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, ScrollHandle, ScrollWheelEvent, Size, Style,
+    UniformListScrollHandle, Window,
+};
 
 /// A scrollbar component that can be attached to scrollable content
 pub struct Scrollbar {
@@ -98,7 +104,7 @@ pub struct ScrollbarState {
 impl ScrollbarState {
     pub fn new(scroll: impl ScrollableHandle) -> Self {
         Self {
-            thumb_state: Default::default(),
+            thumb_state: Rc::default(),
             scroll_handle: Arc::new(scroll),
         }
     }

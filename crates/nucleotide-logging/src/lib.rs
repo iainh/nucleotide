@@ -147,9 +147,7 @@ mod tests {
     #[test]
     fn test_file_logging_setup() {
         use std::fs::File;
-        use std::io::Write;
         use tempfile::tempdir;
-        use tracing_subscriber::{fmt, prelude::*, util::SubscriberInitExt};
 
         // Create a temporary directory for testing
         let temp_dir = tempdir().unwrap();

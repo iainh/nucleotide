@@ -1,6 +1,9 @@
 use crate::utils::color_to_hsla;
 use crate::Core;
-use gpui::*;
+use gpui::{
+    div, hsla, px, App, Context, Entity, EventEmitter, Hsla, IntoElement, ParentElement, Render,
+    Styled, Window,
+};
 use helix_view::{DocumentId, ViewId};
 
 /// StatusLineView is a proper GPUI View that can observe model changes
@@ -123,7 +126,7 @@ impl Render for StatusLineView {
                             if let Some(parent_name) = parent.file_name() {
                                 format!(".../{}/{}", parent_name.to_string_lossy(), file_name_str)
                             } else {
-                                format!(".../{}", file_name_str)
+                                format!(".../{file_name_str}")
                             }
                         } else {
                             file_name_str.to_string()

@@ -1,7 +1,7 @@
 // ABOUTME: Main workspace manager that coordinates between editor state and UI
 // ABOUTME: Uses capability traits to avoid circular dependencies
 
-use gpui::*;
+use gpui::Result;
 use nucleotide_core::{CoreEvent, EditorState, EventBus, EventHandler, WorkspaceEvent};
 use nucleotide_logging::{debug, info};
 use std::sync::{Arc, RwLock};
@@ -45,7 +45,7 @@ impl<S: EditorState + 'static> WorkspaceManager<S> {
         };
 
         // Create a tab for it - use debug format since DocumentId fields are private
-        let tab_id = format!("doc_{:?}", doc_id);
+        let tab_id = format!("doc_{doc_id:?}");
         let tab = crate::tab_manager::Tab::new(tab_id.clone(), path.display().to_string());
         self.tabs.add_tab(tab);
 

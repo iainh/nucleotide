@@ -15,10 +15,10 @@ pub enum AppEvent {
 impl std::fmt::Debug for AppEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AppEvent::Core(e) => write!(f, "Core({:?})", e),
-            AppEvent::Ui(e) => write!(f, "Ui({:?})", e),
-            AppEvent::Workspace(e) => write!(f, "Workspace({:?})", e),
-            AppEvent::Lsp(e) => write!(f, "Lsp({:?})", e),
+            AppEvent::Core(e) => write!(f, "Core({e:?})"),
+            AppEvent::Ui(e) => write!(f, "Ui({e:?})"),
+            AppEvent::Workspace(e) => write!(f, "Workspace({e:?})"),
+            AppEvent::Lsp(e) => write!(f, "Lsp({e:?})"),
         }
     }
 }

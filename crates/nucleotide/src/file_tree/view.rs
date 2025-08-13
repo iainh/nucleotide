@@ -7,7 +7,11 @@ use crate::file_tree::{
     FileTreeEvent, GitStatus,
 };
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    div, px, uniform_list, App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
+    UniformListScrollHandle, Window,
+};
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_ui::theme_utils::color_to_hsla;
 use nucleotide_ui::{
@@ -738,18 +742,13 @@ impl FileTreeView {
             debug!("Starting file system watcher background task");
 
             cx.spawn(async move |this, cx| {
-                loop {
-                    if let Some(event) = watcher.next_event().await {
-                        if let Some(this) = this.upgrade() {
-                            let _ = this.update(cx, |view, cx| {
-                                view.queue_file_system_event(event, cx);
-                            });
-                        } else {
-                            // Component was dropped, stop watching
-                            break;
-                        }
+                while let Some(event) = watcher.next_event().await {
+                    if let Some(this) = this.upgrade() {
+                        let _ = this.update(cx, |view, cx| {
+                            view.queue_file_system_event(event, cx);
+                        });
                     } else {
-                        // Watcher ended, stop the loop
+                        // Component was dropped, stop watching
                         break;
                     }
                 }
@@ -827,13 +826,13 @@ impl FileTreeView {
             use crate::file_tree::FileSystemEventKind;
             match kind {
                 FileSystemEventKind::Created => {
-                    self.handle_file_created(&path, cx);
+                    self.handle_file_created(path, cx);
                 }
                 FileSystemEventKind::Deleted => {
-                    self.handle_file_deleted(&path, cx);
+                    self.handle_file_deleted(path, cx);
                 }
                 FileSystemEventKind::Modified => {
-                    self.handle_file_modified(&path, cx);
+                    self.handle_file_modified(path, cx);
                 }
                 FileSystemEventKind::Renamed { from, to } => {
                     self.handle_file_renamed(from, to, cx);
@@ -1281,7 +1280,7 @@ impl Render for FileTreeView {
                     )
                     .when_some(
                         Scrollbar::vertical(self.scrollbar_state.clone()),
-                        |div, scrollbar| div.child(scrollbar),
+                        gpui::ParentElement::child,
                     ),
             )
     }

@@ -143,7 +143,7 @@ impl Application {
                                         continue;
                                     }
                                     helix_lsp::ProgressStatus::Started { title, progress } => {
-                                        let key = format!("{}-{:?}", id, token);
+                                        let key = format!("{id}-{token:?}");
                                         let (message, percentage) = match progress {
                                             lsp::WorkDoneProgress::Begin(begin) => {
                                                 (begin.message.clone(), begin.percentage)
@@ -166,7 +166,7 @@ impl Application {
 
                                         state.progress.insert(key, nucleotide_lsp::LspProgress {
                                             server_id: id,
-                                            token: format!("{:?}", token),
+                                            token: format!("{token:?}"),
                                             title: title.clone(),
                                             message,
                                             percentage,
@@ -354,7 +354,7 @@ impl Application {
             .git_ignore(true) // Respect .gitignore
             .git_global(true) // Respect global .gitignore
             .git_exclude(true) // Respect .git/info/exclude
-            .sort_by_file_name(|a, b| a.cmp(b)) // Sort alphabetically
+            .sort_by_file_name(std::cmp::Ord::cmp) // Sort alphabetically
             .filter_entry(|entry| {
                 // Filter out VCS directories and common build directories
                 if let Some(name) = entry.file_name().to_str() {
@@ -469,7 +469,7 @@ impl Application {
                 flags.push('*');
             }
             // Pad flags to consistent width
-            let flags_str = format!("{:<2}", flags);
+            let flags_str = format!("{flags:<2}");
 
             // Get path or [scratch] label
             let path_str = if let Some(path) = &meta.path {
@@ -487,7 +487,7 @@ impl Application {
             };
 
             // Combine into terminal-like format with proper spacing
-            let label = format!("{:<4} {} {}", id_str, flags_str, path_str);
+            let label = format!("{id_str:<4} {flags_str} {path_str}");
 
             // Store the document ID in the picker item data
             items.push(PickerItem {
@@ -957,7 +957,7 @@ impl Application {
                                     info!("New bufferline config in Update event: {:?}", new_editor_config.bufferline);
                                     // The toggle command sent us a new config
                                     // We detect what changed and store it as overrides
-                                    self.config.apply_helix_config_update(&new_editor_config);
+                                    self.config.apply_helix_config_update(new_editor_config);
 
                                     // Update the ArcSwap with the new config so the editor sees it
                                     let updated_helix_config = self.config.to_helix_config();

@@ -4,7 +4,7 @@
 use gpui::actions;
 
 pub mod picker {
-    use super::*;
+    use super::actions;
 
     actions!(
         picker,
@@ -21,7 +21,7 @@ pub mod picker {
 }
 
 pub mod completion {
-    use super::*;
+    use super::actions;
 
     actions!(
         completion,
@@ -38,7 +38,7 @@ pub mod completion {
 }
 
 pub mod prompt {
-    use super::*;
+    use super::actions;
 
     actions!(
         prompt,
@@ -58,7 +58,7 @@ pub mod prompt {
 }
 
 pub mod file_tree {
-    use super::*;
+    use super::actions;
 
     actions!(
         file_tree,
@@ -73,7 +73,7 @@ pub mod file_tree {
 }
 
 pub mod editor {
-    use super::*;
+    use super::actions;
 
     actions!(
         editor,
@@ -95,13 +95,13 @@ pub mod editor {
 }
 
 pub mod help {
-    use super::*;
+    use super::actions;
 
     actions!(help, [About, OpenTutorial,]);
 }
 
 pub mod workspace {
-    use super::*;
+    use super::actions;
 
     actions!(
         workspace,
@@ -117,20 +117,20 @@ pub mod workspace {
 }
 
 pub mod window {
-    use super::*;
+    use super::actions;
 
     actions!(window, [Hide, HideOthers, ShowAll, Minimize, Zoom,]);
 }
 
 pub mod test {
-    use super::*;
+    use super::actions;
 
     actions!(test, [TestPrompt, TestCompletion,]);
 }
 
 // Common editor navigation actions
 pub mod common {
-    use super::*;
+    use super::actions;
 
     actions!(
         common,

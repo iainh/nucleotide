@@ -21,7 +21,7 @@ impl ParsedCommand {
         }
 
         // Check if it's a line number (special case)
-        if input.chars().all(|c| c.is_numeric()) {
+        if input.chars().all(char::is_numeric) {
             return Ok(ParsedCommand {
                 name: "goto".to_string(),
                 args: vec![input.to_string()],
@@ -38,7 +38,10 @@ impl ParsedCommand {
 
         // Parse arguments
         let args = if parts.len() > 1 {
-            parts[1].split_whitespace().map(|s| s.to_string()).collect()
+            parts[1]
+                .split_whitespace()
+                .map(std::string::ToString::to_string)
+                .collect()
         } else {
             Vec::new()
         };
@@ -108,7 +111,7 @@ impl fmt::Display for ParsedCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name)?;
         for arg in &self.args {
-            write!(f, " {}", arg)?;
+            write!(f, " {arg}")?;
         }
         Ok(())
     }

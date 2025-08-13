@@ -3,10 +3,16 @@
 
 #![allow(dead_code)]
 
-use crate::actions::picker::*;
+use crate::actions::picker::{
+    ConfirmSelection, DismissPicker, SelectFirst, SelectLast, SelectNext, SelectPrev, TogglePreview,
+};
 use crate::picker_delegate::PickerDelegate;
 use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    div, hsla, px, uniform_list, App, Context, DismissEvent, Element, Entity, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy,
+    Styled, UniformListScrollHandle, Window,
+};
 
 /// Generic picker element that works with any PickerDelegate
 pub struct Picker<D: PickerDelegate> {
@@ -142,8 +148,8 @@ impl<D: PickerDelegate> Render for Picker<D> {
 
         // Calculate dimensions
         let window_size = window.viewport_size();
-        let window_width = window_size.width.0 as f64;
-        let window_height = window_size.height.0 as f64;
+        let window_width = f64::from(window_size.width.0);
+        let window_height = f64::from(window_size.height.0);
         let total_width = px((window_width * 0.8).min(1000.0) as f32);
         let max_height = px((window_height * 0.7).min(600.0) as f32);
 
