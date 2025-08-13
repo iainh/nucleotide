@@ -1,5 +1,10 @@
 # Nucleotide Teal Theme - A WCAG-compliant teal variant of the default Helix theme
+# Author: Nucleotide contributors
+# License: MPL-2.0
+# Compatibility: This theme was created for Nucleotide but is fully compatible with Helix
+#
 # Based on the default purple theme but with teal as the dominant color
+# Features WCAG AA compliant contrast ratios for accessibility
 
 attribute = "aqua"
 keyword = "almond"

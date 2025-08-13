@@ -1,5 +1,10 @@
 # Nucleotide Ocean Theme - A WCAG-compliant cool-toned theme
+# Author: Nucleotide contributors
+# License: MPL-2.0
+# Compatibility: This theme was created for Nucleotide but is fully compatible with Helix
+#
 # Background: Cadet Gray (#A3BAC3) with cerulean and moonstone accents
+# Features WCAG AA compliant contrast ratios for accessibility
 
 attribute = "cerulean-dark"
 keyword = "moonstone-dark"

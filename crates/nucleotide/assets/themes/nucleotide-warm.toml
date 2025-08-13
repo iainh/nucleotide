@@ -1,5 +1,10 @@
 # Nucleotide Warm Theme - A WCAG-compliant light theme with warm accents
+# Author: Nucleotide contributors
+# License: MPL-2.0
+# Compatibility: This theme was created for Nucleotide but is fully compatible with Helix
+#
 # Background: Beige (#EBEBD3) with Yale Blue and warm color accents
+# Features WCAG AA compliant contrast ratios for accessibility
 
 attribute = "yale-blue"
 keyword = "rust-dark"

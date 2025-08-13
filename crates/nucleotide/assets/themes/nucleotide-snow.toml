@@ -1,5 +1,10 @@
 # Nucleotide Snow Theme - A WCAG-compliant light theme with teal accents
+# Author: Nucleotide contributors
+# License: MPL-2.0
+# Compatibility: This theme was created for Nucleotide but is fully compatible with Helix
+#
 # Background: Snow Drift (#E4E4DC) with dark text for optimal contrast
+# Features WCAG AA compliant contrast ratios for accessibility
 
 attribute = "teal-dark"
 keyword = "plum"
