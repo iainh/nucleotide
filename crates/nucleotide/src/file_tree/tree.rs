@@ -507,7 +507,7 @@ impl FileTree {
     }
 
     /// Generate next entry ID
-    fn next_entry_id(&mut self) -> FileTreeEntryId {
+    pub fn next_entry_id(&mut self) -> FileTreeEntryId {
         let id = FileTreeEntryId(self.next_id);
         self.next_id += 1;
         id
@@ -764,7 +764,7 @@ impl FileTree {
     }
 
     /// Get VCS status for a specific path
-    fn get_vcs_status(&self, path: &Path) -> Option<GitStatus> {
+    pub fn get_vcs_status(&self, path: &Path) -> Option<GitStatus> {
         self.git_status_cache.get(path).cloned()
     }
 

@@ -1,9 +1,10 @@
 // ABOUTME: File tree UI view component using GPUI's uniform_list for performance
 // ABOUTME: Handles user interaction, selection, and rendering of file tree entries
 
+use crate::file_tree::watcher::FileTreeWatcher;
 use crate::file_tree::{
-    get_file_icon, get_symlink_icon, icons::chevron_icon, DebouncedFileTreeWatcher, FileTree,
-    FileTreeConfig, FileTreeEntry, FileTreeEvent, GitStatus,
+    get_file_icon, get_symlink_icon, icons::chevron_icon, FileTree, FileTreeConfig, FileTreeEntry,
+    FileTreeEvent, GitStatus,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -30,7 +31,11 @@ pub struct FileTreeView {
     /// Tokio runtime handle for async VCS operations
     tokio_handle: Option<tokio::runtime::Handle>,
     /// File system watcher for detecting changes
-    _file_watcher: Option<DebouncedFileTreeWatcher>,
+    file_watcher: Option<FileTreeWatcher>,
+    /// Pending file system events for debouncing
+    pending_fs_events: std::collections::HashMap<PathBuf, FileTreeEvent>,
+    /// Last file system event time for debouncing
+    last_fs_event_time: Option<std::time::Instant>,
 }
 
 impl FileTreeView {
@@ -53,7 +58,9 @@ impl FileTreeView {
             scroll_handle,
             scrollbar_state,
             tokio_handle: None,
-            _file_watcher: None,
+            file_watcher: None,
+            pending_fs_events: std::collections::HashMap::new(),
+            last_fs_event_time: None,
         };
 
         // Auto-select the first entry if there are any entries
@@ -84,17 +91,19 @@ impl FileTreeView {
 
         // Try to create file watcher if filesystem watching is enabled
         let file_watcher = if config.watch_filesystem {
-            match DebouncedFileTreeWatcher::with_defaults(root_path.clone()) {
+            debug!(root_path = ?root_path, "Attempting to create file system watcher");
+            match FileTreeWatcher::new(root_path.clone()) {
                 Ok(watcher) => {
-                    debug!(root_path = ?root_path, "File system watcher created");
+                    debug!(root_path = ?root_path, "File system watcher created successfully");
                     Some(watcher)
                 }
                 Err(e) => {
-                    warn!(error = %e, "Failed to create file system watcher");
+                    warn!(error = %e, root_path = ?root_path, "Failed to create file system watcher");
                     None
                 }
             }
         } else {
+            debug!("File system watching disabled in config");
             None
         };
 
@@ -108,7 +117,9 @@ impl FileTreeView {
             scroll_handle,
             scrollbar_state,
             tokio_handle,
-            _file_watcher: file_watcher,
+            file_watcher,
+            pending_fs_events: std::collections::HashMap::new(),
+            last_fs_event_time: None,
         };
 
         // Auto-select the first entry if there are any entries
@@ -125,6 +136,14 @@ impl FileTreeView {
             // Fallback to test statuses for demonstration
             debug!("No Tokio handle available, using test statuses");
             instance.apply_test_statuses(cx);
+        }
+
+        // Start file watcher if enabled
+        if instance.file_watcher.is_some() {
+            debug!("Starting file system watcher");
+            instance.start_file_watcher(cx);
+        } else {
+            debug!("No file watcher available, file watching disabled");
         }
 
         instance
@@ -711,6 +730,276 @@ impl FileTreeView {
         cx.notify();
 
         debug!("Applied test VCS statuses to demonstrate indicators");
+    }
+
+    /// Start the file system watcher background task
+    fn start_file_watcher(&mut self, cx: &mut Context<Self>) {
+        if let Some(mut watcher) = self.file_watcher.take() {
+            debug!("Starting file system watcher background task");
+
+            cx.spawn(async move |this, cx| {
+                loop {
+                    if let Some(event) = watcher.next_event().await {
+                        if let Some(this) = this.upgrade() {
+                            let _ = this.update(cx, |view, cx| {
+                                view.queue_file_system_event(event, cx);
+                            });
+                        } else {
+                            // Component was dropped, stop watching
+                            break;
+                        }
+                    } else {
+                        // Watcher ended, stop the loop
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+    }
+
+    /// Queue a file system event for debounced processing
+    fn queue_file_system_event(&mut self, event: FileTreeEvent, cx: &mut Context<Self>) {
+        if let FileTreeEvent::FileSystemChanged { path, kind } = &event {
+            debug!(path = ?path, kind = ?kind, "Queuing file system event");
+
+            // Immediate debug: check if root is expanded
+            if let Some(parent) = path.parent() {
+                let is_expanded = self.tree.is_expanded(parent);
+                debug!(parent = ?parent, is_expanded = is_expanded, "Parent directory expansion status");
+            }
+
+            // Store the latest event for this path
+            self.pending_fs_events.insert(path.clone(), event);
+            self.last_fs_event_time = Some(std::time::Instant::now());
+
+            // Schedule a debounced processing after 300ms
+            cx.spawn(async move |this, cx| {
+                // Wait for debounce period
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(300))
+                    .await;
+
+                if let Some(this) = this.upgrade() {
+                    let _ = this.update(cx, |view, cx| {
+                        view.process_pending_events(cx);
+                    });
+                }
+            })
+            .detach();
+        }
+    }
+
+    /// Process pending file system events
+    fn process_pending_events(&mut self, cx: &mut Context<Self>) {
+        debug!("Processing pending file system events");
+
+        // Check if enough time has passed since the last event
+        if let Some(last_time) = self.last_fs_event_time {
+            if last_time.elapsed() < std::time::Duration::from_millis(300) {
+                debug!("Debounce time not elapsed yet, skipping processing");
+                return;
+            }
+        }
+
+        // Collect events to process to avoid borrowing issues
+        let events_to_process: Vec<_> = self.pending_fs_events.drain().collect();
+        debug!(
+            event_count = events_to_process.len(),
+            "Processing {} pending events",
+            events_to_process.len()
+        );
+
+        // Process all collected events
+        for (_, event) in events_to_process {
+            debug!("Processing event: {:?}", event);
+            self.handle_file_system_event(event, cx);
+        }
+
+        self.last_fs_event_time = None;
+    }
+
+    /// Handle a file system event and update the tree structure
+    fn handle_file_system_event(&mut self, event: FileTreeEvent, cx: &mut Context<Self>) {
+        if let FileTreeEvent::FileSystemChanged { path, kind } = &event {
+            debug!(path = ?path, kind = ?kind, "Handling file system event");
+
+            use crate::file_tree::FileSystemEventKind;
+            match kind {
+                FileSystemEventKind::Created => {
+                    self.handle_file_created(&path, cx);
+                }
+                FileSystemEventKind::Deleted => {
+                    self.handle_file_deleted(&path, cx);
+                }
+                FileSystemEventKind::Modified => {
+                    self.handle_file_modified(&path, cx);
+                }
+                FileSystemEventKind::Renamed { from, to } => {
+                    self.handle_file_renamed(from, to, cx);
+                }
+            }
+
+            // Emit the event to workspace for further handling (VCS refresh, etc.)
+            cx.emit(event);
+        }
+    }
+
+    /// Handle file/directory creation
+    fn handle_file_created(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
+        debug!(path = ?path, "Handling file creation");
+
+        // Check if the parent directory is expanded and visible
+        if let Some(parent) = path.parent() {
+            // Only add if parent directory is expanded (visible in tree)
+            if self.tree.is_expanded(parent) {
+                debug!(parent = ?parent, "Parent directory is expanded, adding new entry");
+
+                // Create the new entry
+                if let Ok(metadata) = std::fs::metadata(path) {
+                    let entry = self.create_tree_entry(path, &metadata, parent);
+
+                    // Add the entry to the tree
+                    self.tree.upsert_entry(entry);
+                    debug!(path = ?path, "Successfully added new entry to tree");
+
+                    // Trigger VCS refresh to get correct status indicators for the new file
+                    debug!(path = ?path, "Triggering VCS refresh for newly added file");
+                    self.handle_vcs_refresh(false, cx);
+
+                    cx.notify();
+                } else {
+                    debug!(path = ?path, "Failed to get metadata for created file");
+                }
+            } else {
+                debug!(parent = ?parent, "Parent directory not expanded, skipping file addition");
+            }
+        } else {
+            debug!(path = ?path, "No parent directory found for created file");
+        }
+    }
+
+    /// Create a tree entry from path and metadata  
+    fn create_tree_entry(
+        &mut self,
+        path: &PathBuf,
+        metadata: &std::fs::Metadata,
+        parent: &std::path::Path,
+    ) -> crate::file_tree::FileTreeEntry {
+        use crate::file_tree::FileTreeEntry;
+
+        let id = self.tree.next_entry_id();
+        let mtime = metadata.modified().ok();
+
+        // Determine depth based on parent
+        let parent_depth = if let Some(parent_entry) = self.tree.entry_by_path(parent) {
+            parent_entry.depth
+        } else {
+            0
+        };
+
+        let mut entry = if metadata.is_dir() {
+            FileTreeEntry::new_directory(id, path.clone(), mtime)
+        } else if metadata.is_file() {
+            FileTreeEntry::new_file(id, path.clone(), metadata.len(), mtime)
+        } else {
+            // Symlink
+            let target = std::fs::read_link(path).ok();
+            let target_exists = target.as_ref().map(|t| t.exists()).unwrap_or(false);
+            FileTreeEntry::new_symlink(id, path.clone(), target, target_exists, mtime)
+        };
+
+        entry.depth = parent_depth + 1;
+        entry.is_visible = true;
+
+        // Set VCS status if available
+        if let Some(status) = self.tree.get_vcs_status(path) {
+            entry.git_status = Some(status);
+        }
+
+        entry
+    }
+
+    /// Handle file/directory deletion  
+    fn handle_file_deleted(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
+        debug!(path = ?path, "Handling file deletion");
+
+        // Remove the entry from the tree
+        if self.tree.remove_entry(path).is_some() {
+            // If the deleted file was selected, clear selection or select next available
+            if self.selected_path.as_ref() == Some(path) {
+                // Try to select the next available entry
+                let entries = self.tree.visible_entries();
+                let new_selection = if !entries.is_empty() {
+                    Some(entries[0].path.clone())
+                } else {
+                    None
+                };
+                self.select_path(new_selection, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    /// Handle file modification
+    fn handle_file_modified(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
+        debug!(path = ?path, "Handling file modification");
+
+        // Check if this file exists in the tree
+        if let Some(_existing_entry) = self.tree.entry_by_path(path) {
+            // File exists in tree - this is a genuine modification
+            debug!(path = ?path, "File exists in tree, treating as modification");
+
+            // For now, just refresh VCS status since file content changed
+            // We could also update metadata if needed (size, permissions, etc.)
+            self.handle_vcs_refresh(false, cx);
+        } else {
+            // File doesn't exist in tree - this might be a new file creation
+            // that was reported as "Modified" instead of "Created" by the OS
+            debug!(path = ?path, "File not in tree, checking if it's a new file");
+
+            // Verify the file actually exists on disk
+            if path.exists() {
+                debug!(path = ?path, "File exists on disk but not in tree, treating as creation");
+                self.handle_file_created(path, cx);
+            } else {
+                debug!(path = ?path, "File doesn't exist on disk or in tree, ignoring");
+            }
+        }
+    }
+
+    /// Handle file/directory rename
+    fn handle_file_renamed(&mut self, from: &PathBuf, to: &PathBuf, cx: &mut Context<Self>) {
+        debug!(from = ?from, to = ?to, "Handling file rename");
+
+        // Remove the old entry
+        if self.tree.remove_entry(from).is_some() {
+            // Update selection if the renamed file was selected
+            if self.selected_path.as_ref() == Some(from) {
+                self.select_path(Some(to.clone()), cx);
+            }
+
+            // Add the new entry if parent is expanded
+            if let Some(parent) = to.parent() {
+                if self.tree.is_expanded(parent) {
+                    debug!(parent = ?parent, "Parent directory is expanded, adding renamed entry");
+
+                    if let Ok(metadata) = std::fs::metadata(to) {
+                        let entry = self.create_tree_entry(to, &metadata, parent);
+                        self.tree.upsert_entry(entry);
+                        debug!(path = ?to, "Successfully added renamed entry to tree");
+
+                        // Trigger VCS refresh to get correct status for the renamed file
+                        debug!(from = ?from, to = ?to, "Triggering VCS refresh for renamed file");
+                        self.handle_vcs_refresh(false, cx);
+                    } else {
+                        debug!(path = ?to, "Failed to get metadata for renamed file");
+                    }
+                }
+            }
+
+            cx.notify();
+        }
     }
 
     /// Render a single file tree entry
