@@ -3,6 +3,7 @@
 
 use crate::lsp_state::LspState;
 use gpui::*;
+use nucleotide_logging::error;
 
 /// LSP status indicator for the status bar
 pub struct LspStatus {
@@ -187,7 +188,7 @@ impl Element for LspStatusElement {
                 window,
                 cx,
             ) {
-                log::error!("Failed to paint LSP status: {e:?}");
+                error!(error = ?e, "Failed to paint LSP status");
             }
         }
     }

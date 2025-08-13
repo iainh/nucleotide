@@ -7,6 +7,7 @@ use crate::file_tree::{
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use nucleotide_logging::{debug, error, warn};
 use nucleotide_ui::theme_utils::color_to_hsla;
 use nucleotide_ui::{
     scrollbar::{Scrollbar, ScrollbarState},
@@ -39,7 +40,7 @@ impl FileTreeView {
 
         // Load initial tree structure
         if let Err(e) = tree.load() {
-            log::error!("Failed to load file tree: {}", e);
+            error!(error = %e, "Failed to load file tree");
         }
 
         let scroll_handle = UniformListScrollHandle::new();
@@ -78,18 +79,18 @@ impl FileTreeView {
 
         // Load initial tree structure
         if let Err(e) = tree.load() {
-            log::error!("Failed to load file tree: {}", e);
+            error!(error = %e, "Failed to load file tree");
         }
 
         // Try to create file watcher if filesystem watching is enabled
         let file_watcher = if config.watch_filesystem {
             match DebouncedFileTreeWatcher::with_defaults(root_path.clone()) {
                 Ok(watcher) => {
-                    log::debug!("File system watcher created for: {:?}", root_path);
+                    debug!(root_path = ?root_path, "File system watcher created");
                     Some(watcher)
                 }
                 Err(e) => {
-                    log::warn!("Failed to create file system watcher: {}", e);
+                    warn!(error = %e, "Failed to create file system watcher");
                     None
                 }
             }
@@ -118,11 +119,11 @@ impl FileTreeView {
 
         // Start async VCS loading if we have a runtime handle
         if instance.tokio_handle.is_some() {
-            log::debug!("Starting async VCS refresh with Tokio handle");
+            debug!("Starting async VCS refresh with Tokio handle");
             instance.start_async_vcs_refresh(cx);
         } else {
             // Fallback to test statuses for demonstration
-            log::debug!("No Tokio handle available, using test statuses");
+            debug!("No Tokio handle available, using test statuses");
             instance.apply_test_statuses(cx);
         }
 
@@ -190,7 +191,7 @@ impl FileTreeView {
         if is_expanded {
             // Collapse is synchronous
             if let Err(e) = self.tree.collapse_directory(path) {
-                log::error!("Failed to collapse directory {}: {}", path.display(), e);
+                error!(path = %path.display(), error = %e, "Failed to collapse directory");
             } else {
                 cx.emit(FileTreeEvent::DirectoryToggled {
                     path: path.to_path_buf(),

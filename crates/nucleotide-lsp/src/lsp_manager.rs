@@ -7,7 +7,7 @@ use helix_lsp::{
     Call, LanguageServerId, LspProgressMap, MethodCall, Notification,
 };
 use helix_view::Editor;
-use log::{error, info, warn};
+use nucleotide_logging::{error, info, instrument, warn};
 use std::collections::btree_map::Entry;
 
 /// Manages LSP operations and message handling
@@ -25,6 +25,7 @@ impl<'a> LspManager<'a> {
     }
 
     /// Handle a language server message
+    #[instrument(skip(self))]
     pub async fn handle_language_server_message(
         &mut self,
         call: Call,
@@ -44,8 +45,8 @@ impl<'a> LspManager<'a> {
                     }
                     Err(err) => {
                         error!(
-                            "Ignoring unknown notification from Language Server: {}",
-                            err
+                            error = %err,
+                            "Ignoring unknown notification from Language Server"
                         );
                         return;
                     }
@@ -59,7 +60,7 @@ impl<'a> LspManager<'a> {
                         self.handle_progress_notification(params, server_id);
                     }
                     Notification::LogMessage(params) => {
-                        info!("LSP Log: {}", params.message);
+                        info!(message = %params.message, "LSP Log");
                     }
                     Notification::ShowMessage(params) => {
                         let _severity = match params.typ {
@@ -83,11 +84,12 @@ impl<'a> LspManager<'a> {
                 self.handle_method_call(method_call, server_id).await;
             }
             Call::Invalid { id } => {
-                error!("LSP invalid method call id={id:?}");
+                error!(id = ?id, "LSP invalid method call");
             }
         }
     }
 
+    #[instrument(skip(self), fields(uri = %params.uri))]
     fn handle_diagnostics_published(
         &mut self,
         mut params: helix_lsp::lsp::PublishDiagnosticsParams,
@@ -96,7 +98,7 @@ impl<'a> LspManager<'a> {
         let path = match params.uri.to_file_path() {
             Ok(path) => helix_stdx::path::normalize(path),
             Err(_) => {
-                error!("Unsupported file URI: {}", params.uri);
+                error!(uri = %params.uri, "Unsupported file URI");
                 return;
             }
         };
@@ -104,26 +106,34 @@ impl<'a> LspManager<'a> {
         let language_server = match self.editor.language_server_by_id(server_id) {
             Some(ls) => ls,
             None => {
-                warn!("can't find language server with id `{}`", server_id);
+                warn!(server_id = ?server_id, "Can't find language server with id");
                 return;
             }
         };
 
         if !language_server.is_initialized() {
             error!(
-                "Discarding publishDiagnostic notification sent by an uninitialized server: {}",
-                language_server.name()
+                server_name = %language_server.name(),
+                "Discarding publishDiagnostic notification sent by an uninitialized server"
             );
             return;
         }
 
         // Find the document with this path
-        let doc = self.editor.documents.values_mut()
+        let doc = self
+            .editor
+            .documents
+            .values_mut()
             .find(|doc| doc.path().map(|p| p == &path).unwrap_or(false))
             .filter(|doc| {
                 if let Some(version) = params.version {
                     if version != doc.version() {
-                        info!("Version ({version}) is out of date for {path:?} (expected ({}), dropping PublishDiagnostic notification", doc.version());
+                        info!(
+                            version = version,
+                            path = ?path,
+                            expected_version = doc.version(),
+                            "Version is out of date, dropping PublishDiagnostic notification"
+                        );
                         return false;
                     }
                 }
@@ -254,6 +264,7 @@ impl<'a> LspManager<'a> {
         }
     }
 
+    #[instrument(skip(self), fields(method = %method_call.method))]
     async fn handle_method_call(
         &mut self,
         method_call: helix_lsp::jsonrpc::MethodCall,
@@ -270,8 +281,9 @@ impl<'a> LspManager<'a> {
         let reply = match MethodCall::parse(&method_call.method, method_call.params) {
             Err(helix_lsp::Error::Unhandled) => {
                 error!(
-                    "Language Server: Method {} not found in request {}",
-                    method_call.method, method_call.id
+                    method = %method_call.method,
+                    request_id = %method_call.id,
+                    "Language Server: Method not found in request"
                 );
                 Err(helix_lsp::jsonrpc::Error {
                     code: helix_lsp::jsonrpc::ErrorCode::MethodNotFound,
@@ -281,8 +293,10 @@ impl<'a> LspManager<'a> {
             }
             Err(err) => {
                 error!(
-                    "Language Server: Received malformed method call {} in request {}: {}",
-                    method_call.method, method_call.id, err
+                    method = %method_call.method,
+                    request_id = %method_call.id,
+                    error = %err,
+                    "Language Server: Received malformed method call in request"
                 );
                 Err(helix_lsp::jsonrpc::Error {
                     code: helix_lsp::jsonrpc::ErrorCode::ParseError,
@@ -366,7 +380,7 @@ impl<'a> LspManager<'a> {
                                     match serde_json::from_value(options) {
                                         Ok(ops) => ops,
                                         Err(err) => {
-                                            warn!("Failed to deserialize DidChangeWatchedFilesRegistrationOptions: {err}");
+                                            warn!(error = %err, "Failed to deserialize DidChangeWatchedFilesRegistrationOptions");
                                             continue;
                                         }
                                     };
@@ -402,8 +416,8 @@ impl<'a> LspManager<'a> {
                         }
                         _ => {
                             warn!(
-                                "Received unregistration request for unsupported method: {}",
-                                unreg.method
+                                method = %unreg.method,
+                                "Received unregistration request for unsupported method"
                             );
                         }
                     }
@@ -420,7 +434,7 @@ impl<'a> LspManager<'a> {
         // Get language server again to send reply
         if let Some(language_server) = self.editor.language_server_by_id(server_id) {
             if let Err(err) = language_server.reply(method_call.id, reply) {
-                error!("Failed to reply to method call: {}", err);
+                error!(error = %err, "Failed to reply to method call");
             }
         }
     }
