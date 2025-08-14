@@ -16,7 +16,7 @@ use nucleotide_logging::{debug, error, warn};
 use nucleotide_ui::theme_utils::color_to_hsla;
 use nucleotide_ui::{
     scrollbar::{Scrollbar, ScrollbarState},
-    FileIcon, Theme, VcsIndicator, VcsStatus,
+    FileIcon, Theme, VcsStatus,
 };
 use std::path::{Path, PathBuf};
 

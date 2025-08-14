@@ -1264,7 +1264,6 @@ pub fn init_editor(
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-    use super::*;
     use crate::test_utils::test_support::{
         create_counting_channel, create_test_diagnostic_events, create_test_document_events,
         create_test_selection_events, TestUpdate,

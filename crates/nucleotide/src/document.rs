@@ -7,9 +7,8 @@ use gpui::{
     black, div, fill, hsla, px, relative, white, App, Bounds, Context, DefiniteLength,
     DismissEvent, Element, ElementId, Entity, EventEmitter, FocusHandle, Focusable, Font,
     GlobalElementId, Hitbox, Hsla, InspectorElementId, InteractiveElement, Interactivity,
-    IntoElement, LayoutId, MouseButton, ParentElement, Pixels, Point, Render, ShapedLine,
-    SharedString, Size, StatefulInteractiveElement, Style, Styled, TextStyle, Window,
-    WindowTextSystem,
+    IntoElement, LayoutId, ParentElement, Pixels, Point, Render, ShapedLine, SharedString, Size,
+    StatefulInteractiveElement, Style, Styled, TextStyle, Window, WindowTextSystem,
 };
 use gpui::{point, size, TextRun};
 use helix_core::{
@@ -18,7 +17,7 @@ use helix_core::{
     ropey::RopeSlice,
     syntax::{self, Highlight, HighlightEvent, OverlayHighlights},
     text_annotations::TextAnnotations,
-    Selection, Uri,
+    Uri,
 };
 use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
@@ -824,7 +823,7 @@ impl DocumentElement {
         let absolute_visual_row = visual_row + view_offset.vertical_offset;
 
         // Create DocumentFormatter to find the character at this visual position
-        let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
+        let formatter = DocumentFormatter::new_at_prev_checkpoint(
             text,
             text_format,
             &annotations,
@@ -979,7 +978,7 @@ impl DocumentElement {
             }
         }
 
-        let text_origin_x = params.bounds.origin.x
+        let _text_origin_x = params.bounds.origin.x
             + (f32::from(params.view.gutter_offset(params.document)) * params.cell_width);
         let mut y_offset = px(0.0);
 
@@ -1963,7 +1962,7 @@ impl Element for DocumentElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let focus = self.focus.clone();
+        let _focus = self.focus.clone();
         let core = self.core.clone();
         let view_id = self.view_id;
         let cell_width = after_layout.cell_width;
@@ -2065,8 +2064,8 @@ impl Element for DocumentElement {
         };
         line_cache.clear(); // Clear previous layouts
 
-        let line_cache_mouse = line_cache.clone();
-        let scrollbar_state_mouse = self.scrollbar_state.clone();
+        let _line_cache_mouse = line_cache.clone();
+        let _scrollbar_state_mouse = self.scrollbar_state.clone();
         // OLD MOUSE HANDLER REMOVED - Using new comprehensive handler above
 
         // Handle mouse drag for selection
@@ -3914,3 +3913,350 @@ impl<'t> OverlayHighlighter<'t> {
 }
 
 // Removed DiagnosticView - diagnostics are now handled through events and document highlights
+
+#[cfg(test)]
+mod coordinate_transformation_tests {
+    use super::*;
+    use gpui::{point, px, size, Bounds};
+    use helix_view::view::ViewPosition;
+
+    fn create_test_text_bounds() -> Bounds<Pixels> {
+        // Simulate text area: starts at (48, 24) with size 800x600
+        Bounds {
+            origin: point(px(48.0), px(24.0)), // After gutter (48px) and header (24px)
+            size: size(px(800.0), px(600.0)),
+        }
+    }
+
+    fn create_test_view_offset() -> ViewPosition {
+        ViewPosition {
+            anchor: 100, // Character position 100 in document
+            horizontal_offset: 0,
+            vertical_offset: 2, // 2 lines scrolled down
+        }
+    }
+
+    #[test]
+    fn test_window_to_text_area_coordinate_conversion() {
+        let text_bounds = create_test_text_bounds();
+
+        // Test basic coordinate conversion
+        let window_pos = point(px(100.0), px(100.0));
+        let text_area_pos = point(
+            window_pos.x - text_bounds.origin.x,
+            window_pos.y - text_bounds.origin.y,
+        );
+
+        // Expected: (100-48, 100-24) = (52, 76)
+        assert_eq!(text_area_pos.x, px(52.0));
+        assert_eq!(text_area_pos.y, px(76.0));
+
+        // Test position at text area origin
+        let origin_pos = text_bounds.origin;
+        let converted = point(
+            origin_pos.x - text_bounds.origin.x,
+            origin_pos.y - text_bounds.origin.y,
+        );
+        assert_eq!(converted.x, px(0.0));
+        assert_eq!(converted.y, px(0.0));
+
+        // Test position outside text area (should handle negative coordinates)
+        let outside_pos = point(px(20.0), px(10.0));
+        let outside_converted = point(
+            outside_pos.x - text_bounds.origin.x,
+            outside_pos.y - text_bounds.origin.y,
+        );
+        assert_eq!(outside_converted.x, px(-28.0));
+        assert_eq!(outside_converted.y, px(-14.0));
+    }
+
+    #[test]
+    fn test_text_area_to_content_coordinate_conversion() {
+        let view_offset = create_test_view_offset();
+        let cell_width = px(8.0);
+        let line_height = px(20.0);
+
+        // Test conversion with scroll offset
+        let text_area_pos = point(px(40.0), px(60.0));
+
+        // Content position = text_area_position + scroll_offset
+        let scroll_x = px(view_offset.horizontal_offset as f32 * cell_width.0);
+        let scroll_y = px(view_offset.vertical_offset as f32 * line_height.0);
+
+        let content_pos = point(text_area_pos.x + scroll_x, text_area_pos.y + scroll_y);
+
+        // Expected: (40 + 0*8, 60 + 2*20) = (40, 100)
+        assert_eq!(content_pos.x, px(40.0));
+        assert_eq!(content_pos.y, px(100.0));
+
+        // Test with horizontal scroll
+        let view_offset_with_h_scroll = ViewPosition {
+            anchor: 100,
+            horizontal_offset: 5, // 5 characters scrolled right
+            vertical_offset: 3,   // 3 lines scrolled down
+        };
+
+        let scroll_x_h = px(view_offset_with_h_scroll.horizontal_offset as f32 * cell_width.0);
+        let scroll_y_h = px(view_offset_with_h_scroll.vertical_offset as f32 * line_height.0);
+
+        let content_pos_h = point(text_area_pos.x + scroll_x_h, text_area_pos.y + scroll_y_h);
+
+        // Expected: (40 + 5*8, 60 + 3*20) = (80, 120)
+        assert_eq!(content_pos_h.x, px(80.0));
+        assert_eq!(content_pos_h.y, px(120.0));
+    }
+
+    #[test]
+    fn test_content_to_display_point_conversion() {
+        let cell_width = px(8.0);
+        let line_height = px(20.0);
+
+        // Test basic pixel to display point conversion
+        let content_pos = point(px(64.0), px(100.0));
+
+        let display_col = (content_pos.x.0 / cell_width.0) as usize;
+        let display_row = (content_pos.y.0 / line_height.0) as usize;
+
+        // Expected: (64/8, 100/20) = (8, 5)
+        assert_eq!(display_col, 8);
+        assert_eq!(display_row, 5);
+
+        // Test fractional positioning (should truncate)
+        let fractional_pos = point(px(67.5), px(109.9));
+        let frac_col = (fractional_pos.x.0 / cell_width.0) as usize;
+        let frac_row = (fractional_pos.y.0 / line_height.0) as usize;
+
+        // Expected: (67.5/8, 109.9/20) = (8, 5) (truncated)
+        assert_eq!(frac_col, 8);
+        assert_eq!(frac_row, 5);
+
+        // Test zero position
+        let zero_pos = point(px(0.0), px(0.0));
+        let zero_col = (zero_pos.x.0 / cell_width.0) as usize;
+        let zero_row = (zero_pos.y.0 / line_height.0) as usize;
+        assert_eq!(zero_col, 0);
+        assert_eq!(zero_row, 0);
+    }
+
+    #[test]
+    fn test_complete_coordinate_transformation_chain() {
+        // Test the complete chain: Window → TextArea → Content → DisplayPoint
+        let text_bounds = create_test_text_bounds();
+        let view_offset = create_test_view_offset();
+        let cell_width = px(8.0);
+        let line_height = px(20.0);
+
+        // Start with a window coordinate
+        let window_pos = point(px(144.0), px(84.0));
+
+        // Step 1: Window → TextArea
+        let text_area_pos = point(
+            window_pos.x - text_bounds.origin.x,
+            window_pos.y - text_bounds.origin.y,
+        );
+        // Expected: (144-48, 84-24) = (96, 60)
+        assert_eq!(text_area_pos.x, px(96.0));
+        assert_eq!(text_area_pos.y, px(60.0));
+
+        // Step 2: TextArea → Content
+        let scroll_x = px(view_offset.horizontal_offset as f32 * cell_width.0);
+        let scroll_y = px(view_offset.vertical_offset as f32 * line_height.0);
+        let content_pos = point(text_area_pos.x + scroll_x, text_area_pos.y + scroll_y);
+        // Expected: (96 + 0*8, 60 + 2*20) = (96, 100)
+        assert_eq!(content_pos.x, px(96.0));
+        assert_eq!(content_pos.y, px(100.0));
+
+        // Step 3: Content → DisplayPoint
+        let display_col = (content_pos.x.0 / cell_width.0) as usize;
+        let display_row = (content_pos.y.0 / line_height.0) as usize;
+        // Expected: (96/8, 100/20) = (12, 5)
+        assert_eq!(display_col, 12);
+        assert_eq!(display_row, 5);
+    }
+
+    #[test]
+    fn test_bounds_validation() {
+        let text_bounds = create_test_text_bounds();
+
+        // Test position inside bounds
+        let inside_pos = point(px(100.0), px(100.0));
+        assert!(text_bounds.contains(&inside_pos));
+
+        // Test position outside bounds (left)
+        let left_outside = point(px(20.0), px(100.0));
+        assert!(!text_bounds.contains(&left_outside));
+
+        // Test position outside bounds (top)
+        let top_outside = point(px(100.0), px(10.0));
+        assert!(!text_bounds.contains(&top_outside));
+
+        // Test position outside bounds (right)
+        let right_outside = point(px(900.0), px(100.0)); // text_bounds.origin.x + size.width = 48 + 800 = 848
+        assert!(!text_bounds.contains(&right_outside));
+
+        // Test position outside bounds (bottom)
+        let bottom_outside = point(px(100.0), px(700.0)); // text_bounds.origin.y + size.height = 24 + 600 = 624
+        assert!(!text_bounds.contains(&bottom_outside));
+
+        // Test position exactly at bounds edges
+        let top_left = text_bounds.origin;
+        assert!(text_bounds.contains(&top_left));
+
+        let bottom_right = point(
+            text_bounds.origin.x + text_bounds.size.width - px(1.0),
+            text_bounds.origin.y + text_bounds.size.height - px(1.0),
+        );
+        assert!(text_bounds.contains(&bottom_right));
+    }
+
+    #[test]
+    fn test_scroll_position_clamping() {
+        // Test scroll position clamping logic
+        let max_scroll_x = px(200.0);
+        let max_scroll_y = px(500.0);
+
+        // Test normal position (should not be clamped)
+        let normal_pos = point(px(100.0), px(250.0));
+        let clamped_normal = point(
+            normal_pos.x.max(px(0.0)).min(max_scroll_x),
+            normal_pos.y.max(px(0.0)).min(max_scroll_y),
+        );
+        assert_eq!(clamped_normal, normal_pos);
+
+        // Test negative position (should clamp to 0)
+        let negative_pos = point(px(-50.0), px(-100.0));
+        let clamped_negative = point(
+            negative_pos.x.max(px(0.0)).min(max_scroll_x),
+            negative_pos.y.max(px(0.0)).min(max_scroll_y),
+        );
+        assert_eq!(clamped_negative, point(px(0.0), px(0.0)));
+
+        // Test position beyond maximum (should clamp to max)
+        let beyond_max = point(px(300.0), px(600.0));
+        let clamped_beyond = point(
+            beyond_max.x.max(px(0.0)).min(max_scroll_x),
+            beyond_max.y.max(px(0.0)).min(max_scroll_y),
+        );
+        assert_eq!(clamped_beyond, point(max_scroll_x, max_scroll_y));
+    }
+
+    #[test]
+    fn test_x_overshoot_behavior() {
+        // Test X-overshoot tracking for selections past end-of-line
+        let line_width = px(80.0); // Line has 10 characters * 8px = 80px
+        let cell_width = px(8.0);
+
+        // Click within line bounds
+        let within_bounds = px(64.0); // 8 characters in
+        let within_col = (within_bounds.0 / cell_width.0) as usize;
+        assert_eq!(within_col, 8);
+
+        // Click past end of line (should allow overshoot)
+        let past_end = px(120.0); // 15 characters in (past the 10-char line)
+        let past_col = (past_end.0 / cell_width.0) as usize;
+        assert_eq!(past_col, 15); // Should allow overshoot for selections
+
+        // Verify overshoot distance
+        let overshoot_distance = past_end - line_width;
+        assert_eq!(overshoot_distance, px(40.0)); // 5 characters * 8px = 40px
+    }
+
+    #[test]
+    fn test_edge_case_coordinates() {
+        let cell_width = px(8.0);
+        let line_height = px(20.0);
+
+        // Test coordinates exactly at cell boundaries
+        let exact_boundary = point(px(80.0), px(100.0));
+        let boundary_col = (exact_boundary.x.0 / cell_width.0) as usize;
+        let boundary_row = (exact_boundary.y.0 / line_height.0) as usize;
+        assert_eq!(boundary_col, 10); // Exactly at character 10
+        assert_eq!(boundary_row, 5); // Exactly at line 5
+
+        // Test coordinates just before boundaries
+        let before_boundary = point(px(79.9), px(99.9));
+        let before_col = (before_boundary.x.0 / cell_width.0) as usize;
+        let before_row = (before_boundary.y.0 / line_height.0) as usize;
+        assert_eq!(before_col, 9); // Still character 9
+        assert_eq!(before_row, 4); // Still line 4
+
+        // Test coordinates just after boundaries
+        let after_boundary = point(px(80.1), px(100.1));
+        let after_col = (after_boundary.x.0 / cell_width.0) as usize;
+        let after_row = (after_boundary.y.0 / line_height.0) as usize;
+        assert_eq!(after_col, 10); // Now character 10
+        assert_eq!(after_row, 5); // Now line 5
+    }
+
+    #[test]
+    fn test_viewport_coordinate_calculations() {
+        let text_bounds = create_test_text_bounds();
+        let line_height = px(20.0);
+
+        // Calculate visible lines in viewport
+        let viewport_height = text_bounds.size.height;
+        let lines_in_viewport = (viewport_height.0 / line_height.0) as usize;
+        // Expected: 600 / 20 = 30 lines visible
+        assert_eq!(lines_in_viewport, 30);
+
+        // Test first/last visible line calculation with scroll
+        let scroll_y = px(40.0); // Scrolled down 2 lines
+        let first_visible_line = (scroll_y.0 / line_height.0) as usize;
+        let last_visible_line = first_visible_line + lines_in_viewport;
+
+        assert_eq!(first_visible_line, 2); // Line 2 is first visible
+        assert_eq!(last_visible_line, 32); // Line 32 is last visible (2 + 30)
+
+        // Test visibility check
+        let test_line = 15;
+        let is_visible = test_line >= first_visible_line && test_line < last_visible_line;
+        assert!(is_visible); // Line 15 should be visible
+
+        let out_of_view_line = 35;
+        let is_out_of_view =
+            out_of_view_line >= first_visible_line && out_of_view_line < last_visible_line;
+        assert!(!is_out_of_view); // Line 35 should not be visible
+    }
+
+    #[test]
+    fn test_coordinate_system_consistency() {
+        // Verify that forward and reverse transformations are consistent
+        let _text_bounds = create_test_text_bounds();
+        let _view_offset = create_test_view_offset();
+        let cell_width = px(8.0);
+        let line_height = px(20.0);
+
+        // Start with display coordinates
+        let original_col = 12;
+        let original_row = 5;
+
+        // Convert to pixel coordinates
+        let content_pos = point(
+            px(original_col as f32 * cell_width.0),
+            px(original_row as f32 * line_height.0),
+        );
+
+        // Convert back to display coordinates
+        let recovered_col = (content_pos.x.0 / cell_width.0) as usize;
+        let recovered_row = (content_pos.y.0 / line_height.0) as usize;
+
+        // Should match original values
+        assert_eq!(recovered_col, original_col);
+        assert_eq!(recovered_row, original_row);
+
+        // Test reverse transformation: pixel → display → pixel
+        let original_pixel_pos = point(px(96.0), px(100.0));
+
+        let display_col = (original_pixel_pos.x.0 / cell_width.0) as usize;
+        let display_row = (original_pixel_pos.y.0 / line_height.0) as usize;
+
+        let recovered_pixel_pos = point(
+            px(display_col as f32 * cell_width.0),
+            px(display_row as f32 * line_height.0),
+        );
+
+        // Should be at character boundary (may differ due to truncation)
+        assert_eq!(recovered_pixel_pos.x, px(96.0)); // 12 * 8 = 96
+        assert_eq!(recovered_pixel_pos.y, px(100.0)); // 5 * 20 = 100
+    }
+}

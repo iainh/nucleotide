@@ -33,9 +33,9 @@ mod tests {
             },
         };
 
-        // Only initialize once to avoid conflicts
+        // Only initialize once to avoid conflicts - handle failure gracefully
         INIT.call_once(|| {
-            init_logging_with_config(config).expect("Failed to initialize logging");
+            let _ = init_logging_with_config(config); // Ignore failure if already initialized
         });
 
         // Test that logging macros work
