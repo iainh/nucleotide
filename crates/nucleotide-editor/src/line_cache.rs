@@ -71,6 +71,9 @@ impl LineLayoutCache {
     /// # Coordinate System
     /// Expects `position` to be in element-local coordinates (after converting from window coordinates)
     /// Use this method when you have already transformed coordinates: Window → TextArea
+    ///
+    /// # Performance
+    /// Uses binary search for O(log n) performance since line layouts are stored in Y-order
     pub fn find_line_at_position(
         &self,
         position: gpui::Point<Pixels>,
@@ -78,16 +81,43 @@ impl LineLayoutCache {
         line_height: Pixels,
     ) -> Option<LineLayout> {
         if let Ok(layouts) = self.layouts.lock() {
-            layouts
-                .iter()
-                .find(|layout| {
-                    let line_bounds = Bounds {
-                        origin: layout.origin,
-                        size: size(bounds_width, line_height),
+            if layouts.is_empty() {
+                return None;
+            }
+
+            // Binary search for the line containing the Y position
+            // Since line layouts are stored in Y-order (monotonically increasing origin.y),
+            // we can use binary search for O(log n) performance
+            let target_y = position.y;
+
+            let mut left = 0;
+            let mut right = layouts.len();
+
+            while left < right {
+                let mid = left + (right - left) / 2;
+                let layout = &layouts[mid];
+                let line_bounds = Bounds {
+                    origin: layout.origin,
+                    size: size(bounds_width, line_height),
+                };
+
+                if line_bounds.origin.y <= target_y
+                    && target_y < line_bounds.origin.y + line_bounds.size.height
+                {
+                    // Found the line - also check X bounds
+                    return if line_bounds.contains(&position) {
+                        Some(layout.clone())
+                    } else {
+                        None // X position is outside line bounds
                     };
-                    line_bounds.contains(&position)
-                })
-                .cloned()
+                } else if target_y < line_bounds.origin.y {
+                    right = mid;
+                } else {
+                    left = mid + 1;
+                }
+            }
+
+            None // Position not found in any line
         } else {
             None
         }
@@ -375,5 +405,133 @@ mod tests {
 
         // Verify it's gone
         assert!(cache.find_line_by_index(0).is_none());
+    }
+
+    #[test]
+    fn test_binary_search_performance_correctness() {
+        let cache = LineLayoutCache::new();
+        let line_height = px(24.0);
+        let bounds_width = px(800.0);
+
+        // Add many test lines to verify binary search works with larger datasets
+        let num_lines = 100;
+        for line_idx in 0..num_lines {
+            let y_position = px(line_idx as f32 * line_height.0);
+            let layout = LineLayout {
+                line_idx,
+                shaped_line: create_test_shaped_line(),
+                origin: point(px(0.0), y_position),
+            };
+            cache.push(layout);
+        }
+
+        // Test various positions to ensure binary search finds correct lines
+        let test_cases = [
+            // First line
+            (point(px(50.0), px(5.0)), Some(0)),
+            // Middle lines
+            (point(px(50.0), px(25.0)), Some(1)),
+            (point(px(50.0), px(49.0)), Some(2)),
+            (point(px(50.0), px(120.0)), Some(5)),
+            (point(px(50.0), px(480.0)), Some(20)),
+            // Near end
+            (point(px(50.0), px(2350.0)), Some(97)),
+            (point(px(50.0), px(2374.0)), Some(98)),
+            (point(px(50.0), px(2398.0)), Some(99)),
+            // Beyond all lines
+            (point(px(50.0), px(3000.0)), None),
+            // Before all lines (negative Y)
+            (point(px(50.0), px(-10.0)), None),
+            // X position outside bounds (should return None)
+            (point(px(1000.0), px(50.0)), None),
+        ];
+
+        for (position, expected_line) in test_cases {
+            let found = cache.find_line_at_position(position, bounds_width, line_height);
+            match expected_line {
+                Some(expected_idx) => {
+                    assert!(
+                        found.is_some(),
+                        "Binary search should find line at position {:?}, expected line {}",
+                        position,
+                        expected_idx
+                    );
+                    let found_layout = found.unwrap();
+                    assert_eq!(
+                        found_layout.line_idx, expected_idx,
+                        "Binary search found wrong line at position {:?}, expected {}, got {}",
+                        position, expected_idx, found_layout.line_idx
+                    );
+                }
+                None => {
+                    assert!(
+                        found.is_none(),
+                        "Binary search should not find line at position {:?}, but found line {}",
+                        position,
+                        found.map(|l| l.line_idx).unwrap_or(999)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_binary_search_edge_cases() {
+        let cache = LineLayoutCache::new();
+        let line_height = px(24.0);
+        let bounds_width = px(800.0);
+
+        // Test empty cache
+        assert!(cache
+            .find_line_at_position(point(px(50.0), px(12.0)), bounds_width, line_height)
+            .is_none());
+
+        // Test single line
+        let layout = LineLayout {
+            line_idx: 0,
+            shaped_line: create_test_shaped_line(),
+            origin: point(px(0.0), px(0.0)),
+        };
+        cache.push(layout);
+
+        // Should find the single line
+        assert!(cache
+            .find_line_at_position(point(px(50.0), px(12.0)), bounds_width, line_height)
+            .is_some());
+        // Should not find outside the line bounds
+        assert!(cache
+            .find_line_at_position(point(px(50.0), px(30.0)), bounds_width, line_height)
+            .is_none());
+
+        // Test two lines (boundary case for binary search)
+        let layout2 = LineLayout {
+            line_idx: 1,
+            shaped_line: create_test_shaped_line(),
+            origin: point(px(0.0), px(24.0)),
+        };
+        cache.push(layout2);
+
+        // Test positions at the boundaries between lines
+        assert_eq!(
+            cache
+                .find_line_at_position(point(px(50.0), px(23.9)), bounds_width, line_height)
+                .unwrap()
+                .line_idx,
+            0
+        );
+        assert_eq!(
+            cache
+                .find_line_at_position(point(px(50.0), px(24.0)), bounds_width, line_height)
+                .unwrap()
+                .line_idx,
+            1
+        );
+        assert_eq!(
+            cache
+                .find_line_at_position(point(px(50.0), px(47.9)), bounds_width, line_height)
+                .unwrap()
+                .line_idx,
+            1
+        );
     }
 }

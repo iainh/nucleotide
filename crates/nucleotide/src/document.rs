@@ -1504,16 +1504,57 @@ impl Element for DocumentElement {
                     y: event.position.y - text_bounds.origin.y,
                 };
 
-                // STEP 2: Convert text-area coordinates to content coordinates
-                let scroll_position = scroll_manager_for_down.scroll_position();
-                // Zed convention: scroll_position.y is positive when scrolled down
-                // To get content coordinates: content_y = text_area_y + scroll_position.y
-                let content_pos = gpui::Point {
-                    x: text_area_pos.x + scroll_position.x, // Horizontal scroll (currently unused)
-                    y: text_area_pos.y + scroll_position.y, // Add positive scroll distance
+                // STEP 2: Detect soft-wrap mode for branched coordinate transformation
+                let soft_wrap_enabled = {
+                    let core = core_for_down.read(cx);
+                    let editor = &core.editor;
+                    if let Some(document) = editor.document(doc_id) {
+                        if let Some(_view) = editor.tree.try_get(view_id) {
+                            let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                            // Calculate viewport width for text formatting (matching paint calculation)
+                            let gutter_width_px = f32::from(gutter_offset) * cell_width.0;
+                            let right_padding = cell_width.0 * 2.0; // 2 characters of padding
+                            let text_area_width = text_bounds.size.width.0 - gutter_width_px - right_padding;
+                            let viewport_width = (text_area_width / cell_width.0).max(10.0) as u16;
+
+                            let text_format = document.text_format(viewport_width, Some(theme));
+                            text_format.soft_wrap
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
                 };
 
-                // STEP 3: Apply bounds validation and clamping
+                debug!(
+                    soft_wrap_enabled = soft_wrap_enabled,
+                    viewport_width = (text_bounds.size.width.0 / cell_width.0).max(10.0) as u16,
+                    "🎯 SOFT-WRAP DETECTION: Detected soft-wrap mode for coordinate transformation"
+                );
+
+                // STEP 3: Convert text-area coordinates to content coordinates
+                // Branch based on soft-wrap mode for different coordinate transformation logic
+                let scroll_position = scroll_manager_for_down.scroll_position();
+                let content_pos = if soft_wrap_enabled {
+                    // TODO: Implement proper wrapped mode coordinate transformation in next task
+                    // For now, use the same transformation as non-wrapped mode
+                    debug!("🎯 COORDINATE TRANSFORM: Using wrapped mode transformation (placeholder)");
+                    gpui::Point {
+                        x: text_area_pos.x + scroll_position.x, // Horizontal scroll (currently unused)
+                        y: text_area_pos.y + scroll_position.y, // Add positive scroll distance
+                    }
+                } else {
+                    debug!("🎯 COORDINATE TRANSFORM: Using non-wrapped mode transformation");
+                    // Zed convention: scroll_position.y is positive when scrolled down
+                    // To get content coordinates: content_y = text_area_y + scroll_position.y
+                    gpui::Point {
+                        x: text_area_pos.x + scroll_position.x, // Horizontal scroll (currently unused)
+                        y: text_area_pos.y + scroll_position.y, // Add positive scroll distance
+                    }
+                };
+
+                // STEP 4: Apply bounds validation and clamping
                 // Clamp coordinates to valid ranges to prevent out-of-bounds access
                 let clamped_text_area_pos = Point {
                     x: text_area_pos.x.max(px(0.0)).min(text_bounds.size.width),
