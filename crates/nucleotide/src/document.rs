@@ -790,6 +790,107 @@ impl DocumentElement {
         self.x_overshoot.set(px(0.0));
     }
 
+    /// Convert text-area coordinates to visual coordinates for wrapped mode
+    /// This handles the complex case where document lines are wrapped across multiple visual lines
+    fn text_area_to_visual_wrapped(
+        text_area_pos: Point<Pixels>,
+        text_format: &helix_core::doc_formatter::TextFormat,
+        view_offset: ViewPosition,
+        document: &helix_view::Document,
+        cell_width: Pixels,
+        line_height: Pixels,
+    ) -> Option<Point<Pixels>> {
+        use helix_core::{doc_formatter::DocumentFormatter, text_annotations::TextAnnotations};
+
+        let text = document.text().slice(..);
+        let annotations = TextAnnotations::default();
+
+        // Convert pixel position to visual row and column
+        let visual_row = (text_area_pos.y.0 / line_height.0) as usize;
+        let visual_col = (text_area_pos.x.0 / cell_width.0) as usize;
+
+        debug!(
+            text_area_x = %text_area_pos.x,
+            text_area_y = %text_area_pos.y,
+            cell_width = %cell_width,
+            line_height = %line_height,
+            calculated_visual_row = visual_row,
+            calculated_visual_col = visual_col,
+            view_offset_vertical = view_offset.vertical_offset,
+            "🎯 WRAPPED COORD: Converting text-area to visual coordinates"
+        );
+
+        // Adjust visual row to account for viewport offset
+        let absolute_visual_row = visual_row + view_offset.vertical_offset;
+
+        // Create DocumentFormatter to find the character at this visual position
+        let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
+            text,
+            text_format,
+            &annotations,
+            view_offset.anchor,
+        );
+
+        // Search for grapheme at the target visual position
+        let mut target_char_pos = None;
+        let mut last_char_pos = view_offset.anchor;
+
+        for grapheme in formatter {
+            // Track character position
+            let char_pos = text.byte_to_char(grapheme.char_idx);
+
+            // Check if this grapheme is at our target visual position
+            if grapheme.visual_pos.row == absolute_visual_row {
+                if grapheme.visual_pos.col <= visual_col {
+                    // This is the closest grapheme to our target column
+                    target_char_pos = Some(char_pos);
+                    last_char_pos = char_pos;
+                } else {
+                    // We've passed the target column, use the previous character
+                    break;
+                }
+            } else if grapheme.visual_pos.row > absolute_visual_row {
+                // We've passed the target row
+                break;
+            }
+
+            last_char_pos = char_pos;
+        }
+
+        // Use the found character position or the last valid position
+        let final_char_pos = target_char_pos.unwrap_or(last_char_pos);
+
+        debug!(
+            target_visual_row = absolute_visual_row,
+            target_visual_col = visual_col,
+            found_char_pos = final_char_pos,
+            "🎯 WRAPPED COORD: Found character position for visual coordinates"
+        );
+
+        // Convert character position back to document line and column
+        let doc_line = text.char_to_line(final_char_pos);
+        let line_start = text.line_to_char(doc_line);
+        let char_offset = final_char_pos - line_start;
+
+        // Convert to pixel coordinates within the document line
+        // This gives us the position within the unwrapped document coordinates
+        let result_x = px(char_offset as f32 * cell_width.0);
+        let result_y = px(doc_line as f32 * line_height.0);
+
+        debug!(
+            final_doc_line = doc_line,
+            final_char_offset = char_offset,
+            result_x = %result_x,
+            result_y = %result_y,
+            "🎯 WRAPPED COORD: Converted to document coordinates"
+        );
+
+        Some(Point {
+            x: result_x,
+            y: result_y,
+        })
+    }
+
     /// Calculate x-overshoot for a given position and line width
     /// Returns (clamped_x, overshoot_amount)
     fn calculate_x_overshoot(&self, x: Pixels, line_width: Pixels) -> (Pixels, Pixels) {
@@ -1537,12 +1638,55 @@ impl Element for DocumentElement {
                 // Branch based on soft-wrap mode for different coordinate transformation logic
                 let scroll_position = scroll_manager_for_down.scroll_position();
                 let content_pos = if soft_wrap_enabled {
-                    // TODO: Implement proper wrapped mode coordinate transformation in next task
-                    // For now, use the same transformation as non-wrapped mode
-                    debug!("🎯 COORDINATE TRANSFORM: Using wrapped mode transformation (placeholder)");
+                    debug!("🎯 COORDINATE TRANSFORM: Using wrapped mode transformation");
+                    // Implement wrapped mode coordinate transformation
+                    let wrapped_content_pos = {
+                        // Get core data needed for wrapped coordinate transformation
+                        let core = core_for_down.read(cx);
+                        let editor = &core.editor;
+                        if let Some(document) = editor.document(doc_id) {
+                            if let Some(_view) = editor.tree.try_get(view_id) {
+                                let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                                // Calculate viewport width for text formatting
+                                let gutter_width_px = f32::from(gutter_offset) * cell_width.0;
+                                let right_padding = cell_width.0 * 2.0;
+                                let text_area_width = text_bounds.size.width.0 - gutter_width_px - right_padding;
+                                let viewport_width = (text_area_width / cell_width.0).max(10.0) as u16;
+
+                                // Get text format and view offset
+                                let text_format = document.text_format(viewport_width, Some(theme));
+                                let view_offset = document.view_offset(view_id);
+
+                                // Get line height from scroll manager or use default
+                                let line_height = scroll_manager_for_down.line_height.get();
+
+                                // Convert text-area position to visual coordinates
+                                Self::text_area_to_visual_wrapped(
+                                    text_area_pos,
+                                    &text_format,
+                                    view_offset,
+                                    document,
+                                    cell_width,
+                                    line_height
+                                ).unwrap_or_else(|| {
+                                    // Fallback to non-wrapped transformation
+                                    debug!("🎯 WRAPPED FALLBACK: Using non-wrapped transformation");
+                                    text_area_pos
+                                })
+                            } else {
+                                debug!("🎯 WRAPPED FALLBACK: No view found, using non-wrapped transformation");
+                                text_area_pos
+                            }
+                        } else {
+                            debug!("🎯 WRAPPED FALLBACK: No document found, using non-wrapped transformation");
+                            text_area_pos
+                        }
+                    };
+
+                    // Add scroll position to get final content coordinates
                     gpui::Point {
-                        x: text_area_pos.x + scroll_position.x, // Horizontal scroll (currently unused)
-                        y: text_area_pos.y + scroll_position.y, // Add positive scroll distance
+                        x: wrapped_content_pos.x + scroll_position.x,
+                        y: wrapped_content_pos.y + scroll_position.y,
                     }
                 } else {
                     debug!("🎯 COORDINATE TRANSFORM: Using non-wrapped mode transformation");
