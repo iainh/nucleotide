@@ -1,15 +1,20 @@
 // ABOUTME: Line layout cache for mouse interaction in document view
-// ABOUTME: Provides thread-safe storage of line layouts without RefCell
+// ABOUTME: Stores line layouts in element-local coordinates (text-area relative) for fast mouse hit testing
 
 use gpui::{size, Bounds, Pixels, ShapedLine};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// Layout information for a single line in the document
+///
+/// COORDINATE SYSTEM: All positions stored in element-local coordinates
+/// - origin: Position relative to text area (0,0 = top-left of text area, after gutters)
+/// - This matches the coordinate system expected by mouse event handlers
 #[derive(Clone)]
 pub struct LineLayout {
     pub line_idx: usize,
     pub shaped_line: ShapedLine,
+    /// Position of line's top-left corner in element-local coordinates (text-area relative)
     pub origin: gpui::Point<Pixels>,
 }
 
@@ -56,6 +61,16 @@ impl LineLayoutCache {
         }
     }
 
+    /// Find line at given position using element-local coordinates
+    ///
+    /// # Arguments
+    /// * `position` - Mouse position in element-local coordinates (text-area relative)
+    /// * `bounds_width` - Width of text area in pixels  
+    /// * `line_height` - Height of each line in pixels
+    ///
+    /// # Coordinate System
+    /// Expects `position` to be in element-local coordinates (after converting from window coordinates)
+    /// Use this method when you have already transformed coordinates: Window → TextArea
     pub fn find_line_at_position(
         &self,
         position: gpui::Point<Pixels>,
@@ -78,8 +93,19 @@ impl LineLayoutCache {
         }
     }
 
-    /// Find line at position accounting for scroll offset
-    /// The scroll_offset represents how much the content has been shifted (GPUI convention: negative when scrolled down)
+    /// Find line at position with scroll offset adjustment (DEPRECATED - use find_line_at_position)
+    ///
+    /// # Deprecation Notice
+    /// This method is deprecated in favor of proper coordinate transformation.
+    /// New code should use the coordinate transformation chain: Window → TextArea → Content
+    /// and then use find_line_at_position() with properly transformed coordinates.
+    ///
+    /// # Arguments
+    /// * `position` - Mouse position in element-local coordinates
+    /// * `scroll_offset` - Current scroll offset (negative when scrolled down)
+    ///
+    /// # Note
+    /// The scroll_offset uses GPUI's negative convention (negative when scrolled down)
     pub fn find_line_at_position_with_scroll(
         &self,
         position: gpui::Point<Pixels>,
@@ -152,3 +178,202 @@ impl LineLayoutCache {
 }
 
 impl gpui::Global for LineLayoutCache {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{point, px};
+
+    fn create_test_shaped_line() -> ShapedLine {
+        // Create a mock shaped line - in real usage this would be from the font system
+        // Use the default implementation since the struct has private fields
+        <ShapedLine as std::default::Default>::default()
+    }
+
+    #[test]
+    fn test_line_lookup_by_index() {
+        let cache = LineLayoutCache::new();
+
+        // Add some test lines
+        for line_idx in 0..5 {
+            let layout = LineLayout {
+                line_idx,
+                shaped_line: create_test_shaped_line(),
+                origin: point(px(0.0), px(line_idx as f32 * 24.0)),
+            };
+            cache.push(layout);
+        }
+
+        // Test finding existing lines
+        for line_idx in 0..5 {
+            let found = cache.find_line_by_index(line_idx);
+            assert!(found.is_some(), "Should find line {}", line_idx);
+            let layout = found.unwrap();
+            assert_eq!(layout.line_idx, line_idx);
+            assert_eq!(layout.origin.y, px(line_idx as f32 * 24.0));
+        }
+
+        // Test finding non-existent line
+        let not_found = cache.find_line_by_index(10);
+        assert!(not_found.is_none(), "Should not find non-existent line 10");
+    }
+
+    #[test]
+    fn test_line_lookup_at_position() {
+        let cache = LineLayoutCache::new();
+        let line_height = px(24.0);
+        let bounds_width = px(800.0);
+
+        // Add test lines at different Y positions
+        for line_idx in 0..3 {
+            let y_position = px(line_idx as f32 * line_height.0);
+            let layout = LineLayout {
+                line_idx,
+                shaped_line: create_test_shaped_line(),
+                origin: point(px(0.0), y_position),
+            };
+            cache.push(layout);
+        }
+
+        // Test finding lines by position
+        let test_cases = [
+            (point(px(50.0), px(12.0)), Some(0)), // Middle of first line
+            (point(px(50.0), px(36.0)), Some(1)), // Middle of second line
+            (point(px(50.0), px(60.0)), Some(2)), // Middle of third line
+            (point(px(50.0), px(100.0)), None),   // Below all lines
+        ];
+
+        for (position, expected_line) in test_cases {
+            let found = cache.find_line_at_position(position, bounds_width, line_height);
+            match expected_line {
+                Some(expected_idx) => {
+                    assert!(
+                        found.is_some(),
+                        "Should find line at position {:?}",
+                        position
+                    );
+                    assert_eq!(found.unwrap().line_idx, expected_idx);
+                }
+                None => {
+                    assert!(
+                        found.is_none(),
+                        "Should not find line at position {:?}",
+                        position
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_line_lookup_with_scroll() {
+        let cache = LineLayoutCache::new();
+        let line_height = px(24.0);
+        let bounds_width = px(800.0);
+        let scroll_offset = point(px(0.0), px(-48.0)); // Scrolled down 2 lines
+
+        // Add test lines at their unscrolled positions
+        for line_idx in 0..5 {
+            let y_position = px(line_idx as f32 * line_height.0);
+            let layout = LineLayout {
+                line_idx,
+                shaped_line: create_test_shaped_line(),
+                origin: point(px(0.0), y_position),
+            };
+            cache.push(layout);
+        }
+
+        // Test finding lines considering scroll offset
+        let test_cases = [
+            // Position (50, 12) after scroll adjustment should hit line 2
+            (point(px(50.0), px(12.0)), Some(2)),
+            // Position (50, 36) after scroll adjustment should hit line 3
+            (point(px(50.0), px(36.0)), Some(3)),
+        ];
+
+        for (position, expected_line) in test_cases {
+            let found = cache.find_line_at_position_with_scroll(
+                position,
+                bounds_width,
+                line_height,
+                scroll_offset,
+            );
+            match expected_line {
+                Some(expected_idx) => {
+                    assert!(
+                        found.is_some(),
+                        "Should find line at position {:?} with scroll",
+                        position
+                    );
+                    assert_eq!(found.unwrap().line_idx, expected_idx);
+                }
+                None => {
+                    assert!(
+                        found.is_none(),
+                        "Should not find line at position {:?} with scroll",
+                        position
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cursor_line_lookup_scenario() {
+        // Test the specific scenario from cursor rendering:
+        // Cursor is on line 9, should find that line in the cache
+        let cache = LineLayoutCache::new();
+
+        // Simulate line layouts for lines 0-15 (typical visible range)
+        for line_idx in 0..16 {
+            let layout = LineLayout {
+                line_idx,
+                shaped_line: create_test_shaped_line(),
+                origin: point(px(0.0), px(line_idx as f32 * 24.0)),
+            };
+            cache.push(layout);
+        }
+
+        // Test finding cursor line 9 (from debug logs)
+        let cursor_line = 9;
+        let found = cache.find_line_by_index(cursor_line);
+        assert!(found.is_some(), "Should find cursor line {}", cursor_line);
+
+        let layout = found.unwrap();
+        assert_eq!(layout.line_idx, cursor_line);
+        assert_eq!(layout.origin.y, px(216.0)); // 9 * 24.0 = 216
+    }
+
+    #[test]
+    fn test_empty_cache_lookups() {
+        let cache = LineLayoutCache::new();
+
+        // Test lookups on empty cache
+        assert!(cache.find_line_by_index(0).is_none());
+        assert!(cache
+            .find_line_at_position(point(px(50.0), px(12.0)), px(800.0), px(24.0))
+            .is_none());
+    }
+
+    #[test]
+    fn test_cache_clear_functionality() {
+        let cache = LineLayoutCache::new();
+
+        // Add a test line
+        let layout = LineLayout {
+            line_idx: 0,
+            shaped_line: create_test_shaped_line(),
+            origin: point(px(0.0), px(0.0)),
+        };
+        cache.push(layout);
+
+        // Verify it exists
+        assert!(cache.find_line_by_index(0).is_some());
+
+        // Clear cache
+        cache.clear();
+
+        // Verify it's gone
+        assert!(cache.find_line_by_index(0).is_none());
+    }
+}
