@@ -4,8 +4,8 @@
 use std::{any::Any, cell::Cell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
 
 use gpui::{
-    fill, hsla, px, quad, relative, Along, App, Axis, BorderStyle, Bounds, ContentMask, Corners,
-    CursorStyle, Edges, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior,
+    hsla, px, quad, relative, Along, App, Axis, BorderStyle, Bounds, ContentMask, Corners,
+    CursorStyle, Edges, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
     InspectorElementId, IntoElement, IsZero, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, ScrollHandle, ScrollWheelEvent, Size, Style,
     UniformListScrollHandle, Window,
@@ -269,28 +269,45 @@ impl Element for Scrollbar {
             let axis = self.axis;
             let thumb_state = self.state.thumb_state.get();
 
-            // Use theme colors - fallback to simple grays if theme is not available
-            let (thumb_bg, track_bg) = {
-                if let Some(_theme) = cx.try_global::<crate::Theme>() {
-                    let thumb_base_color = match thumb_state {
-                        ThumbState::Dragging(_) => hsla(0.0, 0.0, 0.6, 0.9),
-                        ThumbState::Hover => hsla(0.0, 0.0, 0.5, 0.7),
-                        ThumbState::Inactive => hsla(0.0, 0.0, 0.4, 0.5),
+            // Helper function to determine if a color is light or dark
+            let is_light_color = |color: &Hsla| -> bool {
+                // Convert HSLA to relative luminance for perceptual lightness
+                let rgba = color.to_rgb();
+                let r = rgba.r;
+                let g = rgba.g;
+                let b = rgba.b;
+
+                // Using relative luminance formula: 0.299*R + 0.587*G + 0.114*B
+                let luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+                luminance > 0.5
+            };
+
+            // Use adaptive theme colors with 50% transparency
+            let thumb_bg = {
+                if let Some(theme) = cx.try_global::<crate::Theme>() {
+                    let background = &theme.background;
+                    let is_light = is_light_color(background);
+
+                    // If background is light, use darker thumb; if dark, use lighter thumb
+                    let base_lightness = if is_light { 0.3 } else { 0.7 };
+
+                    // Adjust lightness slightly based on state for visual feedback
+                    let lightness = match thumb_state {
+                        ThumbState::Dragging(_) => {
+                            base_lightness + (if is_light { -0.1 } else { 0.1 })
+                        }
+                        ThumbState::Hover => base_lightness + (if is_light { -0.05 } else { 0.05 }),
+                        ThumbState::Inactive => base_lightness,
                     };
-                    (thumb_base_color, hsla(0.0, 0.0, 0.2, 0.2)) // Subtle track
+
+                    hsla(0.0, 0.0, lightness, 0.5) // Always 50% transparent
                 } else {
-                    // Fallback colors - more subtle
-                    let thumb_base_color = match thumb_state {
-                        ThumbState::Dragging(_) => hsla(0.0, 0.0, 0.6, 0.9),
-                        ThumbState::Hover => hsla(0.0, 0.0, 0.5, 0.7),
-                        ThumbState::Inactive => hsla(0.0, 0.0, 0.4, 0.5),
-                    };
-                    (thumb_base_color, hsla(0.0, 0.0, 0.2, 0.2)) // Subtle track
+                    // Fallback: neutral gray with 50% transparency
+                    hsla(0.0, 0.0, 0.5, 0.5)
                 }
             };
 
-            // Paint the track background first
-            window.paint_quad(fill(bounds, track_bg));
+            // No gutter background - removed track background painting
 
             let padded_bounds = Bounds::from_corners(
                 bounds

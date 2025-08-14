@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
@@ -318,6 +317,10 @@ impl Render for DocumentView {
         // Create the scrollbar
         let scrollbar_opt = Scrollbar::vertical(self.scrollbar_state.clone());
 
+        // Create scroll wheel handler for the editor area
+        let scroll_manager_wheel = self.scroll_manager.clone();
+        let core_wheel = self.core.clone();
+
         // Create the editor content with custom scrollbar
         let editor_content = div()
             .id("editor-content")
@@ -331,7 +334,96 @@ impl Render for DocumentView {
                     .w_full()
                     .h_full()
                     .flex_1()
-                    .child(document_element),
+                    .child(document_element)
+                    .on_scroll_wheel({
+                        move |event, _window, cx| {
+                            use nucleotide_logging::debug;
+                            debug!(
+                                delta = ?event.delta,
+                                "Scroll wheel event received on editor paint area"
+                            );
+
+                            // Get the actual line height from scroll manager
+                            let line_height = scroll_manager_wheel.line_height.get();
+                            let delta = event.delta.pixel_delta(line_height);
+
+                            debug!(
+                                line_height = %line_height,
+                                pixel_delta = ?delta,
+                                "Converted scroll delta to pixels on paint area"
+                            );
+
+                            // Update scroll position immediately for visual feedback
+                            let current_offset = scroll_manager_wheel.scroll_offset();
+
+                            // Clamp the scroll offset to valid bounds
+                            let max_scroll = scroll_manager_wheel.max_scroll_offset();
+                            debug!(
+                                current_offset = ?current_offset,
+                                max_scroll = ?max_scroll,
+                                total_lines = scroll_manager_wheel.total_lines.get(),
+                                viewport_size = ?scroll_manager_wheel.viewport_size.get(),
+                                "Scroll bounds calculation on paint area"
+                            );
+
+                            let new_offset = point(
+                                (current_offset.x + delta.x)
+                                    .max(px(0.0))
+                                    .min(max_scroll.width),
+                                (current_offset.y + delta.y)
+                                    .max(-max_scroll.height)
+                                    .min(px(0.0)),
+                            );
+
+                            debug!(
+                                new_offset = ?new_offset,
+                                offset_changed = ?(new_offset != current_offset),
+                                "Calculated new scroll offset on paint area"
+                            );
+
+                            // Only update if the offset actually changed
+                            if new_offset != current_offset {
+                                scroll_manager_wheel.set_scroll_offset(new_offset);
+
+                                // Sync to Helix immediately for responsive scrolling
+                                core_wheel.update(cx, |core, cx| {
+                                    let editor = &mut core.editor;
+                                    let scroll_lines = (delta.y.0 / line_height.0).round() as isize;
+                                    if scroll_lines != 0 {
+                                        use helix_core::movement::Direction;
+                                        use helix_term::commands;
+
+                                        let count = scroll_lines.unsigned_abs();
+                                        let mut ctx = helix_term::commands::Context {
+                                            editor,
+                                            register: None,
+                                            count: None,
+                                            callback: Vec::new(),
+                                            on_next_key_callback: None,
+                                            jobs: &mut core.jobs,
+                                        };
+
+                                        if scroll_lines > 0 {
+                                            commands::scroll(
+                                                &mut ctx,
+                                                count,
+                                                Direction::Backward,
+                                                false,
+                                            );
+                                        } else {
+                                            commands::scroll(
+                                                &mut ctx,
+                                                count,
+                                                Direction::Forward,
+                                                false,
+                                            );
+                                        }
+                                    }
+                                    cx.notify();
+                                });
+                            }
+                        }
+                    }),
             )
             .when_some(scrollbar_opt, gpui::ParentElement::child);
 
@@ -1143,6 +1235,7 @@ impl Element for DocumentElement {
 
         let line_cache_mouse = line_cache.clone();
         let scrollbar_state_mouse = self.scrollbar_state.clone();
+        let scroll_manager_mouse = self.scroll_manager.clone();
         let _soft_wrap_for_mouse = soft_wrap_enabled;
         self.interactivity
             .on_mouse_down(MouseButton::Left, move |ev, window, cx| {
@@ -1155,11 +1248,13 @@ impl Element for DocumentElement {
 
                 let mouse_pos = ev.position;
 
-                // Find which line was clicked by checking line layouts
-                let clicked_line = line_cache_mouse.find_line_at_position(
+                // Find which line was clicked by checking line layouts with scroll offset
+                let scroll_offset = scroll_manager_mouse.scroll_offset();
+                let clicked_line = line_cache_mouse.find_line_at_position_with_scroll(
                     mouse_pos,
                     bounds.size.width,
                     line_height,
+                    scroll_offset,
                 );
 
                 if let Some(line_layout) = clicked_line {
@@ -1226,6 +1321,7 @@ impl Element for DocumentElement {
         let view_id_drag = self.view_id;
         let line_cache_drag = line_cache.clone();
         let scrollbar_state_drag = self.scrollbar_state.clone();
+        let scroll_manager_drag = self.scroll_manager.clone();
 
         self.interactivity.on_mouse_move(move |ev, _window, cx| {
             // Only process if dragging (mouse button held down)
@@ -1240,9 +1336,14 @@ impl Element for DocumentElement {
 
             let mouse_pos = ev.position;
 
-            // Find which line is under the mouse using line layouts
-            let hovered_line =
-                line_cache_drag.find_line_at_position(mouse_pos, bounds.size.width, line_height);
+            // Find which line is under the mouse using line layouts with scroll offset
+            let scroll_offset = scroll_manager_drag.scroll_offset();
+            let hovered_line = line_cache_drag.find_line_at_position_with_scroll(
+                mouse_pos,
+                bounds.size.width,
+                line_height,
+                scroll_offset,
+            );
 
             if let Some(line_layout) = hovered_line {
                 // Calculate x position relative to the line origin
@@ -1307,122 +1408,6 @@ impl Element for DocumentElement {
                 });
             }
         });
-
-        // Handle scroll wheel events with optimized performance
-        let scroll_manager = self.scroll_manager.clone();
-        let core_scroll = self.core.clone();
-        let view_id_scroll = self.view_id;
-        let doc_id_scroll = self.doc_id;
-
-        // Use a flag to batch scroll updates
-        let last_scroll_time = Rc::new(Cell::new(std::time::Instant::now()));
-        let pending_scroll_delta = Rc::new(Cell::new(Point::<Pixels>::default()));
-
-        self.interactivity
-            .on_scroll_wheel(move |event, _window, cx| {
-                // Get the actual line height from scroll manager
-                let line_height = scroll_manager.line_height.get();
-                let delta = event.delta.pixel_delta(line_height);
-
-                // Accumulate scroll delta for batching
-                let current_pending = pending_scroll_delta.get();
-                pending_scroll_delta.set(point(
-                    current_pending.x + delta.x,
-                    current_pending.y + delta.y,
-                ));
-
-                // Update scroll position immediately for visual feedback
-                let current_offset = scroll_manager.scroll_offset();
-
-                // Clamp the scroll offset to valid bounds
-                let max_scroll = scroll_manager.max_scroll_offset();
-                let new_offset = point(
-                    (current_offset.x + delta.x)
-                        .max(px(0.0))
-                        .min(max_scroll.width),
-                    (current_offset.y + delta.y)
-                        .max(-max_scroll.height)
-                        .min(px(0.0)),
-                );
-
-                // Only update if the offset actually changed
-                if new_offset != current_offset {
-                    scroll_manager.set_scroll_offset(new_offset);
-                } else {
-                    // We've hit the scroll bounds, clear pending delta
-                    pending_scroll_delta.set(Point::default());
-                    return;
-                }
-
-                // Only sync to Helix if enough time has passed or delta is significant
-                let now = std::time::Instant::now();
-                let time_since_last = now.duration_since(last_scroll_time.get());
-                let accumulated_delta = pending_scroll_delta.get();
-
-                // Sync to Helix less frequently (every 16ms ~60fps or when delta is large)
-                if time_since_last > std::time::Duration::from_millis(16)
-                    || accumulated_delta.y.abs() > px(60.0)
-                {
-                    last_scroll_time.set(now);
-                    pending_scroll_delta.set(Point::default());
-
-                    // Update Helix viewport to match the new scroll position
-                    core_scroll.update(cx, |core, cx| {
-                        let editor = &mut core.editor;
-
-                        // Convert accumulated pixels to lines
-                        let scroll_lines = (accumulated_delta.y.0 / line_height.0).round() as isize;
-                        if scroll_lines != 0 {
-                            // Store cursor position before scrolling to ensure it doesn't move
-                            let cursor_pos = if let Some(doc) = editor.document(doc_id_scroll) {
-                                let selection = doc.selection(view_id_scroll).clone();
-                                Some(selection)
-                            } else {
-                                None
-                            };
-
-                            // Import the scroll command from helix
-                            use helix_core::movement::Direction;
-                            use helix_term::commands;
-
-                            let count = scroll_lines.unsigned_abs();
-
-                            // Create the correct context for the scroll command
-                            let mut ctx = helix_term::commands::Context {
-                                editor,
-                                register: None,
-                                count: None,
-                                callback: Vec::new(),
-                                on_next_key_callback: None,
-                                jobs: &mut core.jobs,
-                            };
-
-                            // Call the appropriate scroll function with sync_cursor=false
-                            // This ensures the cursor doesn't move with the viewport
-                            if scroll_lines > 0 {
-                                // Scroll up (content moves down)
-                                commands::scroll(&mut ctx, count, Direction::Backward, false);
-                            } else {
-                                // Scroll down (content moves up)
-                                commands::scroll(&mut ctx, count, Direction::Forward, false);
-                            }
-
-                            // Restore cursor position if it was changed (safeguard)
-                            if let Some(saved_selection) = cursor_pos {
-                                if let Some(doc) = ctx.editor.document_mut(doc_id_scroll) {
-                                    let current_selection = doc.selection(view_id_scroll).clone();
-                                    if current_selection != saved_selection {
-                                        doc.set_selection(view_id_scroll, saved_selection);
-                                    }
-                                }
-                            }
-                        }
-
-                        // Only notify for Helix sync, visual update already happened
-                        cx.notify();
-                    });
-                }
-            });
 
         let is_focused = self.is_focused;
 
