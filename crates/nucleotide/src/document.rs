@@ -1033,6 +1033,8 @@ impl DocumentElement {
                 line_idx: current_doc_line,
                 shaped_line,
                 origin: text_area_origin,
+                segment_char_offset: 0, // TODO: Calculate properly for wrapped segments
+                text_start_byte_offset: 0, // TODO: Calculate properly for wrapped segments
             };
             line_layouts.push(layout);
 
@@ -1811,20 +1813,50 @@ impl Element for DocumentElement {
                             let text = document.text();
                             let line_start = text.line_to_char(line_layout.line_idx);
 
-                            // Convert byte offset to character offset for Unicode support
+                            // FIXED: Handle wrapped line segments correctly, accounting for wrap indicators
                             let line_text = text.line(line_layout.line_idx).to_string();
-                            let char_offset = line_text.char_indices()
-                                .take_while(|(byte_idx, _)| *byte_idx < byte_index)
-                                .count();
+                            let char_offset = if line_layout.segment_char_offset == 0 {
+                                // Non-wrapped line: byte_index is relative to full line
+                                line_text.char_indices()
+                                    .take_while(|(byte_idx, _)| *byte_idx < byte_index)
+                                    .count()
+                            } else {
+                                // Wrapped line: adjust byte_index to account for wrap indicators
+                                // byte_index is offset within the complete shaped line text (including indicators)
+                                // text_start_byte_offset tells us where the real text begins
+                                let adjusted_byte_index = if byte_index >= line_layout.text_start_byte_offset {
+                                    byte_index - line_layout.text_start_byte_offset
+                                } else {
+                                    0 // Click was in the wrap indicator area, position at start of text
+                                };
+
+                                // Get the segment text (real text only, starting at segment_char_offset)
+                                let segment_text = line_text.chars().skip(line_layout.segment_char_offset).collect::<String>();
+
+                                // Convert adjusted byte offset to character offset within the segment
+                                let char_offset_in_segment = segment_text.char_indices()
+                                    .take_while(|(byte_idx, _)| *byte_idx < adjusted_byte_index)
+                                    .count();
+
+                                line_layout.segment_char_offset + char_offset_in_segment
+                            };
 
                             let target_pos = (line_start + char_offset).min(text.len_chars());
 
                             debug!(
                                 line_idx = line_layout.line_idx,
                                 line_start = line_start,
-                                char_offset = char_offset,
+                                segment_char_offset = line_layout.segment_char_offset,
+                                text_start_byte_offset = line_layout.text_start_byte_offset,
+                                raw_byte_index = byte_index,
+                                adjusted_byte_index = if line_layout.segment_char_offset > 0 && byte_index >= line_layout.text_start_byte_offset {
+                                    byte_index - line_layout.text_start_byte_offset
+                                } else {
+                                    byte_index
+                                },
+                                total_char_offset = char_offset,
                                 target_pos = target_pos,
-                                "🎯 Final cursor position calculated"
+                                "🎯 Final cursor position calculated (with wrap indicator adjustment)"
                             );
 
                             // Create cursor selection
@@ -2632,6 +2664,11 @@ impl Element for DocumentElement {
                                 error!(error = ?e, "Failed to paint text");
                             }
 
+                            // FIXED: Update document line BEFORE storing layout to prevent off-by-one error
+                            if let Some(first_grapheme) = line_graphemes.first() {
+                                current_doc_line = first_grapheme.line_idx;
+                            }
+
                             // Store line layout for mouse interaction
                             // FIXED: Store in text-area coordinates (gutter excluded)
                             // Use y_offset directly to match coordinate system used by mouse handler
@@ -2648,19 +2685,26 @@ impl Element for DocumentElement {
                                 element_bounds_origin = ?bounds.origin,
                                 fixed_text_area_origin = ?text_area_origin,
                                 shaped_line_width = %shaped_line.width,
-                                "🎯 FIXED Line layout storage (soft-wrap) - Using y_offset directly to match mouse handler"
+                                "🎯 FIXED Line layout storage (soft-wrap) - Using correct line_idx after early update"
                             );
+                            // Calculate segment character offset for wrapped lines
+                            let segment_char_offset = if let Some(first_grapheme) = line_graphemes.iter().find(|g| !g.is_virtual()) {
+                                let line_start = text.line_to_char(current_doc_line);
+                                first_grapheme.char_idx.saturating_sub(line_start)
+                            } else {
+                                0 // No real content in this segment
+                            };
+
+                            // Calculate where the real text starts in the shaped line (after wrap indicators)
+                            let text_start_byte_offset = line_start_col + wrap_indicator_len;
                             let layout = nucleotide_editor::LineLayout {
                                 line_idx: current_doc_line,
                                 shaped_line,
                                 origin: text_area_origin,
+                                segment_char_offset,
+                                text_start_byte_offset,
                             };
                             line_cache.push(layout);
-                        }
-
-                        // Update document line based on the first grapheme of this visual line
-                        if let Some(first_grapheme) = line_graphemes.first() {
-                            current_doc_line = first_grapheme.line_idx;
                         }
 
                         // Always move to the next visual line
@@ -3199,6 +3243,8 @@ impl Element for DocumentElement {
                         line_idx,
                         shaped_line,
                         origin: text_area_origin,
+                        segment_char_offset: 0, // Non-wrapped lines always start at beginning
+                        text_start_byte_offset: 0, // No wrap indicators in non-wrapped lines
                     };
 
                     // Debug: log phantom line layout creation

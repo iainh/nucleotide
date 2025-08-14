@@ -16,6 +16,12 @@ pub struct LineLayout {
     pub shaped_line: ShapedLine,
     /// Position of line's top-left corner in element-local coordinates (text-area relative)
     pub origin: gpui::Point<Pixels>,
+    /// For wrapped lines: character offset where this segment starts within the full document line.
+    /// For non-wrapped lines: always 0.
+    pub segment_char_offset: usize,
+    /// For wrapped lines: byte offset where real text starts within the shaped line (after wrap indicators).
+    /// For non-wrapped lines: always 0.
+    pub text_start_byte_offset: usize,
 }
 
 /// Key for caching shaped lines
@@ -168,6 +174,8 @@ impl LineLayoutCache {
                             layout.origin.x + scroll_offset.x,
                             layout.origin.y + scroll_offset.y,
                         ),
+                        segment_char_offset: layout.segment_char_offset,
+                        text_start_byte_offset: layout.text_start_byte_offset,
                     }
                 })
         } else {
