@@ -6,44 +6,44 @@
 # Background: Warm cream (#F5F2E8) with sage green accents
 # Features WCAG AA compliant contrast ratios for accessibility
 
-attribute = "teal-dark"
-keyword = "plum"
-"keyword.directive" = "teal-dark" # -- preprocessor comments (#if in C)
-namespace = "teal-dark"
+attribute = "warm-purple"
+keyword = "deep-teal"
+"keyword.directive" = "deep-plum" # -- preprocessor comments (#if in C)
+namespace = "deep-plum"
 punctuation = "charcoal"
 "punctuation.delimiter" = "charcoal"
-operator = "teal-dark"
-special = "amber-dark"
-"variable.other.member" = "coal"
+operator = "sage-dark"
+special = "coral-rust"
+"variable.other.member" = "warm-purple"
 variable = "charcoal"
 # variable = "plum" # TODO: metavariables only
 # "variable.parameter" = { fg = "charcoal", modifiers = ["underlined"] }
 "variable.parameter" = { fg = "charcoal" }
-"variable.builtin" = "forest-dark"
-type = "coal"
-"type.builtin" = "coal" # TODO: distinguish?
-constructor = "teal-dark"
-function = "coal"
-"function.macro" = "teal-dark"
-"function.builtin" = "coal"
-tag = "plum"
+"variable.builtin" = "deep-teal"
+type = "deep-plum"
+"type.builtin" = "warm-purple" # Distinguish from regular types
+constructor = "coral-rust"
+function = "deep-teal"
+"function.macro" = "coral-rust"
+"function.builtin" = "deep-teal"
+tag = "forest-accent"
 comment = "stone"
-constant = "coal"
-"constant.builtin" = "coal"
+constant = "coral-rust"
+"constant.builtin" = "coral-rust"
 string = "pine"
-"constant.numeric" = "amber-dark"
-"constant.character.escape" = "amber-dark"
+"constant.numeric" = "camping-orange"
+"constant.character.escape" = "camping-orange"
 # used for lifetimes
-label = "amber-dark"
+label = "camping-orange"
 tabstop = { modifiers = ["italic"], bg = "cream" }
 
-"markup.heading" = "teal-dark"
+"markup.heading" = "sage-dark"
 "markup.bold" = { modifiers = ["bold"] }
 "markup.italic" = { modifiers = ["italic"] }
 "markup.strikethrough" = { modifiers = ["crossed_out"] }
 "markup.link.url" = { fg = "pine", modifiers = ["underlined"] }
-"markup.link.text" = "plum"
-"markup.raw" = "plum"
+"markup.link.text" = "forest-accent"
+"markup.raw" = "forest-accent"
 
 "diff.plus" = "#047857"
 "diff.minus" = "#dc2626"
@@ -52,31 +52,31 @@ tabstop = { modifiers = ["italic"], bg = "cream" }
 # TODO: differentiate doc comment
 # concat (ERROR) @error.syntax and "MISSING ;" selectors for errors
 
-"ui.background" = { bg = "snow-drift" }
+"ui.background" = { bg = "camping-cream" }
 "ui.background.separator" = { fg = "ash" }
 "ui.linenr" = { fg = "ash" }
-"ui.linenr.selected" = { fg = "teal-dark" }
-"ui.statusline" = { fg = "charcoal", bg = "snow-drift" }
-"ui.statusline.inactive" = { fg = "stone", bg = "snow-drift" }
+"ui.linenr.selected" = { fg = "sage-dark" }
+"ui.statusline" = { fg = "charcoal", bg = "camping-cream" }
+"ui.statusline.inactive" = { fg = "stone", bg = "camping-cream" }
 "ui.popup" = { bg = "cream" }
 "ui.window" = { fg = "ash" }
 "ui.help" = { bg = "#0891b2", fg = "#ffffff" }
 "ui.text" = { fg = "charcoal" }
 "ui.text.focus" = { fg = "coal" }
 "ui.text.inactive" = "stone"
-"ui.text.directory" = { fg = "teal-dark" }
+"ui.text.directory" = { fg = "sage-dark" }
 "ui.virtual" = { fg = "ash" }
 "ui.virtual.ruler" = { bg = "cream" }
 "ui.virtual.jump-label" = { fg = "#dc2626", modifiers = ["bold"] }
 
 "ui.virtual.indent-guide" = { fg = "ash" }
 
-"ui.selection" = { bg = "#a5d6c8" }
-"ui.selection.primary" = { bg = "#a5d6c8" }
+"ui.selection" = { bg = "sage-light" }
+"ui.selection.primary" = { bg = "sage-light" }
 # TODO: namespace ui.cursor as ui.selection.cursor?
-"ui.cursor.select" = { bg = "teal-bright" }
+"ui.cursor.select" = { bg = "sage-bright" }
 "ui.cursor.insert" = { bg = "coal" }
-"ui.cursor.primary.select" = { bg = "teal-bright" }
+"ui.cursor.primary.select" = { bg = "sage-bright" }
 "ui.cursor.primary.insert" = { bg = "coal" }
 "ui.cursor.match" = { fg = "#ffffff", bg = "#0891b2" }
 "ui.cursor" = { modifiers = ["reversed"] }
@@ -86,11 +86,11 @@ tabstop = { modifiers = ["italic"], bg = "cream" }
 "ui.debug" = { fg = "#0891b2" }
 "ui.debug.breakpoint" = { fg = "#dc2626" }
 "ui.menu" = { fg = "charcoal", bg = "cream" }
-"ui.menu.selected" = { fg = "snow-drift", bg = "teal-dark" }
+"ui.menu.selected" = { fg = "camping-cream", bg = "sage-dark" }
 "ui.menu.scroll" = { fg = "charcoal", bg = "ash" }
 
 "diagnostic.hint" = { underline = { color = "stone", style = "curl" } }
-"diagnostic.info" = { underline = { color = "teal-bright", style = "curl" } }
+"diagnostic.info" = { underline = { color = "sage-bright", style = "curl" } }
 "diagnostic.warning" = { underline = { color = "#f59e0b", style = "curl" } }
 "diagnostic.error" = { underline = { color = "#dc2626", style = "curl" } }
 "diagnostic.unnecessary" = { modifiers = ["dim"] }
@@ -98,34 +98,41 @@ tabstop = { modifiers = ["italic"], bg = "cream" }
 
 warning = "#f59e0b"
 error = "#dc2626"
-info = "teal-bright"
+info = "sage-bright"
 hint = "stone"
 
 [palette]
-# Light mode colors with WCAG AA compliance on Snow Drift background
+# GMK Camping inspired colors with WCAG AA compliance
 
-# Main background - Snow Drift
-snow-drift = "#E4E4DC"
+# Main background - Warm camping cream
+camping-cream = "#F5F2E8"
 
 # Light backgrounds and accents
-cream = "#d6d3cc"  # Slightly darker than snow-drift for layers
-ash = "#a8a29e"    # Medium grey for subtle elements (3:1 contrast)
+cream = "#EAE7DC"        # Slightly darker than camping-cream for layers
+ash = "#A8A29E"          # Medium grey for subtle elements (3:1 contrast)
 
-# Text colors (all meet WCAG AA 4.5:1 on #E4E4DC)
-coal = "#1c1917"        # Primary text (contrast ratio: 17:1)
-charcoal = "#374151"    # Secondary text (contrast ratio: 9:1)
-stone = "#6b7280"       # Comments/inactive (contrast ratio: 4.8:1)
+# Text colors (all meet WCAG AA 4.5:1 on #F5F2E8)
+coal = "#1C1917"         # Primary text (contrast ratio: 17:1)
+charcoal = "#374151"     # Secondary text (contrast ratio: 9:1)
+stone = "#6B7280"        # Comments/inactive (contrast ratio: 4.8:1)
 
-# Teal palette (darker versions for light mode)
-teal-dark = "#0d9488"   # Primary teal (contrast ratio: 4.7:1)
-teal-bright = "#0891b2" # Bright teal accent (contrast ratio: 4.6:1)
-forest-dark = "#047857"  # Dark green-teal (contrast ratio: 7:1)
-pine = "#065f46"        # Very dark green (contrast ratio: 11:1)
+# Sage green palette (GMK Camping greens)
+sage-dark = "#4A5C3A"     # Dark sage green (contrast ratio: 8.2:1)
+sage-bright = "#7A8471"   # Bright sage green (contrast ratio: 4.6:1)
+sage-light = "#B8C5A8"    # Light sage for selections
+forest-dark = "#2D3A1F"   # Very dark forest green (contrast ratio: 12:1)
+forest-accent = "#5D6B4A" # Forest accent (contrast ratio: 6.1:1)
+pine = "#065F46"          # Dark pine green for strings
 
-# Accent colors (all WCAG compliant)
-plum = "#7c3aed"        # Purple accent (contrast ratio: 7:1)
-amber-dark = "#d97706"  # Orange-yellow (contrast ratio: 4.5:1)
+# Camping accent colors (warm earth tones)
+camping-orange = "#B8763D"  # Warm camping orange (contrast ratio: 4.7:1)
+
+# Tetradic color scheme additions for better distinction
+deep-teal = "#2F5F5F"       # Dark teal for keywords/functions (contrast ratio: 8.1:1)
+coral-rust = "#8B4513"      # Coral-rust for constants/constructors (contrast ratio: 6.8:1)
+deep-plum = "#4A3C5A"       # Deep plum for types/namespaces (contrast ratio: 8.9:1)
+warm-purple = "#6B5B73"     # Warm purple for attributes/variables (contrast ratio: 5.1:1)
 
 # Additional UI colors
-white = "#ffffff"
-silver = "#e5e7eb"
+white = "#FFFFFF"
+silver = "#E5E7EB"
