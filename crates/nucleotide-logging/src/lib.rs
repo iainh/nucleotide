@@ -10,6 +10,18 @@ pub mod subscriber;
 #[cfg(test)]
 mod integration_test;
 
+#[cfg(test)]
+mod structured_tests;
+
+#[cfg(test)]
+mod instrumentation_tests;
+
+#[cfg(test)]
+mod level_filtering_tests;
+
+#[cfg(test)]
+mod simple_mock_tests;
+
 // Re-export tracing macros for convenience
 pub use tracing::{debug, error, info, instrument, span, trace, warn, Level, Span};
 
@@ -102,50 +114,59 @@ mod tests {
 
     #[test]
     fn test_file_logging_with_structured_fields() {
+        use std::sync::Arc;
         use tempfile::tempdir;
+        use tracing_subscriber::{fmt, prelude::*};
 
         // Create a temporary directory for testing
         let temp_dir = tempdir().unwrap();
-        let log_path = temp_dir.path().join("test_nucleotide.log");
+        let log_path = temp_dir.path().join("isolated_test_nucleotide.log");
 
-        // Create config with file logging enabled
-        let mut config = crate::config::LoggingConfig::default();
-        config.file.path = log_path.clone();
-        config.output.file = true;
-        config.output.console = false; // Disable console for cleaner test
+        // Create file writer for the test
+        let log_file = std::fs::File::create(&log_path).expect("Failed to create test log file");
+        let file_writer = Arc::new(log_file);
 
-        // Try initialization (might fail if already initialized)
-        let result = init_logging_with_reload(config);
+        // Create an isolated subscriber just for this test
+        let subscriber = tracing_subscriber::registry().with(
+            fmt::layer()
+                .with_target(true)
+                .with_line_number(true)
+                .with_writer(file_writer),
+        );
 
-        // Send test messages with structured fields
-        info!(test_type = "integration", "File logging test message");
-        warn!(field = "value", count = 42, "Structured logging test");
+        // Use the isolated subscriber for this test only
+        tracing::subscriber::with_default(subscriber, || {
+            info!(test_type = "integration", "File logging test message");
+            warn!(field = "value", count = 42, "Structured logging test");
+        });
 
         // Give it time to flush
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // Check for log file with date suffix (daily rolling appender behavior)
-        if let Ok(entries) = std::fs::read_dir(temp_dir.path()) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.to_string_lossy().contains("test_nucleotide.log") {
-                    if let Ok(contents) = std::fs::read_to_string(&path) {
-                        assert!(contents.contains("File logging test message"));
-                        assert!(contents.contains("Structured logging test"));
-                        return; // Test passed
-                    }
-                }
-            }
-        }
+        // Read the log file directly
+        let contents = std::fs::read_to_string(&log_path).expect("Failed to read test log file");
 
-        // Only fail if logging initialization succeeded but no file was created
-        if result.is_ok() {
-            // Log that the file wasn't found but don't panic - this may be due to global state
-            eprintln!("Warning: Logging initialized but no log file was created. This may be due to global logging state.");
-        }
-
-        // Test should not panic if logging was already initialized
-        // If initialization failed (due to double-init in tests), that's expected
+        // Verify the content
+        assert!(
+            contents.contains("File logging test message"),
+            "Log file should contain the info message. Contents: {}",
+            contents
+        );
+        assert!(
+            contents.contains("Structured logging test"),
+            "Log file should contain the warn message. Contents: {}",
+            contents
+        );
+        assert!(
+            contents.contains("test_type"),
+            "Log file should contain structured field. Contents: {}",
+            contents
+        );
+        assert!(
+            contents.contains("field"),
+            "Log file should contain structured field. Contents: {}",
+            contents
+        );
     }
 
     #[test]

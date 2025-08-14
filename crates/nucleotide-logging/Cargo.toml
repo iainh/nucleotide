@@ -27,3 +27,4 @@ anyhow.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tracing-mock = "0.1.0-beta.1"

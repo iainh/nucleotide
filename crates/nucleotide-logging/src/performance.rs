@@ -143,6 +143,7 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
+    use tracing_mock::{expect, subscriber};
 
     #[test]
     fn test_perf_timer() {
@@ -171,5 +172,99 @@ mod tests {
             42
         });
         assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_perf_timer_span_creation() {
+        let (subscriber, handle) = subscriber::mock()
+            .new_span(expect::span().named("perf_timer"))
+            .drop_span(expect::span().named("perf_timer"))
+            .only()
+            .run_with_handle();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let timer = PerfTimer::new("test_operation");
+            // Let timer drop to trigger span recording
+            drop(timer);
+        });
+
+        handle.assert_finished();
+    }
+
+    #[test]
+    fn test_perf_timer_with_warn_threshold() {
+        let (subscriber, handle) = subscriber::mock()
+            .new_span(expect::span().named("perf_timer"))
+            .event(expect::event().with_fields(expect::msg("Slow operation detected")))
+            .drop_span(expect::span().named("perf_timer"))
+            .only()
+            .run_with_handle();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let timer =
+                PerfTimer::new("slow_operation").with_warn_threshold(Duration::from_millis(1));
+            thread::sleep(Duration::from_millis(10));
+            drop(timer);
+        });
+
+        handle.assert_finished();
+    }
+
+    #[test]
+    fn test_perf_span_macro() {
+        let (subscriber, handle) = subscriber::mock()
+            .new_span(
+                expect::span()
+                    .named("perf")
+                    .with_fields(expect::field("operation").with_value(&"test_macro_operation")),
+            )
+            .only()
+            .run_with_handle();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let _span = perf_span!("test_macro_operation");
+        });
+
+        handle.assert_finished();
+    }
+
+    #[test]
+    fn test_perf_span_macro_with_fields() {
+        let (subscriber, handle) = subscriber::mock()
+            .new_span(
+                expect::span().named("perf").with_fields(
+                    expect::field("operation")
+                        .with_value(&"complex_operation")
+                        .and(expect::field("items").with_value(&42))
+                        .and(expect::field("category").with_value(&"processing")),
+                ),
+            )
+            .only()
+            .run_with_handle();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let _span = perf_span!("complex_operation", items = 42, category = "processing");
+        });
+
+        handle.assert_finished();
+    }
+
+    #[test]
+    fn test_timed_macro_with_tracing() {
+        let (subscriber, handle) = subscriber::mock()
+            .new_span(expect::span().named("perf_timer"))
+            .drop_span(expect::span().named("perf_timer"))
+            .only()
+            .run_with_handle();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let result = timed!("timed_macro_test", {
+                thread::sleep(Duration::from_millis(1));
+                42
+            });
+            assert_eq!(result, 42);
+        });
+
+        handle.assert_finished();
     }
 }
