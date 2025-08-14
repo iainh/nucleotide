@@ -1701,9 +1701,10 @@ impl Element for DocumentElement {
 
                 // STEP 4: Apply bounds validation and clamping
                 // Clamp coordinates to valid ranges to prevent out-of-bounds access
+                // FIXED: Don't clamp Y to viewport height - allow clicks in rendered content area
                 let clamped_text_area_pos = Point {
                     x: text_area_pos.x.max(px(0.0)).min(text_bounds.size.width),
-                    y: text_area_pos.y.max(px(0.0)).min(text_bounds.size.height),
+                    y: text_area_pos.y.max(px(0.0)), // Only clamp to positive, not to viewport height
                 };
 
                 // Calculate total content height based on document lines
@@ -1741,6 +1742,16 @@ impl Element for DocumentElement {
 
                 // NOTE: Line cache still stores in element-local coordinates, so we use clamped_text_area_pos
                 // This ensures we don't access out-of-bounds positions in the line cache
+
+                // DEBUG: Log line cache contents and search
+                debug!(
+                    original_window_pos = ?event.position,
+                    text_area_pos = ?text_area_pos,
+                    clamped_text_area_pos = ?clamped_text_area_pos,
+                    text_bounds = ?text_bounds,
+                    line_height = %line_height,
+                    "🔍 CLICK DEBUG: About to search line cache"
+                );
                 let line_layout = line_cache.find_line_at_position(
                     clamped_text_area_pos, // Use clamped text-area coordinates
                     text_bounds.size.width,
@@ -1871,8 +1882,11 @@ impl Element for DocumentElement {
                     debug!(
                         window_pos = ?event.position,
                         text_area_pos = ?text_area_pos,
+                        clamped_text_area_pos = ?clamped_text_area_pos,
                         content_pos = ?content_pos,
-                        "🎯 No line found - click may be outside text area"
+                        text_bounds = ?text_bounds,
+                        line_height = %line_height,
+                        "🚨 NO LINE FOUND - CLICK FAILED in bottom area"
                     );
                 }
             });
@@ -2002,7 +2016,18 @@ impl Element for DocumentElement {
 
         // Update scroll manager with current layout info
         self.scroll_manager.set_line_height(line_height);
-        self.scroll_manager.set_viewport_size(bounds.size);
+
+        // Set scroll manager viewport to effective rendering size (account for padding)
+        let effective_viewport_height = bounds.size.height - px(2.0); // Account for top/bottom padding
+        let effective_viewport_size = size(bounds.size.width, effective_viewport_height);
+        self.scroll_manager
+            .set_viewport_size(effective_viewport_size);
+
+        debug!(
+            bounds_size = ?bounds.size,
+            effective_viewport_size = ?effective_viewport_size,
+            "🎯 SCROLL MANAGER: Set viewport size with padding adjustment"
+        );
 
         // TODO: Update shared cell_width for mouse handlers (requires structural change to pass between prepaint/paint)
 
@@ -2475,7 +2500,18 @@ impl Element for DocumentElement {
                     let mut y_offset = px(0.0);
                     let mut visual_line = 0;
                     let mut current_doc_line = text.char_to_line(view_offset.anchor);
-                    let viewport_height = (bounds.size.height / after_layout.line_height) as usize;
+                    // Account for padding in viewport height calculation and add buffer
+                    let effective_height = bounds.size.height - px(2.0); // Account for padding
+                    let calculated_height = (effective_height / after_layout.line_height) as usize;
+                    let viewport_height = calculated_height + 2; // Add 2 extra lines as buffer
+                    debug!(
+                        bounds_height = %bounds.size.height,
+                        effective_height = %effective_height,
+                        line_height = %after_layout.line_height,
+                        calculated_height = calculated_height,
+                        viewport_height_with_buffer = viewport_height,
+                        "🎯 VIEWPORT: Calculated viewport height accounting for padding and buffer"
+                    );
 
                     // Skip lines before the viewport - need to consume all graphemes for skipped lines
                     let mut pending_grapheme = None;
@@ -2642,6 +2678,25 @@ impl Element for DocumentElement {
                         if !line_str.is_empty() {
                             let shaped_line = window.text_system()
                                 .shape_line(SharedString::from(line_str.clone()), self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
+
+                            // Paint cursorline background for soft-wrap mode
+                            if let Some(cursorline_bg) = cursorline_style {
+                                // Get the document line for this visual line from the graphemes
+                                let visual_line_doc_line = if let Some(first_grapheme) = line_graphemes.first() {
+                                    first_grapheme.line_idx
+                                } else {
+                                    current_doc_line // Fallback to current if no graphemes
+                                };
+                                // Check if this visual line belongs to the cursor's document line
+                                if visual_line_doc_line == cursor_line_num {
+                                    debug!("Painting cursorline for soft-wrap visual line {} (doc line {})", visual_line, visual_line_doc_line);
+                                    let cursorline_bounds = Bounds {
+                                        origin: point(bounds.origin.x, line_y),
+                                        size: size(bounds.size.width, after_layout.line_height),
+                                    };
+                                    window.paint_quad(fill(cursorline_bounds, cursorline_bg));
+                                }
+                            }
 
                             // Paint background highlights using the shaped line for accurate positioning
                             let mut byte_offset = 0;
