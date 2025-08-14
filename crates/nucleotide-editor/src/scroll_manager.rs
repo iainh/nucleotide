@@ -25,8 +25,8 @@ pub struct ScrollManager {
     pub line_height: Rc<Cell<Pixels>>,
     /// Total number of lines in the document
     pub total_lines: Rc<Cell<usize>>,
-    /// Current scroll offset in pixels
-    pub scroll_offset: Rc<Cell<Point<Pixels>>>,
+    /// Current scroll position in pixels (positive when scrolled down/right)
+    pub scroll_position: Rc<Cell<Point<Pixels>>>,
     /// Viewport size in pixels
     pub viewport_size: Rc<Cell<Size<Pixels>>>,
     /// Track if scroll was changed by scrollbar (needs sync to Helix)
@@ -42,7 +42,7 @@ impl ScrollManager {
             id: NEXT_ID.fetch_add(1, Ordering::SeqCst),
             line_height: Rc::new(Cell::new(line_height)),
             total_lines: Rc::new(Cell::new(1)),
-            scroll_offset: Rc::new(Cell::new(point(px(0.0), px(0.0)))),
+            scroll_position: Rc::new(Cell::new(point(px(0.0), px(0.0)))),
             viewport_size: Rc::new(Cell::new(size(px(800.0), px(600.0)))),
             scrollbar_changed: Rc::new(Cell::new(false)),
         }
@@ -74,40 +74,59 @@ impl ScrollManager {
         size(px(0.0), max_y)
     }
 
-    /// Get the current scroll offset in pixels
-    pub fn scroll_offset(&self) -> Point<Pixels> {
-        self.scroll_offset.get()
+    /// Get the current scroll position in pixels (positive when scrolled down/right)
+    pub fn scroll_position(&self) -> Point<Pixels> {
+        self.scroll_position.get()
     }
 
-    /// Set the scroll offset in pixels from scrollbar interaction
+    /// Get the scroll offset for GPUI scrollable (negative when scrolled down/right)
+    pub fn scroll_offset(&self) -> Point<Pixels> {
+        let pos = self.scroll_position.get();
+        point(-pos.x, -pos.y)
+    }
+
+    /// Set the scroll position in pixels from scrollbar interaction (positive when scrolled down/right)
+    /// This marks the position as needing sync back to Helix
+    pub fn set_scroll_position(&self, position: Point<Pixels>) {
+        self.set_scroll_position_internal(position, true);
+    }
+
+    /// Set the scroll offset in pixels from scrollbar interaction (negative when scrolled down/right)
     /// This marks the position as needing sync back to Helix
     pub fn set_scroll_offset(&self, offset: Point<Pixels>) {
-        self.set_scroll_offset_internal(offset, true);
+        let position = point(-offset.x, -offset.y);
+        self.set_scroll_position_internal(position, true);
+    }
+
+    /// Set the scroll position from Helix sync (doesn't mark as scrollbar-changed)
+    pub fn set_scroll_position_from_helix(&self, position: Point<Pixels>) {
+        self.set_scroll_position_internal(position, false);
     }
 
     /// Set the scroll offset from Helix sync (doesn't mark as scrollbar-changed)
     pub fn set_scroll_offset_from_helix(&self, offset: Point<Pixels>) {
-        self.set_scroll_offset_internal(offset, false);
+        let position = point(-offset.x, -offset.y);
+        self.set_scroll_position_internal(position, false);
     }
 
-    /// Internal method to set scroll offset with control over scrollbar_changed flag
-    fn set_scroll_offset_internal(&self, offset: Point<Pixels>, from_scrollbar: bool) {
+    /// Internal method to set scroll position with control over scrollbar_changed flag
+    fn set_scroll_position_internal(&self, position: Point<Pixels>, from_scrollbar: bool) {
         let max_offset = self.max_scroll_offset();
-        // GPUI convention: offsets are negative when scrolled, clamped between -max and 0
-        let clamped_offset = point(
-            offset.x.min(px(0.0)).max(-max_offset.width),
-            offset.y.min(px(0.0)).max(-max_offset.height),
+        // Zed convention: positions are positive when scrolled, clamped between 0 and max
+        let clamped_position = point(
+            position.x.max(px(0.0)).min(max_offset.width),
+            position.y.max(px(0.0)).min(max_offset.height),
         );
-        let old_offset = self.scroll_offset.get();
-        self.scroll_offset.set(clamped_offset);
+        let old_position = self.scroll_position.get();
+        self.scroll_position.set(clamped_position);
 
-        if old_offset != clamped_offset {
+        if old_position != clamped_position {
             debug!(
                 scroll_manager_id = self.id,
-                old_offset = ?old_offset,
-                new_offset = ?clamped_offset,
+                old_position = ?old_position,
+                new_position = ?clamped_position,
                 from_scrollbar = from_scrollbar,
-                "ScrollManager offset changed"
+                "ScrollManager position changed"
             );
             if from_scrollbar {
                 // Mark that scrollbar changed the position (needs sync to Helix)
@@ -136,25 +155,19 @@ impl ScrollManager {
         let text = document.text();
         let anchor_line = text.char_to_line(view_offset.anchor);
         let y = self.anchor_to_pixels(anchor_line);
-        // GPUI convention: negative offset when scrolled down
-        let new_offset = point(px(0.0), -y);
+        // Zed convention: positive position when scrolled down
+        let new_position = point(px(0.0), y);
 
-        // Update scroll offset without marking as scrollbar-changed
+        // Update scroll position without marking as scrollbar-changed
         // This is a sync FROM Helix, not a scrollbar action
-        let max_offset = self.max_scroll_offset();
-        let clamped_offset = point(
-            new_offset.x.min(px(0.0)).max(-max_offset.width),
-            new_offset.y.min(px(0.0)).max(-max_offset.height),
-        );
-        self.scroll_offset.set(clamped_offset);
-        // Don't set scrollbar_changed flag - this is Helix updating us
+        self.set_scroll_position_from_helix(new_position);
     }
 
     /// Update Helix's ViewOffset from current scroll position
     pub fn sync_to_helix(&self, document: &Document) -> ViewOffset {
-        let y = self.scroll_offset.get().y;
-        // GPUI convention: offset.y is negative when scrolled down
-        let anchor_line = self.pixels_to_anchor(-y);
+        let y = self.scroll_position.get().y;
+        // Zed convention: position.y is positive when scrolled down
+        let anchor_line = self.pixels_to_anchor(y);
         let text = document.text();
         let anchor = text.line_to_char(anchor_line);
 
@@ -167,19 +180,18 @@ impl ScrollManager {
 
     /// Get the visible line range for the current scroll position
     pub fn visible_line_range(&self) -> (usize, usize) {
-        let offset = self.scroll_offset.get();
+        let position = self.scroll_position.get();
         let viewport = self.viewport_size.get();
 
-        // GPUI convention: offset.y is negative when scrolled down
-        // So -offset.y gives us the positive scroll distance
-        let first_line = self.pixels_to_anchor(-offset.y);
-        let last_line = self.pixels_to_anchor(-offset.y + viewport.height) + 1;
+        // Zed convention: position.y is positive when scrolled down
+        let first_line = self.pixels_to_anchor(position.y);
+        let last_line = self.pixels_to_anchor(position.y + viewport.height) + 1;
 
         let total_lines = self.total_lines.get();
         let result = (first_line, last_line.min(total_lines));
         debug!(
             scroll_manager_id = self.id,
-            offset = ?offset,
+            position = ?position,
             viewport = ?viewport,
             line_range = ?result,
             "ScrollManager visible line range calculated"
@@ -210,8 +222,8 @@ impl ScrollManager {
             }
         };
 
-        // GPUI convention: negative offset when scrolled down
-        self.set_scroll_offset(point(px(0.0), -target_y));
+        // Zed convention: positive position when scrolled down
+        self.set_scroll_position(point(px(0.0), target_y));
     }
 }
 

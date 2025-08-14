@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
@@ -418,6 +419,7 @@ impl Render for DocumentView {
             is_focused: self.is_focused,
             scroll_manager: self.scroll_manager.clone(),
             scrollbar_state: self.scrollbar_state.clone(),
+            x_overshoot: Rc::new(Cell::new(px(0.0))),
         };
 
         // Create the scrollbar
@@ -584,6 +586,9 @@ pub struct DocumentElement {
     is_focused: bool,
     scroll_manager: ScrollManager,
     scrollbar_state: ScrollbarState,
+    /// X-overshoot tracking for dragging selections past end-of-line (like Zed)
+    /// Stores how far past the end of a line the selection extends in pixels
+    x_overshoot: Rc<Cell<Pixels>>,
 }
 
 impl IntoElement for DocumentElement {
@@ -698,16 +703,16 @@ impl DocumentElement {
     }
 
     /// Convert text-area coordinates to content coordinates by applying scroll
-    /// Currently uses negative scroll semantics (ScrollManager convention)
+    /// Uses positive scroll positions matching Zed's conventions
     fn text_area_to_content(&self, text_area_pos: Point<Pixels>) -> Point<Pixels> {
-        let scroll_offset = self.scroll_manager.scroll_offset();
+        let scroll_position = self.scroll_manager.scroll_position();
 
-        // NOTE: Current ScrollManager uses negative scroll convention
-        // scroll_offset.y is negative when scrolled down, so subtracting it adds the scroll distance
-        // Example: When scrolled down 100px, scroll_offset.y = -100, so text_area_y - (-100) = text_area_y + 100
+        // Zed convention: scroll_position.y is positive when scrolled down
+        // To get content coordinates: content_y = text_area_y + scroll_position.y
+        // Example: When scrolled down 100px, scroll_position.y = 100, so content_y = text_area_y + 100
         Point {
-            x: text_area_pos.x - scroll_offset.x, // Horizontal scroll
-            y: text_area_pos.y - scroll_offset.y, // Vertical scroll: subtracts negative = adds scroll distance
+            x: text_area_pos.x + scroll_position.x, // Horizontal scroll
+            y: text_area_pos.y + scroll_position.y, // Vertical scroll: add positive scroll distance
         }
     }
 
@@ -737,6 +742,65 @@ impl DocumentElement {
         }
     }
 
+    /// Coordinate transformation with x-overshoot tracking
+    /// Returns (clamped_point, x_overshoot_amount) for selection dragging past line ends
+    fn screen_to_content_with_overshoot(
+        &self,
+        window_pos: Point<Pixels>,
+        text_bounds: Bounds<Pixels>,
+        line_width: Option<Pixels>,
+    ) -> (Point<Pixels>, Pixels) {
+        // Step 1: Window coordinates to text-area coordinates
+        let text_area_pos = self.window_to_text_area(window_pos, text_bounds);
+
+        // Step 2: Apply text-area bounds validation
+        let clamped_text_area_pos = Point {
+            x: text_area_pos.x.max(px(0.0)).min(text_bounds.size.width),
+            y: text_area_pos.y.max(px(0.0)).min(text_bounds.size.height),
+        };
+
+        // Step 3: Text-area coordinates to content coordinates
+        let content_pos = self.text_area_to_content(clamped_text_area_pos);
+
+        // Step 4: Apply content bounds validation with x-overshoot calculation
+        let y = content_pos.y.max(px(0.0)); // Prevent negative Y coordinates
+
+        // Calculate x-overshoot if line width is provided
+        let (x, x_overshoot) = if let Some(line_width) = line_width {
+            self.calculate_x_overshoot(content_pos.x.max(px(0.0)), line_width)
+        } else {
+            (content_pos.x.max(px(0.0)), px(0.0))
+        };
+
+        (Point { x, y }, x_overshoot)
+    }
+
+    /// Get current x-overshoot value
+    pub fn x_overshoot(&self) -> Pixels {
+        self.x_overshoot.get()
+    }
+
+    /// Set x-overshoot value (used when dragging selections past line end)
+    pub fn set_x_overshoot(&self, overshoot: Pixels) {
+        self.x_overshoot.set(overshoot.max(px(0.0)));
+    }
+
+    /// Reset x-overshoot (used when starting a new selection or clicking)
+    pub fn reset_x_overshoot(&self) {
+        self.x_overshoot.set(px(0.0));
+    }
+
+    /// Calculate x-overshoot for a given position and line width
+    /// Returns (clamped_x, overshoot_amount)
+    fn calculate_x_overshoot(&self, x: Pixels, line_width: Pixels) -> (Pixels, Pixels) {
+        if x > line_width {
+            let overshoot = x - line_width;
+            (line_width, overshoot)
+        } else {
+            (x, px(0.0))
+        }
+    }
+
     pub fn new(
         core: Entity<Core>,
         doc_id: DocumentId,
@@ -763,6 +827,7 @@ impl DocumentElement {
             is_focused,
             scroll_manager,
             scrollbar_state,
+            x_overshoot: Rc::new(Cell::new(px(0.0))),
         }
         .track_focus(focus)
     }
@@ -1361,6 +1426,9 @@ impl Element for DocumentElement {
         let cell_width_shared = std::rc::Rc::new(std::cell::Cell::new(px(16.0))); // Default fallback
         let cell_width_for_down = cell_width_shared.clone();
 
+        // Clone x_overshoot for use in closures
+        let x_overshoot_for_down = self.x_overshoot.clone();
+
         // FIXED: Register mouse down handler with proper coordinate transformation
         self.interactivity
             .on_mouse_down(gpui::MouseButton::Left, move |event, _window, cx| {
@@ -1371,6 +1439,11 @@ impl Element for DocumentElement {
                     line_height = %line_height,
                     "🎯 Mouse click received - Starting coordinate transformation"
                 );
+
+                // Reset x-overshoot at the start of a new click
+                // This ensures that each new click/selection starts without overshoot
+                // Overshoot will be recalculated based on the new cursor position
+                // self.reset_x_overshoot(); // TODO: Uncomment when ready to test
                 // Get gutter offset and calculate text bounds
                 let (gutter_offset, cell_width, element_bounds) = {
                     let core = core_for_down.read(cx);
@@ -1432,13 +1505,12 @@ impl Element for DocumentElement {
                 };
 
                 // STEP 2: Convert text-area coordinates to content coordinates
-                let scroll_offset = scroll_manager_for_down.scroll_offset();
-                // NOTE: ScrollManager uses negative scroll convention (scroll_offset.y is negative when scrolled down)
-                // To get content coordinates: content_y = text_area_y - scroll_offset.y
-                // Since scroll_offset.y is negative when scrolled down, subtracting it adds the scroll distance
+                let scroll_position = scroll_manager_for_down.scroll_position();
+                // Zed convention: scroll_position.y is positive when scrolled down
+                // To get content coordinates: content_y = text_area_y + scroll_position.y
                 let content_pos = gpui::Point {
-                    x: text_area_pos.x - scroll_offset.x, // Horizontal scroll (currently unused)
-                    y: text_area_pos.y - scroll_offset.y, // Correct: subtracts negative = adds scroll distance
+                    x: text_area_pos.x + scroll_position.x, // Horizontal scroll (currently unused)
+                    y: text_area_pos.y + scroll_position.y, // Add positive scroll distance
                 };
 
                 // STEP 3: Apply bounds validation and clamping
@@ -1460,8 +1532,10 @@ impl Element for DocumentElement {
                     }
                 };
 
+                // For now, clamp content position without x-overshoot tracking
+                // X-overshoot will be calculated later when we have line width information
                 let clamped_content_pos = Point {
-                    x: content_pos.x.max(px(0.0)), // Allow x-overshoot for selection dragging (TODO: add proper tracking)
+                    x: content_pos.x.max(px(0.0)), // Will be updated with x-overshoot tracking below
                     y: content_pos.y.max(px(0.0)).min(total_content_height),
                 };
 
@@ -1469,7 +1543,7 @@ impl Element for DocumentElement {
                     window_pos = ?event.position,
                     text_area_pos = ?text_area_pos,
                     clamped_text_area_pos = ?clamped_text_area_pos,
-                    scroll_offset = ?scroll_offset,
+                    scroll_position = ?scroll_position,
                     content_pos = ?content_pos,
                     clamped_content_pos = ?clamped_content_pos,
                     total_content_height = %total_content_height,
@@ -1494,6 +1568,26 @@ impl Element for DocumentElement {
                         shaped_line_width = %line_layout.shaped_line.width,
                         shaped_line_len_bytes = line_layout.shaped_line.len(),
                         "🎯 Line found using corrected coordinates - DETAILED ANALYSIS"
+                    );
+
+                    // STEP 4.5: Calculate and track x-overshoot for selection dragging
+                    let line_width = line_layout.shaped_line.width;
+                    let raw_content_x = content_pos.x.max(px(0.0));
+                    let (clamped_x, x_overshoot) = if raw_content_x > line_width {
+                        let overshoot = raw_content_x - line_width;
+                        (line_width, overshoot)
+                    } else {
+                        (raw_content_x, px(0.0))
+                    };
+
+                    // Store x-overshoot for future selection operations
+                    x_overshoot_for_down.set(x_overshoot.max(px(0.0)));
+                    debug!(
+                        raw_content_x = %raw_content_x,
+                        line_width = %line_width,
+                        clamped_x = %clamped_x,
+                        x_overshoot = %x_overshoot,
+                        "🎯 X-overshoot tracking: calculated overshoot for selection dragging"
                     );
 
                     // STEP 5: Calculate character position within the line using clamped coordinates
