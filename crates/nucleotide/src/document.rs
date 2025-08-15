@@ -370,6 +370,7 @@ impl EventEmitter<DismissEvent> for DocumentView {}
 
 impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // DocumentView render creates the DocumentElement for actual painting
         let doc_id = {
             let editor = &self.core.read(cx).editor;
             match editor.tree.try_get(self.view_id) {
@@ -2008,6 +2009,8 @@ impl Element for DocumentElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        // Note: GPUI may call paint() multiple times per frame for the same element
+        // This can cause visual accumulation of overlapping elements like tildes
         let _focus = self.focus.clone();
         let core = self.core.clone();
         let view_id = self.view_id;
@@ -2322,7 +2325,7 @@ impl Element for DocumentElement {
                     .cursor(text.slice(..));
                 // Get the line number where the cursor is located
                 let cursor_line_num = text.char_to_line(cursor_char_idx);
-                debug!("Cursor is at line: {}, char_idx: {}", cursor_line_num, cursor_char_idx);
+                debug!("Cursor position: line={}, char_idx={}", cursor_line_num, cursor_char_idx);
 
                 // Use the last row from scroll manager
                 let mut last_row = last_row_from_scroll;
@@ -2446,7 +2449,7 @@ impl Element for DocumentElement {
                 let text = doc_text.slice(..);
 
                 // Update the shared line layouts for mouse interaction
-                debug!("🎯 RENDER MODE: soft_wrap_enabled={}", soft_wrap_enabled);
+                debug!("Render mode: soft_wrap_enabled={}", soft_wrap_enabled);
                 if soft_wrap_enabled {
                     // Use DocumentFormatter for soft wrap rendering
 
@@ -2520,6 +2523,7 @@ impl Element for DocumentElement {
                     );
 
                     // Skip lines before the viewport - need to consume all graphemes for skipped lines
+                    // Skip lines before viewport if needed
                     let mut pending_grapheme = None;
                     while visual_line < view_offset.vertical_offset {
                         for grapheme in formatter.by_ref() {
@@ -2691,29 +2695,29 @@ impl Element for DocumentElement {
                             }
                         }
 
-                        // Paint the line
+                        // Paint cursorline background for soft-wrap mode - BEFORE checking if line is empty
+                        // Empty lines still need cursorline rendering when cursor is on them
+                        if let Some(cursorline_bg) = cursorline_style {
+                            // Get the document line for this visual line from the graphemes
+                            let visual_line_doc_line = if let Some(first_grapheme) = line_graphemes.first() {
+                                first_grapheme.line_idx
+                            } else {
+                                current_doc_line // Fallback to current if no graphemes
+                            };
+                            // Check if this visual line belongs to the cursor's document line
+                            if visual_line_doc_line == cursor_line_num {
+                                let cursorline_bounds = Bounds {
+                                    origin: point(bounds.origin.x, line_y),
+                                    size: size(bounds.size.width, after_layout.line_height),
+                                };
+                                window.paint_quad(fill(cursorline_bounds, cursorline_bg));
+                            }
+                        }
+
+                        // Paint the line text (only for non-empty lines)
                         if !line_str.is_empty() {
                             let shaped_line = window.text_system()
                                 .shape_line(SharedString::from(line_str.clone()), self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
-
-                            // Paint cursorline background for soft-wrap mode
-                            if let Some(cursorline_bg) = cursorline_style {
-                                // Get the document line for this visual line from the graphemes
-                                let visual_line_doc_line = if let Some(first_grapheme) = line_graphemes.first() {
-                                    first_grapheme.line_idx
-                                } else {
-                                    current_doc_line // Fallback to current if no graphemes
-                                };
-                                // Check if this visual line belongs to the cursor's document line
-                                if visual_line_doc_line == cursor_line_num {
-                                    debug!("Painting cursorline for soft-wrap visual line {} (doc line {})", visual_line, visual_line_doc_line);
-                                    let cursorline_bounds = Bounds {
-                                        origin: point(bounds.origin.x, line_y),
-                                        size: size(bounds.size.width, after_layout.line_height),
-                                    };
-                                    window.paint_quad(fill(cursorline_bounds, cursorline_bg));
-                                }
-                            }
 
                             // Paint background highlights using the shaped line for accurate positioning
                             let mut byte_offset = 0;
@@ -2749,11 +2753,13 @@ impl Element for DocumentElement {
                                 text.len_chars()
                             };
                             let is_phantom_line = line_start >= line_end;
-                            
+
                             if is_phantom_line {
-                                debug!("🎯 SOFT-WRAP: Skipping phantom line layout creation for doc_line={}", current_doc_line);
-                                // Don't increment visual_line or y_offset for phantom lines
-                                // Skip to next iteration without creating layout
+                                debug!("Soft-wrap: phantom line contributes to UI coordinates, doc_line={}", current_doc_line);
+                                // Phantom lines should still increment visual position for UI elements (gutter, cursorline)
+                                // but don't need text layout since they have no content
+                                visual_line += 1;
+                                y_offset += after_layout.line_height;
                                 continue;
                             }
 
@@ -2903,7 +2909,7 @@ impl Element for DocumentElement {
                         let style = theme.get("ui.linenr");
                         let color = style.fg.and_then(color_to_hsla).unwrap_or(hsla(0.5, 0., 0.5, 1.));
 
-                        debug!("🎯 SOFT-WRAP GUTTER: doc_line_positions={:?}, text.len_lines()={}, text.len_chars()={}", 
+                        debug!("🎯 SOFT-WRAP GUTTER: doc_line_positions={:?}, text.len_lines()={}, text.len_chars()={}",
                                doc_line_positions, text.len_lines(), text.len_chars());
 
                         for (doc_line, y_pos) in doc_line_positions {
@@ -2915,15 +2921,15 @@ impl Element for DocumentElement {
                                 text.len_chars()
                             };
                             let is_phantom_line = line_start >= line_end;
-                            
-                            debug!("🎯 SOFT-WRAP GUTTER LINE: doc_line={}, line_start={}, line_end={}, is_phantom={}", 
+
+                            debug!("🎯 SOFT-WRAP GUTTER LINE: doc_line={}, line_start={}, line_end={}, is_phantom={}",
                                    doc_line, line_start, line_end, is_phantom_line);
-                            
+
                             if is_phantom_line {
                                 debug!("🎯 SOFT-WRAP GUTTER: Skipping phantom line {}", doc_line);
                                 continue;
                             }
-                            
+
                             let line_num_str = format!("{:>4} ", doc_line + 1);
                             let y = gutter_origin.y + y_pos;
 
@@ -3041,7 +3047,7 @@ impl Element for DocumentElement {
                         let mut cursor_visual_line = None;
                         let mut cursor_visual_col = 0;
 
-                        debug!("🎯 SOFT-WRAP CURSOR SEARCH: Starting search for cursor_char_idx={}, text.len_chars()={}", 
+                        debug!("🎯 SOFT-WRAP CURSOR SEARCH: Starting search for cursor_char_idx={}, text.len_chars()={}",
                                cursor_char_idx, text.len_chars());
 
                         // Iterate through graphemes to find cursor position (following Helix's approach)
@@ -3049,8 +3055,8 @@ impl Element for DocumentElement {
                             // Check if the cursor position is before the next grapheme
                             // This matches Helix's logic: formatter.next_char_pos() > pos
                             let next_char_pos = grapheme.char_idx + grapheme.doc_chars();
-                            debug!("🎯 SOFT-WRAP GRAPHEME: char_idx={}, doc_chars={}, next_char_pos={}, visual_pos={}:{}, cursor_char_idx={}", 
-                                   grapheme.char_idx, grapheme.doc_chars(), next_char_pos, 
+                            debug!("🎯 SOFT-WRAP GRAPHEME: char_idx={}, doc_chars={}, next_char_pos={}, visual_pos={}:{}, cursor_char_idx={}",
+                                   grapheme.char_idx, grapheme.doc_chars(), next_char_pos,
                                    grapheme.visual_pos.row, grapheme.visual_pos.col, cursor_char_idx);
                             if next_char_pos > cursor_char_idx {
                                 // Cursor is at this grapheme's visual position
@@ -3072,15 +3078,15 @@ impl Element for DocumentElement {
                             debug!("🎯 SOFT-WRAP EOF PHANTOM LINE: Assigned cursor to visual line {} (matching cursorline)", _visual_line);
                         }
 
-                        debug!("🎯 SOFT-WRAP CURSOR SEARCH RESULT: cursor_visual_line={:?}, cursor_visual_col={}, _visual_line={}", 
+                        debug!("🎯 SOFT-WRAP CURSOR SEARCH RESULT: cursor_visual_line={:?}, cursor_visual_col={}, _visual_line={}",
                                cursor_visual_line, cursor_visual_col, _visual_line);
 
                         // If cursor is in viewport, render it
-                        debug!("🎯 SOFT-WRAP CURSOR CHECK: cursor_visual_line={:?}, view_offset.vertical_offset={}, viewport_height={}", 
+                        debug!("🎯 SOFT-WRAP CURSOR CHECK: cursor_visual_line={:?}, view_offset.vertical_offset={}, viewport_height={}",
                                cursor_visual_line, view_offset.vertical_offset, viewport_height);
                         if let Some(cursor_line) = cursor_visual_line {
-                            debug!("🎯 SOFT-WRAP CURSOR BOUNDS: cursor_line={}, view_offset={}, range={}..{}", 
-                                   cursor_line, view_offset.vertical_offset, view_offset.vertical_offset, 
+                            debug!("🎯 SOFT-WRAP CURSOR BOUNDS: cursor_line={}, view_offset={}, range={}..{}",
+                                   cursor_line, view_offset.vertical_offset, view_offset.vertical_offset,
                                    view_offset.vertical_offset + viewport_height);
                             if cursor_line >= view_offset.vertical_offset &&
                                cursor_line < view_offset.vertical_offset + viewport_height {
@@ -3186,55 +3192,9 @@ impl Element for DocumentElement {
                     let visual_lines_rendered = visual_line - view_offset.vertical_offset;
                     let viewport_height_in_lines = (bounds.size.height - px(2.0)) / after_layout.line_height;
                     let viewport_capacity = viewport_height_in_lines as usize;
-                    
-                    debug!("🎯 SOFT-WRAP TILDE CHECK: visual_lines_rendered={}, viewport_capacity={}, soft_wrap_enabled={}", 
-                           visual_lines_rendered, viewport_capacity, soft_wrap_enabled);
-                    if visual_lines_rendered < viewport_capacity {
-                        let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                        let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
-                        
-                        // Use a muted color for tildes, similar to Helix's style
-                        let tilde_style = helix_theme.get("ui.background");
-                        let tilde_color = tilde_style
-                            .fg
-                            .and_then(crate::utils::color_to_hsla)
-                            .map(|c| hsla(c.h, c.s, c.l * 0.6, c.a)) // Make it more muted
-                            .unwrap_or_else(|| {
-                                let base = ui_theme.text_muted;
-                                hsla(base.h, base.s, base.l * 0.7, base.a)
-                            });
 
-                        let lines_to_fill = viewport_capacity - visual_lines_rendered;
-                        debug!("🎯 SOFT-WRAP TILDE RENDER: lines_to_fill={}, y_offset={:?}", lines_to_fill, y_offset);
-                        for i in 0..lines_to_fill {
-                            let tilde_y = bounds.origin.y + px(1.0) + y_offset + (after_layout.line_height * i as f32);
-                            debug!("🎯 SOFT-WRAP TILDE {}: tilde_y={:?}, bounds_origin_y={:?}", 
-                                   i, tilde_y, bounds.origin.y);
-                            
-                            // Only render if within bounds
-                            if tilde_y + after_layout.line_height <= bounds.origin.y + bounds.size.height {
-                                let tilde_text = SharedString::from("~");
-                                let run = TextRun {
-                                    len: tilde_text.len(),
-                                    font: self.style.font(),
-                                    color: tilde_color,
-                                    background_color: None,
-                                    underline: None,
-                                    strikethrough: None,
-                                };
-                                
-                                let shaped_tilde = window.text_system()
-                                    .shape_line(tilde_text, self.style.font_size.to_pixels(px(16.0)), &[run], None);
-                                
-                                let tilde_origin = point(
-                                    bounds.origin.x + px(8.0), // Small left margin
-                                    tilde_y
-                                );
-                                
-                                let _ = shaped_tilde.paint(tilde_origin, after_layout.line_height, window, cx);
-                            }
-                        }
-                    }
+                    // Note: Tilde rendering is handled by the gutter for consistency with Helix
+                    // The gutter shows "~" for phantom lines in the line number area
 
                     // Skip the regular rendering loop when soft wrap is enabled
                     return;
@@ -3246,16 +3206,16 @@ impl Element for DocumentElement {
                     // For a file ending with \n, the last line is empty and is the phantom line
                     // Also treat any empty line at the end as phantom line
                     let line_start_char = if line_idx < total_lines { text.line_to_char(line_idx) } else { text.len_chars() };
-                    let line_end_char = if line_idx + 1 < total_lines { 
-                        text.line_to_char(line_idx + 1).saturating_sub(1) 
-                    } else { 
-                        text.len_chars() 
+                    let line_end_char = if line_idx + 1 < total_lines {
+                        text.line_to_char(line_idx + 1).saturating_sub(1)
+                    } else {
+                        text.len_chars()
                     };
                     let line_is_empty = line_start_char >= line_end_char;
-                    let is_phantom_line = (cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1) || 
+                    let is_phantom_line = (cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1) ||
                                          (line_idx >= total_lines) ||
                                          (line_idx == total_lines - 1 && line_is_empty && total_lines > 1);
-                    
+
                     // Skip phantom lines entirely - they shouldn't take up visual space
                     if is_phantom_line {
                         debug!("Skipping phantom line layout creation for line_idx={}", line_idx);
@@ -3442,8 +3402,8 @@ impl Element for DocumentElement {
                         text_start_byte_offset: 0, // No wrap indicators in non-wrapped lines
                     };
 
-                    // Debug: log line layout creation  
-                    debug!("💾 LINE LAYOUT CACHED: line_idx={}, y_offset={:?}, is_phantom={}", 
+                    // Debug: log line layout creation
+                    debug!("💾 LINE LAYOUT CACHED: line_idx={}, y_offset={:?}, is_phantom={}",
                         line_idx, y_offset, false);
 
                     line_cache.push(layout);
@@ -3458,13 +3418,13 @@ impl Element for DocumentElement {
                 let mut actual_lines_rendered = 0;
                 for line_idx in first_row..last_row {
                     let line_start_char = if line_idx < total_lines { text.line_to_char(line_idx) } else { text.len_chars() };
-                    let line_end_char = if line_idx + 1 < total_lines { 
-                        text.line_to_char(line_idx + 1).saturating_sub(1) 
-                    } else { 
-                        text.len_chars() 
+                    let line_end_char = if line_idx + 1 < total_lines {
+                        text.line_to_char(line_idx + 1).saturating_sub(1)
+                    } else {
+                        text.len_chars()
                     };
                     let line_is_empty = line_start_char >= line_end_char;
-                    let is_phantom_line = (cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1) || 
+                    let is_phantom_line = (cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1) ||
                                          (line_idx >= total_lines) ||
                                          (line_idx == total_lines - 1 && line_is_empty && total_lines > 1);
                     if !is_phantom_line {
@@ -3473,62 +3433,9 @@ impl Element for DocumentElement {
                 }
                 let viewport_height_in_lines = (bounds.size.height - px(2.0)) / after_layout.line_height;
                 let viewport_capacity = viewport_height_in_lines as usize;
-                
-                debug!("🎯 NON-SOFT-WRAP TILDE CHECK: actual_lines_rendered={}, viewport_capacity={}", 
-                       actual_lines_rendered, viewport_capacity);
-                if actual_lines_rendered < viewport_capacity {
-                    let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                    let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
-                    
-                    // Use a muted color for tildes, similar to Helix's style
-                    let tilde_style = helix_theme.get("ui.background");
-                    let tilde_color = tilde_style
-                        .fg
-                        .and_then(crate::utils::color_to_hsla)
-                        .map(|c| hsla(c.h, c.s, c.l * 0.6, c.a)) // Make it more muted
-                        .unwrap_or_else(|| {
-                            let base = ui_theme.text_muted;
-                            hsla(base.h, base.s, base.l * 0.7, base.a)
-                        });
 
-                    let lines_to_fill = viewport_capacity - actual_lines_rendered;
-                    debug!("🎯 NON-SOFT-WRAP TILDE RENDER: lines_to_fill={}, y_offset={:?}, actual_lines_rendered={}", 
-                           lines_to_fill, y_offset, actual_lines_rendered);
-                    
-                    // Start tildes AFTER the last rendered line
-                    // y_offset is where the next line after rendered content would start
-                    for i in 0..lines_to_fill {
-                        let tilde_y = bounds.origin.y + px(1.0) + y_offset + (after_layout.line_height * i as f32);
-                        debug!("🎯 NON-SOFT-WRAP TILDE {}: tilde_y={:?}, bounds_origin_y={:?}, calculation={}+1+{}+{}*{}", 
-                               i, tilde_y, bounds.origin.y, bounds.origin.y, y_offset, after_layout.line_height, i);
-                        
-                        // Only render if within bounds
-                        if tilde_y + after_layout.line_height <= bounds.origin.y + bounds.size.height {
-                            let tilde_text = SharedString::from("~");
-                            let run = TextRun {
-                                len: tilde_text.len(),
-                                font: self.style.font(),
-                                color: tilde_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            };
-                            
-                            let shaped_tilde = window.text_system()
-                                .shape_line(tilde_text, self.style.font_size.to_pixels(px(16.0)), &[run], None);
-                            
-                            let tilde_origin = point(
-                                bounds.origin.x + px(8.0), // Small left margin
-                                tilde_y
-                            );
-                            
-                            debug!("🎯 NON-SOFT-WRAP TILDE PAINT {}: origin=({}, {}), bounds.origin=({}, {})", 
-                                   i, tilde_origin.x, tilde_origin.y, bounds.origin.x, bounds.origin.y);
-                            
-                            let _ = shaped_tilde.paint(tilde_origin, after_layout.line_height, window, cx);
-                        }
-                    }
-                }
+                // Note: Tilde rendering is handled by the gutter for consistency with Helix
+                // The gutter shows "~" for phantom lines in the line number area
 
                 // draw cursor
                 let element_focused = self.focus.is_focused(window);
@@ -3788,16 +3695,16 @@ impl Element for DocumentElement {
                                 cursor.paint(absolute_cursor_position, window, cx);
                             } else {
                                 debug!("❌ CURSOR FAIL: Could not find line layout for cursor line {} (layout_line_idx={})", cursor_line, layout_line_idx);
-                                
+
                                 // Special handling for EOF phantom line cursor
                                 if cursor_at_end && file_ends_with_newline && cursor_char_idx >= text.len_chars() {
                                     debug!("🎯 EOF PHANTOM CURSOR: Rendering cursor at phantom line position");
-                                    
+
                                     // Calculate text bounds for phantom cursor positioning (same as normal cursor logic)
                                     let cell_width = after_layout.cell_width;
                                     let gutter_offset_u16 = gutter_width;
                                     let element_bounds = bounds;
-                                    
+
                                     let phantom_text_bounds = {
                                         let gutter_width_px = Pixels::from(gutter_offset_u16 as f32 * cell_width.0);
                                         let right_padding = cell_width * 2.0;
@@ -3814,12 +3721,12 @@ impl Element for DocumentElement {
                                             },
                                         }
                                     };
-                                    
+
                                     // Calculate cursor position at the first tilde line
                                     // Use the y_offset from the main loop (where the next line would be)
                                     let cursor_x = phantom_text_bounds.origin.x; // Start of line
                                     let cursor_y = phantom_text_bounds.origin.y + y_offset; // At the phantom line position
-                                    
+
                                     // Check if cursor has reversed modifier (same logic as normal cursor)
                                     let has_reversed = cursor_style.add_modifier.contains(helix_view::graphics::Modifier::REVERSED) &&
                                                        !cursor_style.sub_modifier.contains(helix_view::graphics::Modifier::REVERSED);
@@ -3854,10 +3761,10 @@ impl Element for DocumentElement {
                                             .or_else(|| cursor_style.fg.and_then(color_to_hsla))
                                             .unwrap_or(fg_color)
                                     };
-                                    
+
                                     // Use default cursor width
                                     let cursor_width = after_layout.cell_width;
-                                    
+
                                     let mut cursor = Cursor {
                                         origin: point(px(0.0), px(0.0)),
                                         kind: cursor_kind,
@@ -3866,7 +3773,7 @@ impl Element for DocumentElement {
                                         line_height: after_layout.line_height,
                                         text: cursor_text_shaped,
                                     };
-                                    
+
                                     debug!("🎯 EOF PHANTOM CURSOR PAINT: position=({}, {})", cursor_x, cursor_y);
                                     cursor.paint(point(cursor_x, cursor_y), window, cx);
                                 } else {
@@ -3906,8 +3813,8 @@ impl Element for DocumentElement {
                     let text_system = window.text_system().clone();
                     let style = self.style.clone();
 
-                    // Only pass actual document lines to gutter, not phantom lines
-                    let gutter_last_row = last_row.min(total_lines);
+                    // Include phantom lines for gutter so it can render "~" for empty lines  
+                    let gutter_last_row = last_row;
 
                     // SOFTWRAP HANDLING: Generate LinePos entries for each visual line
                     // When softwrap is enabled, long document lines can span multiple visual lines
