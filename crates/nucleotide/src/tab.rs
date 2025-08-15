@@ -3,14 +3,14 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, App, CursorStyle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    div, px, App, CursorStyle, InteractiveElement, IntoElement, MouseButton, MouseUpEvent,
     ParentElement, RenderOnce, SharedString, Styled, Window,
 };
 use helix_view::DocumentId;
 use nucleotide_ui::{Button, ButtonSize, ButtonVariant, VcsIndicator, VcsStatus};
 
 /// Type alias for mouse event handlers in tabs
-type MouseEventHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
+type MouseEventHandler = Box<dyn Fn(&MouseUpEvent, &mut Window, &mut App) + 'static>;
 
 /// A single tab in the tab bar
 #[derive(IntoElement)]
@@ -41,8 +41,8 @@ impl Tab {
         is_modified: bool,
         git_status: Option<VcsStatus>,
         is_active: bool,
-        on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-        on_close: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+        on_click: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+        on_close: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         Self {
             doc_id,
@@ -127,7 +127,7 @@ impl RenderOnce for Tab {
                 // Inactive tabs get bottom border to separate from editor
                 this.border_b_1().border_color(ui_theme.border)
             })
-            .on_mouse_down(MouseButton::Left, {
+            .on_mouse_up(MouseButton::Left, {
                 let on_click = self.on_click;
                 move |event, window, cx| {
                     on_click(event, window, cx);

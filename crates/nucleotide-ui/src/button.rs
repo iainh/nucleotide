@@ -5,7 +5,7 @@ use crate::spacing;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, hsla, px, svg, white, App, ElementId, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, RenderOnce, SharedString,
+    MouseButton, MouseUpEvent, ParentElement, Pixels, RenderOnce, SharedString,
     StatefulInteractiveElement, Styled, Window,
 };
 
@@ -45,7 +45,7 @@ impl ButtonSize {
 }
 
 // Type alias for button click handler
-type ButtonClickHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
+type ButtonClickHandler = Box<dyn Fn(&MouseUpEvent, &mut Window, &mut App) + 'static>;
 
 /// A reusable button component
 #[derive(IntoElement)]
@@ -130,7 +130,7 @@ impl Button {
     /// Set click handler
     pub fn on_click(
         mut self,
-        handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+        handler: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_click = Some(Box::new(handler));
         self
@@ -227,7 +227,7 @@ impl RenderOnce for Button {
             button = button.cursor_pointer();
 
             if let Some(on_click) = self.on_click {
-                button = button.on_mouse_down(MouseButton::Left, move |ev, window, cx| {
+                button = button.on_mouse_up(MouseButton::Left, move |ev, window, cx| {
                     on_click(ev, window, cx);
                 });
             }
