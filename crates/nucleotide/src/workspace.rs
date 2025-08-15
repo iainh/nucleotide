@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use gpui::prelude::FluentBuilder;
 use gpui::FontFeatures;
 use gpui::{
-    black, div, hsla, px, svg, transparent_black, white, App, AppContext, BorrowAppContext,
-    Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement,
+    black, div, hsla, px, transparent_black, white, App, AppContext, BorrowAppContext, Context,
+    DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement, Render, StatefulInteractiveElement, Styled, TextStyle, Window, WindowAppearance,
     WindowBackgroundAppearance,
@@ -1582,32 +1582,19 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .w(px(24.0))
-                            .h(px(24.0))
-                            .rounded_md()
-                            .hover(|style| style.bg(ui_theme.surface_hover))
-                            .cursor(gpui::CursorStyle::PointingHand)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|workspace, _event, _window, cx| {
+                    .child({
+                        let workspace_entity = cx.entity().clone();
+                        Button::icon_only("file-tree-toggle", "icons/folder-tree.svg")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Small)
+                            .on_click(move |_event, _window, app_cx| {
+                                workspace_entity.update(app_cx, |workspace, cx| {
                                     info!("Status bar file tree toggle clicked");
                                     workspace.show_file_tree = !workspace.show_file_tree;
                                     cx.notify();
-                                }),
-                            )
-                            .child(svg().path("icons/folder-tree.svg").size_4().text_color(
-                                if self.show_file_tree {
-                                    fg_color
-                                } else {
-                                    ui_theme.text_muted
-                                },
-                            )),
-                    ),
+                                });
+                            })
+                    }),
             )
             .when(self.show_file_tree, |status_bar| {
                 status_bar
@@ -2535,7 +2522,7 @@ impl Render for Workspace {
                             .variant(ButtonVariant::Secondary)
                             .size(ButtonSize::Medium)
                             .icon("icons/folder.svg")
-                            .on_click(move |_event, app_cx| {
+                            .on_click(move |_event, _window, app_cx| {
                                 // Create and show directory picker
                                 let directory_picker = crate::picker::Picker::native_directory(
                                     "Select Project Directory",
