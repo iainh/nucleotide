@@ -1021,14 +1021,19 @@ impl FileTreeView {
         let is_selected = self.selected_path.as_ref() == Some(&entry.path);
         let theme = cx.global::<Theme>();
 
-        // Get ui.selection background color from Helix theme
-        let selection_bg = {
+        // Get ui.menu.selected colors from Helix theme
+        let (selection_bg, selection_fg) = {
             let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
-            helix_theme
-                .get("ui.selection")
+            let menu_selected = helix_theme.get("ui.menu.selected");
+            let bg = menu_selected
                 .bg
                 .and_then(color_to_hsla)
-                .unwrap_or(theme.accent)
+                .unwrap_or(theme.accent);
+            let fg = menu_selected
+                .fg
+                .and_then(color_to_hsla)
+                .unwrap_or(theme.text);
+            (bg, fg)
         };
 
         let indentation = px(entry.depth as f32 * 16.0); // 16px per level
@@ -1042,7 +1047,7 @@ impl FileTreeView {
             .pl(indentation)
             .pr(px(8.0))
             .when(is_selected, |div| {
-                div.bg(selection_bg).text_color(theme.background)
+                div.bg(selection_bg).text_color(selection_fg)
             })
             .hover(|style| style.bg(theme.surface_hover))
             .on_click({
