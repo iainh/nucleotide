@@ -512,6 +512,7 @@ impl Render for PromptView {
                     .items_center()
                     .px_3()
                     .py_2()
+                    .h(px(44.)) // Fixed height to prevent expansion
                     .gap_2()
                     .child(
                         div()
