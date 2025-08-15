@@ -2446,6 +2446,7 @@ impl Element for DocumentElement {
                 let text = doc_text.slice(..);
 
                 // Update the shared line layouts for mouse interaction
+                debug!("🎯 RENDER MODE: soft_wrap_enabled={}", soft_wrap_enabled);
                 if soft_wrap_enabled {
                     // Use DocumentFormatter for soft wrap rendering
 
@@ -2503,16 +2504,18 @@ impl Element for DocumentElement {
                     let mut y_offset = px(0.0);
                     let mut visual_line = 0;
                     let mut current_doc_line = text.char_to_line(view_offset.anchor);
-                    // Account for padding in viewport height calculation and add buffer
+                    // Account for padding in viewport height calculation - match ScrollManager exactly
                     let effective_height = bounds.size.height - px(2.0); // Account for padding
                     let calculated_height = (effective_height / after_layout.line_height) as usize;
-                    let viewport_height = calculated_height + 2; // Add 2 extra lines as buffer
+                    // IMPORTANT: Don't add buffer lines here - this must match ScrollManager's viewport calculation
+                    // The ScrollManager uses exactly this height for max scroll calculations
+                    let viewport_height = calculated_height;
                     debug!(
                         bounds_height = %bounds.size.height,
                         effective_height = %effective_height,
                         line_height = %after_layout.line_height,
                         calculated_height = calculated_height,
-                        viewport_height_with_buffer = viewport_height,
+                        viewport_height_exact = viewport_height,
                         "🎯 VIEWPORT: Calculated viewport height accounting for padding and buffer"
                     );
 
@@ -2738,6 +2741,22 @@ impl Element for DocumentElement {
                                 current_doc_line = first_grapheme.line_idx;
                             }
 
+                            // Skip phantom lines in soft-wrap mode - they shouldn't take up visual space
+                            let line_start = text.line_to_char(current_doc_line);
+                            let line_end = if current_doc_line + 1 < text.len_lines() {
+                                text.line_to_char(current_doc_line + 1)
+                            } else {
+                                text.len_chars()
+                            };
+                            let is_phantom_line = line_start >= line_end;
+                            
+                            if is_phantom_line {
+                                debug!("🎯 SOFT-WRAP: Skipping phantom line layout creation for doc_line={}", current_doc_line);
+                                // Don't increment visual_line or y_offset for phantom lines
+                                // Skip to next iteration without creating layout
+                                continue;
+                            }
+
                             // Store line layout for mouse interaction
                             // FIXED: Store in text-area coordinates (gutter excluded)
                             // Use y_offset directly to match coordinate system used by mouse handler
@@ -2884,7 +2903,27 @@ impl Element for DocumentElement {
                         let style = theme.get("ui.linenr");
                         let color = style.fg.and_then(color_to_hsla).unwrap_or(hsla(0.5, 0., 0.5, 1.));
 
+                        debug!("🎯 SOFT-WRAP GUTTER: doc_line_positions={:?}, text.len_lines()={}, text.len_chars()={}", 
+                               doc_line_positions, text.len_lines(), text.len_chars());
+
                         for (doc_line, y_pos) in doc_line_positions {
+                            // Skip phantom lines (empty lines at EOF with trailing newline)
+                            let line_start = text.line_to_char(doc_line);
+                            let line_end = if doc_line + 1 < text.len_lines() {
+                                text.line_to_char(doc_line + 1)
+                            } else {
+                                text.len_chars()
+                            };
+                            let is_phantom_line = line_start >= line_end;
+                            
+                            debug!("🎯 SOFT-WRAP GUTTER LINE: doc_line={}, line_start={}, line_end={}, is_phantom={}", 
+                                   doc_line, line_start, line_end, is_phantom_line);
+                            
+                            if is_phantom_line {
+                                debug!("🎯 SOFT-WRAP GUTTER: Skipping phantom line {}", doc_line);
+                                continue;
+                            }
+                            
                             let line_num_str = format!("{:>4} ", doc_line + 1);
                             let y = gutter_origin.y + y_pos;
 
@@ -3002,11 +3041,17 @@ impl Element for DocumentElement {
                         let mut cursor_visual_line = None;
                         let mut cursor_visual_col = 0;
 
+                        debug!("🎯 SOFT-WRAP CURSOR SEARCH: Starting search for cursor_char_idx={}, text.len_chars()={}", 
+                               cursor_char_idx, text.len_chars());
+
                         // Iterate through graphemes to find cursor position (following Helix's approach)
                         for grapheme in formatter {
                             // Check if the cursor position is before the next grapheme
                             // This matches Helix's logic: formatter.next_char_pos() > pos
                             let next_char_pos = grapheme.char_idx + grapheme.doc_chars();
+                            debug!("🎯 SOFT-WRAP GRAPHEME: char_idx={}, doc_chars={}, next_char_pos={}, visual_pos={}:{}, cursor_char_idx={}", 
+                                   grapheme.char_idx, grapheme.doc_chars(), next_char_pos, 
+                                   grapheme.visual_pos.row, grapheme.visual_pos.col, cursor_char_idx);
                             if next_char_pos > cursor_char_idx {
                                 // Cursor is at this grapheme's visual position
                                 // The DocumentFormatter already accounts for wrap indicators in visual_pos.col
@@ -3017,8 +3062,26 @@ impl Element for DocumentElement {
                             _visual_line = grapheme.visual_pos.row;
                         }
 
+                        // Handle EOF phantom line case - if cursor wasn't found in formatter but is at EOF
+                        if cursor_visual_line.is_none() && cursor_char_idx >= text.len_chars() {
+                            // Cursor is at EOF phantom line - position at first tilde line
+                            // Since phantom line layouts are skipped, the cursor should be at _visual_line + 1
+                            // but the cursorline is showing at the right position, so let's match it
+                            cursor_visual_line = Some(_visual_line);
+                            cursor_visual_col = 0; // Phantom line starts at column 0
+                            debug!("🎯 SOFT-WRAP EOF PHANTOM LINE: Assigned cursor to visual line {} (matching cursorline)", _visual_line);
+                        }
+
+                        debug!("🎯 SOFT-WRAP CURSOR SEARCH RESULT: cursor_visual_line={:?}, cursor_visual_col={}, _visual_line={}", 
+                               cursor_visual_line, cursor_visual_col, _visual_line);
+
                         // If cursor is in viewport, render it
+                        debug!("🎯 SOFT-WRAP CURSOR CHECK: cursor_visual_line={:?}, view_offset.vertical_offset={}, viewport_height={}", 
+                               cursor_visual_line, view_offset.vertical_offset, viewport_height);
                         if let Some(cursor_line) = cursor_visual_line {
+                            debug!("🎯 SOFT-WRAP CURSOR BOUNDS: cursor_line={}, view_offset={}, range={}..{}", 
+                                   cursor_line, view_offset.vertical_offset, view_offset.vertical_offset, 
+                                   view_offset.vertical_offset + viewport_height);
                             if cursor_line >= view_offset.vertical_offset &&
                                cursor_line < view_offset.vertical_offset + viewport_height {
                                 // Calculate cursor position - FIXED: Use text_bounds coordinate system to match mouse clicks
@@ -3118,22 +3181,89 @@ impl Element for DocumentElement {
                         }
                     }
 
+                    // Render tilde lines for empty viewport space (soft-wrap mode)
+                    // Calculate how many visual lines we've rendered vs viewport capacity
+                    let visual_lines_rendered = visual_line - view_offset.vertical_offset;
+                    let viewport_height_in_lines = (bounds.size.height - px(2.0)) / after_layout.line_height;
+                    let viewport_capacity = viewport_height_in_lines as usize;
+                    
+                    debug!("🎯 SOFT-WRAP TILDE CHECK: visual_lines_rendered={}, viewport_capacity={}, soft_wrap_enabled={}", 
+                           visual_lines_rendered, viewport_capacity, soft_wrap_enabled);
+                    if visual_lines_rendered < viewport_capacity {
+                        let ui_theme = cx.global::<nucleotide_ui::Theme>();
+                        let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
+                        
+                        // Use a muted color for tildes, similar to Helix's style
+                        let tilde_style = helix_theme.get("ui.background");
+                        let tilde_color = tilde_style
+                            .fg
+                            .and_then(crate::utils::color_to_hsla)
+                            .map(|c| hsla(c.h, c.s, c.l * 0.6, c.a)) // Make it more muted
+                            .unwrap_or_else(|| {
+                                let base = ui_theme.text_muted;
+                                hsla(base.h, base.s, base.l * 0.7, base.a)
+                            });
+
+                        let lines_to_fill = viewport_capacity - visual_lines_rendered;
+                        debug!("🎯 SOFT-WRAP TILDE RENDER: lines_to_fill={}, y_offset={:?}", lines_to_fill, y_offset);
+                        for i in 0..lines_to_fill {
+                            let tilde_y = bounds.origin.y + px(1.0) + y_offset + (after_layout.line_height * i as f32);
+                            debug!("🎯 SOFT-WRAP TILDE {}: tilde_y={:?}, bounds_origin_y={:?}", 
+                                   i, tilde_y, bounds.origin.y);
+                            
+                            // Only render if within bounds
+                            if tilde_y + after_layout.line_height <= bounds.origin.y + bounds.size.height {
+                                let tilde_text = SharedString::from("~");
+                                let run = TextRun {
+                                    len: tilde_text.len(),
+                                    font: self.style.font(),
+                                    color: tilde_color,
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                
+                                let shaped_tilde = window.text_system()
+                                    .shape_line(tilde_text, self.style.font_size.to_pixels(px(16.0)), &[run], None);
+                                
+                                let tilde_origin = point(
+                                    bounds.origin.x + px(8.0), // Small left margin
+                                    tilde_y
+                                );
+                                
+                                let _ = shaped_tilde.paint(tilde_origin, after_layout.line_height, window, cx);
+                            }
+                        }
+                    }
+
                     // Skip the regular rendering loop when soft wrap is enabled
                     return;
                 }
 
                 // Original rendering loop (without soft wrap)
                 for (loop_index, line_idx) in (first_row..last_row).enumerate() {
-                    debug!("Rendering line {line_idx} (loop index {loop_index}), y_offset: {y_offset:?}");
                     // Handle phantom line (empty line at EOF when file ends with newline)
                     // For a file ending with \n, the last line is empty and is the phantom line
-                    let is_phantom_line = cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1;
+                    // Also treat any empty line at the end as phantom line
+                    let line_start_char = if line_idx < total_lines { text.line_to_char(line_idx) } else { text.len_chars() };
+                    let line_end_char = if line_idx + 1 < total_lines { 
+                        text.line_to_char(line_idx + 1).saturating_sub(1) 
+                    } else { 
+                        text.len_chars() 
+                    };
+                    let line_is_empty = line_start_char >= line_end_char;
+                    let is_phantom_line = (cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1) || 
+                                         (line_idx >= total_lines) ||
+                                         (line_idx == total_lines - 1 && line_is_empty && total_lines > 1);
+                    
+                    // Skip phantom lines entirely - they shouldn't take up visual space
+                    if is_phantom_line {
+                        debug!("Skipping phantom line layout creation for line_idx={}", line_idx);
+                        continue;
+                    }
 
-                    let (line_start, line_end) = if is_phantom_line {
-                        // Phantom line is empty, positioned at end of file
-                        debug!("Rendering phantom line at index {line_idx}");
-                        (text.len_chars(), text.len_chars())
-                    } else {
+                    let (line_start, line_end) = {
+                        // Normal line - get actual line boundaries
                         let line_start = text.line_to_char(line_idx);
                         let line_end = if line_idx + 1 < total_lines {
                             text.line_to_char(line_idx + 1).saturating_sub(1) // Exclude newline
@@ -3144,9 +3274,8 @@ impl Element for DocumentElement {
                     };
 
                     // Skip lines outside our view
-                    // For phantom line, we need special handling since line_start == end_char == text.len_chars()
                     let anchor_char = text.line_to_char(first_row);
-                    if !is_phantom_line && (line_start >= end_char || line_end < anchor_char) {
+                    if line_start >= end_char || line_end < anchor_char {
                         y_offset += after_layout.line_height;
                         continue;
                     }
@@ -3162,10 +3291,7 @@ impl Element for DocumentElement {
                         continue;
                     }
 
-                    let (line_str, line_runs) = if is_phantom_line {
-                        // Phantom line is always empty with no highlights
-                        (SharedString::from(""), Vec::new())
-                    } else {
+                    let (line_str, line_runs) = {
                         let line_slice = text.slice(line_start..line_end);
                         // Convert to string and remove any trailing newlines
                         let line_str = {
@@ -3214,7 +3340,7 @@ impl Element for DocumentElement {
                     let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
                     // Paint cursorline background if this is the cursor's line
                     if let Some(cursorline_bg) = cursorline_style {
-                        if line_idx == cursor_line_num || (is_phantom_line && cursor_at_end && file_ends_with_newline) {
+                        if line_idx == cursor_line_num {
                             debug!("Painting cursorline for line {} (cursor at line {})", line_idx, cursor_line_num);
                             let cursorline_bounds = Bounds {
                                 origin: point(bounds.origin.x, bounds.origin.y + px(1.) + y_offset),
@@ -3316,15 +3442,92 @@ impl Element for DocumentElement {
                         text_start_byte_offset: 0, // No wrap indicators in non-wrapped lines
                     };
 
-                    // Debug: log phantom line layout creation
-                    if is_phantom_line {
-                        debug!("Created phantom line layout - line_idx: {}, origin.y: {:?}, y_offset: {:?}",
-                            line_idx, text_origin.y, y_offset);
-                    }
+                    // Debug: log line layout creation  
+                    debug!("💾 LINE LAYOUT CACHED: line_idx={}, y_offset={:?}, is_phantom={}", 
+                        line_idx, y_offset, false);
 
                     line_cache.push(layout);
 
                     y_offset += after_layout.line_height;
+                }
+
+                // Render tilde lines for empty viewport space (like Helix/Vim)
+                // Calculate how many lines we've rendered vs viewport capacity
+                // Since we skip phantom lines, we need to count actual rendered lines, not just last_row - first_row
+                // Count lines by iterating through the range and checking which ones weren't skipped
+                let mut actual_lines_rendered = 0;
+                for line_idx in first_row..last_row {
+                    let line_start_char = if line_idx < total_lines { text.line_to_char(line_idx) } else { text.len_chars() };
+                    let line_end_char = if line_idx + 1 < total_lines { 
+                        text.line_to_char(line_idx + 1).saturating_sub(1) 
+                    } else { 
+                        text.len_chars() 
+                    };
+                    let line_is_empty = line_start_char >= line_end_char;
+                    let is_phantom_line = (cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1) || 
+                                         (line_idx >= total_lines) ||
+                                         (line_idx == total_lines - 1 && line_is_empty && total_lines > 1);
+                    if !is_phantom_line {
+                        actual_lines_rendered += 1;
+                    }
+                }
+                let viewport_height_in_lines = (bounds.size.height - px(2.0)) / after_layout.line_height;
+                let viewport_capacity = viewport_height_in_lines as usize;
+                
+                debug!("🎯 NON-SOFT-WRAP TILDE CHECK: actual_lines_rendered={}, viewport_capacity={}", 
+                       actual_lines_rendered, viewport_capacity);
+                if actual_lines_rendered < viewport_capacity {
+                    let ui_theme = cx.global::<nucleotide_ui::Theme>();
+                    let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
+                    
+                    // Use a muted color for tildes, similar to Helix's style
+                    let tilde_style = helix_theme.get("ui.background");
+                    let tilde_color = tilde_style
+                        .fg
+                        .and_then(crate::utils::color_to_hsla)
+                        .map(|c| hsla(c.h, c.s, c.l * 0.6, c.a)) // Make it more muted
+                        .unwrap_or_else(|| {
+                            let base = ui_theme.text_muted;
+                            hsla(base.h, base.s, base.l * 0.7, base.a)
+                        });
+
+                    let lines_to_fill = viewport_capacity - actual_lines_rendered;
+                    debug!("🎯 NON-SOFT-WRAP TILDE RENDER: lines_to_fill={}, y_offset={:?}, actual_lines_rendered={}", 
+                           lines_to_fill, y_offset, actual_lines_rendered);
+                    
+                    // Start tildes AFTER the last rendered line
+                    // y_offset is where the next line after rendered content would start
+                    for i in 0..lines_to_fill {
+                        let tilde_y = bounds.origin.y + px(1.0) + y_offset + (after_layout.line_height * i as f32);
+                        debug!("🎯 NON-SOFT-WRAP TILDE {}: tilde_y={:?}, bounds_origin_y={:?}, calculation={}+1+{}+{}*{}", 
+                               i, tilde_y, bounds.origin.y, bounds.origin.y, y_offset, after_layout.line_height, i);
+                        
+                        // Only render if within bounds
+                        if tilde_y + after_layout.line_height <= bounds.origin.y + bounds.size.height {
+                            let tilde_text = SharedString::from("~");
+                            let run = TextRun {
+                                len: tilde_text.len(),
+                                font: self.style.font(),
+                                color: tilde_color,
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            };
+                            
+                            let shaped_tilde = window.text_system()
+                                .shape_line(tilde_text, self.style.font_size.to_pixels(px(16.0)), &[run], None);
+                            
+                            let tilde_origin = point(
+                                bounds.origin.x + px(8.0), // Small left margin
+                                tilde_y
+                            );
+                            
+                            debug!("🎯 NON-SOFT-WRAP TILDE PAINT {}: origin=({}, {}), bounds.origin=({}, {})", 
+                                   i, tilde_origin.x, tilde_origin.y, bounds.origin.x, bounds.origin.y);
+                            
+                            let _ = shaped_tilde.paint(tilde_origin, after_layout.line_height, window, cx);
+                        }
+                    }
                 }
 
                 // draw cursor
@@ -3372,9 +3575,9 @@ impl Element for DocumentElement {
                         let helix_core::Position { row: viewport_row, col: _ } = position;
 
                         // Get the line containing the cursor
-                        // When cursor is at EOF with newline, the phantom line is the last line
+                        // Since we skip phantom lines, cursor at EOF should position on the last real line
                         let cursor_line = if cursor_at_end && file_ends_with_newline {
-                            total_lines - 1  // Phantom line is the last line
+                            (total_lines - 1).min(text.len_lines().saturating_sub(1))  // Last real line, not phantom
                         } else {
                             text.char_to_line(cursor_char_idx)
                         };
@@ -3399,40 +3602,37 @@ impl Element for DocumentElement {
                                 debug!("Found line layout - line_idx: {}, origin.y: {:?}, expected line: {}",
                                     line_layout.line_idx, line_layout.origin.y, layout_line_idx);
 
-                                // Additional debug for phantom line
-                                if cursor_at_end && file_ends_with_newline {
-                                    // Line layouts are now stored in LineLayoutCache
-                                }
-                                // Special handling for phantom line
-                                let is_phantom_line = layout_line_idx >= text.len_lines();
-
-                                let (_line_start, cursor_char_offset, cursor_byte_offset, line_text) = if is_phantom_line {
-                                    // Phantom line: cursor is at end of file
-                                    (text.len_chars(), 0, 0, String::new())
-                                } else {
-                                    // Normal line
-                                    let line_start = text.line_to_char(cursor_line);
-                                    let cursor_char_offset = cursor_char_idx.saturating_sub(line_start);
-
-                                    // Get the line text for debugging
+                                // Get cursor position within the line
+                                let line_start = text.line_to_char(cursor_line);
+                                let cursor_char_offset = if cursor_at_end && file_ends_with_newline {
+                                    // When cursor is at EOF with newline, position at end of last real line
                                     let line_end = if cursor_line + 1 < text.len_lines() {
                                         text.line_to_char(cursor_line + 1)
                                     } else {
                                         text.len_chars()
                                     };
-                                    let mut line_text = text.slice(line_start..line_end).to_string();
-                                    // Remove trailing newlines to match how the line was shaped
-                                    while line_text.ends_with('\n') || line_text.ends_with('\r') {
-                                        line_text.pop();
-                                    }
-                                    // Clamp cursor offset to line character count (without newline)
-                                    let cursor_char_offset = cursor_char_offset.min(line_text.chars().count());
-
-                                    // Convert char offset to byte offset for GPUI's x_for_index
-                                    let cursor_byte_offset = line_text.chars().take(cursor_char_offset).map(char::len_utf8).sum::<usize>();
-
-                                    (line_start, cursor_char_offset, cursor_byte_offset, line_text)
+                                    let line_text = text.slice(line_start..line_end).to_string();
+                                    line_text.trim_end_matches(&['\n', '\r'][..]).chars().count()
+                                } else {
+                                    cursor_char_idx.saturating_sub(line_start)
                                 };
+
+                                // Get the line text for debugging
+                                let line_end = if cursor_line + 1 < text.len_lines() {
+                                    text.line_to_char(cursor_line + 1)
+                                } else {
+                                    text.len_chars()
+                                };
+                                let mut line_text = text.slice(line_start..line_end).to_string();
+                                // Remove trailing newlines to match how the line was shaped
+                                while line_text.ends_with('\n') || line_text.ends_with('\r') {
+                                    line_text.pop();
+                                }
+                                // Clamp cursor offset to line character count (without newline)
+                                let cursor_char_offset = cursor_char_offset.min(line_text.chars().count());
+
+                                // Convert char offset to byte offset for GPUI's x_for_index
+                                let cursor_byte_offset = line_text.chars().take(cursor_char_offset).map(char::len_utf8).sum::<usize>();
 
                                 // Get the x position from the shaped line using byte offset
                                 let cursor_x_relative_to_line = line_layout.shaped_line.x_for_index(cursor_byte_offset);
@@ -3480,8 +3680,8 @@ impl Element for DocumentElement {
                                 debug!("Cursor rendering - line: {cursor_line}, char_offset: {cursor_char_offset}, byte_offset: {cursor_byte_offset}, x_relative: {cursor_x_relative_to_line:?}, x_absolute: {cursor_x:?}, viewport_row: {viewport_row}");
 
                                 // Debug info about the line content
-                                debug!("Line content: {:?}, cursor at char offset {} (byte offset {}), is_phantom: {}",
-                                    &line_text, cursor_char_offset, cursor_byte_offset, is_phantom_line);
+                                debug!("Line content: {:?}, cursor at char offset {} (byte offset {}), at_eof: {}",
+                                    &line_text, cursor_char_offset, cursor_byte_offset, cursor_at_end && file_ends_with_newline);
 
                                 // Additional debug for emoji detection
                                 if !line_text.is_empty() {
@@ -3587,7 +3787,91 @@ impl Element for DocumentElement {
                                 );
                                 cursor.paint(absolute_cursor_position, window, cx);
                             } else {
-                                debug!("Warning: Could not find line layout for cursor line {cursor_line}");
+                                debug!("❌ CURSOR FAIL: Could not find line layout for cursor line {} (layout_line_idx={})", cursor_line, layout_line_idx);
+                                
+                                // Special handling for EOF phantom line cursor
+                                if cursor_at_end && file_ends_with_newline && cursor_char_idx >= text.len_chars() {
+                                    debug!("🎯 EOF PHANTOM CURSOR: Rendering cursor at phantom line position");
+                                    
+                                    // Calculate text bounds for phantom cursor positioning (same as normal cursor logic)
+                                    let cell_width = after_layout.cell_width;
+                                    let gutter_offset_u16 = gutter_width;
+                                    let element_bounds = bounds;
+                                    
+                                    let phantom_text_bounds = {
+                                        let gutter_width_px = Pixels::from(gutter_offset_u16 as f32 * cell_width.0);
+                                        let right_padding = cell_width * 2.0;
+                                        let top_padding = px(1.0);
+
+                                        gpui::Bounds {
+                                            origin: gpui::Point {
+                                                x: element_bounds.origin.x + gutter_width_px,
+                                                y: element_bounds.origin.y + top_padding,
+                                            },
+                                            size: gpui::Size {
+                                                width: element_bounds.size.width - gutter_width_px - right_padding,
+                                                height: element_bounds.size.height - top_padding,
+                                            },
+                                        }
+                                    };
+                                    
+                                    // Calculate cursor position at the first tilde line
+                                    // Use the y_offset from the main loop (where the next line would be)
+                                    let cursor_x = phantom_text_bounds.origin.x; // Start of line
+                                    let cursor_y = phantom_text_bounds.origin.y + y_offset; // At the phantom line position
+                                    
+                                    // Check if cursor has reversed modifier (same logic as normal cursor)
+                                    let has_reversed = cursor_style.add_modifier.contains(helix_view::graphics::Modifier::REVERSED) &&
+                                                       !cursor_style.sub_modifier.contains(helix_view::graphics::Modifier::REVERSED);
+
+                                    // For reversed cursor, we need to get the text style at cursor position
+                                    let cursor_color = if has_reversed {
+                                        // Get the styled text color at cursor position
+                                        let text_style_at_cursor = {
+                                            let core = self.core.read(cx);
+                                            let editor = &core.editor;
+                                            let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                                            if let Some(doc) = editor.document(self.doc_id) {
+                                                Self::get_text_style_at_position(
+                                                    doc,
+                                                    self.view_id,
+                                                    theme,
+                                                    &editor.syn_loader,
+                                                    cursor_char_idx,
+                                                )
+                                            } else {
+                                                // Default style if document not found
+                                                helix_view::graphics::Style::default()
+                                            }
+                                        };
+
+                                        // Use the text's foreground color as cursor background
+                                        text_style_at_cursor.fg.and_then(color_to_hsla)
+                                            .unwrap_or(fg_color)
+                                    } else {
+                                        // Normal cursor: use cursor's background color
+                                        cursor_style.bg.and_then(color_to_hsla)
+                                            .or_else(|| cursor_style.fg.and_then(color_to_hsla))
+                                            .unwrap_or(fg_color)
+                                    };
+                                    
+                                    // Use default cursor width
+                                    let cursor_width = after_layout.cell_width;
+                                    
+                                    let mut cursor = Cursor {
+                                        origin: point(px(0.0), px(0.0)),
+                                        kind: cursor_kind,
+                                        color: cursor_color,
+                                        block_width: cursor_width,
+                                        line_height: after_layout.line_height,
+                                        text: cursor_text_shaped,
+                                    };
+                                    
+                                    debug!("🎯 EOF PHANTOM CURSOR PAINT: position=({}, {})", cursor_x, cursor_y);
+                                    cursor.paint(point(cursor_x, cursor_y), window, cx);
+                                } else {
+                                    debug!("❌ CURSOR FAIL: Normal line layout missing for line {}", cursor_line);
+                                }
                             }
                         } else {
                             debug!("Cursor line {cursor_line} is outside rendered range {first_row}..{last_row}");
