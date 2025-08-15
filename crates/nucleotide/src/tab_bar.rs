@@ -11,10 +11,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::tab::Tab;
+use crate::tab_overflow_dropdown::TabOverflowButton;
 use nucleotide_ui::VcsStatus;
 
 /// Type alias for tab event handlers
 type TabEventHandler = Arc<dyn Fn(DocumentId, &mut Window, &mut App) + 'static>;
+/// Type alias for dropdown toggle handlers
+type DropdownToggleHandler = Arc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 /// Information about a document for tab display
 #[derive(Clone)]
@@ -23,6 +26,7 @@ pub struct DocumentInfo {
     pub path: Option<PathBuf>,
     pub is_modified: bool,
     pub focused_at: std::time::Instant,
+    pub order: usize, // Tracks the order documents were opened
     pub git_status: Option<VcsStatus>,
 }
 
@@ -39,6 +43,12 @@ pub struct TabBar {
     on_tab_click: TabEventHandler,
     /// Callback when a tab close button is clicked
     on_tab_close: TabEventHandler,
+    /// Callback when overflow dropdown toggle is clicked
+    on_overflow_toggle: Option<DropdownToggleHandler>,
+    /// Available width for tabs (None means no limit)
+    available_width: Option<f32>,
+    /// Whether overflow dropdown is currently open
+    is_overflow_open: bool,
 }
 
 impl TabBar {
@@ -55,6 +65,42 @@ impl TabBar {
             project_directory,
             on_tab_click: Arc::new(on_tab_click),
             on_tab_close: Arc::new(on_tab_close),
+            on_overflow_toggle: None,
+            available_width: None,
+            is_overflow_open: false,
+        }
+    }
+
+    /// Create a new TabBar with available width for overflow calculation
+    pub fn with_available_width(mut self, width: f32) -> Self {
+        self.available_width = Some(width);
+        self
+    }
+
+    /// Set the overflow dropdown state
+    pub fn with_overflow_open(mut self, is_open: bool) -> Self {
+        self.is_overflow_open = is_open;
+        self
+    }
+
+    /// Set the overflow dropdown toggle callback
+    pub fn with_overflow_toggle(
+        mut self,
+        on_toggle: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_overflow_toggle = Some(Arc::new(on_toggle));
+        self
+    }
+
+    /// Get the overflow documents that don't fit in the tab bar
+    pub fn get_overflow_documents(&self) -> Vec<DocumentInfo> {
+        if let Some(available_width) = self.available_width {
+            let documents = self.documents.clone();
+            let (_visible_tabs, overflow_documents) =
+                self.calculate_overflow(&documents, available_width);
+            overflow_documents
+        } else {
+            Vec::new()
         }
     }
 
@@ -77,6 +123,69 @@ impl TabBar {
             "[scratch]".to_string()
         }
     }
+
+    /// Calculate which tabs fit in available width and which overflow
+    fn calculate_overflow(
+        &self,
+        documents: &[DocumentInfo],
+        available_width: f32,
+    ) -> (Vec<DocumentInfo>, Vec<DocumentInfo>) {
+        const OVERFLOW_BUTTON_WIDTH: f32 = 50.0; // More accurate estimate: padding(16) + text(20) + arrow(10) + border(4)
+        const TAB_PADDING: f32 = 8.0; // Additional padding between tabs
+
+        // If there's only one document, no overflow is possible
+        if documents.len() <= 1 {
+            return (documents.to_vec(), Vec::new());
+        }
+
+        let mut visible_tabs = Vec::new();
+        let mut overflow_tabs = Vec::new();
+        let mut used_width = 0.0;
+
+        // Always reserve space for overflow button when there are multiple documents
+        // This prevents the "flickering" effect where tabs switch between visible and overflow
+        let effective_width = available_width - OVERFLOW_BUTTON_WIDTH;
+
+        // Process all tabs in their natural order (from opening sequence)
+        // Don't prioritize active tab - it should stay in its natural position
+        for doc_info in documents {
+            let tab_width = self.estimate_tab_width(doc_info);
+            if used_width + tab_width <= effective_width {
+                visible_tabs.push(doc_info.clone());
+                used_width += tab_width + TAB_PADDING;
+            } else {
+                overflow_tabs.push(doc_info.clone());
+            }
+        }
+
+        // Debug logging to help diagnose overflow issues
+        nucleotide_logging::debug!(
+            available_width = available_width,
+            effective_width = effective_width,
+            visible_count = visible_tabs.len(),
+            overflow_count = overflow_tabs.len(),
+            visible_docs = ?visible_tabs.iter().map(|d| d.path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("[scratch]")).collect::<Vec<_>>(),
+            overflow_docs = ?overflow_tabs.iter().map(|d| d.path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("[scratch]")).collect::<Vec<_>>(),
+            "Tab overflow calculation completed"
+        );
+
+        (visible_tabs, overflow_tabs)
+    }
+
+    /// Estimate the width a tab would take up
+    fn estimate_tab_width(&self, doc_info: &DocumentInfo) -> f32 {
+        const TAB_MIN_WIDTH: f32 = 120.0;
+        const TAB_MAX_WIDTH: f32 = 200.0;
+        const CHAR_WIDTH: f32 = 8.0; // Approximate character width
+        const TAB_PADDING: f32 = 24.0; // Icon + close button + padding
+
+        let label = self.get_document_label(doc_info);
+        let text_width = label.len() as f32 * CHAR_WIDTH;
+        let estimated_width = text_width + TAB_PADDING;
+
+        // Clamp between min and max width
+        estimated_width.clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+    }
 }
 
 impl RenderOnce for TabBar {
@@ -92,22 +201,23 @@ impl RenderOnce for TabBar {
             .and_then(crate::utils::color_to_hsla)
             .unwrap_or(ui_theme.surface_background);
 
-        // Keep documents in a stable order
-        // Sort by path (alphabetically) for a consistent order, with unnamed buffers at the end
+        // Keep documents in the order they were opened
         let mut documents = self.documents.clone();
-        documents.sort_by(|a, b| {
-            match (&a.path, &b.path) {
-                (Some(path_a), Some(path_b)) => path_a.cmp(path_b),
-                (Some(_), None) => std::cmp::Ordering::Less, // Named files come before unnamed
-                (None, Some(_)) => std::cmp::Ordering::Greater, // Unnamed buffers go after named
-                (None, None) => a.id.cmp(&b.id),             // For unnamed buffers, sort by ID
-            }
-        });
+        documents.sort_by(|a, b| a.order.cmp(&b.order));
 
-        // Create tabs for each document
+        // Calculate overflow if available width is specified
+        let (visible_tabs, overflow_documents) = if let Some(available_width) = self.available_width
+        {
+            self.calculate_overflow(&documents, available_width)
+        } else {
+            // No overflow calculation - show all tabs
+            (documents.clone(), Vec::new())
+        };
+
+        // Create tabs for visible documents
         let mut tabs = Vec::new();
-        for doc_info in documents {
-            let label = self.get_document_label(&doc_info);
+        for doc_info in &visible_tabs {
+            let label = self.get_document_label(doc_info);
             let is_active = self.active_doc_id == Some(doc_info.id);
 
             let on_tab_click = self.on_tab_click.clone();
@@ -134,28 +244,68 @@ impl RenderOnce for TabBar {
 
         // Render the tab bar container
         let has_tabs = !tabs.is_empty();
+        let has_overflow = !overflow_documents.is_empty();
+
+        // Create a container that allows the dropdown to escape the tab bar bounds
         div()
-            .id("tab-bar")
-            .flex()
-            .flex_row() // Explicitly set horizontal layout
-            .items_center() // Vertically center tabs
+            .relative() // Important: relative positioning for absolute child
             .w_full()
-            .h(px(32.0)) // Match tab height
-            .bg(bg_color)
-            // Removed border_b_1() for seamless active tab integration
-            .overflow_x_scroll()
-            .when(has_tabs, |this| this.children(tabs))
-            .when(!has_tabs, |this| {
-                // Show placeholder when no tabs
-                this.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .px(px(12.0))
-                        .text_color(ui_theme.text_muted)
-                        .text_size(px(13.0))
-                        .child("No open files"),
-                )
+            .h(px(32.0))
+            .child(
+                // The actual tab bar
+                div()
+                    .id("tab-bar")
+                    .flex()
+                    .flex_row() // Explicitly set horizontal layout
+                    .items_center() // Vertically center tabs
+                    .w_full()
+                    .h(px(32.0)) // Match tab height
+                    .bg(bg_color)
+                    // Removed border_b_1() for seamless active tab integration
+                    .when(!has_overflow, |this| this.overflow_x_scroll()) // Only scroll when no overflow dropdown
+                    .when(has_tabs, |this| {
+                        this.child(
+                            // Container for visible tabs
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .flex_1() // Take remaining space
+                                .children(tabs),
+                        )
+                    })
+                    .when(!has_tabs, |this| {
+                        // Show placeholder when no tabs
+                        this.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .px(px(12.0))
+                                .text_color(ui_theme.text_muted)
+                                .text_size(px(13.0))
+                                .child("No open files"),
+                        )
+                    }),
+            )
+            .when(has_overflow, |this| {
+                // Add overflow button as a sibling, not child of tab-bar
+                this.child(if let Some(ref on_toggle) = self.on_overflow_toggle {
+                    TabOverflowButton::new(
+                        overflow_documents.len(),
+                        {
+                            let on_toggle = on_toggle.clone();
+                            move |window, cx| on_toggle(window, cx)
+                        },
+                        self.is_overflow_open,
+                    )
+                } else {
+                    // Fallback without toggle functionality
+                    TabOverflowButton::new(
+                        overflow_documents.len(),
+                        |_window, _cx| {}, // No-op
+                        self.is_overflow_open,
+                    )
+                })
             })
     }
 }
