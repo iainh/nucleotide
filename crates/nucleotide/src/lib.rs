@@ -13,6 +13,7 @@ pub mod overlay;
 pub mod statusline;
 pub mod tab;
 pub mod tab_bar;
+pub mod tab_overflow_dropdown;
 #[cfg(test)]
 pub mod test_utils;
 pub mod types;
