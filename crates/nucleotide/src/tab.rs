@@ -7,7 +7,7 @@ use gpui::{
     ParentElement, RenderOnce, SharedString, Styled, Window,
 };
 use helix_view::DocumentId;
-use nucleotide_ui::{VcsIndicator, VcsStatus};
+use nucleotide_ui::{Button, ButtonSize, ButtonVariant, VcsIndicator, VcsStatus};
 
 /// Type alias for mouse event handlers in tabs
 type MouseEventHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
@@ -180,28 +180,18 @@ impl RenderOnce for Tab {
                     )
                     .child(
                         // Close button
-                        div()
-                            .ml(px(4.0)) // Less margin since we have gap
-                            .px(px(4.0)) // Horizontal padding for better click target
-                            .py(px(2.0)) // Vertical padding
-                            .rounded_sm()
-                            .hover(|style| style.bg(ui_theme.surface_active))
-                            .cursor(CursorStyle::PointingHand)
-                            .on_mouse_down(MouseButton::Left, {
-                                let on_close = self.on_close;
-                                move |event, window, cx| {
-                                    on_close(event, window, cx);
-                                    cx.stop_propagation();
-                                }
-                            })
-                            .child(
-                                // Simple X icon for close button
-                                div()
-                                    .text_color(text_color.opacity(0.6))
-                                    .text_size(px(16.0)) // Larger X
-                                    .hover(|style| style.text_color(text_color))
-                                    .child("×"),
-                            ),
+                        div().ml(px(4.0)).child(
+                            Button::icon_only("tab-close", "icons/close.svg")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Small)
+                                .on_click({
+                                    let on_close = self.on_close;
+                                    move |event, window, cx| {
+                                        on_close(event, window, cx);
+                                        cx.stop_propagation();
+                                    }
+                                }),
+                        ),
                     ),
             )
     }
