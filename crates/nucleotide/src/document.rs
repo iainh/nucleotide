@@ -2452,6 +2452,9 @@ impl Element for DocumentElement {
                     // Get text format and create DocumentFormatter
                     let theme = cx.global::<crate::ThemeManager>().helix_theme();
 
+                    // Extract wrap indicator color early to avoid borrow conflicts later
+                    let wrap_indicator_color = theme.get("ui.virtual.wrap").fg.and_then(color_to_hsla);
+
                     // Re-read core to get document and view - extract what we need and drop the borrow
                     let (text_format, view_offset, gutter_offset) = {
                         let core = self.core.read(cx);
@@ -2654,24 +2657,35 @@ impl Element for DocumentElement {
                         };
 
                         // Adjust text runs to account for leading spaces and wrap indicator
-                        let mut prefix_len = line_start_col; // Indentation spaces
-                        if wrap_indicator_len > 0 {
-                            prefix_len += wrap_indicator_len;
-                        }
+                        if !line_runs.is_empty() {
+                            // Handle indentation spaces separately from wrap indicators
+                            if line_start_col > 0 {
+                                // Add run for indentation spaces using normal text color
+                                let indent_run = TextRun {
+                                    len: line_start_col,
+                                    font: self.style.font(),
+                                    color: fg_color,
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                line_runs.insert(0, indent_run);
+                            }
 
-                        if prefix_len > 0 && !line_runs.is_empty() {
-                            // Add a default-styled run for the prefix (indentation + wrap indicator)
-                            let prefix_run = TextRun {
-                                len: prefix_len,
-                                font: self.style.font(),
-                                color: fg_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            };
-
-                            // Prepend the prefix run
-                            line_runs.insert(0, prefix_run);
+                            if wrap_indicator_len > 0 {
+                                // Use pre-extracted wrap indicator color
+                                let wrap_color = wrap_indicator_color.unwrap_or(fg_color); // Fallback to normal text color
+                                // Add run for wrap indicator using ui.virtual.wrap theme color
+                                let wrap_run = TextRun {
+                                    len: wrap_indicator_len,
+                                    font: self.style.font(),
+                                    color: wrap_color,
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                line_runs.insert(if line_start_col > 0 { 1 } else { 0 }, wrap_run);
+                            }
                         }
 
                         // Paint the line
