@@ -4,9 +4,9 @@
 use crate::spacing;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, hsla, px, white, App, ElementId, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement,
-    Styled, Window,
+    div, hsla, px, svg, white, App, ElementId, FontWeight, InteractiveElement, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, RenderOnce, SharedString,
+    StatefulInteractiveElement, Styled, Window,
 };
 
 /// Button variant styles
@@ -55,7 +55,7 @@ pub struct Button {
     variant: ButtonVariant,
     size: ButtonSize,
     disabled: bool,
-    icon: Option<SharedString>,
+    icon_path: Option<SharedString>,
     icon_position: IconPosition,
     on_click: Option<ButtonClickHandler>,
     tooltip: Option<SharedString>,
@@ -75,7 +75,7 @@ impl Button {
             variant: ButtonVariant::Primary,
             size: ButtonSize::Medium,
             disabled: false,
-            icon: None,
+            icon_path: None,
             icon_position: IconPosition::Start,
             on_click: None,
             tooltip: None,
@@ -100,9 +100,9 @@ impl Button {
         self
     }
 
-    /// Add an icon
-    pub fn icon(mut self, icon: impl Into<SharedString>) -> Self {
-        self.icon = Some(icon.into());
+    /// Add an SVG icon by path
+    pub fn icon(mut self, icon_path: impl Into<SharedString>) -> Self {
+        self.icon_path = Some(icon_path.into());
         self
     }
 
@@ -219,13 +219,37 @@ impl RenderOnce for Button {
         // Tooltip implementation removed temporarily
 
         // Add icon and label
-        if let Some(icon) = self.icon {
+        if let Some(icon_path) = self.icon_path {
+            let icon_size = match self.size {
+                ButtonSize::Small => gpui::px(12.),
+                ButtonSize::Medium => gpui::px(16.),
+                ButtonSize::Large => gpui::px(20.),
+            };
+
+            let icon_color = match self.variant {
+                ButtonVariant::Primary => white(),
+                ButtonVariant::Danger => white(),
+                ButtonVariant::Secondary | ButtonVariant::Ghost => {
+                    if self.disabled {
+                        theme.text_disabled
+                    } else {
+                        theme.text
+                    }
+                }
+            };
+
+            let icon_element = svg()
+                .path(icon_path.to_string())
+                .size(icon_size)
+                .text_color(icon_color)
+                .flex_shrink_0();
+
             match self.icon_position {
                 IconPosition::Start => {
-                    button = button.child(icon).child(self.label);
+                    button = button.child(icon_element).child(self.label);
                 }
                 IconPosition::End => {
-                    button = button.child(self.label).child(icon);
+                    button = button.child(self.label).child(icon_element);
                 }
             }
         } else {
