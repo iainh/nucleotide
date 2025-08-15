@@ -45,7 +45,7 @@ impl ButtonSize {
 }
 
 // Type alias for button click handler
-type ButtonClickHandler = Box<dyn Fn(&MouseDownEvent, &mut App) + 'static>;
+type ButtonClickHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
 
 /// A reusable button component
 #[derive(IntoElement)]
@@ -76,6 +76,21 @@ impl Button {
             size: ButtonSize::Medium,
             disabled: false,
             icon_path: None,
+            icon_position: IconPosition::Start,
+            on_click: None,
+            tooltip: None,
+        }
+    }
+
+    /// Create an icon-only button (no text label)
+    pub fn icon_only(id: impl Into<ElementId>, icon_path: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            label: SharedString::default(),
+            variant: ButtonVariant::Ghost,
+            size: ButtonSize::Small,
+            disabled: false,
+            icon_path: Some(icon_path.into()),
             icon_position: IconPosition::Start,
             on_click: None,
             tooltip: None,
@@ -113,7 +128,10 @@ impl Button {
     }
 
     /// Set click handler
-    pub fn on_click(mut self, handler: impl Fn(&MouseDownEvent, &mut App) + 'static) -> Self {
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_click = Some(Box::new(handler));
         self
     }
@@ -209,8 +227,8 @@ impl RenderOnce for Button {
             button = button.cursor_pointer();
 
             if let Some(on_click) = self.on_click {
-                button = button.on_mouse_down(MouseButton::Left, move |ev, _window, cx| {
-                    on_click(ev, cx);
+                button = button.on_mouse_down(MouseButton::Left, move |ev, window, cx| {
+                    on_click(ev, window, cx);
                 });
             }
         }
@@ -244,15 +262,22 @@ impl RenderOnce for Button {
                 .text_color(icon_color)
                 .flex_shrink_0();
 
-            match self.icon_position {
-                IconPosition::Start => {
-                    button = button.child(icon_element).child(self.label);
-                }
-                IconPosition::End => {
-                    button = button.child(self.label).child(icon_element);
+            if self.label.is_empty() {
+                // Icon-only button
+                button = button.child(icon_element);
+            } else {
+                // Button with icon and label
+                match self.icon_position {
+                    IconPosition::Start => {
+                        button = button.child(icon_element).child(self.label);
+                    }
+                    IconPosition::End => {
+                        button = button.child(self.label).child(icon_element);
+                    }
                 }
             }
-        } else {
+        } else if !self.label.is_empty() {
+            // Text-only button
             button = button.child(self.label);
         }
 
