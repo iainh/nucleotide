@@ -13,6 +13,7 @@ use helix_core::Selection;
 use helix_view::ViewId;
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
+use nucleotide_ui::{Button, ButtonSize, ButtonVariant};
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;
@@ -2528,40 +2529,27 @@ impl Render for Workspace {
                     .border_color(ui_theme.border)
                     .flex()
                     .flex_col()
-                    .child(
-                        div().w_full().p(px(12.0)).child(
-                            div()
-                                .px(px(16.0))
-                                .py(px(8.0))
-                                .bg(ui_theme.surface)
-                                .border_1()
-                                .border_color(ui_theme.border)
-                                .rounded_md()
-                                .cursor(gpui::CursorStyle::PointingHand)
-                                .hover(|style| style.bg(ui_theme.surface_hover))
-                                .text_color(ui_theme.text)
-                                .text_align(gpui::TextAlign::Center)
-                                .child("Open Directory")
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|workspace, _event, _window, cx| {
-                                        // Create and show directory picker
-                                        let directory_picker =
-                                            crate::picker::Picker::native_directory(
-                                                "Select Project Directory",
-                                                |_path| {
-                                                    // Callback handled through events
-                                                },
-                                            );
-                                        workspace.core.update(cx, |_core, cx| {
-                                            cx.emit(crate::Update::DirectoryPicker(
-                                                directory_picker,
-                                            ));
-                                        });
-                                    }),
-                                ),
-                        ),
-                    );
+                    .child(div().w_full().p(px(12.0)).child({
+                        let workspace_entity = cx.entity().clone();
+                        Button::new("open-directory-btn", "Open Directory")
+                            .variant(ButtonVariant::Secondary)
+                            .size(ButtonSize::Medium)
+                            .icon("icons/folder.svg")
+                            .on_click(move |_event, app_cx| {
+                                // Create and show directory picker
+                                let directory_picker = crate::picker::Picker::native_directory(
+                                    "Select Project Directory",
+                                    |_path| {
+                                        // Callback handled through events
+                                    },
+                                );
+                                workspace_entity.update(app_cx, |workspace, cx| {
+                                    workspace.core.update(cx, |_core, cx| {
+                                        cx.emit(crate::Update::DirectoryPicker(directory_picker));
+                                    });
+                                });
+                            })
+                    }));
 
                 // Add resize handle with absolute positioning
                 let resize_handle = div()
