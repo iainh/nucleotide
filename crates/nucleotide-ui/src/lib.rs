@@ -26,6 +26,7 @@ pub mod titlebar;
 pub mod vcs_indicator;
 
 pub use assets::Assets;
+pub use button::{Button, ButtonSize, ButtonVariant, IconPosition};
 pub use file_icon::FileIcon;
 pub use list_item::*;
 pub use picker::Picker;
