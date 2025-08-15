@@ -48,11 +48,20 @@ pub struct Workspace {
     titlebar: Option<gpui::AnyView>,
     appearance_observer_set: bool,
     needs_appearance_update: bool,
+    tab_overflow_dropdown_open: bool,
+    document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
 
 impl Workspace {
+    /// Ensure document is in the order list, adding it to the end if new
+    fn ensure_document_in_order(&mut self, doc_id: helix_view::DocumentId) {
+        if !self.document_order.contains(&doc_id) {
+            self.document_order.push(doc_id);
+        }
+    }
+
     pub fn current_filename(&self, cx: &App) -> Option<String> {
         let editor = &self.core.read(cx).editor;
 
@@ -160,6 +169,8 @@ impl Workspace {
             titlebar: None,
             appearance_observer_set: false,
             needs_appearance_update: false,
+            tab_overflow_dropdown_open: false,
+            document_order: Vec::new(),
         };
         // Initialize document views
         workspace.update_document_views(cx);
@@ -1321,7 +1332,7 @@ impl Workspace {
     }
 
     /// Render the tab bar showing all open documents
-    fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tab_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::tab_bar::{DocumentInfo, TabBar};
         use helix_view::editor::BufferLine;
 
@@ -1359,6 +1370,28 @@ impl Workspace {
 
         info!("Tab bar visible, rendering tabs");
 
+        // Calculate available width for tabs dynamically
+        let window_size = window.viewport_size();
+        let mut available_width = window_size.width.0;
+
+        // Subtract file tree width if it's visible
+        if self.show_file_tree {
+            const RESIZE_HANDLE_WIDTH: f32 = 4.0;
+            available_width -= self.file_tree_width + RESIZE_HANDLE_WIDTH;
+        }
+
+        // Reserve some margin for window padding and other UI elements
+        const TAB_BAR_MARGIN: f32 = 20.0;
+        available_width = (available_width - TAB_BAR_MARGIN).max(200.0); // Minimum 200px
+
+        info!(
+            window_width = window_size.width.0,
+            file_tree_width = self.file_tree_width,
+            show_file_tree = self.show_file_tree,
+            calculated_available_width = available_width,
+            "Dynamic tab bar width calculation"
+        );
+
         // Get the currently active document ID
         let active_doc_id = self
             .focused_view_id
@@ -1368,16 +1401,39 @@ impl Workspace {
         // Get project directory for relative paths first
         let project_directory = core.project_directory.clone();
 
-        // Collect document information first
+        // Collect all current document IDs
+        let current_doc_ids: std::collections::HashSet<_> =
+            editor.documents.keys().copied().collect();
+
+        // Release the core borrow early
+        let _ = core;
+
+        // Clean up order list - remove documents that no longer exist
+        self.document_order
+            .retain(|doc_id| current_doc_ids.contains(doc_id));
+
+        // Add any new documents to the end of the order list (rightmost position)
+        for &doc_id in &current_doc_ids {
+            self.ensure_document_in_order(doc_id);
+        }
+
+        // Now collect document information in the stable order
         let mut documents = Vec::new();
-        for (&doc_id, doc) in &editor.documents {
-            documents.push(DocumentInfo {
-                id: doc_id,
-                path: doc.path().map(|p| p.to_path_buf()),
-                is_modified: doc.is_modified(),
-                focused_at: doc.focused_at,
-                git_status: None, // Will be filled in after releasing core borrow
-            });
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+
+        // Iterate in our stable order, not HashMap order
+        for (order_index, &doc_id) in self.document_order.iter().enumerate() {
+            if let Some(doc) = editor.documents.get(&doc_id) {
+                documents.push(DocumentInfo {
+                    id: doc_id,
+                    path: doc.path().map(|p| p.to_path_buf()),
+                    is_modified: doc.is_modified(),
+                    focused_at: doc.focused_at,
+                    order: order_index, // Use position in Vec as order
+                    git_status: None,   // Will be filled in after releasing core borrow
+                });
+            }
         }
 
         // Release the core borrow
@@ -1472,6 +1528,149 @@ impl Workspace {
                     // Update workspace to refresh the view
                     workspace.update(cx, |workspace, cx| {
                         workspace.update_document_views(cx);
+                    });
+                }
+            },
+        )
+        .with_available_width(available_width) // Dynamic width based on window size and file tree
+        .with_overflow_open(self.tab_overflow_dropdown_open)
+        .with_overflow_toggle({
+            let workspace_entity = cx.entity().clone();
+            move |_window, cx| {
+                workspace_entity.update(cx, |workspace, cx| {
+                    workspace.tab_overflow_dropdown_open = !workspace.tab_overflow_dropdown_open;
+                    cx.notify();
+                });
+            }
+        })
+        .into_any_element()
+    }
+
+    /// Render the tab overflow dropdown menu as an overlay
+    fn render_tab_overflow_menu(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        use crate::tab_bar::{DocumentInfo, TabBar};
+        use crate::tab_overflow_dropdown::TabOverflowMenu;
+        use helix_view::editor::BufferLine;
+
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+
+        // Check bufferline configuration
+        let bufferline_config = &editor.config().bufferline;
+        let should_show_tabs = match bufferline_config {
+            BufferLine::Never => false,
+            BufferLine::Always => true,
+            BufferLine::Multiple => editor.documents.len() > 1,
+        };
+
+        if !should_show_tabs {
+            return div().into_any_element();
+        }
+
+        // Get the currently active document ID
+        let active_doc_id = self
+            .focused_view_id
+            .and_then(|focused_view_id| editor.tree.try_get(focused_view_id))
+            .map(|view| view.doc);
+
+        // Get project directory for relative paths first
+        let project_directory = core.project_directory.clone();
+
+        // Collect document information using the same stable ordering as main tab bar
+        let mut documents = Vec::new();
+        for (order_index, &doc_id) in self.document_order.iter().enumerate() {
+            if let Some(doc) = editor.documents.get(&doc_id) {
+                documents.push(DocumentInfo {
+                    id: doc_id,
+                    path: doc.path().map(|p| p.to_path_buf()),
+                    is_modified: doc.is_modified(),
+                    focused_at: doc.focused_at,
+                    order: order_index, // Use position in Vec as order
+                    git_status: None,   // Will be filled in after releasing core borrow
+                });
+            }
+        }
+
+        // Release the core borrow
+        let _ = core;
+
+        // Calculate available width for tabs dynamically (same as in render_tab_bar)
+        let window_size = window.viewport_size();
+        let mut available_width = window_size.width.0;
+
+        // Subtract file tree width if it's visible
+        if self.show_file_tree {
+            const RESIZE_HANDLE_WIDTH: f32 = 4.0;
+            available_width -= self.file_tree_width + RESIZE_HANDLE_WIDTH;
+        }
+
+        // Reserve some margin for window padding and other UI elements
+        const TAB_BAR_MARGIN: f32 = 20.0;
+        available_width = (available_width - TAB_BAR_MARGIN).max(200.0); // Minimum 200px
+
+        // Update documents with VCS status
+        for doc_info in &mut documents {
+            if let Some(ref path) = doc_info.path {
+                let status = cx.global::<VcsServiceHandle>().get_status(path, cx);
+                doc_info.git_status = status;
+            }
+        }
+
+        // Apply the same sorting as the main tab bar for consistency
+        // Sort by the order field which tracks opening order
+        documents.sort_by(|a, b| a.order.cmp(&b.order));
+
+        // Create a temporary TabBar to get overflow documents
+        let temp_tab_bar = TabBar::new(
+            documents.clone(),
+            active_doc_id,
+            project_directory.clone(),
+            |_doc_id, _window, _cx| {}, // No-op
+            |_doc_id, _window, _cx| {}, // No-op
+        )
+        .with_available_width(available_width); // Same dynamic width as main tab bar
+
+        let overflow_documents = temp_tab_bar.get_overflow_documents();
+
+        if overflow_documents.is_empty() {
+            return div().into_any_element();
+        }
+
+        TabOverflowMenu::new(
+            overflow_documents,
+            active_doc_id,
+            project_directory,
+            std::sync::Arc::new({
+                let workspace = cx.entity().clone();
+                let core = self.core.clone();
+                let handle = self.handle.clone();
+                move |doc_id, _window, cx| {
+                    // Switch the current view to display this document
+                    core.update(cx, |core, cx| {
+                        let _guard = handle.enter();
+                        // Use Helix's switch method to change which document is displayed
+                        core.editor
+                            .switch(doc_id, helix_view::editor::Action::Replace);
+                        // Emit a redraw event so the UI updates
+                        cx.emit(crate::Update::Redraw);
+                    });
+
+                    // Update workspace to refresh the view
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.update_document_views(cx);
+                    });
+                }
+            }),
+            {
+                let workspace_entity = cx.entity().clone();
+                move |_window, cx| {
+                    workspace_entity.update(cx, |workspace, cx| {
+                        workspace.tab_overflow_dropdown_open = false;
+                        cx.notify();
                     });
                 }
             },
@@ -2163,7 +2362,7 @@ impl Render for Workspace {
             .flex_col()
             .w_full()
             .h_full()
-            .child(self.render_tab_bar(cx)) // Tab bar at the top of editor area
+            .child(self.render_tab_bar(window, cx)) // Tab bar at the top of editor area
             .child(
                 div()
                     .flex()
@@ -2180,7 +2379,11 @@ impl Render for Workspace {
                         !self.info_hidden && !self.info.read(cx).is_empty(),
                         |this| this.child(self.info.clone()),
                     )
-                    .child(self.key_hints.clone()),
+                    .child(self.key_hints.clone())
+                    .when(self.tab_overflow_dropdown_open, |this| {
+                        // Render the overflow menu as an overlay
+                        this.child(self.render_tab_overflow_menu(window, cx))
+                    }),
             );
 
         // Create the main workspace div with basic styling first
@@ -2231,6 +2434,16 @@ impl Render for Workspace {
                 cx.listener(|workspace, _event: &MouseUpEvent, _window, cx| {
                     if workspace.is_resizing_file_tree {
                         workspace.is_resizing_file_tree = false;
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|workspace, _event: &MouseDownEvent, _window, cx| {
+                    // Close tab overflow dropdown when clicking elsewhere
+                    if workspace.tab_overflow_dropdown_open {
+                        workspace.tab_overflow_dropdown_open = false;
                         cx.notify();
                     }
                 }),
