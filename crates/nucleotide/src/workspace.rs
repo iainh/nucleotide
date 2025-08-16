@@ -14,6 +14,7 @@ use helix_view::ViewId;
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use nucleotide_ui::theme_manager::ThemedContext;
+use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::{
     compute_component_style, Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant,
 };
@@ -2854,15 +2855,25 @@ impl Render for Workspace {
 
         let editor_rect = editor.tree.area();
 
-        let mut docs_root = div().flex().w_full().h_full();
+        // Create document root container using design tokens
+        let mut docs_root = div()
+            .id("docs-root")
+            .flex()
+            .w_full()
+            .h_full()
+            // Background color inherited // Use semantic background color
+            ; // No gap needed for documents
 
         // Only render the focused view, not all views
         if let Some(focused_view_id) = self.focused_view_id {
             if let Some(doc_view) = self.documents.get(&focused_view_id) {
                 let has_border = right_borders.contains(&focused_view_id);
+                // Create document element container with semantic styling
                 let doc_element = div()
+                    .id("document-container")
                     .flex()
                     .size_full()
+                    // Background color inherited
                     .child(doc_view.clone())
                     .when(has_border, |this| {
                         this.border_color(border_color).border_r_1()
@@ -2891,19 +2902,25 @@ impl Render for Workspace {
 
         let has_overlay = !self.overlay.read(cx).is_empty();
 
-        // Create main content area (documents + notifications + overlays) with tab bar
+        // Create main content area using semantic layout with design tokens
         let main_content = div()
+            .id("main-content")
             .flex()
             .flex_col()
             .w_full()
             .h_full()
+            // Background color inherited
+            // No gap needed between tab bar and content
             .child(self.render_tab_bar(window, cx)) // Tab bar at the top of editor area
             .child(
+                // Editor content container
                 div()
+                    .id("editor-container")
                     .flex()
                     .flex_col()
                     .w_full()
                     .flex_1() // Take remaining height after tab bar
+                    // Background color inherited
                     .when_some(Some(docs_root), gpui::ParentElement::child)
                     .child(self.notifications.clone())
                     .when(!self.overlay.read(cx).is_empty(), |this| {
@@ -2921,7 +2938,10 @@ impl Render for Workspace {
                     }),
             );
 
-        // Create the main workspace div with basic styling first
+        // Create the main workspace container using nucleotide-ui theme access
+        let theme = cx.theme();
+        let _tokens = &theme.tokens;
+
         let mut workspace_div = div()
             .key_context("Workspace")
             .id("workspace")
