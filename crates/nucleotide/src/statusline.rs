@@ -6,7 +6,9 @@ use gpui::{
 };
 use helix_view::{DocumentId, ViewId};
 use nucleotide_ui::theme_manager::ThemedContext;
-use nucleotide_ui::{compute_component_style, StyleSize, StyleState, StyleVariant};
+use nucleotide_ui::{
+    compute_component_style, StyleSize, StyleState, StyleVariant, ThemedContext as UIThemedContext,
+};
 
 /// StatusLineView is a proper GPUI View that can observe model changes
 pub struct StatusLineView {
@@ -51,57 +53,11 @@ impl StatusLineView {
         self.focused = focused;
     }
 
-    fn get_computed_style(&self, cx: &mut App) -> nucleotide_ui::ComputedStyle {
-        let ui_theme =
-            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
-                .map(|provider| provider.current_theme().clone())
-                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
-
-        // Use different style states based on focus
-        let style_state = if self.focused {
-            StyleState::Default
+    fn get_status_color(&self, tokens: &nucleotide_ui::DesignTokens) -> gpui::Hsla {
+        if self.focused {
+            tokens.colors.surface
         } else {
-            StyleState::Disabled // Inactive statusline uses disabled styling
-        };
-
-        // Compute style using the enhanced style system
-        let computed_style = compute_component_style(
-            &ui_theme,
-            style_state,
-            StyleVariant::Secondary.as_str(), // Statusline uses secondary variant
-            StyleSize::Medium.as_str(),
-        );
-
-        // If computed style doesn't provide good colors, fall back to Helix theme
-        let base_style = if self.focused {
-            cx.theme_style("ui.statusline")
-        } else {
-            cx.theme_style("ui.statusline.inactive")
-        };
-
-        let background = base_style
-            .bg
-            .and_then(color_to_hsla)
-            .unwrap_or(computed_style.background);
-
-        let foreground = base_style
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or(computed_style.foreground);
-
-        nucleotide_ui::ComputedStyle {
-            background,
-            foreground,
-            border_color: computed_style.border_color,
-            border_width: computed_style.border_width,
-            border_radius: computed_style.border_radius,
-            padding_x: computed_style.padding_x,
-            padding_y: computed_style.padding_y,
-            font_size: computed_style.font_size,
-            font_weight: computed_style.font_weight,
-            opacity: computed_style.opacity,
-            shadow: computed_style.shadow,
-            transition: computed_style.transition,
+            tokens.colors.surface_disabled
         }
     }
 }
@@ -110,20 +66,11 @@ impl EventEmitter<()> for StatusLineView {}
 
 impl Render for StatusLineView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Get UI font configuration
-        let ui_font_config = cx.global::<crate::types::UiFontConfig>();
-        let font = gpui::font(&ui_font_config.family);
-        let font_size = gpui::px(ui_font_config.size);
-
-        // Get computed theme style using enhanced styling system
-        let computed_style = self.get_computed_style(cx);
-
-        // Create divider color with reduced opacity
-        let divider_color = Hsla {
-            h: computed_style.foreground.h,
-            s: computed_style.foreground.s,
-            l: computed_style.foreground.l,
-            a: 0.3,
+        // Get LSP indicator first (before any other mutable borrows)
+        let lsp_indicator = if let Some(lsp_state) = &self.lsp_state {
+            lsp_state.update(cx, |state, _| state.get_lsp_indicator())
+        } else {
+            None
         };
 
         // Collect all data we need
@@ -131,12 +78,42 @@ impl Render for StatusLineView {
         let editor = &core.editor;
         let doc = match editor.document(self.doc_id) {
             Some(doc) => doc,
-            None => return div().h(px(24.)).w_full().bg(computed_style.background),
+            None => {
+                // Use ThemedContext for theme access
+                let theme = cx.theme();
+                let tokens = &theme.tokens;
+                let status_bg = self.get_status_color(&tokens);
+                return div()
+                    .h(tokens.sizes.button_height_sm)
+                    .w_full()
+                    .bg(status_bg);
+            }
         };
         let view = match editor.tree.try_get(self.view_id) {
             Some(view) => view,
-            None => return div().h(px(24.)).w_full().bg(computed_style.background),
+            None => {
+                // Use ThemedContext for theme access
+                let theme = cx.theme();
+                let tokens = &theme.tokens;
+                let status_bg = self.get_status_color(&tokens);
+                return div()
+                    .h(tokens.sizes.button_height_sm)
+                    .w_full()
+                    .bg(status_bg);
+            }
         };
+
+        // Use ThemedContext for consistent theme access
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
+
+        // Get UI font configuration
+        let ui_font_config = cx.global::<crate::types::UiFontConfig>();
+        let font = gpui::font(&ui_font_config.family);
+        let font_size = gpui::px(ui_font_config.size);
+
+        // Get status bar background color based on focus state
+        let status_bg = self.get_status_color(&tokens);
 
         // Build status components
         let position = helix_core::coords_at_pos(
@@ -180,45 +157,51 @@ impl Render for StatusLineView {
 
         let position_text = format!("{}:{}", position.row + 1, position.col + 1);
 
-        // Get LSP indicator if available
-        let lsp_indicator = if let Some(lsp_state) = &self.lsp_state {
-            lsp_state.update(cx, |state, _| state.get_lsp_indicator())
-        } else {
-            None
-        };
-
-        // Build the status line layout
+        // Build the status line layout using design tokens
         let mut status_bar = div()
-            .h(px(24.))
+            .h(tokens.sizes.button_height_sm)
             .w_full()
-            .bg(computed_style.background)
+            .bg(status_bg)
+            .border_t_1()
+            .border_color(tokens.colors.border_default)
             .flex()
             .flex_row()
             .items_center()
-            .px(computed_style.padding_x)
-            .gap_2()
+            .px(tokens.sizes.space_4)
+            .gap(tokens.sizes.space_2)
             .font(font)
             .text_size(font_size)
-            .text_color(computed_style.foreground)
+            .text_color(tokens.colors.text_primary)
             .child(
                 // Mode indicator
-                div().child(mode_name).min_w(px(24.)),
+                div()
+                    .child(mode_name)
+                    .min_w(px(24.))
+                    .px(tokens.sizes.space_2)
+                    .text_color(tokens.colors.text_secondary),
             )
             .child(
                 // Divider
-                div().w(px(1.)).h(px(16.)).bg(divider_color),
+                div().w(px(1.)).h(px(16.)).bg(tokens.colors.border_muted),
             )
             .child(
                 // File name - takes up available space
-                div().flex_1().overflow_hidden().child(file_name),
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .px(tokens.sizes.space_2)
+                    .child(file_name),
             )
             .child(
                 // Divider
-                div().w(px(1.)).h(px(16.)).bg(divider_color),
+                div().w(px(1.)).h(px(16.)).bg(tokens.colors.border_muted),
             )
             .child(
                 // Position
-                div().child(position_text).min_w(px(80.)),
+                div()
+                    .child(position_text)
+                    .min_w(px(80.))
+                    .px(tokens.sizes.space_2),
             );
 
         // Add LSP indicator if available
@@ -226,11 +209,14 @@ impl Render for StatusLineView {
             status_bar = status_bar
                 .child(
                     // Divider before LSP
-                    div().w(px(1.)).h(px(16.)).bg(divider_color),
+                    div().w(px(1.)).h(px(16.)).bg(tokens.colors.border_muted),
                 )
                 .child(
                     // LSP indicator
-                    div().child(indicator).min_w(px(16.)),
+                    div()
+                        .child(indicator)
+                        .min_w(px(16.))
+                        .px(tokens.sizes.space_2),
                 );
         }
 
