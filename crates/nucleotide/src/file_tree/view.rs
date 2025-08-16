@@ -15,9 +15,11 @@ use gpui::{
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_ui::theme_manager::ThemedContext;
 use nucleotide_ui::theme_utils::color_to_hsla;
+use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::{
+    compute_component_state,
     scrollbar::{Scrollbar, ScrollbarState},
-    FileIcon, ListItem, ListItemSpacing, ListItemVariant, Theme, VcsStatus,
+    ComponentState, FileIcon, ListItem, ListItemSpacing, ListItemVariant, Theme, VcsStatus,
 };
 use std::path::{Path, PathBuf};
 
@@ -1105,13 +1107,13 @@ impl FileTreeView {
             )
     }
 
-    /// Render the chevron for directories
+    /// Render the chevron for directories using design tokens
     fn render_chevron(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
+        let theme = cx.theme();
 
         chevron_icon(if entry.is_expanded { "down" } else { "right" })
             .size_3()
-            .text_color(theme.text_muted)
+            .text_color(theme.tokens.colors.text_secondary) // Use design token for consistent color
     }
 
     /// Render the file/directory icon with VCS status overlay
@@ -1158,9 +1160,9 @@ impl FileTreeView {
             )
     }
 
-    /// Render the filename
+    /// Render the filename using nucleotide-ui design tokens
     fn render_filename(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
+        let theme = cx.theme();
 
         // For root directory, show just the directory name
         let filename = if entry.depth == 0 && entry.is_directory() {
@@ -1181,11 +1183,15 @@ impl FileTreeView {
             entry.file_name().unwrap_or("?").to_string()
         };
 
+        // Use design tokens for consistent text styling
         div()
             .flex_1()
-            .text_size(px(14.0))
-            .text_color(theme.text)
-            .when(entry.is_hidden, |div| div.text_color(theme.text_muted))
+            .text_size(px(14.0)) // Use consistent text size
+            .text_color(if entry.is_hidden {
+                theme.tokens.colors.text_secondary
+            } else {
+                theme.tokens.colors.text_primary
+            })
             .child(filename)
     }
 
@@ -1232,29 +1238,42 @@ impl Focusable for FileTreeView {
 
 // FileTreeView is focusable through its focus_handle field
 
+// FileTreeView uses nucleotide-ui design patterns without implementing traits
+// The component is already well-structured with ListItem usage
+
 impl Render for FileTreeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
+        // Use nucleotide-ui theme access for consistent styling
+        let theme = cx.theme();
         let entries = self.tree.visible_entries();
 
-        // Get prompt background color for consistency
-        let prompt_bg = {
-            let popup_style = cx.theme_style("ui.popup");
-            popup_style
-                .bg
-                .and_then(color_to_hsla)
-                .or_else(|| cx.theme_style("ui.background").bg.and_then(color_to_hsla))
-                .unwrap_or(theme.tokens.colors.background)
+        // Compute component state based on file tree status
+        let component_state = compute_component_state(
+            false,               // disabled - file tree is never disabled
+            false,               // loading - TODO: could be true during refresh
+            true,                // focused - when focus_handle is focused
+            false,               // hovered - handled by GPUI
+            !entries.is_empty(), // active when there are entries
+        );
+
+        // Get semantic background color using design tokens
+        let bg_color = match component_state {
+            ComponentState::Active => theme.tokens.colors.surface,
+            ComponentState::Disabled => theme.tokens.colors.surface,
+            _ => theme.tokens.colors.surface,
         };
 
+        // Create semantic file tree container with nucleotide-ui design tokens
         div()
             .id("file-tree")
             .key_context("FileTree")
             .w_full()
             .h_full()
-            .bg(prompt_bg)
+            .bg(bg_color) // Use semantic background color from design tokens
             .flex()
             .flex_col()
+            .border_r_1()
+            .border_color(theme.tokens.colors.border_muted) // Add border using design tokens
             .track_focus(&self.focus_handle)
             .on_click(cx.listener(|view, _event, window, _cx| {
                 // Focus the tree view when clicked anywhere on it
