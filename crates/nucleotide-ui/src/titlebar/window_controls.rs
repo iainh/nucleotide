@@ -6,6 +6,7 @@ use gpui::{
     Styled, Window, WindowControlArea,
 };
 
+use crate::styling::{compute_component_style, StyleSize, StyleState, StyleVariant};
 use crate::titlebar::platform_titlebar::PlatformStyle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,24 +38,52 @@ pub struct WindowControlStyle {
 
 impl WindowControlStyle {
     pub fn default(cx: &App) -> Self {
-        let ui_theme = cx.global::<crate::Theme>();
+        // Use enhanced styling system with provider support
+        let ui_theme = crate::providers::use_provider::<crate::providers::ThemeProvider>()
+            .map(|provider| provider.current_theme().clone())
+            .unwrap_or_else(|| cx.global::<crate::Theme>().clone());
+
+        // Use ghost variant for subtle window controls
+        let default_style = compute_component_style(
+            &ui_theme,
+            StyleState::Default,
+            StyleVariant::Ghost.as_str(),
+            StyleSize::Small.as_str(),
+        );
+        let hover_style = compute_component_style(
+            &ui_theme,
+            StyleState::Hover,
+            StyleVariant::Ghost.as_str(),
+            StyleSize::Small.as_str(),
+        );
 
         Self {
-            background: hsla(0.0, 0.0, 0.0, 0.0), // transparent
-            background_hover: ui_theme.surface_hover,
-            icon: ui_theme.text_muted,
-            icon_hover: ui_theme.text,
+            background: default_style.background, // transparent by default for ghost variant
+            background_hover: hover_style.background,
+            icon: ui_theme.tokens.colors.text_secondary,
+            icon_hover: ui_theme.tokens.colors.text_primary,
         }
     }
 
     pub fn close(cx: &App) -> Self {
-        let ui_theme = cx.global::<crate::Theme>();
+        // Use enhanced styling system with provider support
+        let ui_theme = crate::providers::use_provider::<crate::providers::ThemeProvider>()
+            .map(|provider| provider.current_theme().clone())
+            .unwrap_or_else(|| cx.global::<crate::Theme>().clone());
+
+        // Use danger variant for close button
+        let danger_style = compute_component_style(
+            &ui_theme,
+            StyleState::Hover,
+            StyleVariant::Danger.as_str(),
+            StyleSize::Small.as_str(),
+        );
 
         Self {
-            background: hsla(0.0, 0.0, 0.0, 0.0),       // transparent
-            background_hover: hsla(0.0, 0.7, 0.5, 1.0), // red
-            icon: ui_theme.text_muted,
-            icon_hover: hsla(0.0, 0.0, 1.0, 1.0), // white
+            background: hsla(0.0, 0.0, 0.0, 0.0),      // transparent default
+            background_hover: danger_style.background, // Use computed danger color
+            icon: ui_theme.tokens.colors.text_secondary,
+            icon_hover: danger_style.foreground, // Use computed text color on danger background
         }
     }
 }

@@ -7,6 +7,7 @@ use gpui::{
     MouseButton, ParentElement, Pixels, Render, Styled, Window, WindowControlArea,
 };
 
+use crate::styling::{compute_component_style, StyleSize, StyleState, StyleVariant};
 use crate::titlebar::window_controls::WindowControls;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,9 +60,20 @@ impl PlatformTitleBar {
     }
 
     pub fn title_bar_color(&self, _window: &Window, cx: &App) -> Hsla {
-        // Get color from theme manager
-        let ui_theme = cx.global::<crate::Theme>();
-        ui_theme.surface
+        // Use enhanced styling system with provider support
+        let ui_theme = crate::providers::use_provider::<crate::providers::ThemeProvider>()
+            .map(|provider| provider.current_theme().clone())
+            .unwrap_or_else(|| cx.global::<crate::Theme>().clone());
+
+        // Compute titlebar style using secondary variant for surface styling
+        let titlebar_style = compute_component_style(
+            &ui_theme,
+            StyleState::Default,
+            StyleVariant::Secondary.as_str(),
+            StyleSize::Medium.as_str(),
+        );
+
+        titlebar_style.background
     }
 }
 
@@ -70,9 +82,26 @@ impl Render for PlatformTitleBar {
         let decorations = window.window_decorations();
         let height = Self::height(window);
         let titlebar_color = self.title_bar_color(window, cx);
-        // Get the border color from UI theme
-        let ui_theme = cx.global::<crate::Theme>();
-        let border_color = ui_theme.border;
+
+        // Use enhanced styling system with provider support for all colors
+        let ui_theme = crate::providers::use_provider::<crate::providers::ThemeProvider>()
+            .map(|provider| provider.current_theme().clone())
+            .unwrap_or_else(|| cx.global::<crate::Theme>().clone());
+
+        // Compute styles for titlebar components
+        let titlebar_style = compute_component_style(
+            &ui_theme,
+            StyleState::Default,
+            StyleVariant::Secondary.as_str(),
+            StyleSize::Medium.as_str(),
+        );
+
+        let text_style = compute_component_style(
+            &ui_theme,
+            StyleState::Default,
+            StyleVariant::Primary.as_str(),
+            StyleSize::Small.as_str(),
+        );
 
         // macOS traffic light padding
         const MAC_TRAFFIC_LIGHT_PADDING: f32 = 71.0;
@@ -93,7 +122,7 @@ impl Render for PlatformTitleBar {
             .h(height)
             .bg(titlebar_color)
             .border_b_1()
-            .border_color(border_color)
+            .border_color(titlebar_style.border_color)
             .map(|this| {
                 if window.is_fullscreen() {
                     this.pl_2()
@@ -134,12 +163,18 @@ impl Render for PlatformTitleBar {
                     })
                     .on_mouse_move(|_, _, cx| cx.stop_propagation())
                     .child(
-                        // Title text - centered and bold
+                        // Title text - centered and styled with computed styles
                         div().flex().items_center().gap_2().child(
                             div()
-                                .text_sm() // Standard small text size
-                                .font_weight(gpui::FontWeight::SEMIBOLD) // Semibold weight
-                                .text_color(ui_theme.text)
+                                .text_size(text_style.font_size)
+                                .font_weight(if text_style.font_weight >= 600 {
+                                    gpui::FontWeight::SEMIBOLD
+                                } else if text_style.font_weight >= 500 {
+                                    gpui::FontWeight::MEDIUM
+                                } else {
+                                    gpui::FontWeight::NORMAL
+                                })
+                                .text_color(text_style.foreground)
                                 .child(self.title.clone()),
                         ),
                     ),
