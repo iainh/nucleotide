@@ -3,7 +3,7 @@
 
 use crate::theme_utils::color_to_hsla;
 use crate::Theme as UITheme;
-use gpui::hsla;
+use gpui::{hsla, App, Global, WindowAppearance};
 use helix_view::Theme as HelixTheme;
 
 /// System appearance state
@@ -12,6 +12,39 @@ pub enum SystemAppearance {
     #[default]
     Light,
     Dark,
+}
+
+impl From<WindowAppearance> for SystemAppearance {
+    fn from(appearance: WindowAppearance) -> Self {
+        match appearance {
+            WindowAppearance::Light | WindowAppearance::VibrantLight => SystemAppearance::Light,
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => SystemAppearance::Dark,
+        }
+    }
+}
+
+/// Global SystemAppearance state for GPUI integration
+#[derive(Default)]
+struct GlobalSystemAppearance(SystemAppearance);
+
+impl Global for GlobalSystemAppearance {}
+
+impl SystemAppearance {
+    /// Initializes the global SystemAppearance based on the current window appearance
+    pub fn init(cx: &mut App) {
+        *cx.default_global::<GlobalSystemAppearance>() =
+            GlobalSystemAppearance(SystemAppearance::from(cx.window_appearance()));
+    }
+
+    /// Returns the global SystemAppearance
+    pub fn global(cx: &App) -> Self {
+        cx.global::<GlobalSystemAppearance>().0
+    }
+
+    /// Returns a mutable reference to the global SystemAppearance
+    pub fn global_mut(cx: &mut App) -> &mut Self {
+        &mut cx.global_mut::<GlobalSystemAppearance>().0
+    }
 }
 
 /// Manages theme state and provides consistent access to theme colors
@@ -28,17 +61,18 @@ pub struct ThemeManager {
 impl ThemeManager {
     /// Create a new ThemeManager from a Helix theme
     pub fn new(helix_theme: HelixTheme) -> Self {
-        let ui_theme = Self::derive_ui_theme(&helix_theme);
+        let system_appearance = SystemAppearance::default();
+        let ui_theme = Self::derive_ui_theme_with_appearance(&helix_theme, system_appearance);
         Self {
             helix_theme,
             ui_theme,
-            system_appearance: SystemAppearance::default(),
+            system_appearance,
         }
     }
 
     /// Update the theme
     pub fn set_theme(&mut self, helix_theme: HelixTheme) {
-        self.ui_theme = Self::derive_ui_theme(&helix_theme);
+        self.ui_theme = Self::derive_ui_theme_with_appearance(&helix_theme, self.system_appearance);
         self.helix_theme = helix_theme;
     }
 
@@ -217,6 +251,8 @@ impl ThemeManager {
     /// Set the system appearance
     pub fn set_system_appearance(&mut self, appearance: SystemAppearance) {
         self.system_appearance = appearance;
+        // Re-derive the UI theme with the new system appearance for proper fallback colors
+        self.ui_theme = Self::derive_ui_theme_with_appearance(&self.helix_theme, self.system_appearance);
     }
 
     /// Check if the current theme is dark based on background luminance
@@ -229,6 +265,11 @@ impl ThemeManager {
 
     /// Derive a UI theme from a Helix theme
     fn derive_ui_theme(helix_theme: &HelixTheme) -> UITheme {
+        Self::derive_ui_theme_with_appearance(helix_theme, SystemAppearance::default())
+    }
+
+    /// Derive a UI theme from a Helix theme with system appearance for fallback colors
+    fn derive_ui_theme_with_appearance(helix_theme: &HelixTheme, system_appearance: SystemAppearance) -> UITheme {
         // Check if theme fallback testing is enabled
         let test_fallback = std::env::var("NUCLEOTIDE_DISABLE_THEME_LOADING")
             .map(|val| val == "1" || val.to_lowercase() == "true")
@@ -303,26 +344,52 @@ impl ThemeManager {
             );
         }
 
-        // Convert to GPUI colors with sensible defaults
+        // Convert to GPUI colors with sensible defaults based on system appearance
         let background_from_theme = ui_bg.bg.and_then(color_to_hsla);
-        let background = background_from_theme.unwrap_or_else(|| hsla(0.0, 0.0, 0.05, 1.0));
+        let background = background_from_theme.unwrap_or_else(|| {
+            let fallback_color = match system_appearance {
+                SystemAppearance::Light => hsla(0.0, 0.0, 0.98, 1.0), // Light background
+                SystemAppearance::Dark => hsla(0.0, 0.0, 0.05, 1.0),  // Dark background
+            };
+            nucleotide_logging::debug!(
+                system_appearance = ?system_appearance,
+                fallback_background = ?fallback_color,
+                "Using fallback background color"
+            );
+            fallback_color
+        });
 
         let surface_from_theme = ui_menu
             .bg
             .and_then(color_to_hsla)
             .or_else(|| ui_bg.bg.and_then(color_to_hsla))
             .map(|c| hsla(c.h, c.s, c.l + 0.05, c.a));
-        let surface = surface_from_theme.unwrap_or_else(|| hsla(0.0, 0.0, 0.1, 1.0));
+        let surface = surface_from_theme.unwrap_or_else(|| {
+            match system_appearance {
+                SystemAppearance::Light => hsla(0.0, 0.0, 0.95, 1.0), // Light surface
+                SystemAppearance::Dark => hsla(0.0, 0.0, 0.1, 1.0),   // Dark surface
+            }
+        });
 
         let text_from_theme = ui_text.fg.and_then(color_to_hsla);
-        let text = text_from_theme.unwrap_or_else(|| hsla(0.0, 0.0, 0.9, 1.0));
+        let text = text_from_theme.unwrap_or_else(|| {
+            match system_appearance {
+                SystemAppearance::Light => hsla(0.0, 0.0, 0.1, 1.0),  // Dark text on light background
+                SystemAppearance::Dark => hsla(0.0, 0.0, 0.9, 1.0),   // Light text on dark background
+            }
+        });
 
         let border_from_theme = ui_window
             .fg
             .and_then(color_to_hsla)
             .or_else(|| ui_text.fg.and_then(color_to_hsla))
             .map(|c| hsla(c.h, c.s * 0.5, c.l * 0.5, c.a * 0.8));
-        let border = border_from_theme.unwrap_or_else(|| hsla(0.0, 0.0, 0.2, 1.0));
+        let border = border_from_theme.unwrap_or_else(|| {
+            match system_appearance {
+                SystemAppearance::Light => hsla(0.0, 0.0, 0.8, 1.0),  // Light border
+                SystemAppearance::Dark => hsla(0.0, 0.0, 0.2, 1.0),   // Dark border
+            }
+        });
 
         let accent_from_theme = ui_selection
             .bg

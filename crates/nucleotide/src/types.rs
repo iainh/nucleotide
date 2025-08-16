@@ -12,6 +12,9 @@ pub use nucleotide_core::{
     WorkspaceEvent,
 };
 
+// Re-export UI event enums
+pub use nucleotide_events::SystemAppearance;
+
 // Hybrid Update enum for event system
 // Uses Event(AppEvent) for data-only events and direct variants for complex UI components with behavior
 pub enum Update {

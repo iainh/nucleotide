@@ -405,22 +405,42 @@ impl OverlayView {
         }
     }
 
-    /// Create ModalStyle using testing-aware theme access
+    /// Create ModalStyle using computed theme tokens with proper fallbacks
     fn create_modal_style_from_context(cx: &App) -> nucleotide_ui::common::ModalStyle {
         use nucleotide_ui::theme_utils::color_to_hsla;
 
-        // Get theme styles through the centralized testing-aware system
-        // The ThemeManager handles all fallback logic internally
+        // Get computed theme with design tokens - this handles all fallbacks
+        let ui_theme =
+            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
+                .map(|provider| provider.current_theme().clone())
+                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+
+        // Get theme styles for specific overrides
         let ui_popup = cx.theme_style("ui.popup");
         let ui_text = cx.theme_style("ui.text");
         let ui_menu_selected = cx.theme_style("ui.menu.selected");
 
-        // Extract colors - these will be properly computed by ThemeManager in testing mode
-        let background = ui_popup.bg.and_then(color_to_hsla).unwrap();
-        let text = ui_text.fg.and_then(color_to_hsla).unwrap();
-        let selected_background = ui_menu_selected.bg.and_then(color_to_hsla).unwrap();
-        let selected_text = ui_menu_selected.fg.and_then(color_to_hsla).unwrap();
-        let border = ui_popup.fg.and_then(color_to_hsla).unwrap();
+        // Use computed tokens as fallbacks - these are guaranteed to exist
+        let background = ui_popup
+            .bg
+            .and_then(color_to_hsla)
+            .unwrap_or(ui_theme.tokens.colors.surface);
+        let text = ui_text
+            .fg
+            .and_then(color_to_hsla)
+            .unwrap_or(ui_theme.tokens.colors.text_primary);
+        let selected_background = ui_menu_selected
+            .bg
+            .and_then(color_to_hsla)
+            .unwrap_or(ui_theme.tokens.colors.surface_hover);
+        let selected_text = ui_menu_selected
+            .fg
+            .and_then(color_to_hsla)
+            .unwrap_or(ui_theme.tokens.colors.text_primary);
+        let border = ui_popup
+            .fg
+            .and_then(color_to_hsla)
+            .unwrap_or(ui_theme.tokens.colors.border_default);
         let prompt_text = text;
 
         nucleotide_ui::common::ModalStyle {
@@ -433,20 +453,32 @@ impl OverlayView {
         }
     }
 
-    /// Create PickerView using testing-aware theme access
+    /// Create PickerView using computed theme tokens with proper fallbacks
     fn create_picker_view_with_context(cx: &mut gpui::Context<PickerView>) -> PickerView {
         use nucleotide_ui::theme_utils::color_to_hsla;
 
         // Get modal style using testing-aware theme access
         let modal_style = Self::create_modal_style_from_context(cx);
 
-        // Get theme styles through the centralized testing-aware system
+        // Get computed theme with design tokens - this handles all fallbacks
+        let ui_theme =
+            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
+                .map(|provider| provider.current_theme().clone())
+                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+
+        // Get theme styles for specific overrides
         let ui_background_separator = cx.theme_style("ui.background.separator");
         let ui_cursor = cx.theme_style("ui.cursor");
 
-        // Extract colors - these will be properly computed by ThemeManager in testing mode
-        let preview_background = ui_background_separator.bg.and_then(color_to_hsla).unwrap();
-        let cursor = ui_cursor.bg.and_then(color_to_hsla).unwrap();
+        // Use computed tokens as fallbacks - these are guaranteed to exist
+        let preview_background = ui_background_separator
+            .bg
+            .and_then(color_to_hsla)
+            .unwrap_or(ui_theme.tokens.colors.surface);
+        let cursor = ui_cursor
+            .bg
+            .and_then(color_to_hsla)
+            .unwrap_or(ui_theme.tokens.colors.primary);
 
         let picker_style = nucleotide_ui::picker_view::PickerStyle {
             modal_style,

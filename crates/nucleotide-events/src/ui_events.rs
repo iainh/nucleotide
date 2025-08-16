@@ -58,6 +58,9 @@ pub enum UiEvent {
 
     /// Hide completion widget
     HideCompletion,
+
+    /// System appearance changed (dark/light mode)
+    SystemAppearanceChanged { appearance: SystemAppearance },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -67,6 +70,12 @@ pub enum PickerType {
     Directory,
     Command,
     Symbol,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SystemAppearance {
+    Light,
+    Dark,
 }
 
 impl std::fmt::Debug for UiEvent {
@@ -122,6 +131,10 @@ impl std::fmt::Debug for UiEvent {
                 .finish(),
             UiEvent::ShowCompletion => write!(f, "ShowCompletion"),
             UiEvent::HideCompletion => write!(f, "HideCompletion"),
+            UiEvent::SystemAppearanceChanged { appearance } => f
+                .debug_struct("SystemAppearanceChanged")
+                .field("appearance", appearance)
+                .finish(),
         }
     }
 }

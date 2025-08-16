@@ -51,6 +51,7 @@ pub struct Workspace {
     titlebar: Option<gpui::AnyView>,
     appearance_observer_set: bool,
     needs_appearance_update: bool,
+    pending_appearance: Option<gpui::WindowAppearance>,
     tab_overflow_dropdown_open: bool,
     document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
 }
@@ -172,6 +173,7 @@ impl Workspace {
             titlebar: None,
             appearance_observer_set: false,
             needs_appearance_update: false,
+            pending_appearance: None,
             tab_overflow_dropdown_open: false,
             document_order: Vec::new(),
         };
@@ -223,10 +225,10 @@ impl Workspace {
     fn handle_appearance_change(
         &mut self,
         appearance: WindowAppearance,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use crate::config::ThemeMode;
+        use crate::types::{AppEvent, UiEvent, Update};
         use nucleotide_ui::theme_manager::SystemAppearance;
 
         // Update system appearance in theme manager
@@ -235,29 +237,66 @@ impl Workspace {
             WindowAppearance::Light | WindowAppearance::VibrantLight => SystemAppearance::Light,
         };
 
+        nucleotide_logging::info!(
+            window_appearance = ?appearance,
+            system_appearance = ?system_appearance,
+            "OS appearance change detected - emitting SystemAppearanceChanged event"
+        );
+
+        // Update global SystemAppearance state
         cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
             theme_manager.set_system_appearance(system_appearance);
         });
+        *nucleotide_ui::theme_manager::SystemAppearance::global_mut(cx) = system_appearance;
 
-        // Check if we should switch themes based on configuration
-        let config = self.core.read(cx).config.clone();
-        if config.gui.theme.mode == ThemeMode::System {
-            // Determine which theme to use
-            let theme_name = match system_appearance {
-                SystemAppearance::Light => Some(config.gui.theme.get_light_theme()),
-                SystemAppearance::Dark => Some(config.gui.theme.get_dark_theme()),
+        // Emit SystemAppearanceChanged event for event-driven handling
+        let event_appearance = match system_appearance {
+            SystemAppearance::Dark => crate::types::SystemAppearance::Dark,
+            SystemAppearance::Light => crate::types::SystemAppearance::Light,
+        };
+
+        cx.emit(Update::Event(AppEvent::Ui(
+            UiEvent::SystemAppearanceChanged {
+                appearance: event_appearance,
+            },
+        )));
+    }
+
+    /// Version of switch_theme_by_name for use from event handlers (no window appearance updates)
+    fn switch_theme_by_name_no_window(&mut self, theme_name: &str, cx: &mut Context<Self>) {
+        nucleotide_logging::info!(
+            theme_name = %theme_name,
+            "Switching theme via event handler (no window appearance update)"
+        );
+
+        // Update theme in the editor
+        self.core.update(cx, |core, cx| {
+            let theme_name = if core.editor.theme_loader.load(theme_name).is_ok() {
+                theme_name.to_string()
+            } else {
+                nucleotide_logging::warn!(theme_name = %theme_name, "Theme not found, using default");
+                core.editor.theme.name().to_string()
             };
 
-            // Switch to the appropriate theme if specified
-            if let Some(theme_name) = theme_name {
-                self.switch_theme_by_name(&theme_name, window, cx);
+            // Set theme in the editor
+            if let Ok(theme) = core.editor.theme_loader.load(&theme_name) {
+                core.editor.set_theme(theme);
+                nucleotide_logging::info!(theme_name = %theme_name, "Theme loaded successfully");
             }
-        }
 
-        // Update window appearance if configured
-        if config.gui.window.appearance_follows_theme {
-            self.update_window_appearance(window, cx);
-        }
+            // Update theme manager global
+            cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
+                theme_manager.set_theme(core.editor.theme.clone());
+            });
+
+            // Update nucleotide-ui theme global from theme manager
+            let ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
+            *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme;
+        });
+
+        // Clear caches and redraw
+        self.clear_shaped_lines_cache(cx);
+        cx.notify();
     }
 
     fn switch_theme_by_name(
@@ -286,6 +325,41 @@ impl Workspace {
                     *ui_theme = new_ui_theme;
                 });
 
+                // Update window appearance if configured to follow theme
+                let config = self.core.read(cx).config.clone();
+                if config.gui.window.appearance_follows_theme {
+                    // Determine system appearance based on theme darkness
+                    let theme_manager = cx.global::<crate::ThemeManager>();
+                    let is_dark = theme_manager.is_dark_theme();
+                    let system_appearance = if is_dark {
+                        nucleotide_ui::theme_manager::SystemAppearance::Dark
+                    } else {
+                        nucleotide_ui::theme_manager::SystemAppearance::Light
+                    };
+
+                    nucleotide_logging::info!(
+                        theme_name = %theme_name,
+                        is_dark = is_dark,
+                        system_appearance = ?system_appearance,
+                        "Updating window appearance to match loaded theme"
+                    );
+
+                    // Update system appearance in theme manager
+                    cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
+                        theme_manager.set_system_appearance(system_appearance);
+                    });
+
+                    // Update global SystemAppearance state for GPUI integration
+                    *nucleotide_ui::theme_manager::SystemAppearance::global_mut(cx) =
+                        system_appearance;
+
+                    // Update window background appearance
+                    self.update_window_appearance(_window, cx);
+
+                    // Update titlebar appearance to match theme
+                    self.update_titlebar_appearance(_window, system_appearance);
+                }
+
                 // Clear caches and redraw
                 self.clear_shaped_lines_cache(cx);
                 cx.notify();
@@ -311,6 +385,406 @@ impl Workspace {
         window.set_background_appearance(appearance);
     }
 
+    fn update_titlebar_appearance(
+        &self,
+        _window: &mut Window,
+        system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
+    ) {
+        nucleotide_logging::debug!(
+            system_appearance = ?system_appearance,
+            "Updating titlebar appearance"
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            // For macOS, we'll use a platform-specific approach to ensure the window
+            // follows the system appearance for the titlebar
+            self.set_macos_window_appearance(system_appearance);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_macos_window_appearance(
+        &self,
+        system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
+    ) {
+        use nucleotide_ui::theme_manager::SystemAppearance;
+
+        nucleotide_logging::info!(
+            system_appearance = ?system_appearance,
+            "Setting NSWindow appearance to follow system"
+        );
+
+        // Call the native function to set window appearance
+        unsafe {
+            Self::update_titlebar_appearance_native(system_appearance);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    unsafe fn update_titlebar_appearance_native(
+        system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
+    ) {
+        use cocoa::appkit::{NSAppearance, NSWindow};
+        use cocoa::base::{id, nil};
+        use cocoa::foundation::NSString;
+        use nucleotide_ui::theme_manager::SystemAppearance;
+        use objc::{class, msg_send, sel, sel_impl};
+
+        // Get all windows from NSApplication instead of just the main window
+        use cocoa::appkit::NSApplication;
+
+        let app: id = msg_send![class!(NSApplication), sharedApplication];
+        let windows: id = msg_send![app, windows];
+        let window_count: usize = msg_send![windows, count];
+
+        nucleotide_logging::debug!(
+            window_count = window_count,
+            "Found {} windows in NSApplication",
+            window_count
+        );
+
+        // Log details about all windows to make sure we're targeting the right one
+        for i in 0..window_count {
+            let window: id = msg_send![windows, objectAtIndex: i];
+            let window_title: id = msg_send![window, title];
+            let title_str = if window_title != nil {
+                let cstr: *const i8 = msg_send![window_title, UTF8String];
+                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
+            } else {
+                "nil"
+            };
+            let window_level: i64 = msg_send![window, level];
+            let is_visible: bool = msg_send![window, isVisible];
+            let is_main: bool = msg_send![window, isMainWindow];
+            let is_key: bool = msg_send![window, isKeyWindow];
+
+            nucleotide_logging::debug!(
+                window_index = i,
+                window_title = title_str,
+                window_level = window_level,
+                is_visible = is_visible,
+                is_main = is_main,
+                is_key = is_key,
+                "Window details"
+            );
+        }
+
+        if window_count > 0 {
+            // Find the actual main/key window instead of just taking the first one
+            let mut target_window: id = nil;
+
+            // First try to find the main window
+            for i in 0..window_count {
+                let window: id = msg_send![windows, objectAtIndex: i];
+                let is_main: bool = msg_send![window, isMainWindow];
+                if is_main {
+                    target_window = window;
+                    nucleotide_logging::debug!(window_index = i, "Found main window");
+                    break;
+                }
+            }
+
+            // If no main window, try to find the key window
+            if target_window == nil {
+                for i in 0..window_count {
+                    let window: id = msg_send![windows, objectAtIndex: i];
+                    let is_key: bool = msg_send![window, isKeyWindow];
+                    if is_key {
+                        target_window = window;
+                        nucleotide_logging::debug!(window_index = i, "Found key window");
+                        break;
+                    }
+                }
+            }
+
+            // If still no target, find the first visible window with a titlebar
+            if target_window == nil {
+                for i in 0..window_count {
+                    let window: id = msg_send![windows, objectAtIndex: i];
+                    let is_visible: bool = msg_send![window, isVisible];
+                    let has_titlebar: bool = msg_send![window, hasTitleBar];
+                    if is_visible && has_titlebar {
+                        target_window = window;
+                        nucleotide_logging::debug!(
+                            window_index = i,
+                            "Found visible window with titlebar"
+                        );
+                        break;
+                    }
+                }
+            }
+
+            // Fall back to first window if all else fails
+            if target_window == nil {
+                target_window = msg_send![windows, objectAtIndex: 0];
+                nucleotide_logging::warn!("Falling back to first window");
+            }
+
+            let window = target_window;
+
+            nucleotide_logging::debug!("Found application window, setting appearance");
+
+            // Check window properties that might affect titlebar appearance
+            let style_mask: u64 = msg_send![window, styleMask];
+            let is_titled: bool = (style_mask & 1) != 0; // NSTitledWindowMask
+            let has_titlebar: bool = msg_send![window, hasTitleBar];
+            let titlebar_appears_transparent: bool = msg_send![window, titlebarAppearsTransparent];
+
+            nucleotide_logging::debug!(
+                style_mask = style_mask,
+                is_titled = is_titled,
+                has_titlebar = has_titlebar,
+                titlebar_appears_transparent = titlebar_appears_transparent,
+                "Window titlebar properties"
+            );
+
+            // Check current appearance before setting
+            let current_appearance: id = msg_send![window, appearance];
+            nucleotide_logging::debug!(
+                current_appearance_is_nil = (current_appearance == nil),
+                "Window appearance before setting"
+            );
+
+            // Set the window appearance to match the detected system appearance
+            match system_appearance {
+                SystemAppearance::Dark => {
+                    // Set to dark appearance explicitly
+                    let dark_appearance_name =
+                        NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua");
+                    let dark_appearance: id =
+                        msg_send![class!(NSAppearance), appearanceNamed: dark_appearance_name];
+                    let _: () = msg_send![window, setAppearance: dark_appearance];
+                    nucleotide_logging::debug!("Set window to dark appearance explicitly");
+                }
+                SystemAppearance::Light => {
+                    // Set to light appearance explicitly
+                    let light_appearance_name =
+                        NSString::alloc(nil).init_str("NSAppearanceNameAqua");
+                    let light_appearance: id =
+                        msg_send![class!(NSAppearance), appearanceNamed: light_appearance_name];
+                    let _: () = msg_send![window, setAppearance: light_appearance];
+                    nucleotide_logging::debug!("Set window to light appearance explicitly");
+                }
+            }
+
+            // Check appearance after setting and verify it took effect
+            let new_appearance: id = msg_send![window, appearance];
+            let new_appearance_name: id = if new_appearance != nil {
+                msg_send![new_appearance, name]
+            } else {
+                nil
+            };
+
+            let appearance_name_str = if new_appearance_name != nil {
+                let cstr: *const i8 = msg_send![new_appearance_name, UTF8String];
+                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
+            } else {
+                "nil"
+            };
+
+            nucleotide_logging::info!(
+                system_appearance = ?system_appearance,
+                new_appearance_is_nil = (new_appearance == nil),
+                new_appearance_name = appearance_name_str,
+                "Successfully set NSWindow appearance"
+            );
+
+            // Also check the actual effective appearance to see what macOS thinks
+            let effective_appearance: id = msg_send![window, effectiveAppearance];
+            let effective_appearance_name: id = if effective_appearance != nil {
+                msg_send![effective_appearance, name]
+            } else {
+                nil
+            };
+
+            let effective_name_str = if effective_appearance_name != nil {
+                let cstr: *const i8 = msg_send![effective_appearance_name, UTF8String];
+                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
+            } else {
+                "nil"
+            };
+
+            nucleotide_logging::info!(
+                effective_appearance_name = effective_name_str,
+                "Window effective appearance after setting"
+            );
+
+            // Check if the appearance gets reset by something else shortly after
+            // Schedule a delayed check to see if our setting persists
+            let window_ptr = window as *const _ as usize;
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                unsafe {
+                    let app: id = msg_send![class!(NSApplication), sharedApplication];
+                    let windows: id = msg_send![app, windows];
+                    let window_count: usize = msg_send![windows, count];
+
+                    if window_count > 0 {
+                        let window: id = msg_send![windows, objectAtIndex: 0];
+                        let current_appearance: id = msg_send![window, appearance];
+                        let effective_appearance: id = msg_send![window, effectiveAppearance];
+
+                        let current_name = if current_appearance != nil {
+                            let name: id = msg_send![current_appearance, name];
+                            if name != nil {
+                                let cstr: *const i8 = msg_send![name, UTF8String];
+                                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
+                            } else {
+                                "nil"
+                            }
+                        } else {
+                            "nil"
+                        };
+
+                        let effective_name = if effective_appearance != nil {
+                            let name: id = msg_send![effective_appearance, name];
+                            if name != nil {
+                                let cstr: *const i8 = msg_send![name, UTF8String];
+                                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
+                            } else {
+                                "nil"
+                            }
+                        } else {
+                            "nil"
+                        };
+
+                        nucleotide_logging::warn!(
+                            current_appearance_name = current_name,
+                            effective_appearance_name = effective_name,
+                            "Appearance check 100ms later - did something reset it?"
+                        );
+                    }
+                }
+            });
+        } else {
+            nucleotide_logging::warn!("No windows found in NSApplication, cannot set appearance");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    unsafe fn update_titlebar_appearance_native_with_retry(
+        system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
+        attempt: u32,
+    ) -> bool {
+        use cocoa::appkit::{NSAppearance, NSWindow};
+        use cocoa::base::{id, nil};
+        use cocoa::foundation::NSString;
+        use nucleotide_ui::theme_manager::SystemAppearance;
+        use objc::{class, msg_send, sel, sel_impl};
+
+        let app: id = msg_send![class!(NSApplication), sharedApplication];
+        let windows: id = msg_send![app, windows];
+        let window_count: usize = msg_send![windows, count];
+
+        nucleotide_logging::debug!(
+            attempt = attempt,
+            window_count = window_count,
+            "Retry attempt {} - found {} windows",
+            attempt,
+            window_count
+        );
+
+        if window_count == 0 {
+            return false;
+        }
+
+        // Look for the proper main window - one with a title and main/key status
+        let mut target_window: id = nil;
+
+        for i in 0..window_count {
+            let window: id = msg_send![windows, objectAtIndex: i];
+            let window_title: id = msg_send![window, title];
+            let title_str = if window_title != nil {
+                let cstr: *const i8 = msg_send![window_title, UTF8String];
+                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
+            } else {
+                "nil"
+            };
+            let is_main: bool = msg_send![window, isMainWindow];
+            let is_key: bool = msg_send![window, isKeyWindow];
+            let has_titlebar: bool = msg_send![window, hasTitleBar];
+
+            nucleotide_logging::debug!(
+                attempt = attempt,
+                window_index = i,
+                window_title = title_str,
+                is_main = is_main,
+                is_key = is_key,
+                has_titlebar = has_titlebar,
+                "Retry window details"
+            );
+
+            // Only target windows that are actually main/key windows with titles and titlebars
+            if (is_main || is_key) && has_titlebar && !title_str.is_empty() && title_str != "nil" {
+                target_window = window;
+                nucleotide_logging::info!(
+                    attempt = attempt,
+                    window_index = i,
+                    window_title = title_str,
+                    "Found proper main window for titlebar appearance"
+                );
+                break;
+            }
+        }
+
+        if target_window == nil {
+            nucleotide_logging::debug!(
+                attempt = attempt,
+                "No proper main window found yet, will retry"
+            );
+            return false;
+        }
+
+        // Set the appearance on the proper window
+        let window = target_window;
+        match system_appearance {
+            SystemAppearance::Dark => {
+                let dark_appearance_name =
+                    NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua");
+                let dark_appearance: id =
+                    msg_send![class!(NSAppearance), appearanceNamed: dark_appearance_name];
+                let _: () = msg_send![window, setAppearance: dark_appearance];
+                nucleotide_logging::info!(
+                    attempt = attempt,
+                    "Set window to dark appearance on proper main window"
+                );
+            }
+            SystemAppearance::Light => {
+                let light_appearance_name = NSString::alloc(nil).init_str("NSAppearanceNameAqua");
+                let light_appearance: id =
+                    msg_send![class!(NSAppearance), appearanceNamed: light_appearance_name];
+                let _: () = msg_send![window, setAppearance: light_appearance];
+                nucleotide_logging::info!(
+                    attempt = attempt,
+                    "Set window to light appearance on proper main window"
+                );
+            }
+        }
+
+        return true;
+    }
+
+    fn ensure_window_follows_system_appearance(&self, _window: &mut Window) {
+        nucleotide_logging::info!("Ensuring window follows system appearance");
+
+        #[cfg(target_os = "macos")]
+        {
+            // For macOS, we need to set the NSWindow appearance to nil to follow system
+            self.ensure_nswindow_follows_system();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn ensure_nswindow_follows_system(&self) {
+        // For now, log that we would set the NSWindow appearance to nil
+        nucleotide_logging::info!("Would set NSWindow appearance to nil to follow system");
+
+        // TODO: Implement the actual NSWindow appearance setting
+        // This requires accessing the native window handle through GPUI
+        // and calling [window setAppearance:nil]
+    }
+
     fn clear_shaped_lines_cache(&self, cx: &Context<Self>) {
         if let Some(line_cache) = cx.try_global::<nucleotide_editor::LineLayoutCache>() {
             line_cache.clear_shaped_lines();
@@ -318,6 +792,42 @@ impl Workspace {
     }
 
     // Event handler methods extracted from the main handle_event
+    fn handle_system_appearance_changed(
+        &mut self,
+        appearance: crate::types::SystemAppearance,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::config::ThemeMode;
+
+        nucleotide_logging::info!(
+            appearance = ?appearance,
+            "Handling SystemAppearanceChanged event"
+        );
+
+        let config = self.core.read(cx).config.clone();
+
+        // Only switch themes if configured for system mode
+        if config.gui.theme.mode == ThemeMode::System {
+            let theme_name = match appearance {
+                crate::types::SystemAppearance::Light => config.gui.theme.get_light_theme(),
+                crate::types::SystemAppearance::Dark => config.gui.theme.get_dark_theme(),
+            };
+
+            nucleotide_logging::info!(
+                selected_theme = %theme_name,
+                "Switching theme for system appearance change"
+            );
+
+            // Switch theme directly through the core editor (no window needed)
+            self.switch_theme_by_name_no_window(&theme_name, cx);
+        } else {
+            nucleotide_logging::debug!(
+                theme_mode = ?config.gui.theme.mode,
+                "Theme mode is not System - ignoring appearance change"
+            );
+        }
+    }
+
     fn handle_editor_event(
         &mut self,
         ev: &helix_view::editor::EditorEvent,
@@ -1311,6 +1821,9 @@ impl Workspace {
                                     }
                                 }
                             }
+                            crate::types::UiEvent::SystemAppearanceChanged { appearance } => {
+                                self.handle_system_appearance_changed(*appearance, cx);
+                            }
                             _ => {
                                 // Other UI events not yet handled
                             }
@@ -2225,12 +2738,24 @@ impl Render for Workspace {
 
             // Get initial appearance and trigger theme switch if needed
             let initial_appearance = cx.window_appearance();
+            nucleotide_logging::info!(
+                initial_appearance = ?initial_appearance,
+                "Initial window appearance detected at startup"
+            );
+
+            // Handle initial appearance
             self.handle_appearance_change(initial_appearance, window, cx);
 
             // Set up observer for future changes
-            cx.observe_window_appearance(window, |workspace: &mut Workspace, _appearance, cx| {
-                // Handle the appearance change in a separate method that can access window
+            cx.observe_window_appearance(window, |workspace: &mut Workspace, window, cx| {
+                // Get the new appearance from the window
+                let appearance = window.appearance();
+                nucleotide_logging::info!(
+                    new_appearance = ?appearance,
+                    "Window appearance observer triggered"
+                );
                 workspace.needs_appearance_update = true;
+                workspace.pending_appearance = Some(appearance);
                 cx.notify();
             })
             .detach();
@@ -2239,8 +2764,17 @@ impl Render for Workspace {
         // Handle appearance update if needed
         if self.needs_appearance_update {
             self.needs_appearance_update = false;
-            let appearance = cx.window_appearance();
-            self.handle_appearance_change(appearance, window, cx);
+            if let Some(appearance) = self.pending_appearance.take() {
+                nucleotide_logging::info!(
+                    pending_appearance = ?appearance,
+                    "Processing pending appearance change"
+                );
+                self.handle_appearance_change(appearance, window, cx);
+            } else {
+                // Fallback to current appearance if no pending appearance
+                let appearance = cx.window_appearance();
+                self.handle_appearance_change(appearance, window, cx);
+            }
         }
 
         // Handle focus restoration if needed

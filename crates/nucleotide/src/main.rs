@@ -500,6 +500,9 @@ fn gui_main(
         // Initialize nucleotide-ui first (sets up UIConfig and component registry)
         nucleotide_ui::init(cx, None);
 
+        // Initialize SystemAppearance global state from current window appearance
+        nucleotide_ui::theme_manager::SystemAppearance::init(cx);
+
         // Initialize the provider system
         init_provider_system();
 
