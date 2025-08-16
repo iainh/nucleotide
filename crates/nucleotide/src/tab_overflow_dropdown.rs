@@ -113,7 +113,6 @@ impl RenderOnce for TabOverflowButton {
             .and_then(crate::utils::color_to_hsla)
             .unwrap_or(ui_theme.tokens.colors.surface);
 
-
         // Compute style for the dropdown button with the actual background context
         // Since we're on the statusline/tab bar background, we need to compute foreground accordingly
         let button_style = {
@@ -125,7 +124,8 @@ impl RenderOnce for TabOverflowButton {
                 ColorContext::OnSurface,
             );
             // Override foreground to work with the actual container background
-            style.foreground = nucleotide_ui::ColorTheory::best_text_color(container_bg, &ui_theme.tokens);
+            style.foreground =
+                nucleotide_ui::ColorTheory::best_text_color(container_bg, &ui_theme.tokens);
             style
         };
 
@@ -165,8 +165,13 @@ impl RenderOnce for TabOverflowButton {
                             ColorContext::OnSurface,
                         );
                         // Override foreground to work with the actual container background
-                        hover_style.foreground = nucleotide_ui::ColorTheory::best_text_color(container_bg, &ui_theme.tokens);
-                        style.bg(hover_style.background).text_color(hover_style.foreground)
+                        hover_style.foreground = nucleotide_ui::ColorTheory::best_text_color(
+                            container_bg,
+                            &ui_theme.tokens,
+                        );
+                        style
+                            .bg(hover_style.background)
+                            .text_color(hover_style.foreground)
                     })
                     .on_mouse_up(MouseButton::Left, {
                         let on_dropdown_toggle = self.on_dropdown_toggle.clone();
@@ -214,7 +219,7 @@ impl RenderOnce for TabOverflowMenu {
             StyleSize::Medium.as_str(),
             ColorContext::Floating,
         );
-        
+
         // Override background to match the tab area for visual consistency
         menu_style.background = dropdown_bg;
 
@@ -228,7 +233,8 @@ impl RenderOnce for TabOverflowMenu {
                 ColorContext::Floating,
             );
             // Override foreground to work with the dropdown background
-            style.foreground = nucleotide_ui::ColorTheory::best_text_color(dropdown_bg, &ui_theme.tokens);
+            style.foreground =
+                nucleotide_ui::ColorTheory::best_text_color(dropdown_bg, &ui_theme.tokens);
             style
         };
 
@@ -272,7 +278,10 @@ impl RenderOnce for TabOverflowMenu {
                                     ColorContext::Floating,
                                 );
                                 // Override foreground to work with the dropdown background
-                                style.foreground = nucleotide_ui::ColorTheory::best_text_color(dropdown_bg, &ui_theme.tokens);
+                                style.foreground = nucleotide_ui::ColorTheory::best_text_color(
+                                    dropdown_bg,
+                                    &ui_theme.tokens,
+                                );
                                 style
                             } else {
                                 item_style.clone()
@@ -297,12 +306,25 @@ impl RenderOnce for TabOverflowMenu {
                                     // Create a more visible hover background by darkening/lightening the menu background
                                     let hover_bg = if ui_theme.is_dark() {
                                         // For dark themes, lighten the background
-                                        gpui::hsla(dropdown_bg.h, dropdown_bg.s, (dropdown_bg.l + 0.1).min(1.0), dropdown_bg.a)
+                                        gpui::hsla(
+                                            dropdown_bg.h,
+                                            dropdown_bg.s,
+                                            (dropdown_bg.l + 0.1).min(1.0),
+                                            dropdown_bg.a,
+                                        )
                                     } else {
                                         // For light themes, darken the background more noticeably
-                                        gpui::hsla(dropdown_bg.h, dropdown_bg.s, (dropdown_bg.l - 0.15).max(0.0), dropdown_bg.a)
+                                        gpui::hsla(
+                                            dropdown_bg.h,
+                                            dropdown_bg.s,
+                                            (dropdown_bg.l - 0.15).max(0.0),
+                                            dropdown_bg.a,
+                                        )
                                     };
-                                    let hover_text = nucleotide_ui::ColorTheory::best_text_color(hover_bg, &ui_theme.tokens);
+                                    let hover_text = nucleotide_ui::ColorTheory::best_text_color(
+                                        hover_bg,
+                                        &ui_theme.tokens,
+                                    );
                                     style.bg(hover_bg).text_color(hover_text)
                                 })
                                 .on_mouse_down(MouseButton::Left, {

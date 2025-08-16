@@ -7,7 +7,7 @@ use gpui::{
     MouseButton, ParentElement, Pixels, Render, Styled, Window, WindowControlArea,
 };
 
-use crate::styling::{compute_component_style, StyleSize, StyleState, StyleVariant};
+use crate::styling::ColorTheory;
 use crate::titlebar::window_controls::WindowControls;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,15 +65,34 @@ impl PlatformTitleBar {
             .map(|provider| provider.current_theme().clone())
             .unwrap_or_else(|| cx.global::<crate::Theme>().clone());
 
-        // Compute titlebar style using secondary variant for surface styling
-        let titlebar_style = compute_component_style(
-            &ui_theme,
-            StyleState::Default,
-            StyleVariant::Secondary.as_str(),
-            StyleSize::Medium.as_str(),
-        );
+        // Use surface color as the primary option for titlebar
+        // This should match the overall application surface color
+        let surface_color = ui_theme.tokens.colors.surface;
 
-        titlebar_style.background
+        // Only use the surface color if it's not nearly black (which would indicate uninitialized)
+        if surface_color.l > 0.05 {
+            return surface_color;
+        }
+
+        // Fallback to other UI theme colors
+        let candidates = [
+            ui_theme.tokens.colors.background,
+            ui_theme.background,
+            ui_theme.surface,
+        ];
+
+        for &candidate in &candidates {
+            if candidate.l > 0.05 {
+                return candidate;
+            }
+        }
+
+        // Final fallback based on theme detection
+        if ui_theme.is_dark() {
+            gpui::hsla(0.0, 0.0, 0.15, 1.0)
+        } else {
+            gpui::hsla(0.0, 0.0, 0.95, 1.0)
+        }
     }
 }
 
@@ -88,20 +107,11 @@ impl Render for PlatformTitleBar {
             .map(|provider| provider.current_theme().clone())
             .unwrap_or_else(|| cx.global::<crate::Theme>().clone());
 
-        // Compute styles for titlebar components
-        let titlebar_style = compute_component_style(
-            &ui_theme,
-            StyleState::Default,
-            StyleVariant::Secondary.as_str(),
-            StyleSize::Medium.as_str(),
-        );
+        // Compute text color based on titlebar background for proper contrast
+        let text_color = ColorTheory::best_text_color(titlebar_color, &ui_theme.tokens);
 
-        let text_style = compute_component_style(
-            &ui_theme,
-            StyleState::Default,
-            StyleVariant::Primary.as_str(),
-            StyleSize::Small.as_str(),
-        );
+        // Compute border color based on titlebar background
+        let border_color = ColorTheory::subtle_border_color(titlebar_color, &ui_theme.tokens);
 
         // macOS traffic light padding
         const MAC_TRAFFIC_LIGHT_PADDING: f32 = 71.0;
@@ -122,7 +132,7 @@ impl Render for PlatformTitleBar {
             .h(height)
             .bg(titlebar_color)
             .border_b_1()
-            .border_color(titlebar_style.border_color)
+            .border_color(border_color)
             .map(|this| {
                 if window.is_fullscreen() {
                     this.pl_2()
@@ -163,18 +173,12 @@ impl Render for PlatformTitleBar {
                     })
                     .on_mouse_move(|_, _, cx| cx.stop_propagation())
                     .child(
-                        // Title text - centered and styled with computed styles
+                        // Title text - centered and styled with computed colors
                         div().flex().items_center().gap_2().child(
                             div()
-                                .text_size(text_style.font_size)
-                                .font_weight(if text_style.font_weight >= 600 {
-                                    gpui::FontWeight::SEMIBOLD
-                                } else if text_style.font_weight >= 500 {
-                                    gpui::FontWeight::MEDIUM
-                                } else {
-                                    gpui::FontWeight::NORMAL
-                                })
-                                .text_color(text_style.foreground)
+                                .text_size(px(14.0)) // Standard titlebar font size
+                                .font_weight(gpui::FontWeight::MEDIUM) // Slightly bold for titlebar
+                                .text_color(text_color)
                                 .child(self.title.clone()),
                         ),
                     ),
