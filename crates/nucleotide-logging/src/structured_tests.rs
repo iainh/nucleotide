@@ -145,7 +145,7 @@ mod tests {
             info!(
                 string_val = "test",
                 int_val = 42,
-                float_val = 3.14,
+                float_val = std::f64::consts::PI,
                 bool_val = true,
                 option_val = ?option_val,
                 "Testing various field types"

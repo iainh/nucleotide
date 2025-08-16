@@ -4604,6 +4604,7 @@ name = "nucleotide-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dirs 5.0.1",
  "gpui",
  "helix-core",
  "helix-loader",

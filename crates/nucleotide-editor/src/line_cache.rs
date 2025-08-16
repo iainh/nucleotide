@@ -238,6 +238,8 @@ mod tests {
                 line_idx,
                 shaped_line: create_test_shaped_line(),
                 origin: point(px(0.0), px(line_idx as f32 * 24.0)),
+                segment_char_offset: 0,
+                text_start_byte_offset: 0,
             };
             cache.push(layout);
         }
@@ -269,6 +271,8 @@ mod tests {
                 line_idx,
                 shaped_line: create_test_shaped_line(),
                 origin: point(px(0.0), y_position),
+                segment_char_offset: 0,
+                text_start_byte_offset: 0,
             };
             cache.push(layout);
         }
@@ -317,6 +321,8 @@ mod tests {
                 line_idx,
                 shaped_line: create_test_shaped_line(),
                 origin: point(px(0.0), y_position),
+                segment_char_offset: 0,
+                text_start_byte_offset: 0,
             };
             cache.push(layout);
         }
@@ -368,6 +374,8 @@ mod tests {
                 line_idx,
                 shaped_line: create_test_shaped_line(),
                 origin: point(px(0.0), px(line_idx as f32 * 24.0)),
+                segment_char_offset: 0,
+                text_start_byte_offset: 0,
             };
             cache.push(layout);
         }
@@ -402,6 +410,8 @@ mod tests {
             line_idx: 0,
             shaped_line: create_test_shaped_line(),
             origin: point(px(0.0), px(0.0)),
+            segment_char_offset: 0,
+            text_start_byte_offset: 0,
         };
         cache.push(layout);
 
@@ -429,6 +439,8 @@ mod tests {
                 line_idx,
                 shaped_line: create_test_shaped_line(),
                 origin: point(px(0.0), y_position),
+                segment_char_offset: 0,
+                text_start_byte_offset: 0,
             };
             cache.push(layout);
         }
@@ -499,6 +511,8 @@ mod tests {
             line_idx: 0,
             shaped_line: create_test_shaped_line(),
             origin: point(px(0.0), px(0.0)),
+            segment_char_offset: 0,
+            text_start_byte_offset: 0,
         };
         cache.push(layout);
 
@@ -516,6 +530,8 @@ mod tests {
             line_idx: 1,
             shaped_line: create_test_shaped_line(),
             origin: point(px(0.0), px(24.0)),
+            segment_char_offset: 0,
+            text_start_byte_offset: 0,
         };
         cache.push(layout2);
 
