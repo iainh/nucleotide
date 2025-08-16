@@ -3,13 +3,14 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, App, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    StatefulInteractiveElement, Styled, Window,
+    div, px, App, IntoElement, ParentElement, RenderOnce, StatefulInteractiveElement, Styled,
+    Window,
 };
 use helix_view::DocumentId;
 use nucleotide_ui::theme_manager::ThemedContext;
 use nucleotide_ui::{
-    compute_component_style, ColorTheory, StyleSize, StyleState, StyleVariant, VcsStatus,
+    compute_component_style, ColorTheory, StyleSize, StyleState, StyleVariant,
+    ThemedContext as UIThemedContext, VcsStatus,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -193,51 +194,13 @@ impl TabBar {
 
 impl RenderOnce for TabBar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        // Use enhanced styling system with provider support
-        let ui_theme =
-            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
-                .map(|provider| provider.current_theme().clone())
-                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+        // Use ThemedContext for consistent theme access
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
 
-        // Compute style for the tab bar container (secondary variant for surface styling)
-        let _container_style = compute_component_style(
-            &ui_theme,
-            StyleState::Default,
-            StyleVariant::Secondary.as_str(),
-            StyleSize::Medium.as_str(),
-        );
-
-        // Get theme colors for enhanced tabbar styling
-        // Get active tab background (should match editor background)
-        let editor_bg_style = cx.theme_style("ui.background");
-        let active_tab_bg = editor_bg_style
-            .bg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.background);
-
-        // Get statusline background for fallback
-        let statusline_style = cx.theme_style("ui.statusline");
-        let statusline_bg = statusline_style
-            .bg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.surface);
-
-        // Use statusline background as the base for tabbar, with slight adjustment
-        // This ensures consistency with inactive tabs and proper contrast
-        let tabbar_bg = if ui_theme.is_dark() {
-            // Dark theme: use statusline background or slightly lighter
-            statusline_bg
-        } else {
-            // Light theme: use statusline background or slightly darker for subtle contrast
-            if statusline_bg.l > 0.1 {
-                ColorTheory::darken(statusline_bg, 0.02)
-            } else {
-                statusline_bg
-            }
-        };
-
-        // Compute border colors using color theory
-        let border_color = ColorTheory::subtle_border_color(tabbar_bg, &ui_theme.tokens);
+        // Get tab bar background using design tokens
+        let tabbar_bg = tokens.colors.surface;
+        let border_color = tokens.colors.border_default;
 
         // Keep documents in the order they were opened
         let mut documents = self.documents.clone();
@@ -275,8 +238,7 @@ impl RenderOnce for TabBar {
                 move |_event, window, cx| {
                     on_tab_close(doc_id, window, cx);
                 },
-            )
-            .with_computed_colors(active_tab_bg, statusline_bg, border_color);
+            );
 
             tabs.push(tab);
         }
@@ -289,21 +251,25 @@ impl RenderOnce for TabBar {
         div()
             .relative() // Important: relative positioning for absolute child
             .w_full()
-            .h(px(32.0))
+            .h(tokens.sizes.button_height_md)
             .child(
-                // The actual tab bar
+                // The actual tab bar using design tokens
                 div()
-                    .id("tab-bar")
                     .flex()
                     .flex_row() // Explicitly set horizontal layout
                     .items_center() // Vertically center tabs
                     .w_full()
-                    .h(px(32.0)) // Match tab height
+                    .h(tokens.sizes.button_height_md) // Use consistent sizing
                     .bg(tabbar_bg)
                     .when(has_tabs, |this| {
                         this.child(
-                            // Container for visible tabs
-                            div().flex().flex_row().items_center().children(tabs),
+                            // Container for visible tabs using design tokens
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(tokens.sizes.space_1)
+                                .children(tabs),
                         )
                         .child(
                             // Unused tabbar area with bottom border for visual separation
@@ -316,26 +282,20 @@ impl RenderOnce for TabBar {
                         )
                     })
                     .when(!has_tabs, |this| {
-                        // Show placeholder when no tabs using computed styling
-                        let placeholder_style = compute_component_style(
-                            &ui_theme,
-                            StyleState::Disabled,
-                            StyleVariant::Ghost.as_str(),
-                            StyleSize::Small.as_str(),
-                        );
+                        // Show placeholder when no tabs using design tokens
                         this.child(
                             div()
                                 .flex()
                                 .items_center()
-                                .px(placeholder_style.padding_x)
-                                .text_color(placeholder_style.foreground)
-                                .text_size(placeholder_style.font_size)
+                                .px(tokens.sizes.space_4)
+                                .text_color(tokens.colors.text_disabled)
+                                .text_size(tokens.sizes.text_sm)
                                 .child("No open files"),
                         )
                         .border_b_1()
                         .border_color(border_color)
                     })
-                    .when(!has_overflow, |this| this.overflow_x_scroll()), // Only scroll when no overflow dropdown
+                    .when(!has_overflow, |this| this.overflow_x_hidden()), // Only hide overflow when no overflow dropdown
             )
             .when(has_overflow, |this| {
                 // Add overflow button as a sibling, not child of tab-bar
