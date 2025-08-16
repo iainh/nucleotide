@@ -2919,7 +2919,7 @@ impl Element for DocumentElement {
 
 
                         for (doc_line, y_pos) in doc_line_positions {
-                            // Skip phantom lines (empty lines at EOF with trailing newline)
+                            // Check if this is a phantom line (empty lines at EOF with trailing newline)
                             let line_start = text.line_to_char(doc_line);
                             let line_end = if doc_line + 1 < text.len_lines() {
                                 text.line_to_char(doc_line + 1)
@@ -2928,11 +2928,11 @@ impl Element for DocumentElement {
                             };
                             let is_phantom_line = line_start >= line_end;
 
-                            if is_phantom_line {
-                                continue;
-                            }
-
-                            let line_num_str = format!("{:>4} ", doc_line + 1);
+                            let line_num_str = if is_phantom_line {
+                                "   ~ ".to_string() // Match the format: right-aligned with space
+                            } else {
+                                format!("{:>4} ", doc_line + 1)
+                            };
                             let y = gutter_origin.y + y_pos;
 
                             // Choose color based on whether this line contains a cursor (same logic as regular gutter)
@@ -2943,7 +2943,10 @@ impl Element for DocumentElement {
                             let gutter_selected_color = gutter_selected_style.fg.and_then(crate::utils::color_to_hsla).unwrap_or(default_gutter_color);
 
 
-                            let line_color = if selected {
+                            let line_color = if is_phantom_line {
+                                // Phantom lines (tildes) always use regular gutter color, never selected
+                                gutter_color
+                            } else if selected {
                                 // Current line - use selected gutter style
                                 gutter_selected_color
                             } else {
