@@ -65,10 +65,10 @@ pub use providers::{
     ThemeProvider, UIConfiguration,
 };
 pub use styling::{
-    compute_component_style, compute_style_for_states, merge_styles, should_enable_animations,
+    compute_component_style, compute_contextual_style, compute_style_for_states, merge_styles, should_enable_animations,
     AnimationConfig, AnimationDuration, AnimationPreset, AnimationProperty, AnimationType,
-    BoxShadow, Breakpoint, ComputedStyle, ConditionalStyle, MergeStrategy, ResponsiveSizes,
-    ResponsiveTypography, ResponsiveValue, StyleCombiner, StyleComposer, StyleContext,
+    BoxShadow, Breakpoint, ColorContext, ColorTheory, ComputedStyle, ConditionalStyle, ContrastRatios, ContextualColors,
+    MergeStrategy, ResponsiveSizes, ResponsiveTypography, ResponsiveValue, StyleCombiner, StyleComposer, StyleContext,
     StylePresets, StyleSize, StyleState, StyleUtils, StyleVariant, TimingFunction, Transition,
     TransitionProperty, VariantColors, VariantStyle, VariantStyler, ViewportContext,
 };
