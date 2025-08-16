@@ -9,14 +9,14 @@ use crate::vcs_service::VcsServiceHandle;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, uniform_list, App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
+    IntoElement, MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, Window,
 };
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_ui::theme_utils::color_to_hsla;
 use nucleotide_ui::{
     scrollbar::{Scrollbar, ScrollbarState},
-    FileIcon, Theme, VcsStatus,
+    FileIcon, ListItem, ListItemSpacing, ListItemVariant, Theme, VcsStatus,
 };
 use std::path::{Path, PathBuf};
 
@@ -1016,43 +1016,31 @@ impl FileTreeView {
         }
     }
 
-    /// Render a single file tree entry
+    /// Render a single file tree entry using enhanced ListItem component with wrapped GPUI div
     fn render_entry(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
         let is_selected = self.selected_path.as_ref() == Some(&entry.path);
-        let theme = cx.global::<Theme>();
 
-        // Get ui.menu.selected colors from Helix theme
-        let (selection_bg, selection_fg) = {
-            let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
-            let menu_selected = helix_theme.get("ui.menu.selected");
-            let bg = menu_selected
-                .bg
-                .and_then(color_to_hsla)
-                .unwrap_or(theme.tokens.colors.primary);
-            let fg = menu_selected
-                .fg
-                .and_then(color_to_hsla)
-                .unwrap_or(theme.text);
-            (bg, fg)
-        };
+        // Use provider hooks to get theme and animation preferences
+        let theme =
+            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
+                .map(|provider| provider.current_theme().clone())
+                .unwrap_or_else(|| cx.global::<Theme>().clone());
+
+        let enable_animations = nucleotide_ui::providers::use_provider::<
+            nucleotide_ui::providers::ConfigurationProvider,
+        >()
+        .map(|config| config.ui_config.animation_config.enable_animations)
+        .unwrap_or(true);
 
         let indentation = px(entry.depth as f32 * 16.0); // 16px per level
+        let path = entry.path.clone();
+        let is_dir = entry.is_directory();
 
+        // Use enhanced ListItem for styling and structure, leveraging nucleotide-ui improvements
         div()
-            .id(("file-tree-entry", entry.id.0))
-            .w_full()
-            .h(px(24.0))
-            .flex()
-            .items_center()
-            .pl(indentation)
-            .pr(px(8.0))
-            .when(is_selected, |div| {
-                div.bg(selection_bg).text_color(selection_fg)
-            })
-            .hover(|style| style.bg(theme.tokens.colors.surface_hover))
-            .on_click({
-                let path = entry.path.clone();
-                let is_dir = entry.is_directory();
+            .on_mouse_up(MouseButton::Left, {
+                let path = path.clone();
+                let is_dir = is_dir;
                 cx.listener(move |view, _event, window, cx| {
                     // Focus the tree view when any entry is clicked
                     debug!("File tree entry clicked, focusing tree view");
@@ -1068,11 +1056,31 @@ impl FileTreeView {
                 })
             })
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
+                ListItem::new(("file-tree-entry", entry.id.0))
+                    // Use Ghost variant for no borders/background, or Primary for selected
+                    .variant(if is_selected {
+                        ListItemVariant::Primary
+                    } else {
+                        ListItemVariant::Ghost
+                    })
+                    .spacing(ListItemSpacing::Compact)
+                    .selected(is_selected)
+                    .class("file-tree-entry")
+                    .with_listener({
+                        let theme = theme.clone();
+                        move |item| {
+                            // Apply minimal custom styling - let nucleotide-ui handle most of it
+                            let item = item.pl(indentation).pr(px(8.0)).h(px(24.0));
+
+                            // Apply hover effects conditionally based on animation config
+                            if enable_animations {
+                                item.hover(|style| style.bg(theme.tokens.colors.surface_hover))
+                            } else {
+                                item
+                            }
+                        }
+                    })
+                    .start_slot(
                         // Always reserve space for chevron to align icons
                         div()
                             .w_3()
@@ -1084,8 +1092,15 @@ impl FileTreeView {
                                 div.child(self.render_chevron(entry, cx))
                             }),
                     )
-                    .child(self.render_icon_with_vcs_status(entry, cx))
-                    .child(self.render_filename(entry, cx)),
+                    .child(
+                        // Fix icon alignment by using flex container with items_center for better alignment
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1() // Small gap between icon and text
+                            .child(self.render_icon_with_vcs_status(entry, cx))
+                            .child(self.render_filename(entry, cx)),
+                    ),
             )
     }
 
