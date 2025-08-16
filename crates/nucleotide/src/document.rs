@@ -2327,6 +2327,13 @@ impl Element for DocumentElement {
                 let cursor_line_num = text.char_to_line(cursor_char_idx);
                 debug!("Cursor position: line={}, char_idx={}", cursor_line_num, cursor_char_idx);
 
+                // Get all cursor lines for gutter highlighting (same as regular gutter implementation)
+                let cursors: std::rc::Rc<[_]> = document
+                    .selection(self.view_id)
+                    .iter()
+                    .map(|range| range.cursor_line(text.slice(..)))
+                    .collect();
+
                 // Use the last row from scroll manager
                 let mut last_row = last_row_from_scroll;
 
@@ -2904,13 +2911,12 @@ impl Element for DocumentElement {
                             current_y += after_layout.line_height;
                         }
 
-                        // Now render the line numbers
+                        // Now render the line numbers with highlighting for current line
                         let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                        let style = theme.get("ui.linenr");
-                        let color = style.fg.and_then(color_to_hsla).unwrap_or(hsla(0.5, 0., 0.5, 1.));
+                        let gutter_style = theme.get("ui.linenr");
+                        let gutter_selected_style = theme.get("ui.linenr.selected");
 
-                        debug!("🎯 SOFT-WRAP GUTTER: doc_line_positions={:?}, text.len_lines()={}, text.len_chars()={}",
-                               doc_line_positions, text.len_lines(), text.len_chars());
+
 
                         for (doc_line, y_pos) in doc_line_positions {
                             // Skip phantom lines (empty lines at EOF with trailing newline)
@@ -2922,21 +2928,33 @@ impl Element for DocumentElement {
                             };
                             let is_phantom_line = line_start >= line_end;
 
-                            debug!("🎯 SOFT-WRAP GUTTER LINE: doc_line={}, line_start={}, line_end={}, is_phantom={}",
-                                   doc_line, line_start, line_end, is_phantom_line);
-
                             if is_phantom_line {
-                                debug!("🎯 SOFT-WRAP GUTTER: Skipping phantom line {}", doc_line);
                                 continue;
                             }
 
                             let line_num_str = format!("{:>4} ", doc_line + 1);
                             let y = gutter_origin.y + y_pos;
 
+                            // Choose color based on whether this line contains a cursor (same logic as regular gutter)
+                            let default_gutter_color = hsla(0., 0., 0.5, 1.); // Gray fallback
+                            let selected = cursors.contains(&doc_line);
+
+                            let gutter_color = gutter_style.fg.and_then(crate::utils::color_to_hsla).unwrap_or(default_gutter_color);
+                            let gutter_selected_color = gutter_selected_style.fg.and_then(crate::utils::color_to_hsla).unwrap_or(default_gutter_color);
+
+
+                            let line_color = if selected {
+                                // Current line - use selected gutter style
+                                gutter_selected_color
+                            } else {
+                                // Other lines - use regular gutter style
+                                gutter_color
+                            };
+
                             let run = TextRun {
                                 len: line_num_str.len(),
                                 font: self.style.font(),
-                                color,
+                                color: line_color,
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
@@ -3813,7 +3831,7 @@ impl Element for DocumentElement {
                     let text_system = window.text_system().clone();
                     let style = self.style.clone();
 
-                    // Include phantom lines for gutter so it can render "~" for empty lines  
+                    // Include phantom lines for gutter so it can render "~" for empty lines
                     let gutter_last_row = last_row;
 
                     // SOFTWRAP HANDLING: Generate LinePos entries for each visual line
@@ -3916,6 +3934,7 @@ impl<'a> Gutter<'a> {
             .iter()
             .map(|range| range.cursor_line(text))
             .collect();
+        debug!("🎯 GUTTER CURSORS: cursor_lines={:?}", cursors.as_ref());
 
         let mut offset = 0;
 
@@ -3938,6 +3957,12 @@ impl<'a> Gutter<'a> {
                 // 2. Show appropriate wrap indicators on continuation lines
                 // 3. Handle gutter width for wrapped line numbers
                 let selected = cursors.contains(&pos.doc_line);
+                debug!(
+                    "🎯 GUTTER SELECTION: doc_line={}, selected={}, cursors={:?}",
+                    pos.doc_line,
+                    selected,
+                    cursors.as_ref()
+                );
                 let x = offset;
                 let y = pos.visual_line;
 
