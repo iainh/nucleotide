@@ -9,6 +9,7 @@ use nucleotide_ui::picker_view::{PickerItem, PickerView};
 use nucleotide_ui::prompt::{Prompt, PromptElement};
 use nucleotide_ui::prompt_view::PromptView;
 use nucleotide_ui::theme_manager::ThemedContext;
+use nucleotide_ui::ThemedContext as UIThemedContext;
 
 pub struct OverlayView {
     prompt: Option<Prompt>,
@@ -385,15 +386,18 @@ impl OverlayView {
         }
     }
 
-    /// Create PromptStyle using testing-aware theme access
+    /// Create PromptStyle using ThemedContext for consistent theme access
     fn create_prompt_style_from_context(cx: &App) -> nucleotide_ui::prompt_view::PromptStyle {
-        use gpui::hsla;
         use nucleotide_ui::theme_utils::color_to_hsla;
 
-        // Get modal style using testing-aware theme access
+        // Get modal style using ThemedContext
         let modal_style = Self::create_modal_style_from_context(cx);
 
-        // Get ui.menu style
+        // Use ThemedContext for theme access
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
+
+        // Get ui.menu style with fallback to design tokens
         let ui_menu = cx.theme_style("ui.menu");
 
         nucleotide_ui::prompt_view::PromptStyle {
@@ -401,46 +405,44 @@ impl OverlayView {
             completion_background: ui_menu
                 .bg
                 .and_then(color_to_hsla)
-                .unwrap_or(hsla(0.0, 0.0, 0.15, 1.0)),
+                .unwrap_or(tokens.colors.surface_elevated),
         }
     }
 
-    /// Create ModalStyle using computed theme tokens with proper fallbacks
+    /// Create ModalStyle using ThemedContext with design token fallbacks
     fn create_modal_style_from_context(cx: &App) -> nucleotide_ui::common::ModalStyle {
         use nucleotide_ui::theme_utils::color_to_hsla;
 
-        // Get computed theme with design tokens - this handles all fallbacks
-        let ui_theme =
-            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
-                .map(|provider| provider.current_theme().clone())
-                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+        // Use ThemedContext for consistent theme access
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
 
         // Get theme styles for specific overrides
         let ui_popup = cx.theme_style("ui.popup");
         let ui_text = cx.theme_style("ui.text");
         let ui_menu_selected = cx.theme_style("ui.menu.selected");
 
-        // Use computed tokens as fallbacks - these are guaranteed to exist
+        // Use design tokens as fallbacks - guaranteed to exist
         let background = ui_popup
             .bg
             .and_then(color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.surface);
+            .unwrap_or(tokens.colors.surface_elevated);
         let text = ui_text
             .fg
             .and_then(color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.text_primary);
+            .unwrap_or(tokens.colors.text_primary);
         let selected_background = ui_menu_selected
             .bg
             .and_then(color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.surface_hover);
+            .unwrap_or(tokens.colors.surface_selected);
         let selected_text = ui_menu_selected
             .fg
             .and_then(color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.text_primary);
+            .unwrap_or(tokens.colors.text_primary);
         let border = ui_popup
             .fg
             .and_then(color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.border_default);
+            .unwrap_or(tokens.colors.border_default);
         let prompt_text = text;
 
         nucleotide_ui::common::ModalStyle {
@@ -453,32 +455,30 @@ impl OverlayView {
         }
     }
 
-    /// Create PickerView using computed theme tokens with proper fallbacks
+    /// Create PickerView using ThemedContext with design token fallbacks
     fn create_picker_view_with_context(cx: &mut gpui::Context<PickerView>) -> PickerView {
         use nucleotide_ui::theme_utils::color_to_hsla;
 
-        // Get modal style using testing-aware theme access
+        // Get modal style using ThemedContext
         let modal_style = Self::create_modal_style_from_context(cx);
 
-        // Get computed theme with design tokens - this handles all fallbacks
-        let ui_theme =
-            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
-                .map(|provider| provider.current_theme().clone())
-                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+        // Use ThemedContext for consistent theme access
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
 
         // Get theme styles for specific overrides
         let ui_background_separator = cx.theme_style("ui.background.separator");
         let ui_cursor = cx.theme_style("ui.cursor");
 
-        // Use computed tokens as fallbacks - these are guaranteed to exist
+        // Use design tokens as fallbacks - guaranteed to exist
         let preview_background = ui_background_separator
             .bg
             .and_then(color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.surface);
+            .unwrap_or(tokens.colors.surface);
         let cursor = ui_cursor
             .bg
             .and_then(color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.primary);
+            .unwrap_or(tokens.colors.primary);
 
         let picker_style = nucleotide_ui::picker_view::PickerStyle {
             modal_style,
@@ -510,13 +510,17 @@ impl Render for OverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Check what type of overlay we should render
         if let Some(picker_view) = &self.native_picker_view {
-            // For now, render picker directly until we update Overlay to work with entities
+            // Render picker with design tokens and consistent overlay patterns
+            let theme = cx.theme();
+            let tokens = &theme.tokens;
+
             return div()
                 .key_context("Overlay")
                 .absolute()
                 .size_full()
                 .bottom_0()
                 .left_0()
+                .bg(tokens.colors.surface_overlay)
                 .occlude()
                 .on_mouse_down(MouseButton::Left, |_, _, _| {
                     // Prevent click-through to elements below
@@ -527,20 +531,24 @@ impl Render for OverlayView {
                         .size_full()
                         .justify_center()
                         .items_start()
-                        .pt_20()
+                        .pt(tokens.sizes.space_8)
                         .child(picker_view.clone()),
                 )
                 .into_any_element();
         }
 
         if let Some(prompt_view) = &self.native_prompt_view {
-            // For now, render prompt directly until we update Overlay to work with entities
+            // Render prompt with design tokens and consistent overlay patterns
+            let theme = cx.theme();
+            let tokens = &theme.tokens;
+
             return div()
                 .key_context("Overlay")
                 .absolute()
                 .size_full()
                 .bottom_0()
                 .left_0()
+                .bg(tokens.colors.surface_overlay)
                 .occlude()
                 .on_mouse_down(MouseButton::Left, |_, _, _| {
                     // Prevent click-through to elements below
@@ -551,7 +559,7 @@ impl Render for OverlayView {
                         .size_full()
                         .justify_center()
                         .items_start()
-                        .pt_20()
+                        .pt(tokens.sizes.space_8)
                         .child(prompt_view.clone()),
                 )
                 .into_any_element();
@@ -574,12 +582,16 @@ impl Render for OverlayView {
                 focus: handle.clone(),
                 theme,
             };
+            let theme = cx.theme();
+            let tokens = &theme.tokens;
+
             return div()
                 .key_context("Overlay")
                 .absolute()
                 .size_full()
                 .bottom_0()
                 .left_0()
+                .bg(tokens.colors.surface_overlay)
                 .occlude()
                 .child(
                     div()
@@ -587,13 +599,13 @@ impl Render for OverlayView {
                         .size_full()
                         .justify_center()
                         .items_start()
-                        .pt_20()
+                        .pt(tokens.sizes.space_8)
                         .child(prompt_elem),
                 )
                 .into_any_element();
         }
 
-        // Empty overlay
+        // Empty overlay using design tokens
         div().size_0().into_any_element()
     }
 }
