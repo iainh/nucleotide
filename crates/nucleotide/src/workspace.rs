@@ -3,17 +3,19 @@ use std::collections::{HashMap, HashSet};
 use gpui::prelude::FluentBuilder;
 use gpui::FontFeatures;
 use gpui::{
-    black, div, hsla, px, transparent_black, white, App, AppContext, BorrowAppContext, Context,
-    DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Render, StatefulInteractiveElement, Styled, TextStyle, Window, WindowAppearance,
+    black, div, hsla, px, white, App, AppContext, BorrowAppContext, Context, DismissEvent, Entity,
+    EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render,
+    StatefulInteractiveElement, Styled, TextStyle, Window, WindowAppearance,
     WindowBackgroundAppearance,
 };
 use helix_core::Selection;
 use helix_view::ViewId;
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
-use nucleotide_ui::{Button, ButtonSize, ButtonVariant};
+use nucleotide_ui::{
+    compute_component_style, Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant,
+};
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;
@@ -2661,15 +2663,27 @@ impl Render for Workspace {
                     .border_color(ui_theme.tokens.colors.border_default)
                     .child(file_tree.clone());
 
-                // Create resize handle with absolute positioning
+                // Create resize handle with computed styling
+                let handle_style = compute_component_style(
+                    &ui_theme,
+                    StyleState::Default,
+                    StyleVariant::Ghost.as_str(),
+                    StyleSize::Small.as_str(),
+                );
+                let hover_style = compute_component_style(
+                    &ui_theme,
+                    StyleState::Hover,
+                    StyleVariant::Ghost.as_str(),
+                    StyleSize::Small.as_str(),
+                );
                 let resize_handle = div()
                     .absolute()
                     .left(px(self.file_tree_width))
                     .top_0()
                     .bottom_0()
                     .w(px(resize_handle_width))
-                    .bg(transparent_black())
-                    .hover(|style| style.bg(hsla(0.0, 0.0, 0.5, 0.3)))
+                    .bg(handle_style.background)
+                    .hover(|style| style.bg(hover_style.background))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .id("file-tree-resize-handle")
                     .on_mouse_down(
@@ -2751,15 +2765,27 @@ impl Render for Workspace {
                             })
                     }));
 
-                // Add resize handle with absolute positioning
+                // Add resize handle with computed styling
+                let handle_style = compute_component_style(
+                    &ui_theme,
+                    StyleState::Default,
+                    StyleVariant::Ghost.as_str(),
+                    StyleSize::Small.as_str(),
+                );
+                let hover_style = compute_component_style(
+                    &ui_theme,
+                    StyleState::Hover,
+                    StyleVariant::Ghost.as_str(),
+                    StyleSize::Small.as_str(),
+                );
                 let resize_handle = div()
                     .absolute()
                     .left(px(self.file_tree_width))
                     .top_0()
                     .bottom_0()
                     .w(px(resize_handle_width))
-                    .bg(transparent_black())
-                    .hover(|style| style.bg(hsla(0.0, 0.0, 0.5, 0.3)))
+                    .bg(handle_style.background)
+                    .hover(|style| style.bg(hover_style.background))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .id("file-tree-resize-handle-placeholder")
                     .on_mouse_down(
