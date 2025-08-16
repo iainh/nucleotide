@@ -1,10 +1,11 @@
 use crate::utils::color_to_hsla;
 use crate::Core;
 use gpui::{
-    div, hsla, px, App, Context, Entity, EventEmitter, Hsla, IntoElement, ParentElement, Render,
+    div, px, App, Context, Entity, EventEmitter, Hsla, IntoElement, ParentElement, Render,
     Styled, Window,
 };
 use helix_view::{DocumentId, ViewId};
+use nucleotide_ui::{compute_component_style, StyleState, StyleVariant, StyleSize};
 
 /// StatusLineView is a proper GPUI View that can observe model changes
 pub struct StatusLineView {
@@ -49,22 +50,58 @@ impl StatusLineView {
         self.focused = focused;
     }
 
-    fn style(&self, cx: &mut App) -> (Hsla, Hsla) {
+    fn get_computed_style(&self, cx: &mut App) -> nucleotide_ui::ComputedStyle {
+        let ui_theme = nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
+            .map(|provider| provider.current_theme().clone())
+            .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+
+        // Use different style states based on focus
+        let style_state = if self.focused {
+            StyleState::Default
+        } else {
+            StyleState::Disabled // Inactive statusline uses disabled styling
+        };
+
+        // Compute style using the enhanced style system
+        let computed_style = compute_component_style(
+            &ui_theme,
+            style_state,
+            StyleVariant::Secondary.as_str(), // Statusline uses secondary variant
+            StyleSize::Medium.as_str(),
+        );
+
+        // If computed style doesn't provide good colors, fall back to Helix theme
         let theme = cx.global::<crate::ThemeManager>().helix_theme();
         let base_style = if self.focused {
             theme.get("ui.statusline")
         } else {
             theme.get("ui.statusline.inactive")
         };
-        let foreground = base_style
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or(hsla(0.5, 0.5, 0.5, 1.));
+
         let background = base_style
             .bg
             .and_then(color_to_hsla)
-            .unwrap_or(hsla(0.5, 0.5, 0.5, 1.));
-        (foreground, background)
+            .unwrap_or(computed_style.background);
+
+        let foreground = base_style
+            .fg
+            .and_then(color_to_hsla)
+            .unwrap_or(computed_style.foreground);
+
+        nucleotide_ui::ComputedStyle {
+            background,
+            foreground,
+            border_color: computed_style.border_color,
+            border_width: computed_style.border_width,
+            border_radius: computed_style.border_radius,
+            padding_x: computed_style.padding_x,
+            padding_y: computed_style.padding_y,
+            font_size: computed_style.font_size,
+            font_weight: computed_style.font_weight,
+            opacity: computed_style.opacity,
+            shadow: computed_style.shadow,
+            transition: computed_style.transition,
+        }
     }
 }
 
@@ -77,14 +114,14 @@ impl Render for StatusLineView {
         let font = gpui::font(&ui_font_config.family);
         let font_size = gpui::px(ui_font_config.size);
 
-        // Get theme colors
-        let (fg_color, bg_color) = self.style(cx);
-
+        // Get computed theme style using enhanced styling system
+        let computed_style = self.get_computed_style(cx);
+        
         // Create divider color with reduced opacity
         let divider_color = Hsla {
-            h: fg_color.h,
-            s: fg_color.s,
-            l: fg_color.l,
+            h: computed_style.foreground.h,
+            s: computed_style.foreground.s,
+            l: computed_style.foreground.l,
             a: 0.3,
         };
 
@@ -93,11 +130,11 @@ impl Render for StatusLineView {
         let editor = &core.editor;
         let doc = match editor.document(self.doc_id) {
             Some(doc) => doc,
-            None => return div().h(px(24.)).w_full().bg(bg_color),
+            None => return div().h(px(24.)).w_full().bg(computed_style.background),
         };
         let view = match editor.tree.try_get(self.view_id) {
             Some(view) => view,
-            None => return div().h(px(24.)).w_full().bg(bg_color),
+            None => return div().h(px(24.)).w_full().bg(computed_style.background),
         };
 
         // Build status components
@@ -153,15 +190,15 @@ impl Render for StatusLineView {
         let mut status_bar = div()
             .h(px(24.))
             .w_full()
-            .bg(bg_color)
+            .bg(computed_style.background)
             .flex()
             .flex_row()
             .items_center()
-            .px_2()
+            .px(computed_style.padding_x)
             .gap_2()
             .font(font)
             .text_size(font_size)
-            .text_color(fg_color)
+            .text_color(computed_style.foreground)
             .child(
                 // Mode indicator
                 div().child(mode_name).min_w(px(24.)),
