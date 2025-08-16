@@ -8,7 +8,10 @@ use gpui::{
 };
 use helix_view::DocumentId;
 use nucleotide_ui::theme_manager::ThemedContext;
-use nucleotide_ui::{compute_contextual_style, ColorContext, StyleSize, StyleState, StyleVariant};
+use nucleotide_ui::{
+    compute_contextual_style, ColorContext, StyleSize, StyleState, StyleVariant,
+    ThemedContext as UIThemedContext,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -99,78 +102,46 @@ impl TabOverflowMenu {
 
 impl RenderOnce for TabOverflowButton {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        // Use enhanced styling system with provider support
-        let ui_theme =
-            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
-                .map(|provider| provider.current_theme().clone())
-                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+        // Use ThemedContext for consistent theme access
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
 
-        // Get fallback colors from Helix theme for visual continuity
-        let statusline_style = cx.theme_style("ui.statusline");
-        let container_bg = statusline_style
-            .bg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.surface);
-
-        // Compute style for the dropdown button with the actual background context
-        // Since we're on the statusline/tab bar background, we need to compute foreground accordingly
-        let button_style = {
-            let mut style = compute_contextual_style(
-                &ui_theme,
-                StyleState::Default,
-                StyleVariant::Ghost.as_str(),
-                StyleSize::Small.as_str(),
-                ColorContext::OnSurface,
-            );
-            // Override foreground to work with the actual container background
-            style.foreground =
-                nucleotide_ui::ColorTheory::best_text_color(container_bg, &ui_theme.tokens);
-            style
+        // Use design tokens for consistent colors
+        let container_bg = tokens.colors.surface;
+        let button_bg = if self.is_open {
+            tokens.colors.surface_selected
+        } else {
+            tokens.colors.surface_hover
         };
 
         div()
-            .id("tab-overflow-button")
             .absolute()
             .top(px(0.0))
             .right(px(0.0))
             .flex()
             .flex_none()
             .items_center()
-            .h(px(32.0))
+            .h(tokens.sizes.button_height_md)
             .bg(container_bg)
             .child(
-                // Dropdown trigger button using computed styles
+                // Dropdown trigger button using design tokens
                 div()
-                    .id("tab-overflow-trigger")
                     .flex()
                     .items_center()
-                    .gap(px(4.0))
-                    .px(button_style.padding_x)
-                    .py(button_style.padding_y)
-                    .h(px(24.0))
+                    .gap(tokens.sizes.space_1)
+                    .px(tokens.sizes.space_3)
+                    .py(tokens.sizes.space_2)
+                    .h(tokens.sizes.button_height_sm)
                     .cursor(CursorStyle::PointingHand)
-                    .rounded(button_style.border_radius)
-                    .bg(button_style.background)
-                    .text_color(button_style.foreground)
+                    .rounded(tokens.sizes.radius_md)
+                    .bg(button_bg)
+                    .text_color(tokens.colors.text_primary)
                     .border_1()
-                    .border_color(button_style.border_color)
+                    .border_color(tokens.colors.border_default)
                     .hover(|style| {
-                        // Compute hover style with proper context
-                        let mut hover_style = compute_contextual_style(
-                            &ui_theme,
-                            StyleState::Hover,
-                            StyleVariant::Ghost.as_str(),
-                            StyleSize::Small.as_str(),
-                            ColorContext::OnSurface,
-                        );
-                        // Override foreground to work with the actual container background
-                        hover_style.foreground = nucleotide_ui::ColorTheory::best_text_color(
-                            container_bg,
-                            &ui_theme.tokens,
-                        );
                         style
-                            .bg(hover_style.background)
-                            .text_color(hover_style.foreground)
+                            .bg(tokens.colors.surface_selected)
+                            .border_color(tokens.colors.border_focus)
                     })
                     .on_mouse_up(MouseButton::Left, {
                         let on_dropdown_toggle = self.on_dropdown_toggle.clone();
@@ -181,12 +152,12 @@ impl RenderOnce for TabOverflowButton {
                     })
                     .child(
                         div()
-                            .text_size(button_style.font_size)
+                            .text_size(tokens.sizes.text_sm)
                             .child(format!("+{}", self.overflow_count)),
                     )
                     .child(
                         div()
-                            .text_size(button_style.font_size)
+                            .text_size(tokens.sizes.text_xs)
                             .child(if self.is_open { "▲" } else { "▼" }),
                     ),
             )
@@ -195,66 +166,30 @@ impl RenderOnce for TabOverflowButton {
 
 impl RenderOnce for TabOverflowMenu {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        // Use enhanced styling system with provider support
-        let ui_theme =
-            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
-                .map(|provider| provider.current_theme().clone())
-                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+        // Use ThemedContext for consistent theme access
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
 
-        // Get the same background color as the tab area for consistency
-        let statusline_style = cx.theme_style("ui.statusline");
-        let dropdown_bg = statusline_style
-            .bg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.surface);
-
-        // Compute style for the dropdown menu using the same background as tabs
-        let mut menu_style = compute_contextual_style(
-            &ui_theme,
-            StyleState::Default,
-            StyleVariant::Secondary.as_str(),
-            StyleSize::Medium.as_str(),
-            ColorContext::Floating,
-        );
-
-        // Override background to match the tab area for visual consistency
-        menu_style.background = dropdown_bg;
-
-        // Compute style for menu items with the actual dropdown background
-        let item_style = {
-            let mut style = compute_contextual_style(
-                &ui_theme,
-                StyleState::Default,
-                StyleVariant::Ghost.as_str(),
-                StyleSize::Small.as_str(),
-                ColorContext::Floating,
-            );
-            // Override foreground to work with the dropdown background
-            style.foreground =
-                nucleotide_ui::ColorTheory::best_text_color(dropdown_bg, &ui_theme.tokens);
-            style
-        };
-
-        // Use the computed text color for consistency
-        let text_color = item_style.foreground;
+        // Use design tokens for consistent colors
+        let dropdown_bg = tokens.colors.surface_elevated;
+        let text_color = tokens.colors.text_primary;
 
         // Positioned absolutely to appear right below the overflow button
         div()
-            .id("tab-overflow-menu")
             .absolute()
             .top(px(34.0)) // Right below the tab bar with small gap
-            .right(px(20.0)) // More margin from right edge to prevent clipping
-            .w(px(260.0)) // Slightly narrower to ensure it fits
-            .max_h(px(400.0)) // More space for items
-            .bg(menu_style.background) // Now using the same background as tabs
+            .right(px(20.0)) // Margin from right edge to prevent clipping
+            .w(px(260.0)) // Fixed width for consistency
+            .max_h(px(400.0)) // Maximum height for scrolling
+            .bg(dropdown_bg)
             .border_1()
-            .border_color(menu_style.border_color)
-            .rounded(px(8.0)) // Consistent rounded corners
+            .border_color(tokens.colors.border_default)
+            .rounded(tokens.sizes.radius_lg)
             .shadow_lg()
-            .overflow_y_scroll()
+            .overflow_y_hidden()
             .flex()
             .flex_col()
-            .py(px(4.0)) // Tighter padding
+            .py(tokens.sizes.space_2)
             .children(
                 self.overflow_documents
                     .iter()
@@ -265,23 +200,11 @@ impl RenderOnce for TabOverflowMenu {
                         let on_tab_click = self.on_tab_click.clone();
 
                         {
-                            // Compute styles for active/inactive states with proper context
-                            let current_style = if is_active {
-                                let mut style = compute_contextual_style(
-                                    &ui_theme,
-                                    StyleState::Selected,
-                                    StyleVariant::Ghost.as_str(),
-                                    StyleSize::Small.as_str(),
-                                    ColorContext::Floating,
-                                );
-                                // Override foreground to work with the dropdown background
-                                style.foreground = nucleotide_ui::ColorTheory::best_text_color(
-                                    dropdown_bg,
-                                    &ui_theme.tokens,
-                                );
-                                style
+                            // Use design tokens for active/inactive states
+                            let item_bg = if is_active {
+                                tokens.colors.surface_selected
                             } else {
-                                item_style.clone()
+                                gpui::transparent_black()
                             };
 
                             div()
@@ -289,41 +212,17 @@ impl RenderOnce for TabOverflowMenu {
                                 .flex()
                                 .flex_none()
                                 .items_center()
-                                .gap(px(10.0)) // More spacing between icon and text
-                                .px(px(12.0)) // More horizontal padding
-                                .py(px(6.0)) // Comfortable vertical padding
-                                .mx(px(4.0)) // Margin from edges
+                                .gap(tokens.sizes.space_3)
+                                .px(tokens.sizes.space_4)
+                                .py(tokens.sizes.space_2)
+                                .mx(tokens.sizes.space_1)
                                 .w_full()
-                                .min_h(px(32.0)) // Taller items for better touch targets
+                                .min_h(tokens.sizes.button_height_sm)
                                 .cursor(CursorStyle::PointingHand)
-                                .bg(current_style.background)
+                                .bg(item_bg)
                                 .text_color(text_color)
-                                .rounded(px(4.0)) // Rounded item corners
-                                .hover(|style| {
-                                    // Create a more visible hover background by darkening/lightening the menu background
-                                    let hover_bg = if ui_theme.is_dark() {
-                                        // For dark themes, lighten the background
-                                        gpui::hsla(
-                                            dropdown_bg.h,
-                                            dropdown_bg.s,
-                                            (dropdown_bg.l + 0.1).min(1.0),
-                                            dropdown_bg.a,
-                                        )
-                                    } else {
-                                        // For light themes, darken the background more noticeably
-                                        gpui::hsla(
-                                            dropdown_bg.h,
-                                            dropdown_bg.s,
-                                            (dropdown_bg.l - 0.15).max(0.0),
-                                            dropdown_bg.a,
-                                        )
-                                    };
-                                    let hover_text = nucleotide_ui::ColorTheory::best_text_color(
-                                        hover_bg,
-                                        &ui_theme.tokens,
-                                    );
-                                    style.bg(hover_bg).text_color(hover_text)
-                                })
+                                .rounded(tokens.sizes.radius_md)
+                                .hover(|style| style.bg(tokens.colors.surface_hover))
                                 .on_mouse_down(MouseButton::Left, {
                                     move |_event, _window, cx| {
                                         // Stop propagation immediately to prevent workspace click-away handler
@@ -341,9 +240,9 @@ impl RenderOnce for TabOverflowMenu {
                                     }
                                 })
                                 .child(
-                                    // File icon
+                                    // File icon using design tokens
                                     div()
-                                        .w(px(18.0)) // Slightly larger icon container
+                                        .w(px(18.0))
                                         .h(px(18.0))
                                         .flex()
                                         .flex_none()
@@ -351,23 +250,23 @@ impl RenderOnce for TabOverflowMenu {
                                         .justify_center()
                                         .child(if let Some(ref path) = doc_info.path {
                                             nucleotide_ui::FileIcon::from_path(path, false)
-                                                .size(16.0) // Larger icon for better visibility
+                                                .size(16.0)
                                                 .text_color(text_color)
                                         } else {
                                             nucleotide_ui::FileIcon::scratch()
-                                                .size(16.0) // Larger icon for better visibility
+                                                .size(16.0)
                                                 .text_color(text_color)
                                         }),
                                 )
                                 .child(
-                                    // File name
+                                    // File name using design tokens
                                     div()
                                         .flex_1()
                                         .min_w(px(0.0))
                                         .text_color(text_color)
-                                        .text_size(px(13.0)) // Consistent font size
-                                        .line_height(px(18.0)) // Better line height
-                                        .when(doc_info.is_modified, |name_div| name_div.italic()) // Italic instead of underline
+                                        .text_size(tokens.sizes.text_sm)
+                                        .line_height(px(18.0))
+                                        .when(doc_info.is_modified, |name_div| name_div.italic())
                                         .when(is_active, |name_div| {
                                             name_div.font_weight(gpui::FontWeight::MEDIUM)
                                         })
@@ -380,8 +279,8 @@ impl RenderOnce for TabOverflowMenu {
                                             .w(px(6.0))
                                             .h(px(6.0))
                                             .rounded(px(3.0))
-                                            .bg(ui_theme.tokens.colors.primary)
-                                            .ml(px(4.0)),
+                                            .bg(tokens.colors.primary)
+                                            .ml(tokens.sizes.space_1),
                                     )
                                 })
                         }
