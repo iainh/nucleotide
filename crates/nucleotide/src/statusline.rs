@@ -1,11 +1,11 @@
 use crate::utils::color_to_hsla;
 use crate::Core;
 use gpui::{
-    div, px, App, Context, Entity, EventEmitter, Hsla, IntoElement, ParentElement, Render,
-    Styled, Window,
+    div, px, App, Context, Entity, EventEmitter, Hsla, IntoElement, ParentElement, Render, Styled,
+    Window,
 };
 use helix_view::{DocumentId, ViewId};
-use nucleotide_ui::{compute_component_style, StyleState, StyleVariant, StyleSize};
+use nucleotide_ui::{compute_component_style, StyleSize, StyleState, StyleVariant};
 
 /// StatusLineView is a proper GPUI View that can observe model changes
 pub struct StatusLineView {
@@ -51,9 +51,10 @@ impl StatusLineView {
     }
 
     fn get_computed_style(&self, cx: &mut App) -> nucleotide_ui::ComputedStyle {
-        let ui_theme = nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
-            .map(|provider| provider.current_theme().clone())
-            .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+        let ui_theme =
+            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
+                .map(|provider| provider.current_theme().clone())
+                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
 
         // Use different style states based on focus
         let style_state = if self.focused {
@@ -116,7 +117,7 @@ impl Render for StatusLineView {
 
         // Get computed theme style using enhanced styling system
         let computed_style = self.get_computed_style(cx);
-        
+
         // Create divider color with reduced opacity
         let divider_color = Hsla {
             h: computed_style.foreground.h,

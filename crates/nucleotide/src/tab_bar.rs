@@ -7,12 +7,12 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window,
 };
 use helix_view::DocumentId;
+use nucleotide_ui::{compute_component_style, StyleSize, StyleState, StyleVariant, VcsStatus};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::tab::Tab;
 use crate::tab_overflow_dropdown::TabOverflowButton;
-use nucleotide_ui::VcsStatus;
 
 /// Type alias for tab event handlers
 type TabEventHandler = Arc<dyn Fn(DocumentId, &mut Window, &mut App) + 'static>;
@@ -190,16 +190,28 @@ impl TabBar {
 
 impl RenderOnce for TabBar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let ui_theme = cx.global::<nucleotide_ui::Theme>();
+        // Use enhanced styling system with provider support
+        let ui_theme =
+            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
+                .map(|provider| provider.current_theme().clone())
+                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+
+        // Compute style for the tab bar container (secondary variant for surface styling)
+        let container_style = compute_component_style(
+            &ui_theme,
+            StyleState::Default,
+            StyleVariant::Secondary.as_str(),
+            StyleSize::Medium.as_str(),
+        );
+
+        // Get fallback background color from Helix theme for visual continuity
         let theme_manager = cx.global::<crate::ThemeManager>();
         let helix_theme = theme_manager.helix_theme();
-
-        // Get statusline background color for the tab bar
         let statusline_style = helix_theme.get("ui.statusline");
         let bg_color = statusline_style
             .bg
             .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.surface);
+            .unwrap_or(container_style.background);
 
         // Keep documents in the order they were opened
         let mut documents = self.documents.clone();
@@ -275,14 +287,20 @@ impl RenderOnce for TabBar {
                         )
                     })
                     .when(!has_tabs, |this| {
-                        // Show placeholder when no tabs
+                        // Show placeholder when no tabs using computed styling
+                        let placeholder_style = compute_component_style(
+                            &ui_theme,
+                            StyleState::Disabled,
+                            StyleVariant::Ghost.as_str(),
+                            StyleSize::Small.as_str(),
+                        );
                         this.child(
                             div()
                                 .flex()
                                 .items_center()
-                                .px(px(12.0))
-                                .text_color(ui_theme.tokens.colors.text_secondary)
-                                .text_size(px(13.0))
+                                .px(placeholder_style.padding_x)
+                                .text_color(placeholder_style.foreground)
+                                .text_size(placeholder_style.font_size)
                                 .child("No open files"),
                         )
                     }),
