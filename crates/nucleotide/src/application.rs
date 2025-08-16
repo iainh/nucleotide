@@ -1068,11 +1068,12 @@ pub fn init_editor(
         crate::config::ThemeMode::Light => Some(gui_config.gui.theme.get_light_theme()),
         crate::config::ThemeMode::Dark => Some(gui_config.gui.theme.get_dark_theme()),
         crate::config::ThemeMode::System => {
-            // For system mode, load a default and let the window appearance observer correct it
+            // For system mode, start with light theme as default since most systems start light
+            // The window appearance observer will correct it to match actual OS appearance
             helix_config
                 .theme
                 .clone()
-                .or_else(|| Some(crate::config::DEFAULT_DARK_THEME.to_string()))
+                .or_else(|| Some(gui_config.gui.theme.get_light_theme()))
         }
     };
 

@@ -192,11 +192,25 @@ fn load_helix_config(_dir: &Path) -> anyhow::Result<HelixConfig> {
 fn load_gui_config(dir: &Path) -> anyhow::Result<GuiConfig> {
     let gui_config_path = dir.join("nucleotide.toml");
 
+    nucleotide_logging::info!(
+        config_dir = %dir.display(),
+        config_path = %gui_config_path.display(),
+        config_exists = gui_config_path.exists(),
+        "Loading GUI configuration"
+    );
+
     if gui_config_path.exists() {
         let config_str = std::fs::read_to_string(&gui_config_path)?;
         let config: GuiConfig = toml::from_str(&config_str)?;
+        nucleotide_logging::info!(
+            theme_mode = ?config.theme.mode,
+            light_theme = %config.theme.get_light_theme(),
+            dark_theme = %config.theme.get_dark_theme(),
+            "Loaded GUI configuration"
+        );
         Ok(config)
     } else {
+        nucleotide_logging::info!("No GUI configuration file found, using defaults");
         // Return default GUI configuration if file doesn't exist
         Ok(GuiConfig::default())
     }

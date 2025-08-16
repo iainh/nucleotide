@@ -77,6 +77,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"]
 tracing-appender = "0.2"
 dirs = "5.0"
 
+# macOS framework bindings
+objc = "0.2"
+cocoa = "0.25"
+
 # Inter-crate dependencies
 nucleotide-types = { path = "crates/nucleotide-types" }
 nucleotide-events = { path = "crates/nucleotide-events" }

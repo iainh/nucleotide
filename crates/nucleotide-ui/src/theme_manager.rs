@@ -252,7 +252,8 @@ impl ThemeManager {
     pub fn set_system_appearance(&mut self, appearance: SystemAppearance) {
         self.system_appearance = appearance;
         // Re-derive the UI theme with the new system appearance for proper fallback colors
-        self.ui_theme = Self::derive_ui_theme_with_appearance(&self.helix_theme, self.system_appearance);
+        self.ui_theme =
+            Self::derive_ui_theme_with_appearance(&self.helix_theme, self.system_appearance);
     }
 
     /// Check if the current theme is dark based on background luminance
@@ -269,7 +270,10 @@ impl ThemeManager {
     }
 
     /// Derive a UI theme from a Helix theme with system appearance for fallback colors
-    fn derive_ui_theme_with_appearance(helix_theme: &HelixTheme, system_appearance: SystemAppearance) -> UITheme {
+    fn derive_ui_theme_with_appearance(
+        helix_theme: &HelixTheme,
+        system_appearance: SystemAppearance,
+    ) -> UITheme {
         // Check if theme fallback testing is enabled
         let test_fallback = std::env::var("NUCLEOTIDE_DISABLE_THEME_LOADING")
             .map(|val| val == "1" || val.to_lowercase() == "true")
@@ -374,8 +378,8 @@ impl ThemeManager {
         let text_from_theme = ui_text.fg.and_then(color_to_hsla);
         let text = text_from_theme.unwrap_or_else(|| {
             match system_appearance {
-                SystemAppearance::Light => hsla(0.0, 0.0, 0.1, 1.0),  // Dark text on light background
-                SystemAppearance::Dark => hsla(0.0, 0.0, 0.9, 1.0),   // Light text on dark background
+                SystemAppearance::Light => hsla(0.0, 0.0, 0.1, 1.0), // Dark text on light background
+                SystemAppearance::Dark => hsla(0.0, 0.0, 0.9, 1.0), // Light text on dark background
             }
         });
 
@@ -386,8 +390,8 @@ impl ThemeManager {
             .map(|c| hsla(c.h, c.s * 0.5, c.l * 0.5, c.a * 0.8));
         let border = border_from_theme.unwrap_or_else(|| {
             match system_appearance {
-                SystemAppearance::Light => hsla(0.0, 0.0, 0.8, 1.0),  // Light border
-                SystemAppearance::Dark => hsla(0.0, 0.0, 0.2, 1.0),   // Dark border
+                SystemAppearance::Light => hsla(0.0, 0.0, 0.8, 1.0), // Light border
+                SystemAppearance::Dark => hsla(0.0, 0.0, 0.2, 1.0),  // Dark border
             }
         });
 
