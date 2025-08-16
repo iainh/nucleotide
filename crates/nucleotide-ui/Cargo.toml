@@ -21,3 +21,4 @@ smallvec.workspace = true
 nucleo.workspace = true
 anyhow.workspace = true
 rust-embed.workspace = true
+dirs = "5.0"
