@@ -155,9 +155,15 @@ impl<'a> StyleContext<'a> {
             color_context: ColorContext::OnSurface, // Default context
         }
     }
-    
+
     /// Create a style context with specific color context
-    pub fn with_context(theme: &'a Theme, state: StyleState, variant: &'a str, size: &'a str, context: ColorContext) -> Self {
+    pub fn with_context(
+        theme: &'a Theme,
+        state: StyleState,
+        variant: &'a str,
+        size: &'a str,
+        context: ColorContext,
+    ) -> Self {
         Self {
             theme,
             tokens: &theme.tokens,
@@ -219,17 +225,32 @@ impl<'a> StyleContext<'a> {
             self.color_context,
             self.tokens,
         );
-        
+
         // Apply the contextual colors
         style.background = contextual_colors.background;
         style.foreground = contextual_colors.foreground;
         style.border_color = contextual_colors.border;
-        
-        // Set border width for non-ghost variants
+
+        // Set border width and shadow for non-ghost variants
         if self.variant != "ghost" {
             style.border_width = px(1.0);
+
+            // Add subtle shadow for depth and visual hierarchy
+            style.shadow = Some(BoxShadow {
+                offset_x: px(0.0),
+                offset_y: px(1.0),
+                blur_radius: px(1.5), // Reduced blur radius for crisper borders
+                spread_radius: px(0.0),
+                color: if self.is_dark_theme {
+                    // For dark themes, use a darker shadow
+                    gpui::hsla(0.0, 0.0, 0.0, 0.25)
+                } else {
+                    // For light themes, use a lighter shadow
+                    gpui::hsla(0.0, 0.0, 0.0, 0.1)
+                },
+            });
         }
-        
+
         style
     }
 
@@ -241,11 +262,41 @@ impl<'a> StyleContext<'a> {
                 style.background = self.create_hover_color(style.background);
                 // Ensure text contrast is maintained
                 style.foreground = ColorTheory::best_text_color(style.background, self.tokens);
+
+                // Enhance shadow on hover for non-ghost variants
+                if self.variant != "ghost" {
+                    style.shadow = Some(BoxShadow {
+                        offset_x: px(0.0),
+                        offset_y: px(2.0),
+                        blur_radius: px(2.5), // Reduced blur radius for crisper borders
+                        spread_radius: px(0.0),
+                        color: if self.is_dark_theme {
+                            gpui::hsla(0.0, 0.0, 0.0, 0.3)
+                        } else {
+                            gpui::hsla(0.0, 0.0, 0.0, 0.15)
+                        },
+                    });
+                }
             }
             StyleState::Active => {
                 // Create active state by further darkening/lightening
                 style.background = self.create_active_color(style.background);
                 style.foreground = ColorTheory::best_text_color(style.background, self.tokens);
+
+                // Reduce shadow on active for pressed feeling
+                if self.variant != "ghost" {
+                    style.shadow = Some(BoxShadow {
+                        offset_x: px(0.0),
+                        offset_y: px(0.5),
+                        blur_radius: px(1.0), // Minimal blur for active state
+                        spread_radius: px(0.0),
+                        color: if self.is_dark_theme {
+                            gpui::hsla(0.0, 0.0, 0.0, 0.4)
+                        } else {
+                            gpui::hsla(0.0, 0.0, 0.0, 0.2)
+                        },
+                    });
+                }
             }
             StyleState::Focused => {
                 style.border_color = self.tokens.colors.border_focus;
@@ -318,43 +369,53 @@ impl<'a> StyleContext<'a> {
 
         animated_style
     }
-    
+
     /// Create an appropriate hover color based on background
     fn create_hover_color(&self, background: Hsla) -> Hsla {
         use gpui::hsla;
-        
+
         // For ghost variant, create a subtle overlay that works on the underlying surface
         if self.variant == "ghost" {
             return if self.is_dark_theme {
                 // Light overlay for dark themes
                 hsla(0.0, 0.0, 1.0, 0.1)
             } else {
-                // Dark overlay for light themes  
+                // Dark overlay for light themes
                 hsla(0.0, 0.0, 0.0, 0.1)
             };
         }
-        
+
         // For transparent backgrounds, use surface hover
         if background.a < 0.1 {
             return self.tokens.colors.surface_hover;
         }
-        
+
         let luminance = ColorTheory::relative_luminance(background);
-        
+
         // Lighten dark colors, darken light colors for hover
         if luminance < 0.5 {
             // Dark background - lighten
-            hsla(background.h, background.s, (background.l + 0.08).min(1.0), background.a)
+            hsla(
+                background.h,
+                background.s,
+                (background.l + 0.08).min(1.0),
+                background.a,
+            )
         } else {
             // Light background - darken
-            hsla(background.h, background.s, (background.l - 0.08).max(0.0), background.a)
+            hsla(
+                background.h,
+                background.s,
+                (background.l - 0.08).max(0.0),
+                background.a,
+            )
         }
     }
-    
+
     /// Create an appropriate active color based on background
     fn create_active_color(&self, background: Hsla) -> Hsla {
         use gpui::hsla;
-        
+
         // For ghost variant, create a more pronounced overlay
         if self.variant == "ghost" {
             return if self.is_dark_theme {
@@ -365,21 +426,31 @@ impl<'a> StyleContext<'a> {
                 hsla(0.0, 0.0, 0.0, 0.15)
             };
         }
-        
+
         // For transparent backgrounds, use surface active
         if background.a < 0.1 {
             return self.tokens.colors.surface_active;
         }
-        
+
         let luminance = ColorTheory::relative_luminance(background);
-        
+
         // More pronounced change for active state
         if luminance < 0.5 {
             // Dark background - lighten more
-            hsla(background.h, background.s, (background.l + 0.12).min(1.0), background.a)
+            hsla(
+                background.h,
+                background.s,
+                (background.l + 0.12).min(1.0),
+                background.a,
+            )
         } else {
             // Light background - darken more
-            hsla(background.h, background.s, (background.l - 0.12).max(0.0), background.a)
+            hsla(
+                background.h,
+                background.s,
+                (background.l - 0.12).max(0.0),
+                background.a,
+            )
         }
     }
 }

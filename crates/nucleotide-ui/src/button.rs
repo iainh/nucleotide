@@ -412,6 +412,15 @@ impl RenderOnce for Button {
             .when(computed_style.border_width.0 > 0.0, |el| {
                 el.border_1().border_color(computed_style.border_color)
             })
+            .when(computed_style.shadow.is_some(), |el| {
+                let shadow = computed_style.shadow.as_ref().unwrap();
+                el.shadow(vec![gpui::BoxShadow {
+                    color: shadow.color,
+                    offset: gpui::point(shadow.offset_x, shadow.offset_y),
+                    blur_radius: shadow.blur_radius,
+                    spread_radius: shadow.spread_radius,
+                }])
+            })
             .opacity(computed_style.opacity);
 
         // Apply interactive hover/active states if enabled and not disabled/loading
@@ -431,14 +440,38 @@ impl RenderOnce for Button {
 
             button = button
                 .hover(|this| {
-                    this.bg(hover_style.background)
+                    let mut hovered = this
+                        .bg(hover_style.background)
                         .text_color(hover_style.foreground)
-                        .border_color(hover_style.border_color)
+                        .border_color(hover_style.border_color);
+
+                    if let Some(shadow) = &hover_style.shadow {
+                        hovered = hovered.shadow(vec![gpui::BoxShadow {
+                            color: shadow.color,
+                            offset: gpui::point(shadow.offset_x, shadow.offset_y),
+                            blur_radius: shadow.blur_radius,
+                            spread_radius: shadow.spread_radius,
+                        }]);
+                    }
+
+                    hovered
                 })
                 .active(|this| {
-                    this.bg(active_style.background)
+                    let mut activated = this
+                        .bg(active_style.background)
                         .text_color(active_style.foreground)
-                        .border_color(active_style.border_color)
+                        .border_color(active_style.border_color);
+
+                    if let Some(shadow) = &active_style.shadow {
+                        activated = activated.shadow(vec![gpui::BoxShadow {
+                            color: shadow.color,
+                            offset: gpui::point(shadow.offset_x, shadow.offset_y),
+                            blur_radius: shadow.blur_radius,
+                            spread_radius: shadow.spread_radius,
+                        }]);
+                    }
+
+                    activated
                 });
         }
 
