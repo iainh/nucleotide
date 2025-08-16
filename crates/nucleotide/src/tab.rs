@@ -61,7 +61,19 @@ impl RenderOnce for Tab {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme_manager = cx.global::<crate::ThemeManager>();
         let helix_theme = theme_manager.helix_theme();
-        let ui_theme = cx.global::<nucleotide_ui::Theme>();
+
+        // Use provider hooks to get theme - fallback to global if provider not available
+        let ui_theme =
+            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
+                .map(|provider| provider.current_theme().clone())
+                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+
+        // Use provider hooks to get configuration for animations
+        let enable_animations = nucleotide_ui::providers::use_provider::<
+            nucleotide_ui::providers::ConfigurationProvider,
+        >()
+        .map(|config| config.ui_config.animation_config.enable_animations)
+        .unwrap_or(true); // Default to enabled if provider not available
 
         // Extract values we need before moving self
         let git_status = self.git_status.clone();
@@ -115,7 +127,9 @@ impl RenderOnce for Tab {
             .min_w(px(120.0)) // Minimum width to ensure readability
             // No max width - let it size to content
             .bg(bg_color)
-            .hover(|style| style.bg(hover_bg))
+            .when(enable_animations, |tab| {
+                tab.hover(|style| style.bg(hover_bg))
+            })
             .cursor(CursorStyle::PointingHand)
             .border_r_1()
             .border_color(ui_theme.tokens.colors.border_default)
@@ -185,6 +199,7 @@ impl RenderOnce for Tab {
                             Button::icon_only("tab-close", "icons/close.svg")
                                 .variant(ButtonVariant::Ghost)
                                 .size(ButtonSize::Small)
+                                .class("tab-close-button") // Add CSS class for styling
                                 .on_click({
                                     let on_close = self.on_close;
                                     move |event, window, cx| {
