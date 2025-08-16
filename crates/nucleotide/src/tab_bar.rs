@@ -7,7 +7,9 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window,
 };
 use helix_view::DocumentId;
-use nucleotide_ui::{compute_component_style, StyleSize, StyleState, StyleVariant, VcsStatus};
+use nucleotide_ui::{
+    compute_component_style, ColorTheory, StyleSize, StyleState, StyleVariant, VcsStatus,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -197,21 +199,47 @@ impl RenderOnce for TabBar {
                 .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
 
         // Compute style for the tab bar container (secondary variant for surface styling)
-        let container_style = compute_component_style(
+        let _container_style = compute_component_style(
             &ui_theme,
             StyleState::Default,
             StyleVariant::Secondary.as_str(),
             StyleSize::Medium.as_str(),
         );
 
-        // Get fallback background color from Helix theme for visual continuity
+        // Get theme colors for enhanced tabbar styling
         let theme_manager = cx.global::<crate::ThemeManager>();
         let helix_theme = theme_manager.helix_theme();
-        let statusline_style = helix_theme.get("ui.statusline");
-        let bg_color = statusline_style
+
+        // Get active tab background (should match editor background)
+        let editor_bg_style = helix_theme.get("ui.background");
+        let active_tab_bg = editor_bg_style
             .bg
             .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(container_style.background);
+            .unwrap_or(ui_theme.tokens.colors.background);
+
+        // Get statusline background for fallback
+        let statusline_style = helix_theme.get("ui.statusline");
+        let statusline_bg = statusline_style
+            .bg
+            .and_then(crate::utils::color_to_hsla)
+            .unwrap_or(ui_theme.tokens.colors.surface);
+
+        // Use statusline background as the base for tabbar, with slight adjustment
+        // This ensures consistency with inactive tabs and proper contrast
+        let tabbar_bg = if ui_theme.is_dark() {
+            // Dark theme: use statusline background or slightly lighter
+            statusline_bg
+        } else {
+            // Light theme: use statusline background or slightly darker for subtle contrast
+            if statusline_bg.l > 0.1 {
+                ColorTheory::darken(statusline_bg, 0.02)
+            } else {
+                statusline_bg
+            }
+        };
+
+        // Compute border colors using color theory
+        let border_color = ColorTheory::subtle_border_color(tabbar_bg, &ui_theme.tokens);
 
         // Keep documents in the order they were opened
         let mut documents = self.documents.clone();
@@ -249,7 +277,8 @@ impl RenderOnce for TabBar {
                 move |_event, window, cx| {
                     on_tab_close(doc_id, window, cx);
                 },
-            );
+            )
+            .with_computed_colors(active_tab_bg, statusline_bg, border_color);
 
             tabs.push(tab);
         }
@@ -272,18 +301,20 @@ impl RenderOnce for TabBar {
                     .items_center() // Vertically center tabs
                     .w_full()
                     .h(px(32.0)) // Match tab height
-                    .bg(bg_color)
-                    // Removed border_b_1() for seamless active tab integration
-                    .when(!has_overflow, |this| this.overflow_x_scroll()) // Only scroll when no overflow dropdown
+                    .bg(tabbar_bg)
                     .when(has_tabs, |this| {
                         this.child(
                             // Container for visible tabs
+                            div().flex().flex_row().items_center().children(tabs),
+                        )
+                        .child(
+                            // Unused tabbar area with bottom border for visual separation
                             div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
                                 .flex_1() // Take remaining space
-                                .children(tabs),
+                                .h_full()
+                                .bg(tabbar_bg)
+                                .border_b_1()
+                                .border_color(border_color),
                         )
                     })
                     .when(!has_tabs, |this| {
@@ -303,7 +334,10 @@ impl RenderOnce for TabBar {
                                 .text_size(placeholder_style.font_size)
                                 .child("No open files"),
                         )
-                    }),
+                        .border_b_1()
+                        .border_color(border_color)
+                    })
+                    .when(!has_overflow, |this| this.overflow_x_scroll()), // Only scroll when no overflow dropdown
             )
             .when(has_overflow, |this| {
                 // Add overflow button as a sibling, not child of tab-bar

@@ -2,12 +2,13 @@
 // ABOUTME: Displays buffer name, modified indicator, and handles click events
 
 use gpui::prelude::FluentBuilder;
+use gpui::Hsla;
 use gpui::{
     div, px, App, CursorStyle, InteractiveElement, IntoElement, MouseButton, MouseUpEvent,
     ParentElement, RenderOnce, SharedString, Styled, Window,
 };
 use helix_view::DocumentId;
-use nucleotide_ui::{Button, ButtonSize, ButtonVariant, VcsIndicator, VcsStatus};
+use nucleotide_ui::{Button, ButtonSize, ButtonVariant, ColorTheory, VcsIndicator, VcsStatus};
 
 /// Type alias for mouse event handlers in tabs
 type MouseEventHandler = Box<dyn Fn(&MouseUpEvent, &mut Window, &mut App) + 'static>;
@@ -31,6 +32,10 @@ pub struct Tab {
     pub on_click: MouseEventHandler,
     /// Callback when close button is clicked
     pub on_close: MouseEventHandler,
+    /// Computed colors for consistent theming
+    pub active_tab_bg: Option<Hsla>,
+    pub inactive_tab_bg: Option<Hsla>,
+    pub border_color: Option<Hsla>,
 }
 
 impl Tab {
@@ -53,7 +58,23 @@ impl Tab {
             is_active,
             on_click: Box::new(on_click),
             on_close: Box::new(on_close),
+            active_tab_bg: None,
+            inactive_tab_bg: None,
+            border_color: None,
         }
+    }
+
+    /// Set computed colors for consistent theming
+    pub fn with_computed_colors(
+        mut self,
+        active_bg: Hsla,
+        inactive_bg: Hsla,
+        border: Hsla,
+    ) -> Self {
+        self.active_tab_bg = Some(active_bg);
+        self.inactive_tab_bg = Some(inactive_bg);
+        self.border_color = Some(border);
+        self
     }
 }
 
@@ -78,40 +99,56 @@ impl RenderOnce for Tab {
         // Extract values we need before moving self
         let git_status = self.git_status.clone();
 
-        // Get theme colors for visual continuity with editor
-        let (bg_color, text_color, hover_bg) = if self.is_active {
-            // Active tab should match editor background for visual continuity
-            let editor_bg_style = helix_theme.get("ui.background");
+        // Use computed colors if provided, otherwise fall back to theme colors
+        let (bg_color, text_color, hover_bg, border_color) = if self.is_active {
+            let bg_color = self.active_tab_bg.unwrap_or_else(|| {
+                let editor_bg_style = helix_theme.get("ui.background");
+                editor_bg_style
+                    .bg
+                    .and_then(crate::utils::color_to_hsla)
+                    .unwrap_or(ui_theme.tokens.colors.background)
+            });
+
             let editor_text_style = helix_theme.get("ui.text");
-
-            let bg_color = editor_bg_style
-                .bg
-                .and_then(crate::utils::color_to_hsla)
-                .unwrap_or(ui_theme.tokens.colors.background);
-
             let text_color = editor_text_style
                 .fg
                 .and_then(crate::utils::color_to_hsla)
                 .unwrap_or(ui_theme.tokens.colors.text_primary);
 
-            (bg_color, text_color, bg_color)
+            let border_color = self
+                .border_color
+                .unwrap_or(ui_theme.tokens.colors.border_default);
+
+            (bg_color, text_color, bg_color, border_color)
         } else {
-            // Inactive tabs use statusline styling for background but same text color as active
-            let statusline_style = helix_theme.get("ui.statusline");
+            let bg_color = self.inactive_tab_bg.unwrap_or_else(|| {
+                let statusline_style = helix_theme.get("ui.statusline");
+                statusline_style
+                    .bg
+                    .and_then(crate::utils::color_to_hsla)
+                    .unwrap_or(ui_theme.tokens.colors.surface)
+            });
+
             let editor_text_style = helix_theme.get("ui.text");
-
-            let bg_color = statusline_style
-                .bg
-                .and_then(crate::utils::color_to_hsla)
-                .unwrap_or(ui_theme.tokens.colors.surface);
-
-            // Use same text color as active tabs for consistency
             let text_color = editor_text_style
                 .fg
                 .and_then(crate::utils::color_to_hsla)
                 .unwrap_or(ui_theme.tokens.colors.text_primary);
 
-            (bg_color, text_color, ui_theme.tokens.colors.surface_hover)
+            let border_color = self
+                .border_color
+                .unwrap_or(ui_theme.tokens.colors.border_default);
+
+            // Compute hover color relative to the tab's background
+            let hover_bg = if ui_theme.is_dark() {
+                // Dark theme: lighten the inactive tab background
+                ColorTheory::lighten(bg_color, 0.1)
+            } else {
+                // Light theme: darken the inactive tab background
+                ColorTheory::darken(bg_color, 0.1)
+            };
+
+            (bg_color, text_color, hover_bg, border_color)
         };
 
         // Build the tab
@@ -132,15 +169,15 @@ impl RenderOnce for Tab {
             })
             .cursor(CursorStyle::PointingHand)
             .border_r_1()
-            .border_color(ui_theme.tokens.colors.border_default)
+            .border_color(border_color)
             .when(self.is_active, |this| {
-                // Active tabs: no borders to create complete visual continuity with editor
+                // Active tabs: no bottom border for seamless integration with editor
+                // but keep right border for tab separation
                 this
             })
             .when(!self.is_active, |this| {
-                // Inactive tabs get bottom border to separate from editor
-                this.border_b_1()
-                    .border_color(ui_theme.tokens.colors.border_default)
+                // Inactive tabs get bottom border to separate from editor/active content
+                this.border_b_1().border_color(border_color)
             })
             .on_mouse_up(MouseButton::Left, {
                 let on_click = self.on_click;
