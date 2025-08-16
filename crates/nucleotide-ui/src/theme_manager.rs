@@ -47,6 +47,163 @@ impl ThemeManager {
         &self.helix_theme
     }
 
+    /// Get a theme style with fallback testing support
+    /// Use this instead of helix_theme().get() for testing-aware color lookups
+    pub fn theme_style(&self, key: &str) -> helix_view::graphics::Style {
+        let test_fallback = std::env::var("NUCLEOTIDE_DISABLE_THEME_LOADING")
+            .map(|val| val == "1" || val.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        if test_fallback {
+            nucleotide_logging::debug!(
+                key = key,
+                "TESTING: Returning computed UI color for theme key"
+            );
+            // Return computed colors from our UI theme instead of Helix theme
+            self.compute_style_for_key(key)
+        } else {
+            self.helix_theme.get(key)
+        }
+    }
+
+    /// Get computed style for a given theme key using our UI theme colors
+    fn compute_style_for_key(&self, key: &str) -> helix_view::graphics::Style {
+        use helix_view::graphics::{Color, Style};
+
+        // Convert our UI theme colors to Helix Color format
+        let to_helix_color = |hsla: gpui::Hsla| -> Option<Color> {
+            // Convert HSLA to RGB
+            let (r, g, b) = hsla_to_rgb(hsla.h, hsla.s, hsla.l);
+            Some(Color::Rgb(
+                (r * 255.0) as u8,
+                (g * 255.0) as u8,
+                (b * 255.0) as u8,
+            ))
+        };
+
+        let ui_theme = &self.ui_theme;
+
+        match key {
+            "ui.background" => Style {
+                bg: to_helix_color(ui_theme.background),
+                ..Default::default()
+            },
+            "ui.text" => Style {
+                fg: to_helix_color(ui_theme.text),
+                ..Default::default()
+            },
+            "ui.cursor" | "ui.cursor.primary" => Style {
+                bg: to_helix_color(ui_theme.accent),
+                fg: to_helix_color(ui_theme.background),
+                ..Default::default()
+            },
+            "ui.selection" => Style {
+                bg: to_helix_color(ui_theme.accent),
+                ..Default::default()
+            },
+            "ui.statusline" => Style {
+                bg: to_helix_color(ui_theme.surface),
+                fg: to_helix_color(ui_theme.text),
+                ..Default::default()
+            },
+            "ui.window" => Style {
+                fg: to_helix_color(ui_theme.border),
+                ..Default::default()
+            },
+            "ui.menu" => Style {
+                bg: to_helix_color(ui_theme.surface),
+                fg: to_helix_color(ui_theme.text),
+                ..Default::default()
+            },
+            "ui.popup" => Style {
+                bg: to_helix_color(ui_theme.surface),
+                fg: to_helix_color(ui_theme.border), // fg is used for borders in popups
+                ..Default::default()
+            },
+            "ui.menu.selected" => Style {
+                bg: to_helix_color(ui_theme.accent),
+                fg: to_helix_color(ui_theme.text),
+                ..Default::default()
+            },
+            "ui.background.separator" => Style {
+                bg: to_helix_color(ui_theme.surface_background),
+                ..Default::default()
+            },
+            "ui.cursor.primary.insert" => Style {
+                bg: to_helix_color(ui_theme.accent),
+                fg: to_helix_color(ui_theme.background),
+                ..Default::default()
+            },
+            "ui.cursor.primary.select" => Style {
+                bg: to_helix_color(ui_theme.accent),
+                fg: to_helix_color(ui_theme.background),
+                ..Default::default()
+            },
+            "ui.cursor.primary.normal" => Style {
+                bg: to_helix_color(ui_theme.accent),
+                fg: to_helix_color(ui_theme.background),
+                ..Default::default()
+            },
+            "ui.cursorline.primary" => Style {
+                bg: to_helix_color(ui_theme.surface_hover),
+                ..Default::default()
+            },
+            "ui.virtual.ruler" => Style {
+                bg: to_helix_color(ui_theme.border),
+                ..Default::default()
+            },
+            "ui.virtual.wrap" => Style {
+                fg: to_helix_color(ui_theme.text_muted),
+                ..Default::default()
+            },
+            "ui.gutter" => Style {
+                fg: to_helix_color(ui_theme.text_muted),
+                bg: to_helix_color(ui_theme.background),
+                ..Default::default()
+            },
+            "ui.gutter.selected" => Style {
+                fg: to_helix_color(ui_theme.text),
+                bg: to_helix_color(ui_theme.surface_hover),
+                ..Default::default()
+            },
+            "ui.gutter.virtual" => Style {
+                fg: to_helix_color(ui_theme.text_disabled),
+                bg: to_helix_color(ui_theme.background),
+                ..Default::default()
+            },
+            "ui.gutter.selected.virtual" => Style {
+                fg: to_helix_color(ui_theme.text_muted),
+                bg: to_helix_color(ui_theme.surface_hover),
+                ..Default::default()
+            },
+            "ui.statusline.inactive" => Style {
+                bg: to_helix_color(ui_theme.surface_background),
+                fg: to_helix_color(ui_theme.text_muted),
+                ..Default::default()
+            },
+            "error" => Style {
+                fg: to_helix_color(ui_theme.error),
+                ..Default::default()
+            },
+            "warning" => Style {
+                fg: to_helix_color(ui_theme.warning),
+                ..Default::default()
+            },
+            "info" => Style {
+                fg: to_helix_color(ui_theme.success),
+                ..Default::default()
+            },
+            _ => {
+                nucleotide_logging::debug!(key = key, "Using fallback style for unknown theme key");
+                Style {
+                    fg: to_helix_color(ui_theme.text),
+                    bg: to_helix_color(ui_theme.background),
+                    ..Default::default()
+                }
+            }
+        }
+    }
+
     /// Get the UI theme
     pub fn ui_theme(&self) -> &UITheme {
         &self.ui_theme
@@ -72,62 +229,132 @@ impl ThemeManager {
 
     /// Derive a UI theme from a Helix theme
     fn derive_ui_theme(helix_theme: &HelixTheme) -> UITheme {
+        // Check if theme fallback testing is enabled
+        let test_fallback = std::env::var("NUCLEOTIDE_DISABLE_THEME_LOADING")
+            .map(|val| val == "1" || val.to_lowercase() == "true")
+            .unwrap_or(false);
+
         // Extract colors from Helix theme with fallbacks
-        let ui_bg = helix_theme.get("ui.background");
-        let ui_text = helix_theme.get("ui.text");
-        let ui_selection = helix_theme.get("ui.selection");
-        let ui_cursor = helix_theme.get("ui.cursor.primary");
-        let ui_window = helix_theme.get("ui.window");
-        let ui_menu = helix_theme.get("ui.menu");
-        let error_style = helix_theme.get("error");
-        let warning_style = helix_theme.get("warning");
-        let info_style = helix_theme.get("info");
+        // If testing fallback colors, ignore the theme completely
+        let (
+            ui_bg,
+            ui_text,
+            ui_selection,
+            ui_cursor,
+            ui_window,
+            ui_menu,
+            error_style,
+            warning_style,
+            info_style,
+        ) = if test_fallback {
+            nucleotide_logging::warn!(
+                "TESTING MODE: Ignoring all theme colors to force fallback computation"
+            );
+            // Return empty styles to force all fallbacks
+            use helix_view::graphics::Style;
+            let empty_style = Style::default();
+            (
+                empty_style,
+                empty_style,
+                empty_style,
+                empty_style,
+                empty_style,
+                empty_style,
+                empty_style,
+                empty_style,
+                empty_style,
+            )
+        } else {
+            let ui_bg = helix_theme.get("ui.background");
+            let ui_text = helix_theme.get("ui.text");
+            let ui_selection = helix_theme.get("ui.selection");
+            let ui_cursor = helix_theme.get("ui.cursor.primary");
+            let ui_window = helix_theme.get("ui.window");
+            let ui_menu = helix_theme.get("ui.menu");
+            let error_style = helix_theme.get("error");
+            let warning_style = helix_theme.get("warning");
+            let info_style = helix_theme.get("info");
+
+            (
+                ui_bg,
+                ui_text,
+                ui_selection,
+                ui_cursor,
+                ui_window,
+                ui_menu,
+                error_style,
+                warning_style,
+                info_style,
+            )
+        };
+
+        if test_fallback {
+            nucleotide_logging::info!(
+                ui_background_available = ui_bg.bg.is_some(),
+                ui_text_available = ui_text.fg.is_some(),
+                ui_selection_available = ui_selection.bg.is_some(),
+                ui_cursor_available = ui_cursor.bg.is_some(),
+                ui_window_available = ui_window.fg.is_some(),
+                ui_menu_available = ui_menu.bg.is_some(),
+                error_available = error_style.fg.is_some(),
+                warning_available = warning_style.fg.is_some(),
+                info_available = info_style.fg.is_some(),
+                "Theme color availability analysis (should all be false in test mode)"
+            );
+        }
 
         // Convert to GPUI colors with sensible defaults
-        let background = ui_bg
-            .bg
-            .and_then(color_to_hsla)
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.05, 1.0));
+        let background_from_theme = ui_bg.bg.and_then(color_to_hsla);
+        let background = background_from_theme.unwrap_or_else(|| hsla(0.0, 0.0, 0.05, 1.0));
 
-        let surface = ui_menu
+        let surface_from_theme = ui_menu
             .bg
             .and_then(color_to_hsla)
             .or_else(|| ui_bg.bg.and_then(color_to_hsla))
-            .map(|c| hsla(c.h, c.s, c.l + 0.05, c.a))
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.1, 1.0));
+            .map(|c| hsla(c.h, c.s, c.l + 0.05, c.a));
+        let surface = surface_from_theme.unwrap_or_else(|| hsla(0.0, 0.0, 0.1, 1.0));
 
-        let text = ui_text
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.9, 1.0));
+        let text_from_theme = ui_text.fg.and_then(color_to_hsla);
+        let text = text_from_theme.unwrap_or_else(|| hsla(0.0, 0.0, 0.9, 1.0));
 
-        let border = ui_window
+        let border_from_theme = ui_window
             .fg
             .and_then(color_to_hsla)
             .or_else(|| ui_text.fg.and_then(color_to_hsla))
-            .map(|c| hsla(c.h, c.s * 0.5, c.l * 0.5, c.a * 0.8))
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.2, 1.0));
+            .map(|c| hsla(c.h, c.s * 0.5, c.l * 0.5, c.a * 0.8));
+        let border = border_from_theme.unwrap_or_else(|| hsla(0.0, 0.0, 0.2, 1.0));
 
-        let accent = ui_selection
+        let accent_from_theme = ui_selection
             .bg
             .and_then(color_to_hsla)
-            .or_else(|| ui_cursor.bg.and_then(color_to_hsla))
-            .unwrap_or_else(|| hsla(220.0 / 360.0, 0.6, 0.5, 1.0));
+            .or_else(|| ui_cursor.bg.and_then(color_to_hsla));
+        let accent = accent_from_theme.unwrap_or_else(|| hsla(220.0 / 360.0, 0.6, 0.5, 1.0));
 
-        let error = error_style
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or_else(|| hsla(0.0, 0.8, 0.5, 1.0));
+        let error_from_theme = error_style.fg.and_then(color_to_hsla);
+        let error = error_from_theme.unwrap_or_else(|| hsla(0.0, 0.8, 0.5, 1.0));
 
-        let warning = warning_style
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or_else(|| hsla(40.0 / 360.0, 0.8, 0.5, 1.0));
+        let warning_from_theme = warning_style.fg.and_then(color_to_hsla);
+        let warning = warning_from_theme.unwrap_or_else(|| hsla(40.0 / 360.0, 0.8, 0.5, 1.0));
 
-        let success = info_style
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or_else(|| hsla(120.0 / 360.0, 0.6, 0.5, 1.0));
+        let success_from_theme = info_style.fg.and_then(color_to_hsla);
+        let success = success_from_theme.unwrap_or_else(|| hsla(120.0 / 360.0, 0.6, 0.5, 1.0));
+
+        if test_fallback {
+            nucleotide_logging::info!(
+                background_from_theme = background_from_theme.is_some(),
+                surface_from_theme = surface_from_theme.is_some(),
+                text_from_theme = text_from_theme.is_some(),
+                border_from_theme = border_from_theme.is_some(),
+                accent_from_theme = accent_from_theme.is_some(),
+                error_from_theme = error_from_theme.is_some(),
+                warning_from_theme = warning_from_theme.is_some(),
+                success_from_theme = success_from_theme.is_some(),
+                background_color = ?background,
+                text_color = ?text,
+                accent_color = ?accent,
+                "Computed theme colors - showing which are fallback vs from theme"
+            );
+        }
 
         let tokens = if background.l < 0.5 {
             crate::DesignTokens::dark()
@@ -164,6 +391,8 @@ pub trait ThemedContext {
     fn theme_manager(&self) -> &ThemeManager;
     fn helix_theme(&self) -> &HelixTheme;
     fn ui_theme(&self) -> &UITheme;
+    /// Get a theme style with testing-aware fallback support
+    fn theme_style(&self, key: &str) -> helix_view::graphics::Style;
 }
 
 impl ThemedContext for gpui::App {
@@ -177,6 +406,10 @@ impl ThemedContext for gpui::App {
 
     fn ui_theme(&self) -> &UITheme {
         &self.global::<ThemeManager>().ui_theme
+    }
+
+    fn theme_style(&self, key: &str) -> helix_view::graphics::Style {
+        self.global::<ThemeManager>().theme_style(key)
     }
 }
 
@@ -192,4 +425,31 @@ impl<V: 'static> ThemedContext for gpui::Context<'_, V> {
     fn ui_theme(&self) -> &UITheme {
         &self.global::<ThemeManager>().ui_theme
     }
+
+    fn theme_style(&self, key: &str) -> helix_view::graphics::Style {
+        self.global::<ThemeManager>().theme_style(key)
+    }
+}
+
+/// Convert HSLA to RGB
+fn hsla_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+
+    let (r_prime, g_prime, b_prime) = if h < 1.0 / 6.0 {
+        (c, x, 0.0)
+    } else if h < 2.0 / 6.0 {
+        (x, c, 0.0)
+    } else if h < 3.0 / 6.0 {
+        (0.0, c, x)
+    } else if h < 4.0 / 6.0 {
+        (0.0, x, c)
+    } else if h < 5.0 / 6.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+
+    (r_prime + m, g_prime + m, b_prime + m)
 }

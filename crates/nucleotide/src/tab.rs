@@ -8,6 +8,7 @@ use gpui::{
     ParentElement, RenderOnce, SharedString, Styled, Window,
 };
 use helix_view::DocumentId;
+use nucleotide_ui::theme_manager::ThemedContext;
 use nucleotide_ui::{Button, ButtonSize, ButtonVariant, ColorTheory, VcsIndicator, VcsStatus};
 
 /// Type alias for mouse event handlers in tabs
@@ -80,9 +81,6 @@ impl Tab {
 
 impl RenderOnce for Tab {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme_manager = cx.global::<crate::ThemeManager>();
-        let helix_theme = theme_manager.helix_theme();
-
         // Use provider hooks to get theme - fallback to global if provider not available
         let ui_theme =
             nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
@@ -102,14 +100,14 @@ impl RenderOnce for Tab {
         // Use computed colors if provided, otherwise fall back to theme colors
         let (bg_color, text_color, hover_bg, border_color) = if self.is_active {
             let bg_color = self.active_tab_bg.unwrap_or_else(|| {
-                let editor_bg_style = helix_theme.get("ui.background");
+                let editor_bg_style = cx.theme_style("ui.background");
                 editor_bg_style
                     .bg
                     .and_then(crate::utils::color_to_hsla)
                     .unwrap_or(ui_theme.tokens.colors.background)
             });
 
-            let editor_text_style = helix_theme.get("ui.text");
+            let editor_text_style = cx.theme_style("ui.text");
             let text_color = editor_text_style
                 .fg
                 .and_then(crate::utils::color_to_hsla)
@@ -122,14 +120,14 @@ impl RenderOnce for Tab {
             (bg_color, text_color, bg_color, border_color)
         } else {
             let bg_color = self.inactive_tab_bg.unwrap_or_else(|| {
-                let statusline_style = helix_theme.get("ui.statusline");
+                let statusline_style = cx.theme_style("ui.statusline");
                 statusline_style
                     .bg
                     .and_then(crate::utils::color_to_hsla)
                     .unwrap_or(ui_theme.tokens.colors.surface)
             });
 
-            let editor_text_style = helix_theme.get("ui.text");
+            let editor_text_style = cx.theme_style("ui.text");
             let text_color = editor_text_style
                 .fg
                 .and_then(crate::utils::color_to_hsla)

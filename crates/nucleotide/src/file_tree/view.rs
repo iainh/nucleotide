@@ -13,6 +13,7 @@ use gpui::{
     UniformListScrollHandle, Window,
 };
 use nucleotide_logging::{debug, error, warn};
+use nucleotide_ui::theme_manager::ThemedContext;
 use nucleotide_ui::theme_utils::color_to_hsla;
 use nucleotide_ui::{
     scrollbar::{Scrollbar, ScrollbarState},
@@ -1238,12 +1239,11 @@ impl Render for FileTreeView {
 
         // Get prompt background color for consistency
         let prompt_bg = {
-            let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
-            let popup_style = helix_theme.get("ui.popup");
+            let popup_style = cx.theme_style("ui.popup");
             popup_style
                 .bg
                 .and_then(color_to_hsla)
-                .or_else(|| helix_theme.get("ui.background").bg.and_then(color_to_hsla))
+                .or_else(|| cx.theme_style("ui.background").bg.and_then(color_to_hsla))
                 .unwrap_or(theme.tokens.colors.background)
         };
 

@@ -1076,18 +1076,29 @@ pub fn init_editor(
         }
     };
 
-    let theme = theme_name
-        .and_then(|theme_name| {
-            theme_loader
-                .load(&theme_name)
-                .map_err(|e| {
-                    warn!(theme_name = %theme_name, error = %e, "Failed to load theme");
-                    e
-                })
-                .ok()
-                .filter(|theme| (true_color || theme.is_16_color()))
-        })
-        .unwrap_or_else(|| theme_loader.default_theme(true_color));
+    // Check if theme loading should be disabled for testing fallback colors
+    let disable_theme_loading = std::env::var("NUCLEOTIDE_DISABLE_THEME_LOADING")
+        .map(|val| val == "1" || val.to_lowercase() == "true")
+        .unwrap_or(false);
+
+    let theme = if disable_theme_loading {
+        warn!("Theme loading disabled via NUCLEOTIDE_DISABLE_THEME_LOADING - using default theme but derive_ui_theme will ignore it");
+        // Use any theme here - the derive_ui_theme function will ignore it when testing mode is enabled
+        helix_view::Theme::default()
+    } else {
+        theme_name
+            .and_then(|theme_name| {
+                theme_loader
+                    .load(&theme_name)
+                    .map_err(|e| {
+                        warn!(theme_name = %theme_name, error = %e, "Failed to load theme");
+                        e
+                    })
+                    .ok()
+                    .filter(|theme| (true_color || theme.is_16_color()))
+            })
+            .unwrap_or_else(|| theme_loader.default_theme(true_color))
+    };
 
     let syn_loader = Arc::new(ArcSwap::from_pointee(lang_loader));
 

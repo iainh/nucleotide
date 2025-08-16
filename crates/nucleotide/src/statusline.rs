@@ -5,6 +5,7 @@ use gpui::{
     Window,
 };
 use helix_view::{DocumentId, ViewId};
+use nucleotide_ui::theme_manager::ThemedContext;
 use nucleotide_ui::{compute_component_style, StyleSize, StyleState, StyleVariant};
 
 /// StatusLineView is a proper GPUI View that can observe model changes
@@ -72,11 +73,10 @@ impl StatusLineView {
         );
 
         // If computed style doesn't provide good colors, fall back to Helix theme
-        let theme = cx.global::<crate::ThemeManager>().helix_theme();
         let base_style = if self.focused {
-            theme.get("ui.statusline")
+            cx.theme_style("ui.statusline")
         } else {
-            theme.get("ui.statusline.inactive")
+            cx.theme_style("ui.statusline.inactive")
         };
 
         let background = base_style

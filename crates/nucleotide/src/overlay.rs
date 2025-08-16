@@ -8,6 +8,7 @@ use nucleotide_ui::picker::Picker;
 use nucleotide_ui::picker_view::{PickerItem, PickerView};
 use nucleotide_ui::prompt::{Prompt, PromptElement};
 use nucleotide_ui::prompt_view::PromptView;
+use nucleotide_ui::theme_manager::ThemedContext;
 
 pub struct OverlayView {
     prompt: Option<Prompt>,
@@ -75,19 +76,14 @@ impl OverlayView {
                         let on_submit = on_submit.clone();
                         let on_cancel = on_cancel.clone();
 
-                        // Get theme from ThemeManager
-                        let helix_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-
                         let prompt_view = cx.new(|cx| {
                             let is_search_prompt = prompt_text.starts_with("search")
                                 || prompt_text.starts_with("rsearch");
 
                             let mut view = PromptView::new(prompt_text.clone(), cx);
 
-                            // Apply theme styling
-                            let style = nucleotide_ui::prompt_view::PromptStyle::from_helix_theme(
-                                &helix_theme,
-                            );
+                            // Apply theme styling using testing-aware theme access
+                            let style = Self::create_prompt_style_from_context(cx);
                             view = view.with_style(style);
 
                             if !initial_input.is_empty() {
@@ -231,12 +227,9 @@ impl OverlayView {
                         let core_weak = self.core.clone();
                         let _items_count = items.len();
 
-                        // Get theme from ThemeManager
-                        let helix_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-
                         let picker_view = cx.new(|cx| {
-                            // Use theme-aware constructor
-                            let mut view = PickerView::new_with_theme(&helix_theme, cx);
+                            // Use testing-aware theme constructor
+                            let mut view = Self::create_picker_view_with_context(cx);
                             let items_for_callback = items.clone();
 
                             // Enable preview by default, especially for buffer picker
@@ -390,6 +383,78 @@ impl OverlayView {
             }
             _ => {}
         }
+    }
+
+    /// Create PromptStyle using testing-aware theme access
+    fn create_prompt_style_from_context(cx: &App) -> nucleotide_ui::prompt_view::PromptStyle {
+        use gpui::hsla;
+        use nucleotide_ui::theme_utils::color_to_hsla;
+
+        // Get modal style using testing-aware theme access
+        let modal_style = Self::create_modal_style_from_context(cx);
+
+        // Get ui.menu style
+        let ui_menu = cx.theme_style("ui.menu");
+
+        nucleotide_ui::prompt_view::PromptStyle {
+            modal_style,
+            completion_background: ui_menu
+                .bg
+                .and_then(color_to_hsla)
+                .unwrap_or(hsla(0.0, 0.0, 0.15, 1.0)),
+        }
+    }
+
+    /// Create ModalStyle using testing-aware theme access
+    fn create_modal_style_from_context(cx: &App) -> nucleotide_ui::common::ModalStyle {
+        use nucleotide_ui::theme_utils::color_to_hsla;
+
+        // Get theme styles through the centralized testing-aware system
+        // The ThemeManager handles all fallback logic internally
+        let ui_popup = cx.theme_style("ui.popup");
+        let ui_text = cx.theme_style("ui.text");
+        let ui_menu_selected = cx.theme_style("ui.menu.selected");
+
+        // Extract colors - these will be properly computed by ThemeManager in testing mode
+        let background = ui_popup.bg.and_then(color_to_hsla).unwrap();
+        let text = ui_text.fg.and_then(color_to_hsla).unwrap();
+        let selected_background = ui_menu_selected.bg.and_then(color_to_hsla).unwrap();
+        let selected_text = ui_menu_selected.fg.and_then(color_to_hsla).unwrap();
+        let border = ui_popup.fg.and_then(color_to_hsla).unwrap();
+        let prompt_text = text;
+
+        nucleotide_ui::common::ModalStyle {
+            background,
+            text,
+            border,
+            selected_background,
+            selected_text,
+            prompt_text,
+        }
+    }
+
+    /// Create PickerView using testing-aware theme access
+    fn create_picker_view_with_context(cx: &mut gpui::Context<PickerView>) -> PickerView {
+        use nucleotide_ui::theme_utils::color_to_hsla;
+
+        // Get modal style using testing-aware theme access
+        let modal_style = Self::create_modal_style_from_context(cx);
+
+        // Get theme styles through the centralized testing-aware system
+        let ui_background_separator = cx.theme_style("ui.background.separator");
+        let ui_cursor = cx.theme_style("ui.cursor");
+
+        // Extract colors - these will be properly computed by ThemeManager in testing mode
+        let preview_background = ui_background_separator.bg.and_then(color_to_hsla).unwrap();
+        let cursor = ui_cursor.bg.and_then(color_to_hsla).unwrap();
+
+        let picker_style = nucleotide_ui::picker_view::PickerStyle {
+            modal_style,
+            preview_background,
+            cursor,
+        };
+
+        PickerView::new(cx).with_style(picker_style)
     }
 }
 

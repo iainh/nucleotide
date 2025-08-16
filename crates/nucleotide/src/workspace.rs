@@ -13,6 +13,7 @@ use helix_core::Selection;
 use helix_view::ViewId;
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
+use nucleotide_ui::theme_manager::ThemedContext;
 use nucleotide_ui::{
     compute_component_style, Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant,
 };
@@ -1683,16 +1684,15 @@ impl Workspace {
     /// Render unified status bar with file tree toggle and status information
     fn render_unified_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
-        let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
 
         // Use statusline theme colors
-        let statusline_style = helix_theme.get("ui.statusline");
+        let statusline_style = cx.theme_style("ui.statusline");
         let bg_color = statusline_style
             .bg
             .and_then(crate::utils::color_to_hsla)
             .unwrap_or_else(|| {
-                let base = helix_theme
-                    .get("ui.background")
+                let base = cx
+                    .theme_style("ui.background")
                     .bg
                     .and_then(crate::utils::color_to_hsla)
                     .unwrap_or(ui_theme.tokens.colors.background);
@@ -2301,10 +2301,9 @@ impl Render for Workspace {
 
         let editor = &self.core.read(cx).editor;
 
-        // Get theme from ThemeManager instead of editor directly
-        let theme = cx.global::<crate::ThemeManager>().helix_theme();
-        let default_style = theme.get("ui.background");
-        let default_ui_text = theme.get("ui.text");
+        // Get theme colors using testing-aware theme access
+        let default_style = cx.theme_style("ui.background");
+        let default_ui_text = cx.theme_style("ui.text");
         let bg_color = default_style
             .bg
             .and_then(utils::color_to_hsla)
@@ -2313,7 +2312,7 @@ impl Render for Workspace {
             .fg
             .and_then(utils::color_to_hsla)
             .unwrap_or(white());
-        let window_style = theme.get("ui.window");
+        let window_style = cx.theme_style("ui.window");
         let border_color = window_style
             .fg
             .and_then(utils::color_to_hsla)
@@ -2718,14 +2717,12 @@ impl Render for Workspace {
 
                 // Get the same background color as the file tree
                 let prompt_bg = {
-                    let helix_theme = cx.global::<crate::ThemeManager>().helix_theme();
-                    let popup_style = helix_theme.get("ui.popup");
+                    let popup_style = cx.theme_style("ui.popup");
                     popup_style
                         .bg
                         .and_then(crate::utils::color_to_hsla)
                         .or_else(|| {
-                            helix_theme
-                                .get("ui.background")
+                            cx.theme_style("ui.background")
                                 .bg
                                 .and_then(crate::utils::color_to_hsla)
                         })

@@ -25,6 +25,7 @@ use helix_view::{
     graphics::CursorKind, view::ViewPosition, Document, DocumentId, Editor, Theme, View, ViewId,
 };
 use nucleotide_logging::{debug, error};
+use nucleotide_ui::theme_manager::ThemedContext;
 
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
@@ -235,7 +236,7 @@ struct ShapedLineParams<'a> {
 struct HighlightLineParams<'a> {
     doc: &'a Document,
     view: &'a View,
-    theme: &'a Theme,
+    cx: &'a App,
     editor_mode: helix_view::document::Mode,
     cursor_shape: &'a helix_view::editor::CursorShapeConfig,
     syn_loader: &'a std::sync::Arc<arc_swap::ArcSwap<helix_core::syntax::Loader>>,
@@ -1097,11 +1098,10 @@ impl DocumentElement {
         };
         let view = editor.tree.try_get(self.view_id)?;
 
-        let theme = params.cx.global::<crate::ThemeManager>().helix_theme();
         let line_runs = Self::highlight_line_with_params(HighlightLineParams {
             doc: document,
             view,
-            theme,
+            cx: params.cx,
             editor_mode: editor.mode(),
             cursor_shape: &editor.config().cursor_shape,
             syn_loader: &editor.syn_loader,
@@ -1321,26 +1321,29 @@ impl DocumentElement {
         let mut runs = vec![];
         let loader = params.syn_loader.load();
 
+        // Get the theme from context
+        let theme = params.cx.helix_theme();
+
         // Get syntax highlighter for the entire document view
         let text = params.doc.text().slice(..);
         let anchor = params.doc.view_offset(params.view.id).anchor;
         let lines_from_anchor = text.len_lines() - text.char_to_line(anchor);
         let height = u16::try_from(lines_from_anchor).unwrap_or(u16::MAX);
         let syntax_highlighter =
-            Self::doc_syntax_highlights(params.doc, anchor, height, params.theme, &loader);
+            Self::doc_syntax_highlights(params.doc, anchor, height, theme, &loader);
 
         // Get overlay highlights
         let overlay_highlights = Self::overlay_highlights(
             params.editor_mode,
             params.doc,
             params.view,
-            params.theme,
+            theme,
             params.cursor_shape,
             true,
             params.is_view_focused,
         );
 
-        let default_style = params.theme.get("ui.text");
+        let default_style = params.cx.theme_style("ui.text");
         let text_style = helix_view::graphics::Style {
             fg: default_style.fg,
             bg: default_style.bg,
@@ -1348,9 +1351,8 @@ impl DocumentElement {
         };
 
         // Create syntax and overlay highlighters
-        let mut syntax_hl =
-            SyntaxHighlighter::new(syntax_highlighter, text, params.theme, text_style);
-        let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, params.theme);
+        let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
+        let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, theme);
 
         // Get the line text slice to convert character positions to byte lengths
         let line_slice = text.slice(params.line_start..params.line_end);
@@ -1391,8 +1393,8 @@ impl DocumentElement {
             let underline = style.underline_color.and_then(color_to_hsla);
             // Get default background color from theme for reversed modifier
             let default_bg = params
-                .theme
-                .get("ui.background")
+                .cx
+                .theme_style("ui.background")
                 .bg
                 .and_then(color_to_hsla)
                 .unwrap_or(black());
@@ -1620,7 +1622,7 @@ impl Element for DocumentElement {
                             let text_area_width = text_bounds.size.width.0 - gutter_width_px - right_padding;
                             let viewport_width = (text_area_width / cell_width.0).max(10.0) as u16;
 
-                            let text_format = document.text_format(viewport_width, Some(theme));
+                            let text_format = document.text_format(viewport_width, Some(&theme));
                             text_format.soft_wrap
                         } else {
                             false
@@ -1656,7 +1658,7 @@ impl Element for DocumentElement {
                                 let viewport_width = (text_area_width / cell_width.0).max(10.0) as u16;
 
                                 // Get text format and view offset
-                                let text_format = document.text_format(viewport_width, Some(theme));
+                                let text_format = document.text_format(viewport_width, Some(&theme));
                                 let view_offset = document.view_offset(view_id);
 
                                 // Get line height from scroll manager or use default
@@ -2166,29 +2168,28 @@ impl Element for DocumentElement {
                 debug!("Cursorline check - config value: {}, focused: {}, enabled: {}",
                     config_cursorline, is_focused, cursorline_enabled);
 
-                let theme = cx.global::<crate::ThemeManager>().helix_theme();
                 // Get cursorline style
                 let cursorline_style = if cursorline_enabled {
-                    let style = theme.get("ui.cursorline.primary");
+                    let style = cx.theme_style("ui.cursorline.primary");
                     debug!("Cursorline style found: bg={:?}, fg={:?}", style.bg, style.fg);
                     style.bg.and_then(color_to_hsla)
                 } else {
                     None
                 };
-                let default_style = theme.get("ui.background");
+                let default_style = cx.theme_style("ui.background");
                 let bg_color = default_style.bg
                     .and_then(color_to_hsla)
                     .unwrap_or(black());
                 // Get mode-specific cursor theme like terminal version
                 let mode = editor.mode();
-                let base_cursor_style = theme.get("ui.cursor");
-                let base_primary_cursor_style = theme.get("ui.cursor.primary");
+                let base_cursor_style = cx.theme_style("ui.cursor");
+                let base_primary_cursor_style = cx.theme_style("ui.cursor.primary");
 
                 // Try to get mode-specific cursor style, fallback to base
                 // Important: we need to patch styles to combine colors with modifiers
                 let cursor_style = match mode {
                     helix_view::document::Mode::Insert => {
-                        let style = theme.get("ui.cursor.primary.insert");
+                        let style = cx.theme_style("ui.cursor.primary.insert");
                         if style.fg.is_some() || style.bg.is_some() {
                             // Patch with base cursor to get modifiers
                             base_cursor_style.patch(style)
@@ -2197,7 +2198,7 @@ impl Element for DocumentElement {
                         }
                     }
                     helix_view::document::Mode::Select => {
-                        let style = theme.get("ui.cursor.primary.select");
+                        let style = cx.theme_style("ui.cursor.primary.select");
                         if style.fg.is_some() || style.bg.is_some() {
                             // Patch with base cursor to get modifiers
                             base_cursor_style.patch(style)
@@ -2206,7 +2207,7 @@ impl Element for DocumentElement {
                         }
                     }
                     helix_view::document::Mode::Normal => {
-                        let style = theme.get("ui.cursor.primary.normal");
+                        let style = cx.theme_style("ui.cursor.primary.normal");
                         if style.fg.is_some() || style.bg.is_some() {
                             // Patch with base cursor to get modifiers
                             base_cursor_style.patch(style)
@@ -2384,7 +2385,7 @@ impl Element for DocumentElement {
                 );
 
                 // Render rulers before text
-                let ruler_style = theme.get("ui.virtual.ruler");
+                let ruler_style = cx.theme_style("ui.virtual.ruler");
                 let ruler_color = ruler_style.bg
                     .and_then(color_to_hsla)
                     .unwrap_or_else(|| hsla(0.0, 0.0, 0.3, 0.2)); // Default to subtle gray
@@ -2461,10 +2462,10 @@ impl Element for DocumentElement {
                     // Use DocumentFormatter for soft wrap rendering
 
                     // Get text format and create DocumentFormatter
-                    let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                    let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
 
                     // Extract wrap indicator color early to avoid borrow conflicts later
-                    let wrap_indicator_color = theme.get("ui.virtual.wrap").fg.and_then(color_to_hsla);
+                    let wrap_indicator_color = cx.theme_style("ui.virtual.wrap").fg.and_then(color_to_hsla);
 
                     // Re-read core to get document and view - extract what we need and drop the borrow
                     let (text_format, view_offset, gutter_offset) = {
@@ -2489,7 +2490,7 @@ impl Element for DocumentElement {
                         let text_area_width = bounds.size.width - gutter_width_px - right_padding;
                         let viewport_width = (text_area_width / after_layout.cell_width).max(10.0) as u16;
 
-                        let text_format = document.text_format(viewport_width, Some(theme));
+                        let text_format = document.text_format(viewport_width, Some(&theme));
                         (text_format, view_offset, gutter_offset)
                     };
 
@@ -2652,7 +2653,7 @@ impl Element for DocumentElement {
                                     Self::highlight_line_with_params(HighlightLineParams {
                                         doc: document,
                                         view,
-                                        theme: &editor_theme,
+                                        cx,
                                         editor_mode,
                                         cursor_shape: &cursor_shape,
                                         syn_loader: &syn_loader,
@@ -2912,9 +2913,8 @@ impl Element for DocumentElement {
                         }
 
                         // Now render the line numbers with highlighting for current line
-                        let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                        let gutter_style = theme.get("ui.linenr");
-                        let gutter_selected_style = theme.get("ui.linenr.selected");
+                        let gutter_style = cx.theme_style("ui.linenr");
+                        let gutter_selected_style = cx.theme_style("ui.linenr.selected");
 
 
 
@@ -3005,14 +3005,13 @@ impl Element for DocumentElement {
                                 };
 
                                 // Get cursor style
-                                let theme = cx.global::<crate::ThemeManager>().helix_theme();
                                 let mode = editor.mode();
-                                let base_cursor_style = theme.get("ui.cursor");
-                                let base_primary_cursor_style = theme.get("ui.cursor.primary");
+                                let base_cursor_style = cx.theme_style("ui.cursor");
+                                let base_primary_cursor_style = cx.theme_style("ui.cursor.primary");
                                 // Important: we need to patch styles to combine colors with modifiers
                                 let cursor_style = match mode {
                                     helix_view::document::Mode::Insert => {
-                                        let style = theme.get("ui.cursor.primary.insert");
+                                        let style = cx.theme_style("ui.cursor.primary.insert");
                                         if style.fg.is_some() || style.bg.is_some() {
                                             // Patch with base cursor to get modifiers
                                             base_cursor_style.patch(style)
@@ -3021,7 +3020,7 @@ impl Element for DocumentElement {
                                         }
                                     }
                                     helix_view::document::Mode::Select => {
-                                        let style = theme.get("ui.cursor.primary.select");
+                                        let style = cx.theme_style("ui.cursor.primary.select");
                                         if style.fg.is_some() || style.bg.is_some() {
                                             // Patch with base cursor to get modifiers
                                             base_cursor_style.patch(style)
@@ -3030,7 +3029,7 @@ impl Element for DocumentElement {
                                         }
                                     }
                                     helix_view::document::Mode::Normal => {
-                                        let style = theme.get("ui.cursor.primary.normal");
+                                        let style = cx.theme_style("ui.cursor.primary.normal");
                                         if style.fg.is_some() || style.bg.is_some() {
                                             // Patch with base cursor to get modifiers
                                             base_cursor_style.patch(style)
@@ -3044,7 +3043,7 @@ impl Element for DocumentElement {
                                 let text_style_at_cursor = Self::get_text_style_at_position(
                                     document,
                                     self.view_id,
-                                    theme,
+                                    &theme,
                                     &editor.syn_loader,
                                     cursor_char_idx,
                                 );
@@ -3301,7 +3300,7 @@ impl Element for DocumentElement {
                         let line_runs = Self::highlight_line_with_params(HighlightLineParams {
                             doc: document,
                             view,
-                            theme: &editor_theme,
+                            cx,
                             editor_mode,
                             cursor_shape: &cursor_shape,
                             syn_loader: &syn_loader,

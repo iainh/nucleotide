@@ -7,6 +7,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window,
 };
 use helix_view::DocumentId;
+use nucleotide_ui::theme_manager::ThemedContext;
 use nucleotide_ui::{
     compute_component_style, ColorTheory, StyleSize, StyleState, StyleVariant, VcsStatus,
 };
@@ -207,18 +208,15 @@ impl RenderOnce for TabBar {
         );
 
         // Get theme colors for enhanced tabbar styling
-        let theme_manager = cx.global::<crate::ThemeManager>();
-        let helix_theme = theme_manager.helix_theme();
-
         // Get active tab background (should match editor background)
-        let editor_bg_style = helix_theme.get("ui.background");
+        let editor_bg_style = cx.theme_style("ui.background");
         let active_tab_bg = editor_bg_style
             .bg
             .and_then(crate::utils::color_to_hsla)
             .unwrap_or(ui_theme.tokens.colors.background);
 
         // Get statusline background for fallback
-        let statusline_style = helix_theme.get("ui.statusline");
+        let statusline_style = cx.theme_style("ui.statusline");
         let statusline_bg = statusline_style
             .bg
             .and_then(crate::utils::color_to_hsla)

@@ -7,6 +7,7 @@ use gpui::{
     RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use helix_view::DocumentId;
+use nucleotide_ui::theme_manager::ThemedContext;
 use nucleotide_ui::{compute_contextual_style, ColorContext, StyleSize, StyleState, StyleVariant};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -105,9 +106,7 @@ impl RenderOnce for TabOverflowButton {
                 .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
 
         // Get fallback colors from Helix theme for visual continuity
-        let theme_manager = cx.global::<crate::ThemeManager>();
-        let helix_theme = theme_manager.helix_theme();
-        let statusline_style = helix_theme.get("ui.statusline");
+        let statusline_style = cx.theme_style("ui.statusline");
         let container_bg = statusline_style
             .bg
             .and_then(crate::utils::color_to_hsla)
@@ -203,9 +202,7 @@ impl RenderOnce for TabOverflowMenu {
                 .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
 
         // Get the same background color as the tab area for consistency
-        let theme_manager = cx.global::<crate::ThemeManager>();
-        let helix_theme = theme_manager.helix_theme();
-        let statusline_style = helix_theme.get("ui.statusline");
+        let statusline_style = cx.theme_style("ui.statusline");
         let dropdown_bg = statusline_style
             .bg
             .and_then(crate::utils::color_to_hsla)
