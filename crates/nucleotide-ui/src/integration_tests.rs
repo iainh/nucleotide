@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests {
     use crate::{
-        Button, ButtonSize, ButtonVariant, Component, ComponentFactory, ListItem, ListItemSpacing,
+        Button, ButtonSize, ButtonVariant, Component, ComponentFactory, Interactive, ListItem, ListItemSpacing,
         Styled as UIStyled,
     };
 
@@ -78,14 +78,16 @@ mod tests {
 
     #[test]
     fn test_list_item_interaction() {
-        // Test Interactive trait
+        // Test Interactive trait with new listener pattern
         let item = ListItem::new("interactive-item")
-            .on_click(|_event, _cx| {
-                // Primary click handler
-            })
-            .on_secondary_click(|_event, _cx| {
-                // Secondary click handler
-            });
+            .on_click(Box::new(|div| {
+                // Primary click handler - just return the div as-is for test
+                div
+            }))
+            .on_secondary_click(Box::new(|div| {
+                // Secondary click handler - just return the div as-is for test  
+                div
+            }));
 
         let _id = item.id();
     }
