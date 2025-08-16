@@ -7,6 +7,7 @@ use gpui::{
     RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use helix_view::DocumentId;
+use nucleotide_ui::{compute_component_style, StyleSize, StyleState, StyleVariant};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -97,22 +98,25 @@ impl TabOverflowMenu {
 
 impl RenderOnce for TabOverflowButton {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Use enhanced styling system with provider support
+        let ui_theme =
+            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
+                .map(|provider| provider.current_theme().clone())
+                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+
+        // Compute style for the dropdown button (ghost variant for minimal styling)
+        let button_style = compute_component_style(
+            &ui_theme,
+            StyleState::Default,
+            StyleVariant::Ghost.as_str(),
+            StyleSize::Small.as_str(),
+        );
+
+        // Get fallback colors from Helix theme for visual continuity
         let theme_manager = cx.global::<crate::ThemeManager>();
         let helix_theme = theme_manager.helix_theme();
-        let ui_theme = cx.global::<nucleotide_ui::Theme>();
-
-        // Get theme colors for visual continuity with editor
-        let text_color = helix_theme
-            .get("ui.text")
-            .fg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.text_primary);
-
-        let border_color = ui_theme.tokens.colors.border_default;
-
-        // Get statusline background color to match tab bar
         let statusline_style = helix_theme.get("ui.statusline");
-        let bg_color = statusline_style
+        let container_bg = statusline_style
             .bg
             .and_then(crate::utils::color_to_hsla)
             .unwrap_or(ui_theme.tokens.colors.surface);
@@ -126,23 +130,33 @@ impl RenderOnce for TabOverflowButton {
             .flex_none()
             .items_center()
             .h(px(32.0))
-            .bg(bg_color)
+            .bg(container_bg)
             .child(
-                // Dropdown trigger button
+                // Dropdown trigger button using computed styles
                 div()
                     .id("tab-overflow-trigger")
                     .flex()
                     .items_center()
                     .gap(px(4.0))
-                    .px(px(8.0))
-                    .py(px(4.0))
+                    .px(button_style.padding_x)
+                    .py(button_style.padding_y)
                     .h(px(24.0))
                     .cursor(CursorStyle::PointingHand)
-                    .rounded(px(4.0))
-                    .bg(ui_theme.tokens.colors.surface)
-                    .hover(|style| style.bg(ui_theme.tokens.colors.surface_hover))
+                    .rounded(button_style.border_radius)
+                    .bg(button_style.background)
+                    .text_color(button_style.foreground)
                     .border_1()
-                    .border_color(border_color)
+                    .border_color(button_style.border_color)
+                    .hover(|style| {
+                        // Compute hover style
+                        let hover_style = compute_component_style(
+                            &ui_theme,
+                            StyleState::Hover,
+                            StyleVariant::Ghost.as_str(),
+                            StyleSize::Small.as_str(),
+                        );
+                        style.bg(hover_style.background)
+                    })
                     .on_mouse_up(MouseButton::Left, {
                         let on_dropdown_toggle = self.on_dropdown_toggle.clone();
                         move |_event, window, cx| {
@@ -152,14 +166,12 @@ impl RenderOnce for TabOverflowButton {
                     })
                     .child(
                         div()
-                            .text_color(text_color)
-                            .text_size(px(12.0))
+                            .text_size(button_style.font_size)
                             .child(format!("+{}", self.overflow_count)),
                     )
                     .child(
                         div()
-                            .text_color(text_color)
-                            .text_size(px(12.0))
+                            .text_size(button_style.font_size)
                             .child(if self.is_open { "▲" } else { "▼" }),
                     ),
             )
@@ -168,19 +180,36 @@ impl RenderOnce for TabOverflowButton {
 
 impl RenderOnce for TabOverflowMenu {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Use enhanced styling system with provider support
+        let ui_theme =
+            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
+                .map(|provider| provider.current_theme().clone())
+                .unwrap_or_else(|| cx.global::<nucleotide_ui::Theme>().clone());
+
+        // Compute style for the dropdown menu (secondary variant for popup styling)
+        let menu_style = compute_component_style(
+            &ui_theme,
+            StyleState::Default,
+            StyleVariant::Secondary.as_str(),
+            StyleSize::Medium.as_str(),
+        );
+
+        // Compute style for menu items (ghost variant for minimal styling)
+        let item_style = compute_component_style(
+            &ui_theme,
+            StyleState::Default,
+            StyleVariant::Ghost.as_str(),
+            StyleSize::Small.as_str(),
+        );
+
+        // Get text color fallback from Helix theme
         let theme_manager = cx.global::<crate::ThemeManager>();
         let helix_theme = theme_manager.helix_theme();
-        let ui_theme = cx.global::<nucleotide_ui::Theme>();
-
-        // Get theme colors
         let text_color = helix_theme
             .get("ui.text")
             .fg
             .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.text_primary);
-
-        let dropdown_bg = ui_theme.tokens.colors.surface;
-        let border_color = ui_theme.tokens.colors.border_default;
+            .unwrap_or(menu_style.foreground);
 
         // Positioned absolutely to appear right below the overflow button
         div()
@@ -190,15 +219,15 @@ impl RenderOnce for TabOverflowMenu {
             .right(px(4.0)) // Align with button position
             .w(px(240.0)) // Slightly smaller width
             .max_h(px(300.0)) // Reasonable max height
-            .bg(dropdown_bg)
+            .bg(menu_style.background)
             .border_1()
-            .border_color(border_color)
-            .rounded(px(6.0))
+            .border_color(menu_style.border_color)
+            .rounded(menu_style.border_radius)
             .shadow_lg()
             .overflow_y_scroll()
             .flex()
             .flex_col()
-            .py(px(2.0)) // Tighter padding
+            .py(menu_style.padding_y)
             .children(
                 self.overflow_documents
                     .iter()
@@ -208,81 +237,111 @@ impl RenderOnce for TabOverflowMenu {
                         let doc_id = doc_info.id;
                         let on_tab_click = self.on_tab_click.clone();
 
-                        div()
-                            .id(SharedString::from(format!("overflow-tab-{}", doc_id)))
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(px(8.0))
-                            .px(px(12.0))
-                            .py(px(6.0)) // Tighter vertical padding
-                            .w_full()
-                            .min_h(px(28.0)) // Smaller minimum height
-                            .cursor(CursorStyle::PointingHand)
-                            .hover(|style| style.bg(ui_theme.tokens.colors.surface_hover))
-                            .when(is_active, |item_div| {
-                                item_div.bg(ui_theme.tokens.colors.surface_active)
-                            })
-                            .on_mouse_down(MouseButton::Left, {
-                                move |_event, _window, cx| {
-                                    // Stop propagation immediately to prevent workspace click-away handler
-                                    cx.stop_propagation();
-                                }
-                            })
-                            .on_mouse_up(MouseButton::Left, {
-                                let on_tab_click = on_tab_click.clone();
-                                let on_close = self.on_close.clone();
-                                move |_event, window, cx| {
-                                    // Stop propagation first to prevent workspace handlers
-                                    cx.stop_propagation();
-                                    on_tab_click(doc_id, window, cx);
-                                    on_close(window, cx);
-                                }
-                            })
-                            .child(
-                                // File icon
-                                div()
-                                    .w(px(16.0))
-                                    .h(px(16.0))
-                                    .flex()
-                                    .flex_none()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(if let Some(ref path) = doc_info.path {
-                                        nucleotide_ui::FileIcon::from_path(path, false)
-                                            .size(14.0) // Slightly smaller icon
-                                            .text_color(text_color)
-                                    } else {
-                                        nucleotide_ui::FileIcon::scratch()
-                                            .size(14.0) // Slightly smaller icon
-                                            .text_color(text_color)
-                                    }),
-                            )
-                            .child(
-                                // File name
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .text_color(text_color)
-                                    .text_size(px(12.0)) // Slightly smaller text
-                                    .line_height(px(16.0)) // Tighter line height
-                                    .when(doc_info.is_modified, |name_div| name_div.underline())
-                                    .when(is_active, |name_div| {
-                                        name_div.font_weight(gpui::FontWeight::MEDIUM)
-                                    })
-                                    .child(label),
-                            )
-                            .when(doc_info.is_modified, |modified_div| {
-                                modified_div.child(
-                                    div()
-                                        .flex_none()
-                                        .w(px(6.0))
-                                        .h(px(6.0))
-                                        .rounded(px(3.0))
-                                        .bg(ui_theme.tokens.colors.primary)
-                                        .ml(px(4.0)),
+                        {
+                            // Compute styles for active/inactive states
+                            let current_style = if is_active {
+                                compute_component_style(
+                                    &ui_theme,
+                                    StyleState::Selected,
+                                    StyleVariant::Ghost.as_str(),
+                                    StyleSize::Small.as_str(),
                                 )
-                            })
+                            } else {
+                                item_style.clone()
+                            };
+
+                            div()
+                                .id(SharedString::from(format!("overflow-tab-{}", doc_id)))
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(8.0))
+                                .px(current_style.padding_x)
+                                .py(current_style.padding_y)
+                                .w_full()
+                                .min_h(px(28.0))
+                                .cursor(CursorStyle::PointingHand)
+                                .bg(current_style.background)
+                                .text_color(text_color)
+                                .hover(|style| {
+                                    let hover_style = compute_component_style(
+                                        &ui_theme,
+                                        StyleState::Hover,
+                                        StyleVariant::Ghost.as_str(),
+                                        StyleSize::Small.as_str(),
+                                    );
+                                    style.bg(hover_style.background)
+                                })
+                                .on_mouse_down(MouseButton::Left, {
+                                    move |_event, _window, cx| {
+                                        // Stop propagation immediately to prevent workspace click-away handler
+                                        cx.stop_propagation();
+                                    }
+                                })
+                                .on_mouse_up(MouseButton::Left, {
+                                    let on_tab_click = on_tab_click.clone();
+                                    let on_close = self.on_close.clone();
+                                    move |_event, window, cx| {
+                                        // Stop propagation first to prevent workspace handlers
+                                        cx.stop_propagation();
+                                        on_tab_click(doc_id, window, cx);
+                                        on_close(window, cx);
+                                    }
+                                })
+                                .child(
+                                    // File icon
+                                    div()
+                                        .w(px(16.0))
+                                        .h(px(16.0))
+                                        .flex()
+                                        .flex_none()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(if let Some(ref path) = doc_info.path {
+                                            nucleotide_ui::FileIcon::from_path(path, false)
+                                                .size(14.0) // Slightly smaller icon
+                                                .text_color(text_color)
+                                        } else {
+                                            nucleotide_ui::FileIcon::scratch()
+                                                .size(14.0) // Slightly smaller icon
+                                                .text_color(text_color)
+                                        }),
+                                )
+                                .child(
+                                    // File name
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .text_color(text_color)
+                                        .text_size(current_style.font_size)
+                                        .line_height(px(16.0))
+                                        .when(doc_info.is_modified, |name_div| name_div.underline())
+                                        .when(is_active, |name_div| {
+                                            // Use numeric font weight directly since FontWeight doesn't have from_u16
+                                            name_div.font_weight(
+                                                if current_style.font_weight >= 600 {
+                                                    gpui::FontWeight::BOLD
+                                                } else if current_style.font_weight >= 500 {
+                                                    gpui::FontWeight::MEDIUM
+                                                } else {
+                                                    gpui::FontWeight::NORMAL
+                                                },
+                                            )
+                                        })
+                                        .child(label),
+                                )
+                                .when(doc_info.is_modified, |modified_div| {
+                                    modified_div.child(
+                                        div()
+                                            .flex_none()
+                                            .w(px(6.0))
+                                            .h(px(6.0))
+                                            .rounded(px(3.0))
+                                            .bg(ui_theme.tokens.colors.primary)
+                                            .ml(px(4.0)),
+                                    )
+                                })
+                        }
                     })
                     .collect::<Vec<_>>(),
             )
