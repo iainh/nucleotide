@@ -1,8 +1,8 @@
 // ABOUTME: Event handling provider component for centralized event management and distribution
 // ABOUTME: Manages global event listeners, custom events, and event delegation patterns
 
-use super::{Provider, ProviderContainer, use_provider};
-use gpui::{App, AnyElement, ElementId, IntoElement, SharedString, KeyDownEvent};
+use super::{use_provider, Provider, ProviderContainer};
+use gpui::{AnyElement, App, ElementId, IntoElement, KeyDownEvent, SharedString};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -373,7 +373,7 @@ impl EventHandlingProvider {
             filter_config: EventFilterConfig::default(),
         }
     }
-    
+
     /// Register a global keyboard event listener
     pub fn register_keyboard_listener(
         &self,
@@ -382,14 +382,17 @@ impl EventHandlingProvider {
         priority: EventPriority,
     ) {
         let event_type = event_type.into();
-        
+
         if let Ok(mut listeners) = self.global_listeners.write() {
-            listeners.keyboard_listeners
+            listeners
+                .keyboard_listeners
                 .entry(event_type.clone())
                 .or_insert_with(Vec::new)
                 .push(listener);
-            listeners.listener_priorities.insert(event_type.clone(), priority);
-            
+            listeners
+                .listener_priorities
+                .insert(event_type.clone(), priority);
+
             nucleotide_logging::debug!(
                 event_type = event_type,
                 priority = ?priority,
@@ -397,7 +400,7 @@ impl EventHandlingProvider {
             );
         }
     }
-    
+
     /// Register a global mouse event listener
     pub fn register_mouse_listener(
         &self,
@@ -406,14 +409,17 @@ impl EventHandlingProvider {
         priority: EventPriority,
     ) {
         let event_type = event_type.into();
-        
+
         if let Ok(mut listeners) = self.global_listeners.write() {
-            listeners.mouse_listeners
+            listeners
+                .mouse_listeners
                 .entry(event_type.clone())
                 .or_insert_with(Vec::new)
                 .push(listener);
-            listeners.listener_priorities.insert(event_type.clone(), priority);
-            
+            listeners
+                .listener_priorities
+                .insert(event_type.clone(), priority);
+
             nucleotide_logging::debug!(
                 event_type = event_type,
                 priority = ?priority,
@@ -421,20 +427,22 @@ impl EventHandlingProvider {
             );
         }
     }
-    
+
     /// Register a custom event type
     pub fn register_custom_event(&self, definition: CustomEventDefinition) {
         if let Ok(mut custom_events) = self.custom_events.write() {
             let event_name = definition.name.clone();
-            custom_events.event_types.insert(event_name.clone(), definition);
-            
+            custom_events
+                .event_types
+                .insert(event_name.clone(), definition);
+
             nucleotide_logging::debug!(
                 event_name = %event_name,
                 "Registered custom event type"
             );
         }
     }
-    
+
     /// Emit a custom event
     pub fn emit_custom_event(&self, event: CustomEventDetails) -> bool {
         // Validate the event if filtering is enabled
@@ -443,7 +451,7 @@ impl EventHandlingProvider {
                 return false;
             }
         }
-        
+
         // Check rate limiting
         if self.filter_config.rate_limiting.enabled {
             if !self.check_rate_limit(&event.event_type) {
@@ -454,14 +462,15 @@ impl EventHandlingProvider {
                 return false;
             }
         }
-        
+
         if let Ok(mut custom_events) = self.custom_events.write() {
             // Determine priority
-            let priority = custom_events.event_types
+            let priority = custom_events
+                .event_types
                 .get(&event.event_type)
                 .map(|def| def.default_priority)
                 .unwrap_or(EventPriority::Normal);
-            
+
             // Create queued event
             let queued_event = QueuedEvent {
                 event,
@@ -470,13 +479,14 @@ impl EventHandlingProvider {
                 retry_count: 0,
                 max_retries: 3,
             };
-            
+
             // Add to appropriate queue
-            custom_events.event_queues
+            custom_events
+                .event_queues
                 .entry(priority)
                 .or_insert_with(Vec::new)
                 .push(queued_event);
-            
+
             // Trim queue if necessary
             let max_size = custom_events.scheduling_config.max_queue_size;
             if let Some(queue) = custom_events.event_queues.get_mut(&priority) {
@@ -484,25 +494,30 @@ impl EventHandlingProvider {
                     queue.drain(0..queue.len() - max_size);
                 }
             }
-            
+
             true
         } else {
             false
         }
     }
-    
+
     /// Process queued custom events
     pub fn process_custom_events(&self) -> usize {
         let mut processed_count = 0;
-        
+
         if let Ok(mut custom_events) = self.custom_events.write() {
             let batch_size = custom_events.scheduling_config.batch_size;
-            
+
             // Process events by priority (highest first)
-            for priority in [EventPriority::Critical, EventPriority::High, EventPriority::Normal, EventPriority::Low] {
+            for priority in [
+                EventPriority::Critical,
+                EventPriority::High,
+                EventPriority::Normal,
+                EventPriority::Low,
+            ] {
                 if let Some(queue) = custom_events.event_queues.get_mut(&priority) {
                     let process_count = queue.len().min(batch_size);
-                    
+
                     for _ in 0..process_count {
                         if let Some(queued_event) = queue.pop() {
                             if self.dispatch_custom_event(&queued_event.event) {
@@ -515,21 +530,22 @@ impl EventHandlingProvider {
                             }
                         }
                     }
-                    
+
                     if processed_count >= batch_size {
                         break;
                     }
                 }
             }
         }
-        
+
         processed_count
     }
-    
+
     /// Dispatch a custom event to listeners
     fn dispatch_custom_event(&self, event: &CustomEventDetails) -> bool {
         if let Ok(listeners) = self.global_listeners.read() {
-            if let Some(event_listeners) = listeners.custom_listeners.get(event.event_type.as_ref()) {
+            if let Some(event_listeners) = listeners.custom_listeners.get(event.event_type.as_ref())
+            {
                 for listener in event_listeners {
                     match listener(event) {
                         EventResult::HandledAndStop => return true,
@@ -539,17 +555,21 @@ impl EventHandlingProvider {
                 }
             }
         }
-        
+
         true
     }
-    
+
     /// Validate an event against configured rules
     fn validate_event(&self, event: &CustomEventDetails) -> bool {
         // Check if event type is blocked
-        if self.filter_config.blocked_events.contains(&event.event_type) {
+        if self
+            .filter_config
+            .blocked_events
+            .contains(&event.event_type)
+        {
             return false;
         }
-        
+
         // Apply validation rules
         for rule in &self.filter_config.validation_rules {
             if rule.event_type == event.event_type {
@@ -575,12 +595,16 @@ impl EventHandlingProvider {
                 }
             }
         }
-        
+
         true
     }
-    
+
     /// Apply a specific validation rule
-    fn apply_validation_rule(&self, rule: &EventValidationRule, event: &CustomEventDetails) -> bool {
+    fn apply_validation_rule(
+        &self,
+        rule: &EventValidationRule,
+        event: &CustomEventDetails,
+    ) -> bool {
         match &rule.validator {
             EventValidator::RequiredFields(fields) => {
                 if let CustomEventData::Object(ref data) = event.data {
@@ -592,9 +616,8 @@ impl EventHandlingProvider {
             EventValidator::FieldTypes(type_map) => {
                 if let CustomEventData::Object(ref data) = event.data {
                     type_map.iter().all(|(field, expected_type)| {
-                        data.get(field).map_or(true, |value| {
-                            self.check_data_type(value, *expected_type)
-                        })
+                        data.get(field)
+                            .map_or(true, |value| self.check_data_type(value, *expected_type))
                     })
                 } else {
                     true
@@ -606,7 +629,7 @@ impl EventHandlingProvider {
             }
         }
     }
-    
+
     /// Check if event data matches expected type
     fn check_data_type(&self, data: &CustomEventData, expected: EventDataType) -> bool {
         match (data, expected) {
@@ -619,35 +642,37 @@ impl EventHandlingProvider {
             _ => false,
         }
     }
-    
+
     /// Check rate limiting for an event type
     fn check_rate_limit(&self, _event_type: &str) -> bool {
         // Simplified rate limiting check
         // In a real implementation, you would track event counts per time window
         true
     }
-    
+
     /// Get event statistics
     pub fn get_event_statistics(&self) -> EventStatistics {
         let mut stats = EventStatistics::default();
-        
+
         if let Ok(listeners) = self.global_listeners.read() {
             stats.keyboard_listener_count = listeners.keyboard_listeners.len();
             stats.mouse_listener_count = listeners.mouse_listeners.len();
             stats.focus_listener_count = listeners.focus_listeners.len();
             stats.custom_listener_count = listeners.custom_listeners.len();
         }
-        
+
         if let Ok(custom_events) = self.custom_events.read() {
             stats.custom_event_types = custom_events.event_types.len();
-            stats.queued_events = custom_events.event_queues.values()
+            stats.queued_events = custom_events
+                .event_queues
+                .values()
                 .map(|queue| queue.len())
                 .sum();
         }
-        
+
         stats
     }
-    
+
     /// Clear all event listeners and queues
     pub fn clear_all_events(&self) {
         if let Ok(mut listeners) = self.global_listeners.write() {
@@ -657,11 +682,11 @@ impl EventHandlingProvider {
             listeners.custom_listeners.clear();
             listeners.listener_priorities.clear();
         }
-        
+
         if let Ok(mut custom_events) = self.custom_events.write() {
             custom_events.event_queues.clear();
         }
-        
+
         nucleotide_logging::debug!("Cleared all event listeners and queues");
     }
 }
@@ -687,7 +712,7 @@ impl Provider for EventHandlingProvider {
     fn type_name(&self) -> &'static str {
         "EventHandlingProvider"
     }
-    
+
     fn initialize(&mut self, _cx: &mut App) {
         nucleotide_logging::info!(
             delegation_enabled = self.delegation_config.enable_delegation,
@@ -696,7 +721,7 @@ impl Provider for EventHandlingProvider {
             "EventHandlingProvider initialized"
         );
     }
-    
+
     fn cleanup(&mut self, _cx: &mut App) {
         self.clear_all_events();
         nucleotide_logging::debug!("EventHandlingProvider cleaned up");
@@ -721,23 +746,22 @@ impl EventProviderComponent {
             children: Vec::new(),
         }
     }
-    
+
     pub fn child(mut self, child: impl IntoElement) -> Self {
         self.children.push(child.into_any_element());
         self
     }
-    
+
     pub fn children(mut self, children: impl IntoIterator<Item = impl IntoElement>) -> Self {
-        self.children.extend(
-            children.into_iter().map(|child| child.into_any_element())
-        );
+        self.children
+            .extend(children.into_iter().map(|child| child.into_any_element()));
         self
     }
 }
 
 impl IntoElement for EventProviderComponent {
     type Element = AnyElement;
-    
+
     fn into_element(self) -> Self::Element {
         ProviderContainer::new("event-provider", self.provider)
             .children(self.children)
@@ -754,7 +778,8 @@ pub fn use_event_provider() -> Option<EventHandlingProvider> {
 pub fn use_emit_event() -> impl Fn(CustomEventDetails) -> bool {
     let provider = use_provider::<EventHandlingProvider>();
     move |event| {
-        provider.as_ref()
+        provider
+            .as_ref()
             .map(|p| p.emit_custom_event(event.clone()))
             .unwrap_or(false)
     }
@@ -769,7 +794,8 @@ where
         let listener = Arc::new(listener);
         if let Ok(mut listeners) = provider.global_listeners.write() {
             let event_type = event_type.into();
-            listeners.custom_listeners
+            listeners
+                .custom_listeners
                 .entry(event_type.clone())
                 .or_insert_with(Vec::new)
                 .push(listener);
@@ -785,7 +811,7 @@ mod tests {
     #[test]
     fn test_event_provider_creation() {
         let provider = EventHandlingProvider::new();
-        
+
         assert!(provider.delegation_config.enable_delegation);
         assert!(!provider.analytics_config.enable_analytics);
         assert!(provider.filter_config.enable_filtering);
@@ -794,7 +820,7 @@ mod tests {
     #[test]
     fn test_custom_event_registration() {
         let provider = EventHandlingProvider::new();
-        
+
         let event_def = CustomEventDefinition {
             name: "test-event".into(),
             description: Some("A test event".into()),
@@ -803,9 +829,9 @@ mod tests {
             bubbles: true,
             cancelable: true,
         };
-        
+
         provider.register_custom_event(event_def.clone());
-        
+
         {
             let custom_events = provider.custom_events.read().unwrap();
             let registered = custom_events.event_types.get("test-event");
@@ -817,7 +843,7 @@ mod tests {
     #[test]
     fn test_custom_event_emission() {
         let provider = EventHandlingProvider::new();
-        
+
         // Register event type first
         let event_def = CustomEventDefinition {
             name: "test-emit".into(),
@@ -828,7 +854,7 @@ mod tests {
             cancelable: false,
         };
         provider.register_custom_event(event_def);
-        
+
         let event = CustomEventDetails {
             event_type: "test-emit".into(),
             data: CustomEventData::String("test data".into()),
@@ -836,10 +862,10 @@ mod tests {
             bubbles: false,
             cancelable: false,
         };
-        
+
         let emitted = provider.emit_custom_event(event);
         assert!(emitted);
-        
+
         // Check that event was queued
         {
             let custom_events = provider.custom_events.read().unwrap();
@@ -852,7 +878,7 @@ mod tests {
     #[test]
     fn test_event_processing() {
         let provider = EventHandlingProvider::new();
-        
+
         // Register an event type
         let event_def = CustomEventDefinition {
             name: "process-test".into(),
@@ -863,7 +889,7 @@ mod tests {
             cancelable: false,
         };
         provider.register_custom_event(event_def);
-        
+
         // Emit some events
         for i in 0..5 {
             let event = CustomEventDetails {
@@ -875,7 +901,7 @@ mod tests {
             };
             provider.emit_custom_event(event);
         }
-        
+
         let processed = provider.process_custom_events();
         assert!(processed > 0);
     }
@@ -883,7 +909,7 @@ mod tests {
     #[test]
     fn test_event_validation() {
         let mut provider = EventHandlingProvider::new();
-        
+
         // Add a validation rule
         let rule = EventValidationRule {
             event_type: "validated-event".into(),
@@ -891,22 +917,25 @@ mod tests {
             error_action: ValidationErrorAction::Drop,
         };
         provider.filter_config.validation_rules.push(rule);
-        
+
         // Test valid event
         let valid_event = CustomEventDetails {
             event_type: "validated-event".into(),
             data: CustomEventData::Object({
                 let mut data = HashMap::new();
-                data.insert("required_field".into(), CustomEventData::String("value".into()));
+                data.insert(
+                    "required_field".into(),
+                    CustomEventData::String("value".into()),
+                );
                 data
             }),
             target_id: None,
             bubbles: false,
             cancelable: false,
         };
-        
+
         assert!(provider.validate_event(&valid_event));
-        
+
         // Test invalid event
         let invalid_event = CustomEventDetails {
             event_type: "validated-event".into(),
@@ -915,15 +944,18 @@ mod tests {
             bubbles: false,
             cancelable: false,
         };
-        
+
         assert!(!provider.validate_event(&invalid_event));
     }
 
     #[test]
     fn test_blocked_events() {
         let mut provider = EventHandlingProvider::new();
-        provider.filter_config.blocked_events.push("blocked-event".into());
-        
+        provider
+            .filter_config
+            .blocked_events
+            .push("blocked-event".into());
+
         let blocked_event = CustomEventDetails {
             event_type: "blocked-event".into(),
             data: CustomEventData::None,
@@ -931,9 +963,9 @@ mod tests {
             bubbles: false,
             cancelable: false,
         };
-        
+
         assert!(!provider.validate_event(&blocked_event));
-        
+
         let allowed_event = CustomEventDetails {
             event_type: "allowed-event".into(),
             data: CustomEventData::None,
@@ -941,21 +973,21 @@ mod tests {
             bubbles: false,
             cancelable: false,
         };
-        
+
         assert!(provider.validate_event(&allowed_event));
     }
 
     #[test]
     fn test_event_statistics() {
         let provider = EventHandlingProvider::new();
-        
+
         // Register some listeners
         let listener = Arc::new(|_: &KeyDownEvent| EventResult::Handled);
         provider.register_keyboard_listener("keydown", listener, EventPriority::Normal);
-        
+
         let mouse_listener = Arc::new(|_: &MouseEventDetails| EventResult::Handled);
         provider.register_mouse_listener("click", mouse_listener, EventPriority::Normal);
-        
+
         // Register custom event
         let event_def = CustomEventDefinition {
             name: "stats-test".into(),
@@ -966,7 +998,7 @@ mod tests {
             cancelable: false,
         };
         provider.register_custom_event(event_def);
-        
+
         let stats = provider.get_event_statistics();
         assert_eq!(stats.keyboard_listener_count, 1);
         assert_eq!(stats.mouse_listener_count, 1);
@@ -976,9 +1008,14 @@ mod tests {
     #[test]
     fn test_event_priority_ordering() {
         let provider = EventHandlingProvider::new();
-        
+
         // Register events with different priorities
-        for priority in [EventPriority::Low, EventPriority::Critical, EventPriority::Normal, EventPriority::High] {
+        for priority in [
+            EventPriority::Low,
+            EventPriority::Critical,
+            EventPriority::Normal,
+            EventPriority::High,
+        ] {
             let event_def = CustomEventDefinition {
                 name: format!("priority-{:?}", priority).into(),
                 description: None,
@@ -988,7 +1025,7 @@ mod tests {
                 cancelable: false,
             };
             provider.register_custom_event(event_def);
-            
+
             let event = CustomEventDetails {
                 event_type: format!("priority-{:?}", priority).into(),
                 data: CustomEventData::None,
@@ -998,34 +1035,57 @@ mod tests {
             };
             provider.emit_custom_event(event);
         }
-        
+
         {
             let custom_events = provider.custom_events.read().unwrap();
             // Check that events are in separate priority queues
-            assert!(custom_events.event_queues.get(&EventPriority::Critical).is_some());
-            assert!(custom_events.event_queues.get(&EventPriority::High).is_some());
-            assert!(custom_events.event_queues.get(&EventPriority::Normal).is_some());
-            assert!(custom_events.event_queues.get(&EventPriority::Low).is_some());
+            assert!(custom_events
+                .event_queues
+                .get(&EventPriority::Critical)
+                .is_some());
+            assert!(custom_events
+                .event_queues
+                .get(&EventPriority::High)
+                .is_some());
+            assert!(custom_events
+                .event_queues
+                .get(&EventPriority::Normal)
+                .is_some());
+            assert!(custom_events
+                .event_queues
+                .get(&EventPriority::Low)
+                .is_some());
         }
     }
 
     #[test]
     fn test_data_type_validation() {
         let provider = EventHandlingProvider::new();
-        
+
         // Test different data types
-        assert!(provider.check_data_type(&CustomEventData::String("test".into()), EventDataType::String));
+        assert!(provider.check_data_type(
+            &CustomEventData::String("test".into()),
+            EventDataType::String
+        ));
         assert!(provider.check_data_type(&CustomEventData::Number(42.0), EventDataType::Number));
         assert!(provider.check_data_type(&CustomEventData::Boolean(true), EventDataType::Boolean));
-        assert!(provider.check_data_type(&CustomEventData::Object(HashMap::new()), EventDataType::Object));
+        assert!(provider.check_data_type(
+            &CustomEventData::Object(HashMap::new()),
+            EventDataType::Object
+        ));
         assert!(provider.check_data_type(&CustomEventData::Array(Vec::new()), EventDataType::Array));
-        
+
         // Test Any type
-        assert!(provider.check_data_type(&CustomEventData::String("test".into()), EventDataType::Any));
+        assert!(
+            provider.check_data_type(&CustomEventData::String("test".into()), EventDataType::Any)
+        );
         assert!(provider.check_data_type(&CustomEventData::Number(42.0), EventDataType::Any));
-        
+
         // Test mismatched types
-        assert!(!provider.check_data_type(&CustomEventData::String("test".into()), EventDataType::Number));
+        assert!(!provider.check_data_type(
+            &CustomEventData::String("test".into()),
+            EventDataType::Number
+        ));
         assert!(!provider.check_data_type(&CustomEventData::Number(42.0), EventDataType::String));
     }
 }

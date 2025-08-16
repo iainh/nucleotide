@@ -7,17 +7,17 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-pub mod theme_builder;
-pub mod theme_validator;
-pub mod theme_animator;
 pub mod helix_bridge;
 pub mod runtime_switcher;
+pub mod theme_animator;
+pub mod theme_builder;
+pub mod theme_validator;
 
-pub use theme_builder::*;
-pub use theme_validator::*;
-pub use theme_animator::*;
 pub use helix_bridge::*;
 pub use runtime_switcher::*;
+pub use theme_animator::*;
+pub use theme_builder::*;
+pub use theme_validator::*;
 
 /// Advanced theme manager with runtime capabilities
 pub struct AdvancedThemeManager {
@@ -171,9 +171,7 @@ pub enum ThemeEvent {
         metadata: ThemeMetadata,
     },
     /// Theme was unregistered
-    ThemeUnregistered {
-        name: SharedString,
-    },
+    ThemeUnregistered { name: SharedString },
     /// Theme validation completed
     ThemeValidated {
         name: SharedString,
@@ -213,13 +211,13 @@ impl AdvancedThemeManager {
             event_listeners: Arc::new(RwLock::new(Vec::new())),
         }
     }
-    
+
     /// Initialize with default themes
     pub fn with_default_themes(mut self) -> Self {
         self.register_default_themes();
         self
     }
-    
+
     /// Register default system themes
     fn register_default_themes(&mut self) {
         // Register built-in themes
@@ -227,7 +225,7 @@ impl AdvancedThemeManager {
             ("dark", Theme::dark(), "Default Dark Theme"),
             ("light", Theme::light(), "Default Light Theme"),
         ];
-        
+
         for (name, theme, description) in themes {
             let metadata = ThemeMetadata {
                 name: name.into(),
@@ -241,7 +239,7 @@ impl AdvancedThemeManager {
                 created_at: std::time::SystemTime::now(),
                 modified_at: std::time::SystemTime::now(),
             };
-            
+
             if let Err(e) = self.register_theme(name.into(), theme, metadata) {
                 nucleotide_logging::error!(
                     theme_name = name,
@@ -251,7 +249,7 @@ impl AdvancedThemeManager {
             }
         }
     }
-    
+
     /// Register a new theme
     pub fn register_theme(
         &mut self,
@@ -264,66 +262,75 @@ impl AdvancedThemeManager {
         if !validation_result.is_valid() {
             return Err(ThemeError::ValidationFailed(validation_result));
         }
-        
+
         // Register in theme registry
         if let Ok(mut registry) = self.theme_registry.write() {
             registry.themes.insert(name.clone(), theme);
             registry.metadata.insert(name.clone(), metadata.clone());
-            
+
             // Add to category
-            let category_name: SharedString = format!("{:?}", metadata.category).to_lowercase().into();
-            registry.categories
+            let category_name: SharedString =
+                format!("{:?}", metadata.category).to_lowercase().into();
+            registry
+                .categories
                 .entry(category_name)
                 .or_insert_with(Vec::new)
                 .push(name.clone());
         }
-        
+
         // Emit event
-        self.emit_event(ThemeEvent::ThemeRegistered { name: name.clone(), metadata });
-        self.emit_event(ThemeEvent::ThemeValidated { 
-            name: name.clone(), 
-            result: validation_result 
+        self.emit_event(ThemeEvent::ThemeRegistered {
+            name: name.clone(),
+            metadata,
         });
-        
+        self.emit_event(ThemeEvent::ThemeValidated {
+            name: name.clone(),
+            result: validation_result,
+        });
+
         nucleotide_logging::info!(
             theme_name = %name,
             "Theme registered successfully"
         );
-        
+
         Ok(())
     }
-    
+
     /// Unregister a theme
     pub fn unregister_theme(&mut self, name: &str) -> Result<Theme, ThemeError> {
         if let Ok(mut registry) = self.theme_registry.write() {
-            let theme = registry.themes.remove(name)
+            let theme = registry
+                .themes
+                .remove(name)
                 .ok_or_else(|| ThemeError::ThemeNotFound(name.to_string()))?;
-            
+
             // Remove metadata
             if let Some(metadata) = registry.metadata.remove(name) {
                 // Remove from category
-                let category_name: SharedString = format!("{:?}", metadata.category).to_lowercase().into();
+                let category_name: SharedString =
+                    format!("{:?}", metadata.category).to_lowercase().into();
                 if let Some(category_themes) = registry.categories.get_mut(&category_name) {
                     category_themes.retain(|n| n.as_ref() != name);
                 }
             }
-            
+
             // Remove inheritance references
             registry.inheritance.remove(name);
-            
-            self.emit_event(ThemeEvent::ThemeUnregistered { name: name.to_string().into() });
-            
-            nucleotide_logging::info!(
-                theme_name = name,
-                "Theme unregistered"
-            );
-            
+
+            self.emit_event(ThemeEvent::ThemeUnregistered {
+                name: name.to_string().into(),
+            });
+
+            nucleotide_logging::info!(theme_name = name, "Theme unregistered");
+
             Ok(theme)
         } else {
-            Err(ThemeError::LockError("Failed to acquire registry lock".into()))
+            Err(ThemeError::LockError(
+                "Failed to acquire registry lock".into(),
+            ))
         }
     }
-    
+
     /// Switch to a different theme with optional animation
     pub fn switch_theme(
         &mut self,
@@ -333,21 +340,25 @@ impl AdvancedThemeManager {
     ) -> Result<(), ThemeError> {
         let new_theme = {
             if let Ok(registry) = self.theme_registry.read() {
-                registry.themes.get(name)
+                registry
+                    .themes
+                    .get(name)
                     .cloned()
                     .ok_or_else(|| ThemeError::ThemeNotFound(name.to_string()))?
             } else {
-                return Err(ThemeError::LockError("Failed to acquire registry lock".into()));
+                return Err(ThemeError::LockError(
+                    "Failed to acquire registry lock".into(),
+                ));
             }
         };
-        
+
         let old_theme_name = self.get_current_theme_name();
         let animation_duration = if animate {
             duration.unwrap_or_else(|| Duration::from_millis(300))
         } else {
             Duration::ZERO
         };
-        
+
         if animate && animation_duration > Duration::ZERO {
             // Use animator for smooth transition
             self.animator.animate_theme_transition(
@@ -363,13 +374,13 @@ impl AdvancedThemeManager {
                 return Err(ThemeError::LockError("Failed to acquire theme lock".into()));
             }
         }
-        
+
         self.emit_event(ThemeEvent::ThemeChanged {
             from: old_theme_name.clone(),
             to: name.to_string().into(),
             animation_duration,
         });
-        
+
         nucleotide_logging::info!(
             from_theme = ?old_theme_name,
             to_theme = name,
@@ -377,17 +388,18 @@ impl AdvancedThemeManager {
             duration_ms = animation_duration.as_millis(),
             "Theme switched"
         );
-        
+
         Ok(())
     }
-    
+
     /// Get the current theme
     pub fn get_current_theme(&self) -> Result<Theme, ThemeError> {
-        self.current_theme.read()
+        self.current_theme
+            .read()
             .map(|theme| theme.clone())
             .map_err(|_| ThemeError::LockError("Failed to acquire theme lock".into()))
     }
-    
+
     /// Get the current theme name
     pub fn get_current_theme_name(&self) -> Option<SharedString> {
         if let Ok(current_theme) = self.current_theme.read() {
@@ -404,7 +416,7 @@ impl AdvancedThemeManager {
         }
         None
     }
-    
+
     /// List all available themes
     pub fn list_themes(&self) -> Result<Vec<(SharedString, ThemeMetadata)>, ThemeError> {
         if let Ok(registry) = self.theme_registry.read() {
@@ -415,42 +427,62 @@ impl AdvancedThemeManager {
             themes.sort_by(|a, b| a.0.cmp(&b.0));
             Ok(themes)
         } else {
-            Err(ThemeError::LockError("Failed to acquire registry lock".into()))
+            Err(ThemeError::LockError(
+                "Failed to acquire registry lock".into(),
+            ))
         }
     }
-    
+
     /// List themes by category
-    pub fn list_themes_by_category(&self, category: ThemeCategory) -> Result<Vec<SharedString>, ThemeError> {
+    pub fn list_themes_by_category(
+        &self,
+        category: ThemeCategory,
+    ) -> Result<Vec<SharedString>, ThemeError> {
         if let Ok(registry) = self.theme_registry.read() {
             let category_name: SharedString = format!("{:?}", category).to_lowercase().into();
-            Ok(registry.categories.get(&category_name).cloned().unwrap_or_default())
+            Ok(registry
+                .categories
+                .get(&category_name)
+                .cloned()
+                .unwrap_or_default())
         } else {
-            Err(ThemeError::LockError("Failed to acquire registry lock".into()))
+            Err(ThemeError::LockError(
+                "Failed to acquire registry lock".into(),
+            ))
         }
     }
-    
+
     /// Search themes by tags or metadata
     pub fn search_themes(&self, query: &str) -> Result<Vec<SharedString>, ThemeError> {
         if let Ok(registry) = self.theme_registry.read() {
             let query_lower = query.to_lowercase();
             let mut matches = Vec::new();
-            
+
             for (name, metadata) in &registry.metadata {
                 // Search in name, display name, description, and tags
-                if name.to_lowercase().contains(&query_lower) ||
-                   metadata.display_name.to_lowercase().contains(&query_lower) ||
-                   metadata.description.as_ref().map_or(false, |d| d.to_lowercase().contains(&query_lower)) ||
-                   metadata.tags.iter().any(|tag| tag.to_lowercase().contains(&query_lower)) {
+                if name.to_lowercase().contains(&query_lower)
+                    || metadata.display_name.to_lowercase().contains(&query_lower)
+                    || metadata
+                        .description
+                        .as_ref()
+                        .map_or(false, |d| d.to_lowercase().contains(&query_lower))
+                    || metadata
+                        .tags
+                        .iter()
+                        .any(|tag| tag.to_lowercase().contains(&query_lower))
+                {
                     matches.push(name.clone());
                 }
             }
-            
+
             Ok(matches)
         } else {
-            Err(ThemeError::LockError("Failed to acquire registry lock".into()))
+            Err(ThemeError::LockError(
+                "Failed to acquire registry lock".into(),
+            ))
         }
     }
-    
+
     /// Create a theme from inheritance
     pub fn create_inherited_theme(
         &self,
@@ -461,16 +493,20 @@ impl AdvancedThemeManager {
     ) -> Result<Theme, ThemeError> {
         let parent_theme = {
             if let Ok(registry) = self.theme_registry.read() {
-                registry.themes.get(parent_name)
+                registry
+                    .themes
+                    .get(parent_name)
                     .cloned()
                     .ok_or_else(|| ThemeError::ThemeNotFound(parent_name.to_string()))?
             } else {
-                return Err(ThemeError::LockError("Failed to acquire registry lock".into()));
+                return Err(ThemeError::LockError(
+                    "Failed to acquire registry lock".into(),
+                ));
             }
         };
-        
+
         let mut new_theme = parent_theme;
-        
+
         // Apply color overrides
         for (key, color) in &overrides.colors {
             match key.as_str() {
@@ -491,7 +527,7 @@ impl AdvancedThemeManager {
                 }
             }
         }
-        
+
         // Apply size overrides
         for (key, size) in &overrides.sizes {
             match key.as_str() {
@@ -510,35 +546,38 @@ impl AdvancedThemeManager {
                 }
             }
         }
-        
+
         // Rebuild legacy fields from tokens
         new_theme = Theme::from_tokens(new_theme.tokens);
-        
+
         // Store inheritance information
         if let Ok(mut registry) = self.theme_registry.write() {
-            registry.inheritance.insert(new_name.clone(), ThemeInheritance {
-                parent_theme: Some(parent_name.to_string().into()),
-                overrides,
-                allow_inheritance: true,
-            });
+            registry.inheritance.insert(
+                new_name.clone(),
+                ThemeInheritance {
+                    parent_theme: Some(parent_name.to_string().into()),
+                    overrides,
+                    allow_inheritance: true,
+                },
+            );
         }
-        
+
         nucleotide_logging::info!(
             new_theme = %new_name,
             parent_theme = parent_name,
             "Created inherited theme"
         );
-        
+
         Ok(new_theme)
     }
-    
+
     /// Add a theme event listener
     pub fn add_event_listener(&mut self, listener: ThemeEventListener) {
         if let Ok(mut listeners) = self.event_listeners.write() {
             listeners.push(listener);
         }
     }
-    
+
     /// Emit a theme event to all listeners
     fn emit_event(&self, event: ThemeEvent) {
         if let Ok(listeners) = self.event_listeners.read() {
@@ -547,22 +586,22 @@ impl AdvancedThemeManager {
             }
         }
     }
-    
+
     /// Get theme validator
     pub fn validator(&self) -> &ThemeValidator {
         &self.validator
     }
-    
+
     /// Get theme animator
     pub fn animator(&self) -> &ThemeAnimator {
         &self.animator
     }
-    
+
     /// Get Helix bridge
     pub fn helix_bridge(&self) -> &HelixThemeBridge {
         &self.helix_bridge
     }
-    
+
     /// Get runtime switcher
     pub fn runtime_switcher(&self) -> &RuntimeThemeSwitcher {
         &self.runtime_switcher
@@ -590,7 +629,9 @@ impl std::fmt::Display for ThemeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ThemeError::ThemeNotFound(name) => write!(f, "Theme not found: {}", name),
-            ThemeError::ValidationFailed(result) => write!(f, "Theme validation failed: {:?}", result),
+            ThemeError::ValidationFailed(result) => {
+                write!(f, "Theme validation failed: {:?}", result)
+            }
             ThemeError::LockError(msg) => write!(f, "Lock error: {}", msg),
             ThemeError::AnimationError(msg) => write!(f, "Animation error: {}", msg),
             ThemeError::ImportError(msg) => write!(f, "Import error: {}", msg),
@@ -632,7 +673,7 @@ mod tests {
     #[test]
     fn test_theme_registration() {
         let mut manager = AdvancedThemeManager::new();
-        
+
         let theme = Theme::light();
         let metadata = ThemeMetadata {
             name: "test-theme".into(),
@@ -646,10 +687,10 @@ mod tests {
             created_at: std::time::SystemTime::now(),
             modified_at: std::time::SystemTime::now(),
         };
-        
+
         let result = manager.register_theme("test-theme".into(), theme, metadata);
         assert!(result.is_ok());
-        
+
         let themes = manager.list_themes().unwrap();
         assert!(!themes.is_empty());
     }
@@ -657,10 +698,10 @@ mod tests {
     #[test]
     fn test_theme_search() {
         let mut manager = AdvancedThemeManager::new().with_default_themes();
-        
+
         let results = manager.search_themes("dark").unwrap();
         assert!(!results.is_empty());
-        
+
         let results = manager.search_themes("nonexistent").unwrap();
         assert!(results.is_empty());
     }
@@ -668,21 +709,33 @@ mod tests {
     #[test]
     fn test_theme_categories() {
         let manager = AdvancedThemeManager::new().with_default_themes();
-        
-        let system_themes = manager.list_themes_by_category(ThemeCategory::System).unwrap();
+
+        let system_themes = manager
+            .list_themes_by_category(ThemeCategory::System)
+            .unwrap();
         assert!(!system_themes.is_empty());
-        
-        let custom_themes = manager.list_themes_by_category(ThemeCategory::Custom).unwrap();
+
+        let custom_themes = manager
+            .list_themes_by_category(ThemeCategory::Custom)
+            .unwrap();
         assert!(custom_themes.is_empty()); // No custom themes registered yet
     }
 
     #[test]
     fn test_theme_inheritance() {
         let manager = AdvancedThemeManager::new().with_default_themes();
-        
+
         let mut overrides = ThemeOverrides::default();
-        overrides.colors.insert("primary".to_string(), Hsla { h: 200.0, s: 0.8, l: 0.5, a: 1.0 });
-        
+        overrides.colors.insert(
+            "primary".to_string(),
+            Hsla {
+                h: 200.0,
+                s: 0.8,
+                l: 0.5,
+                a: 1.0,
+            },
+        );
+
         let metadata = ThemeMetadata {
             name: "inherited-theme".into(),
             display_name: "Inherited Theme".into(),
@@ -695,27 +748,36 @@ mod tests {
             created_at: std::time::SystemTime::now(),
             modified_at: std::time::SystemTime::now(),
         };
-        
-        let result = manager.create_inherited_theme("dark", overrides, "inherited-theme".into(), metadata);
+
+        let result =
+            manager.create_inherited_theme("dark", overrides, "inherited-theme".into(), metadata);
         assert!(result.is_ok());
-        
+
         let inherited_theme = result.unwrap();
-        assert_eq!(inherited_theme.tokens.colors.primary, Hsla { h: 200.0, s: 0.8, l: 0.5, a: 1.0 });
+        assert_eq!(
+            inherited_theme.tokens.colors.primary,
+            Hsla {
+                h: 200.0,
+                s: 0.8,
+                l: 0.5,
+                a: 1.0
+            }
+        );
     }
 
     #[test]
     fn test_theme_events() {
         let mut manager = AdvancedThemeManager::new().with_default_themes();
-        
+
         let events = Arc::new(RwLock::new(Vec::new()));
         let events_clone = events.clone();
-        
+
         manager.add_event_listener(Arc::new(move |event| {
             if let Ok(mut event_list) = events_clone.write() {
                 event_list.push(event);
             }
         }));
-        
+
         // This should trigger events
         let theme = Theme::light();
         let metadata = ThemeMetadata {
@@ -730,9 +792,9 @@ mod tests {
             created_at: std::time::SystemTime::now(),
             modified_at: std::time::SystemTime::now(),
         };
-        
+
         let _ = manager.register_theme("event-test".into(), theme, metadata);
-        
+
         // Check events were recorded
         {
             let event_list = events.read().unwrap();

@@ -4,8 +4,8 @@
 #[cfg(test)]
 mod tests {
     use crate::{
-        Button, ButtonSize, ButtonVariant, Component, ComponentFactory, Interactive, ListItem, ListItemSpacing,
-        Styled as UIStyled,
+        Button, ButtonSize, ButtonVariant, Component, ComponentFactory, Interactive, ListItem,
+        ListItemSpacing, Styled as UIStyled,
     };
 
     #[test]
@@ -85,7 +85,7 @@ mod tests {
                 div
             }))
             .on_secondary_click(Box::new(|div| {
-                // Secondary click handler - just return the div as-is for test  
+                // Secondary click handler - just return the div as-is for test
                 div
             }));
 

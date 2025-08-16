@@ -75,21 +75,24 @@ impl TimingFunction {
             Self::Custom { x1, y1, x2, y2 } => (x1, y1, x2, y2),
         }
     }
-    
+
     /// Get a CSS cubic-bezier string representation
     pub fn to_css_string(self) -> String {
         let (x1, y1, x2, y2) = self.control_points();
         format!("cubic-bezier({}, {}, {}, {})", x1, y1, x2, y2)
     }
-    
+
     /// Check if this is a fast timing function (good for micro-interactions)
     pub fn is_fast(self) -> bool {
         matches!(self, Self::EaseOut | Self::EaseOutQuad | Self::EaseOutCubic)
     }
-    
+
     /// Check if this is a slow timing function (good for major transitions)
     pub fn is_slow(self) -> bool {
-        matches!(self, Self::EaseInOut | Self::EaseInOutQuad | Self::EaseInOutCubic)
+        matches!(
+            self,
+            Self::EaseInOut | Self::EaseInOutQuad | Self::EaseInOutCubic
+        )
     }
 }
 
@@ -120,17 +123,17 @@ impl AnimationDuration {
             Self::Custom(ms) => ms,
         }
     }
-    
+
     /// Get the duration as a Duration
     pub fn as_duration(self) -> Duration {
         Duration::from_millis(self.as_millis())
     }
-    
+
     /// Check if this is suitable for micro-interactions
     pub fn is_micro(self) -> bool {
         self.as_millis() <= 100
     }
-    
+
     /// Check if this is suitable for major transitions
     pub fn is_major(self) -> bool {
         self.as_millis() >= 300
@@ -188,109 +191,85 @@ impl AnimationPreset {
             ],
         }
     }
-    
+
     /// Button active/press animation
     pub fn button_active() -> Self {
         Self {
             duration: AnimationDuration::Fastest,
             timing_function: TimingFunction::EaseOut,
-            properties: vec![
-                AnimationProperty::Background,
-                AnimationProperty::Transform,
-            ],
+            properties: vec![AnimationProperty::Background, AnimationProperty::Transform],
         }
     }
-    
+
     /// Focus ring animation
     pub fn focus_ring() -> Self {
         Self {
             duration: AnimationDuration::Normal,
             timing_function: TimingFunction::EaseOut,
-            properties: vec![
-                AnimationProperty::BorderColor,
-                AnimationProperty::BoxShadow,
-            ],
+            properties: vec![AnimationProperty::BorderColor, AnimationProperty::BoxShadow],
         }
     }
-    
+
     /// Modal/overlay enter animation
     pub fn modal_enter() -> Self {
         Self {
             duration: AnimationDuration::Slow,
             timing_function: TimingFunction::EaseOutCubic,
-            properties: vec![
-                AnimationProperty::Opacity,
-                AnimationProperty::Transform,
-            ],
+            properties: vec![AnimationProperty::Opacity, AnimationProperty::Transform],
         }
     }
-    
+
     /// Modal/overlay exit animation
     pub fn modal_exit() -> Self {
         Self {
             duration: AnimationDuration::Normal,
             timing_function: TimingFunction::EaseInCubic,
-            properties: vec![
-                AnimationProperty::Opacity,
-                AnimationProperty::Transform,
-            ],
+            properties: vec![AnimationProperty::Opacity, AnimationProperty::Transform],
         }
     }
-    
+
     /// List item hover animation
     pub fn list_item_hover() -> Self {
         Self {
             duration: AnimationDuration::Fast,
             timing_function: TimingFunction::EaseOut,
-            properties: vec![
-                AnimationProperty::Background,
-            ],
+            properties: vec![AnimationProperty::Background],
         }
     }
-    
+
     /// Loading state animation
     pub fn loading_state() -> Self {
         Self {
             duration: AnimationDuration::Normal,
             timing_function: TimingFunction::EaseInOut,
-            properties: vec![
-                AnimationProperty::Opacity,
-            ],
+            properties: vec![AnimationProperty::Opacity],
         }
     }
-    
+
     /// Notification slide-in animation
     pub fn notification_enter() -> Self {
         Self {
             duration: AnimationDuration::Slow,
             timing_function: TimingFunction::EaseOutBack,
-            properties: vec![
-                AnimationProperty::Transform,
-                AnimationProperty::Opacity,
-            ],
+            properties: vec![AnimationProperty::Transform, AnimationProperty::Opacity],
         }
     }
-    
+
     /// Notification slide-out animation
     pub fn notification_exit() -> Self {
         Self {
             duration: AnimationDuration::Normal,
             timing_function: TimingFunction::EaseInBack,
-            properties: vec![
-                AnimationProperty::Transform,
-                AnimationProperty::Opacity,
-            ],
+            properties: vec![AnimationProperty::Transform, AnimationProperty::Opacity],
         }
     }
-    
+
     /// Micro-interaction (subtle feedback)
     pub fn micro_interaction() -> Self {
         Self {
             duration: AnimationDuration::Fastest,
             timing_function: TimingFunction::EaseOut,
-            properties: vec![
-                AnimationProperty::Transform,
-            ],
+            properties: vec![AnimationProperty::Transform],
         }
     }
 }
@@ -331,7 +310,7 @@ impl AnimationConfig {
             micro_animations: false,
         }
     }
-    
+
     /// Create config respecting reduced motion preferences
     pub fn reduced_motion() -> Self {
         Self {
@@ -343,18 +322,18 @@ impl AnimationConfig {
             micro_animations: false,
         }
     }
-    
+
     /// Check if a specific animation type should be enabled
     pub fn should_animate(&self, animation_type: AnimationType) -> bool {
         if !self.enabled {
             return false;
         }
-        
+
         if self.reduce_motion {
             // Only allow essential animations when reduce motion is enabled
             return matches!(animation_type, AnimationType::Focus);
         }
-        
+
         match animation_type {
             AnimationType::Hover => self.hover_animations,
             AnimationType::Focus => self.focus_animations,
@@ -386,7 +365,7 @@ impl AnimationUtils {
             InteractionType::Loading => AnimationPreset::loading_state(),
         }
     }
-    
+
     /// Adjust animation duration based on user preferences
     pub fn adjust_duration(
         duration: AnimationDuration,
@@ -402,7 +381,7 @@ impl AnimationUtils {
             duration
         }
     }
-    
+
     /// Choose timing function based on animation type
     pub fn timing_for_type(animation_type: AnimationType) -> TimingFunction {
         match animation_type {
@@ -412,7 +391,7 @@ impl AnimationUtils {
             AnimationType::Micro => TimingFunction::EaseOut,
         }
     }
-    
+
     /// Create a transition with fallback for reduced motion
     pub fn create_transition(
         properties: Vec<AnimationProperty>,
@@ -423,9 +402,9 @@ impl AnimationUtils {
         if !config.enabled {
             return None;
         }
-        
+
         let adjusted_duration = Self::adjust_duration(duration, config);
-        
+
         Some(AnimationPreset {
             duration: adjusted_duration,
             timing_function,

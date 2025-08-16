@@ -198,7 +198,7 @@ impl Default for ColorValidationRules {
                 "surface".to_string(),
             ],
             check_contrast: true,
-            min_contrast_ratio: 4.5, // WCAG AA
+            min_contrast_ratio: 4.5,      // WCAG AA
             min_large_text_contrast: 3.0, // WCAG AA for large text
             validate_color_blindness: true,
             check_color_differences: true,
@@ -214,7 +214,7 @@ impl Default for SizeValidationRules {
         max_limits.insert("space_2".to_string(), gpui::px(200.0));
         max_limits.insert("space_3".to_string(), gpui::px(300.0));
         max_limits.insert("space_4".to_string(), gpui::px(400.0));
-        
+
         Self {
             min_touch_target_size: gpui::px(44.0), // iOS/Android guidelines
             max_size_limits: max_limits,
@@ -255,77 +255,81 @@ impl ThemeValidator {
             custom_validators: Vec::new(),
         }
     }
-    
+
     /// Create a validator for specific WCAG level
     pub fn for_wcag_level(level: WcagLevel) -> Self {
         let mut validator = Self::new();
         validator.rules.accessibility_rules.wcag_level = level;
-        
+
         // Adjust contrast requirements based on WCAG level
         validator.rules.color_rules.min_contrast_ratio = match level {
             WcagLevel::A => 3.0,
             WcagLevel::AA => 4.5,
             WcagLevel::AAA => 7.0,
         };
-        
+
         validator.rules.color_rules.min_large_text_contrast = match level {
             WcagLevel::A => 3.0,
             WcagLevel::AA => 3.0,
             WcagLevel::AAA => 4.5,
         };
-        
+
         validator
     }
-    
+
     /// Add a custom validator
     pub fn add_custom_validator(&mut self, validator: CustomValidator) {
         self.custom_validators.push(validator);
     }
-    
+
     /// Configure validation rules
-    pub fn configure_rules<F>(&mut self, configurator: F) 
+    pub fn configure_rules<F>(&mut self, configurator: F)
     where
         F: FnOnce(&mut ValidationRules),
     {
         configurator(&mut self.rules);
     }
-    
+
     /// Validate a theme comprehensively
-    pub fn validate_theme(&self, theme: &Theme, metadata: &super::ThemeMetadata) -> Result<ValidationResult, ValidationError> {
+    pub fn validate_theme(
+        &self,
+        theme: &Theme,
+        metadata: &super::ThemeMetadata,
+    ) -> Result<ValidationResult, ValidationError> {
         let start_time = std::time::Instant::now();
         let mut issues = Vec::new();
         let mut warnings = Vec::new();
         let mut rules_checked = 0;
-        
+
         nucleotide_logging::debug!(
             theme_name = %metadata.name,
             "Starting theme validation"
         );
-        
+
         // Color validation
         if let Err(color_issues) = self.validate_colors(theme) {
             issues.extend(color_issues);
         }
         rules_checked += 1;
-        
+
         // Size validation
         if let Err(size_issues) = self.validate_sizes(theme) {
             issues.extend(size_issues);
         }
         rules_checked += 1;
-        
+
         // Accessibility validation
         if let Err(a11y_issues) = self.validate_accessibility(theme) {
             issues.extend(a11y_issues);
         }
         rules_checked += 1;
-        
+
         // Consistency validation
         if let Err(consistency_issues) = self.validate_consistency(theme) {
             issues.extend(consistency_issues);
         }
         rules_checked += 1;
-        
+
         // Run custom validators
         for validator in &self.custom_validators {
             let custom_result = validator(theme);
@@ -333,12 +337,15 @@ impl ThemeValidator {
             warnings.extend(custom_result.warnings);
             rules_checked += 1;
         }
-        
+
         let validation_duration = start_time.elapsed();
         let is_valid = !issues.iter().any(|issue| {
-            matches!(issue.severity, IssueSeverity::Error | IssueSeverity::Critical)
+            matches!(
+                issue.severity,
+                IssueSeverity::Error | IssueSeverity::Critical
+            )
         });
-        
+
         let result = ValidationResult {
             is_valid,
             issues,
@@ -350,7 +357,7 @@ impl ThemeValidator {
                 validation_duration,
             },
         };
-        
+
         nucleotide_logging::info!(
             theme_name = %metadata.name,
             is_valid = result.is_valid,
@@ -359,14 +366,14 @@ impl ThemeValidator {
             duration_ms = validation_duration.as_millis(),
             "Theme validation completed"
         );
-        
+
         Ok(result)
     }
-    
+
     /// Validate color properties
     fn validate_colors(&self, theme: &Theme) -> Result<(), Vec<ValidationIssue>> {
         let mut issues = Vec::new();
-        
+
         // Check essential colors
         if self.rules.color_rules.require_essential_colors {
             for color_name in &self.rules.color_rules.essential_colors {
@@ -383,14 +390,14 @@ impl ThemeValidator {
                 }
             }
         }
-        
+
         // Check contrast ratios
         if self.rules.color_rules.check_contrast {
             let text_bg_contrast = self.calculate_contrast_ratio(
                 theme.tokens.colors.text_primary,
                 theme.tokens.colors.background,
             );
-            
+
             if text_bg_contrast < self.rules.color_rules.min_contrast_ratio {
                 issues.push(ValidationIssue {
                     severity: IssueSeverity::Error,
@@ -406,23 +413,23 @@ impl ThemeValidator {
                 });
             }
         }
-        
+
         // Check color blindness considerations
         if self.rules.color_rules.validate_color_blindness {
             self.validate_color_blindness_support(theme, &mut issues);
         }
-        
+
         if issues.is_empty() {
             Ok(())
         } else {
             Err(issues)
         }
     }
-    
+
     /// Validate size properties
     fn validate_sizes(&self, theme: &Theme) -> Result<(), Vec<ValidationIssue>> {
         let mut issues = Vec::new();
-        
+
         // Check maximum size limits
         for (size_name, max_limit) in &self.rules.size_rules.max_size_limits {
             if let Some(actual_size) = self.get_size_by_name(theme, size_name) {
@@ -435,13 +442,16 @@ impl ThemeValidator {
                             size_name, actual_size.0, max_limit.0
                         ),
                         affected_element: Some(size_name.clone()),
-                        suggested_fix: Some(format!("Consider reducing {} to {:.1}px or less", size_name, max_limit.0)),
+                        suggested_fix: Some(format!(
+                            "Consider reducing {} to {:.1}px or less",
+                            size_name, max_limit.0
+                        )),
                         wcag_guideline: None,
                     });
                 }
             }
         }
-        
+
         // Check spacing relationships
         if self.rules.size_rules.validate_spacing_ratios {
             let sizes = &theme.tokens.sizes;
@@ -456,26 +466,27 @@ impl ThemeValidator {
                 });
             }
         }
-        
+
         if issues.is_empty() {
             Ok(())
         } else {
             Err(issues)
         }
     }
-    
+
     /// Validate accessibility requirements
     fn validate_accessibility(&self, theme: &Theme) -> Result<(), Vec<ValidationIssue>> {
         let mut issues = Vec::new();
-        
+
         // Check focus indicators
         if self.rules.accessibility_rules.check_focus_indicators {
             let focus_contrast = self.calculate_contrast_ratio(
                 theme.tokens.colors.primary, // Assuming primary is used for focus
                 theme.tokens.colors.background,
             );
-            
-            if focus_contrast < 3.0 { // Minimum for focus indicators
+
+            if focus_contrast < 3.0 {
+                // Minimum for focus indicators
                 issues.push(ValidationIssue {
                     severity: IssueSeverity::Error,
                     category: IssueCategory::Accessibility,
@@ -486,44 +497,46 @@ impl ThemeValidator {
                 });
             }
         }
-        
+
         if issues.is_empty() {
             Ok(())
         } else {
             Err(issues)
         }
     }
-    
+
     /// Validate theme consistency
     fn validate_consistency(&self, theme: &Theme) -> Result<(), Vec<ValidationIssue>> {
         let mut issues = Vec::new();
-        
+
         // Check color harmony
         if self.rules.consistency_rules.check_color_harmony {
             let primary_secondary_difference = self.calculate_color_difference(
                 theme.tokens.colors.primary,
                 theme.tokens.colors.text_secondary,
             );
-            
+
             if primary_secondary_difference < 100.0 {
                 issues.push(ValidationIssue {
                     severity: IssueSeverity::Warning,
                     category: IssueCategory::Consistency,
                     description: "Primary and text secondary colors are very similar".to_string(),
                     affected_element: Some("primary_secondary_colors".to_string()),
-                    suggested_fix: Some("Increase difference between primary and secondary colors".to_string()),
+                    suggested_fix: Some(
+                        "Increase difference between primary and secondary colors".to_string(),
+                    ),
                     wcag_guideline: None,
                 });
             }
         }
-        
+
         if issues.is_empty() {
             Ok(())
         } else {
             Err(issues)
         }
     }
-    
+
     /// Validate color blindness support
     fn validate_color_blindness_support(&self, theme: &Theme, issues: &mut Vec<ValidationIssue>) {
         // Check if important distinctions rely only on color
@@ -531,19 +544,22 @@ impl ThemeValidator {
             theme.tokens.colors.error,
             theme.tokens.colors.text_primary,
         );
-        
+
         if error_text_difference < 0.3 {
             issues.push(ValidationIssue {
                 severity: IssueSeverity::Warning,
                 category: IssueCategory::Accessibility,
-                description: "Error color may not be distinguishable for color-blind users".to_string(),
+                description: "Error color may not be distinguishable for color-blind users"
+                    .to_string(),
                 affected_element: Some("error_color".to_string()),
-                suggested_fix: Some("Ensure error states use more than just color to convey meaning".to_string()),
+                suggested_fix: Some(
+                    "Ensure error states use more than just color to convey meaning".to_string(),
+                ),
                 wcag_guideline: Some("WCAG 1.4.1".to_string()),
             });
         }
     }
-    
+
     /// Get color by name from theme
     fn get_color_by_name(&self, theme: &Theme, name: &str) -> Option<Hsla> {
         match name {
@@ -560,7 +576,7 @@ impl ThemeValidator {
             _ => None,
         }
     }
-    
+
     /// Get size by name from theme
     fn get_size_by_name(&self, theme: &Theme, name: &str) -> Option<Pixels> {
         match name {
@@ -574,35 +590,35 @@ impl ThemeValidator {
             _ => None,
         }
     }
-    
+
     /// Calculate contrast ratio between two colors
     fn calculate_contrast_ratio(&self, color1: Hsla, color2: Hsla) -> f32 {
         let l1 = self.relative_luminance(color1);
         let l2 = self.relative_luminance(color2);
-        
+
         let lighter = l1.max(l2);
         let darker = l1.min(l2);
-        
+
         (lighter + 0.05) / (darker + 0.05)
     }
-    
+
     /// Calculate color difference (Delta E)
     fn calculate_color_difference(&self, color1: Hsla, color2: Hsla) -> f32 {
         // Simplified Delta E calculation
         let dl = color1.l - color2.l;
         let da = (color1.s * color1.l.cos()) - (color2.s * color2.l.cos());
         let db = (color1.s * color1.l.sin()) - (color2.s * color2.l.sin());
-        
+
         (dl * dl + da * da + db * db).sqrt() * 100.0
     }
-    
+
     /// Calculate luminance difference
     fn calculate_luminance_difference(&self, color1: Hsla, color2: Hsla) -> f32 {
         let l1 = self.relative_luminance(color1);
         let l2 = self.relative_luminance(color2);
         (l1 - l2).abs()
     }
-    
+
     /// Calculate relative luminance
     fn relative_luminance(&self, color: Hsla) -> f32 {
         // Simplified luminance calculation using lightness
@@ -615,35 +631,39 @@ impl ValidationResult {
     pub fn is_valid(&self) -> bool {
         self.is_valid
     }
-    
+
     /// Get critical issues
     pub fn critical_issues(&self) -> Vec<&ValidationIssue> {
-        self.issues.iter()
+        self.issues
+            .iter()
             .filter(|issue| issue.severity == IssueSeverity::Critical)
             .collect()
     }
-    
+
     /// Get error issues
     pub fn error_issues(&self) -> Vec<&ValidationIssue> {
-        self.issues.iter()
+        self.issues
+            .iter()
             .filter(|issue| issue.severity == IssueSeverity::Error)
             .collect()
     }
-    
+
     /// Get warning issues
     pub fn warning_issues(&self) -> Vec<&ValidationIssue> {
-        self.issues.iter()
+        self.issues
+            .iter()
             .filter(|issue| issue.severity == IssueSeverity::Warning)
             .collect()
     }
-    
+
     /// Get issues by category
     pub fn issues_by_category(&self, category: IssueCategory) -> Vec<&ValidationIssue> {
-        self.issues.iter()
+        self.issues
+            .iter()
             .filter(|issue| issue.category == category)
             .collect()
     }
-    
+
     /// Generate summary report
     pub fn summary(&self) -> String {
         format!(
@@ -696,16 +716,22 @@ mod tests {
     fn test_theme_validator_creation() {
         let validator = ThemeValidator::new();
         assert!(validator.rules.color_rules.require_essential_colors);
-        assert_eq!(validator.rules.accessibility_rules.wcag_level, WcagLevel::AA);
+        assert_eq!(
+            validator.rules.accessibility_rules.wcag_level,
+            WcagLevel::AA
+        );
     }
-    
+
     #[test]
     fn test_wcag_level_configuration() {
         let validator = ThemeValidator::for_wcag_level(WcagLevel::AAA);
         assert_eq!(validator.rules.color_rules.min_contrast_ratio, 7.0);
-        assert_eq!(validator.rules.accessibility_rules.wcag_level, WcagLevel::AAA);
+        assert_eq!(
+            validator.rules.accessibility_rules.wcag_level,
+            WcagLevel::AAA
+        );
     }
-    
+
     #[test]
     fn test_validation_result() {
         let result = ValidationResult {
@@ -736,29 +762,39 @@ mod tests {
                 validation_duration: std::time::Duration::from_millis(10),
             },
         };
-        
+
         assert!(!result.is_valid());
         assert_eq!(result.error_issues().len(), 1);
         assert_eq!(result.warning_issues().len(), 1);
         assert_eq!(result.issues_by_category(IssueCategory::Color).len(), 1);
     }
-    
+
     #[test]
     fn test_contrast_ratio_calculation() {
         let validator = ThemeValidator::new();
-        
-        let black = Hsla { h: 0.0, s: 0.0, l: 0.0, a: 1.0 };
-        let white = Hsla { h: 0.0, s: 0.0, l: 1.0, a: 1.0 };
-        
+
+        let black = Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 1.0,
+        };
+        let white = Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 1.0,
+            a: 1.0,
+        };
+
         let contrast = validator.calculate_contrast_ratio(black, white);
         assert!(contrast > 10.0); // Should be high contrast
     }
-    
+
     #[test]
     fn test_essential_colors_validation() {
         let validator = ThemeValidator::new();
         let theme = Theme::light();
-        
+
         let result = validator.validate_colors(&theme);
         assert!(result.is_ok()); // Default theme should pass
     }

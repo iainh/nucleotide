@@ -8,7 +8,7 @@ use crate::{
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, 
+    div, AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels,
     RenderOnce, SharedString, StatefulInteractiveElement, Styled, TextOverflow, Window,
 };
 use smallvec::SmallVec;
@@ -159,7 +159,8 @@ impl ListItemSpacing {
 }
 
 // Type alias for GPUI event listeners - these will be applied to the rendered element
-type EventListener = Box<dyn FnOnce(gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> + 'static>;
+type EventListener =
+    Box<dyn FnOnce(gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> + 'static>;
 
 /// A reusable list item component following Zed's pattern
 #[derive(IntoElement)]
@@ -282,9 +283,9 @@ impl ListItem {
     }
 
     /// Add a GPUI event listener - this allows the ListItem to work with cx.listener() pattern
-    pub fn with_listener<F>(mut self, listener_fn: F) -> Self 
+    pub fn with_listener<F>(mut self, listener_fn: F) -> Self
     where
-        F: FnOnce(gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> + 'static
+        F: FnOnce(gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> + 'static,
     {
         self.event_listeners.push(Box::new(listener_fn));
         self
@@ -367,7 +368,8 @@ impl UIStyled for ListItem {
 
 // Implement the Interactive trait using the new listener pattern
 impl Interactive for ListItem {
-    type ClickHandler = Box<dyn FnOnce(gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> + 'static>;
+    type ClickHandler =
+        Box<dyn FnOnce(gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> + 'static>;
 
     fn on_click(mut self, handler: Self::ClickHandler) -> Self {
         self.event_listeners.push(handler);
@@ -669,7 +671,7 @@ mod tests {
             ListItemVariant::from(StyleVariant::Accent),
             ListItemVariant::Primary
         );
-        
+
         // Test Ghost variant conversion
         assert_eq!(
             StyleVariant::from(ListItemVariant::Ghost),

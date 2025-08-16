@@ -1,18 +1,21 @@
 // ABOUTME: Provider system for managing shared state and configuration across the component tree
 // ABOUTME: Implements React-style provider patterns adapted for GPUI's reactive system
 
-use gpui::{App, AnyElement, ElementId, IntoElement, RenderOnce, SharedString, Window, div, ParentElement, InteractiveElement};
+use gpui::{
+    div, AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, Window,
+};
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::any::{Any, TypeId};
 
-pub mod theme_provider;
 pub mod config_provider;
 pub mod event_provider;
+pub mod theme_provider;
 
-pub use theme_provider::*;
 pub use config_provider::*;
 pub use event_provider::*;
+pub use theme_provider::*;
 
 /// Global provider context storage
 static mut PROVIDER_CONTEXT: Option<Arc<RwLock<ProviderContext>>> = None;
@@ -20,10 +23,8 @@ static INIT_PROVIDERS: std::sync::Once = std::sync::Once::new();
 
 /// Initialize the provider system
 pub fn init_provider_system() {
-    INIT_PROVIDERS.call_once(|| {
-        unsafe {
-            PROVIDER_CONTEXT = Some(Arc::new(RwLock::new(ProviderContext::new())));
-        }
+    INIT_PROVIDERS.call_once(|| unsafe {
+        PROVIDER_CONTEXT = Some(Arc::new(RwLock::new(ProviderContext::new())));
     });
 }
 
@@ -33,9 +34,9 @@ where
     F: FnOnce(&ProviderContext) -> R,
 {
     unsafe {
-        PROVIDER_CONTEXT.as_ref().and_then(|context| {
-            context.read().ok().map(|guard| f(&*guard))
-        })
+        PROVIDER_CONTEXT
+            .as_ref()
+            .and_then(|context| context.read().ok().map(|guard| f(&*guard)))
     }
 }
 
@@ -46,10 +47,13 @@ where
 {
     unsafe {
         PROVIDER_CONTEXT.as_ref().map_or(false, |context| {
-            context.write().map(|mut guard| {
-                f(&mut *guard);
-                true
-            }).unwrap_or(false)
+            context
+                .write()
+                .map(|mut guard| {
+                    f(&mut *guard);
+                    true
+                })
+                .unwrap_or(false)
         })
     }
 }
@@ -84,7 +88,7 @@ impl ProviderContext {
             active_scope: None,
         }
     }
-    
+
     /// Register a global provider
     pub fn register_global_provider<T>(&mut self, provider: T)
     where
@@ -92,13 +96,13 @@ impl ProviderContext {
     {
         let type_id = TypeId::of::<T>();
         self.providers.insert(type_id, Box::new(provider));
-        
+
         nucleotide_logging::debug!(
             provider_type = std::any::type_name::<T>(),
             "Registered global provider"
         );
     }
-    
+
     /// Get a global provider
     pub fn get_global_provider<T>(&self) -> Option<&T>
     where
@@ -107,7 +111,7 @@ impl ProviderContext {
         let type_id = TypeId::of::<T>();
         self.providers.get(&type_id)?.downcast_ref::<T>()
     }
-    
+
     /// Create a new provider scope
     pub fn create_scope(&mut self, element_id: Option<ElementId>) -> ProviderScopeId {
         let id = ProviderScopeId(self.provider_hierarchy.len());
@@ -117,16 +121,16 @@ impl ProviderContext {
             providers: HashMap::new(),
             parent_scope: self.active_scope,
         };
-        
+
         self.provider_hierarchy.push(scope);
         id
     }
-    
+
     /// Set the active scope
     pub fn set_active_scope(&mut self, scope_id: Option<ProviderScopeId>) {
         self.active_scope = scope_id;
     }
-    
+
     /// Register a scoped provider
     pub fn register_scoped_provider<T>(&mut self, scope_id: ProviderScopeId, provider: T)
     where
@@ -137,41 +141,45 @@ impl ProviderContext {
             scope.providers.insert(type_id, Box::new(provider));
         }
     }
-    
+
     /// Get a provider from the current scope or parent scopes
     pub fn get_provider<T>(&self) -> Option<&T>
     where
         T: Any + Send + Sync,
     {
         let type_id = TypeId::of::<T>();
-        
+
         // First check current scope and walk up the hierarchy
         if let Some(scope_id) = self.active_scope {
             if let Some(provider) = self.find_provider_in_hierarchy(type_id, scope_id) {
                 return provider.downcast_ref::<T>();
             }
         }
-        
+
         // Fall back to global providers
         self.providers.get(&type_id)?.downcast_ref::<T>()
     }
-    
+
     /// Find provider in scope hierarchy
-    fn find_provider_in_hierarchy(&self, type_id: TypeId, scope_id: ProviderScopeId) -> Option<&Box<dyn Any + Send + Sync>> {
+    fn find_provider_in_hierarchy(
+        &self,
+        type_id: TypeId,
+        scope_id: ProviderScopeId,
+    ) -> Option<&Box<dyn Any + Send + Sync>> {
         if let Some(scope) = self.provider_hierarchy.get(scope_id.0) {
             if let Some(provider) = scope.providers.get(&type_id) {
                 return Some(provider);
             }
-            
+
             // Check parent scope
             if let Some(parent_id) = scope.parent_scope {
                 return self.find_provider_in_hierarchy(type_id, parent_id);
             }
         }
-        
+
         None
     }
-    
+
     /// Remove a scope and clean up
     pub fn remove_scope(&mut self, scope_id: ProviderScopeId) {
         // Update active scope if it's being removed
@@ -180,7 +188,7 @@ impl ProviderContext {
                 self.active_scope = scope.parent_scope;
             }
         }
-        
+
         // Note: We don't actually remove from the vec to maintain indices
         // In a real implementation, you might use a different data structure
         if let Some(scope) = self.provider_hierarchy.get_mut(scope_id.0) {
@@ -193,10 +201,10 @@ impl ProviderContext {
 pub trait Provider: Any + Send + Sync {
     /// Get the provider type name
     fn type_name(&self) -> &'static str;
-    
+
     /// Initialize the provider
     fn initialize(&mut self, _cx: &mut App) {}
-    
+
     /// Clean up the provider
     fn cleanup(&mut self, _cx: &mut App) {}
 }
@@ -225,18 +233,17 @@ where
             children: Vec::new(),
         }
     }
-    
+
     /// Add a child element
     pub fn child(mut self, child: impl IntoElement) -> Self {
         self.children.push(child.into_any_element());
         self
     }
-    
+
     /// Add multiple children
     pub fn children(mut self, children: impl IntoIterator<Item = impl IntoElement>) -> Self {
-        self.children.extend(
-            children.into_iter().map(|child| child.into_any_element())
-        );
+        self.children
+            .extend(children.into_iter().map(|child| child.into_any_element()));
         self
     }
 }
@@ -246,7 +253,7 @@ where
     T: Provider + Clone + 'static,
 {
     type Element = AnyElement;
-    
+
     fn into_element(self) -> Self::Element {
         self.into_any_element()
     }
@@ -265,7 +272,7 @@ where
             self.scope_id = Some(scope_id);
             new_scope_id = Some(scope_id);
         });
-        
+
         // Create a container element that manages the scope
         ProviderScopeElement {
             scope_id: new_scope_id,
@@ -282,7 +289,7 @@ struct ProviderScopeElement {
 
 impl IntoElement for ProviderScopeElement {
     type Element = AnyElement;
-    
+
     fn into_element(self) -> Self::Element {
         self.into_any_element()
     }
@@ -296,7 +303,7 @@ impl RenderOnce for ProviderScopeElement {
                 context.set_active_scope(Some(scope_id));
             });
         }
-        
+
         // Create a div container for the children
         let mut container = div();
         for child in self.children {
@@ -311,9 +318,7 @@ pub fn use_provider<T>() -> Option<T>
 where
     T: Any + Send + Sync + Clone,
 {
-    with_provider_context(|context| {
-        context.get_provider::<T>().cloned()
-    }).flatten()
+    with_provider_context(|context| context.get_provider::<T>().cloned()).flatten()
 }
 
 /// Provider hook with default fallback
@@ -332,7 +337,7 @@ macro_rules! create_provider {
             provider: $provider_type,
             children: Vec<gpui::AnyElement>,
         }
-        
+
         impl $name {
             pub fn new(provider: $provider_type) -> Self {
                 Self {
@@ -340,23 +345,25 @@ macro_rules! create_provider {
                     children: Vec::new(),
                 }
             }
-            
+
             pub fn child(mut self, child: impl gpui::IntoElement) -> Self {
                 self.children.push(child.into_any_element());
                 self
             }
-            
-            pub fn children(mut self, children: impl IntoIterator<Item = impl gpui::IntoElement>) -> Self {
-                self.children.extend(
-                    children.into_iter().map(|child| child.into_any_element())
-                );
+
+            pub fn children(
+                mut self,
+                children: impl IntoIterator<Item = impl gpui::IntoElement>,
+            ) -> Self {
+                self.children
+                    .extend(children.into_iter().map(|child| child.into_any_element()));
                 self
             }
         }
-        
+
         impl gpui::IntoElement for $name {
             type Element = gpui::AnyElement;
-            
+
             fn into_element(self) -> Self::Element {
                 $crate::providers::ProviderContainer::new(stringify!($name), self.provider)
                     .children(self.children)
@@ -390,7 +397,7 @@ impl ProviderTreeBuilder {
             children: Vec::new(),
         }
     }
-    
+
     pub fn with_provider<T>(mut self, provider: T) -> Self
     where
         T: Provider + Clone + 'static,
@@ -401,26 +408,25 @@ impl ProviderTreeBuilder {
         });
         self
     }
-    
+
     pub fn child(mut self, child: impl IntoElement) -> Self {
         self.children.push(child.into_any_element());
         self
     }
-    
+
     pub fn children(mut self, children: impl IntoIterator<Item = impl IntoElement>) -> Self {
-        self.children.extend(
-            children.into_iter().map(|child| child.into_any_element())
-        );
+        self.children
+            .extend(children.into_iter().map(|child| child.into_any_element()));
         self
     }
-    
+
     pub fn build(self) -> AnyElement {
         // Create nested provider structure
         let mut current_element: AnyElement = gpui::div()
             .id("provider-tree-content")
             .children(self.children)
             .into_any_element();
-        
+
         // Wrap each provider around the content (innermost first)
         for entry in self.providers.into_iter().rev() {
             // Create a provider container for each entry
@@ -428,10 +434,10 @@ impl ProviderTreeBuilder {
             let container = div()
                 .id(ElementId::from(provider_id))
                 .child(current_element);
-            
+
             current_element = container.into_any_element();
         }
-        
+
         current_element
     }
 }
@@ -453,7 +459,7 @@ impl ProviderComposition {
             .with_provider(config_provider::ConfigurationProvider::new())
             .with_provider(event_provider::EventHandlingProvider::new())
     }
-    
+
     /// Create an accessibility-focused provider tree
     pub fn accessibility_providers() -> ProviderTreeBuilder {
         provider_tree()
@@ -461,7 +467,7 @@ impl ProviderComposition {
             .with_provider(config_provider::ConfigurationProvider::accessibility_focused())
             .with_provider(event_provider::EventHandlingProvider::new())
     }
-    
+
     /// Create a performance-optimized provider tree
     pub fn performance_providers() -> ProviderTreeBuilder {
         provider_tree()
@@ -469,22 +475,22 @@ impl ProviderComposition {
             .with_provider(config_provider::ConfigurationProvider::performance_focused())
             .with_provider(event_provider::EventHandlingProvider::new())
     }
-    
+
     /// Create a minimal provider tree with just theme support
     pub fn minimal_providers() -> ProviderTreeBuilder {
-        provider_tree()
-            .with_provider(theme_provider::ThemeConfigurations::light_dark())
+        provider_tree().with_provider(theme_provider::ThemeConfigurations::light_dark())
     }
-    
+
     /// Create a development provider tree with all features enabled
     pub fn development_providers() -> ProviderTreeBuilder {
         let mut config = config_provider::ConfigurationProvider::new();
-        config.feature_flags.experimental_features = crate::utils::ExperimentalFeatures::development();
-        
+        config.feature_flags.experimental_features =
+            crate::utils::ExperimentalFeatures::development();
+
         let mut event_provider = event_provider::EventHandlingProvider::new();
         event_provider.analytics_config.enable_analytics = true;
         event_provider.analytics_config.track_performance = true;
-        
+
         provider_tree()
             .with_provider(theme_provider::ThemeConfigurations::light_dark())
             .with_provider(config)
@@ -500,37 +506,37 @@ impl ProviderHooks {
     pub fn theme() -> crate::Theme {
         theme_provider::use_theme()
     }
-    
+
     /// Get UI configuration with fallback
     pub fn ui_config() -> config_provider::UIConfiguration {
         config_provider::use_ui_config()
     }
-    
+
     /// Get accessibility configuration with fallback
     pub fn accessibility_config() -> config_provider::AccessibilityConfiguration {
         config_provider::use_accessibility_config()
     }
-    
+
     /// Check if a feature is enabled
     pub fn is_feature_enabled(feature: &str) -> bool {
         config_provider::use_config().is_feature_enabled(feature)
     }
-    
+
     /// Get effective animation duration
     pub fn animation_duration(base: std::time::Duration) -> std::time::Duration {
         config_provider::use_animation_duration(base)
     }
-    
+
     /// Emit a custom event
     pub fn emit_event(event: event_provider::CustomEventDetails) -> bool {
         event_provider::use_emit_event()(event)
     }
-    
+
     /// Check if reduced motion is preferred
     pub fn prefers_reduced_motion() -> bool {
         config_provider::use_prefers_reduced_motion()
     }
-    
+
     /// Check if dark theme is active
     pub fn is_dark_theme() -> bool {
         theme_provider::use_is_dark_theme()
@@ -544,30 +550,30 @@ macro_rules! provider_composition {
         $crate::providers::provider_tree()
             $(.with_provider($provider))*
     };
-    
+
     (theme: $theme:expr, config: $config:expr, events: $events:expr) => {
         $crate::providers::provider_tree()
             .with_provider($theme)
             .with_provider($config)
             .with_provider($events)
     };
-    
+
     (minimal) => {
         $crate::providers::ProviderComposition::minimal_providers()
     };
-    
+
     (app) => {
         $crate::providers::ProviderComposition::app_providers()
     };
-    
+
     (accessibility) => {
         $crate::providers::ProviderComposition::accessibility_providers()
     };
-    
+
     (performance) => {
         $crate::providers::ProviderComposition::performance_providers()
     };
-    
+
     (development) => {
         $crate::providers::ProviderComposition::development_providers()
     };
@@ -613,9 +619,9 @@ mod tests {
         let provider = TestProvider {
             value: "test".to_string(),
         };
-        
+
         context.register_global_provider(provider.clone());
-        
+
         let retrieved = context.get_global_provider::<TestProvider>();
         assert_eq!(retrieved, Some(&provider));
     }
@@ -624,11 +630,11 @@ mod tests {
     fn test_provider_scope_creation() {
         let mut context = ProviderContext::new();
         let element_id: ElementId = "test-element".into();
-        
+
         let scope_id = context.create_scope(Some(element_id.clone()));
         assert_eq!(scope_id.0, 0);
         assert_eq!(context.provider_hierarchy.len(), 1);
-        
+
         let scope = &context.provider_hierarchy[0];
         assert_eq!(scope.id, scope_id);
         assert_eq!(scope.element_id, Some(element_id));
@@ -639,14 +645,14 @@ mod tests {
     fn test_scoped_provider_registration() {
         let mut context = ProviderContext::new();
         let scope_id = context.create_scope(None);
-        
+
         let provider = TestProvider {
             value: "scoped".to_string(),
         };
-        
+
         context.register_scoped_provider(scope_id, provider.clone());
         context.set_active_scope(Some(scope_id));
-        
+
         let retrieved = context.get_provider::<TestProvider>();
         assert_eq!(retrieved, Some(&provider));
     }
@@ -654,27 +660,27 @@ mod tests {
     #[test]
     fn test_provider_hierarchy() {
         let mut context = ProviderContext::new();
-        
+
         // Create parent scope with a provider
         let parent_scope = context.create_scope(None);
         let parent_provider = TestProvider {
             value: "parent".to_string(),
         };
         context.register_scoped_provider(parent_scope, parent_provider.clone());
-        
+
         // Create child scope
         context.set_active_scope(Some(parent_scope));
         let child_scope = context.create_scope(None);
         let child_provider = AnotherProvider { number: 42 };
         context.register_scoped_provider(child_scope, child_provider.clone());
-        
+
         // Set child as active scope
         context.set_active_scope(Some(child_scope));
-        
+
         // Should find parent provider from child scope
         let parent_retrieved = context.get_provider::<TestProvider>();
         assert_eq!(parent_retrieved, Some(&parent_provider));
-        
+
         // Should find child provider in child scope
         let child_retrieved = context.get_provider::<AnotherProvider>();
         assert_eq!(child_retrieved, Some(&child_provider));
@@ -683,17 +689,17 @@ mod tests {
     #[test]
     fn test_provider_fallback_to_global() {
         let mut context = ProviderContext::new();
-        
+
         // Register global provider
         let global_provider = TestProvider {
             value: "global".to_string(),
         };
         context.register_global_provider(global_provider.clone());
-        
+
         // Create scope without the provider
         let scope_id = context.create_scope(None);
         context.set_active_scope(Some(scope_id));
-        
+
         // Should fall back to global provider
         let retrieved = context.get_provider::<TestProvider>();
         assert_eq!(retrieved, Some(&global_provider));
@@ -703,10 +709,10 @@ mod tests {
     fn test_scope_removal() {
         let mut context = ProviderContext::new();
         let scope_id = context.create_scope(None);
-        
+
         context.set_active_scope(Some(scope_id));
         assert_eq!(context.active_scope, Some(scope_id));
-        
+
         context.remove_scope(scope_id);
         assert_eq!(context.active_scope, None);
     }
@@ -714,31 +720,31 @@ mod tests {
     #[test]
     fn test_nested_scope_hierarchy() {
         let mut context = ProviderContext::new();
-        
+
         // Create grandparent scope
         let grandparent_scope = context.create_scope(None);
         let grandparent_provider = TestProvider {
             value: "grandparent".to_string(),
         };
         context.register_scoped_provider(grandparent_scope, grandparent_provider.clone());
-        
+
         // Create parent scope
         context.set_active_scope(Some(grandparent_scope));
         let parent_scope = context.create_scope(None);
-        
+
         // Create child scope
         context.set_active_scope(Some(parent_scope));
         let child_scope = context.create_scope(None);
         let child_provider = AnotherProvider { number: 99 };
         context.register_scoped_provider(child_scope, child_provider.clone());
-        
+
         // Set child as active
         context.set_active_scope(Some(child_scope));
-        
+
         // Should find grandparent provider through the hierarchy
         let grandparent_retrieved = context.get_provider::<TestProvider>();
         assert_eq!(grandparent_retrieved, Some(&grandparent_provider));
-        
+
         // Should find child provider directly
         let child_retrieved = context.get_provider::<AnotherProvider>();
         assert_eq!(child_retrieved, Some(&child_provider));
@@ -753,7 +759,7 @@ mod tests {
             .with_provider(AnotherProvider { number: 123 })
             .child(gpui::div().id("child1"))
             .child(gpui::div().id("child2"));
-        
+
         let element = tree.build();
         // Test would verify the element structure in a real implementation
         assert!(true); // Placeholder assertion

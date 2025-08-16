@@ -1,7 +1,7 @@
 // ABOUTME: Responsive design system for nucleotide-ui components
 // ABOUTME: Provides breakpoints, responsive tokens, and adaptive styling
 
-use gpui::{Pixels, px, Size};
+use gpui::{px, Pixels, Size};
 use std::collections::HashMap;
 
 /// Standard responsive breakpoints
@@ -27,7 +27,7 @@ impl Breakpoint {
             Self::XXLarge => px(1536.0),
         }
     }
-    
+
     /// Get the maximum width for this breakpoint (exclusive)
     pub fn max_width(self) -> Option<Pixels> {
         match self {
@@ -39,7 +39,7 @@ impl Breakpoint {
             Self::XXLarge => None, // No upper limit
         }
     }
-    
+
     /// Get breakpoint from viewport width
     pub fn from_width(width: Pixels) -> Self {
         if width.0 >= 1536.0 {
@@ -56,7 +56,7 @@ impl Breakpoint {
             Self::ExtraSmall
         }
     }
-    
+
     /// Get short identifier for this breakpoint
     pub fn as_str(self) -> &'static str {
         match self {
@@ -68,7 +68,7 @@ impl Breakpoint {
             Self::XXLarge => "2xl",
         }
     }
-    
+
     /// Get all breakpoints in order
     pub fn all() -> &'static [Breakpoint] {
         &[
@@ -97,19 +97,19 @@ impl<T: Clone> ResponsiveValue<T> {
             default,
         }
     }
-    
+
     /// Set value for a specific breakpoint
     pub fn set(mut self, breakpoint: Breakpoint, value: T) -> Self {
         self.values.insert(breakpoint, value);
         self
     }
-    
+
     /// Get value for current breakpoint
     pub fn get(&self, current_breakpoint: Breakpoint) -> &T {
         // Find the highest breakpoint that's <= current_breakpoint
         let mut best_match = None;
         let mut best_breakpoint = None;
-        
+
         for (breakpoint, value) in &self.values {
             if *breakpoint <= current_breakpoint {
                 if best_breakpoint.is_none() || *breakpoint > best_breakpoint.unwrap() {
@@ -118,10 +118,10 @@ impl<T: Clone> ResponsiveValue<T> {
                 }
             }
         }
-        
+
         best_match.unwrap_or(&self.default)
     }
-    
+
     /// Create from breakpoint-value pairs
     pub fn from_pairs(default: T, pairs: &[(Breakpoint, T)]) -> Self
     where
@@ -154,92 +154,146 @@ impl ResponsiveSizes {
     /// Create responsive sizes with mobile-first approach
     pub fn mobile_first() -> Self {
         Self {
-            space_1: ResponsiveValue::from_pairs(px(4.0), &[
-                (Breakpoint::Medium, px(4.0)),
-                (Breakpoint::Large, px(6.0)),
-            ]),
-            space_2: ResponsiveValue::from_pairs(px(8.0), &[
-                (Breakpoint::Medium, px(8.0)),
-                (Breakpoint::Large, px(10.0)),
-            ]),
-            space_3: ResponsiveValue::from_pairs(px(12.0), &[
-                (Breakpoint::Medium, px(12.0)),
-                (Breakpoint::Large, px(16.0)),
-            ]),
-            space_4: ResponsiveValue::from_pairs(px(16.0), &[
-                (Breakpoint::Medium, px(16.0)),
-                (Breakpoint::Large, px(20.0)),
-            ]),
-            space_5: ResponsiveValue::from_pairs(px(20.0), &[
-                (Breakpoint::Medium, px(20.0)),
-                (Breakpoint::Large, px(24.0)),
-            ]),
-            space_6: ResponsiveValue::from_pairs(px(24.0), &[
-                (Breakpoint::Medium, px(24.0)),
-                (Breakpoint::Large, px(32.0)),
-            ]),
-            space_8: ResponsiveValue::from_pairs(px(32.0), &[
-                (Breakpoint::Medium, px(32.0)),
-                (Breakpoint::Large, px(40.0)),
-            ]),
-            space_10: ResponsiveValue::from_pairs(px(40.0), &[
-                (Breakpoint::Medium, px(40.0)),
-                (Breakpoint::Large, px(48.0)),
-            ]),
-            space_12: ResponsiveValue::from_pairs(px(48.0), &[
-                (Breakpoint::Medium, px(48.0)),
-                (Breakpoint::Large, px(64.0)),
-            ]),
-            space_16: ResponsiveValue::from_pairs(px(64.0), &[
-                (Breakpoint::Medium, px(64.0)),
-                (Breakpoint::Large, px(80.0)),
-            ]),
+            space_1: ResponsiveValue::from_pairs(
+                px(4.0),
+                &[(Breakpoint::Medium, px(4.0)), (Breakpoint::Large, px(6.0))],
+            ),
+            space_2: ResponsiveValue::from_pairs(
+                px(8.0),
+                &[(Breakpoint::Medium, px(8.0)), (Breakpoint::Large, px(10.0))],
+            ),
+            space_3: ResponsiveValue::from_pairs(
+                px(12.0),
+                &[
+                    (Breakpoint::Medium, px(12.0)),
+                    (Breakpoint::Large, px(16.0)),
+                ],
+            ),
+            space_4: ResponsiveValue::from_pairs(
+                px(16.0),
+                &[
+                    (Breakpoint::Medium, px(16.0)),
+                    (Breakpoint::Large, px(20.0)),
+                ],
+            ),
+            space_5: ResponsiveValue::from_pairs(
+                px(20.0),
+                &[
+                    (Breakpoint::Medium, px(20.0)),
+                    (Breakpoint::Large, px(24.0)),
+                ],
+            ),
+            space_6: ResponsiveValue::from_pairs(
+                px(24.0),
+                &[
+                    (Breakpoint::Medium, px(24.0)),
+                    (Breakpoint::Large, px(32.0)),
+                ],
+            ),
+            space_8: ResponsiveValue::from_pairs(
+                px(32.0),
+                &[
+                    (Breakpoint::Medium, px(32.0)),
+                    (Breakpoint::Large, px(40.0)),
+                ],
+            ),
+            space_10: ResponsiveValue::from_pairs(
+                px(40.0),
+                &[
+                    (Breakpoint::Medium, px(40.0)),
+                    (Breakpoint::Large, px(48.0)),
+                ],
+            ),
+            space_12: ResponsiveValue::from_pairs(
+                px(48.0),
+                &[
+                    (Breakpoint::Medium, px(48.0)),
+                    (Breakpoint::Large, px(64.0)),
+                ],
+            ),
+            space_16: ResponsiveValue::from_pairs(
+                px(64.0),
+                &[
+                    (Breakpoint::Medium, px(64.0)),
+                    (Breakpoint::Large, px(80.0)),
+                ],
+            ),
         }
     }
-    
+
     /// Create responsive sizes optimized for desktop-first
     pub fn desktop_first() -> Self {
         Self {
-            space_1: ResponsiveValue::from_pairs(px(6.0), &[
-                (Breakpoint::ExtraSmall, px(4.0)),
-                (Breakpoint::Small, px(4.0)),
-            ]),
-            space_2: ResponsiveValue::from_pairs(px(10.0), &[
-                (Breakpoint::ExtraSmall, px(8.0)),
-                (Breakpoint::Small, px(8.0)),
-            ]),
-            space_3: ResponsiveValue::from_pairs(px(16.0), &[
-                (Breakpoint::ExtraSmall, px(12.0)),
-                (Breakpoint::Small, px(12.0)),
-            ]),
-            space_4: ResponsiveValue::from_pairs(px(20.0), &[
-                (Breakpoint::ExtraSmall, px(16.0)),
-                (Breakpoint::Small, px(16.0)),
-            ]),
-            space_5: ResponsiveValue::from_pairs(px(24.0), &[
-                (Breakpoint::ExtraSmall, px(20.0)),
-                (Breakpoint::Small, px(20.0)),
-            ]),
-            space_6: ResponsiveValue::from_pairs(px(32.0), &[
-                (Breakpoint::ExtraSmall, px(24.0)),
-                (Breakpoint::Small, px(24.0)),
-            ]),
-            space_8: ResponsiveValue::from_pairs(px(40.0), &[
-                (Breakpoint::ExtraSmall, px(32.0)),
-                (Breakpoint::Small, px(32.0)),
-            ]),
-            space_10: ResponsiveValue::from_pairs(px(48.0), &[
-                (Breakpoint::ExtraSmall, px(40.0)),
-                (Breakpoint::Small, px(40.0)),
-            ]),
-            space_12: ResponsiveValue::from_pairs(px(64.0), &[
-                (Breakpoint::ExtraSmall, px(48.0)),
-                (Breakpoint::Small, px(48.0)),
-            ]),
-            space_16: ResponsiveValue::from_pairs(px(80.0), &[
-                (Breakpoint::ExtraSmall, px(64.0)),
-                (Breakpoint::Small, px(64.0)),
-            ]),
+            space_1: ResponsiveValue::from_pairs(
+                px(6.0),
+                &[
+                    (Breakpoint::ExtraSmall, px(4.0)),
+                    (Breakpoint::Small, px(4.0)),
+                ],
+            ),
+            space_2: ResponsiveValue::from_pairs(
+                px(10.0),
+                &[
+                    (Breakpoint::ExtraSmall, px(8.0)),
+                    (Breakpoint::Small, px(8.0)),
+                ],
+            ),
+            space_3: ResponsiveValue::from_pairs(
+                px(16.0),
+                &[
+                    (Breakpoint::ExtraSmall, px(12.0)),
+                    (Breakpoint::Small, px(12.0)),
+                ],
+            ),
+            space_4: ResponsiveValue::from_pairs(
+                px(20.0),
+                &[
+                    (Breakpoint::ExtraSmall, px(16.0)),
+                    (Breakpoint::Small, px(16.0)),
+                ],
+            ),
+            space_5: ResponsiveValue::from_pairs(
+                px(24.0),
+                &[
+                    (Breakpoint::ExtraSmall, px(20.0)),
+                    (Breakpoint::Small, px(20.0)),
+                ],
+            ),
+            space_6: ResponsiveValue::from_pairs(
+                px(32.0),
+                &[
+                    (Breakpoint::ExtraSmall, px(24.0)),
+                    (Breakpoint::Small, px(24.0)),
+                ],
+            ),
+            space_8: ResponsiveValue::from_pairs(
+                px(40.0),
+                &[
+                    (Breakpoint::ExtraSmall, px(32.0)),
+                    (Breakpoint::Small, px(32.0)),
+                ],
+            ),
+            space_10: ResponsiveValue::from_pairs(
+                px(48.0),
+                &[
+                    (Breakpoint::ExtraSmall, px(40.0)),
+                    (Breakpoint::Small, px(40.0)),
+                ],
+            ),
+            space_12: ResponsiveValue::from_pairs(
+                px(64.0),
+                &[
+                    (Breakpoint::ExtraSmall, px(48.0)),
+                    (Breakpoint::Small, px(48.0)),
+                ],
+            ),
+            space_16: ResponsiveValue::from_pairs(
+                px(80.0),
+                &[
+                    (Breakpoint::ExtraSmall, px(64.0)),
+                    (Breakpoint::Small, px(64.0)),
+                ],
+            ),
         }
     }
 }
@@ -260,27 +314,13 @@ impl ResponsiveTypography {
     /// Create responsive typography with mobile-first scaling
     pub fn mobile_first() -> Self {
         Self {
-            text_xs: ResponsiveValue::from_pairs(px(12.0), &[
-                (Breakpoint::Large, px(12.0)),
-            ]),
-            text_sm: ResponsiveValue::from_pairs(px(14.0), &[
-                (Breakpoint::Large, px(14.0)),
-            ]),
-            text_base: ResponsiveValue::from_pairs(px(16.0), &[
-                (Breakpoint::Large, px(16.0)),
-            ]),
-            text_lg: ResponsiveValue::from_pairs(px(18.0), &[
-                (Breakpoint::Large, px(20.0)),
-            ]),
-            text_xl: ResponsiveValue::from_pairs(px(20.0), &[
-                (Breakpoint::Large, px(24.0)),
-            ]),
-            text_2xl: ResponsiveValue::from_pairs(px(24.0), &[
-                (Breakpoint::Large, px(30.0)),
-            ]),
-            text_3xl: ResponsiveValue::from_pairs(px(30.0), &[
-                (Breakpoint::Large, px(36.0)),
-            ]),
+            text_xs: ResponsiveValue::from_pairs(px(12.0), &[(Breakpoint::Large, px(12.0))]),
+            text_sm: ResponsiveValue::from_pairs(px(14.0), &[(Breakpoint::Large, px(14.0))]),
+            text_base: ResponsiveValue::from_pairs(px(16.0), &[(Breakpoint::Large, px(16.0))]),
+            text_lg: ResponsiveValue::from_pairs(px(18.0), &[(Breakpoint::Large, px(20.0))]),
+            text_xl: ResponsiveValue::from_pairs(px(20.0), &[(Breakpoint::Large, px(24.0))]),
+            text_2xl: ResponsiveValue::from_pairs(px(24.0), &[(Breakpoint::Large, px(30.0))]),
+            text_3xl: ResponsiveValue::from_pairs(px(30.0), &[(Breakpoint::Large, px(36.0))]),
         }
     }
 }
@@ -299,23 +339,28 @@ impl ViewportContext {
     /// Create viewport context from size
     pub fn from_size(size: Size<Pixels>) -> Self {
         let breakpoint = Breakpoint::from_width(size.width);
-        
+
         Self {
             size,
             breakpoint,
             is_mobile: matches!(breakpoint, Breakpoint::ExtraSmall),
             is_tablet: matches!(breakpoint, Breakpoint::Small | Breakpoint::Medium),
-            is_desktop: matches!(breakpoint, Breakpoint::Large | Breakpoint::ExtraLarge | Breakpoint::XXLarge),
+            is_desktop: matches!(
+                breakpoint,
+                Breakpoint::Large | Breakpoint::ExtraLarge | Breakpoint::XXLarge
+            ),
         }
     }
-    
+
     /// Check if viewport matches a breakpoint condition
     pub fn matches_breakpoint(&self, condition: BreakpointCondition) -> bool {
         match condition {
             BreakpointCondition::Exact(bp) => self.breakpoint == bp,
             BreakpointCondition::Min(bp) => self.breakpoint >= bp,
             BreakpointCondition::Max(bp) => self.breakpoint <= bp,
-            BreakpointCondition::Range(min, max) => self.breakpoint >= min && self.breakpoint <= max,
+            BreakpointCondition::Range(min, max) => {
+                self.breakpoint >= min && self.breakpoint <= max
+            }
         }
     }
 }
@@ -354,7 +399,7 @@ impl ResponsiveStyler {
             _ => px(8.0), // Default fallback
         }
     }
-    
+
     /// Get responsive typography value
     pub fn typography(
         &self,
@@ -373,12 +418,12 @@ impl ResponsiveStyler {
             _ => px(16.0), // Default fallback
         }
     }
-    
+
     /// Check if mobile-optimized styles should be used
     pub fn should_use_mobile_styles(&self, viewport: &ViewportContext) -> bool {
         viewport.is_mobile
     }
-    
+
     /// Check if touch-friendly sizing should be used
     pub fn should_use_touch_sizing(&self, viewport: &ViewportContext) -> bool {
         viewport.is_mobile || viewport.is_tablet

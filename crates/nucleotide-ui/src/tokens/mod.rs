@@ -240,17 +240,17 @@ impl SemanticColors {
 #[derive(Debug, Clone, Copy)]
 pub struct SizeTokens {
     // Spacing scale
-    pub space_0: Pixels,   // 0px
-    pub space_1: Pixels,   // 2px
-    pub space_2: Pixels,   // 4px
-    pub space_3: Pixels,   // 8px
-    pub space_4: Pixels,   // 12px
-    pub space_5: Pixels,   // 16px
-    pub space_6: Pixels,   // 20px
-    pub space_7: Pixels,   // 24px
-    pub space_8: Pixels,   // 32px
-    pub space_9: Pixels,   // 40px
-    pub space_10: Pixels,  // 48px
+    pub space_0: Pixels,  // 0px
+    pub space_1: Pixels,  // 2px
+    pub space_2: Pixels,  // 4px
+    pub space_3: Pixels,  // 8px
+    pub space_4: Pixels,  // 12px
+    pub space_5: Pixels,  // 16px
+    pub space_6: Pixels,  // 20px
+    pub space_7: Pixels,  // 24px
+    pub space_8: Pixels,  // 32px
+    pub space_9: Pixels,  // 40px
+    pub space_10: Pixels, // 48px
 
     // Component sizes
     pub button_height_sm: Pixels,
@@ -373,7 +373,7 @@ pub use utils::*;
 #[deprecated(note = "Use DesignTokens::sizes instead")]
 pub mod spacing {
     use super::*;
-    
+
     pub const XS: Pixels = px(2.0);
     pub const SM: Pixels = px(4.0);
     pub const MD: Pixels = px(8.0);

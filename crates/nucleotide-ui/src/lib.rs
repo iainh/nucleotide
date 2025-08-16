@@ -2,6 +2,7 @@
 // ABOUTME: Provides consistent, styled components for the application
 
 pub mod actions;
+pub mod advanced_theming;
 pub mod assets;
 pub mod button;
 pub mod common;
@@ -9,6 +10,7 @@ pub mod completion;
 pub mod file_icon;
 pub mod info_box;
 pub mod key_hint_view;
+pub mod keyboard_navigation;
 pub mod list_item;
 pub mod notification;
 pub mod picker;
@@ -17,20 +19,18 @@ pub mod picker_element;
 pub mod picker_view;
 pub mod prompt;
 pub mod prompt_view;
+pub mod providers;
 pub mod scrollbar;
 pub mod style_utils;
+pub mod styling;
 pub mod text_utils;
 pub mod theme_manager;
 pub mod theme_utils;
 pub mod titlebar;
 pub mod tokens;
 pub mod traits;
-pub mod vcs_indicator;
-pub mod styling;
-pub mod keyboard_navigation;
 pub mod utils;
-pub mod providers;
-pub mod advanced_theming;
+pub mod vcs_indicator;
 
 #[cfg(test)]
 mod integration_tests;
@@ -41,48 +41,51 @@ mod initialization_tests;
 #[cfg(test)]
 mod styling_tests;
 
+pub use advanced_theming::{
+    AdvancedThemeManager, AnimationStep, HelixThemeBridge, HelixThemeDiscovery,
+    RuntimeThemeSwitcher, ThemeAnimator, ThemeBuilder, ThemeCategory, ThemeMetadata, ThemeRegistry,
+    ThemeValidator, ValidationResult,
+};
 pub use assets::Assets;
 pub use button::{Button, ButtonSize, ButtonVariant, IconPosition};
 pub use file_icon::FileIcon;
-pub use list_item::{ListItem, ListItemSpacing, ListItemVariant, ListItemState, SelectionMode, SelectionState};
 pub use keyboard_navigation::{
-    KeyboardNavigationHandler, NavigationDirection, NavigationAction, NavigationResult, ListVirtualization
+    KeyboardNavigationHandler, ListVirtualization, NavigationAction, NavigationDirection,
+    NavigationResult,
+};
+pub use list_item::{
+    ListItem, ListItemSpacing, ListItemState, ListItemVariant, SelectionMode, SelectionState,
 };
 pub use picker::Picker;
 pub use prompt::{Prompt, PromptElement};
+pub use providers::{
+    provider_tree, use_provider, use_provider_or_default, AccessibilityConfiguration,
+    ConfigurationProvider, CustomEventData, CustomEventDetails, EventHandlingProvider, EventResult,
+    PerformanceConfiguration, Provider, ProviderComposition, ProviderContainer, ProviderHooks,
+    ThemeProvider, UIConfiguration,
+};
+pub use styling::{
+    compute_component_style, compute_style_for_states, merge_styles, should_enable_animations,
+    AnimationConfig, AnimationDuration, AnimationPreset, AnimationProperty, AnimationType,
+    BoxShadow, Breakpoint, ComputedStyle, ConditionalStyle, MergeStrategy, ResponsiveSizes,
+    ResponsiveTypography, ResponsiveValue, StyleCombiner, StyleComposer, StyleContext,
+    StylePresets, StyleSize, StyleState, StyleUtils, StyleVariant, TimingFunction, Transition,
+    TransitionProperty, VariantColors, VariantStyle, VariantStyler, ViewportContext,
+};
 pub use tokens::{DesignTokens, SemanticColors, SizeTokens};
 pub use traits::{
-    Component, Styled, Interactive, Tooltipped, Composable, Slotted,
-    ComponentStyles, ThemedContext, ComponentBuilder, Measurable, 
-    Validatable, ValidationState, ComponentFactory, KeyboardNavigable,
-    Loadable, ComponentState, compute_component_state
-};
-pub use vcs_indicator::{VcsIndicator, VcsStatus};
-pub use styling::{
-    StyleState, ComputedStyle, BoxShadow, Transition, TimingFunction, TransitionProperty,
-    StyleContext, compute_component_style, compute_style_for_states, should_enable_animations,
-    StyleVariant, StyleSize, VariantColors, VariantStyle, VariantStyler,
-    Breakpoint, ResponsiveValue, ResponsiveSizes, ResponsiveTypography, ViewportContext,
-    AnimationDuration, AnimationPreset, AnimationProperty, AnimationConfig, AnimationType,
-    MergeStrategy, StyleCombiner, merge_styles, ConditionalStyle, StyleComposer, StyleUtils, StylePresets
-};
-pub use providers::{
-    Provider, ProviderContainer, use_provider, use_provider_or_default, provider_tree, 
-    ProviderComposition, ProviderHooks, ThemeProvider, ConfigurationProvider, EventHandlingProvider,
-    UIConfiguration, AccessibilityConfiguration, PerformanceConfiguration, 
-    CustomEventDetails, CustomEventData, EventResult
+    compute_component_state, Component, ComponentBuilder, ComponentFactory, ComponentState,
+    ComponentStyles, Composable, Interactive, KeyboardNavigable, Loadable, Measurable, Slotted,
+    Styled, ThemedContext, Tooltipped, Validatable, ValidationState,
 };
 pub use utils::{
-    FeatureFlags, PerformanceFeatures, ExperimentalFeatures,
-    is_feature_enabled as is_utils_feature_enabled, is_named_feature_enabled,
-    PerfTimer, Profiler, MemoryTracker, FocusManager, FocusGroup, KeyboardShortcut, ShortcutRegistry
+    is_feature_enabled as is_utils_feature_enabled, is_named_feature_enabled, ExperimentalFeatures,
+    FeatureFlags, FocusGroup, FocusManager, KeyboardShortcut, MemoryTracker, PerfTimer,
+    PerformanceFeatures, Profiler, ShortcutRegistry,
 };
-pub use advanced_theming::{
-    AdvancedThemeManager, ThemeBuilder, ThemeValidator, ThemeAnimator, HelixThemeBridge, RuntimeThemeSwitcher,
-    ThemeRegistry, ThemeMetadata, ThemeCategory, ValidationResult, AnimationStep, HelixThemeDiscovery
-};
+pub use vcs_indicator::{VcsIndicator, VcsStatus};
 
-// Export initialization and configuration types 
+// Export initialization and configuration types
 // (Functions are defined in this module, types can be re-exported)
 
 use gpui::{App, Hsla};
@@ -308,24 +311,24 @@ impl ComponentRegistry {
 impl gpui::Global for ComponentRegistry {}
 
 /// Initialize the nucleotide-ui component system
-/// 
+///
 /// This function should be called once during application startup to:
 /// - Setup global state management for themes and configuration
 /// - Initialize the component registration system
 /// - Setup performance monitoring (if enabled)
 /// - Configure default themes and tokens
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `cx` - GPUI app context for setting up global state
 /// * `config` - Optional configuration, uses default if None
-/// 
+///
 /// # Example
-/// 
+///
 /// ```no_run
 /// use nucleotide_ui::{init, UIConfig};
 /// use gpui::App;
-/// 
+///
 /// fn main() {
 ///     App::new().run(|cx| {
 ///         // Initialize UI system with default config
@@ -335,23 +338,23 @@ impl gpui::Global for ComponentRegistry {}
 ///     });
 /// }
 /// ```
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function is safe to call multiple times - subsequent calls will update
 /// the configuration but won't cause any issues.
 pub fn init(cx: &mut App, config: Option<UIConfig>) {
     let config = config.unwrap_or_default();
-    
+
     // Setup global theme
     cx.set_global(config.default_theme.clone());
-    
+
     // Setup global configuration
     cx.set_global(config);
-    
+
     // Initialize component registry
     let mut registry = ComponentRegistry::default();
-    
+
     // Register built-in components
     registry.register_component("Button");
     registry.register_component("ListItem");
@@ -359,52 +362,52 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     registry.register_component("FileIcon");
     registry.register_component("Picker");
     registry.register_component("Prompt");
-    
+
     cx.set_global(registry);
-    
+
     // TODO: Setup performance monitoring when enabled
     // TODO: Setup event handling system
     // TODO: Initialize accessibility features
 }
 
 /// Get the current UI configuration
-/// 
+///
 /// # Panics
-/// 
+///
 /// Panics if `init()` has not been called first to setup the global configuration.
 pub fn get_config(cx: &App) -> &UIConfig {
     cx.global::<UIConfig>()
 }
 
 /// Get the current component registry
-/// 
+///
 /// # Panics
-/// 
+///
 /// Panics if `init()` has not been called first to setup the component registry.
 pub fn get_registry(cx: &App) -> &ComponentRegistry {
     cx.global::<ComponentRegistry>()
 }
 
 /// Check if a feature is enabled in the current configuration
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `cx` - GPUI app context
 /// * `feature_check` - Closure that takes UIFeatures and returns bool
-/// 
+///
 /// # Example
-/// 
+///
 /// ```no_run
 /// use nucleotide_ui::is_feature_enabled;
 /// use gpui::App;
-/// 
+///
 /// fn my_component(cx: &App) {
 ///     if is_feature_enabled(cx, |features| features.enable_animations) {
 ///         // Use animations
 ///     }
 /// }
 /// ```
-pub fn is_feature_enabled<F>(cx: &App, feature_check: F) -> bool 
+pub fn is_feature_enabled<F>(cx: &App, feature_check: F) -> bool
 where
     F: FnOnce(&UIFeatures) -> bool,
 {
@@ -413,11 +416,11 @@ where
 }
 
 /// Update the global theme
-/// 
+///
 /// This allows runtime theme switching without restarting the application.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `cx` - Mutable GPUI app context  
 /// * `theme` - New theme to apply
 pub fn update_theme(cx: &mut App, theme: Theme) {

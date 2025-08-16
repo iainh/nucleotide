@@ -1,23 +1,23 @@
 // ABOUTME: Performance monitoring and utility functions for nucleotide-ui components
 // ABOUTME: Provides performance measurement, conditional compilation helpers, and common UI utilities
 
-use std::time::{Duration, Instant};
-use std::collections::HashMap;
 use gpui::{App, SharedString};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
-pub mod performance;
+pub mod feature_flags;
 pub mod focus;
 pub mod keyboard;
-pub mod feature_flags;
-pub mod ui_helpers;
+pub mod performance;
 pub mod render_utils;
+pub mod ui_helpers;
 
-pub use performance::*;
+pub use feature_flags::*;
 pub use focus::*;
 pub use keyboard::*;
-pub use feature_flags::*;
-pub use ui_helpers::*;
+pub use performance::*;
 pub use render_utils::*;
+pub use ui_helpers::*;
 
 /// Global performance monitoring state
 static mut PERFORMANCE_MONITOR: Option<PerformanceMonitor> = None;
@@ -25,10 +25,8 @@ static INIT_MONITOR: std::sync::Once = std::sync::Once::new();
 
 /// Initialize the performance monitoring system
 pub fn init_performance_monitoring(config: PerformanceConfig) {
-    INIT_MONITOR.call_once(|| {
-        unsafe {
-            PERFORMANCE_MONITOR = Some(PerformanceMonitor::new(config));
-        }
+    INIT_MONITOR.call_once(|| unsafe {
+        PERFORMANCE_MONITOR = Some(PerformanceMonitor::new(config));
     });
 }
 
@@ -37,9 +35,7 @@ pub fn with_performance_monitor<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut PerformanceMonitor) -> R,
 {
-    unsafe {
-        PERFORMANCE_MONITOR.as_mut().map(f)
-    }
+    unsafe { PERFORMANCE_MONITOR.as_mut().map(f) }
 }
 
 /// Performance monitoring configuration
@@ -99,19 +95,26 @@ impl PerformanceMonitor {
     }
 
     /// Record a component render time
-    pub fn record_render_time(&mut self, component_name: impl Into<SharedString>, duration: Duration) {
+    pub fn record_render_time(
+        &mut self,
+        component_name: impl Into<SharedString>,
+        duration: Duration,
+    ) {
         if !self.config.enable_render_timing {
             return;
         }
 
         let name = component_name.into();
-        let entry = self.render_times.entry(name.clone()).or_insert_with(Vec::new);
-        
+        let entry = self
+            .render_times
+            .entry(name.clone())
+            .or_insert_with(Vec::new);
+
         // Keep only recent entries
         if entry.len() >= self.config.max_history_entries {
             entry.remove(0);
         }
-        
+
         entry.push(duration);
         self.total_renders += 1;
 
@@ -122,8 +125,11 @@ impl PerformanceMonitor {
                 component_name: name,
                 duration,
                 timestamp: Instant::now(),
-                details: format!("Render took {}ms (threshold: {}ms)", 
-                    duration.as_millis(), self.config.slow_render_threshold_ms),
+                details: format!(
+                    "Render took {}ms (threshold: {}ms)",
+                    duration.as_millis(),
+                    self.config.slow_render_threshold_ms
+                ),
             });
         }
     }
@@ -135,12 +141,15 @@ impl PerformanceMonitor {
         }
 
         let name = event_name.into();
-        let entry = self.event_times.entry(name.clone()).or_insert_with(Vec::new);
-        
+        let entry = self
+            .event_times
+            .entry(name.clone())
+            .or_insert_with(Vec::new);
+
         if entry.len() >= self.config.max_history_entries {
             entry.remove(0);
         }
-        
+
         entry.push(duration);
         self.total_events += 1;
 
@@ -151,8 +160,11 @@ impl PerformanceMonitor {
                 component_name: name,
                 duration,
                 timestamp: Instant::now(),
-                details: format!("Event took {}ms (threshold: {}ms)", 
-                    duration.as_millis(), self.config.slow_event_threshold_ms),
+                details: format!(
+                    "Event took {}ms (threshold: {}ms)",
+                    duration.as_millis(),
+                    self.config.slow_event_threshold_ms
+                ),
             });
         }
     }
@@ -172,7 +184,7 @@ impl PerformanceMonitor {
         };
 
         self.memory_snapshots.push(snapshot);
-        
+
         // Keep only recent snapshots
         if self.memory_snapshots.len() > self.config.max_history_entries {
             self.memory_snapshots.remove(0);
@@ -184,7 +196,11 @@ impl PerformanceMonitor {
         self.render_times.get(component_name).map(|times| {
             let total_time: Duration = times.iter().sum();
             let count = times.len();
-            let avg_time = if count > 0 { total_time / count as u32 } else { Duration::ZERO };
+            let avg_time = if count > 0 {
+                total_time / count as u32
+            } else {
+                Duration::ZERO
+            };
             let min_time = times.iter().min().copied().unwrap_or(Duration::ZERO);
             let max_time = times.iter().max().copied().unwrap_or(Duration::ZERO);
 
@@ -280,11 +296,11 @@ macro_rules! time_render {
         let start = std::time::Instant::now();
         let result = $block;
         let duration = start.elapsed();
-        
+
         $crate::utils::with_performance_monitor(|monitor| {
             monitor.record_render_time($component_name, duration);
         });
-        
+
         result
     }};
 }
@@ -296,11 +312,11 @@ macro_rules! time_event {
         let start = std::time::Instant::now();
         let result = $block;
         let duration = start.elapsed();
-        
+
         $crate::utils::with_performance_monitor(|monitor| {
             monitor.record_event_time($event_name, duration);
         });
-        
+
         result
     }};
 }
@@ -310,10 +326,10 @@ pub fn init_utils(cx: &mut App) {
     // Initialize performance monitoring
     let perf_config = PerformanceConfig::default();
     init_performance_monitoring(perf_config);
-    
+
     // Initialize focus management
     init_focus_management(cx);
-    
+
     // Initialize feature flags if not already done
     init_feature_flags();
 }
@@ -326,7 +342,7 @@ mod tests {
     fn test_performance_monitor_creation() {
         let config = PerformanceConfig::default();
         let monitor = PerformanceMonitor::new(config);
-        
+
         assert_eq!(monitor.total_renders, 0);
         assert_eq!(monitor.total_events, 0);
         assert!(monitor.warnings.is_empty());
@@ -335,12 +351,12 @@ mod tests {
     #[test]
     fn test_render_time_recording() {
         let mut monitor = PerformanceMonitor::new(PerformanceConfig::default());
-        
+
         monitor.record_render_time("Button", Duration::from_millis(5));
         monitor.record_render_time("Button", Duration::from_millis(10));
-        
+
         assert_eq!(monitor.total_renders, 2);
-        
+
         let stats = monitor.get_component_stats("Button").unwrap();
         assert_eq!(stats.render_count, 2);
         assert_eq!(stats.min_render_time, Duration::from_millis(5));
@@ -352,9 +368,9 @@ mod tests {
         let mut config = PerformanceConfig::default();
         config.slow_render_threshold_ms = 10;
         let mut monitor = PerformanceMonitor::new(config);
-        
+
         monitor.record_render_time("SlowComponent", Duration::from_millis(20));
-        
+
         assert_eq!(monitor.warnings.len(), 1);
         assert_eq!(monitor.warnings[0].warning_type, WarningType::SlowRender);
     }
@@ -363,14 +379,14 @@ mod tests {
     fn test_performance_macros() {
         // Initialize a local monitor for testing
         init_performance_monitoring(PerformanceConfig::default());
-        
+
         let result = time_render!("TestComponent", {
             std::thread::sleep(Duration::from_millis(1));
             42
         });
-        
+
         assert_eq!(result, 42);
-        
+
         // The timing should have been recorded
         // Note: In real tests, you'd need better isolation of the global state
     }

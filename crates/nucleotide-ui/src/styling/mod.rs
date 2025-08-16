@@ -1,26 +1,26 @@
 // ABOUTME: Advanced styling system for nucleotide-ui components
 // ABOUTME: Provides style computation, variants, responsive design, and animations
 
-use crate::{Theme, DesignTokens};
-use gpui::{Hsla, Pixels, px};
+use crate::{DesignTokens, Theme};
+use gpui::{px, Hsla, Pixels};
 use std::time::Duration;
 
-pub mod variants;
-pub mod responsive;
 pub mod animations;
 pub mod combinations;
+pub mod responsive;
+pub mod variants;
 
-pub use variants::*;
-pub use responsive::*;
 pub use animations::*;
 pub use combinations::*;
+pub use responsive::*;
+pub use variants::*;
 
 /// Component style state for style computation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StyleState {
     Default,
     Hover,
-    Active, 
+    Active,
     Focused,
     Disabled,
     Loading,
@@ -32,12 +32,12 @@ impl StyleState {
     pub fn is_interactive(self) -> bool {
         !matches!(self, Self::Disabled | Self::Loading)
     }
-    
+
     /// Check if this state indicates user interaction
     pub fn is_user_interaction(self) -> bool {
         matches!(self, Self::Hover | Self::Active | Self::Focused)
     }
-    
+
     /// Get the priority of this state for style resolution
     pub fn priority(self) -> u8 {
         match self {
@@ -141,12 +141,7 @@ pub struct StyleContext<'a> {
 
 impl<'a> StyleContext<'a> {
     /// Create a new style context
-    pub fn new(
-        theme: &'a Theme, 
-        state: StyleState, 
-        variant: &'a str, 
-        size: &'a str
-    ) -> Self {
+    pub fn new(theme: &'a Theme, state: StyleState, variant: &'a str, size: &'a str) -> Self {
         Self {
             theme,
             tokens: &theme.tokens,
@@ -156,16 +151,16 @@ impl<'a> StyleContext<'a> {
             is_dark_theme: theme.is_dark(),
         }
     }
-    
+
     /// Compute the base style for this context
     pub fn compute_base_style(&self) -> ComputedStyle {
         let mut style = ComputedStyle::default();
-        
+
         // Apply base colors from tokens
         style.background = self.tokens.colors.surface;
         style.foreground = self.tokens.colors.text_primary;
         style.border_color = self.tokens.colors.border_default;
-        
+
         // Apply size-based properties
         match self.size {
             "small" => {
@@ -194,10 +189,10 @@ impl<'a> StyleContext<'a> {
                 style.border_radius = self.tokens.sizes.radius_md;
             }
         }
-        
+
         style
     }
-    
+
     /// Apply variant-specific styles
     pub fn apply_variant_styles(&self, mut style: ComputedStyle) -> ComputedStyle {
         match self.variant {
@@ -236,10 +231,10 @@ impl<'a> StyleContext<'a> {
                 // Default variant styling already applied in base
             }
         }
-        
+
         style
     }
-    
+
     /// Apply state-specific styles
     pub fn apply_state_styles(&self, mut style: ComputedStyle) -> ComputedStyle {
         match self.state {
@@ -248,7 +243,7 @@ impl<'a> StyleContext<'a> {
                     "primary" => self.tokens.colors.primary_hover,
                     "secondary" => self.tokens.colors.surface_hover,
                     "ghost" => self.tokens.colors.surface_hover,
-                    "danger" => self.tokens.colors.primary_hover,  // Use primary hover as fallback
+                    "danger" => self.tokens.colors.primary_hover, // Use primary hover as fallback
                     "success" => self.tokens.colors.primary_hover,
                     "warning" => self.tokens.colors.primary_hover,
                     _ => self.tokens.colors.surface_hover,
@@ -268,7 +263,7 @@ impl<'a> StyleContext<'a> {
             StyleState::Focused => {
                 style.border_color = self.tokens.colors.border_focus;
                 style.border_width = px(2.0);
-                
+
                 // Add focus ring shadow
                 style.shadow = Some(BoxShadow {
                     offset_x: px(0.0),
@@ -305,10 +300,10 @@ impl<'a> StyleContext<'a> {
                 // Default state already handled in base and variant styles
             }
         }
-        
+
         style
     }
-    
+
     /// Apply animations if enabled
     pub fn apply_animations(&self, mut style: ComputedStyle) -> ComputedStyle {
         // Only add animations if not disabled or loading (performance)
@@ -323,17 +318,17 @@ impl<'a> StyleContext<'a> {
                 ],
             });
         }
-        
+
         style
     }
-    
+
     /// Compute the complete style for this context
     pub fn compute_style(&self) -> ComputedStyle {
         let base_style = self.compute_base_style();
         let variant_style = self.apply_variant_styles(base_style);
         let state_style = self.apply_state_styles(variant_style);
         let animated_style = self.apply_animations(state_style);
-        
+
         animated_style
     }
 }
@@ -362,7 +357,7 @@ pub fn compute_style_for_states(
         .max_by_key(|state| state.priority())
         .copied()
         .unwrap_or(StyleState::Default);
-        
+
     compute_component_style(theme, primary_state, variant, size)
 }
 
@@ -372,7 +367,7 @@ pub fn should_enable_animations(_theme: &Theme, state: StyleState) -> bool {
     if !state.is_interactive() {
         return false;
     }
-    
+
     // Check if animations are enabled in the theme/config
     // This would integrate with the UIFeatures from our initialization system
     true // For now, always enable animations when interactive

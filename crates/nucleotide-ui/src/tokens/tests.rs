@@ -3,8 +3,8 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::tokens::{darken, lighten, mix, with_alpha, BaseColors};
     use crate::{DesignTokens, SemanticColors, SizeTokens};
-    use crate::tokens::{BaseColors, with_alpha, lighten, darken, mix};
     use gpui::{hsla, px};
 
     #[test]
@@ -15,10 +15,10 @@ mod tests {
         // Test that we have all required colors
         assert_ne!(light.neutral_50, light.neutral_950);
         assert_ne!(dark.neutral_50, dark.neutral_950);
-        
+
         // Test primary colors are consistent across themes (same hue)
         assert_eq!(light.primary_500.h, dark.primary_500.h);
-        
+
         // Test semantic colors exist
         assert_ne!(light.success_500, hsla(0.0, 0.0, 0.0, 0.0));
         assert_ne!(light.warning_500, hsla(0.0, 0.0, 0.0, 0.0));
@@ -73,11 +73,14 @@ mod tests {
         let dark_tokens = DesignTokens::dark();
 
         // Test that light and dark tokens are different
-        assert_ne!(light_tokens.colors.background, dark_tokens.colors.background);
-        
+        assert_ne!(
+            light_tokens.colors.background,
+            dark_tokens.colors.background
+        );
+
         // Test that sizes are the same across themes
         assert_eq!(light_tokens.sizes.space_3, dark_tokens.sizes.space_3);
-        
+
         // Test semantic colors exist and are valid
         assert_ne!(light_tokens.colors.text_primary, hsla(0.0, 0.0, 0.0, 0.0));
         assert_ne!(dark_tokens.colors.text_primary, hsla(0.0, 0.0, 0.0, 0.0));
@@ -110,7 +113,7 @@ mod tests {
         let color1 = hsla(0.0, 1.0, 0.5, 1.0); // Red
         let color2 = hsla(0.33, 1.0, 0.5, 1.0); // Green
         let mixed = mix(color1, color2, 0.5);
-        
+
         // Should be roughly between the two
         assert!(mixed.h > color1.h && mixed.h < color2.h);
     }
@@ -131,7 +134,7 @@ mod tests {
     #[test]
     fn test_theme_integration() {
         let theme = crate::Theme::dark();
-        
+
         // Test that tokens are properly integrated
         assert_eq!(theme.background, theme.tokens.colors.background);
         assert_eq!(theme.text, theme.tokens.colors.text_primary);
@@ -139,7 +142,7 @@ mod tests {
 
         // Test new APIs
         assert!(theme.is_dark());
-        
+
         let light_theme = crate::Theme::light();
         assert!(!light_theme.is_dark());
     }
@@ -147,7 +150,7 @@ mod tests {
     #[test]
     fn test_surface_elevation() {
         let theme = crate::Theme::dark();
-        
+
         // Test different elevation levels
         let surface_0 = theme.surface_at_elevation(0);
         let surface_1 = theme.surface_at_elevation(1);
@@ -158,7 +161,7 @@ mod tests {
         assert_eq!(surface_0, theme.tokens.colors.background);
         assert_eq!(surface_1, theme.tokens.colors.surface);
         assert_eq!(surface_2, theme.tokens.colors.surface_elevated);
-        
+
         // Higher elevations should be lighter in dark theme
         assert!(surface_3.l > surface_2.l);
     }
@@ -167,9 +170,12 @@ mod tests {
     fn test_theme_from_tokens() {
         let custom_tokens = DesignTokens::light();
         let theme = crate::Theme::from_tokens(custom_tokens);
-        
+
         // Test that theme correctly uses the provided tokens
-        assert_eq!(theme.tokens.colors.background, custom_tokens.colors.background);
+        assert_eq!(
+            theme.tokens.colors.background,
+            custom_tokens.colors.background
+        );
         assert_eq!(theme.background, custom_tokens.colors.background);
     }
 
@@ -195,7 +201,7 @@ mod tests {
         // Test that interactive states are related
         assert_ne!(tokens.colors.surface, tokens.colors.surface_hover);
         assert_ne!(tokens.colors.surface_hover, tokens.colors.surface_active);
-        
+
         // Test that primary variants are related
         assert_ne!(tokens.colors.primary, tokens.colors.primary_hover);
         assert_ne!(tokens.colors.primary_hover, tokens.colors.primary_active);

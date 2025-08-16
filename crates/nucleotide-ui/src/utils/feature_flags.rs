@@ -1,9 +1,9 @@
 // ABOUTME: Feature flag system for conditional compilation and runtime features
 // ABOUTME: Provides compile-time and runtime feature toggling for nucleotide-ui components
 
+use gpui::{App, SharedString};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use gpui::{App, SharedString};
 
 /// Global feature flag state
 static mut FEATURE_FLAGS: Option<Arc<RwLock<FeatureFlags>>> = None;
@@ -11,10 +11,8 @@ static INIT_FLAGS: std::sync::Once = std::sync::Once::new();
 
 /// Initialize the feature flag system
 pub fn init_feature_flags() {
-    INIT_FLAGS.call_once(|| {
-        unsafe {
-            FEATURE_FLAGS = Some(Arc::new(RwLock::new(FeatureFlags::default())));
-        }
+    INIT_FLAGS.call_once(|| unsafe {
+        FEATURE_FLAGS = Some(Arc::new(RwLock::new(FeatureFlags::default())));
     });
 }
 
@@ -24,9 +22,9 @@ where
     F: FnOnce(&FeatureFlags) -> R,
 {
     unsafe {
-        FEATURE_FLAGS.as_ref().and_then(|flags| {
-            flags.read().ok().map(|guard| f(&*guard))
-        })
+        FEATURE_FLAGS
+            .as_ref()
+            .and_then(|flags| flags.read().ok().map(|guard| f(&*guard)))
     }
 }
 
@@ -37,10 +35,13 @@ where
 {
     unsafe {
         FEATURE_FLAGS.as_ref().map_or(false, |flags| {
-            flags.write().map(|mut guard| {
-                f(&mut *guard);
-                true
-            }).unwrap_or(false)
+            flags
+                .write()
+                .map(|mut guard| {
+                    f(&mut *guard);
+                    true
+                })
+                .unwrap_or(false)
         })
     }
 }
@@ -79,7 +80,7 @@ impl FeatureFlags {
             runtime_flags: HashMap::new(),
         }
     }
-    
+
     /// Create feature flags with all features enabled (including experimental)
     pub fn all_enabled() -> Self {
         Self {
@@ -89,17 +90,17 @@ impl FeatureFlags {
             runtime_flags: HashMap::new(),
         }
     }
-    
+
     /// Set a runtime flag
     pub fn set_flag(&mut self, name: impl Into<SharedString>, enabled: bool) {
         self.runtime_flags.insert(name.into(), enabled);
     }
-    
+
     /// Get a runtime flag value
     pub fn get_flag(&self, name: &str) -> bool {
         self.runtime_flags.get(name).copied().unwrap_or(false)
     }
-    
+
     /// Check if a specific feature is enabled
     pub fn is_enabled(&self, feature: &str) -> bool {
         match feature {
@@ -110,20 +111,20 @@ impl FeatureFlags {
             "high_contrast" => self.ui_features.enable_high_contrast,
             "reduced_motion" => self.ui_features.enable_reduced_motion,
             "keyboard_navigation" => self.ui_features.enable_keyboard_navigation,
-            
+
             // Performance features
             "virtualization" => self.performance_features.enable_virtualization,
             "lazy_loading" => self.performance_features.enable_lazy_loading,
             "caching" => self.performance_features.enable_caching,
             "performance_monitoring" => self.performance_features.enable_performance_monitoring,
             "memory_optimization" => self.performance_features.enable_memory_optimization,
-            
+
             // Experimental features
             "advanced_theming" => self.experimental_features.enable_advanced_theming,
             "component_hot_reload" => self.experimental_features.enable_component_hot_reload,
             "debug_overlays" => self.experimental_features.enable_debug_overlays,
             "beta_components" => self.experimental_features.enable_beta_components,
-            
+
             // Runtime flags
             _ => self.get_flag(feature),
         }
@@ -158,7 +159,7 @@ impl UIFeatures {
     pub fn stable() -> Self {
         Self::default()
     }
-    
+
     pub fn all_enabled() -> Self {
         Self {
             enable_animations: true,
@@ -169,7 +170,7 @@ impl UIFeatures {
             enable_keyboard_navigation: true,
         }
     }
-    
+
     pub fn accessibility_focused() -> Self {
         Self {
             enable_animations: false,
@@ -208,7 +209,7 @@ impl PerformanceFeatures {
     pub fn stable() -> Self {
         Self::default()
     }
-    
+
     pub fn all_enabled() -> Self {
         Self {
             enable_virtualization: true,
@@ -218,7 +219,7 @@ impl PerformanceFeatures {
             enable_memory_optimization: true,
         }
     }
-    
+
     pub fn minimal() -> Self {
         Self {
             enable_virtualization: false,
@@ -259,7 +260,7 @@ impl ExperimentalFeatures {
             enable_beta_components: false,
         }
     }
-    
+
     pub fn all_enabled() -> Self {
         Self {
             enable_advanced_theming: true,
@@ -268,7 +269,7 @@ impl ExperimentalFeatures {
             enable_beta_components: true,
         }
     }
-    
+
     pub fn development() -> Self {
         Self {
             enable_advanced_theming: true,
@@ -337,7 +338,7 @@ macro_rules! if_feature_enabled {
             $disabled_code
         }
     };
-    
+
     ($cx:expr, $feature_check:expr, $enabled_code:block) => {
         if $crate::utils::is_feature_enabled($cx, $feature_check) {
             $enabled_code
@@ -352,7 +353,7 @@ impl FeatureConfig {
     /// Load feature flags from environment variables
     pub fn from_env() -> FeatureFlags {
         let mut flags = FeatureFlags::default();
-        
+
         // UI features
         if let Ok(val) = std::env::var("NUCLEOTIDE_ENABLE_ANIMATIONS") {
             flags.ui_features.enable_animations = val.parse().unwrap_or(true);
@@ -369,25 +370,26 @@ impl FeatureConfig {
         if let Ok(val) = std::env::var("NUCLEOTIDE_ENABLE_REDUCED_MOTION") {
             flags.ui_features.enable_reduced_motion = val.parse().unwrap_or(false);
         }
-        
+
         // Performance features
         if let Ok(val) = std::env::var("NUCLEOTIDE_ENABLE_VIRTUALIZATION") {
             flags.performance_features.enable_virtualization = val.parse().unwrap_or(true);
         }
         if let Ok(val) = std::env::var("NUCLEOTIDE_ENABLE_PERFORMANCE_MONITORING") {
-            flags.performance_features.enable_performance_monitoring = val.parse().unwrap_or(cfg!(debug_assertions));
+            flags.performance_features.enable_performance_monitoring =
+                val.parse().unwrap_or(cfg!(debug_assertions));
         }
-        
+
         // Experimental features
         if let Ok(val) = std::env::var("NUCLEOTIDE_ENABLE_EXPERIMENTAL") {
             if val.parse().unwrap_or(false) {
                 flags.experimental_features = ExperimentalFeatures::all_enabled();
             }
         }
-        
+
         flags
     }
-    
+
     /// Create a configuration for development
     pub fn development() -> FeatureFlags {
         FeatureFlags {
@@ -397,7 +399,7 @@ impl FeatureConfig {
             runtime_flags: HashMap::new(),
         }
     }
-    
+
     /// Create a configuration for production
     pub fn production() -> FeatureFlags {
         FeatureFlags {
@@ -416,7 +418,7 @@ mod tests {
     #[test]
     fn test_feature_flags_default() {
         let flags = FeatureFlags::default();
-        
+
         assert!(flags.ui_features.enable_animations);
         assert!(flags.ui_features.enable_tooltips);
         assert!(flags.performance_features.enable_virtualization);
@@ -426,7 +428,7 @@ mod tests {
     #[test]
     fn test_feature_flags_stable() {
         let flags = FeatureFlags::stable();
-        
+
         assert!(flags.ui_features.enable_animations);
         assert!(!flags.experimental_features.enable_advanced_theming);
         assert!(!flags.experimental_features.enable_beta_components);
@@ -435,7 +437,7 @@ mod tests {
     #[test]
     fn test_feature_flags_all_enabled() {
         let flags = FeatureFlags::all_enabled();
-        
+
         assert!(flags.ui_features.enable_animations);
         assert!(flags.ui_features.enable_high_contrast);
         assert!(flags.performance_features.enable_performance_monitoring);
@@ -445,12 +447,12 @@ mod tests {
     #[test]
     fn test_runtime_flags() {
         let mut flags = FeatureFlags::default();
-        
+
         assert!(!flags.get_flag("custom_feature"));
-        
+
         flags.set_flag("custom_feature", true);
         assert!(flags.get_flag("custom_feature"));
-        
+
         flags.set_flag("custom_feature", false);
         assert!(!flags.get_flag("custom_feature"));
     }
@@ -458,7 +460,7 @@ mod tests {
     #[test]
     fn test_named_feature_checking() {
         let flags = FeatureFlags::default();
-        
+
         assert!(flags.is_enabled("animations"));
         assert!(flags.is_enabled("tooltips"));
         assert!(!flags.is_enabled("advanced_theming"));
@@ -468,7 +470,7 @@ mod tests {
     #[test]
     fn test_ui_features_accessibility() {
         let flags = UIFeatures::accessibility_focused();
-        
+
         assert!(!flags.enable_animations);
         assert!(flags.enable_tooltips);
         assert!(flags.enable_high_contrast);
@@ -479,7 +481,7 @@ mod tests {
     #[test]
     fn test_performance_features_minimal() {
         let flags = PerformanceFeatures::minimal();
-        
+
         assert!(!flags.enable_virtualization);
         assert!(!flags.enable_lazy_loading);
         assert!(!flags.enable_caching);
@@ -492,7 +494,7 @@ mod tests {
         let disabled = ExperimentalFeatures::disabled();
         assert!(!disabled.enable_advanced_theming);
         assert!(!disabled.enable_debug_overlays);
-        
+
         let enabled = ExperimentalFeatures::all_enabled();
         assert!(enabled.enable_advanced_theming);
         assert!(enabled.enable_debug_overlays);
@@ -504,7 +506,7 @@ mod tests {
         let dev_config = FeatureConfig::development();
         assert!(dev_config.ui_features.enable_animations);
         assert!(dev_config.experimental_features.enable_advanced_theming);
-        
+
         let prod_config = FeatureConfig::production();
         assert!(prod_config.ui_features.enable_animations);
         assert!(!prod_config.experimental_features.enable_advanced_theming);

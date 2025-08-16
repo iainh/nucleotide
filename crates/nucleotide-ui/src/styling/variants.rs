@@ -2,7 +2,7 @@
 // ABOUTME: Provides variant definitions and style computations
 
 use crate::{DesignTokens, Theme};
-use gpui::{Hsla, Pixels, px};
+use gpui::{px, Hsla, Pixels};
 
 /// Standard component variants
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +22,7 @@ impl StyleVariant {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Primary => "primary",
-            Self::Secondary => "secondary", 
+            Self::Secondary => "secondary",
             Self::Ghost => "ghost",
             Self::Danger => "danger",
             Self::Success => "success",
@@ -31,7 +31,7 @@ impl StyleVariant {
             Self::Accent => "accent",
         }
     }
-    
+
     /// Get the semantic role of this variant
     pub fn semantic_role(self) -> VariantRole {
         match self {
@@ -44,12 +44,15 @@ impl StyleVariant {
             Self::Info => VariantRole::Informational,
         }
     }
-    
+
     /// Check if this variant should have strong visual emphasis
     pub fn is_emphasis(self) -> bool {
-        matches!(self, Self::Primary | Self::Danger | Self::Success | Self::Accent)
+        matches!(
+            self,
+            Self::Primary | Self::Danger | Self::Success | Self::Accent
+        )
     }
-    
+
     /// Get all available variants
     pub fn all() -> &'static [StyleVariant] {
         &[
@@ -98,7 +101,7 @@ impl StyleSize {
             Self::ExtraLarge => "xl",
         }
     }
-    
+
     /// Get the scale factor for this size
     pub fn scale_factor(self) -> f32 {
         match self {
@@ -109,7 +112,7 @@ impl StyleSize {
             Self::ExtraLarge => 1.25,
         }
     }
-    
+
     /// Get padding values for this size
     pub fn padding(self, tokens: &DesignTokens) -> (Pixels, Pixels) {
         match self {
@@ -120,13 +123,13 @@ impl StyleSize {
             Self::ExtraLarge => (tokens.sizes.space_5, tokens.sizes.space_4),
         }
     }
-    
+
     /// Get font size for this size
     pub fn font_size(self, base_size: Pixels) -> Pixels {
         let scale = self.scale_factor();
         px(base_size.0 * scale)
     }
-    
+
     /// Get border radius for this size
     pub fn border_radius(self, tokens: &DesignTokens) -> Pixels {
         match self {
@@ -164,7 +167,7 @@ impl VariantColors {
     /// Get variant colors for a specific variant and theme
     pub fn for_variant(variant: StyleVariant, theme: &Theme) -> Self {
         let tokens = &theme.tokens;
-        
+
         match variant {
             StyleVariant::Primary => Self {
                 background: tokens.colors.primary,
@@ -191,7 +194,7 @@ impl VariantColors {
                 background: tokens.colors.error,
                 foreground: tokens.colors.text_on_primary,
                 border: tokens.colors.error,
-                hover_background: tokens.colors.primary_hover,  // Use similar color
+                hover_background: tokens.colors.primary_hover, // Use similar color
                 active_background: tokens.colors.primary_active,
             },
             StyleVariant::Success => Self {
@@ -216,7 +219,7 @@ impl VariantColors {
                 active_background: tokens.colors.primary_active,
             },
             StyleVariant::Accent => Self {
-                background: tokens.colors.primary,  // Use primary as accent
+                background: tokens.colors.primary, // Use primary as accent
                 foreground: tokens.colors.text_on_primary,
                 border: tokens.colors.primary,
                 hover_background: tokens.colors.primary_hover,
@@ -224,11 +227,11 @@ impl VariantColors {
             },
         }
     }
-    
+
     /// Get outline variant (border-only) colors
     pub fn outline_variant(variant: StyleVariant, theme: &Theme) -> Self {
         let base_colors = Self::for_variant(variant, theme);
-        
+
         Self {
             background: Hsla::transparent_black(),
             foreground: base_colors.background, // Use original background as foreground
@@ -243,12 +246,12 @@ impl VariantColors {
             },
         }
     }
-    
+
     /// Get soft variant (muted) colors
     pub fn soft_variant(variant: StyleVariant, theme: &Theme) -> Self {
         let base_colors = Self::for_variant(variant, theme);
         let _tokens = &theme.tokens;
-        
+
         Self {
             background: {
                 let bg = base_colors.background;
@@ -293,7 +296,7 @@ impl VariantStyler {
         let colors = VariantColors::for_variant(variant, theme);
         let tokens = &theme.tokens;
         let (padding_x, padding_y) = size.padding(tokens);
-        
+
         VariantStyle {
             variant,
             size,
@@ -302,10 +305,14 @@ impl VariantStyler {
             padding_y,
             font_size: size.font_size(px(14.0)),
             border_radius: size.border_radius(tokens),
-            border_width: if variant == StyleVariant::Secondary { px(1.0) } else { px(0.0) },
+            border_width: if variant == StyleVariant::Secondary {
+                px(1.0)
+            } else {
+                px(0.0)
+            },
         }
     }
-    
+
     /// Compute outline variant styles
     pub fn compute_outline_style(
         variant: StyleVariant,
@@ -315,7 +322,7 @@ impl VariantStyler {
         let colors = VariantColors::outline_variant(variant, theme);
         let tokens = &theme.tokens;
         let (padding_x, padding_y) = size.padding(tokens);
-        
+
         VariantStyle {
             variant,
             size,
@@ -327,7 +334,7 @@ impl VariantStyler {
             border_width: px(1.0), // Always has border for outline
         }
     }
-    
+
     /// Compute soft variant styles
     pub fn compute_soft_style(
         variant: StyleVariant,
@@ -337,7 +344,7 @@ impl VariantStyler {
         let colors = VariantColors::soft_variant(variant, theme);
         let tokens = &theme.tokens;
         let (padding_x, padding_y) = size.padding(tokens);
-        
+
         VariantStyle {
             variant,
             size,

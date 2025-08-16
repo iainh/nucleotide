@@ -1,25 +1,25 @@
 // ABOUTME: Core trait system providing consistent APIs across all components
 // ABOUTME: Defines interfaces for component lifecycle, styling, and interaction patterns
 
-use gpui::{App, ElementId, IntoElement, SharedString, Context, KeyDownEvent};
 use crate::{DesignTokens, Theme};
+use gpui::{App, Context, ElementId, IntoElement, KeyDownEvent, SharedString};
 
 /// Core component trait that all nucleotide-ui components should implement
 /// Provides consistent lifecycle and identification patterns
 pub trait Component {
     /// Get the component's unique identifier
     fn id(&self) -> &ElementId;
-    
+
     /// Set the component's identifier (builder pattern)
     fn with_id(self, id: impl Into<ElementId>) -> Self
     where
         Self: Sized;
-    
+
     /// Check if the component is in a disabled state
     fn is_disabled(&self) -> bool {
         false
     }
-    
+
     /// Set the disabled state (builder pattern)
     fn disabled(self, disabled: bool) -> Self
     where
@@ -31,26 +31,26 @@ pub trait Component {
 pub trait Styled {
     /// Get the current variant/style of the component
     type Variant: Clone + Default;
-    
+
     /// Get the current size of the component  
     type Size: Clone + Default;
-    
+
     /// Get the component's current variant
     fn variant(&self) -> &Self::Variant;
-    
+
     /// Set the component's variant (builder pattern)
     fn with_variant(self, variant: Self::Variant) -> Self
     where
         Self: Sized;
-    
+
     /// Get the component's current size
     fn size(&self) -> &Self::Size;
-    
-    /// Set the component's size (builder pattern) 
+
+    /// Set the component's size (builder pattern)
     fn with_size(self, size: Self::Size) -> Self
     where
         Self: Sized;
-    
+
     /// Apply theme-aware styling to the component
     /// This is called during rendering to compute final styles
     fn apply_theme_styling(&self, theme: &Theme) -> ComponentStyles {
@@ -63,22 +63,22 @@ pub trait Styled {
 pub trait Interactive {
     /// Type for click event handlers
     type ClickHandler: 'static;
-    
+
     /// Set primary click handler (builder pattern)
     fn on_click(self, handler: Self::ClickHandler) -> Self
     where
         Self: Sized;
-    
+
     /// Set secondary click handler (builder pattern)  
     fn on_secondary_click(self, handler: Self::ClickHandler) -> Self
     where
         Self: Sized;
-    
+
     /// Check if the component can receive focus
     fn is_focusable(&self) -> bool {
         true
     }
-    
+
     /// Check if the component is currently focused
     fn is_focused(&self) -> bool {
         false
@@ -91,7 +91,7 @@ pub trait Tooltipped {
     fn tooltip(self, tooltip: impl Into<SharedString>) -> Self
     where
         Self: Sized;
-    
+
     /// Get the current tooltip text
     fn get_tooltip(&self) -> Option<&SharedString>;
 }
@@ -102,7 +102,7 @@ pub trait Composable {
     fn child(self, child: impl IntoElement) -> Self
     where
         Self: Sized;
-    
+
     /// Add multiple children (builder pattern)
     fn children(self, children: impl IntoIterator<Item = impl IntoElement>) -> Self
     where
@@ -115,7 +115,7 @@ pub trait Slotted {
     fn start_slot(self, slot: impl IntoElement) -> Self
     where
         Self: Sized;
-    
+
     /// Set the end slot (badge, suffix, etc.)
     fn end_slot(self, slot: impl IntoElement) -> Self
     where
@@ -143,7 +143,7 @@ impl ComponentStyles {
             border_radius: theme.tokens.sizes.radius_md,
         }
     }
-    
+
     /// Create hover state styles
     pub fn hover_state(&self, theme: &Theme) -> Self {
         Self {
@@ -154,7 +154,7 @@ impl ComponentStyles {
             border_radius: self.border_radius,
         }
     }
-    
+
     /// Create active state styles
     pub fn active_state(&self, theme: &Theme) -> Self {
         Self {
@@ -165,7 +165,7 @@ impl ComponentStyles {
             border_radius: self.border_radius,
         }
     }
-    
+
     /// Create disabled state styles
     pub fn disabled_state(&self, theme: &Theme) -> Self {
         Self {
@@ -182,12 +182,12 @@ impl ComponentStyles {
 pub trait ThemedContext {
     /// Get the current theme
     fn theme(&self) -> &Theme;
-    
+
     /// Get design tokens
     fn tokens(&self) -> &DesignTokens {
         &self.theme().tokens
     }
-    
+
     /// Check if the current theme is dark
     fn is_dark_theme(&self) -> bool {
         self.theme().is_dark()
@@ -212,15 +212,15 @@ pub trait ComponentBuilder: Sized {
     fn disabled(self) -> Self {
         self.with_disabled(true)
     }
-    
-    /// Set component as enabled 
+
+    /// Set component as enabled
     fn enabled(self) -> Self {
         self.with_disabled(false)
     }
-    
+
     /// Set disabled state
     fn with_disabled(self, disabled: bool) -> Self;
-    
+
     /// Set component tooltip
     fn with_tooltip(self, tooltip: impl Into<SharedString>) -> Self;
 }
@@ -229,12 +229,12 @@ pub trait ComponentBuilder: Sized {
 pub trait Measurable {
     /// Get the component's preferred size
     fn preferred_size(&self, theme: &Theme) -> (gpui::Pixels, gpui::Pixels);
-    
+
     /// Get minimum size constraints
     fn min_size(&self, theme: &Theme) -> (gpui::Pixels, gpui::Pixels) {
         self.preferred_size(theme)
     }
-    
+
     /// Check if the component should grow to fill available space
     fn should_grow(&self) -> bool {
         false
@@ -245,20 +245,20 @@ pub trait Measurable {
 pub trait Validatable {
     /// Validation state enumeration
     type ValidationState: Clone + Default;
-    
+
     /// Get the current validation state
     fn validation_state(&self) -> &Self::ValidationState;
-    
+
     /// Set validation state (builder pattern)
     fn with_validation_state(self, state: Self::ValidationState) -> Self
     where
         Self: Sized;
-    
+
     /// Check if the component is in an error state
     fn has_error(&self) -> bool {
         false
     }
-    
+
     /// Get error message if any
     fn error_message(&self) -> Option<&str> {
         None
@@ -278,11 +278,11 @@ impl ValidationState {
     pub fn is_error(&self) -> bool {
         matches!(self, ValidationState::Error(_))
     }
-    
+
     pub fn is_warning(&self) -> bool {
         matches!(self, ValidationState::Warning(_))
     }
-    
+
     pub fn message(&self) -> Option<&str> {
         match self {
             ValidationState::Valid => None,
@@ -299,16 +299,16 @@ macro_rules! impl_component {
             fn id(&self) -> &gpui::ElementId {
                 &self.id
             }
-            
+
             fn with_id(mut self, id: impl Into<gpui::ElementId>) -> Self {
                 self.id = id.into();
                 self
             }
-            
+
             fn is_disabled(&self) -> bool {
                 self.disabled
             }
-            
+
             fn disabled(mut self, disabled: bool) -> Self {
                 self.disabled = disabled;
                 self
@@ -326,7 +326,7 @@ macro_rules! impl_tooltipped {
                 self.tooltip = Some(tooltip.into());
                 self
             }
-            
+
             fn get_tooltip(&self) -> Option<&gpui::SharedString> {
                 self.tooltip.as_ref()
             }
@@ -338,7 +338,7 @@ macro_rules! impl_tooltipped {
 pub trait ComponentFactory {
     /// Create a new component with default styling
     fn new(id: impl Into<ElementId>) -> Self;
-    
+
     /// Create a new component with specified variant
     fn with_variant<V>(id: impl Into<ElementId>, variant: V) -> Self
     where
@@ -346,7 +346,7 @@ pub trait ComponentFactory {
     {
         Self::new(id).with_variant(variant)
     }
-    
+
     /// Create a new component with specified size
     fn with_size<S>(id: impl Into<ElementId>, size: S) -> Self
     where
@@ -362,12 +362,12 @@ pub trait KeyboardNavigable {
     fn handle_key_event(&mut self, _event: &KeyDownEvent) -> bool {
         false
     }
-    
+
     /// Get the component's tab index for keyboard navigation
     fn tab_index(&self) -> Option<i32> {
         None
     }
-    
+
     /// Check if component should be included in tab navigation
     fn is_tab_navigable(&self) -> bool {
         self.tab_index().is_some()
@@ -380,12 +380,12 @@ pub trait Loadable {
     fn is_loading(&self) -> bool {
         false
     }
-    
+
     /// Set loading state (builder pattern)
     fn loading(self, loading: bool) -> Self
     where
         Self: Sized;
-    
+
     /// Get loading message
     fn loading_message(&self) -> Option<&str> {
         None
@@ -406,9 +406,12 @@ pub enum ComponentState {
 impl ComponentState {
     /// Check if state represents an interactive state
     pub fn is_interactive(&self) -> bool {
-        matches!(self, ComponentState::Hover | ComponentState::Active | ComponentState::Focused)
+        matches!(
+            self,
+            ComponentState::Hover | ComponentState::Active | ComponentState::Focused
+        )
     }
-    
+
     /// Check if state prevents interaction
     pub fn prevents_interaction(&self) -> bool {
         matches!(self, ComponentState::Disabled | ComponentState::Loading)
@@ -438,10 +441,10 @@ pub fn compute_component_state(
     }
 }
 
+pub use ComponentState as State;
 /// Re-export commonly used types for convenience
 pub use ComponentStyles as Styles;
 pub use ValidationState as Validation;
-pub use ComponentState as State;
 
 #[cfg(test)]
 mod tests;

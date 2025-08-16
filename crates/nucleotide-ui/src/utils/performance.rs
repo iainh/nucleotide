@@ -1,9 +1,9 @@
 // ABOUTME: Performance measurement utilities for nucleotide-ui components
 // ABOUTME: Provides timing, profiling, and measurement tools for component optimization
 
-use std::time::{Duration, Instant};
-use std::collections::HashMap;
 use gpui::SharedString;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// Performance timer for measuring operation duration
 pub struct PerfTimer {
@@ -21,13 +21,13 @@ impl PerfTimer {
             fields: HashMap::new(),
         }
     }
-    
+
     /// Add a field to the timer for additional context
     pub fn with_field(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.fields.insert(key.into(), value.into());
         self
     }
-    
+
     /// Start the timer and return it for method chaining
     pub fn start(self) -> TimerGuard {
         TimerGuard {
@@ -48,12 +48,12 @@ pub struct TimerGuard {
 impl Drop for TimerGuard {
     fn drop(&mut self) {
         let duration = self.start_time.elapsed();
-        
+
         // Record the timing with the performance monitor
         crate::utils::with_performance_monitor(|monitor| {
             monitor.record_render_time(&self.name, duration);
         });
-        
+
         // Log structured performance data
         nucleotide_logging::debug!(
             timer_name = %self.name,
@@ -76,13 +76,13 @@ impl Profiler {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Start timing an operation
     pub fn start_timer(&mut self, name: impl Into<String>) {
         let name = name.into();
         self.active_timers.insert(name, Instant::now());
     }
-    
+
     /// Stop timing an operation and record the duration
     pub fn stop_timer(&mut self, name: &str) -> Option<Duration> {
         if let Some(start_time) = self.active_timers.remove(name) {
@@ -96,16 +96,20 @@ impl Profiler {
             None
         }
     }
-    
+
     /// Get statistics for a measurement
     pub fn get_stats(&self, name: &str) -> Option<ProfilerStats> {
         self.measurements.get(name).map(|durations| {
             let count = durations.len();
             let total: Duration = durations.iter().sum();
-            let average = if count > 0 { total / count as u32 } else { Duration::ZERO };
+            let average = if count > 0 {
+                total / count as u32
+            } else {
+                Duration::ZERO
+            };
             let min = durations.iter().min().copied().unwrap_or(Duration::ZERO);
             let max = durations.iter().max().copied().unwrap_or(Duration::ZERO);
-            
+
             ProfilerStats {
                 name: name.to_string(),
                 count,
@@ -116,7 +120,7 @@ impl Profiler {
             }
         })
     }
-    
+
     /// Get all recorded measurements
     pub fn get_all_stats(&self) -> Vec<ProfilerStats> {
         self.measurements
@@ -124,7 +128,7 @@ impl Profiler {
             .filter_map(|name| self.get_stats(name))
             .collect()
     }
-    
+
     /// Clear all measurements
     pub fn clear(&mut self) {
         self.measurements.clear();
@@ -162,37 +166,37 @@ impl MemoryTracker {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Take a memory snapshot with a label
     pub fn snapshot(&mut self, label: impl Into<String>) {
         // Note: This is a simplified implementation
         // In a real implementation, you would use platform-specific APIs
         // or memory profiling libraries to get actual memory usage
-        
+
         let reading = MemoryReading {
             timestamp: Instant::now(),
             label: label.into(),
             estimated_bytes: 0, // Would be populated with actual data
         };
-        
+
         self.snapshots.push(reading);
-        
+
         // Keep only recent snapshots
         if self.snapshots.len() > 100 {
             self.snapshots.remove(0);
         }
     }
-    
+
     /// Get the latest memory reading
     pub fn latest(&self) -> Option<&MemoryReading> {
         self.snapshots.last()
     }
-    
+
     /// Get all memory readings
     pub fn readings(&self) -> &[MemoryReading] {
         &self.snapshots
     }
-    
+
     /// Clear all readings
     pub fn clear(&mut self) {
         self.snapshots.clear();
@@ -208,12 +212,12 @@ macro_rules! timed {
         let _timer = $crate::utils::PerfTimer::new($name).start();
         $block
     }};
-    
+
     ($name:expr, warn_threshold: $threshold:expr, $block:block) => {{
         let start = std::time::Instant::now();
         let result = $block;
         let duration = start.elapsed();
-        
+
         if duration > $threshold {
             nucleotide_logging::warn!(
                 operation = $name,
@@ -222,11 +226,11 @@ macro_rules! timed {
                 "Slow operation detected"
             );
         }
-        
+
         $crate::utils::with_performance_monitor(|monitor| {
             monitor.record_render_time($name, duration);
         });
-        
+
         result
     }};
 }
@@ -252,7 +256,7 @@ mod tests {
         let timer = PerfTimer::new("test_operation")
             .with_field("component", "Button")
             .with_field("variant", "primary");
-        
+
         let _guard = timer.start();
         thread::sleep(Duration::from_millis(1));
         // Timer automatically records when guard is dropped
@@ -261,14 +265,14 @@ mod tests {
     #[test]
     fn test_profiler() {
         let mut profiler = Profiler::new();
-        
+
         profiler.start_timer("operation1");
         thread::sleep(Duration::from_millis(1));
         let duration1 = profiler.stop_timer("operation1");
-        
+
         assert!(duration1.is_some());
         assert!(duration1.unwrap() >= Duration::from_millis(1));
-        
+
         let stats = profiler.get_stats("operation1").unwrap();
         assert_eq!(stats.count, 1);
         assert!(stats.total >= Duration::from_millis(1));
@@ -277,14 +281,14 @@ mod tests {
     #[test]
     fn test_profiler_multiple_measurements() {
         let mut profiler = Profiler::new();
-        
+
         // Record multiple measurements
         for i in 0..3 {
             profiler.start_timer("test_op");
             thread::sleep(Duration::from_millis(1));
             profiler.stop_timer("test_op");
         }
-        
+
         let stats = profiler.get_stats("test_op").unwrap();
         assert_eq!(stats.count, 3);
         assert!(stats.average >= Duration::from_millis(1));
@@ -295,10 +299,10 @@ mod tests {
     #[test]
     fn test_memory_tracker() {
         let mut tracker = MemoryTracker::new();
-        
+
         tracker.snapshot("initial");
         tracker.snapshot("after_allocation");
-        
+
         assert_eq!(tracker.readings().len(), 2);
         assert_eq!(tracker.latest().unwrap().label, "after_allocation");
     }
@@ -309,19 +313,19 @@ mod tests {
             thread::sleep(Duration::from_millis(1));
             42
         });
-        
+
         assert_eq!(result, 42);
     }
 
     #[test]
     fn test_profile_macro() {
         let mut profiler = Profiler::new();
-        
+
         let result = profile!(profiler, "macro_test", {
             thread::sleep(Duration::from_millis(1));
             "success"
         });
-        
+
         assert_eq!(result, "success");
         assert!(profiler.get_stats("macro_test").is_some());
     }

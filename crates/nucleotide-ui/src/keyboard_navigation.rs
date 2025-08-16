@@ -1,8 +1,8 @@
 // ABOUTME: Keyboard navigation utilities for list components
 // ABOUTME: Provides arrow key navigation, home/end shortcuts, and search functionality
 
-use gpui::KeyDownEvent;
 use crate::list_item::{SelectionMode, SelectionState};
+use gpui::KeyDownEvent;
 
 /// Navigation direction for keyboard events
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,23 +58,22 @@ impl KeyboardNavigationHandler {
     /// Update the item count (when list changes)
     pub fn set_item_count(&mut self, count: usize) {
         self.item_count = count;
-        
+
         // Adjust focused index if it's out of bounds
         if let Some(focused) = self.focused_index {
             if focused >= count {
                 self.focused_index = if count > 0 { Some(count - 1) } else { None };
             }
         }
-        
+
         // Remove selected indices that are out of bounds
         self.selected_indices.retain(|&index| index < count);
     }
 
     /// Handle keyboard input and return the appropriate action
     pub fn handle_key_down(&mut self, event: &KeyDownEvent) -> Option<NavigationAction> {
-        
         let modifiers = &event.keystroke.modifiers;
-        
+
         match event.keystroke.key.as_str() {
             // Arrow navigation
             "up" | "ArrowUp" => {
@@ -91,7 +90,7 @@ impl KeyboardNavigationHandler {
                     Some(NavigationAction::Move(NavigationDirection::Down))
                 }
             }
-            
+
             // Home/End navigation
             "home" | "Home" => {
                 if modifiers.shift && self.selection_mode == SelectionMode::Range {
@@ -107,7 +106,7 @@ impl KeyboardNavigationHandler {
                     Some(NavigationAction::Move(NavigationDirection::End))
                 }
             }
-            
+
             // Page navigation
             "pageup" | "PageUp" => {
                 if modifiers.shift && self.selection_mode == SelectionMode::Range {
@@ -123,7 +122,7 @@ impl KeyboardNavigationHandler {
                     Some(NavigationAction::Move(NavigationDirection::PageDown))
                 }
             }
-            
+
             // Selection commands
             " " | "space" => {
                 if self.selection_mode != SelectionMode::None {
@@ -132,13 +131,14 @@ impl KeyboardNavigationHandler {
                     None
                 }
             }
-            
+
             // Select all (Ctrl+A / Cmd+A)
-            "a" if (modifiers.control || modifiers.platform) &&
-                   self.selection_mode == SelectionMode::Multiple => {
+            "a" if (modifiers.control || modifiers.platform)
+                && self.selection_mode == SelectionMode::Multiple =>
+            {
                 Some(NavigationAction::SelectAll)
             }
-            
+
             // Clear selection (Escape)
             "escape" | "Escape" => {
                 if !self.selected_indices.is_empty() || self.focused_index.is_some() {
@@ -147,7 +147,7 @@ impl KeyboardNavigationHandler {
                     None
                 }
             }
-            
+
             // Character input for search
             _ => {
                 if let Some(char) = event.keystroke.key.to_string().chars().next() {
@@ -166,15 +166,15 @@ impl KeyboardNavigationHandler {
     /// Handle search character input
     fn handle_search_input(&mut self, char: char) -> Option<NavigationAction> {
         let now = std::time::Instant::now();
-        
+
         // Reset search buffer if too much time has passed
         if now.duration_since(self.last_search_time).as_millis() > 500 {
             self.search_buffer.clear();
         }
-        
+
         self.search_buffer.push(char);
         self.last_search_time = now;
-        
+
         Some(NavigationAction::Search(self.search_buffer.clone()))
     }
 
@@ -185,7 +185,7 @@ impl KeyboardNavigationHandler {
                 let new_focus = self.calculate_new_focus(direction);
                 let old_focus = self.focused_index;
                 self.focused_index = new_focus;
-                
+
                 NavigationResult {
                     old_focused_index: old_focus,
                     new_focused_index: new_focus,
@@ -193,18 +193,18 @@ impl KeyboardNavigationHandler {
                     selected_indices: self.selected_indices.clone(),
                 }
             }
-            
+
             NavigationAction::Select(direction) => {
                 let old_focus = self.focused_index;
                 let new_focus = self.calculate_new_focus(direction);
-                
+
                 // Handle range selection
                 if self.selection_mode == SelectionMode::Range {
                     self.handle_range_selection(old_focus, new_focus);
                 }
-                
+
                 self.focused_index = new_focus;
-                
+
                 NavigationResult {
                     old_focused_index: old_focus,
                     new_focused_index: new_focus,
@@ -212,7 +212,7 @@ impl KeyboardNavigationHandler {
                     selected_indices: self.selected_indices.clone(),
                 }
             }
-            
+
             NavigationAction::ToggleSelection => {
                 if let Some(focused) = self.focused_index {
                     if self.selected_indices.contains(&focused) {
@@ -220,7 +220,7 @@ impl KeyboardNavigationHandler {
                     } else {
                         self.selected_indices.insert(focused);
                     }
-                    
+
                     NavigationResult {
                         old_focused_index: self.focused_index,
                         new_focused_index: self.focused_index,
@@ -231,10 +231,10 @@ impl KeyboardNavigationHandler {
                     NavigationResult::no_change()
                 }
             }
-            
+
             NavigationAction::SelectAll => {
                 self.selected_indices = (0..self.item_count).collect();
-                
+
                 NavigationResult {
                     old_focused_index: self.focused_index,
                     new_focused_index: self.focused_index,
@@ -242,14 +242,14 @@ impl KeyboardNavigationHandler {
                     selected_indices: self.selected_indices.clone(),
                 }
             }
-            
+
             NavigationAction::ClearSelection => {
                 let had_selection = !self.selected_indices.is_empty();
                 let had_focus = self.focused_index.is_some();
-                
+
                 self.selected_indices.clear();
                 self.focused_index = None;
-                
+
                 NavigationResult {
                     old_focused_index: if had_focus { self.focused_index } else { None },
                     new_focused_index: None,
@@ -257,7 +257,7 @@ impl KeyboardNavigationHandler {
                     selected_indices: std::collections::HashSet::new(),
                 }
             }
-            
+
             NavigationAction::Search(_query) => {
                 // Search implementation would be handled by the list component
                 // This just returns the current state
@@ -273,7 +273,7 @@ impl KeyboardNavigationHandler {
         }
 
         let current = self.focused_index.unwrap_or(0);
-        
+
         match direction {
             NavigationDirection::Up => {
                 if current > 0 {
@@ -307,7 +307,7 @@ impl KeyboardNavigationHandler {
         if let (Some(start), Some(end)) = (start, end) {
             let min = start.min(end);
             let max = start.max(end);
-            
+
             // Add all indices in the range to selection
             for i in min..=max {
                 if i < self.item_count {
@@ -392,7 +392,9 @@ impl ListVirtualization {
 
     /// Update scroll position
     pub fn set_scroll_offset(&mut self, offset: f32) {
-        self.scroll_offset = offset.max(0.0).min(self.total_height() - self.viewport_height);
+        self.scroll_offset = offset
+            .max(0.0)
+            .min(self.total_height() - self.viewport_height);
     }
 
     /// Scroll to make a specific item visible
@@ -422,24 +424,24 @@ mod tests {
     #[test]
     fn test_keyboard_navigation_basic() {
         let mut handler = KeyboardNavigationHandler::new(5, SelectionMode::Single);
-        
+
         // Test initial state
         assert_eq!(handler.focused_index, None);
-        
+
         // Test moving down
         handler.focused_index = Some(0);
         let new_focus = handler.calculate_new_focus(NavigationDirection::Down);
         assert_eq!(new_focus, Some(1));
-        
+
         // Test moving up from top
         handler.focused_index = Some(0);
         let new_focus = handler.calculate_new_focus(NavigationDirection::Up);
         assert_eq!(new_focus, Some(0)); // Should stay at top
-        
+
         // Test home/end
         let home_focus = handler.calculate_new_focus(NavigationDirection::Home);
         assert_eq!(home_focus, Some(0));
-        
+
         let end_focus = handler.calculate_new_focus(NavigationDirection::End);
         assert_eq!(end_focus, Some(4));
     }
@@ -450,13 +452,13 @@ mod tests {
         handler.focused_index = Some(2);
         handler.selected_indices.insert(1);
         handler.selected_indices.insert(2);
-        
+
         let state_0 = handler.get_selection_state(0);
         assert!(!state_0.selected && !state_0.focused);
-        
+
         let state_1 = handler.get_selection_state(1);
         assert!(state_1.selected && !state_1.focused);
-        
+
         let state_2 = handler.get_selection_state(2);
         assert!(state_2.selected && state_2.focused);
     }
@@ -464,17 +466,17 @@ mod tests {
     #[test]
     fn test_virtualization() {
         let mut virt = ListVirtualization::new(100, 25.0, 300.0);
-        
+
         // Test visible range at top
         let (start, end) = virt.visible_range();
         assert_eq!(start, 0);
         assert!(end <= 13); // Should be around 12-13 items visible
-        
+
         // Test scrolling
         virt.set_scroll_offset(250.0); // Scroll down
         let (start, _end) = virt.visible_range();
         assert_eq!(start, 10); // 250 / 25 = 10
-        
+
         // Test scroll to item
         virt.scroll_to_item(50);
         assert!(virt.scroll_offset > 0.0);

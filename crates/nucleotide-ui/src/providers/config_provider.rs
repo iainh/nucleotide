@@ -1,9 +1,9 @@
 // ABOUTME: Configuration provider component for app-wide settings and preferences
 // ABOUTME: Manages user preferences, accessibility settings, and runtime configuration
 
-use super::{Provider, ProviderContainer, use_provider, use_provider_or_default};
+use super::{use_provider, use_provider_or_default, Provider, ProviderContainer};
 use crate::utils::FeatureFlags;
-use gpui::{App, AnyElement, IntoElement, SharedString, Pixels, px};
+use gpui::{px, AnyElement, App, IntoElement, Pixels, SharedString};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -133,10 +133,10 @@ pub enum ContrastPreference {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorBlindnessSupport {
     None,
-    Protanopia,    // Red-blind
-    Deuteranopia,  // Green-blind
-    Tritanopia,    // Blue-blind
-    Monochromacy,  // Complete color blindness
+    Protanopia,   // Red-blind
+    Deuteranopia, // Green-blind
+    Tritanopia,   // Blue-blind
+    Monochromacy, // Complete color blindness
 }
 
 /// Viewport configuration
@@ -194,9 +194,9 @@ pub enum FocusRingStyle {
 /// Focus trap behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTrapBehavior {
-    Strict,    // Always trap focus within components
-    Lenient,   // Allow focus to escape in some cases
-    Disabled,  // No focus trapping
+    Strict,   // Always trap focus within components
+    Lenient,  // Allow focus to escape in some cases
+    Disabled, // No focus trapping
 }
 
 /// Keyboard navigation configuration
@@ -631,64 +631,79 @@ impl ConfigurationProvider {
             persistence_config: PersistenceConfiguration::default(),
         }
     }
-    
+
     /// Create a configuration provider optimized for accessibility
     pub fn accessibility_focused() -> Self {
         let mut config = Self::new();
-        
+
         config.accessibility_config.screen_reader_support = true;
         config.accessibility_config.high_contrast_mode = true;
         config.accessibility_config.reduced_motion = true;
-        config.accessibility_config.focus_config.show_focus_indicators = true;
+        config
+            .accessibility_config
+            .focus_config
+            .show_focus_indicators = true;
         config.accessibility_config.focus_config.focus_ring_style = FocusRingStyle::Combined;
-        
+
         config.ui_config.animation_config.enable_animations = false;
         config.ui_config.animation_config.performance_mode = AnimationPerformanceMode::Minimal;
         config.ui_config.color_config.contrast_preference = ContrastPreference::High;
         config.ui_config.layout_config.density = LayoutDensity::Spacious;
-        
+
         config.feature_flags.ui_features.enable_reduced_motion = true;
         config.feature_flags.ui_features.enable_high_contrast = true;
-        
+
         config
     }
-    
+
     /// Create a configuration provider optimized for performance
     pub fn performance_focused() -> Self {
         let mut config = Self::new();
-        
+
         config.performance_config.enable_virtualization = true;
         config.performance_config.virtualization_threshold = 50;
         config.performance_config.render_optimization.enable_caching = true;
-        config.performance_config.render_optimization.enable_batched_updates = true;
+        config
+            .performance_config
+            .render_optimization
+            .enable_batched_updates = true;
         config.performance_config.memory_management.enable_gc_hints = true;
-        
+
         config.ui_config.animation_config.performance_mode = AnimationPerformanceMode::Performance;
         config.ui_config.layout_config.density = LayoutDensity::Compact;
-        
-        config.feature_flags.performance_features.enable_virtualization = true;
-        config.feature_flags.performance_features.enable_lazy_loading = true;
+
+        config
+            .feature_flags
+            .performance_features
+            .enable_virtualization = true;
+        config
+            .feature_flags
+            .performance_features
+            .enable_lazy_loading = true;
         config.feature_flags.performance_features.enable_caching = true;
-        config.feature_flags.performance_features.enable_memory_optimization = true;
-        
+        config
+            .feature_flags
+            .performance_features
+            .enable_memory_optimization = true;
+
         config
     }
-    
+
     /// Set a custom configuration value
     pub fn set_config(&mut self, key: impl Into<SharedString>, value: ConfigValue) {
         self.custom_config.insert(key.into(), value);
     }
-    
+
     /// Get a custom configuration value
     pub fn get_config(&self, key: &str) -> Option<&ConfigValue> {
         self.custom_config.get(key)
     }
-    
+
     /// Remove a custom configuration value
     pub fn remove_config(&mut self, key: &str) -> Option<ConfigValue> {
         self.custom_config.remove(key)
     }
-    
+
     /// Update UI configuration
     pub fn update_ui_config<F>(&mut self, updater: F)
     where
@@ -697,7 +712,7 @@ impl ConfigurationProvider {
         updater(&mut self.ui_config);
         nucleotide_logging::debug!("UI configuration updated");
     }
-    
+
     /// Update accessibility configuration
     pub fn update_accessibility_config<F>(&mut self, updater: F)
     where
@@ -706,7 +721,7 @@ impl ConfigurationProvider {
         updater(&mut self.accessibility_config);
         nucleotide_logging::debug!("Accessibility configuration updated");
     }
-    
+
     /// Update performance configuration
     pub fn update_performance_config<F>(&mut self, updater: F)
     where
@@ -715,7 +730,7 @@ impl ConfigurationProvider {
         updater(&mut self.performance_config);
         nucleotide_logging::debug!("Performance configuration updated");
     }
-    
+
     /// Update internationalization configuration
     pub fn update_i18n_config<F>(&mut self, updater: F)
     where
@@ -724,21 +739,23 @@ impl ConfigurationProvider {
         updater(&mut self.i18n_config);
         nucleotide_logging::debug!("I18n configuration updated");
     }
-    
+
     /// Check if a feature is enabled
     pub fn is_feature_enabled(&self, feature: &str) -> bool {
         self.feature_flags.is_enabled(feature)
     }
-    
+
     /// Enable or disable a feature
     pub fn set_feature_enabled(&mut self, feature: &str, enabled: bool) {
         self.feature_flags.set_flag(feature.to_string(), enabled);
     }
-    
+
     /// Get effective animation duration based on configuration
     pub fn get_animation_duration(&self, base_duration: Duration) -> Duration {
-        if !self.ui_config.animation_config.enable_animations 
-            || (self.ui_config.animation_config.respect_reduced_motion && self.accessibility_config.reduced_motion) {
+        if !self.ui_config.animation_config.enable_animations
+            || (self.ui_config.animation_config.respect_reduced_motion
+                && self.accessibility_config.reduced_motion)
+        {
             Duration::ZERO
         } else {
             let scale = match self.ui_config.animation_config.performance_mode {
@@ -747,25 +764,27 @@ impl ConfigurationProvider {
                 AnimationPerformanceMode::Performance => 0.5,
                 AnimationPerformanceMode::Minimal => 0.2,
             };
-            
+
             Duration::from_millis((base_duration.as_millis() as f32 * scale) as u64)
         }
     }
-    
+
     /// Check if virtualization should be used for a list of given size
     pub fn should_use_virtualization(&self, item_count: usize) -> bool {
-        self.performance_config.enable_virtualization 
+        self.performance_config.enable_virtualization
             && item_count >= self.performance_config.virtualization_threshold
     }
-    
+
     /// Get effective text size based on accessibility settings
     pub fn get_effective_text_size(&self, base_size: Pixels) -> Pixels {
         let scaled_size = px(base_size.0 * self.ui_config.font_scale);
-        let clamped_size = px(scaled_size.0.max(self.accessibility_config.text_config.min_text_size.0)
+        let clamped_size = px(scaled_size
+            .0
+            .max(self.accessibility_config.text_config.min_text_size.0)
             .min(self.accessibility_config.text_config.max_text_size.0));
         clamped_size
     }
-    
+
     /// Load configuration from environment variables
     pub fn load_from_env(&mut self) {
         // Font scale
@@ -774,22 +793,22 @@ impl ConfigurationProvider {
                 self.ui_config.font_scale = scale_value;
             }
         }
-        
+
         // Reduced motion
         if let Ok(reduced_motion) = std::env::var("PREFER_REDUCED_MOTION") {
             self.accessibility_config.reduced_motion = reduced_motion.parse().unwrap_or(false);
         }
-        
+
         // High contrast
         if let Ok(high_contrast) = std::env::var("PREFER_HIGH_CONTRAST") {
             self.accessibility_config.high_contrast_mode = high_contrast.parse().unwrap_or(false);
         }
-        
+
         // Locale
         if let Ok(locale) = std::env::var("LANG") {
             self.i18n_config.locale = locale.into();
         }
-        
+
         nucleotide_logging::debug!("Configuration loaded from environment variables");
     }
 }
@@ -804,7 +823,7 @@ impl Provider for ConfigurationProvider {
     fn type_name(&self) -> &'static str {
         "ConfigurationProvider"
     }
-    
+
     fn initialize(&mut self, _cx: &mut App) {
         self.load_from_env();
         nucleotide_logging::info!(
@@ -814,7 +833,7 @@ impl Provider for ConfigurationProvider {
             "ConfigurationProvider initialized"
         );
     }
-    
+
     fn cleanup(&mut self, _cx: &mut App) {
         nucleotide_logging::debug!("ConfigurationProvider cleaned up");
     }
@@ -838,23 +857,22 @@ impl ConfigProviderComponent {
             children: Vec::new(),
         }
     }
-    
+
     pub fn child(mut self, child: impl IntoElement) -> Self {
         self.children.push(child.into_any_element());
         self
     }
-    
+
     pub fn children(mut self, children: impl IntoIterator<Item = impl IntoElement>) -> Self {
-        self.children.extend(
-            children.into_iter().map(|child| child.into_any_element())
-        );
+        self.children
+            .extend(children.into_iter().map(|child| child.into_any_element()));
         self
     }
 }
 
 impl IntoElement for ConfigProviderComponent {
     type Element = AnyElement;
-    
+
     fn into_element(self) -> Self::Element {
         ProviderContainer::new("config-provider", self.provider)
             .children(self.children)
@@ -909,7 +927,7 @@ mod tests {
     #[test]
     fn test_configuration_provider_creation() {
         let config = ConfigurationProvider::new();
-        
+
         assert_eq!(config.ui_config.font_scale, 1.0);
         assert_eq!(config.i18n_config.locale, "en-US");
         assert!(!config.accessibility_config.reduced_motion);
@@ -919,21 +937,27 @@ mod tests {
     #[test]
     fn test_accessibility_focused_config() {
         let config = ConfigurationProvider::accessibility_focused();
-        
+
         assert!(config.accessibility_config.screen_reader_support);
         assert!(config.accessibility_config.high_contrast_mode);
         assert!(config.accessibility_config.reduced_motion);
         assert!(!config.ui_config.animation_config.enable_animations);
-        assert_eq!(config.ui_config.layout_config.density, LayoutDensity::Spacious);
+        assert_eq!(
+            config.ui_config.layout_config.density,
+            LayoutDensity::Spacious
+        );
     }
 
     #[test]
     fn test_performance_focused_config() {
         let config = ConfigurationProvider::performance_focused();
-        
+
         assert!(config.performance_config.enable_virtualization);
         assert_eq!(config.performance_config.virtualization_threshold, 50);
-        assert_eq!(config.ui_config.layout_config.density, LayoutDensity::Compact);
+        assert_eq!(
+            config.ui_config.layout_config.density,
+            LayoutDensity::Compact
+        );
         assert_eq!(
             config.ui_config.animation_config.performance_mode,
             AnimationPerformanceMode::Performance
@@ -943,15 +967,24 @@ mod tests {
     #[test]
     fn test_custom_config_values() {
         let mut config = ConfigurationProvider::new();
-        
+
         config.set_config("test_string", ConfigValue::String("hello".into()));
         config.set_config("test_number", ConfigValue::Integer(42));
         config.set_config("test_bool", ConfigValue::Boolean(true));
-        
-        assert!(matches!(config.get_config("test_string"), Some(ConfigValue::String(_))));
-        assert!(matches!(config.get_config("test_number"), Some(ConfigValue::Integer(42))));
-        assert!(matches!(config.get_config("test_bool"), Some(ConfigValue::Boolean(true))));
-        
+
+        assert!(matches!(
+            config.get_config("test_string"),
+            Some(ConfigValue::String(_))
+        ));
+        assert!(matches!(
+            config.get_config("test_number"),
+            Some(ConfigValue::Integer(42))
+        ));
+        assert!(matches!(
+            config.get_config("test_bool"),
+            Some(ConfigValue::Boolean(true))
+        ));
+
         let removed = config.remove_config("test_string");
         assert!(removed.is_some());
         assert!(config.get_config("test_string").is_none());
@@ -961,22 +994,22 @@ mod tests {
     fn test_animation_duration_calculation() {
         let mut config = ConfigurationProvider::new();
         let base_duration = Duration::from_millis(200);
-        
+
         // Normal case
         let duration = config.get_animation_duration(base_duration);
         assert_eq!(duration, Duration::from_millis(160)); // Balanced mode = 0.8x
-        
+
         // Disabled animations
         config.ui_config.animation_config.enable_animations = false;
         let duration = config.get_animation_duration(base_duration);
         assert_eq!(duration, Duration::ZERO);
-        
+
         // Reduced motion
         config.ui_config.animation_config.enable_animations = true;
         config.accessibility_config.reduced_motion = true;
         let duration = config.get_animation_duration(base_duration);
         assert_eq!(duration, Duration::ZERO);
-        
+
         // Performance mode
         config.accessibility_config.reduced_motion = false;
         config.ui_config.animation_config.performance_mode = AnimationPerformanceMode::Performance;
@@ -987,10 +1020,10 @@ mod tests {
     #[test]
     fn test_virtualization_threshold() {
         let config = ConfigurationProvider::new();
-        
-        assert!(!config.should_use_virtualization(50));  // Below threshold
+
+        assert!(!config.should_use_virtualization(50)); // Below threshold
         assert!(config.should_use_virtualization(150)); // Above threshold
-        
+
         let mut disabled_config = config.clone();
         disabled_config.performance_config.enable_virtualization = false;
         assert!(!disabled_config.should_use_virtualization(150)); // Disabled
@@ -999,19 +1032,19 @@ mod tests {
     #[test]
     fn test_effective_text_size() {
         let mut config = ConfigurationProvider::new();
-        
+
         // Normal scaling
         let base_size = px(14.0);
         config.ui_config.font_scale = 1.2;
         let effective_size = config.get_effective_text_size(base_size);
         assert_eq!(effective_size.0, 16.8); // 14 * 1.2
-        
+
         // Clamped to minimum
         config.ui_config.font_scale = 0.5;
         config.accessibility_config.text_config.min_text_size = px(12.0);
         let effective_size = config.get_effective_text_size(base_size);
         assert_eq!(effective_size.0, 12.0); // Clamped to min
-        
+
         // Clamped to maximum
         config.ui_config.font_scale = 2.0;
         config.accessibility_config.text_config.max_text_size = px(20.0);
@@ -1022,14 +1055,14 @@ mod tests {
     #[test]
     fn test_feature_flag_management() {
         let mut config = ConfigurationProvider::new();
-        
+
         // Default state
         assert!(!config.is_feature_enabled("experimental_feature"));
-        
+
         // Enable feature
         config.set_feature_enabled("experimental_feature", true);
         assert!(config.is_feature_enabled("experimental_feature"));
-        
+
         // Disable feature
         config.set_feature_enabled("experimental_feature", false);
         assert!(!config.is_feature_enabled("experimental_feature"));
@@ -1038,20 +1071,23 @@ mod tests {
     #[test]
     fn test_configuration_updates() {
         let mut config = ConfigurationProvider::new();
-        
+
         config.update_ui_config(|ui_config| {
             ui_config.font_scale = 1.5;
             ui_config.layout_config.density = LayoutDensity::Spacious;
         });
-        
+
         assert_eq!(config.ui_config.font_scale, 1.5);
-        assert_eq!(config.ui_config.layout_config.density, LayoutDensity::Spacious);
-        
+        assert_eq!(
+            config.ui_config.layout_config.density,
+            LayoutDensity::Spacious
+        );
+
         config.update_accessibility_config(|a11y_config| {
             a11y_config.reduced_motion = true;
             a11y_config.high_contrast_mode = true;
         });
-        
+
         assert!(config.accessibility_config.reduced_motion);
         assert!(config.accessibility_config.high_contrast_mode);
     }
@@ -1061,15 +1097,15 @@ mod tests {
         let ui_config = UIConfiguration::default();
         assert_eq!(ui_config.font_family, "system-ui");
         assert_eq!(ui_config.font_scale, 1.0);
-        
+
         let a11y_config = AccessibilityConfiguration::default();
         assert!(!a11y_config.screen_reader_support);
         assert!(a11y_config.focus_config.show_focus_indicators);
-        
+
         let perf_config = PerformanceConfiguration::default();
         assert!(perf_config.enable_virtualization);
         assert_eq!(perf_config.virtualization_threshold, 100);
-        
+
         let i18n_config = InternationalizationConfiguration::default();
         assert_eq!(i18n_config.locale, "en-US");
         assert_eq!(i18n_config.text_direction, TextDirection::LeftToRight);
