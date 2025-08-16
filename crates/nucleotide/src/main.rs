@@ -19,6 +19,9 @@ use nucleotide::{
     application, config, info_box, notification, overlay, types, workspace, ThemeManager,
 };
 
+// Import nucleotide-ui enhanced components
+// Note: These traits will be used in the workspace and component integration
+
 // Only declare modules that are not in lib.rs (binary-specific modules)
 mod test_utils;
 
@@ -491,6 +494,15 @@ fn gui_main(
     });
 
     gpui_app.run(move |cx| {
+        // Initialize the enhanced UI system
+        use nucleotide_ui::providers::{init_provider_system, ProviderComposition};
+
+        // Initialize nucleotide-ui first (sets up UIConfig and component registry)
+        nucleotide_ui::init(cx, None);
+
+        // Initialize the provider system
+        init_provider_system();
+
         // Set up theme manager with Helix theme
         let helix_theme = app.editor.theme.clone();
         let mut theme_manager = crate::ThemeManager::new(helix_theme);
@@ -508,8 +520,21 @@ fn gui_main(
         }
 
         let ui_theme = theme_manager.ui_theme().clone();
+        let is_dark_theme = theme_manager.is_dark_theme(); // Store before moving
         cx.set_global(theme_manager);
         cx.set_global(ui_theme);
+
+        // Initialize the design token system based on the current theme
+        use nucleotide_ui::Theme as EnhancedTheme;
+        let enhanced_theme = if is_dark_theme {
+            EnhancedTheme::dark()
+        } else {
+            EnhancedTheme::light()
+        };
+        cx.set_global(enhanced_theme);
+
+        // Set up the enhanced provider system
+        let _provider_tree = ProviderComposition::app_providers();
 
         // Initialize VCS service
         let vcs_config = nucleotide::vcs_service::VcsConfig::default();
@@ -785,7 +810,10 @@ fn gui_main(
             // Create notifications view with theme colors
             let notifications = cx.new(|cx| {
                 let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                notification::NotificationView::new(ui_theme.background, ui_theme.text)
+                notification::NotificationView::new(
+                    ui_theme.tokens.colors.background,
+                    ui_theme.tokens.colors.text_primary,
+                )
             });
 
             // Create info box view with default style

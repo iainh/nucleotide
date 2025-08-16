@@ -129,6 +129,12 @@ impl ThemeManager {
             .and_then(color_to_hsla)
             .unwrap_or_else(|| hsla(120.0 / 360.0, 0.6, 0.5, 1.0));
 
+        let tokens = if background.l < 0.5 {
+            crate::DesignTokens::dark()
+        } else {
+            crate::DesignTokens::light()
+        };
+
         UITheme {
             background,
             surface,
@@ -146,6 +152,7 @@ impl ThemeManager {
             error,
             warning,
             success,
+            tokens,
         }
     }
 }
