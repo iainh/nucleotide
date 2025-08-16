@@ -199,7 +199,7 @@ impl RenderOnce for TabBar {
         let bg_color = statusline_style
             .bg
             .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.surface_background);
+            .unwrap_or(ui_theme.tokens.colors.surface);
 
         // Keep documents in the order they were opened
         let mut documents = self.documents.clone();
@@ -281,7 +281,7 @@ impl RenderOnce for TabBar {
                                 .flex()
                                 .items_center()
                                 .px(px(12.0))
-                                .text_color(ui_theme.text_muted)
+                                .text_color(ui_theme.tokens.colors.text_secondary)
                                 .text_size(px(13.0))
                                 .child("No open files"),
                         )

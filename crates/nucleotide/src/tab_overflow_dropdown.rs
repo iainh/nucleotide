@@ -106,16 +106,16 @@ impl RenderOnce for TabOverflowButton {
             .get("ui.text")
             .fg
             .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.text);
+            .unwrap_or(ui_theme.tokens.colors.text_primary);
 
-        let border_color = ui_theme.border;
+        let border_color = ui_theme.tokens.colors.border_default;
 
         // Get statusline background color to match tab bar
         let statusline_style = helix_theme.get("ui.statusline");
         let bg_color = statusline_style
             .bg
             .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.surface_background);
+            .unwrap_or(ui_theme.tokens.colors.surface);
 
         div()
             .id("tab-overflow-button")
@@ -139,8 +139,8 @@ impl RenderOnce for TabOverflowButton {
                     .h(px(24.0))
                     .cursor(CursorStyle::PointingHand)
                     .rounded(px(4.0))
-                    .bg(ui_theme.surface)
-                    .hover(|style| style.bg(ui_theme.surface_hover))
+                    .bg(ui_theme.tokens.colors.surface)
+                    .hover(|style| style.bg(ui_theme.tokens.colors.surface_hover))
                     .border_1()
                     .border_color(border_color)
                     .on_mouse_up(MouseButton::Left, {
@@ -177,10 +177,10 @@ impl RenderOnce for TabOverflowMenu {
             .get("ui.text")
             .fg
             .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.text);
+            .unwrap_or(ui_theme.tokens.colors.text_primary);
 
-        let dropdown_bg = ui_theme.surface;
-        let border_color = ui_theme.border;
+        let dropdown_bg = ui_theme.tokens.colors.surface;
+        let border_color = ui_theme.tokens.colors.border_default;
 
         // Positioned absolutely to appear right below the overflow button
         div()
@@ -219,8 +219,10 @@ impl RenderOnce for TabOverflowMenu {
                             .w_full()
                             .min_h(px(28.0)) // Smaller minimum height
                             .cursor(CursorStyle::PointingHand)
-                            .hover(|style| style.bg(ui_theme.surface_hover))
-                            .when(is_active, |item_div| item_div.bg(ui_theme.surface_active))
+                            .hover(|style| style.bg(ui_theme.tokens.colors.surface_hover))
+                            .when(is_active, |item_div| {
+                                item_div.bg(ui_theme.tokens.colors.surface_active)
+                            })
                             .on_mouse_down(MouseButton::Left, {
                                 move |_event, _window, cx| {
                                     // Stop propagation immediately to prevent workspace click-away handler
@@ -277,7 +279,7 @@ impl RenderOnce for TabOverflowMenu {
                                         .w(px(6.0))
                                         .h(px(6.0))
                                         .rounded(px(3.0))
-                                        .bg(ui_theme.accent)
+                                        .bg(ui_theme.tokens.colors.primary)
                                         .ml(px(4.0)),
                                 )
                             })

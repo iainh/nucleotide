@@ -1028,7 +1028,7 @@ impl FileTreeView {
             let bg = menu_selected
                 .bg
                 .and_then(color_to_hsla)
-                .unwrap_or(theme.accent);
+                .unwrap_or(theme.tokens.colors.primary);
             let fg = menu_selected
                 .fg
                 .and_then(color_to_hsla)
@@ -1049,7 +1049,7 @@ impl FileTreeView {
             .when(is_selected, |div| {
                 div.bg(selection_bg).text_color(selection_fg)
             })
-            .hover(|style| style.bg(theme.surface_hover))
+            .hover(|style| style.bg(theme.tokens.colors.surface_hover))
             .on_click({
                 let path = entry.path.clone();
                 let is_dir = entry.is_directory();
@@ -1119,7 +1119,7 @@ impl FileTreeView {
                 FileIcon::symlink(*target_exists)
                     .size(16.0)
                     .text_color(if *target_exists {
-                        theme.accent
+                        theme.tokens.colors.primary
                     } else {
                         theme.error
                     })
@@ -1186,7 +1186,7 @@ impl FileTreeView {
             VcsStatus::Added => theme.success,
             VcsStatus::Deleted => theme.error,
             VcsStatus::Untracked => theme.text_muted,
-            VcsStatus::Renamed => theme.accent,
+            VcsStatus::Renamed => theme.tokens.colors.primary,
             VcsStatus::Conflicted => theme.error,
             VcsStatus::UpToDate => return div(), // Don't show anything for up-to-date files
         };
@@ -1202,7 +1202,7 @@ impl FileTreeView {
             .rounded_full()
             .bg(color)
             .border_1()
-            .border_color(theme.background) // Add a small border to separate from icon
+            .border_color(theme.tokens.colors.background) // Add a small border to separate from icon
     }
 }
 
@@ -1229,7 +1229,7 @@ impl Render for FileTreeView {
                 .bg
                 .and_then(color_to_hsla)
                 .or_else(|| helix_theme.get("ui.background").bg.and_then(color_to_hsla))
-                .unwrap_or(theme.background)
+                .unwrap_or(theme.tokens.colors.background)
         };
 
         div()

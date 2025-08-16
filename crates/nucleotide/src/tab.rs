@@ -75,12 +75,12 @@ impl RenderOnce for Tab {
             let bg_color = editor_bg_style
                 .bg
                 .and_then(crate::utils::color_to_hsla)
-                .unwrap_or(ui_theme.background);
+                .unwrap_or(ui_theme.tokens.colors.background);
 
             let text_color = editor_text_style
                 .fg
                 .and_then(crate::utils::color_to_hsla)
-                .unwrap_or(ui_theme.text);
+                .unwrap_or(ui_theme.tokens.colors.text_primary);
 
             (bg_color, text_color, bg_color)
         } else {
@@ -91,15 +91,15 @@ impl RenderOnce for Tab {
             let bg_color = statusline_style
                 .bg
                 .and_then(crate::utils::color_to_hsla)
-                .unwrap_or(ui_theme.surface_background);
+                .unwrap_or(ui_theme.tokens.colors.surface);
 
             // Use same text color as active tabs for consistency
             let text_color = editor_text_style
                 .fg
                 .and_then(crate::utils::color_to_hsla)
-                .unwrap_or(ui_theme.text);
+                .unwrap_or(ui_theme.tokens.colors.text_primary);
 
-            (bg_color, text_color, ui_theme.surface_hover)
+            (bg_color, text_color, ui_theme.tokens.colors.surface_hover)
         };
 
         // Build the tab
@@ -118,14 +118,15 @@ impl RenderOnce for Tab {
             .hover(|style| style.bg(hover_bg))
             .cursor(CursorStyle::PointingHand)
             .border_r_1()
-            .border_color(ui_theme.border)
+            .border_color(ui_theme.tokens.colors.border_default)
             .when(self.is_active, |this| {
                 // Active tabs: no borders to create complete visual continuity with editor
                 this
             })
             .when(!self.is_active, |this| {
                 // Inactive tabs get bottom border to separate from editor
-                this.border_b_1().border_color(ui_theme.border)
+                this.border_b_1()
+                    .border_color(ui_theme.tokens.colors.border_default)
             })
             .on_mouse_up(MouseButton::Left, {
                 let on_click = self.on_click;

@@ -1693,13 +1693,13 @@ impl Workspace {
                     .get("ui.background")
                     .bg
                     .and_then(crate::utils::color_to_hsla)
-                    .unwrap_or(ui_theme.background);
+                    .unwrap_or(ui_theme.tokens.colors.background);
                 hsla(base.h, base.s, base.l * 0.9, base.a)
             });
         let fg_color = statusline_style
             .fg
             .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.text);
+            .unwrap_or(ui_theme.tokens.colors.text_primary);
 
         // Get UI font configuration
         let ui_font_config = cx.global::<crate::types::UiFontConfig>();
@@ -1767,7 +1767,7 @@ impl Workspace {
             .w_full()
             .bg(bg_color)
             .border_t_1()
-            .border_color(ui_theme.border)
+            .border_color(ui_theme.tokens.colors.border_default)
             .flex()
             .flex_row()
             .items_center()
@@ -2658,7 +2658,7 @@ impl Render for Workspace {
                     .bottom_0()
                     .w(px(self.file_tree_width))
                     .border_r_1()
-                    .border_color(ui_theme.border)
+                    .border_color(ui_theme.tokens.colors.border_default)
                     .child(file_tree.clone());
 
                 // Create resize handle with absolute positioning
@@ -2715,7 +2715,7 @@ impl Render for Workspace {
                                 .bg
                                 .and_then(crate::utils::color_to_hsla)
                         })
-                        .unwrap_or(ui_theme.background)
+                        .unwrap_or(ui_theme.tokens.colors.background)
                 };
 
                 let placeholder_panel = div()
@@ -2726,7 +2726,7 @@ impl Render for Workspace {
                     .w(px(self.file_tree_width))
                     .bg(prompt_bg)
                     .border_r_1()
-                    .border_color(ui_theme.border)
+                    .border_color(ui_theme.tokens.colors.border_default)
                     .flex()
                     .flex_col()
                     .child(div().w_full().p(px(12.0)).child({
