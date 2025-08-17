@@ -3,8 +3,23 @@
 
 use crate::theme_utils::color_to_hsla;
 use crate::Theme as UITheme;
-use gpui::{hsla, App, Global, WindowAppearance};
+use gpui::{hsla, App, Global, Hsla, WindowAppearance};
 use helix_view::Theme as HelixTheme;
+
+/// Extracted colors from Helix theme for comprehensive design token creation
+#[derive(Debug, Clone, Copy)]
+pub struct HelixThemeColors {
+    pub selection: Hsla,
+    pub cursor_normal: Hsla,
+    pub cursor_insert: Hsla,
+    pub cursor_select: Hsla,
+    pub cursor_match: Hsla,
+    pub error: Hsla,
+    pub warning: Hsla,
+    pub success: Hsla,
+    pub statusline: Hsla,
+    pub popup: Hsla,
+}
 
 /// System appearance state
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -411,8 +426,13 @@ impl ThemeManager {
             ui_text,
             ui_selection,
             ui_cursor,
+            ui_cursor_insert,
+            ui_cursor_select,
+            ui_cursor_match,
             ui_window,
             ui_menu,
+            ui_statusline,
+            ui_popup,
             error_style,
             warning_style,
             info_style,
@@ -433,14 +453,24 @@ impl ThemeManager {
                 empty_style,
                 empty_style,
                 empty_style,
+                empty_style,
+                empty_style,
+                empty_style,
+                empty_style,
+                empty_style,
             )
         } else {
             let ui_bg = helix_theme.get("ui.background");
             let ui_text = helix_theme.get("ui.text");
             let ui_selection = helix_theme.get("ui.selection");
             let ui_cursor = helix_theme.get("ui.cursor.primary");
+            let ui_cursor_insert = helix_theme.get("ui.cursor.insert");
+            let ui_cursor_select = helix_theme.get("ui.cursor.select");
+            let ui_cursor_match = helix_theme.get("ui.cursor.match");
             let ui_window = helix_theme.get("ui.window");
             let ui_menu = helix_theme.get("ui.menu");
+            let ui_statusline = helix_theme.get("ui.statusline");
+            let ui_popup = helix_theme.get("ui.popup");
             let error_style = helix_theme.get("error");
             let warning_style = helix_theme.get("warning");
             let info_style = helix_theme.get("info");
@@ -450,8 +480,13 @@ impl ThemeManager {
                 ui_text,
                 ui_selection,
                 ui_cursor,
+                ui_cursor_insert,
+                ui_cursor_select,
+                ui_cursor_match,
                 ui_window,
                 ui_menu,
+                ui_statusline,
+                ui_popup,
                 error_style,
                 warning_style,
                 info_style,
@@ -464,8 +499,13 @@ impl ThemeManager {
                 ui_text_available = ui_text.fg.is_some(),
                 ui_selection_available = ui_selection.bg.is_some(),
                 ui_cursor_available = ui_cursor.bg.is_some(),
+                ui_cursor_insert_available = ui_cursor_insert.bg.is_some(),
+                ui_cursor_select_available = ui_cursor_select.bg.is_some(),
+                ui_cursor_match_available = ui_cursor_match.bg.is_some(),
                 ui_window_available = ui_window.fg.is_some(),
                 ui_menu_available = ui_menu.bg.is_some(),
+                ui_statusline_available = ui_statusline.bg.is_some(),
+                ui_popup_available = ui_popup.bg.is_some(),
                 error_available = error_style.fg.is_some(),
                 warning_available = warning_style.fg.is_some(),
                 info_available = info_style.fg.is_some(),
@@ -488,16 +528,50 @@ impl ThemeManager {
             fallback_color
         });
 
-        let surface_from_theme = ui_menu
-            .bg
-            .and_then(color_to_hsla)
-            .or_else(|| ui_bg.bg.and_then(color_to_hsla))
-            .map(|c| hsla(c.h, c.s, c.l + 0.05, c.a));
+        let surface_from_theme = {
+            let menu_color = ui_menu.bg.and_then(color_to_hsla);
+            let bg_color = ui_bg.bg.and_then(color_to_hsla);
+
+            match (menu_color, bg_color) {
+                (Some(menu), Some(bg)) => {
+                    // If menu is darker than background, compute a lighter surface from background
+                    if menu.l < bg.l {
+                        nucleotide_logging::debug!(
+                            menu_lightness = menu.l,
+                            bg_lightness = bg.l,
+                            "ui.menu is darker than ui.background, computing surface from background"
+                        );
+                        Some(hsla(bg.h, bg.s, bg.l + 0.05, bg.a))
+                    } else {
+                        // Menu is lighter than or equal to background, use it as surface
+                        Some(menu)
+                    }
+                }
+                (Some(menu), None) => {
+                    // Only menu available, add lightness
+                    Some(hsla(menu.h, menu.s, menu.l + 0.05, menu.a))
+                }
+                (None, Some(bg)) => {
+                    // Only background available, add lightness
+                    Some(hsla(bg.h, bg.s, bg.l + 0.05, bg.a))
+                }
+                (None, None) => None,
+            }
+        };
+
         let surface = surface_from_theme.unwrap_or_else(|| {
-            match system_appearance {
+            let fallback_color = match system_appearance {
                 SystemAppearance::Light => hsla(0.0, 0.0, 0.95, 1.0), // Light surface
                 SystemAppearance::Dark => hsla(0.0, 0.0, 0.1, 1.0),   // Dark surface
-            }
+            };
+            nucleotide_logging::warn!(
+                system_appearance = ?system_appearance,
+                fallback_surface = ?fallback_color,
+                ui_menu_bg_available = ui_menu.bg.is_some(),
+                ui_background_available = ui_bg.bg.is_some(),
+                "Using fallback surface color - Helix theme may not define ui.menu or ui.background"
+            );
+            fallback_color
         });
 
         let text_from_theme = ui_text.fg.and_then(color_to_hsla);
@@ -535,6 +609,23 @@ impl ThemeManager {
         let success_from_theme = info_style.fg.and_then(color_to_hsla);
         let success = success_from_theme.unwrap_or_else(|| hsla(120.0 / 360.0, 0.6, 0.5, 1.0));
 
+        // Extract additional cursor colors from Helix theme
+        let cursor_insert_from_theme = ui_cursor_insert.bg.and_then(color_to_hsla);
+        let cursor_insert = cursor_insert_from_theme.unwrap_or(success); // Fallback to success color
+
+        let cursor_select_from_theme = ui_cursor_select.bg.and_then(color_to_hsla);
+        let cursor_select = cursor_select_from_theme.unwrap_or(warning); // Fallback to warning color
+
+        let cursor_match_from_theme = ui_cursor_match.bg.and_then(color_to_hsla);
+        let cursor_match = cursor_match_from_theme.unwrap_or(accent); // Fallback to accent color
+
+        // Extract statusline and popup colors
+        let statusline_from_theme = ui_statusline.bg.and_then(color_to_hsla);
+        let statusline = statusline_from_theme.unwrap_or(surface);
+
+        let popup_from_theme = ui_popup.bg.and_then(color_to_hsla);
+        let popup = popup_from_theme.unwrap_or(surface);
+
         if test_fallback {
             nucleotide_logging::info!(
                 background_from_theme = background_from_theme.is_some(),
@@ -552,10 +643,24 @@ impl ThemeManager {
             );
         }
 
+        // Create comprehensive theme colors struct
+        let theme_colors = HelixThemeColors {
+            selection: accent,
+            cursor_normal: accent,
+            cursor_insert,
+            cursor_select,
+            cursor_match,
+            error,
+            warning,
+            success,
+            statusline,
+            popup,
+        };
+
         let tokens = if background.l < 0.5 {
-            crate::DesignTokens::dark()
+            crate::DesignTokens::dark_with_helix_colors(theme_colors)
         } else {
-            crate::DesignTokens::light()
+            crate::DesignTokens::light_with_helix_colors(theme_colors)
         };
 
         UITheme {
