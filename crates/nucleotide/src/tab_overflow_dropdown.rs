@@ -7,7 +7,7 @@ use gpui::{
     RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use helix_view::DocumentId;
-use nucleotide_ui::theme_manager::ThemedContext;
+use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::{
     compute_contextual_style, ColorContext, StyleSize, StyleState, StyleVariant,
     ThemedContext as UIThemedContext,

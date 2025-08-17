@@ -3,9 +3,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    blue, div, hsla, white, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window,
+    div, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 
 /// LSP completion view component
@@ -136,18 +135,22 @@ impl CompletionView {
 }
 
 impl Render for CompletionView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.is_visible() {
             return div().id("completion-hidden");
         }
+
+        // Access theme from global state
+        let theme = cx.global::<crate::Theme>();
+        let tokens = &theme.tokens;
 
         div()
             .id("completion-popup")
             .key_context("CompletionView")
             .track_focus(&self.focus_handle)
-            .bg(white())
+            .bg(tokens.colors.popup_background)
             .border_1()
-            .border_color(hsla(0.0, 0.0, 0.5, 1.0))
+            .border_color(tokens.colors.popup_border)
             .rounded_md()
             .shadow_lg()
             .max_h_48()
@@ -162,13 +165,18 @@ impl Render for CompletionView {
                             div()
                                 .px_2()
                                 .py_1()
-                                .when(is_selected, |div| div.bg(blue().opacity(0.2)))
-                                .child(div().text_sm().child(item.label.clone()))
+                                .when(is_selected, |div| div.bg(tokens.colors.menu_selected))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(tokens.colors.text_primary)
+                                        .child(item.label.clone()),
+                                )
                                 .when_some(item.detail.as_ref(), |el, detail| {
                                     el.child(
                                         div()
                                             .text_xs()
-                                            .text_color(hsla(0.0, 0.0, 0.5, 1.0))
+                                            .text_color(tokens.colors.text_secondary)
                                             .child(detail.clone()),
                                     )
                                 })

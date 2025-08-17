@@ -13,7 +13,7 @@ use helix_core::Selection;
 use helix_view::ViewId;
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
-use nucleotide_ui::theme_manager::ThemedContext;
+use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::{
     compute_component_style, Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant,

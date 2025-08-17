@@ -263,11 +263,11 @@ impl SemanticColors {
             line_number_active: base.neutral_700,
 
             // Enhanced status and buffer system
-            statusline_active: base.neutral_100,   // surface
-            statusline_inactive: base.neutral_100, // surface_disabled
-            bufferline_background: base.neutral_100,
-            bufferline_active: base.neutral_50,    // background
-            bufferline_inactive: base.neutral_100, // surface
+            statusline_active: base.neutral_100,     // surface
+            statusline_inactive: base.neutral_200,   // more distinct from active
+            bufferline_background: base.neutral_300, // distinct tab bar background (16% lightness)
+            bufferline_active: base.neutral_50, // background (active tab matches editor - 98% lightness)
+            bufferline_inactive: base.neutral_200, // inactive tabs (94% lightness - clear contrast)
 
             // Enhanced popup and menu system
             popup_background: base.neutral_200, // surface_elevated
@@ -350,11 +350,11 @@ impl SemanticColors {
             line_number_active: base.neutral_700,
 
             // Enhanced status and buffer system
-            statusline_active: base.neutral_100,   // surface
-            statusline_inactive: base.neutral_100, // surface_disabled
-            bufferline_background: base.neutral_100,
-            bufferline_active: base.neutral_50,    // background
-            bufferline_inactive: base.neutral_100, // surface
+            statusline_active: base.neutral_100,     // surface
+            statusline_inactive: base.neutral_200,   // more distinct from active
+            bufferline_background: base.neutral_300, // distinct tab bar background (16% lightness)
+            bufferline_active: base.neutral_50, // background (active tab matches editor - 5% lightness)
+            bufferline_inactive: base.neutral_200, // inactive tabs (12% lightness - clear contrast)
 
             // Enhanced popup and menu system
             popup_background: base.neutral_200, // surface_elevated

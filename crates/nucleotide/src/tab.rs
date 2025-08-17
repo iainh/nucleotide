@@ -8,11 +8,11 @@ use gpui::{
     MouseUpEvent, ParentElement, RenderOnce, SharedString, Styled, Window,
 };
 use helix_view::DocumentId;
-use nucleotide_ui::theme_manager::ThemedContext;
+use nucleotide_ui::ThemedContext;
 use nucleotide_ui::{
     compute_component_state, Button, ButtonSize, ButtonVariant, Component, ComponentFactory,
-    ComponentState, Interactive, StyleVariant, Styled as UIStyled,
-    ThemedContext as UIThemedContext, Tooltipped, VcsIndicator, VcsStatus,
+    ComponentState, Interactive, StyleVariant, Styled as UIStyled, Tooltipped, VcsIndicator,
+    VcsStatus,
 };
 
 /// Type alias for mouse event handlers in tabs
@@ -245,28 +245,28 @@ impl RenderOnce for Tab {
         // Use design tokens for consistent theming
         let (bg_color, text_color, hover_bg, border_color) = match component_state {
             ComponentState::Active => (
-                tokens.colors.background, // Active tab matches editor background
+                tokens.colors.bufferline_active,
                 tokens.colors.text_primary,
-                tokens.colors.background,
+                tokens.colors.bufferline_active, // No hover change for active tabs
                 tokens.colors.border_default,
             ),
             ComponentState::Disabled => (
                 tokens.colors.surface_disabled,
                 tokens.colors.text_disabled,
-                tokens.colors.surface_disabled,
+                tokens.colors.surface_disabled, // No hover for disabled tabs
                 tokens.colors.border_muted,
             ),
             _ => {
+                // Inactive tabs: use buffer line tokens with appropriate hover state
                 let bg = if self.is_modified {
-                    tokens.colors.surface_selected
+                    tokens.colors.surface_selected // Modified tabs get selected appearance
                 } else {
-                    tokens.colors.surface
+                    tokens.colors.bufferline_inactive
                 };
-                let hover_bg = tokens.colors.surface_hover;
                 (
                     bg,
                     tokens.colors.text_primary,
-                    hover_bg,
+                    tokens.colors.surface_hover, // Standard hover for inactive tabs
                     tokens.colors.border_default,
                 )
             }
@@ -276,10 +276,12 @@ impl RenderOnce for Tab {
         let git_status = self.git_status.clone();
         let height = match self.size {
             TabSize::Small => tokens.sizes.button_height_sm,
-            TabSize::Medium => px(32.0),
+            TabSize::Medium => tokens.sizes.button_height_md,
             TabSize::Large => tokens.sizes.button_height_lg,
         };
-        let padding = tokens.sizes.space_4;
+        let padding_horizontal = tokens.sizes.space_4;
+        let padding_right = tokens.sizes.space_1;
+        let min_width = px(120.0); // TODO: Consider making this a design token
 
         // Build the tab using design tokens
         div()
@@ -287,10 +289,10 @@ impl RenderOnce for Tab {
             .flex()
             .flex_none() // Don't grow or shrink
             .items_center()
-            .pl(padding)
-            .pr(tokens.sizes.space_1)
+            .pl(padding_horizontal)
+            .pr(padding_right)
             .h(height)
-            .min_w(px(120.0)) // Minimum width to ensure readability
+            .min_w(min_width)
             .bg(bg_color)
             .when(enable_animations && !self.disabled, |tab| {
                 tab.hover(|style| style.bg(hover_bg))
@@ -323,28 +325,28 @@ impl RenderOnce for Tab {
                 div()
                     .flex()
                     .items_center()
-                    .gap(tokens.sizes.space_1)
+                    .gap(tokens.sizes.space_2) // Slightly more space between icon and text
                     .child(
                         // File icon with VCS overlay
                         div()
                             .relative() // Needed for absolute positioning of the overlay
-                            .w(px(16.0))
-                            .h(px(16.0))
+                            .size(tokens.sizes.text_lg) // Use text_lg (16px) for icon container
                             .flex()
                             .items_center()
                             .justify_center()
                             .child(if let Some(ref path) = self.file_path {
                                 nucleotide_ui::FileIcon::from_path(path, false)
-                                    .size(16.0)
+                                    .size(tokens.sizes.text_lg.into()) // Convert Pixels to f32
                                     .text_color(text_color)
                             } else {
                                 nucleotide_ui::FileIcon::scratch()
-                                    .size(16.0)
+                                    .size(tokens.sizes.text_lg.into()) // Convert Pixels to f32
                                     .text_color(text_color)
                             })
                             .when_some(git_status.as_ref(), |div, status| {
-                                let indicator =
-                                    VcsIndicator::new(status.clone()).size(8.0).overlay();
+                                let indicator = VcsIndicator::new(status.clone())
+                                    .size(tokens.sizes.space_3.into()) // Use space_3 (8px) for overlay indicator
+                                    .overlay();
                                 div.child(indicator)
                             }),
                     )

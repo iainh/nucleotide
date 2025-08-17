@@ -127,16 +127,16 @@ impl ThemeManager {
                 ..Default::default()
             },
             "ui.cursor" | "ui.cursor.primary" => Style {
-                bg: to_helix_color(ui_theme.accent),
+                bg: to_helix_color(ui_theme.tokens.colors.cursor_normal),
                 fg: to_helix_color(ui_theme.background),
                 ..Default::default()
             },
             "ui.selection" => Style {
-                bg: to_helix_color(ui_theme.accent),
+                bg: to_helix_color(ui_theme.tokens.colors.selection_primary),
                 ..Default::default()
             },
             "ui.statusline" => Style {
-                bg: to_helix_color(ui_theme.surface),
+                bg: to_helix_color(ui_theme.tokens.colors.statusline_active),
                 fg: to_helix_color(ui_theme.text),
                 ..Default::default()
             },
@@ -145,36 +145,36 @@ impl ThemeManager {
                 ..Default::default()
             },
             "ui.menu" => Style {
-                bg: to_helix_color(ui_theme.surface),
+                bg: to_helix_color(ui_theme.tokens.colors.menu_background),
                 fg: to_helix_color(ui_theme.text),
                 ..Default::default()
             },
             "ui.popup" => Style {
-                bg: to_helix_color(ui_theme.surface),
-                fg: to_helix_color(ui_theme.border), // fg is used for borders in popups
+                bg: to_helix_color(ui_theme.tokens.colors.popup_background),
+                fg: to_helix_color(ui_theme.tokens.colors.popup_border), // fg is used for borders in popups
                 ..Default::default()
             },
             "ui.menu.selected" => Style {
-                bg: to_helix_color(ui_theme.accent),
+                bg: to_helix_color(ui_theme.tokens.colors.menu_selected),
                 fg: to_helix_color(ui_theme.text),
                 ..Default::default()
             },
             "ui.background.separator" => Style {
-                bg: to_helix_color(ui_theme.surface_background),
+                bg: to_helix_color(ui_theme.tokens.colors.separator_horizontal),
                 ..Default::default()
             },
             "ui.cursor.primary.insert" => Style {
-                bg: to_helix_color(ui_theme.accent),
+                bg: to_helix_color(ui_theme.tokens.colors.cursor_insert),
                 fg: to_helix_color(ui_theme.background),
                 ..Default::default()
             },
             "ui.cursor.primary.select" => Style {
-                bg: to_helix_color(ui_theme.accent),
+                bg: to_helix_color(ui_theme.tokens.colors.cursor_select),
                 fg: to_helix_color(ui_theme.background),
                 ..Default::default()
             },
             "ui.cursor.primary.normal" => Style {
-                bg: to_helix_color(ui_theme.accent),
+                bg: to_helix_color(ui_theme.tokens.colors.cursor_normal),
                 fg: to_helix_color(ui_theme.background),
                 ..Default::default()
             },
@@ -191,13 +191,13 @@ impl ThemeManager {
                 ..Default::default()
             },
             "ui.gutter" => Style {
-                fg: to_helix_color(ui_theme.text_muted),
-                bg: to_helix_color(ui_theme.background),
+                fg: to_helix_color(ui_theme.tokens.colors.line_number),
+                bg: to_helix_color(ui_theme.tokens.colors.gutter_background),
                 ..Default::default()
             },
             "ui.gutter.selected" => Style {
-                fg: to_helix_color(ui_theme.text),
-                bg: to_helix_color(ui_theme.surface_hover),
+                fg: to_helix_color(ui_theme.tokens.colors.line_number_active),
+                bg: to_helix_color(ui_theme.tokens.colors.gutter_selected),
                 ..Default::default()
             },
             "ui.gutter.virtual" => Style {
@@ -210,11 +210,6 @@ impl ThemeManager {
                 bg: to_helix_color(ui_theme.surface_hover),
                 ..Default::default()
             },
-            "ui.statusline.inactive" => Style {
-                bg: to_helix_color(ui_theme.surface_background),
-                fg: to_helix_color(ui_theme.text_muted),
-                ..Default::default()
-            },
             "error" => Style {
                 fg: to_helix_color(ui_theme.error),
                 ..Default::default()
@@ -225,6 +220,136 @@ impl ThemeManager {
             },
             "info" => Style {
                 fg: to_helix_color(ui_theme.success),
+                ..Default::default()
+            },
+            "hint" => Style {
+                fg: to_helix_color(ui_theme.tokens.colors.diagnostic_hint),
+                ..Default::default()
+            },
+            // Enhanced cursor and selection mappings
+            "ui.cursor.normal" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.cursor_normal),
+                fg: to_helix_color(ui_theme.background),
+                ..Default::default()
+            },
+            "ui.cursor.insert" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.cursor_insert),
+                fg: to_helix_color(ui_theme.background),
+                ..Default::default()
+            },
+            "ui.cursor.select" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.cursor_select),
+                fg: to_helix_color(ui_theme.background),
+                ..Default::default()
+            },
+            "ui.cursor.match" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.cursor_match),
+                fg: to_helix_color(ui_theme.background),
+                ..Default::default()
+            },
+            "ui.highlight" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.selection_secondary),
+                ..Default::default()
+            },
+            // Enhanced gutter mappings
+            "ui.linenr" => Style {
+                fg: to_helix_color(ui_theme.tokens.colors.line_number),
+                bg: to_helix_color(ui_theme.tokens.colors.gutter_background),
+                ..Default::default()
+            },
+            "ui.linenr.selected" => Style {
+                fg: to_helix_color(ui_theme.tokens.colors.line_number_active),
+                bg: to_helix_color(ui_theme.tokens.colors.gutter_selected),
+                ..Default::default()
+            },
+            // Enhanced status and buffer mappings
+            "ui.statusline.inactive" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.statusline_inactive),
+                fg: to_helix_color(ui_theme.text_muted),
+                ..Default::default()
+            },
+            "ui.bufferline" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.bufferline_background),
+                fg: to_helix_color(ui_theme.text),
+                ..Default::default()
+            },
+            "ui.bufferline.active" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.bufferline_active),
+                fg: to_helix_color(ui_theme.text),
+                ..Default::default()
+            },
+            // Enhanced diagnostic mappings
+            "diagnostic.error" => Style {
+                fg: to_helix_color(ui_theme.tokens.colors.diagnostic_error),
+                ..Default::default()
+            },
+            "diagnostic.warning" => Style {
+                fg: to_helix_color(ui_theme.tokens.colors.diagnostic_warning),
+                ..Default::default()
+            },
+            "diagnostic.info" => Style {
+                fg: to_helix_color(ui_theme.tokens.colors.diagnostic_info),
+                ..Default::default()
+            },
+            "diagnostic.hint" => Style {
+                fg: to_helix_color(ui_theme.tokens.colors.diagnostic_hint),
+                ..Default::default()
+            },
+            // Diagnostic background mappings (for error/warning underlines and highlights)
+            "diagnostic.error.bg" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.diagnostic_error_bg),
+                ..Default::default()
+            },
+            "diagnostic.warning.bg" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.diagnostic_warning_bg),
+                ..Default::default()
+            },
+            "diagnostic.info.bg" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.diagnostic_info_bg),
+                ..Default::default()
+            },
+            "diagnostic.hint.bg" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.diagnostic_hint_bg),
+                ..Default::default()
+            },
+            // Enhanced popup and menu mappings
+            "ui.menu.scroll" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.menu_background),
+                fg: to_helix_color(ui_theme.text_muted),
+                ..Default::default()
+            },
+            // Focus ring mappings
+            "ui.cursor.primary.focus" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.focus_ring),
+                ..Default::default()
+            },
+            // Additional separator mappings
+            "ui.background.separator.vertical" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.separator_vertical),
+                ..Default::default()
+            },
+            // Additional buffer line mappings
+            "ui.bufferline.inactive" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.bufferline_inactive),
+                fg: to_helix_color(ui_theme.text_muted),
+                ..Default::default()
+            },
+            // Menu separator mapping
+            "ui.menu.separator" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.menu_separator),
+                ..Default::default()
+            },
+            // Enhanced focus ring variants for accessibility
+            "ui.focus" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.focus_ring),
+                ..Default::default()
+            },
+            "ui.focus.error" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.focus_ring_error),
+                ..Default::default()
+            },
+            "ui.focus.warning" => Style {
+                bg: to_helix_color(ui_theme.tokens.colors.focus_ring_warning),
                 ..Default::default()
             },
             _ => {
@@ -457,8 +582,8 @@ impl ThemeManager {
 
 impl gpui::Global for ThemeManager {}
 
-/// Extension trait for easy theme access from contexts
-pub trait ThemedContext {
+/// Extension trait for easy Helix theme access from contexts
+pub trait HelixThemedContext {
     fn theme_manager(&self) -> &ThemeManager;
     fn helix_theme(&self) -> &HelixTheme;
     fn ui_theme(&self) -> &UITheme;
@@ -466,7 +591,7 @@ pub trait ThemedContext {
     fn theme_style(&self, key: &str) -> helix_view::graphics::Style;
 }
 
-impl ThemedContext for gpui::App {
+impl HelixThemedContext for gpui::App {
     fn theme_manager(&self) -> &ThemeManager {
         self.global::<ThemeManager>()
     }
@@ -484,7 +609,7 @@ impl ThemedContext for gpui::App {
     }
 }
 
-impl<V: 'static> ThemedContext for gpui::Context<'_, V> {
+impl<V: 'static> HelixThemedContext for gpui::Context<'_, V> {
     fn theme_manager(&self) -> &ThemeManager {
         self.global::<ThemeManager>()
     }

@@ -5,10 +5,8 @@ use gpui::{
     Window,
 };
 use helix_view::{DocumentId, ViewId};
-use nucleotide_ui::theme_manager::ThemedContext;
-use nucleotide_ui::{
-    compute_component_style, StyleSize, StyleState, StyleVariant, ThemedContext as UIThemedContext,
-};
+use nucleotide_ui::ThemedContext;
+use nucleotide_ui::{compute_component_style, StyleSize, StyleState, StyleVariant};
 
 /// StatusLineView is a proper GPUI View that can observe model changes
 pub struct StatusLineView {
@@ -55,9 +53,9 @@ impl StatusLineView {
 
     fn get_status_color(&self, tokens: &nucleotide_ui::DesignTokens) -> gpui::Hsla {
         if self.focused {
-            tokens.colors.surface
+            tokens.colors.statusline_active
         } else {
-            tokens.colors.surface_disabled
+            tokens.colors.statusline_inactive
         }
     }
 }

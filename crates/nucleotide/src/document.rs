@@ -25,7 +25,7 @@ use helix_view::{
     graphics::CursorKind, view::ViewPosition, Document, DocumentId, Editor, Theme, View, ViewId,
 };
 use nucleotide_logging::{debug, error};
-use nucleotide_ui::theme_manager::ThemedContext;
+use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;

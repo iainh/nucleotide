@@ -7,10 +7,9 @@ use gpui::{
     Window,
 };
 use helix_view::DocumentId;
-use nucleotide_ui::theme_manager::ThemedContext;
+use nucleotide_ui::ThemedContext;
 use nucleotide_ui::{
-    compute_component_style, ColorTheory, StyleSize, StyleState, StyleVariant,
-    ThemedContext as UIThemedContext, VcsStatus,
+    compute_component_style, ColorTheory, StyleSize, StyleState, StyleVariant, VcsStatus,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -199,7 +198,7 @@ impl RenderOnce for TabBar {
         let tokens = &theme.tokens;
 
         // Get tab bar background using design tokens
-        let tabbar_bg = tokens.colors.surface;
+        let tabbar_bg = tokens.colors.bufferline_background;
         let border_color = tokens.colors.border_default;
 
         // Keep documents in the order they were opened
