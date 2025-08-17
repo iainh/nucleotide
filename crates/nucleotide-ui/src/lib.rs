@@ -41,6 +41,9 @@ mod initialization_tests;
 #[cfg(test)]
 mod styling_tests;
 
+#[cfg(test)]
+mod theme_mapping_test;
+
 pub use advanced_theming::{
     AdvancedThemeManager, AnimationStep, HelixThemeBridge, HelixThemeDiscovery,
     RuntimeThemeSwitcher, ThemeAnimator, ThemeBuilder, ThemeCategory, ThemeMetadata, ThemeRegistry,

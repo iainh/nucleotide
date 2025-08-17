@@ -9,16 +9,42 @@ use helix_view::Theme as HelixTheme;
 /// Extracted colors from Helix theme for comprehensive design token creation
 #[derive(Debug, Clone, Copy)]
 pub struct HelixThemeColors {
+    // Core selection and cursor colors
     pub selection: Hsla,
     pub cursor_normal: Hsla,
     pub cursor_insert: Hsla,
     pub cursor_select: Hsla,
     pub cursor_match: Hsla,
+    
+    // Semantic feedback colors
     pub error: Hsla,
     pub warning: Hsla,
     pub success: Hsla,
+    
+    // UI component backgrounds
     pub statusline: Hsla,
+    pub statusline_inactive: Hsla,
     pub popup: Hsla,
+    
+    // Buffer and tab system
+    pub bufferline_background: Hsla,
+    pub bufferline_active: Hsla,
+    pub bufferline_inactive: Hsla,
+    
+    // Gutter and line number system  
+    pub gutter_background: Hsla,
+    pub gutter_selected: Hsla,
+    pub line_number: Hsla,
+    pub line_number_active: Hsla,
+    
+    // Menu and popup system
+    pub menu_background: Hsla,
+    pub menu_selected: Hsla,
+    pub menu_separator: Hsla,
+    
+    // Separator and focus system
+    pub separator: Hsla,
+    pub focus: Hsla,
 }
 
 /// System appearance state
@@ -419,6 +445,63 @@ impl ThemeManager {
             .map(|val| val == "1" || val.to_lowercase() == "true")
             .unwrap_or(false);
 
+        // Helper functions to compute derived colors from ui.background
+        let compute_surface_from_bg = |bg: Hsla| -> Hsla {
+            // Create a surface color by adjusting lightness from background based on actual brightness
+            if bg.l > 0.5 {
+                // Background is light, make surface slightly darker
+                hsla(bg.h, bg.s, (bg.l - 0.05).max(0.0), bg.a)
+            } else {
+                // Background is dark, make surface slightly lighter
+                hsla(bg.h, bg.s, (bg.l + 0.05).min(1.0), bg.a)
+            }
+        };
+        
+        let compute_text_from_bg = |bg: Hsla| -> Hsla {
+            // Create contrasting text color from background based on actual brightness
+            if bg.l > 0.5 {
+                // Background is light, use much darker text for contrast
+                hsla(bg.h, bg.s.min(0.2), 0.1, 1.0)
+            } else {
+                // Background is dark, use much lighter text for contrast
+                hsla(bg.h, bg.s.min(0.2), 0.9, 1.0)
+            }
+        };
+        
+        let compute_border_from_bg = |bg: Hsla| -> Hsla {
+            // Create subtle border color from background based on actual background brightness
+            // Use the background's lightness value to determine contrast direction
+            if bg.l > 0.5 {
+                // Background is light, make border darker with reduced saturation
+                hsla(bg.h, bg.s * 0.3, (bg.l - 0.15).max(0.0), 0.8)
+            } else {
+                // Background is dark, make border lighter with reduced saturation
+                hsla(bg.h, bg.s * 0.3, (bg.l + 0.15).min(1.0), 0.8)
+            }
+        };
+        
+        let compute_hover_from_bg = |bg: Hsla| -> Hsla {
+            // Create hover state color from background based on actual background brightness
+            if bg.l > 0.5 {
+                // Background is light, make hover slightly darker
+                hsla(bg.h, bg.s, (bg.l - 0.03).max(0.0), bg.a)
+            } else {
+                // Background is dark, make hover slightly lighter
+                hsla(bg.h, bg.s, (bg.l + 0.03).min(1.0), bg.a)
+            }
+        };
+        
+        let compute_active_from_bg = |bg: Hsla| -> Hsla {
+            // Create active state color from background based on actual background brightness
+            if bg.l > 0.5 {
+                // Background is light, make active darker than hover
+                hsla(bg.h, bg.s, (bg.l - 0.08).max(0.0), bg.a)
+            } else {
+                // Background is dark, make active lighter than hover
+                hsla(bg.h, bg.s, (bg.l + 0.08).min(1.0), bg.a)
+            }
+        };
+
         // Extract colors from Helix theme with fallbacks
         // If testing fallback colors, ignore the theme completely
         let (
@@ -474,6 +557,7 @@ impl ThemeManager {
             let error_style = helix_theme.get("error");
             let warning_style = helix_theme.get("warning");
             let info_style = helix_theme.get("info");
+            
 
             (
                 ui_bg,
@@ -560,27 +644,37 @@ impl ThemeManager {
         };
 
         let surface = surface_from_theme.unwrap_or_else(|| {
-            let fallback_color = match system_appearance {
-                SystemAppearance::Light => hsla(0.0, 0.0, 0.95, 1.0), // Light surface
-                SystemAppearance::Dark => hsla(0.0, 0.0, 0.1, 1.0),   // Dark surface
-            };
+            // Derive surface from background instead of using hardcoded gray
+            let fallback_color = compute_surface_from_bg(background);
             nucleotide_logging::warn!(
                 system_appearance = ?system_appearance,
-                fallback_surface = ?fallback_color,
+                background_color = ?background,
+                computed_surface = ?fallback_color,
                 ui_menu_bg_available = ui_menu.bg.is_some(),
                 ui_background_available = ui_bg.bg.is_some(),
-                "Using fallback surface color - Helix theme may not define ui.menu or ui.background"
+                "Using computed surface color derived from ui.background - Helix theme may not define ui.menu"
             );
             fallback_color
         });
 
         let text_from_theme = ui_text.fg.and_then(color_to_hsla);
         let text = text_from_theme.unwrap_or_else(|| {
-            match system_appearance {
-                SystemAppearance::Light => hsla(0.0, 0.0, 0.1, 1.0), // Dark text on light background
-                SystemAppearance::Dark => hsla(0.0, 0.0, 0.9, 1.0), // Light text on dark background
-            }
+            // Derive text color from background instead of using hardcoded gray
+            let fallback_color = compute_text_from_bg(background);
+            nucleotide_logging::debug!(
+                system_appearance = ?system_appearance,
+                background_color = ?background,
+                computed_text = ?fallback_color,
+                "Using computed text color derived from ui.background"
+            );
+            fallback_color
         });
+
+        // Compute derived colors from actual background instead of hardcoded grays
+        let derived_surface = compute_surface_from_bg(background);
+        let derived_text = compute_text_from_bg(background);
+        let derived_hover = compute_hover_from_bg(background);
+        let derived_active = compute_active_from_bg(background);
 
         let border_from_theme = ui_window
             .fg
@@ -588,10 +682,15 @@ impl ThemeManager {
             .or_else(|| ui_text.fg.and_then(color_to_hsla))
             .map(|c| hsla(c.h, c.s * 0.5, c.l * 0.5, c.a * 0.8));
         let border = border_from_theme.unwrap_or_else(|| {
-            match system_appearance {
-                SystemAppearance::Light => hsla(0.0, 0.0, 0.8, 1.0), // Light border
-                SystemAppearance::Dark => hsla(0.0, 0.0, 0.2, 1.0),  // Dark border
-            }
+            // Derive border color from background instead of using hardcoded gray
+            let fallback_color = compute_border_from_bg(background);
+            nucleotide_logging::debug!(
+                system_appearance = ?system_appearance,
+                background_color = ?background,
+                computed_border = ?fallback_color,
+                "Using computed border color derived from ui.background"
+            );
+            fallback_color
         });
 
         let accent_from_theme = ui_selection
@@ -643,18 +742,61 @@ impl ThemeManager {
             );
         }
 
+        // Extract additional UI component colors for comprehensive mapping
+        let extract_color = |key: &str, fallback: Hsla| -> Hsla {
+            if test_fallback {
+                fallback
+            } else {
+                helix_theme.get(key).bg.and_then(color_to_hsla).unwrap_or(fallback)
+            }
+        };
+        
+        let extract_fg_color = |key: &str, fallback: Hsla| -> Hsla {
+            if test_fallback {
+                fallback
+            } else {
+                helix_theme.get(key).fg.and_then(color_to_hsla).unwrap_or(fallback)
+            }
+        };
+
         // Create comprehensive theme colors struct
         let theme_colors = HelixThemeColors {
+            // Core selection and cursor colors
             selection: accent,
             cursor_normal: accent,
             cursor_insert,
             cursor_select,
             cursor_match,
+            
+            // Semantic feedback colors
             error,
             warning,
             success,
+            
+            // UI component backgrounds
             statusline,
+            statusline_inactive: extract_color("ui.statusline.inactive", derived_surface),
             popup,
+            
+            // Buffer and tab system
+            bufferline_background: extract_color("ui.bufferline", background),
+            bufferline_active: extract_color("ui.bufferline.active", background),
+            bufferline_inactive: extract_color("ui.bufferline.inactive", derived_surface),
+            
+            // Gutter and line number system
+            gutter_background: extract_color("ui.gutter", background),
+            gutter_selected: extract_color("ui.gutter.selected", derived_surface),
+            line_number: extract_fg_color("ui.linenr", derived_text),
+            line_number_active: extract_fg_color("ui.linenr.selected", text),
+            
+            // Menu and popup system
+            menu_background: extract_color("ui.menu", surface),
+            menu_selected: extract_color("ui.menu.selected", accent),
+            menu_separator: extract_color("ui.menu.separator", border),
+            
+            // Separator and focus system
+            separator: extract_color("ui.background.separator", border),
+            focus: extract_color("ui.focus", accent),
         };
 
         let tokens = if background.l < 0.5 {
@@ -666,9 +808,9 @@ impl ThemeManager {
         UITheme {
             background,
             surface,
-            surface_background: hsla(surface.h, surface.s, surface.l - 0.02, surface.a),
-            surface_hover: hsla(surface.h, surface.s, surface.l + 0.05, surface.a),
-            surface_active: hsla(surface.h, surface.s, surface.l + 0.1, surface.a),
+            surface_background: derived_surface,
+            surface_hover: derived_hover,
+            surface_active: derived_active,
             border,
             border_focused: accent,
             text,

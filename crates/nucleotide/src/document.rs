@@ -2388,7 +2388,10 @@ impl Element for DocumentElement {
                 let ruler_style = cx.theme_style("ui.virtual.ruler");
                 let ruler_color = ruler_style.bg
                     .and_then(color_to_hsla)
-                    .unwrap_or_else(|| hsla(0.0, 0.0, 0.3, 0.2)); // Default to subtle gray
+                    .unwrap_or_else(|| {
+                        // Use UI theme's border color instead of hardcoded gray
+                        cx.ui_theme().border
+                    });
 
                 // Get rulers configuration - try language-specific first, then fall back to editor config
                 let editor_config = editor.config();
@@ -2936,7 +2939,8 @@ impl Element for DocumentElement {
                             let y = gutter_origin.y + y_pos;
 
                             // Choose color based on whether this line contains a cursor (same logic as regular gutter)
-                            let default_gutter_color = hsla(0., 0., 0.5, 1.); // Gray fallback
+                            // Use UI theme's text_muted color instead of hardcoded gray
+                            let default_gutter_color = cx.ui_theme().text_muted;
                             let selected = cursors.contains(&doc_line);
 
                             let gutter_color = gutter_style.fg.and_then(crate::utils::color_to_hsla).unwrap_or(default_gutter_color);
@@ -4006,7 +4010,7 @@ impl<'a> GutterRenderer for Gutter<'a> {
         let base_fg = style
             .fg
             .and_then(color_to_hsla)
-            .unwrap_or(hsla(0., 0., 1., 1.));
+            .unwrap_or(white()); // Use white as a reasonable fallback for gutter text
         let base_bg = style.bg.and_then(color_to_hsla);
 
         if let Some(text) = text {

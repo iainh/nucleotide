@@ -265,9 +265,9 @@ impl SemanticColors {
             // Enhanced status and buffer system
             statusline_active: base.neutral_100,     // surface
             statusline_inactive: base.neutral_200,   // more distinct from active
-            bufferline_background: base.neutral_300, // distinct tab bar background (16% lightness)
+            bufferline_background: base.neutral_300, // distinct tab bar background (91% lightness)
             bufferline_active: base.neutral_50, // background (active tab matches editor - 98% lightness)
-            bufferline_inactive: base.neutral_200, // inactive tabs (94% lightness - clear contrast)
+            bufferline_inactive: base.neutral_400, // inactive tabs (78% lightness - high contrast with active)
 
             // Enhanced popup and menu system
             popup_background: base.neutral_200, // surface_elevated
@@ -354,7 +354,7 @@ impl SemanticColors {
             statusline_inactive: base.neutral_200,   // more distinct from active
             bufferline_background: base.neutral_300, // distinct tab bar background (16% lightness)
             bufferline_active: base.neutral_50, // background (active tab matches editor - 5% lightness)
-            bufferline_inactive: base.neutral_200, // inactive tabs (12% lightness - clear contrast)
+            bufferline_inactive: base.neutral_400, // inactive tabs (24% lightness - high contrast with active)
 
             // Enhanced popup and menu system
             popup_background: base.neutral_200, // surface_elevated
@@ -424,7 +424,32 @@ impl SemanticColors {
 
         // UI component colors
         colors.statusline_active = helix_colors.statusline;
+        colors.statusline_inactive = helix_colors.statusline_inactive;
         colors.popup_background = helix_colors.popup;
+        
+        // Buffer and tab system
+        colors.bufferline_background = helix_colors.bufferline_background;
+        colors.bufferline_active = helix_colors.bufferline_active;
+        colors.bufferline_inactive = helix_colors.bufferline_inactive;
+        
+        // Gutter and line number system
+        colors.gutter_background = helix_colors.gutter_background;
+        colors.gutter_selected = helix_colors.gutter_selected;
+        colors.line_number = helix_colors.line_number;
+        colors.line_number_active = helix_colors.line_number_active;
+        
+        // Menu and popup system
+        colors.menu_background = helix_colors.menu_background;
+        colors.menu_selected = helix_colors.menu_selected;
+        colors.menu_separator = helix_colors.menu_separator;
+        
+        // Separator and focus system
+        colors.separator_horizontal = helix_colors.separator;
+        colors.separator_vertical = helix_colors.separator;
+        colors.separator_subtle = utils::with_alpha(helix_colors.separator, 0.5);
+        colors.focus_ring = helix_colors.focus;
+        colors.focus_ring_error = helix_colors.error;
+        colors.focus_ring_warning = helix_colors.warning;
 
         // Also update primary brand color to match selection for consistency
         colors.primary = helix_colors.selection;
@@ -462,7 +487,32 @@ impl SemanticColors {
 
         // UI component colors
         colors.statusline_active = helix_colors.statusline;
+        colors.statusline_inactive = helix_colors.statusline_inactive;
         colors.popup_background = helix_colors.popup;
+        
+        // Buffer and tab system
+        colors.bufferline_background = helix_colors.bufferline_background;
+        colors.bufferline_active = helix_colors.bufferline_active;
+        colors.bufferline_inactive = helix_colors.bufferline_inactive;
+        
+        // Gutter and line number system
+        colors.gutter_background = helix_colors.gutter_background;
+        colors.gutter_selected = helix_colors.gutter_selected;
+        colors.line_number = helix_colors.line_number;
+        colors.line_number_active = helix_colors.line_number_active;
+        
+        // Menu and popup system
+        colors.menu_background = helix_colors.menu_background;
+        colors.menu_selected = helix_colors.menu_selected;
+        colors.menu_separator = helix_colors.menu_separator;
+        
+        // Separator and focus system
+        colors.separator_horizontal = helix_colors.separator;
+        colors.separator_vertical = helix_colors.separator;
+        colors.separator_subtle = utils::with_alpha(helix_colors.separator, 0.5);
+        colors.focus_ring = helix_colors.focus;
+        colors.focus_ring_error = helix_colors.error;
+        colors.focus_ring_warning = helix_colors.warning;
 
         // Also update primary brand color to match selection for consistency
         colors.primary = helix_colors.selection;

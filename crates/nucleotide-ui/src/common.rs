@@ -51,13 +51,15 @@ pub struct ModalStyle {
 
 impl Default for ModalStyle {
     fn default() -> Self {
+        // Use design tokens for better theme consistency
+        let tokens = crate::DesignTokens::dark();
         Self {
-            background: hsla(0.0, 0.0, 0.1, 1.0),
-            text: hsla(0.0, 0.0, 0.9, 1.0),
-            border: hsla(0.0, 0.0, 0.3, 1.0),
-            selected_background: hsla(220.0 / 360.0, 0.6, 0.5, 1.0),
-            selected_text: hsla(0.0, 0.0, 1.0, 1.0),
-            prompt_text: hsla(0.0, 0.0, 0.7, 1.0),
+            background: tokens.colors.popup_background,
+            text: tokens.colors.text_primary,
+            border: tokens.colors.border_default,
+            selected_background: tokens.colors.selection_primary,
+            selected_text: tokens.colors.text_on_primary,
+            prompt_text: tokens.colors.text_secondary,
         }
     }
 }
@@ -67,25 +69,28 @@ impl ModalStyle {
     pub fn from_theme(theme: &helix_view::Theme) -> Self {
         use crate::theme_utils::color_to_hsla;
 
+        // Use design tokens for intelligent fallbacks instead of hardcoded grays
+        let fallback_tokens = Self::default();
+
         let background = theme
             .get("ui.popup")
             .bg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.background").bg.and_then(color_to_hsla))
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.1, 1.0));
+            .unwrap_or(fallback_tokens.background);
 
         let text = theme
             .get("ui.text")
             .fg
             .and_then(color_to_hsla)
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.9, 1.0));
+            .unwrap_or(fallback_tokens.text);
 
         let selected_background = theme
             .get("ui.menu.selected")
             .bg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.selection").bg.and_then(color_to_hsla))
-            .unwrap_or_else(|| hsla(220.0 / 360.0, 0.6, 0.5, 1.0));
+            .unwrap_or(fallback_tokens.selected_background);
 
         let selected_text = theme
             .get("ui.menu.selected")
@@ -99,14 +104,14 @@ impl ModalStyle {
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.text").fg.and_then(color_to_hsla))
             .map(|color| hsla(color.h, color.s, color.l * 0.5, color.a))
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.3, 1.0));
+            .unwrap_or(fallback_tokens.border);
 
         let prompt_text = theme
             .get("ui.text")
             .fg
             .and_then(color_to_hsla)
             .map(|color| hsla(color.h, color.s, color.l * 0.7, color.a))
-            .unwrap_or_else(|| hsla(0.0, 0.0, 0.7, 1.0));
+            .unwrap_or(fallback_tokens.prompt_text);
 
         Self {
             background,

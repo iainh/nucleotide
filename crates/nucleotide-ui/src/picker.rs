@@ -84,13 +84,14 @@ impl RenderOnce for PickerElement {
                     .into();
 
                 {
-                    // Create default theme colors for fallback
-                    let background = hsla(0.0, 0.0, 0.1, 1.0);
-                    let border = hsla(0.0, 0.0, 0.3, 1.0);
-                    let text = hsla(0.0, 0.0, 0.9, 1.0);
-                    let selected_bg = hsla(220.0 / 360.0, 0.6, 0.5, 1.0);
-                    let selected_text = hsla(0.0, 0.0, 1.0, 1.0);
-                    let prompt_text = hsla(0.0, 0.0, 0.7, 1.0);
+                    // Use design tokens for theme-aware colors
+                    let tokens = crate::DesignTokens::dark();
+                    let background = tokens.colors.popup_background;
+                    let border = tokens.colors.border_default;
+                    let text = tokens.colors.text_primary;
+                    let selected_bg = tokens.colors.selection_primary;
+                    let selected_text = tokens.colors.text_on_primary;
+                    let prompt_text = tokens.colors.text_secondary;
 
                     div()
                         .track_focus(&self.focus)
