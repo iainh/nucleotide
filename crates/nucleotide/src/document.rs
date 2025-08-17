@@ -47,12 +47,6 @@ fn test_synthetic_click_accuracy(
 ) -> Option<(usize, usize)> {
     use nucleotide_logging::debug;
 
-    debug!(
-        target_line = target_line_idx,
-        target_char = target_char_idx,
-        "🎯 Synthetic click test starting - Testing click accuracy at known position"
-    );
-
     // Find the target line in the cache
     if let Some(line_layout) = line_cache.find_line_by_index(target_line_idx) {
         // Calculate approximate pixel position for the target character
@@ -61,14 +55,6 @@ fn test_synthetic_click_accuracy(
             line_layout.shaped_line.width.0 / line_layout.shaped_line.len() as f32;
         let estimated_x = line_layout.origin.x.0 + (target_char_idx as f32 * char_width_estimate);
         let synthetic_position = gpui::point(gpui::px(estimated_x), line_layout.origin.y);
-
-        debug!(
-            estimated_x = estimated_x,
-            line_origin = ?line_layout.origin,
-            synthetic_position = ?synthetic_position,
-            char_width_estimate = char_width_estimate,
-            "🎯 Synthetic click position calculated - Calculated synthetic mouse position"
-        );
 
         // Test if this position would be found correctly
         if let Some(found_layout) =
@@ -81,21 +67,11 @@ fn test_synthetic_click_accuracy(
                 .index_for_x(relative_x)
                 .unwrap_or(0);
 
-            debug!(
-                target_line = target_line_idx,
-                target_char = target_char_idx,
-                found_line = found_layout.line_idx,
-                resolved_byte_index = resolved_byte_index,
-                "🎯 Synthetic click test result - Click accuracy validation complete"
-            );
-
             Some((found_layout.line_idx, resolved_byte_index))
         } else {
-            debug!("🎯 Synthetic click test failed - position not found - Line lookup failed");
             None
         }
     } else {
-        debug!("🎯 Synthetic click test failed - target line not in cache - Target line not found");
         None
     }
 }
@@ -103,14 +79,6 @@ fn test_synthetic_click_accuracy(
 #[cfg(debug_assertions)]
 fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, font_size: f32) {
     use nucleotide_logging::debug;
-
-    debug!(
-        line_text_len = line_text.len(),
-        line_char_count = line_text.chars().count(),
-        shaped_line_width = %shaped_line.width,
-        font_size = font_size,
-        "🎯 ShapedLine validation test starting - Testing GPUI ShapedLine accuracy"
-    );
 
     // Test various x positions and see if they map to sensible character indices
     let test_positions = vec![
@@ -131,16 +99,6 @@ fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, fo
             .char_indices()
             .take_while(|(byte_idx, _)| *byte_idx < byte_index)
             .count();
-
-        debug!(
-            test_case = i,
-            x_position = %px_x,
-            calculated_byte_index = byte_index,
-            calculated_char_index = char_index,
-            line_length_chars = line_text.chars().count(),
-            line_length_bytes = line_text.len(),
-            "🎯 ShapedLine position test - Position->character mapping validation"
-        );
     }
 }
 
@@ -810,17 +768,6 @@ impl DocumentElement {
         let visual_row = (text_area_pos.y.0 / line_height.0) as usize;
         let visual_col = (text_area_pos.x.0 / cell_width.0) as usize;
 
-        debug!(
-            text_area_x = %text_area_pos.x,
-            text_area_y = %text_area_pos.y,
-            cell_width = %cell_width,
-            line_height = %line_height,
-            calculated_visual_row = visual_row,
-            calculated_visual_col = visual_col,
-            view_offset_vertical = view_offset.vertical_offset,
-            "🎯 WRAPPED COORD: Converting text-area to visual coordinates"
-        );
-
         // Adjust visual row to account for viewport offset
         let absolute_visual_row = visual_row + view_offset.vertical_offset;
 
@@ -861,13 +808,6 @@ impl DocumentElement {
         // Use the found character position or the last valid position
         let final_char_pos = target_char_pos.unwrap_or(last_char_pos);
 
-        debug!(
-            target_visual_row = absolute_visual_row,
-            target_visual_col = visual_col,
-            found_char_pos = final_char_pos,
-            "🎯 WRAPPED COORD: Found character position for visual coordinates"
-        );
-
         // Convert character position back to document line and column
         let doc_line = text.char_to_line(final_char_pos);
         let line_start = text.line_to_char(doc_line);
@@ -877,14 +817,6 @@ impl DocumentElement {
         // This gives us the position within the unwrapped document coordinates
         let result_x = px(char_offset as f32 * cell_width.0);
         let result_y = px(doc_line as f32 * line_height.0);
-
-        debug!(
-            final_doc_line = doc_line,
-            final_char_offset = char_offset,
-            result_x = %result_x,
-            result_y = %result_y,
-            "🎯 WRAPPED COORD: Converted to document coordinates"
-        );
 
         Some(Point {
             x: result_x,
@@ -1537,14 +1469,6 @@ impl Element for DocumentElement {
         // FIXED: Register mouse down handler with proper coordinate transformation
         self.interactivity
             .on_mouse_down(gpui::MouseButton::Left, move |event, _window, cx| {
-                debug!(
-                    window_pos = ?event.position,
-                    view_id = ?view_id,
-                    doc_id = ?doc_id,
-                    line_height = %line_height,
-                    "🎯 Mouse click received - Starting coordinate transformation"
-                );
-
                 // Reset x-overshoot at the start of a new click
                 // This ensures that each new click/selection starts without overshoot
                 // Overshoot will be recalculated based on the new cursor position
@@ -1553,20 +1477,21 @@ impl Element for DocumentElement {
                 let (gutter_offset, cell_width, element_bounds) = {
                     let core = core_for_down.read(cx);
                     let editor = &core.editor;
-                    if let (Some(document), Some(view)) = (editor.document(doc_id), editor.tree.try_get(view_id)) {
+                    if let (Some(document), Some(view)) =
+                        (editor.document(doc_id), editor.tree.try_get(view_id))
+                    {
                         let gutter_offset = view.gutter_offset(document);
                         // Use stored bounds width, with fallback calculation
                         let bounds_width = bounds_width_for_down.get();
                         let element_bounds = gpui::Bounds {
                             origin: element_bounds_for_down.get(), // Use actual bounds from prepaint
-                            size: gpui::Size { width: bounds_width, height: px(600.0) }, // Approximate height
+                            size: gpui::Size {
+                                width: bounds_width,
+                                height: px(600.0),
+                            }, // Approximate height
                         };
-                        debug!(
-                            actual_cell_width = %cell_width_for_down.get(),
-                            gutter_offset = gutter_offset,
-                            "🎯 CELL_WIDTH DEBUG: Using actual calculated cell width from prepaint"
-                        );
-                        (gutter_offset, cell_width_for_down.get(), element_bounds) // Use actual cell_width
+                        (gutter_offset, cell_width_for_down.get(), element_bounds)
+                    // Use actual cell_width
                     } else {
                         debug!("Could not get document/view for coordinate transformation");
                         return;
@@ -1590,18 +1515,8 @@ impl Element for DocumentElement {
                     }
                 };
 
-                let expected_text_origin_x = element_bounds.origin.x + Pixels::from(gutter_offset as f32 * cell_width.0);
-                debug!(
-                    text_bounds = ?text_bounds,
-                    gutter_offset = gutter_offset,
-                    gutter_width_pixels = %(gutter_offset as f32 * cell_width.0),
-                    cell_width = %cell_width,
-                    element_bounds = ?element_bounds,
-                    expected_text_origin_x = %expected_text_origin_x,
-                    calculated_text_bounds_origin_x = %text_bounds.origin.x,
-                    text_origin_matches = expected_text_origin_x == text_bounds.origin.x,
-                    "🎯 CRITICAL TEXT BOUNDS DEBUG - This should match line layout calculations!"
-                );
+                let expected_text_origin_x =
+                    element_bounds.origin.x + Pixels::from(gutter_offset as f32 * cell_width.0);
 
                 // STEP 1: Convert window coordinates to text-area coordinates
                 let text_area_pos = gpui::Point {
@@ -1619,7 +1534,8 @@ impl Element for DocumentElement {
                             // Calculate viewport width for text formatting (matching paint calculation)
                             let gutter_width_px = f32::from(gutter_offset) * cell_width.0;
                             let right_padding = cell_width.0 * 2.0; // 2 characters of padding
-                            let text_area_width = text_bounds.size.width.0 - gutter_width_px - right_padding;
+                            let text_area_width =
+                                text_bounds.size.width.0 - gutter_width_px - right_padding;
                             let viewport_width = (text_area_width / cell_width.0).max(10.0) as u16;
 
                             let text_format = document.text_format(viewport_width, Some(&theme));
@@ -1632,17 +1548,10 @@ impl Element for DocumentElement {
                     }
                 };
 
-                debug!(
-                    soft_wrap_enabled = soft_wrap_enabled,
-                    viewport_width = (text_bounds.size.width.0 / cell_width.0).max(10.0) as u16,
-                    "🎯 SOFT-WRAP DETECTION: Detected soft-wrap mode for coordinate transformation"
-                );
-
                 // STEP 3: Convert text-area coordinates to content coordinates
                 // Branch based on soft-wrap mode for different coordinate transformation logic
                 let scroll_position = scroll_manager_for_down.scroll_position();
                 let content_pos = if soft_wrap_enabled {
-                    debug!("🎯 COORDINATE TRANSFORM: Using wrapped mode transformation");
                     // Implement wrapped mode coordinate transformation
                     let wrapped_content_pos = {
                         // Get core data needed for wrapped coordinate transformation
@@ -1654,11 +1563,14 @@ impl Element for DocumentElement {
                                 // Calculate viewport width for text formatting
                                 let gutter_width_px = f32::from(gutter_offset) * cell_width.0;
                                 let right_padding = cell_width.0 * 2.0;
-                                let text_area_width = text_bounds.size.width.0 - gutter_width_px - right_padding;
-                                let viewport_width = (text_area_width / cell_width.0).max(10.0) as u16;
+                                let text_area_width =
+                                    text_bounds.size.width.0 - gutter_width_px - right_padding;
+                                let viewport_width =
+                                    (text_area_width / cell_width.0).max(10.0) as u16;
 
                                 // Get text format and view offset
-                                let text_format = document.text_format(viewport_width, Some(&theme));
+                                let text_format =
+                                    document.text_format(viewport_width, Some(&theme));
                                 let view_offset = document.view_offset(view_id);
 
                                 // Get line height from scroll manager or use default
@@ -1671,18 +1583,16 @@ impl Element for DocumentElement {
                                     view_offset,
                                     document,
                                     cell_width,
-                                    line_height
-                                ).unwrap_or_else(|| {
+                                    line_height,
+                                )
+                                .unwrap_or_else(|| {
                                     // Fallback to non-wrapped transformation
-                                    debug!("🎯 WRAPPED FALLBACK: Using non-wrapped transformation");
                                     text_area_pos
                                 })
                             } else {
-                                debug!("🎯 WRAPPED FALLBACK: No view found, using non-wrapped transformation");
                                 text_area_pos
                             }
                         } else {
-                            debug!("🎯 WRAPPED FALLBACK: No document found, using non-wrapped transformation");
                             text_area_pos
                         }
                     };
@@ -1693,7 +1603,6 @@ impl Element for DocumentElement {
                         y: wrapped_content_pos.y + scroll_position.y,
                     }
                 } else {
-                    debug!("🎯 COORDINATE TRANSFORM: Using non-wrapped mode transformation");
                     // Zed convention: scroll_position.y is positive when scrolled down
                     // To get content coordinates: content_y = text_area_y + scroll_position.y
                     gpui::Point {
@@ -1729,17 +1638,6 @@ impl Element for DocumentElement {
                     y: content_pos.y.max(px(0.0)).min(total_content_height),
                 };
 
-                debug!(
-                    window_pos = ?event.position,
-                    text_area_pos = ?text_area_pos,
-                    clamped_text_area_pos = ?clamped_text_area_pos,
-                    scroll_position = ?scroll_position,
-                    content_pos = ?content_pos,
-                    clamped_content_pos = ?clamped_content_pos,
-                    total_content_height = %total_content_height,
-                    "🎯 Coordinate transformation with bounds validation complete"
-                );
-
                 // STEP 4: Find line using clamped coordinates
                 let line_cache = cx.global::<nucleotide_editor::LineLayoutCache>();
 
@@ -1762,14 +1660,6 @@ impl Element for DocumentElement {
                 );
 
                 if let Some(line_layout) = line_layout {
-                    debug!(
-                        found_line_idx = line_layout.line_idx,
-                        line_origin = ?line_layout.origin,
-                        shaped_line_width = %line_layout.shaped_line.width,
-                        shaped_line_len_bytes = line_layout.shaped_line.len(),
-                        "🎯 Line found using corrected coordinates - DETAILED ANALYSIS"
-                    );
-
                     // STEP 4.5: Calculate and track x-overshoot for selection dragging
                     let line_width = line_layout.shaped_line.width;
                     let raw_content_x = content_pos.x.max(px(0.0));
@@ -1782,27 +1672,10 @@ impl Element for DocumentElement {
 
                     // Store x-overshoot for future selection operations
                     x_overshoot_for_down.set(x_overshoot.max(px(0.0)));
-                    debug!(
-                        raw_content_x = %raw_content_x,
-                        line_width = %line_width,
-                        clamped_x = %clamped_x,
-                        x_overshoot = %x_overshoot,
-                        "🎯 X-overshoot tracking: calculated overshoot for selection dragging"
-                    );
 
                     // STEP 5: Calculate character position within the line using clamped coordinates
                     // line_layout.origin is in element-local coordinates (text-area relative)
                     let relative_x = clamped_text_area_pos.x - line_layout.origin.x;
-
-                    debug!(
-                        raw_window_x = %event.position.x,
-                        calculated_text_bounds_origin_x = %text_bounds.origin.x,
-                        resulting_text_area_x = %text_area_pos.x,
-                        clamped_text_area_x = %clamped_text_area_pos.x,
-                        line_origin_x = %line_layout.origin.x,
-                        relative_x = %relative_x,
-                        "🎯 DETAILED X-AXIS DEBUG: relative_x should be distance from line start in pixels"
-                    );
 
                     // Convert pixel position to byte offset with proper bounds checking
                     let byte_index = if relative_x < px(0.0) {
@@ -1812,13 +1685,6 @@ impl Element for DocumentElement {
                     } else {
                         line_layout.shaped_line.index_for_x(relative_x).unwrap_or(0)
                     };
-
-                    debug!(
-                        relative_x = %relative_x,
-                        line_width = %line_layout.shaped_line.width,
-                        byte_index = byte_index,
-                        "🎯 Byte index calculated with bounds checking"
-                    );
 
                     // Update Helix editor selection
                     core_for_down.update(cx, |core, cx| {
@@ -1831,24 +1697,30 @@ impl Element for DocumentElement {
                             let line_text = text.line(line_layout.line_idx).to_string();
                             let char_offset = if line_layout.segment_char_offset == 0 {
                                 // Non-wrapped line: byte_index is relative to full line
-                                line_text.char_indices()
+                                line_text
+                                    .char_indices()
                                     .take_while(|(byte_idx, _)| *byte_idx < byte_index)
                                     .count()
                             } else {
                                 // Wrapped line: adjust byte_index to account for wrap indicators
                                 // byte_index is offset within the complete shaped line text (including indicators)
                                 // text_start_byte_offset tells us where the real text begins
-                                let adjusted_byte_index = if byte_index >= line_layout.text_start_byte_offset {
-                                    byte_index - line_layout.text_start_byte_offset
-                                } else {
-                                    0 // Click was in the wrap indicator area, position at start of text
-                                };
+                                let adjusted_byte_index =
+                                    if byte_index >= line_layout.text_start_byte_offset {
+                                        byte_index - line_layout.text_start_byte_offset
+                                    } else {
+                                        0 // Click was in the wrap indicator area, position at start of text
+                                    };
 
                                 // Get the segment text (real text only, starting at segment_char_offset)
-                                let segment_text = line_text.chars().skip(line_layout.segment_char_offset).collect::<String>();
+                                let segment_text = line_text
+                                    .chars()
+                                    .skip(line_layout.segment_char_offset)
+                                    .collect::<String>();
 
                                 // Convert adjusted byte offset to character offset within the segment
-                                let char_offset_in_segment = segment_text.char_indices()
+                                let char_offset_in_segment = segment_text
+                                    .char_indices()
                                     .take_while(|(byte_idx, _)| *byte_idx < adjusted_byte_index)
                                     .count();
 
@@ -1857,25 +1729,10 @@ impl Element for DocumentElement {
 
                             let target_pos = (line_start + char_offset).min(text.len_chars());
 
-                            debug!(
-                                line_idx = line_layout.line_idx,
-                                line_start = line_start,
-                                segment_char_offset = line_layout.segment_char_offset,
-                                text_start_byte_offset = line_layout.text_start_byte_offset,
-                                raw_byte_index = byte_index,
-                                adjusted_byte_index = if line_layout.segment_char_offset > 0 && byte_index >= line_layout.text_start_byte_offset {
-                                    byte_index - line_layout.text_start_byte_offset
-                                } else {
-                                    byte_index
-                                },
-                                total_char_offset = char_offset,
-                                target_pos = target_pos,
-                                "🎯 Final cursor position calculated (with wrap indicator adjustment)"
-                            );
-
                             // Create cursor selection
                             let range = helix_core::Range::new(target_pos, target_pos);
-                            let selection = helix_core::Selection::new(helix_core::SmallVec::from([range]), 0);
+                            let selection =
+                                helix_core::Selection::new(helix_core::SmallVec::from([range]), 0);
                             document.set_selection(view_id, selection);
 
                             cx.notify();
@@ -2027,12 +1884,6 @@ impl Element for DocumentElement {
         let effective_viewport_size = size(bounds.size.width, effective_viewport_height);
         self.scroll_manager
             .set_viewport_size(effective_viewport_size);
-
-        debug!(
-            bounds_size = ?bounds.size,
-            effective_viewport_size = ?effective_viewport_size,
-            "🎯 SCROLL MANAGER: Set viewport size with padding adjustment"
-        );
 
         // TODO: Update shared cell_width for mouse handlers (requires structural change to pass between prepaint/paint)
 
@@ -2374,15 +2225,6 @@ impl Element for DocumentElement {
                 // we need to match the soft-wrap calculation which doesn't include px(2.)
                 let text_origin_x = bounds.origin.x + (after_layout.cell_width * f32::from(gutter_width));
 
-                debug!(
-                    bounds_origin_x = %bounds.origin.x,
-                    coordinate_system = "LOCAL", // Now using local coordinate system like soft-wrap
-                    cell_width = %after_layout.cell_width,
-                    gutter_width = gutter_width,
-                    calculated_text_origin_x = %text_origin_x,
-                    will_become_local_x = %(text_origin_x - bounds.origin.x),
-                    "🎯 UNIFIED NON-SOFT-WRAP calculation - Matching soft-wrap coordinate system"
-                );
 
                 // Render rulers before text
                 let ruler_style = cx.theme_style("ui.virtual.ruler");
@@ -2460,7 +2302,6 @@ impl Element for DocumentElement {
                 let text = doc_text.slice(..);
 
                 // Update the shared line layouts for mouse interaction
-                debug!("Render mode: soft_wrap_enabled={}", soft_wrap_enabled);
                 if soft_wrap_enabled {
                     // Use DocumentFormatter for soft wrap rendering
 
@@ -2508,13 +2349,6 @@ impl Element for DocumentElement {
                     );
 
                     let text_origin_x = bounds.origin.x + (f32::from(gutter_offset) * after_layout.cell_width);
-                    debug!(
-                        bounds_origin_x = %bounds.origin.x,
-                        cell_width = %after_layout.cell_width,
-                        gutter_offset = gutter_offset,
-                        calculated_text_origin_x = %text_origin_x,
-                        "🎯 SOFT-WRAP text_origin_x calculation - Soft-wrap coordinate calculation"
-                    );
                     let mut y_offset = px(0.0);
                     let mut visual_line = 0;
                     let mut current_doc_line = text.char_to_line(view_offset.anchor);
@@ -2524,14 +2358,6 @@ impl Element for DocumentElement {
                     // IMPORTANT: Don't add buffer lines here - this must match ScrollManager's viewport calculation
                     // The ScrollManager uses exactly this height for max scroll calculations
                     let viewport_height = calculated_height;
-                    debug!(
-                        bounds_height = %bounds.size.height,
-                        effective_height = %effective_height,
-                        line_height = %after_layout.line_height,
-                        calculated_height = calculated_height,
-                        viewport_height_exact = viewport_height,
-                        "🎯 VIEWPORT: Calculated viewport height accounting for padding and buffer"
-                    );
 
                     // Skip lines before the viewport - need to consume all graphemes for skipped lines
                     // Skip lines before viewport if needed
@@ -2766,7 +2592,6 @@ impl Element for DocumentElement {
                             let is_phantom_line = line_start >= line_end;
 
                             if is_phantom_line {
-                                debug!("Soft-wrap: phantom line contributes to UI coordinates, doc_line={}", current_doc_line);
                                 // Phantom lines should still increment visual position for UI elements (gutter, cursorline)
                                 // but don't need text layout since they have no content
                                 visual_line += 1;
@@ -2780,17 +2605,6 @@ impl Element for DocumentElement {
                             let text_area_origin = point(
                                 px(0.0), // Line starts at x=0 in text-area coordinates
                                 y_offset, // Use y_offset directly (no px(1.) like non-wrap mode)
-                            );
-                            debug!(
-                                line_idx = current_doc_line,
-                                visual_line = visual_line,
-                                global_text_origin_x = %text_origin_x,
-                                global_line_y = %line_y,
-                                y_offset = %y_offset,
-                                element_bounds_origin = ?bounds.origin,
-                                fixed_text_area_origin = ?text_area_origin,
-                                shaped_line_width = %shaped_line.width,
-                                "🎯 FIXED Line layout storage (soft-wrap) - Using correct line_idx after early update"
                             );
                             // Calculate segment character offset for wrapped lines
                             let segment_char_offset = if let Some(first_grapheme) = line_graphemes.iter().find(|g| !g.is_virtual()) {
@@ -3071,17 +2885,12 @@ impl Element for DocumentElement {
                         let mut cursor_visual_line = None;
                         let mut cursor_visual_col = 0;
 
-                        debug!("🎯 SOFT-WRAP CURSOR SEARCH: Starting search for cursor_char_idx={}, text.len_chars()={}",
-                               cursor_char_idx, text.len_chars());
 
                         // Iterate through graphemes to find cursor position (following Helix's approach)
                         for grapheme in formatter {
                             // Check if the cursor position is before the next grapheme
                             // This matches Helix's logic: formatter.next_char_pos() > pos
                             let next_char_pos = grapheme.char_idx + grapheme.doc_chars();
-                            debug!("🎯 SOFT-WRAP GRAPHEME: char_idx={}, doc_chars={}, next_char_pos={}, visual_pos={}:{}, cursor_char_idx={}",
-                                   grapheme.char_idx, grapheme.doc_chars(), next_char_pos,
-                                   grapheme.visual_pos.row, grapheme.visual_pos.col, cursor_char_idx);
                             if next_char_pos > cursor_char_idx {
                                 // Cursor is at this grapheme's visual position
                                 // The DocumentFormatter already accounts for wrap indicators in visual_pos.col
@@ -3099,19 +2908,11 @@ impl Element for DocumentElement {
                             // but the cursorline is showing at the right position, so let's match it
                             cursor_visual_line = Some(_visual_line);
                             cursor_visual_col = 0; // Phantom line starts at column 0
-                            debug!("🎯 SOFT-WRAP EOF PHANTOM LINE: Assigned cursor to visual line {} (matching cursorline)", _visual_line);
                         }
 
-                        debug!("🎯 SOFT-WRAP CURSOR SEARCH RESULT: cursor_visual_line={:?}, cursor_visual_col={}, _visual_line={}",
-                               cursor_visual_line, cursor_visual_col, _visual_line);
 
                         // If cursor is in viewport, render it
-                        debug!("🎯 SOFT-WRAP CURSOR CHECK: cursor_visual_line={:?}, view_offset.vertical_offset={}, viewport_height={}",
-                               cursor_visual_line, view_offset.vertical_offset, viewport_height);
                         if let Some(cursor_line) = cursor_visual_line {
-                            debug!("🎯 SOFT-WRAP CURSOR BOUNDS: cursor_line={}, view_offset={}, range={}..{}",
-                                   cursor_line, view_offset.vertical_offset, view_offset.vertical_offset,
-                                   view_offset.vertical_offset + viewport_height);
                             if cursor_line >= view_offset.vertical_offset &&
                                cursor_line < view_offset.vertical_offset + viewport_height {
                                 // Calculate cursor position - FIXED: Use text_bounds coordinate system to match mouse clicks
@@ -3409,15 +3210,6 @@ impl Element for DocumentElement {
                         px(0.0), // Line starts at x=0 in text-area coordinates
                         y_offset, // Use y_offset directly (without the px(1.) padding)
                     );
-                    debug!(
-                        line_idx = line_idx,
-                        global_origin = ?text_origin,
-                        bounds_origin = ?bounds.origin,
-                        y_offset = %y_offset,
-                        fixed_text_area_origin = ?text_area_origin,
-                        shaped_line_width = %shaped_line.width,
-                        "🎯 FIXED Line layout storage (no-wrap) - Using y_offset directly (no px(1.) double-add)"
-                    );
                     let layout = nucleotide_editor::LineLayout {
                         line_idx,
                         shaped_line,
@@ -3569,15 +3361,6 @@ impl Element for DocumentElement {
                                 let cursor_x_relative_to_line = line_layout.shaped_line.x_for_index(cursor_byte_offset);
 
                                 // Additional debug for x_for_index calculation
-                                debug!(
-                                    cursor_char_offset = cursor_char_offset,
-                                    cursor_byte_offset = cursor_byte_offset,
-                                    line_text_len = line_text.len(),
-                                    line_text_preview = ?&line_text.chars().take(20).collect::<String>(),
-                                    cursor_x_from_x_for_index = %cursor_x_relative_to_line,
-                                    shaped_line_width = %line_layout.shaped_line.width,
-                                    "🎯 X_FOR_INDEX DEBUG: Investigating cursor X position calculation"
-                                );
 
                                 // FIXED: Convert from line-relative coordinates to text-area coordinates
                                 // Line layouts are stored in text-area coordinates (x=0), so we need to add text bounds offset
@@ -3638,16 +3421,6 @@ impl Element for DocumentElement {
                                     relative_cursor_y // Relative Y coordinate (line-relative)
                                 );
 
-                                debug!(
-                                    cursor_line = cursor_line,
-                                    cursor_x_relative_to_line = %cursor_x_relative_to_line,
-                                    cursor_x_absolute = %cursor_x,
-                                    text_bounds_origin_x = %text_bounds.origin.x,
-                                    line_layout_origin = ?line_layout.origin,
-                                    cursor_origin = ?cursor_origin,
-                                    will_paint_at = ?(cursor_origin.x + line_layout.origin.x, cursor_origin.y + line_layout.origin.y),
-                                    "🎯 CURSOR DEBUG: Final cursor positioning calculation"
-                                );
 
                                 // Check if cursor has reversed modifier
                                 let has_reversed = cursor_style.add_modifier.contains(helix_view::graphics::Modifier::REVERSED) &&
@@ -3710,19 +3483,12 @@ impl Element for DocumentElement {
                                     text_bounds.origin.x + line_layout.origin.x,
                                     text_bounds.origin.y + line_layout.origin.y,
                                 );
-                                debug!(
-                                    text_bounds_origin = ?text_bounds.origin,
-                                    line_layout_origin = ?line_layout.origin,
-                                    absolute_cursor_position = ?absolute_cursor_position,
-                                    "🎯 CURSOR PAINT: Converting text-area coordinates to absolute window coordinates"
-                                );
                                 cursor.paint(absolute_cursor_position, window, cx);
                             } else {
                                 debug!("❌ CURSOR FAIL: Could not find line layout for cursor line {} (layout_line_idx={})", cursor_line, layout_line_idx);
 
                                 // Special handling for EOF phantom line cursor
                                 if cursor_at_end && file_ends_with_newline && cursor_char_idx >= text.len_chars() {
-                                    debug!("🎯 EOF PHANTOM CURSOR: Rendering cursor at phantom line position");
 
                                     // Calculate text bounds for phantom cursor positioning (same as normal cursor logic)
                                     let cell_width = after_layout.cell_width;
@@ -3798,7 +3564,6 @@ impl Element for DocumentElement {
                                         text: cursor_text_shaped,
                                     };
 
-                                    debug!("🎯 EOF PHANTOM CURSOR PAINT: position=({}, {})", cursor_x, cursor_y);
                                     cursor.paint(point(cursor_x, cursor_y), window, cx);
                                 } else {
                                     debug!("❌ CURSOR FAIL: Normal line layout missing for line {}", cursor_line);
@@ -3940,7 +3705,6 @@ impl<'a> Gutter<'a> {
             .iter()
             .map(|range| range.cursor_line(text))
             .collect();
-        debug!("🎯 GUTTER CURSORS: cursor_lines={:?}", cursors.as_ref());
 
         let mut offset = 0;
 
@@ -3963,12 +3727,6 @@ impl<'a> Gutter<'a> {
                 // 2. Show appropriate wrap indicators on continuation lines
                 // 3. Handle gutter width for wrapped line numbers
                 let selected = cursors.contains(&pos.doc_line);
-                debug!(
-                    "🎯 GUTTER SELECTION: doc_line={}, selected={}, cursors={:?}",
-                    pos.doc_line,
-                    selected,
-                    cursors.as_ref()
-                );
                 let x = offset;
                 let y = pos.visual_line;
 
@@ -4007,10 +3765,7 @@ impl<'a> GutterRenderer for Gutter<'a> {
         let origin_y = self.origin.y + self.after_layout.line_height * f32::from(y);
         let origin_x = self.origin.x + self.after_layout.cell_width * f32::from(x);
 
-        let base_fg = style
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or(white()); // Use white as a reasonable fallback for gutter text
+        let base_fg = style.fg.and_then(color_to_hsla).unwrap_or(white()); // Use white as a reasonable fallback for gutter text
         let base_bg = style.bg.and_then(color_to_hsla);
 
         if let Some(text) = text {
