@@ -123,7 +123,7 @@ This allows for consistent theming while maintaining flexibility for different a
 
 ## Helix Theme Mapping
 
-### Primary Mappings
+### Primary Mappings (Enhanced)
 
 | Nucleotide Token | Helix Theme Key | Fallback Logic |
 |------------------|-----------------|----------------|
@@ -131,18 +131,54 @@ This allows for consistent theming while maintaining flexibility for different a
 | `surface` | `ui.menu` → `ui.background` (+5% lightness) | System appearance: Light(95%), Dark(10%) |
 | `text_primary` | `ui.text` | System appearance: Light(10%), Dark(90%) |
 | `border_default` | `ui.window` → `ui.text` (50% sat, 50% light, 80% alpha) | System appearance: Light(80%), Dark(20%) |
-| `primary` | `ui.selection` → `ui.cursor.primary` | Default: Blue (220°, 60%, 50%) |
-| `error` | `error` | Default: Red (0°, 80%, 50%/60%) |
-| `warning` | `warning` | Default: Orange (40°, 80%, 50%/60%) |
-| `info` | `info` | Default: Blue (200°, 70%, 50%/60%) |
+| `selection_primary` | `ui.selection` ✅ | Extracted directly from Helix theme |
+| `primary` | `ui.selection` ✅ | Now derives from selection for consistency |
+| `cursor_normal` | `ui.cursor.primary` ✅ | Extracted from Helix theme |
+| `cursor_insert` | `ui.cursor.insert` ✅ | Extracted from Helix theme |
+| `cursor_select` | `ui.cursor.select` ✅ | Extracted from Helix theme |
+| `cursor_match` | `ui.cursor.match` ✅ | Extracted from Helix theme |
+| `popup_background` | `ui.popup` ✅ | Extracted from Helix theme |
+| `statusline_active` | `ui.statusline` ✅ | Extracted from Helix theme |
+| `error` | `error` ✅ | Enhanced extraction and diagnostic variants |
+| `warning` | `warning` ✅ | Enhanced extraction and diagnostic variants |
+| `success` | `info` ✅ | Enhanced extraction and diagnostic variants |
+
+### Comprehensive Theme Extraction (NEW)
+
+The theme system now extracts comprehensive color information from Helix themes through the `HelixThemeColors` struct:
+
+#### Extracted Theme Keys
+- `ui.cursor.primary`, `ui.cursor.insert`, `ui.cursor.select`, `ui.cursor.match`
+- `ui.statusline`, `ui.popup`
+- `error`, `warning`, `info` (for diagnostic colors)
+- `ui.selection` (for consistent selection across components)
+
+#### Enhanced Token Creation
+Design tokens are now created using:
+- `DesignTokens::light_with_helix_colors(helix_colors)` 
+- `DesignTokens::dark_with_helix_colors(helix_colors)`
+
+This ensures all semantic tokens derive from Helix theme colors when available, with intelligent fallbacks.
 
 ### Computed Colors
 
 Some design tokens are computed from Helix theme values:
 
-- **Surface**: `ui.menu` background, or `ui.background` + 5% lightness
+- **Surface**: `ui.menu` background (if lighter than `ui.background`), or `ui.background` + 5% lightness (FIXED: prevents dark surface when menu is darker than background)
 - **Border**: `ui.window` foreground with reduced saturation/lightness and transparency
 - **Interactive States**: Computed from base colors using lightness adjustments
+- **Selection Colors**: `selection_primary` uses `ui.selection`, `selection_secondary` uses 30% opacity variant
+- **Brand Colors**: `primary` colors now derive from `ui.selection` for consistency
+
+#### Surface Color Logic (Enhanced)
+The surface color computation now includes intelligent fallback logic:
+1. If both `ui.menu` and `ui.background` are available:
+   - If `ui.menu` is darker than `ui.background`: Use `ui.background` + 5% lightness
+   - If `ui.menu` is lighter than or equal to `ui.background`: Use `ui.menu`
+2. If only one is available: Use that color + 5% lightness
+3. If neither is available: Use system appearance fallback
+
+This fixes issues with themes like `nucleotide-teal` where `ui.menu` (#0a1918, 6.9% lightness) is darker than `ui.background` (#0f2e2c, 12.0% lightness).
 
 ### Fallback System
 
@@ -176,9 +212,29 @@ let status_bg = if focused {
 
 ### Overlay System
 ```rust
-// Consistent overlay styling
-.bg(tokens.colors.surface_overlay)     // 95% opacity backdrop
+// Consistent overlay styling using Helix popup colors
+.bg(tokens.colors.popup_background)    // ui.popup
+.border_color(tokens.colors.popup_border) // ui.popup border
 .pt(tokens.sizes.space_8)              // 32px top padding
+```
+
+### Tab Overflow Menu (NEW)
+```rust
+// Uses proper popup colors from Helix theme
+.bg(tokens.colors.popup_background)    // ui.popup
+.border_color(tokens.colors.popup_border) // computed border
+.child(selected_item.bg(tokens.colors.selection_primary)) // ui.selection
+```
+
+### File Tree Selection (FIXED)
+```rust
+// Now matches editor selection color
+.when(is_selected, |div| {
+    div.bg(tokens.colors.selection_primary) // ui.selection (green)
+})
+.hover(|style| {
+    style.bg(tokens.colors.selection_secondary) // 30% opacity variant
+})
 ```
 
 ## Debugging Guide
@@ -227,13 +283,13 @@ All colors use HSLA format:
 
 Example: `hsla(220.0/360.0, 0.6, 0.5, 1.0)` = Blue (220°, 60%, 50%, 100%)
 
-## Proposed Additional Theme Keys
+## Additional Theme Keys (IMPLEMENTED)
 
-Based on comprehensive analysis of Helix theme documentation, the following theme keys could be added to enhance the design system:
+Based on comprehensive analysis of Helix theme documentation, the following theme keys have been implemented to enhance the design system:
 
 ### Cursor and Selection System
 
-| Proposed Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
+| Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
 |----------------|-----------|------------------|------------------|-------|
 | `colors.cursor_normal` | `ui.cursor.normal` → `ui.cursor` | `primary_500` | `primary_500` | Default cursor state |
 | `colors.cursor_insert` | `ui.cursor.insert` | `success_500` | `success_500` | Insert mode cursor |
@@ -244,7 +300,7 @@ Based on comprehensive analysis of Helix theme documentation, the following them
 
 ### Gutter and Line Number System
 
-| Proposed Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
+| Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
 |----------------|-----------|------------------|------------------|-------|
 | `colors.gutter_background` | `ui.gutter` | `neutral_50` | `neutral_50` | Editor gutter background |
 | `colors.gutter_selected` | `ui.gutter.selected` | `neutral_100` | `neutral_100` | Active line gutter |
@@ -253,7 +309,7 @@ Based on comprehensive analysis of Helix theme documentation, the following them
 
 ### Enhanced Status and Buffer System
 
-| Proposed Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
+| Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
 |----------------|-----------|------------------|------------------|-------|
 | `colors.statusline_active` | `ui.statusline` | `surface` | `surface` | Active window status |
 | `colors.statusline_inactive` | `ui.statusline.inactive` | `surface_disabled` | `surface_disabled` | Inactive window status |
@@ -263,7 +319,7 @@ Based on comprehensive analysis of Helix theme documentation, the following them
 
 ### Enhanced Popup and Menu System
 
-| Proposed Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
+| Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
 |----------------|-----------|------------------|------------------|-------|
 | `colors.popup_background` | `ui.popup` | `surface_elevated` | `surface_elevated` | Documentation popups |
 | `colors.popup_border` | `ui.popup` → computed | `border_default` | `border_default` | Popup borders |
@@ -273,7 +329,7 @@ Based on comprehensive analysis of Helix theme documentation, the following them
 
 ### Enhanced Diagnostic System
 
-| Proposed Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
+| Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
 |----------------|-----------|------------------|------------------|-------|
 | `colors.diagnostic_error` | `error` | `error_500` | `error_500` | Error text/icons |
 | `colors.diagnostic_warning` | `warning` | `warning_500` | `warning_500` | Warning text/icons |
@@ -286,7 +342,7 @@ Based on comprehensive analysis of Helix theme documentation, the following them
 
 ### Separator and UI Enhancement System
 
-| Proposed Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
+| Token | Helix Key | Light Theme Value | Dark Theme Value | Usage |
 |----------------|-----------|------------------|------------------|-------|
 | `colors.separator_horizontal` | `ui.background.separator` | `border_muted` | `border_muted` | Horizontal dividers |
 | `colors.separator_vertical` | `ui.background.separator` | `border_muted` | `border_muted` | Vertical dividers |
@@ -294,28 +350,6 @@ Based on comprehensive analysis of Helix theme documentation, the following them
 | `colors.focus_ring` | `ui.cursor.primary` | `primary_500` | `primary_500` | Focus indicators |
 | `colors.focus_ring_error` | `error` | `error_500` | `error_500` | Error state focus |
 | `colors.focus_ring_warning` | `warning` | `warning_500` | `warning_500` | Warning state focus |
-
-## Implementation Roadmap
-
-### Phase 1: Core Editor Experience
-1. **Cursor and Selection System** - Essential for editing modes
-2. **Enhanced Diagnostics** - Critical for LSP integration
-3. **Gutter and Line Numbers** - Editor-specific functionality
-
-### Phase 2: UI Hierarchy and Navigation  
-4. **Status and Buffer System** - Window and tab management
-5. **Enhanced Popups and Menus** - Command and completion UX
-
-### Phase 3: Polish and Accessibility
-6. **Separators and Focus** - Visual hierarchy and accessibility
-7. **Component Integration** - Update existing components to use new tokens
-
-### Implementation Benefits
-
-- **Enhanced Editor Fidelity**: More accurate Helix terminal → GUI mapping
-- **Improved User Experience**: Better visual distinction between UI states
-- **Design System Completeness**: Comprehensive coverage of Helix UI elements
-- **Better Debugging**: More granular theme key mapping for troubleshooting
 
 ---
 
