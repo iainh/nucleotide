@@ -1242,18 +1242,18 @@ impl Focusable for FileTreeView {
 // The component is already well-structured with ListItem usage
 
 impl Render for FileTreeView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Use nucleotide-ui theme access for consistent styling
         let theme = cx.theme();
         let entries = self.tree.visible_entries();
 
         // Compute component state based on file tree status
         let component_state = compute_component_state(
-            false,               // disabled - file tree is never disabled
-            false,               // loading - TODO: could be true during refresh
-            true,                // focused - when focus_handle is focused
-            false,               // hovered - handled by GPUI
-            !entries.is_empty(), // active when there are entries
+            false,                                // disabled - file tree is never disabled
+            false,                                // loading - TODO: could be true during refresh
+            self.focus_handle.is_focused(window), // focused - check actual focus state
+            false,                                // hovered - handled by GPUI
+            !entries.is_empty(),                  // active when there are entries
         );
 
         // Get semantic background color using design tokens
@@ -1263,16 +1263,9 @@ impl Render for FileTreeView {
             _ => theme.tokens.colors.surface,
         };
 
-        // Debug logging for file tree background color issue
-        nucleotide_logging::info!(
-            bg_color_h = bg_color.h,
-            bg_color_s = bg_color.s,
-            bg_color_l = bg_color.l,
-            bg_color_a = bg_color.a,
-            "FILE TREE BACKGROUND COLOR DEBUG"
-        );
-
         // Create semantic file tree container with nucleotide-ui design tokens
+        let border_color =
+            nucleotide_ui::styling::ColorTheory::subtle_border_color(bg_color, &theme.tokens);
         div()
             .id("file-tree")
             .key_context("FileTree")
@@ -1282,7 +1275,7 @@ impl Render for FileTreeView {
             .flex()
             .flex_col()
             .border_r_1()
-            .border_color(theme.tokens.colors.border_muted) // Add border using design tokens
+            .border_color(border_color) // Use consistent subtle border color
             .track_focus(&self.focus_handle)
             .on_click(cx.listener(|view, _event, window, _cx| {
                 // Focus the tree view when clicked anywhere on it

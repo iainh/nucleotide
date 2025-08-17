@@ -116,14 +116,20 @@ impl RenderOnce for TabOverflowButton {
         let tokens = &theme.tokens;
 
         // Use design tokens for consistent colors
-        // Use provided background or fall back to surface color
-        let container_bg = self.container_bg.unwrap_or(tokens.colors.surface);
+        // Use provided background or fall back to tab bar background for consistency
+        let container_bg = self
+            .container_bg
+            .unwrap_or(tokens.colors.bufferline_background);
         let button_bg = if self.is_open {
             tokens.colors.surface_selected
         } else {
             tokens.colors.surface_hover
         };
 
+        // Use inactive tab border color for consistency with empty tab bar area
+        let inactive_tab_bg = tokens.colors.bufferline_inactive;
+        let border_color =
+            nucleotide_ui::styling::ColorTheory::subtle_border_color(inactive_tab_bg, &tokens);
         div()
             .absolute()
             .top(px(0.0))
@@ -134,7 +140,7 @@ impl RenderOnce for TabOverflowButton {
             .h(tokens.sizes.button_height_md)
             .bg(container_bg)
             .border_b_1()
-            .border_color(tokens.colors.border_default)
+            .border_color(border_color)
             .child(
                 // Dropdown trigger button using design tokens
                 div()
@@ -149,7 +155,9 @@ impl RenderOnce for TabOverflowButton {
                     .bg(button_bg)
                     .text_color(tokens.colors.text_primary)
                     .border_1()
-                    .border_color(tokens.colors.border_default)
+                    .border_color(nucleotide_ui::styling::ColorTheory::subtle_border_color(
+                        button_bg, &tokens,
+                    ))
                     .hover(|style| {
                         style
                             .bg(tokens.colors.surface_selected)

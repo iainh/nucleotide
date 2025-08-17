@@ -299,7 +299,13 @@ impl RenderOnce for TabBar {
 
         // Get tab bar background using design tokens
         let tabbar_bg = tokens.colors.bufferline_background;
-        let border_color = tokens.colors.border_default;
+        let border_color =
+            nucleotide_ui::styling::ColorTheory::subtle_border_color(tabbar_bg, &tokens);
+
+        // Calculate inactive tab border color for empty tab bar sections
+        let inactive_tab_bg = tokens.colors.bufferline_inactive;
+        let inactive_border_color =
+            nucleotide_ui::styling::ColorTheory::subtle_border_color(inactive_tab_bg, &tokens);
 
         // Create tabs for visible documents
         let mut tabs = Vec::new();
@@ -349,12 +355,12 @@ impl RenderOnce for TabBar {
                     .bg(tabbar_bg)
                     .when(has_tabs, |this| {
                         this.child(
-                            // Container for visible tabs - constrained to prevent overlap with overflow button
+                            // Container for visible tabs - sizes to content
                             div()
                                 .flex()
                                 .flex_row()
                                 .items_center()
-                                .flex_1() // Take available space
+                                .flex_none() // Only take space needed for tabs
                                 .overflow_x_hidden() // Ensure tabs don't extend beyond container
                                 .when(has_overflow, |div| {
                                     // Reserve space for overflow button - must match OVERFLOW_BUTTON_WIDTH in calculation
@@ -363,18 +369,17 @@ impl RenderOnce for TabBar {
                                 .children(tabs),
                         )
                         .child(
-                            // Unused tabbar area with bottom border for visual separation
+                            // Unused tabbar area with bottom border matching inactive tabs
                             div()
-                                .flex_none() // Don't grow, just fill remaining space
-                                .w(px(0.0)) // Minimal width
+                                .flex_1() // Take remaining space after tabs
                                 .h_full()
                                 .bg(tabbar_bg)
                                 .border_b_1()
-                                .border_color(border_color),
+                                .border_color(inactive_border_color),
                         )
                     })
                     .when(!has_tabs, |this| {
-                        // Show placeholder when no tabs using design tokens
+                        // Show placeholder when no tabs with border matching inactive tabs
                         this.child(
                             div()
                                 .flex()
@@ -385,7 +390,7 @@ impl RenderOnce for TabBar {
                                 .child("No open files"),
                         )
                         .border_b_1()
-                        .border_color(border_color)
+                        .border_color(inactive_border_color)
                     })
                     .overflow_x_hidden(), // Always hide overflow at tab bar level
             )

@@ -1427,7 +1427,14 @@ impl Workspace {
                 let new_ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
 
                 cx.update_global(|_ui_theme: &mut nucleotide_ui::Theme, _cx| {
-                    *_ui_theme = new_ui_theme;
+                    *_ui_theme = new_ui_theme.clone();
+                });
+
+                // Update theme provider with the new theme
+                nucleotide_ui::providers::update_provider_context(|context| {
+                    // Create a new theme provider with the updated theme
+                    let theme_provider = nucleotide_ui::providers::ThemeProvider::new(new_ui_theme);
+                    context.register_global_provider(theme_provider);
                 });
 
                 // Clear the shaped lines cache to force re-rendering with new theme colors
@@ -2292,12 +2299,14 @@ impl Workspace {
             a: 0.3,
         };
 
+        let border_color =
+            nucleotide_ui::styling::ColorTheory::subtle_border_color(bg_color, &ui_theme.tokens);
         div()
             .h(px(28.0))
             .w_full()
             .bg(bg_color)
             .border_t_1()
-            .border_color(ui_theme.tokens.colors.border_default)
+            .border_color(border_color)
             .flex()
             .flex_row()
             .items_center()
@@ -3220,6 +3229,11 @@ impl Render for Workspace {
             if let Some(file_tree) = &self.file_tree {
                 // Create file tree panel with absolute positioning
                 let ui_theme = cx.global::<nucleotide_ui::Theme>();
+                let panel_bg = ui_theme.tokens.colors.surface;
+                let border_color = nucleotide_ui::styling::ColorTheory::subtle_border_color(
+                    panel_bg,
+                    &ui_theme.tokens,
+                );
                 let file_tree_panel = div()
                     .absolute()
                     .left(px(file_tree_left_offset))
@@ -3227,7 +3241,7 @@ impl Render for Workspace {
                     .bottom_0()
                     .w(px(self.file_tree_width))
                     .border_r_1()
-                    .border_color(ui_theme.tokens.colors.border_default)
+                    .border_color(border_color)
                     .child(file_tree.clone());
 
                 // Create resize handle with computed styling
@@ -3283,19 +3297,12 @@ impl Render for Workspace {
                 let resize_handle_width = 4.0;
                 let main_content_offset = self.file_tree_width + resize_handle_width;
 
-                // Get the same background color as the file tree
-                let prompt_bg = {
-                    let popup_style = cx.theme_style("ui.popup");
-                    popup_style
-                        .bg
-                        .and_then(crate::utils::color_to_hsla)
-                        .or_else(|| {
-                            cx.theme_style("ui.background")
-                                .bg
-                                .and_then(crate::utils::color_to_hsla)
-                        })
-                        .unwrap_or(ui_theme.tokens.colors.background)
-                };
+                // Use the same background color as the actual file tree for consistency
+                let prompt_bg = ui_theme.tokens.colors.surface;
+                let border_color = nucleotide_ui::styling::ColorTheory::subtle_border_color(
+                    prompt_bg,
+                    &ui_theme.tokens,
+                );
 
                 let placeholder_panel = div()
                     .absolute()
@@ -3305,7 +3312,7 @@ impl Render for Workspace {
                     .w(px(self.file_tree_width))
                     .bg(prompt_bg)
                     .border_r_1()
-                    .border_color(ui_theme.tokens.colors.border_default)
+                    .border_color(border_color)
                     .flex()
                     .flex_col()
                     .child(div().w_full().p(px(12.0)).child({

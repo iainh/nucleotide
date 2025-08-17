@@ -244,18 +244,24 @@ impl RenderOnce for Tab {
 
         // Use design tokens for consistent theming
         let (bg_color, text_color, hover_bg, border_color) = match component_state {
-            ComponentState::Active => (
-                tokens.colors.bufferline_active,
-                tokens.colors.text_primary,
-                tokens.colors.bufferline_active, // No hover change for active tabs
-                tokens.colors.border_default,
-            ),
-            ComponentState::Disabled => (
-                tokens.colors.surface_disabled,
-                tokens.colors.text_disabled,
-                tokens.colors.surface_disabled, // No hover for disabled tabs
-                tokens.colors.border_muted,
-            ),
+            ComponentState::Active => {
+                let bg = tokens.colors.bufferline_active;
+                (
+                    bg,
+                    tokens.colors.text_primary,
+                    bg, // No hover change for active tabs
+                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, &tokens),
+                )
+            }
+            ComponentState::Disabled => {
+                let bg = tokens.colors.surface_disabled;
+                (
+                    bg,
+                    tokens.colors.text_disabled,
+                    bg, // No hover for disabled tabs
+                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, &tokens),
+                )
+            }
             _ => {
                 // Inactive tabs: use buffer line tokens with appropriate hover state
                 let bg = if self.is_modified {
@@ -267,7 +273,7 @@ impl RenderOnce for Tab {
                     bg,
                     tokens.colors.text_primary,
                     tokens.colors.surface_hover, // Standard hover for inactive tabs
-                    tokens.colors.border_default,
+                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, &tokens),
                 )
             }
         };

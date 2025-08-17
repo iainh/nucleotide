@@ -156,12 +156,14 @@ impl Render for StatusLineView {
         let position_text = format!("{}:{}", position.row + 1, position.col + 1);
 
         // Build the status line layout using design tokens
+        let border_color =
+            nucleotide_ui::styling::ColorTheory::subtle_border_color(status_bg, &tokens);
         let mut status_bar = div()
             .h(tokens.sizes.button_height_sm)
             .w_full()
             .bg(status_bg)
             .border_t_1()
-            .border_color(tokens.colors.border_default)
+            .border_color(border_color)
             .flex()
             .flex_row()
             .items_center()
