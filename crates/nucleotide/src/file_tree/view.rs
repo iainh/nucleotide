@@ -1263,6 +1263,15 @@ impl Render for FileTreeView {
             _ => theme.tokens.colors.surface,
         };
 
+        // Debug logging for file tree background color issue
+        nucleotide_logging::info!(
+            bg_color_h = bg_color.h,
+            bg_color_s = bg_color.s,
+            bg_color_l = bg_color.l,
+            bg_color_a = bg_color.a,
+            "FILE TREE BACKGROUND COLOR DEBUG"
+        );
+
         // Create semantic file tree container with nucleotide-ui design tokens
         div()
             .id("file-tree")
