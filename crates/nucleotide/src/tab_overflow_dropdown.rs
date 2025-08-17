@@ -31,6 +31,8 @@ pub struct TabOverflowButton {
     on_dropdown_toggle: DropdownToggleHandler,
     /// Whether the dropdown is currently open
     is_open: bool,
+    /// Background color to match the tab bar
+    container_bg: Option<gpui::Hsla>,
 }
 
 /// Dropdown menu that shows overflow tabs
@@ -58,7 +60,14 @@ impl TabOverflowButton {
             overflow_count,
             on_dropdown_toggle: Arc::new(on_dropdown_toggle),
             is_open,
+            container_bg: None,
         }
+    }
+
+    /// Set the background color to match the tab bar
+    pub fn with_background(mut self, background: gpui::Hsla) -> Self {
+        self.container_bg = Some(background);
+        self
     }
 }
 
@@ -107,7 +116,8 @@ impl RenderOnce for TabOverflowButton {
         let tokens = &theme.tokens;
 
         // Use design tokens for consistent colors
-        let container_bg = tokens.colors.surface;
+        // Use provided background or fall back to surface color
+        let container_bg = self.container_bg.unwrap_or(tokens.colors.surface);
         let button_bg = if self.is_open {
             tokens.colors.surface_selected
         } else {
@@ -123,6 +133,8 @@ impl RenderOnce for TabOverflowButton {
             .items_center()
             .h(tokens.sizes.button_height_md)
             .bg(container_bg)
+            .border_b_1()
+            .border_color(tokens.colors.border_default)
             .child(
                 // Dropdown trigger button using design tokens
                 div()

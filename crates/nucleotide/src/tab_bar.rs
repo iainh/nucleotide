@@ -127,14 +127,28 @@ impl TabBar {
         }
     }
 
-    /// Calculate which tabs fit in available width and which overflow
+    /// Calculate which tabs fit in available width and which overflow (fallback using estimation)
     fn calculate_overflow(
         &self,
         documents: &[DocumentInfo],
         available_width: f32,
     ) -> (Vec<DocumentInfo>, Vec<DocumentInfo>) {
-        const OVERFLOW_BUTTON_WIDTH: f32 = 50.0; // More accurate estimate: padding(16) + text(20) + arrow(10) + border(4)
-        const TAB_PADDING: f32 = 8.0; // Additional padding between tabs
+        self.calculate_overflow_internal(documents, available_width, None)
+    }
+
+    /// Calculate which tabs fit in available width and which overflow (with optional context for measurement)
+    fn calculate_overflow_internal(
+        &self,
+        documents: &[DocumentInfo],
+        available_width: f32,
+        mut cx: Option<&mut App>,
+    ) -> (Vec<DocumentInfo>, Vec<DocumentInfo>) {
+        // Overflow button width calculation - refined based on actual rendering:
+        // The "+X" button should be more accurately sized
+        const OVERFLOW_BUTTON_WIDTH: f32 = 60.0; // Reduced from 80px to better match actual size
+
+        // No gap between tabs since we removed .gap() from the container
+        const TAB_GAP: f32 = 0.0;
 
         // If there's only one document, no overflow is possible
         if documents.len() <= 1 {
@@ -147,15 +161,31 @@ impl TabBar {
 
         // Always reserve space for overflow button when there are multiple documents
         // This prevents the "flickering" effect where tabs switch between visible and overflow
-        let effective_width = available_width - OVERFLOW_BUTTON_WIDTH;
+        // Add moderate safety margin to ensure tabs never appear partially behind overflow button
+        const SAFETY_MARGIN: f32 = 10.0; // Reduced from 20px to allow more tabs to be visible
+        let effective_width = available_width - OVERFLOW_BUTTON_WIDTH - SAFETY_MARGIN;
 
         // Process all tabs in their natural order (from opening sequence)
         // Don't prioritize active tab - it should stay in its natural position
-        for doc_info in documents {
-            let tab_width = self.estimate_tab_width(doc_info);
-            if used_width + tab_width <= effective_width {
+        for (index, doc_info) in documents.iter().enumerate() {
+            let tab_width = if let Some(ref mut context) = cx {
+                // Use accurate measurement when context is available
+                self.measure_tab_width(doc_info, context)
+            } else {
+                // Fall back to estimation when no context (for public API compatibility)
+                self.estimate_tab_width(doc_info)
+            };
+
+            // Calculate required width including gap (gaps go between tabs, not after the last one)
+            let width_needed = if index == 0 {
+                tab_width // First tab needs no preceding gap
+            } else {
+                tab_width + TAB_GAP // Subsequent tabs need gap
+            };
+
+            if used_width + width_needed <= effective_width {
                 visible_tabs.push(doc_info.clone());
-                used_width += tab_width + TAB_PADDING;
+                used_width += width_needed;
             } else {
                 overflow_tabs.push(doc_info.clone());
             }
@@ -175,12 +205,12 @@ impl TabBar {
         (visible_tabs, overflow_tabs)
     }
 
-    /// Estimate the width a tab would take up
+    /// Estimate the width a tab would take up (fallback when no context available)
     fn estimate_tab_width(&self, doc_info: &DocumentInfo) -> f32 {
         const TAB_MIN_WIDTH: f32 = 120.0;
-        const TAB_MAX_WIDTH: f32 = 200.0;
-        const CHAR_WIDTH: f32 = 8.0; // Approximate character width
-        const TAB_PADDING: f32 = 24.0; // Icon + close button + padding
+        const TAB_MAX_WIDTH: f32 = 280.0;
+        const CHAR_WIDTH: f32 = 9.0; // Approximate character width
+        const TAB_PADDING: f32 = 62.0; // Icon + close button + padding + borders - reduced to match measurement
 
         let label = self.get_document_label(doc_info);
         let text_width = label.len() as f32 * CHAR_WIDTH;
@@ -189,18 +219,67 @@ impl TabBar {
         // Clamp between min and max width
         estimated_width.clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
     }
+
+    /// Calculate the actual width a tab would take up using text measurement
+    fn measure_tab_width(&self, doc_info: &DocumentInfo, cx: &mut App) -> f32 {
+        const TAB_MIN_WIDTH: f32 = 120.0;
+        const TAB_MAX_WIDTH: f32 = 280.0;
+
+        // Get the label text
+        let label = self.get_document_label(doc_info);
+
+        // Get theme and font information
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
+        let font_size = tokens.sizes.text_md;
+
+        // Measure the actual text width using GPUI's text system
+        let text_width = self.measure_text_width(&label, font_size, cx);
+
+        // Add padding for icon, close button, and tab padding
+        // Icon (16px) + gap (4px) + close button (16px) + padding left/right (24px) + border (2px)
+        const TAB_PADDING: f32 = 16.0 + 4.0 + 16.0 + 24.0 + 2.0; // ~62px total - reduced from 70px
+
+        let total_width = text_width + TAB_PADDING;
+
+        // Clamp between min and max width
+        total_width.clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+    }
+
+    /// Measure the actual width of text using GPUI's text system
+    fn measure_text_width(&self, text: &str, font_size: gpui::Pixels, cx: &mut App) -> f32 {
+        // Use system UI font which matches what GPUI uses by default for UI text
+        let font = gpui::Font {
+            family: ".SystemUIFont".into(), // System UI font family as SharedString
+            features: gpui::FontFeatures::default(),
+            weight: gpui::FontWeight::NORMAL,
+            style: gpui::FontStyle::Normal,
+            fallbacks: None,
+        };
+
+        // Resolve the font
+        let font_id = cx.text_system().resolve_font(&font);
+
+        // For simple width measurement, we can estimate using character advances
+        // This is faster than full text shaping for our use case
+        let mut total_width = 0.0;
+
+        for ch in text.chars() {
+            let char_width = cx
+                .text_system()
+                .advance(font_id, font_size, ch)
+                .map(|advance| advance.width.0)
+                .unwrap_or(8.0); // fallback to 8px if measurement fails
+
+            total_width += char_width;
+        }
+
+        total_width
+    }
 }
 
 impl RenderOnce for TabBar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        // Use ThemedContext for consistent theme access
-        let theme = cx.theme();
-        let tokens = &theme.tokens;
-
-        // Get tab bar background using design tokens
-        let tabbar_bg = tokens.colors.bufferline_background;
-        let border_color = tokens.colors.border_default;
-
         // Keep documents in the order they were opened
         let mut documents = self.documents.clone();
         documents.sort_by(|a, b| a.order.cmp(&b.order));
@@ -208,11 +287,19 @@ impl RenderOnce for TabBar {
         // Calculate overflow if available width is specified
         let (visible_tabs, overflow_documents) = if let Some(available_width) = self.available_width
         {
-            self.calculate_overflow(&documents, available_width)
+            self.calculate_overflow_internal(&documents, available_width, Some(cx))
         } else {
             // No overflow calculation - show all tabs
             (documents.clone(), Vec::new())
         };
+
+        // Use ThemedContext for consistent theme access after overflow calculation
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
+
+        // Get tab bar background using design tokens
+        let tabbar_bg = tokens.colors.bufferline_background;
+        let border_color = tokens.colors.border_default;
 
         // Create tabs for visible documents
         let mut tabs = Vec::new();
@@ -262,18 +349,24 @@ impl RenderOnce for TabBar {
                     .bg(tabbar_bg)
                     .when(has_tabs, |this| {
                         this.child(
-                            // Container for visible tabs using design tokens
+                            // Container for visible tabs - constrained to prevent overlap with overflow button
                             div()
                                 .flex()
                                 .flex_row()
                                 .items_center()
-                                .gap(tokens.sizes.space_1)
+                                .flex_1() // Take available space
+                                .overflow_x_hidden() // Ensure tabs don't extend beyond container
+                                .when(has_overflow, |div| {
+                                    // Reserve space for overflow button - must match OVERFLOW_BUTTON_WIDTH in calculation
+                                    div.pr(px(60.0)) // Padding right to prevent overlap - reduced to match refined calculation
+                                })
                                 .children(tabs),
                         )
                         .child(
                             // Unused tabbar area with bottom border for visual separation
                             div()
-                                .flex_1() // Take remaining space
+                                .flex_none() // Don't grow, just fill remaining space
+                                .w(px(0.0)) // Minimal width
                                 .h_full()
                                 .bg(tabbar_bg)
                                 .border_b_1()
@@ -294,7 +387,7 @@ impl RenderOnce for TabBar {
                         .border_b_1()
                         .border_color(border_color)
                     })
-                    .when(!has_overflow, |this| this.overflow_x_hidden()), // Only hide overflow when no overflow dropdown
+                    .overflow_x_hidden(), // Always hide overflow at tab bar level
             )
             .when(has_overflow, |this| {
                 // Add overflow button as a sibling, not child of tab-bar
@@ -307,6 +400,7 @@ impl RenderOnce for TabBar {
                         },
                         self.is_overflow_open,
                     )
+                    .with_background(tabbar_bg)
                 } else {
                     // Fallback without toggle functionality
                     TabOverflowButton::new(
@@ -314,6 +408,7 @@ impl RenderOnce for TabBar {
                         |_window, _cx| {}, // No-op
                         self.is_overflow_open,
                     )
+                    .with_background(tabbar_bg)
                 })
             })
     }
