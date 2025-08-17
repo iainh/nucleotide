@@ -150,6 +150,52 @@ pub struct SemanticColors {
     pub warning: Hsla,
     pub error: Hsla,
     pub info: Hsla,
+
+    // Cursor and selection system
+    pub cursor_normal: Hsla,
+    pub cursor_insert: Hsla,
+    pub cursor_select: Hsla,
+    pub cursor_match: Hsla,
+    pub selection_primary: Hsla,
+    pub selection_secondary: Hsla,
+
+    // Enhanced diagnostic system
+    pub diagnostic_error: Hsla,
+    pub diagnostic_warning: Hsla,
+    pub diagnostic_info: Hsla,
+    pub diagnostic_hint: Hsla,
+    pub diagnostic_error_bg: Hsla,
+    pub diagnostic_warning_bg: Hsla,
+    pub diagnostic_info_bg: Hsla,
+    pub diagnostic_hint_bg: Hsla,
+
+    // Gutter and line number system
+    pub gutter_background: Hsla,
+    pub gutter_selected: Hsla,
+    pub line_number: Hsla,
+    pub line_number_active: Hsla,
+
+    // Enhanced status and buffer system
+    pub statusline_active: Hsla,
+    pub statusline_inactive: Hsla,
+    pub bufferline_background: Hsla,
+    pub bufferline_active: Hsla,
+    pub bufferline_inactive: Hsla,
+
+    // Enhanced popup and menu system
+    pub popup_background: Hsla,
+    pub popup_border: Hsla,
+    pub menu_background: Hsla,
+    pub menu_selected: Hsla,
+    pub menu_separator: Hsla,
+
+    // Separator and UI enhancement system
+    pub separator_horizontal: Hsla,
+    pub separator_vertical: Hsla,
+    pub separator_subtle: Hsla,
+    pub focus_ring: Hsla,
+    pub focus_ring_error: Hsla,
+    pub focus_ring_warning: Hsla,
 }
 
 impl SemanticColors {
@@ -191,6 +237,52 @@ impl SemanticColors {
             warning: base.warning_500,
             error: base.error_500,
             info: base.info_500,
+
+            // Cursor and selection system
+            cursor_normal: base.primary_500,
+            cursor_insert: base.success_500,
+            cursor_select: base.warning_500,
+            cursor_match: base.info_500,
+            selection_primary: base.primary_100,
+            selection_secondary: base.neutral_100,
+
+            // Enhanced diagnostic system
+            diagnostic_error: base.error_500,
+            diagnostic_warning: base.warning_500,
+            diagnostic_info: base.info_500,
+            diagnostic_hint: base.neutral_600,
+            diagnostic_error_bg: utils::with_alpha(base.error_500, 0.1),
+            diagnostic_warning_bg: utils::with_alpha(base.warning_500, 0.1),
+            diagnostic_info_bg: utils::with_alpha(base.info_500, 0.1),
+            diagnostic_hint_bg: utils::with_alpha(base.neutral_600, 0.1),
+
+            // Gutter and line number system
+            gutter_background: base.neutral_50,
+            gutter_selected: base.neutral_100,
+            line_number: base.neutral_500,
+            line_number_active: base.neutral_700,
+
+            // Enhanced status and buffer system
+            statusline_active: base.neutral_100,   // surface
+            statusline_inactive: base.neutral_100, // surface_disabled
+            bufferline_background: base.neutral_100,
+            bufferline_active: base.neutral_50,    // background
+            bufferline_inactive: base.neutral_100, // surface
+
+            // Enhanced popup and menu system
+            popup_background: base.neutral_200, // surface_elevated
+            popup_border: base.neutral_300,     // border_default
+            menu_background: base.neutral_200,  // surface_elevated
+            menu_selected: base.primary_100,    // surface_selected
+            menu_separator: base.neutral_200,   // border_muted
+
+            // Separator and UI enhancement system
+            separator_horizontal: base.neutral_200, // border_muted
+            separator_vertical: base.neutral_200,   // border_muted
+            separator_subtle: utils::with_alpha(base.neutral_200, 0.5), // border_muted + alpha
+            focus_ring: base.primary_500,
+            focus_ring_error: base.error_500,
+            focus_ring_warning: base.warning_500,
         }
     }
 
@@ -232,6 +324,52 @@ impl SemanticColors {
             warning: base.warning_500,
             error: base.error_500,
             info: base.info_500,
+
+            // Cursor and selection system
+            cursor_normal: base.primary_500,
+            cursor_insert: base.success_500,
+            cursor_select: base.warning_500,
+            cursor_match: base.info_500,
+            selection_primary: base.primary_200,
+            selection_secondary: base.neutral_200,
+
+            // Enhanced diagnostic system
+            diagnostic_error: base.error_500,
+            diagnostic_warning: base.warning_500,
+            diagnostic_info: base.info_500,
+            diagnostic_hint: base.neutral_600,
+            diagnostic_error_bg: utils::with_alpha(base.error_500, 0.1),
+            diagnostic_warning_bg: utils::with_alpha(base.warning_500, 0.1),
+            diagnostic_info_bg: utils::with_alpha(base.info_500, 0.1),
+            diagnostic_hint_bg: utils::with_alpha(base.neutral_600, 0.1),
+
+            // Gutter and line number system
+            gutter_background: base.neutral_50,
+            gutter_selected: base.neutral_100,
+            line_number: base.neutral_500,
+            line_number_active: base.neutral_700,
+
+            // Enhanced status and buffer system
+            statusline_active: base.neutral_100,   // surface
+            statusline_inactive: base.neutral_100, // surface_disabled
+            bufferline_background: base.neutral_100,
+            bufferline_active: base.neutral_50,    // background
+            bufferline_inactive: base.neutral_100, // surface
+
+            // Enhanced popup and menu system
+            popup_background: base.neutral_200, // surface_elevated
+            popup_border: base.neutral_300,     // border_default
+            menu_background: base.neutral_200,  // surface_elevated
+            menu_selected: base.primary_200,    // surface_selected
+            menu_separator: base.neutral_200,   // border_muted
+
+            // Separator and UI enhancement system
+            separator_horizontal: base.neutral_200, // border_muted
+            separator_vertical: base.neutral_200,   // border_muted
+            separator_subtle: utils::with_alpha(base.neutral_200, 0.5), // border_muted + alpha
+            focus_ring: base.primary_500,
+            focus_ring_error: base.error_500,
+            focus_ring_warning: base.warning_500,
         }
     }
 }
