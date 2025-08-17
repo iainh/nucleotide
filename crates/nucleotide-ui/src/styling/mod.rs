@@ -330,9 +330,10 @@ impl<'a> StyleContext<'a> {
                 // Loading styles could include animations
             }
             StyleState::Selected => {
-                style.background = self.tokens.colors.primary;
-                style.foreground = self.tokens.colors.text_on_primary;
-                style.border_color = self.tokens.colors.primary;
+                // Use primary selection color for active selection
+                style.background = self.tokens.colors.selection_primary;
+                style.foreground = self.tokens.colors.text_primary;
+                style.border_color = self.tokens.colors.selection_primary;
             }
             StyleState::Default => {
                 // Default state already handled in base and variant styles
@@ -374,15 +375,9 @@ impl<'a> StyleContext<'a> {
     fn create_hover_color(&self, background: Hsla) -> Hsla {
         use gpui::hsla;
 
-        // For ghost variant, create a subtle overlay that works on the underlying surface
+        // For ghost variant, use secondary selection color for better list selection UX
         if self.variant == "ghost" {
-            return if self.is_dark_theme {
-                // Light overlay for dark themes
-                hsla(0.0, 0.0, 1.0, 0.1)
-            } else {
-                // Dark overlay for light themes
-                hsla(0.0, 0.0, 0.0, 0.1)
-            };
+            return self.tokens.colors.selection_secondary;
         }
 
         // For transparent backgrounds, use surface hover

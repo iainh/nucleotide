@@ -165,7 +165,10 @@ impl Render for CompletionView {
                             div()
                                 .px_2()
                                 .py_1()
-                                .when(is_selected, |div| div.bg(tokens.colors.menu_selected))
+                                .when(is_selected, |div| div.bg(tokens.colors.selection_primary))
+                                .when(!is_selected, |div| {
+                                    div.hover(|style| style.bg(tokens.colors.selection_secondary))
+                                })
                                 .child(
                                     div()
                                         .text_sm()
