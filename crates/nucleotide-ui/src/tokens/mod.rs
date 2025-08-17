@@ -372,6 +372,106 @@ impl SemanticColors {
             focus_ring_warning: base.warning_500,
         }
     }
+
+    /// Create semantic colors from base colors for light theme with Helix-derived selection color
+    pub fn from_base_light_with_selection(base: &BaseColors, selection_color: Hsla) -> Self {
+        let mut colors = Self::from_base_light(base);
+
+        // Override selection colors with Helix theme's selection color
+        colors.selection_primary = selection_color;
+        // Create a lighter variant for secondary selection (hover)
+        colors.selection_secondary = utils::with_alpha(selection_color, 0.3);
+
+        colors
+    }
+
+    /// Create semantic colors from base colors for dark theme with Helix-derived selection color
+    pub fn from_base_dark_with_selection(base: &BaseColors, selection_color: Hsla) -> Self {
+        let mut colors = Self::from_base_dark(base);
+
+        // Override selection colors with Helix theme's selection color
+        colors.selection_primary = selection_color;
+        // Create a lighter variant for secondary selection (hover)
+        colors.selection_secondary = utils::with_alpha(selection_color, 0.3);
+
+        colors
+    }
+
+    /// Create semantic colors from base colors for light theme with comprehensive Helix-derived colors
+    pub fn from_base_light_with_helix_colors(
+        base: &BaseColors,
+        helix_colors: crate::theme_manager::HelixThemeColors,
+    ) -> Self {
+        let mut colors = Self::from_base_light(base);
+
+        // Override colors with Helix theme's extracted colors
+        colors.selection_primary = helix_colors.selection;
+        colors.selection_secondary = utils::with_alpha(helix_colors.selection, 0.3);
+
+        // Cursor colors
+        colors.cursor_normal = helix_colors.cursor_normal;
+        colors.cursor_insert = helix_colors.cursor_insert;
+        colors.cursor_select = helix_colors.cursor_select;
+        colors.cursor_match = helix_colors.cursor_match;
+
+        // Semantic feedback colors
+        colors.error = helix_colors.error;
+        colors.warning = helix_colors.warning;
+        colors.success = helix_colors.success;
+        colors.diagnostic_error = helix_colors.error;
+        colors.diagnostic_warning = helix_colors.warning;
+        colors.diagnostic_info = helix_colors.success;
+
+        // UI component colors
+        colors.statusline_active = helix_colors.statusline;
+        colors.popup_background = helix_colors.popup;
+
+        // Also update primary brand color to match selection for consistency
+        colors.primary = helix_colors.selection;
+        colors.primary_hover = utils::lighten(helix_colors.selection, 0.1);
+        colors.primary_active = utils::darken(helix_colors.selection, 0.1);
+        colors.border_focus = helix_colors.selection;
+
+        colors
+    }
+
+    /// Create semantic colors from base colors for dark theme with comprehensive Helix-derived colors
+    pub fn from_base_dark_with_helix_colors(
+        base: &BaseColors,
+        helix_colors: crate::theme_manager::HelixThemeColors,
+    ) -> Self {
+        let mut colors = Self::from_base_dark(base);
+
+        // Override colors with Helix theme's extracted colors
+        colors.selection_primary = helix_colors.selection;
+        colors.selection_secondary = utils::with_alpha(helix_colors.selection, 0.3);
+
+        // Cursor colors
+        colors.cursor_normal = helix_colors.cursor_normal;
+        colors.cursor_insert = helix_colors.cursor_insert;
+        colors.cursor_select = helix_colors.cursor_select;
+        colors.cursor_match = helix_colors.cursor_match;
+
+        // Semantic feedback colors
+        colors.error = helix_colors.error;
+        colors.warning = helix_colors.warning;
+        colors.success = helix_colors.success;
+        colors.diagnostic_error = helix_colors.error;
+        colors.diagnostic_warning = helix_colors.warning;
+        colors.diagnostic_info = helix_colors.success;
+
+        // UI component colors
+        colors.statusline_active = helix_colors.statusline;
+        colors.popup_background = helix_colors.popup;
+
+        // Also update primary brand color to match selection for consistency
+        colors.primary = helix_colors.selection;
+        colors.primary_hover = utils::lighten(helix_colors.selection, 0.1);
+        colors.primary_active = utils::darken(helix_colors.selection, 0.1);
+        colors.border_focus = helix_colors.selection;
+
+        colors
+    }
 }
 
 /// Size and spacing tokens
@@ -468,6 +568,42 @@ impl DesignTokens {
         let base_colors = BaseColors::dark();
         Self {
             colors: SemanticColors::from_base_dark(&base_colors),
+            sizes: SizeTokens::default(),
+        }
+    }
+
+    /// Create design tokens for light theme with Helix-derived selection color
+    pub fn light_with_selection(selection_color: Hsla) -> Self {
+        let base_colors = BaseColors::light();
+        Self {
+            colors: SemanticColors::from_base_light_with_selection(&base_colors, selection_color),
+            sizes: SizeTokens::default(),
+        }
+    }
+
+    /// Create design tokens for dark theme with Helix-derived selection color  
+    pub fn dark_with_selection(selection_color: Hsla) -> Self {
+        let base_colors = BaseColors::dark();
+        Self {
+            colors: SemanticColors::from_base_dark_with_selection(&base_colors, selection_color),
+            sizes: SizeTokens::default(),
+        }
+    }
+
+    /// Create design tokens for light theme with comprehensive Helix-derived colors
+    pub fn light_with_helix_colors(helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
+        let base_colors = BaseColors::light();
+        Self {
+            colors: SemanticColors::from_base_light_with_helix_colors(&base_colors, helix_colors),
+            sizes: SizeTokens::default(),
+        }
+    }
+
+    /// Create design tokens for dark theme with comprehensive Helix-derived colors
+    pub fn dark_with_helix_colors(helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
+        let base_colors = BaseColors::dark();
+        Self {
+            colors: SemanticColors::from_base_dark_with_helix_colors(&base_colors, helix_colors),
             sizes: SizeTokens::default(),
         }
     }
