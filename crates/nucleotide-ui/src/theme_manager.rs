@@ -15,33 +15,33 @@ pub struct HelixThemeColors {
     pub cursor_insert: Hsla,
     pub cursor_select: Hsla,
     pub cursor_match: Hsla,
-    
+
     // Semantic feedback colors
     pub error: Hsla,
     pub warning: Hsla,
     pub success: Hsla,
-    
+
     // UI component backgrounds
     pub statusline: Hsla,
     pub statusline_inactive: Hsla,
     pub popup: Hsla,
-    
+
     // Buffer and tab system
     pub bufferline_background: Hsla,
     pub bufferline_active: Hsla,
     pub bufferline_inactive: Hsla,
-    
-    // Gutter and line number system  
+
+    // Gutter and line number system
     pub gutter_background: Hsla,
     pub gutter_selected: Hsla,
     pub line_number: Hsla,
     pub line_number_active: Hsla,
-    
+
     // Menu and popup system
     pub menu_background: Hsla,
     pub menu_selected: Hsla,
     pub menu_separator: Hsla,
-    
+
     // Separator and focus system
     pub separator: Hsla,
     pub focus: Hsla,
@@ -445,6 +445,11 @@ impl ThemeManager {
             .map(|val| val == "1" || val.to_lowercase() == "true")
             .unwrap_or(false);
 
+        nucleotide_logging::debug!(
+            "TITLEBAR THEME_MANAGER: derive_ui_theme_with_appearance - test_fallback={}",
+            test_fallback
+        );
+
         // Helper functions to compute derived colors from ui.background
         let compute_surface_from_bg = |bg: Hsla| -> Hsla {
             // Create a surface color by adjusting lightness from background based on actual brightness
@@ -456,7 +461,7 @@ impl ThemeManager {
                 hsla(bg.h, bg.s, (bg.l + 0.05).min(1.0), bg.a)
             }
         };
-        
+
         let compute_text_from_bg = |bg: Hsla| -> Hsla {
             // Create contrasting text color from background based on actual brightness
             if bg.l > 0.5 {
@@ -467,7 +472,7 @@ impl ThemeManager {
                 hsla(bg.h, bg.s.min(0.2), 0.9, 1.0)
             }
         };
-        
+
         let compute_border_from_bg = |bg: Hsla| -> Hsla {
             // Create subtle border color from background based on actual background brightness
             // Use the background's lightness value to determine contrast direction
@@ -479,7 +484,7 @@ impl ThemeManager {
                 hsla(bg.h, bg.s * 0.3, (bg.l + 0.15).min(1.0), 0.8)
             }
         };
-        
+
         let compute_hover_from_bg = |bg: Hsla| -> Hsla {
             // Create hover state color from background based on actual background brightness
             if bg.l > 0.5 {
@@ -490,7 +495,7 @@ impl ThemeManager {
                 hsla(bg.h, bg.s, (bg.l + 0.03).min(1.0), bg.a)
             }
         };
-        
+
         let compute_active_from_bg = |bg: Hsla| -> Hsla {
             // Create active state color from background based on actual background brightness
             if bg.l > 0.5 {
@@ -557,7 +562,12 @@ impl ThemeManager {
             let error_style = helix_theme.get("error");
             let warning_style = helix_theme.get("warning");
             let info_style = helix_theme.get("info");
-            
+
+            nucleotide_logging::debug!(
+                "TITLEBAR THEME_MANAGER: Extracted Helix colors - ui.background={:?}, ui.text={:?}",
+                ui_bg.fg,
+                ui_text.fg
+            );
 
             (
                 ui_bg,
@@ -599,6 +609,12 @@ impl ThemeManager {
 
         // Convert to GPUI colors with sensible defaults based on system appearance
         let background_from_theme = ui_bg.bg.and_then(color_to_hsla);
+        nucleotide_logging::debug!(
+            "TITLEBAR THEME_MANAGER: ui_bg.bg={:?}, converted background_from_theme={:?}",
+            ui_bg.bg,
+            background_from_theme
+        );
+
         let background = background_from_theme.unwrap_or_else(|| {
             let fallback_color = match system_appearance {
                 SystemAppearance::Light => hsla(0.0, 0.0, 0.98, 1.0), // Light background
@@ -607,7 +623,7 @@ impl ThemeManager {
             nucleotide_logging::debug!(
                 system_appearance = ?system_appearance,
                 fallback_background = ?fallback_color,
-                "Using fallback background color"
+                "TITLEBAR THEME_MANAGER: Using fallback background color (no theme background found)"
             );
             fallback_color
         });
@@ -615,6 +631,12 @@ impl ThemeManager {
         let surface_from_theme = {
             let menu_color = ui_menu.bg.and_then(color_to_hsla);
             let bg_color = ui_bg.bg.and_then(color_to_hsla);
+            nucleotide_logging::debug!(
+                "TITLEBAR THEME_MANAGER: ui_menu.bg={:?}, menu_color={:?}, bg_color={:?}",
+                ui_menu.bg,
+                menu_color,
+                bg_color
+            );
 
             match (menu_color, bg_color) {
                 (Some(menu), Some(bg)) => {
@@ -625,19 +647,19 @@ impl ThemeManager {
                             bg_lightness = bg.l,
                             "ui.menu is darker than ui.background, computing surface from background"
                         );
-                        Some(hsla(bg.h, bg.s, bg.l + 0.05, bg.a))
+                        Some(compute_surface_from_bg(bg))
                     } else {
                         // Menu is lighter than or equal to background, use it as surface
                         Some(menu)
                     }
                 }
                 (Some(menu), None) => {
-                    // Only menu available, add lightness
-                    Some(hsla(menu.h, menu.s, menu.l + 0.05, menu.a))
+                    // Only menu available, compute proper surface color
+                    Some(compute_surface_from_bg(menu))
                 }
                 (None, Some(bg)) => {
-                    // Only background available, add lightness
-                    Some(hsla(bg.h, bg.s, bg.l + 0.05, bg.a))
+                    // Only background available, compute proper surface color
+                    Some(compute_surface_from_bg(bg))
                 }
                 (None, None) => None,
             }
@@ -652,10 +674,16 @@ impl ThemeManager {
                 computed_surface = ?fallback_color,
                 ui_menu_bg_available = ui_menu.bg.is_some(),
                 ui_background_available = ui_bg.bg.is_some(),
-                "Using computed surface color derived from ui.background - Helix theme may not define ui.menu"
+                "TITLEBAR THEME_MANAGER: Using computed surface color derived from ui.background - Helix theme may not define ui.menu"
             );
             fallback_color
         });
+
+        nucleotide_logging::debug!(
+            "TITLEBAR THEME_MANAGER: Final colors - background={:?}, surface={:?}",
+            background,
+            surface
+        );
 
         let text_from_theme = ui_text.fg.and_then(color_to_hsla);
         let text = text_from_theme.unwrap_or_else(|| {
@@ -747,15 +775,23 @@ impl ThemeManager {
             if test_fallback {
                 fallback
             } else {
-                helix_theme.get(key).bg.and_then(color_to_hsla).unwrap_or(fallback)
+                helix_theme
+                    .get(key)
+                    .bg
+                    .and_then(color_to_hsla)
+                    .unwrap_or(fallback)
             }
         };
-        
+
         let extract_fg_color = |key: &str, fallback: Hsla| -> Hsla {
             if test_fallback {
                 fallback
             } else {
-                helix_theme.get(key).fg.and_then(color_to_hsla).unwrap_or(fallback)
+                helix_theme
+                    .get(key)
+                    .fg
+                    .and_then(color_to_hsla)
+                    .unwrap_or(fallback)
             }
         };
 
@@ -767,43 +803,51 @@ impl ThemeManager {
             cursor_insert,
             cursor_select,
             cursor_match,
-            
+
             // Semantic feedback colors
             error,
             warning,
             success,
-            
+
             // UI component backgrounds
             statusline,
             statusline_inactive: extract_color("ui.statusline.inactive", derived_surface),
             popup,
-            
+
             // Buffer and tab system
             bufferline_background: extract_color("ui.bufferline", background),
             bufferline_active: extract_color("ui.bufferline.active", background),
             bufferline_inactive: extract_color("ui.bufferline.inactive", derived_surface),
-            
+
             // Gutter and line number system
             gutter_background: extract_color("ui.gutter", background),
             gutter_selected: extract_color("ui.gutter.selected", derived_surface),
             line_number: extract_fg_color("ui.linenr", derived_text),
             line_number_active: extract_fg_color("ui.linenr.selected", text),
-            
+
             // Menu and popup system
             menu_background: extract_color("ui.menu", surface),
             menu_selected: extract_color("ui.menu.selected", accent),
             menu_separator: extract_color("ui.menu.separator", border),
-            
+
             // Separator and focus system
             separator: extract_color("ui.background.separator", border),
             focus: extract_color("ui.focus", accent),
         };
 
-        let tokens = if background.l < 0.5 {
+        let mut tokens = if background.l < 0.5 {
             crate::DesignTokens::dark_with_helix_colors(theme_colors)
         } else {
             crate::DesignTokens::light_with_helix_colors(theme_colors)
         };
+
+        // Inject the computed Helix-derived surface colors into the token system
+        // This ensures TitleBarTokens and other components get the correct theme colors
+        tokens.colors.background = background; // ui.background
+        tokens.colors.surface = surface; // computed surface
+        tokens.colors.surface_elevated = derived_surface; // +/- elevation
+        tokens.colors.surface_hover = derived_hover;
+        tokens.colors.surface_active = derived_active;
 
         UITheme {
             background,

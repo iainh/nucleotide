@@ -6,8 +6,10 @@ use gpui::{
     Styled, Window, WindowControlArea,
 };
 
-use crate::styling::{compute_component_style, StyleSize, StyleState, StyleVariant};
+use crate::styling::{compute_component_style, ColorTheory, StyleSize, StyleState, StyleVariant};
 use crate::titlebar::platform_titlebar::PlatformStyle;
+use crate::tokens::TitleBarTokens;
+use nucleotide_logging::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowControlType {
@@ -37,6 +39,34 @@ pub struct WindowControlStyle {
 }
 
 impl WindowControlStyle {
+    pub fn default_from_tokens(
+        titlebar_tokens: TitleBarTokens,
+        _theme_tokens: &crate::DesignTokens,
+    ) -> Self {
+        // Create ghost button style that works on the titlebar background
+        let bg = titlebar_tokens.background;
+        let fg = titlebar_tokens.foreground;
+
+        // Create hover background that's subtle on titlebar
+        let hover_bg = ColorTheory::lighten(bg, 0.05);
+
+        debug!("TITLEBAR WINDOW_CONTROL: Creating default control style - bg={:?}, fg={:?}, hover_bg={:?}", 
+            bg, fg, hover_bg);
+
+        let icon_color = ColorTheory::mix(fg, bg, 0.3);
+        debug!(
+            "TITLEBAR WINDOW_CONTROL: Computed icon colors - normal={:?}, hover={:?}",
+            icon_color, fg
+        );
+
+        Self {
+            background: hsla(0.0, 0.0, 0.0, 0.0), // Transparent by default
+            background_hover: hover_bg,
+            icon: icon_color, // More subtle icon color
+            icon_hover: fg,
+        }
+    }
+
     pub fn default(cx: &App) -> Self {
         // Use enhanced styling system with provider support
         let ui_theme = crate::providers::use_provider::<crate::providers::ThemeProvider>()
@@ -62,6 +92,34 @@ impl WindowControlStyle {
             background_hover: hover_style.background,
             icon: ui_theme.tokens.colors.text_secondary,
             icon_hover: ui_theme.tokens.colors.text_primary,
+        }
+    }
+
+    pub fn close_from_tokens(
+        titlebar_tokens: TitleBarTokens,
+        theme_tokens: &crate::DesignTokens,
+    ) -> Self {
+        // Create danger button style for close button
+        let bg = titlebar_tokens.background;
+        let fg = titlebar_tokens.foreground;
+        let error_color = theme_tokens.colors.error;
+
+        debug!("TITLEBAR WINDOW_CONTROL: Creating close button style - bg={:?}, fg={:?}, error_color={:?}", 
+            bg, fg, error_color);
+
+        let icon_color = ColorTheory::mix(fg, bg, 0.3);
+        let icon_hover = ColorTheory::best_text_color(error_color, theme_tokens);
+
+        debug!(
+            "TITLEBAR WINDOW_CONTROL: Close button computed colors - icon={:?}, icon_hover={:?}",
+            icon_color, icon_hover
+        );
+
+        Self {
+            background: hsla(0.0, 0.0, 0.0, 0.0), // Transparent by default
+            background_hover: error_color,
+            icon: icon_color, // More subtle icon color
+            icon_hover,
         }
     }
 
@@ -108,10 +166,33 @@ impl WindowControl {
             style,
         }
     }
+
+    pub fn with_tokens(
+        id: impl Into<gpui::ElementId>,
+        control_type: WindowControlType,
+        titlebar_tokens: TitleBarTokens,
+        theme_tokens: &crate::DesignTokens,
+    ) -> Self {
+        let style = match control_type {
+            WindowControlType::Close => {
+                WindowControlStyle::close_from_tokens(titlebar_tokens, theme_tokens)
+            }
+            _ => WindowControlStyle::default_from_tokens(titlebar_tokens, theme_tokens),
+        };
+
+        Self {
+            id: id.into(),
+            control_type,
+            style,
+        }
+    }
 }
 
 impl RenderOnce for WindowControl {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        debug!("TITLEBAR WINDOW_CONTROL: Rendering {:?} control with colors - icon={:?}, icon_hover={:?}, bg_hover={:?}",
+            self.control_type, self.style.icon, self.style.icon_hover, self.style.background_hover);
+
         let icon = svg()
             .size_4()
             .flex_none()
@@ -154,6 +235,7 @@ impl RenderOnce for WindowControl {
 pub struct WindowControls {
     platform_style: PlatformStyle,
     window_control_area: Option<WindowControlArea>,
+    titlebar_tokens: Option<TitleBarTokens>,
 }
 
 impl WindowControls {
@@ -161,12 +243,18 @@ impl WindowControls {
         Self {
             platform_style,
             window_control_area: None,
+            titlebar_tokens: None,
         }
     }
 
     #[allow(dead_code)]
     pub fn window_control_area(mut self, area: WindowControlArea) -> Self {
         self.window_control_area = Some(area);
+        self
+    }
+
+    pub fn with_titlebar_tokens(mut self, titlebar_tokens: TitleBarTokens) -> Self {
+        self.titlebar_tokens = Some(titlebar_tokens);
         self
     }
 }
@@ -190,27 +278,83 @@ impl RenderOnce for WindowControls {
             controls = controls.window_control_area(area);
         }
 
-        // Add controls based on platform
-        match self.platform_style {
-            PlatformStyle::Linux => controls
-                .child(WindowControl::new(
-                    "minimize",
-                    WindowControlType::Minimize,
-                    cx,
-                ))
-                .child(WindowControl::new(
-                    "maximize-or-restore",
-                    if window.is_maximized() {
-                        WindowControlType::Restore
-                    } else {
-                        WindowControlType::Maximize
-                    },
-                    cx,
-                ))
-                .child(WindowControl::new("close", WindowControlType::Close, cx)),
-            PlatformStyle::Windows => {
-                // Windows order: minimize, maximize, close
-                controls
+        // Use tokens if available, otherwise fallback to old system
+        if let Some(titlebar_tokens) = self.titlebar_tokens {
+            debug!("TITLEBAR WINDOW_CONTROLS: Using titlebar tokens for controls - bg={:?}, fg={:?}, border={:?}", 
+                titlebar_tokens.background, titlebar_tokens.foreground, titlebar_tokens.border);
+
+            // Get theme tokens for creating controls
+            let theme_tokens = if let Some(theme_provider) =
+                crate::providers::use_provider::<crate::providers::ThemeProvider>()
+            {
+                debug!("TITLEBAR WINDOW_CONTROLS: Using theme provider for theme tokens");
+                theme_provider.current_theme.tokens
+            } else {
+                debug!("TITLEBAR WINDOW_CONTROLS: Using global theme for theme tokens");
+                cx.global::<crate::Theme>().tokens
+            };
+
+            // Add controls based on platform with tokens
+            match self.platform_style {
+                PlatformStyle::Linux => controls
+                    .child(WindowControl::with_tokens(
+                        "minimize",
+                        WindowControlType::Minimize,
+                        titlebar_tokens,
+                        &theme_tokens,
+                    ))
+                    .child(WindowControl::with_tokens(
+                        "maximize-or-restore",
+                        if window.is_maximized() {
+                            WindowControlType::Restore
+                        } else {
+                            WindowControlType::Maximize
+                        },
+                        titlebar_tokens,
+                        &theme_tokens,
+                    ))
+                    .child(WindowControl::with_tokens(
+                        "close",
+                        WindowControlType::Close,
+                        titlebar_tokens,
+                        &theme_tokens,
+                    )),
+                PlatformStyle::Windows => {
+                    // Windows order: minimize, maximize, close
+                    controls
+                        .child(WindowControl::with_tokens(
+                            "minimize",
+                            WindowControlType::Minimize,
+                            titlebar_tokens,
+                            &theme_tokens,
+                        ))
+                        .child(WindowControl::with_tokens(
+                            "maximize-or-restore",
+                            if window.is_maximized() {
+                                WindowControlType::Restore
+                            } else {
+                                WindowControlType::Maximize
+                            },
+                            titlebar_tokens,
+                            &theme_tokens,
+                        ))
+                        .child(WindowControl::with_tokens(
+                            "close",
+                            WindowControlType::Close,
+                            titlebar_tokens,
+                            &theme_tokens,
+                        ))
+                }
+                PlatformStyle::Mac => {
+                    // macOS uses native traffic lights, return empty container
+                    controls
+                }
+            }
+        } else {
+            debug!("TITLEBAR WINDOW_CONTROLS: No titlebar tokens available, using fallback styling system");
+            // Fallback to old system without tokens
+            match self.platform_style {
+                PlatformStyle::Linux => controls
                     .child(WindowControl::new(
                         "minimize",
                         WindowControlType::Minimize,
@@ -225,11 +369,30 @@ impl RenderOnce for WindowControls {
                         },
                         cx,
                     ))
-                    .child(WindowControl::new("close", WindowControlType::Close, cx))
-            }
-            PlatformStyle::Mac => {
-                // macOS uses native traffic lights, return empty container
-                controls
+                    .child(WindowControl::new("close", WindowControlType::Close, cx)),
+                PlatformStyle::Windows => {
+                    // Windows order: minimize, maximize, close
+                    controls
+                        .child(WindowControl::new(
+                            "minimize",
+                            WindowControlType::Minimize,
+                            cx,
+                        ))
+                        .child(WindowControl::new(
+                            "maximize-or-restore",
+                            if window.is_maximized() {
+                                WindowControlType::Restore
+                            } else {
+                                WindowControlType::Maximize
+                            },
+                            cx,
+                        ))
+                        .child(WindowControl::new("close", WindowControlType::Close, cx))
+                }
+                PlatformStyle::Mac => {
+                    // macOS uses native traffic lights, return empty container
+                    controls
+                }
             }
         }
     }

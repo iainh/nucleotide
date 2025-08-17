@@ -12,7 +12,7 @@ mod tests {
     #[test]
     fn test_all_helix_colors_mapped() {
         let test_color = hsla(0.5, 0.5, 0.5, 1.0);
-        
+
         // Create a test HelixThemeColors with all fields set to the same test color
         let helix_colors = HelixThemeColors {
             // Core selection and cursor colors
@@ -21,40 +21,41 @@ mod tests {
             cursor_insert: test_color,
             cursor_select: test_color,
             cursor_match: test_color,
-            
+
             // Semantic feedback colors
             error: test_color,
             warning: test_color,
             success: test_color,
-            
+
             // UI component backgrounds
             statusline: test_color,
             statusline_inactive: test_color,
             popup: test_color,
-            
+
             // Buffer and tab system
             bufferline_background: test_color,
             bufferline_active: test_color,
             bufferline_inactive: test_color,
-            
-            // Gutter and line number system  
+
+            // Gutter and line number system
             gutter_background: test_color,
             gutter_selected: test_color,
             line_number: test_color,
             line_number_active: test_color,
-            
+
             // Menu and popup system
             menu_background: test_color,
             menu_selected: test_color,
             menu_separator: test_color,
-            
+
             // Separator and focus system
             separator: test_color,
             focus: test_color,
         };
 
         let base_colors = BaseColors::light();
-        let semantic_colors = SemanticColors::from_base_light_with_helix_colors(&base_colors, helix_colors);
+        let semantic_colors =
+            SemanticColors::from_base_light_with_helix_colors(&base_colors, helix_colors);
 
         // Verify that our test color appears in key mapped fields
         // This ensures the mapping functions actually use the HelixThemeColors fields
@@ -83,7 +84,7 @@ mod tests {
     #[test]
     fn test_dark_theme_mapping() {
         let test_color = hsla(0.2, 0.8, 0.3, 1.0);
-        
+
         let helix_colors = HelixThemeColors {
             selection: test_color,
             cursor_normal: test_color,
@@ -111,7 +112,8 @@ mod tests {
         };
 
         let base_colors = BaseColors::dark();
-        let semantic_colors = SemanticColors::from_base_dark_with_helix_colors(&base_colors, helix_colors);
+        let semantic_colors =
+            SemanticColors::from_base_dark_with_helix_colors(&base_colors, helix_colors);
 
         // Verify key mappings work in dark theme too
         assert_eq!(semantic_colors.selection_primary, test_color);
@@ -124,10 +126,10 @@ mod tests {
     fn test_no_unmapped_semantic_fields() {
         // This test ensures that as new fields are added to SemanticColors,
         // they get proper mappings in the Helix theme functions
-        
+
         let different_color = hsla(0.8, 0.2, 0.7, 1.0);
         let base_colors = BaseColors::light();
-        
+
         // Create helix colors with easily identifiable values
         let helix_colors = HelixThemeColors {
             selection: hsla(0.1, 1.0, 0.5, 1.0),
@@ -155,15 +157,19 @@ mod tests {
             focus: hsla(0.52, 1.0, 0.5, 1.0),
         };
 
-        let semantic_colors = SemanticColors::from_base_light_with_helix_colors(&base_colors, helix_colors);
-        
-        // This test will fail if any crucial SemanticColors field is not being 
+        let semantic_colors =
+            SemanticColors::from_base_light_with_helix_colors(&base_colors, helix_colors);
+
+        // This test will fail if any crucial SemanticColors field is not being
         // overridden by helix colors (i.e., still using base color fallbacks)
         // The specific assertions verify that our helix theme extraction is working
-        
+
         // Core functionality should use helix colors, not base fallbacks
         assert_ne!(semantic_colors.selection_primary, base_colors.primary_500);
-        assert_ne!(semantic_colors.bufferline_background, base_colors.neutral_300);
+        assert_ne!(
+            semantic_colors.bufferline_background,
+            base_colors.neutral_300
+        );
         assert_ne!(semantic_colors.statusline_active, base_colors.neutral_100);
     }
 }

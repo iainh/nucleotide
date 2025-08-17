@@ -28,12 +28,8 @@ impl TitleBar {
     }
 
     pub fn height(window: &Window) -> gpui::Pixels {
-        // Match Zed's titlebar height calculation
-        #[cfg(target_os = "windows")]
-        return px(32.0);
-
-        #[cfg(not(target_os = "windows"))]
-        return (1.75 * window.rem_size()).max(px(34.0));
+        // Use PlatformTitleBar's height calculation which now uses tokens
+        PlatformTitleBar::height(window)
     }
 }
 

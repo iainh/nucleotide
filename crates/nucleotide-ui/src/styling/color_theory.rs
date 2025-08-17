@@ -83,7 +83,15 @@ impl ColorTheory {
 
         // If still not good enough, generate a high-contrast color
         if best_contrast < ContrastRatios::AA_NORMAL {
-            Self::generate_high_contrast_text(background)
+            let high_contrast = Self::generate_high_contrast_text(background);
+            let high_contrast_ratio = Self::contrast_ratio(background, high_contrast);
+
+            // Use the generated high-contrast color if it's better
+            if high_contrast_ratio > best_contrast {
+                high_contrast
+            } else {
+                best_color
+            }
         } else {
             best_color
         }
@@ -91,13 +99,18 @@ impl ColorTheory {
 
     /// Generate a high-contrast text color for any background
     fn generate_high_contrast_text(background: Hsla) -> Hsla {
-        let bg_luminance = Self::relative_luminance(background);
+        // Try pure white and pure black for maximum contrast
+        let pure_white = hsla(0.0, 0.0, 1.0, 1.0);
+        let pure_black = hsla(0.0, 0.0, 0.0, 1.0);
 
-        // Use white text for dark backgrounds, black for light
-        if bg_luminance < 0.5 {
-            hsla(0.0, 0.0, 0.95, 1.0) // Near white
+        let white_contrast = Self::contrast_ratio(background, pure_white);
+        let black_contrast = Self::contrast_ratio(background, pure_black);
+
+        // Choose the option with better contrast
+        if white_contrast > black_contrast {
+            pure_white
         } else {
-            hsla(0.0, 0.0, 0.05, 1.0) // Near black
+            pure_black
         }
     }
 
@@ -105,14 +118,18 @@ impl ColorTheory {
     pub fn contextual_colors(
         variant: &str,
         is_dark_theme: bool,
-        context: ColorContext,
+        context: crate::tokens::ColorContext,
         tokens: &DesignTokens,
     ) -> ContextualColors {
         match context {
-            ColorContext::OnSurface => Self::on_surface_colors(variant, tokens),
-            ColorContext::OnPrimary => Self::on_primary_colors(variant, tokens),
-            ColorContext::Floating => Self::floating_colors(variant, is_dark_theme, tokens),
-            ColorContext::Overlay => Self::overlay_colors(variant, is_dark_theme, tokens),
+            crate::tokens::ColorContext::OnSurface => Self::on_surface_colors(variant, tokens),
+            crate::tokens::ColorContext::OnPrimary => Self::on_primary_colors(variant, tokens),
+            crate::tokens::ColorContext::Floating => {
+                Self::floating_colors(variant, is_dark_theme, tokens)
+            }
+            crate::tokens::ColorContext::Overlay => {
+                Self::overlay_colors(variant, is_dark_theme, tokens)
+            }
         }
     }
 
@@ -237,16 +254,33 @@ impl ColorTheory {
     }
 
     /// Create a subtle border color that works with the background
-    pub fn subtle_border_color(background: Hsla, tokens: &DesignTokens) -> Hsla {
+    pub fn subtle_border_color(background: Hsla, _tokens: &DesignTokens) -> Hsla {
         let bg_luminance = Self::relative_luminance(background);
 
-        if bg_luminance > 0.5 {
+        // Aim for at least 3:1 contrast ratio for borders
+        let mut border_color = if bg_luminance > 0.5 {
             // Light background - use darker border
-            Self::darken(background, 0.1)
+            Self::darken(background, 0.15)
         } else {
             // Dark background - use lighter border
-            Self::lighten(background, 0.1)
+            Self::lighten(background, 0.15)
+        };
+
+        // Check contrast and adjust if needed
+        let mut contrast = Self::contrast_ratio(background, border_color);
+        let mut adjustment = 0.05;
+
+        while contrast < 3.0 && adjustment < 0.5 {
+            border_color = if bg_luminance > 0.5 {
+                Self::darken(background, 0.15 + adjustment)
+            } else {
+                Self::lighten(background, 0.15 + adjustment)
+            };
+            contrast = Self::contrast_ratio(background, border_color);
+            adjustment += 0.05;
         }
+
+        border_color
     }
 
     /// Adjust color for primary context
@@ -276,7 +310,7 @@ impl ColorTheory {
     }
 
     /// Mix two colors
-    fn mix(color1: Hsla, color2: Hsla, ratio: f32) -> Hsla {
+    pub fn mix(color1: Hsla, color2: Hsla, ratio: f32) -> Hsla {
         let ratio = ratio.clamp(0.0, 1.0);
         hsla(
             color1.h + (color2.h - color1.h) * ratio,
@@ -308,19 +342,6 @@ impl ColorTheory {
 
         (r + m, g + m, b + m)
     }
-}
-
-/// UI context for color selection
-#[derive(Debug, Clone, Copy)]
-pub enum ColorContext {
-    /// Element sits on a surface background
-    OnSurface,
-    /// Element sits on a primary color background
-    OnPrimary,
-    /// Floating element (modal, popup)
-    Floating,
-    /// Overlay element
-    Overlay,
 }
 
 /// Contextually computed colors

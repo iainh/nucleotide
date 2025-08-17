@@ -3,12 +3,13 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, App, Context, Decorations, ElementId, Hsla, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Pixels, Render, Styled, Window, WindowControlArea,
+    div, px, Context, Decorations, ElementId, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Pixels, Render, Styled, Window, WindowControlArea,
 };
 
-use crate::styling::ColorTheory;
 use crate::titlebar::window_controls::WindowControls;
+use crate::tokens::{ColorContext, TitleBarTokens};
+use nucleotide_logging::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -52,66 +53,55 @@ impl PlatformTitleBar {
     }
 
     pub fn height(window: &Window) -> Pixels {
+        // Use theme provider for consistent height with token system
+        if let Some(theme_provider) =
+            crate::providers::use_provider::<crate::providers::ThemeProvider>()
+        {
+            let tokens = theme_provider.titlebar_tokens(ColorContext::OnSurface);
+            debug!(
+                "TITLEBAR HEIGHT: Using theme provider tokens, height={:?}",
+                tokens.height
+            );
+            return (1.75 * window.rem_size()).max(tokens.height);
+        }
+
+        debug!("TITLEBAR HEIGHT: No theme provider, using fallback heights");
         #[cfg(target_os = "windows")]
         return px(32.0);
 
         #[cfg(not(target_os = "windows"))]
         return (1.75 * window.rem_size()).max(px(34.0));
     }
-
-    pub fn title_bar_color(&self, _window: &Window, cx: &App) -> Hsla {
-        // Use enhanced styling system with provider support
-        let ui_theme = crate::providers::use_provider::<crate::providers::ThemeProvider>()
-            .map(|provider| provider.current_theme().clone())
-            .unwrap_or_else(|| cx.global::<crate::Theme>().clone());
-
-        // Use surface color as the primary option for titlebar
-        // This should match the overall application surface color
-        let surface_color = ui_theme.tokens.colors.surface;
-
-        // Only use the surface color if it's not nearly black (which would indicate uninitialized)
-        if surface_color.l > 0.05 {
-            return surface_color;
-        }
-
-        // Fallback to other UI theme colors
-        let candidates = [
-            ui_theme.tokens.colors.background,
-            ui_theme.background,
-            ui_theme.surface,
-        ];
-
-        for &candidate in &candidates {
-            if candidate.l > 0.05 {
-                return candidate;
-            }
-        }
-
-        // Final fallback based on theme detection
-        if ui_theme.is_dark() {
-            gpui::hsla(0.0, 0.0, 0.15, 1.0)
-        } else {
-            gpui::hsla(0.0, 0.0, 0.95, 1.0)
-        }
-    }
 }
 
 impl Render for PlatformTitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let decorations = window.window_decorations();
-        let height = Self::height(window);
-        let titlebar_color = self.title_bar_color(window, cx);
 
-        // Use enhanced styling system with provider support for all colors
-        let ui_theme = crate::providers::use_provider::<crate::providers::ThemeProvider>()
-            .map(|provider| provider.current_theme().clone())
-            .unwrap_or_else(|| cx.global::<crate::Theme>().clone());
+        // Get titlebar tokens from theme provider
+        let theme_provider = crate::providers::use_provider::<crate::providers::ThemeProvider>();
+        debug!(
+            "TITLEBAR RENDER: Theme provider available: {}",
+            theme_provider.is_some()
+        );
 
-        // Compute text color based on titlebar background for proper contrast
-        let text_color = ColorTheory::best_text_color(titlebar_color, &ui_theme.tokens);
+        let titlebar_tokens = if let Some(provider) = theme_provider {
+            // Use OnSurface context for standard titlebar appearance
+            let tokens = provider.titlebar_tokens(ColorContext::OnSurface);
+            debug!("TITLEBAR RENDER: Using theme provider tokens - bg={:?}, fg={:?}, border={:?}, height={:?}", 
+                tokens.background, tokens.foreground, tokens.border, tokens.height);
+            tokens
+        } else {
+            // Fallback: use global theme for tokens
+            let ui_theme = cx.global::<crate::Theme>();
+            let tokens = TitleBarTokens::on_surface(&ui_theme.tokens);
+            debug!("TITLEBAR RENDER: Using fallback global theme tokens - bg={:?}, fg={:?}, border={:?}, height={:?}", 
+                tokens.background, tokens.foreground, tokens.border, tokens.height);
+            tokens
+        };
 
-        // Compute border color based on titlebar background
-        let border_color = ColorTheory::subtle_border_color(titlebar_color, &ui_theme.tokens);
+        let height = titlebar_tokens.height;
+        debug!("TITLEBAR RENDER: Final titlebar height: {:?}", height);
 
         // macOS traffic light padding
         const MAC_TRAFFIC_LIGHT_PADDING: f32 = 71.0;
@@ -122,6 +112,11 @@ impl Render for PlatformTitleBar {
             Decorations::Server => window.set_client_inset(px(0.0)),
         }
 
+        debug!(
+            "TITLEBAR RENDER: Applying styles - background={:?}, border={:?}",
+            titlebar_tokens.background, titlebar_tokens.border
+        );
+
         // Build the titlebar
         div()
             .flex()
@@ -130,9 +125,9 @@ impl Render for PlatformTitleBar {
             .window_control_area(WindowControlArea::Drag)
             .w_full()
             .h(height)
-            .bg(titlebar_color)
+            .bg(titlebar_tokens.background)
             .border_b_1()
-            .border_color(border_color)
+            .border_color(titlebar_tokens.border)
             .map(|this| {
                 if window.is_fullscreen() {
                     this.pl_2()
@@ -174,13 +169,17 @@ impl Render for PlatformTitleBar {
                     .on_mouse_move(|_, _, cx| cx.stop_propagation())
                     .child(
                         // Title text - centered and styled with computed colors
-                        div().flex().items_center().gap_2().child(
+                        div().flex().items_center().gap_2().child({
+                            debug!(
+                                "TITLEBAR RENDER: Applying text color to title: {:?}",
+                                titlebar_tokens.foreground
+                            );
                             div()
                                 .text_size(px(14.0)) // Standard titlebar font size
                                 .font_weight(gpui::FontWeight::MEDIUM) // Slightly bold for titlebar
-                                .text_color(text_color)
-                                .child(self.title.clone()),
-                        ),
+                                .text_color(titlebar_tokens.foreground)
+                                .child(self.title.clone())
+                        }),
                     ),
             )
             .when(!window.is_fullscreen(), |title_bar| {
@@ -190,11 +189,10 @@ impl Render for PlatformTitleBar {
                         // macOS uses native traffic lights, no custom controls needed
                         title_bar
                     }
-                    PlatformStyle::Linux | PlatformStyle::Windows => {
-                        title_bar.child(
-                            WindowControls::new(self.platform_style), // Note: WindowControlArea doesn't have WindowControls variant in this GPUI version
-                        )
-                    }
+                    PlatformStyle::Linux | PlatformStyle::Windows => title_bar.child(
+                        WindowControls::new(self.platform_style)
+                            .with_titlebar_tokens(titlebar_tokens),
+                    ),
                 }
             })
     }

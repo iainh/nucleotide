@@ -82,6 +82,10 @@ impl Default for ThemeTransitionConfig {
 impl ThemeProvider {
     /// Create a new theme provider with a default theme
     pub fn new(default_theme: Theme) -> Self {
+        use nucleotide_logging::debug;
+        debug!("TITLEBAR THEME_PROVIDER: Creating new ThemeProvider with surface={:?}, background={:?}",
+            default_theme.tokens.colors.surface, default_theme.tokens.colors.background);
+
         let mut available_themes = HashMap::new();
         let theme_name: SharedString = if default_theme.is_dark() {
             "dark".into()
@@ -124,6 +128,8 @@ impl ThemeProvider {
             self.theme_inheritance = vec![theme_name.to_string().into()];
 
             nucleotide_logging::info!(theme_name = theme_name, "Theme switched");
+            nucleotide_logging::debug!("TITLEBAR THEME_PROVIDER: Switched to theme '{}' with surface={:?}, background={:?}",
+                theme_name, self.current_theme.tokens.colors.surface, self.current_theme.tokens.colors.background);
 
             true
         } else {
@@ -299,6 +305,65 @@ impl ThemeProvider {
         };
 
         self.switch_theme(target_theme)
+    }
+
+    /// Update the current theme with a new theme (typically from ThemeManager)
+    pub fn update_theme(&mut self, new_theme: crate::Theme) {
+        use nucleotide_logging::debug;
+        debug!(
+            "TITLEBAR THEME_PROVIDER: Updating current theme with surface={:?}, background={:?}",
+            new_theme.tokens.colors.surface, new_theme.tokens.colors.background
+        );
+
+        // Update the current theme
+        self.current_theme = new_theme.clone();
+
+        // Update the theme in available_themes for consistency
+        let theme_name = if new_theme.is_dark() { "dark" } else { "light" };
+
+        self.available_themes.insert(theme_name.into(), new_theme);
+        self.theme_inheritance = vec![theme_name.into()];
+
+        debug!("TITLEBAR THEME_PROVIDER: Theme updated successfully");
+    }
+
+    /// Get titlebar tokens for a specific color context
+    pub fn titlebar_tokens(
+        &self,
+        ctx: crate::tokens::ColorContext,
+    ) -> crate::tokens::TitleBarTokens {
+        use nucleotide_logging::debug;
+        debug!(
+            "TITLEBAR THEME_PROVIDER: Requested titlebar tokens for context {:?}",
+            ctx
+        );
+
+        debug!(
+            "TITLEBAR THEME_PROVIDER: Current theme surface color: {:?}, background: {:?}",
+            self.current_theme.tokens.colors.surface, self.current_theme.tokens.colors.background
+        );
+
+        let tokens = match ctx {
+            crate::tokens::ColorContext::OnSurface => {
+                crate::tokens::TitleBarTokens::on_surface(&self.current_theme.tokens)
+            }
+            crate::tokens::ColorContext::OnPrimary => {
+                crate::tokens::TitleBarTokens::on_primary(&self.current_theme.tokens)
+            }
+            crate::tokens::ColorContext::Floating => {
+                crate::tokens::TitleBarTokens::floating(&self.current_theme.tokens)
+            }
+            crate::tokens::ColorContext::Overlay => {
+                crate::tokens::TitleBarTokens::overlay(&self.current_theme.tokens)
+            }
+        };
+
+        debug!(
+            "TITLEBAR THEME_PROVIDER: Returning tokens - bg={:?}, fg={:?}, border={:?}",
+            tokens.background, tokens.foreground, tokens.border
+        );
+
+        tokens
     }
 }
 

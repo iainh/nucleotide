@@ -139,7 +139,7 @@ pub struct StyleContext<'a> {
     pub variant: &'a str,
     pub size: &'a str,
     pub is_dark_theme: bool,
-    pub color_context: ColorContext,
+    pub color_context: crate::tokens::ColorContext,
 }
 
 impl<'a> StyleContext<'a> {
@@ -152,7 +152,7 @@ impl<'a> StyleContext<'a> {
             variant,
             size,
             is_dark_theme: theme.is_dark(),
-            color_context: ColorContext::OnSurface, // Default context
+            color_context: crate::tokens::ColorContext::OnSurface, // Default context
         }
     }
 
@@ -162,7 +162,7 @@ impl<'a> StyleContext<'a> {
         state: StyleState,
         variant: &'a str,
         size: &'a str,
-        context: ColorContext,
+        context: crate::tokens::ColorContext,
     ) -> Self {
         Self {
             theme,
@@ -467,7 +467,7 @@ pub fn compute_contextual_style(
     state: StyleState,
     variant: &str,
     size: &str,
-    color_context: ColorContext,
+    color_context: crate::tokens::ColorContext,
 ) -> ComputedStyle {
     let context = StyleContext::with_context(theme, state, variant, size, color_context);
     context.compute_style()

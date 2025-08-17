@@ -2,6 +2,7 @@
 // ABOUTME: Replaces hardcoded values with systematic, theme-aware design tokens
 
 use gpui::{hsla, px, Hsla, Pixels};
+use nucleotide_logging::debug;
 
 /// Base color palette - raw color definitions
 #[derive(Debug, Clone, Copy)]
@@ -426,23 +427,23 @@ impl SemanticColors {
         colors.statusline_active = helix_colors.statusline;
         colors.statusline_inactive = helix_colors.statusline_inactive;
         colors.popup_background = helix_colors.popup;
-        
+
         // Buffer and tab system
         colors.bufferline_background = helix_colors.bufferline_background;
         colors.bufferline_active = helix_colors.bufferline_active;
         colors.bufferline_inactive = helix_colors.bufferline_inactive;
-        
+
         // Gutter and line number system
         colors.gutter_background = helix_colors.gutter_background;
         colors.gutter_selected = helix_colors.gutter_selected;
         colors.line_number = helix_colors.line_number;
         colors.line_number_active = helix_colors.line_number_active;
-        
+
         // Menu and popup system
         colors.menu_background = helix_colors.menu_background;
         colors.menu_selected = helix_colors.menu_selected;
         colors.menu_separator = helix_colors.menu_separator;
-        
+
         // Separator and focus system
         colors.separator_horizontal = helix_colors.separator;
         colors.separator_vertical = helix_colors.separator;
@@ -489,23 +490,23 @@ impl SemanticColors {
         colors.statusline_active = helix_colors.statusline;
         colors.statusline_inactive = helix_colors.statusline_inactive;
         colors.popup_background = helix_colors.popup;
-        
+
         // Buffer and tab system
         colors.bufferline_background = helix_colors.bufferline_background;
         colors.bufferline_active = helix_colors.bufferline_active;
         colors.bufferline_inactive = helix_colors.bufferline_inactive;
-        
+
         // Gutter and line number system
         colors.gutter_background = helix_colors.gutter_background;
         colors.gutter_selected = helix_colors.gutter_selected;
         colors.line_number = helix_colors.line_number;
         colors.line_number_active = helix_colors.line_number_active;
-        
+
         // Menu and popup system
         colors.menu_background = helix_colors.menu_background;
         colors.menu_selected = helix_colors.menu_selected;
         colors.menu_separator = helix_colors.menu_separator;
-        
+
         // Separator and focus system
         colors.separator_horizontal = helix_colors.separator;
         colors.separator_vertical = helix_colors.separator;
@@ -557,6 +558,9 @@ pub struct SizeTokens {
     pub text_md: Pixels,
     pub text_lg: Pixels,
     pub text_xl: Pixels,
+
+    // Component sizes
+    pub titlebar_height: Pixels,
 }
 
 impl SizeTokens {
@@ -592,6 +596,9 @@ impl SizeTokens {
             text_md: px(14.0),
             text_lg: px(16.0),
             text_xl: px(18.0),
+
+            // Component sizes
+            titlebar_height: px(34.0),
         }
     }
 }
@@ -687,6 +694,100 @@ pub mod utils {
             color1.l + (color2.l - color1.l) * ratio,
             color1.a + (color2.a - color1.a) * ratio,
         )
+    }
+}
+
+/// UI context for color selection
+#[derive(Debug, Clone, Copy)]
+pub enum ColorContext {
+    /// Element sits on a surface background
+    OnSurface,
+    /// Element sits on a primary color background
+    OnPrimary,
+    /// Floating element (modal, popup)
+    Floating,
+    /// Overlay element
+    Overlay,
+}
+
+/// Component-specific tokens for titlebar styling
+#[derive(Clone, Copy, Debug)]
+pub struct TitleBarTokens {
+    pub background: Hsla,
+    pub foreground: Hsla,
+    pub border: Hsla,
+    pub height: Pixels,
+}
+
+impl TitleBarTokens {
+    pub fn on_surface(dt: &DesignTokens) -> Self {
+        let bg = dt.colors.surface;
+        let fg = crate::styling::ColorTheory::best_text_color(bg, dt);
+        let border = crate::styling::ColorTheory::subtle_border_color(bg, dt);
+        let height = dt.sizes.titlebar_height;
+
+        debug!("TITLEBAR TOKENS: Creating on_surface tokens - bg={:?}, fg={:?}, border={:?}, height={:?}", 
+            bg, fg, border, height);
+
+        Self {
+            background: bg,
+            foreground: fg,
+            border,
+            height,
+        }
+    }
+
+    pub fn on_primary(dt: &DesignTokens) -> Self {
+        let bg = dt.colors.primary;
+        let fg = crate::styling::ColorTheory::best_text_color(bg, dt);
+        let border = crate::styling::ColorTheory::subtle_border_color(bg, dt);
+        let height = dt.sizes.titlebar_height;
+
+        debug!("TITLEBAR TOKENS: Creating on_primary tokens - bg={:?}, fg={:?}, border={:?}, height={:?}", 
+            bg, fg, border, height);
+
+        Self {
+            background: bg,
+            foreground: fg,
+            border,
+            height,
+        }
+    }
+
+    pub fn floating(dt: &DesignTokens) -> Self {
+        let bg = dt.colors.surface_elevated;
+        let fg = crate::styling::ColorTheory::best_text_color(bg, dt);
+        let border = crate::styling::ColorTheory::subtle_border_color(bg, dt);
+        let height = dt.sizes.titlebar_height;
+
+        debug!("TITLEBAR TOKENS: Creating floating tokens - bg={:?}, fg={:?}, border={:?}, height={:?}", 
+            bg, fg, border, height);
+
+        Self {
+            background: bg,
+            foreground: fg,
+            border,
+            height,
+        }
+    }
+
+    pub fn overlay(dt: &DesignTokens) -> Self {
+        let bg = dt.colors.surface_overlay;
+        let fg = crate::styling::ColorTheory::best_text_color(bg, dt);
+        let border = crate::styling::ColorTheory::subtle_border_color(bg, dt);
+        let height = dt.sizes.titlebar_height;
+
+        debug!(
+            "TITLEBAR TOKENS: Creating overlay tokens - bg={:?}, fg={:?}, border={:?}, height={:?}",
+            bg, fg, border, height
+        );
+
+        Self {
+            background: bg,
+            foreground: fg,
+            border,
+            height,
+        }
     }
 }
 

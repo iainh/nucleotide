@@ -292,7 +292,14 @@ impl Workspace {
 
             // Update nucleotide-ui theme global from theme manager
             let ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
-            *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme;
+            *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme.clone();
+
+            // Update theme provider with the new theme
+            nucleotide_ui::providers::update_provider_context(|context| {
+                // Create a new theme provider with the updated theme
+                let theme_provider = nucleotide_ui::providers::ThemeProvider::new(ui_theme);
+                context.register_global_provider(theme_provider);
+            });
         });
 
         // Clear caches and redraw
@@ -323,7 +330,14 @@ impl Workspace {
                 // Update global UI theme
                 let new_ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
                 cx.update_global(|ui_theme: &mut nucleotide_ui::Theme, _cx| {
-                    *ui_theme = new_ui_theme;
+                    *ui_theme = new_ui_theme.clone();
+                });
+
+                // Update theme provider with the new theme
+                nucleotide_ui::providers::update_provider_context(|context| {
+                    // Create a new theme provider with the updated theme
+                    let theme_provider = nucleotide_ui::providers::ThemeProvider::new(new_ui_theme);
+                    context.register_global_provider(theme_provider);
                 });
 
                 // Update window appearance if configured to follow theme
