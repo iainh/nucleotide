@@ -405,7 +405,7 @@ impl OverlayView {
             completion_background: ui_menu
                 .bg
                 .and_then(color_to_hsla)
-                .unwrap_or(tokens.colors.surface_elevated),
+                .unwrap_or(tokens.colors.menu_background),
         }
     }
 
@@ -426,7 +426,7 @@ impl OverlayView {
         let background = ui_popup
             .bg
             .and_then(color_to_hsla)
-            .unwrap_or(tokens.colors.surface_elevated);
+            .unwrap_or(tokens.colors.popup_background);
         let text = ui_text
             .fg
             .and_then(color_to_hsla)
