@@ -39,6 +39,18 @@ impl OverlayView {
             && self.completion_view.is_none()
     }
 
+    pub fn has_completion(&self) -> bool {
+        self.completion_view.is_some()
+    }
+
+    pub fn dismiss_completion(&mut self, cx: &mut Context<Self>) {
+        if self.completion_view.is_some() {
+            eprintln!("DEBUG: Dismissing completion view");
+            self.completion_view = None;
+            cx.notify();
+        }
+    }
+
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         // Clean up picker before clearing
         if let Some(picker) = &self.native_picker_view {
@@ -193,10 +205,12 @@ impl OverlayView {
                 cx.notify();
             }
             crate::Update::Completion(completion_view) => {
+                println!("COMP: OverlayView received completion view");
                 // Subscribe to dismiss events from the completion view
                 cx.subscribe(
                     completion_view,
                     |this, _completion_view, _event: &DismissEvent, cx| {
+                        println!("COMP: CompletionView dismissed");
                         this.completion_view = None;
                         // Emit dismiss event to notify workspace
                         cx.emit(DismissEvent);
@@ -206,6 +220,7 @@ impl OverlayView {
                 .detach();
 
                 self.completion_view = Some(completion_view.clone());
+                println!("COMP: OverlayView set completion_view and notifying");
                 cx.notify();
             }
             crate::Update::Picker(picker) => {
@@ -492,14 +507,14 @@ impl OverlayView {
 
 impl Focusable for OverlayView {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        // Delegate focus to the active native component
+        // Delegate focus to the active native component, but not completion views
+        // Completion views should not steal focus - let the editor maintain focus
         if let Some(picker_view) = &self.native_picker_view {
             picker_view.focus_handle(cx)
         } else if let Some(prompt_view) = &self.native_prompt_view {
             prompt_view.focus_handle(cx)
-        } else if let Some(completion_view) = &self.completion_view {
-            completion_view.focus_handle(cx)
         } else {
+            // Don't delegate to completion_view - let editor keep focus
             self.focus.clone()
         }
     }
@@ -566,8 +581,8 @@ impl Render for OverlayView {
         }
 
         if let Some(completion_view) = &self.completion_view {
-            // Completion view handles its own positioning
-            return completion_view.clone().into_any_element();
+            // Render completion view directly without cloning
+            return div().child(completion_view.clone()).into_any_element();
         }
 
         // Legacy prompt fallback

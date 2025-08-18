@@ -1062,7 +1062,9 @@ impl Workspace {
         match trigger {
             crate::types::CompletionTrigger::Manual => {
                 // Always show for manual triggers
+                println!("COMP: Manual completion trigger detected - calling trigger_completion");
                 self.trigger_completion(cx);
+                println!("COMP: trigger_completion called for manual trigger");
             }
             crate::types::CompletionTrigger::Character(_c) => {
                 // Disable automatic completion on character input to prevent blocking
@@ -2464,6 +2466,7 @@ impl Workspace {
     }
 
     fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
+        eprintln!("DEBUG: Workspace handle_key received: '{}'", ev.keystroke.key);
         // Wrap the entire key handling in a catch to prevent panics from propagating to FFI
         if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Check if the file tree has focus - if so, don't consume the event
@@ -2497,6 +2500,18 @@ impl Workspace {
                     self.info_hidden = true;
                     cx.notify();
                     return; // Don't pass escape to editor when dismissing info box
+                }
+
+                // Then check if we should dismiss the completion popup
+                let has_completion = self.overlay.read(cx).has_completion();
+                eprintln!("DEBUG: Escape - has_completion: {}", has_completion);
+                if has_completion {
+                    eprintln!("DEBUG: Escape pressed - dismissing completion popup");
+                    self.overlay.update(cx, |overlay, cx| {
+                        overlay.dismiss_completion(cx);
+                    });
+                    cx.notify();
+                    return; // Don't pass escape to editor when dismissing completion
                 }
             }
 
@@ -2591,10 +2606,12 @@ impl Workspace {
 
     /// Trigger completion UI based on current editor state
     fn trigger_completion(&mut self, cx: &mut Context<Self>) {
+        println!("COMP: trigger_completion called - creating completion view");
         // Create a completion view with sample items for now
         // In a full implementation, this would query the LSP for actual completions
         self.core.update(cx, |core, cx| {
             let items = core.create_sample_completion_items();
+            println!("COMP: Created {} sample completion items", items.len());
             // Create the completion view with a default anchor position
             let _anchor_position = gpui::Point::new(gpui::Pixels(100.0), gpui::Pixels(100.0));
 
@@ -2602,8 +2619,11 @@ impl Workspace {
             let completion_view = cx.new(|cx| {
                 let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
                 view.set_items(items, cx);
+                println!("COMP: Created completion view entity");
                 view
             });
+            
+            println!("COMP: Emitting completion update event");
 
             cx.emit(crate::Update::Completion(completion_view));
         });
@@ -3131,6 +3151,8 @@ impl Render for Workspace {
         // Completion trigger action
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::completion::TriggerCompletion, _window, cx| {
+                println!("COMP: TriggerCompletion action received - manual completion triggered");
+                
                 // Get current view and document IDs
                 let (doc_id, view_id) = {
                     let core = workspace.core.read(cx);
@@ -3141,6 +3163,7 @@ impl Render for Workspace {
                         .try_get(view_id)
                         .map(|view| view.doc)
                         .unwrap_or_default();
+                    println!("COMP: Manual completion: doc_id={:?}, view_id={:?}", doc_id, view_id);
                     (doc_id, view_id)
                 };
 

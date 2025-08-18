@@ -4,8 +4,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Task,
-    Window, div,
+    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, 
+    Styled, Task, Window, div, px,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -222,6 +222,7 @@ pub struct CompletionView {
 
 impl CompletionView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        println!("COMP: Creating new CompletionView");
         Self {
             all_items: Vec::new(),
             match_candidates: Vec::new(),
@@ -253,6 +254,7 @@ impl CompletionView {
 
     /// Set all completion items and prepare candidates for filtering
     pub fn set_items(&mut self, items: Vec<CompletionItem>, cx: &mut Context<Self>) {
+        println!("COMP: Setting {} items in CompletionView", items.len());
         // Calculate hash for cache invalidation
         let new_hash = self.calculate_items_hash(&items);
 
@@ -277,6 +279,7 @@ impl CompletionView {
             .collect();
 
         // Reset state
+        println!("COMP: Resetting completion state and making visible");
         self.filtered_entries.clear();
         self.selected_index = 0;
         self.initial_query = None;
@@ -287,11 +290,25 @@ impl CompletionView {
         self.cancel_current_filter();
         self.debouncer.reset();
 
+        // Initialize filtered_entries with all items when no filter is applied
+        if !self.all_items.is_empty() {
+            println!("COMP: Populating filtered_entries with {} items", self.all_items.len());
+            self.filtered_entries = self.all_items.iter().enumerate()
+                .map(|(index, _item)| StringMatch {
+                    candidate_id: index,
+                    score: 100,
+                    positions: Vec::new(),
+                })
+                .collect();
+            self.visible = true;
+            println!("COMP: Set visible=true with {} filtered_entries", self.filtered_entries.len());
+        } else {
+            self.visible = false;
+        }
+
         // Update performance monitor
         self.performance_monitor
             .update_memory_usage(self.all_items.len(), self.cache.size());
-
-        self.visible = !self.all_items.is_empty();
         cx.notify();
     }
 
@@ -903,54 +920,70 @@ impl Focusable for CompletionView {
 impl EventEmitter<DismissEvent> for CompletionView {}
 
 impl Render for CompletionView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.is_visible() {
             return div().id("completion-hidden");
         }
+        
+        // Access theme - if not available, return empty
+        let theme = match cx.try_global::<crate::Theme>() {
+            Some(theme) => theme,
+            None => return div().id("completion-no-theme"),
+        };
+        let tokens = &theme.tokens;
+        
+        // Create completion items directly without external functions
+        let completion_items: Vec<gpui::AnyElement> = self.filtered_entries.iter().enumerate()
+            .filter_map(|(index, string_match)| {
+                let item = self.all_items.get(string_match.candidate_id)?;
+                let is_selected = index == self.selected_index;
+                
+                let element = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .when(is_selected, |div| {
+                        div.bg(tokens.colors.selection_primary)
+                    })
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(tokens.colors.text_primary)
+                            .child(item.text.clone())
+                    );
+                
+                Some(element.into_any_element())
+            })
+            .collect();
 
-        // Access theme from global state and clone needed data
-        let theme = cx.global::<crate::Theme>().clone();
-        let tokens = theme.tokens.clone();
-        let show_documentation = self.show_documentation;
-        let documentation_panel = self.documentation_panel.clone();
+        // Simple container without key handling - let workspace handle escape
+        let container = div()
+            .id("completion-popup-v2");
 
-        let completion_list = render_completion_list(
-            &self.all_items,
-            &self.filtered_entries,
-            self.selected_index,
-            &self.list_state,
-            cx,
-            |_index, item, string_match, is_selected| {
-                CompletionItemElement::new(item.clone(), string_match.clone(), is_selected)
-            },
-        );
+        // Don't focus the completion view - let the editor keep focus
+        // We'll handle escape through the workspace level instead
 
-        // Main container with completion list and optional documentation panel
-        div()
-            .id("completion-popup-v2")
-            .key_context("CompletionView")
-            .track_focus(&self.focus_handle)
+        container
             .flex()
-            .flex_row()
             .child(
-                // Completion list container
                 div()
+                    .id("completion-list")
                     .flex()
                     .flex_col()
                     .min_w_64()
                     .max_w_96()
-                    .child(completion_list),
+                    .bg(tokens.colors.popup_background)
+                    .border_1()
+                    .border_color(tokens.colors.popup_border)
+                    .rounded_md()
+                    .shadow_lg()
+                    .max_h(px(300.0))
+                    .overflow_y_scroll()
+                    .children(completion_items)
             )
-            .when(show_documentation, |container| {
-                container.child(
-                    // Documentation panel
-                    div()
-                        .w_80()
-                        .border_l_1()
-                        .border_color(tokens.colors.border_muted)
-                        .child(documentation_panel),
-                )
-            })
     }
 }
 

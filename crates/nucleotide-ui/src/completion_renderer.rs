@@ -408,26 +408,62 @@ pub fn render_completion_list<F, T: 'static>(
 where
     F: Fn(usize, &CompletionItem, &StringMatch, bool) -> CompletionItemElement + 'static + Clone,
 {
-    let theme = cx.global::<crate::Theme>();
+    println!("COMP: render_completion_list called with {} items, {} matches", items.len(), matches.len());
+    
+    let theme = match cx.try_global::<crate::Theme>() {
+        Some(theme) => {
+            println!("COMP: render_completion_list got theme successfully");
+            theme
+        },
+        None => {
+            println!("COMP: render_completion_list - no theme found, returning empty div");
+            return div().id("completion-list-no-theme");
+        }
+    };
     let tokens = &theme.tokens;
 
+    println!("COMP: About to create rendered_items vector");
     // Create items vector with proper matching
     let rendered_items: Vec<AnyElement> = matches
         .iter()
         .enumerate()
         .filter_map(|(index, string_match)| {
-            // Find the corresponding completion item by ID
-            let item = items.iter().find(|item| {
-                let candidate = crate::completion_v2::StringMatchCandidate::from(*item);
-                candidate.id == string_match.candidate_id
-            })?;
+            println!("COMP: Processing match {} with candidate_id {}", index, string_match.candidate_id);
+            
+            // Use the candidate_id as the direct index into the items array
+            let item = items.get(string_match.candidate_id)?;
+            println!("COMP: Got item: {}", item.text);
 
-            let element = render_item(index, item, string_match, index == selected_index);
+            println!("COMP: About to create simple div for item: {}", item.text);
+            
+            // Create a simple div element instead of using CompletionItemElement for now
+            let element = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .w_full()
+                .px_2()
+                .py_1()
+                .gap_2()
+                .when(index == selected_index, |div| {
+                    div.bg(tokens.colors.selection_primary)
+                })
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(tokens.colors.text_primary)
+                        .child(item.text.clone())
+                );
+            
+            println!("COMP: Created simple div, converting to AnyElement");
             Some(element.into_any_element())
         })
         .collect();
+    
+    println!("COMP: Created {} rendered_items", rendered_items.len());
 
-    div()
+    println!("COMP: About to create final div container");
+    let result = div()
         .id("completion-list")
         .flex()
         .flex_col()
@@ -439,7 +475,10 @@ where
         .max_h(px(list_state.max_height))
         .min_h(px(list_state.item_height * 3.0))
         .overflow_y_scroll()
-        .children(rendered_items)
+        .children(rendered_items);
+    
+    println!("COMP: render_completion_list returning successfully");
+    result
 }
 
 #[cfg(test)]
