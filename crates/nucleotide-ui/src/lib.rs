@@ -17,7 +17,9 @@ pub mod completion_renderer;
 pub mod completion_v2;
 pub mod debouncer;
 pub mod file_icon;
+pub mod focus_indicator;
 pub mod fuzzy;
+pub mod global_input;
 pub mod info_box;
 pub mod key_hint_view;
 pub mod keyboard_navigation;
@@ -83,9 +85,19 @@ pub use completion_renderer::{
     render_completion_list,
 };
 pub use file_icon::FileIcon;
+pub use focus_indicator::{
+    FocusIndicator, focused_element, high_contrast_focus_ring, subtle_focus_ring,
+};
+pub use global_input::{
+    DismissTarget, FocusElement, FocusElementType, FocusGroup as GlobalFocusGroup, FocusGroupInfo,
+    FocusIndicatorConfig, FocusIndicatorStyle, FocusIndicatorStyles, FocusPriority,
+    FocusedElementInfo, GlobalInputDispatcher, InputContext,
+    NavigationDirection as GlobalNavigationDirection, NavigationOptions, ShortcutAction,
+    ShortcutDefinition, ShortcutInfo,
+};
 pub use keyboard_navigation::{
-    KeyboardNavigationHandler, ListVirtualization, NavigationAction, NavigationDirection,
-    NavigationResult,
+    KeyboardNavigationHandler, ListVirtualization, NavigationAction,
+    NavigationDirection as KeyboardNavigationDirection, NavigationResult,
 };
 pub use list_item::{
     ListItem, ListItemSpacing, ListItemState, ListItemVariant, SelectionMode, SelectionState,
@@ -114,9 +126,10 @@ pub use traits::{
     Tooltipped, Validatable, ValidationState, compute_component_state,
 };
 pub use utils::{
-    ExperimentalFeatures, FeatureFlags, FocusGroup, FocusManager, KeyboardShortcut, MemoryTracker,
-    PerfTimer, PerformanceFeatures, Profiler, ShortcutRegistry,
-    is_feature_enabled as is_utils_feature_enabled, is_named_feature_enabled,
+    ExperimentalFeatures, FeatureFlags, FocusGroup as UtilsFocusGroup, FocusManager,
+    KeyboardShortcut, MemoryTracker, PerfTimer, PerformanceFeatures, Profiler,
+    ShortcutRegistry as UtilsShortcutRegistry, is_feature_enabled as is_utils_feature_enabled,
+    is_named_feature_enabled,
 };
 pub use vcs_indicator::{VcsIndicator, VcsStatus};
 

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
 use gpui::FontFeatures;
 use gpui::prelude::FluentBuilder;
@@ -10,12 +11,15 @@ use gpui::{
 };
 use helix_core::Selection;
 use helix_view::ViewId;
+use helix_view::input::KeyEvent;
+use helix_view::keyboard::{KeyCode, KeyModifiers};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::{
-    Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant, compute_component_style,
+    Button, ButtonSize, ButtonVariant, GlobalInputDispatcher, StyleSize, StyleState, StyleVariant,
+    compute_component_style,
 };
 
 use crate::application::find_workspace_root_from;
@@ -54,6 +58,7 @@ pub struct Workspace {
     pending_appearance: Option<gpui::WindowAppearance>,
     tab_overflow_dropdown_open: bool,
     document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
+    global_input: GlobalInputDispatcher,         // Global input event dispatcher
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -102,6 +107,11 @@ impl Workspace {
             |workspace, _overlay, _event: &DismissEvent, cx| {
                 // Mark that we need to restore focus in the next render
                 workspace.needs_focus_restore = true;
+
+                // Check if completion was dismissed and manage context
+                let has_completion = workspace.overlay.read(cx).has_completion();
+                workspace.manage_completion_context(has_completion);
+
                 cx.notify();
             },
         )
@@ -151,6 +161,10 @@ impl Workspace {
             info!("Workspace: No file tree to subscribe to");
         }
 
+        // Initialize global input dispatcher
+        let mut global_input = GlobalInputDispatcher::new();
+        global_input.initialize(cx);
+
         let mut workspace = Self {
             core,
             input,
@@ -176,7 +190,18 @@ impl Workspace {
             pending_appearance: None,
             tab_overflow_dropdown_open: false,
             document_order: Vec::new(),
+            global_input,
         };
+
+        // Register focus groups for main UI areas
+        workspace.register_focus_groups(cx);
+
+        // Setup completion-specific shortcuts
+        workspace.setup_completion_shortcuts();
+
+        // Register action handlers for global input system
+        workspace.register_action_handlers(cx);
+
         // Initialize document views
         workspace.update_document_views(cx);
 
@@ -909,6 +934,10 @@ impl Workspace {
     fn handle_overlay_update(&mut self, cx: &mut Context<Self>) {
         // When a picker, prompt, or completion appears, auto-dismiss the info box
         self.info_hidden = true;
+
+        // Check if completion is now active and manage input contexts
+        let has_completion = self.overlay.read(cx).has_completion();
+        self.manage_completion_context(has_completion);
 
         // Focus will be handled by the overlay components
         cx.notify();
@@ -2470,6 +2499,34 @@ impl Workspace {
             "DEBUG: Workspace handle_key received: '{}'",
             ev.keystroke.key
         );
+
+        // First, try to handle the event through the global input system
+        use nucleotide_ui::providers::EventResult;
+        let global_result = self.global_input.handle_key_event(ev);
+
+        match global_result {
+            EventResult::HandledAndStop | EventResult::PreventDefault => {
+                // Event was fully handled by global input system, don't continue processing
+                eprintln!(
+                    "DEBUG: Event fully handled by global input system: {:?}",
+                    global_result
+                );
+                return;
+            }
+            EventResult::Handled => {
+                // Event was handled but should continue processing
+                eprintln!("DEBUG: Event partially handled by global input system, continuing");
+
+                // Handle any shortcuts that the global input system detected
+                self.handle_global_input_shortcuts(ev, cx);
+
+                // For some shortcuts like completion dismiss, we want both global handling AND normal processing
+            }
+            EventResult::NotHandled => {
+                // Event not handled by global input system, continue with normal processing
+            }
+        }
+
         // Wrap the entire key handling in a catch to prevent panics from propagating to FFI
         if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Check if the file tree has focus - if so, don't consume the event
@@ -2558,6 +2615,625 @@ impl Workspace {
         });
     }
 
+    /// Register focus groups for main UI areas
+    fn register_focus_groups(&mut self, cx: &mut Context<Self>) {
+        use nucleotide_ui::{FocusElement, FocusElementType, FocusPriority, GlobalFocusGroup};
+
+        // Register editor focus group
+        let editor_group = GlobalFocusGroup {
+            id: "editor".to_string(),
+            name: "Editor".to_string(),
+            priority: FocusPriority::High,
+            elements: vec![FocusElement {
+                id: "document_view".to_string(),
+                name: "Document View".to_string(),
+                focus_handle: Some(self.focus_handle.clone()),
+                tab_index: 1,
+                enabled: true,
+                element_type: FocusElementType::Editor,
+            }],
+            active_element: Some(0),
+            enabled: true,
+        };
+        self.global_input.register_focus_group(editor_group);
+
+        // Register file tree focus group if available
+        if let Some(ref file_tree) = self.file_tree {
+            let file_tree_group = GlobalFocusGroup {
+                id: "file_tree".to_string(),
+                name: "File Tree".to_string(),
+                priority: FocusPriority::Normal,
+                elements: vec![FocusElement {
+                    id: "file_tree_view".to_string(),
+                    name: "File Tree View".to_string(),
+                    focus_handle: Some(file_tree.focus_handle(cx)),
+                    tab_index: 0,
+                    enabled: true,
+                    element_type: FocusElementType::FileTree,
+                }],
+                active_element: Some(0),
+                enabled: true,
+            };
+            self.global_input.register_focus_group(file_tree_group);
+        }
+
+        // Register overlay focus group
+        let overlay_group = GlobalFocusGroup {
+            id: "overlays".to_string(),
+            name: "Overlays".to_string(),
+            priority: FocusPriority::Critical,
+            elements: vec![FocusElement {
+                id: "overlay_view".to_string(),
+                name: "Overlay View".to_string(),
+                focus_handle: Some(self.overlay.focus_handle(cx)),
+                tab_index: 2,
+                enabled: true,
+                element_type: FocusElementType::Picker,
+            }],
+            active_element: Some(0),
+            enabled: true,
+        };
+        self.global_input.register_focus_group(overlay_group);
+
+        nucleotide_logging::info!("Registered focus groups for main UI areas");
+    }
+
+    /// Setup completion-specific shortcuts and input contexts
+    fn setup_completion_shortcuts(&mut self) {
+        use nucleotide_ui::providers::EventPriority;
+        use nucleotide_ui::{
+            DismissTarget, GlobalNavigationDirection, ShortcutAction, ShortcutDefinition,
+        };
+
+        // Register Escape key to dismiss completion with high priority
+        let escape_shortcut = ShortcutDefinition {
+            key_combination: "escape".to_string(),
+            action: ShortcutAction::Dismiss(DismissTarget::Completion),
+            description: "Dismiss completion popup".to_string(),
+            context: Some("completion".to_string()),
+            priority: EventPriority::Critical,
+            enabled: true,
+        };
+        self.global_input.register_shortcut(escape_shortcut);
+
+        // Register Ctrl+Space to trigger completion
+        let trigger_completion_shortcut = ShortcutDefinition {
+            key_combination: "ctrl-space".to_string(),
+            action: ShortcutAction::Action("trigger_completion".to_string()),
+            description: "Trigger completion".to_string(),
+            context: Some("editor".to_string()),
+            priority: EventPriority::High,
+            enabled: true,
+        };
+        self.global_input
+            .register_shortcut(trigger_completion_shortcut);
+
+        // Register Tab for completion navigation
+        let tab_shortcut = ShortcutDefinition {
+            key_combination: "tab".to_string(),
+            action: ShortcutAction::Navigate(GlobalNavigationDirection::Next),
+            description: "Navigate to next completion item".to_string(),
+            context: Some("completion".to_string()),
+            priority: EventPriority::High,
+            enabled: true,
+        };
+        self.global_input.register_shortcut(tab_shortcut);
+
+        // Register Shift+Tab for reverse completion navigation
+        let shift_tab_shortcut = ShortcutDefinition {
+            key_combination: "shift-tab".to_string(),
+            action: ShortcutAction::Navigate(GlobalNavigationDirection::Previous),
+            description: "Navigate to previous completion item".to_string(),
+            context: Some("completion".to_string()),
+            priority: EventPriority::High,
+            enabled: true,
+        };
+        self.global_input.register_shortcut(shift_tab_shortcut);
+
+        // Register additional keyboard navigation shortcuts
+        self.setup_additional_navigation_shortcuts();
+
+        // Register dismiss handler for completion
+        // Note: The actual dismissal is handled by the global input system returning HandledAndStop
+        // which prevents the key from reaching the normal escape handling logic
+        self.global_input.register_dismiss_handler(
+            nucleotide_ui::DismissTarget::Completion,
+            move || {
+                eprintln!("DEBUG: Global input dispatcher handling completion dismiss signal");
+                // This signals that the dismiss action was triggered by global input
+                // The actual dismissal happens in the normal key handling flow
+            },
+        );
+
+        nucleotide_logging::info!("Setup completion-specific shortcuts");
+    }
+
+    /// Manage completion input context based on completion state
+    fn manage_completion_context(&mut self, has_completion: bool) {
+        // Check current context stack to see if completion context is active
+        let completion_context_active = self.global_input.is_context_active("completion");
+
+        match (has_completion, completion_context_active) {
+            (true, false) => {
+                // Completion appeared, push completion context
+                self.global_input.push_context("completion");
+                nucleotide_logging::debug!("Pushed completion context");
+            }
+            (false, true) => {
+                // Completion disappeared, pop completion context
+                if let Some(popped) = self.global_input.pop_context() {
+                    nucleotide_logging::debug!(context = popped, "Popped completion context");
+                }
+            }
+            _ => {
+                // No context change needed
+            }
+        }
+    }
+
+    /// Manage file tree input context based on focus state
+    fn manage_file_tree_context(&mut self, has_file_tree_focus: bool) {
+        let file_tree_context_active = self.global_input.is_context_active("file_tree");
+
+        match (has_file_tree_focus, file_tree_context_active) {
+            (true, false) => {
+                // File tree gained focus, push file tree context
+                self.global_input.push_context("file_tree");
+                nucleotide_logging::debug!("Pushed file_tree context");
+            }
+            (false, true) => {
+                // File tree lost focus, pop file tree context
+                if let Some(popped) = self.global_input.pop_context() {
+                    nucleotide_logging::debug!(context = popped, "Popped file_tree context");
+                }
+            }
+            _ => {
+                // No context change needed
+            }
+        }
+    }
+
+    /// Setup additional keyboard navigation shortcuts for comprehensive app navigation
+    fn setup_additional_navigation_shortcuts(&mut self) {
+        use nucleotide_ui::providers::EventPriority;
+        use nucleotide_ui::{
+            DismissTarget, GlobalNavigationDirection, ShortcutAction, ShortcutDefinition,
+        };
+
+        // Global shortcuts that work in any context
+        let global_shortcuts = vec![
+            // File tree management
+            ShortcutDefinition {
+                key_combination: "ctrl-b".to_string(),
+                action: ShortcutAction::Action("toggle_file_tree".to_string()),
+                description: "Toggle file tree visibility".to_string(),
+                context: None,
+                priority: EventPriority::Normal,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "ctrl-shift-e".to_string(),
+                action: ShortcutAction::Focus("file_tree".to_string()),
+                description: "Focus file tree".to_string(),
+                context: None,
+                priority: EventPriority::Normal,
+                enabled: true,
+            },
+            // Focus management shortcuts
+            ShortcutDefinition {
+                key_combination: "ctrl-1".to_string(),
+                action: ShortcutAction::Focus("editor".to_string()),
+                description: "Focus main editor".to_string(),
+                context: None,
+                priority: EventPriority::Normal,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "ctrl-2".to_string(),
+                action: ShortcutAction::Focus("file_tree".to_string()),
+                description: "Focus file tree".to_string(),
+                context: None,
+                priority: EventPriority::Normal,
+                enabled: true,
+            },
+            // Panel navigation
+            ShortcutDefinition {
+                key_combination: "alt-left".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::Left),
+                description: "Navigate to left panel".to_string(),
+                context: None,
+                priority: EventPriority::Normal,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "alt-right".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::Right),
+                description: "Navigate to right panel".to_string(),
+                context: None,
+                priority: EventPriority::Normal,
+                enabled: true,
+            },
+            // Quick actions
+            ShortcutDefinition {
+                key_combination: "ctrl-p".to_string(),
+                action: ShortcutAction::Action("open_file_picker".to_string()),
+                description: "Open file picker".to_string(),
+                context: None,
+                priority: EventPriority::High,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "ctrl-shift-p".to_string(),
+                action: ShortcutAction::Action("open_command_palette".to_string()),
+                description: "Open command palette".to_string(),
+                context: None,
+                priority: EventPriority::High,
+                enabled: true,
+            },
+            // Window management
+            ShortcutDefinition {
+                key_combination: "ctrl-w".to_string(),
+                action: ShortcutAction::Action("close_active_document".to_string()),
+                description: "Close active document".to_string(),
+                context: Some("editor".to_string()),
+                priority: EventPriority::High,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "ctrl-shift-w".to_string(),
+                action: ShortcutAction::Action("close_all_documents".to_string()),
+                description: "Close all documents".to_string(),
+                context: None,
+                priority: EventPriority::Normal,
+                enabled: true,
+            },
+            // Search and navigation
+            ShortcutDefinition {
+                key_combination: "ctrl-f".to_string(),
+                action: ShortcutAction::Action("start_search".to_string()),
+                description: "Start search".to_string(),
+                context: Some("editor".to_string()),
+                priority: EventPriority::High,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "ctrl-shift-f".to_string(),
+                action: ShortcutAction::Action("global_search".to_string()),
+                description: "Global search in files".to_string(),
+                context: None,
+                priority: EventPriority::High,
+                enabled: true,
+            },
+        ];
+
+        // File tree specific shortcuts
+        let file_tree_shortcuts = vec![
+            // Navigate within file tree
+            ShortcutDefinition {
+                key_combination: "up".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::Up),
+                description: "Move up in file tree".to_string(),
+                context: Some("file_tree".to_string()),
+                priority: EventPriority::High,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "down".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::Down),
+                description: "Move down in file tree".to_string(),
+                context: Some("file_tree".to_string()),
+                priority: EventPriority::High,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "left".to_string(),
+                action: ShortcutAction::Action("collapse_file_tree_node".to_string()),
+                description: "Collapse file tree node".to_string(),
+                context: Some("file_tree".to_string()),
+                priority: EventPriority::High,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "right".to_string(),
+                action: ShortcutAction::Action("expand_file_tree_node".to_string()),
+                description: "Expand file tree node".to_string(),
+                context: Some("file_tree".to_string()),
+                priority: EventPriority::High,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "enter".to_string(),
+                action: ShortcutAction::Action("open_selected_file".to_string()),
+                description: "Open selected file".to_string(),
+                context: Some("file_tree".to_string()),
+                priority: EventPriority::High,
+                enabled: true,
+            },
+            // Return to editor from file tree
+            ShortcutDefinition {
+                key_combination: "escape".to_string(),
+                action: ShortcutAction::Focus("editor".to_string()),
+                description: "Return focus to editor".to_string(),
+                context: Some("file_tree".to_string()),
+                priority: EventPriority::High,
+                enabled: true,
+            },
+        ];
+
+        // Completion specific shortcuts (beyond the basic ones already registered)
+        let completion_shortcuts = vec![
+            ShortcutDefinition {
+                key_combination: "up".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::Up),
+                description: "Move up in completion list".to_string(),
+                context: Some("completion".to_string()),
+                priority: EventPriority::Critical,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "down".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::Down),
+                description: "Move down in completion list".to_string(),
+                context: Some("completion".to_string()),
+                priority: EventPriority::Critical,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "enter".to_string(),
+                action: ShortcutAction::Action("accept_completion".to_string()),
+                description: "Accept selected completion".to_string(),
+                context: Some("completion".to_string()),
+                priority: EventPriority::Critical,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "page-up".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::First),
+                description: "Move to first completion item".to_string(),
+                context: Some("completion".to_string()),
+                priority: EventPriority::High,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "page-down".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::Last),
+                description: "Move to last completion item".to_string(),
+                context: Some("completion".to_string()),
+                priority: EventPriority::High,
+                enabled: true,
+            },
+        ];
+
+        // Register all shortcuts
+        for shortcut in global_shortcuts
+            .into_iter()
+            .chain(file_tree_shortcuts.into_iter())
+            .chain(completion_shortcuts.into_iter())
+        {
+            self.global_input.register_shortcut(shortcut);
+        }
+
+        // Register action handlers
+        self.setup_action_handlers();
+
+        nucleotide_logging::info!("Setup additional navigation shortcuts");
+    }
+
+    /// Setup action handlers for keyboard shortcuts
+    fn setup_action_handlers(&mut self) {
+        nucleotide_logging::info!("Setup comprehensive action handlers for keyboard navigation");
+        // Note: Action handlers are now implemented as workspace methods
+        // The global input system will call these methods via the action execution system
+    }
+
+    /// Register action handlers with the global input system
+    fn register_action_handlers(&mut self, cx: &mut Context<Self>) {
+        nucleotide_logging::info!("Registering action handlers with global input system");
+
+        // Get weak references to avoid circular dependencies
+        let workspace_handle = cx.entity().downgrade();
+
+        // For now, register simple logging handlers - the real functionality will be
+        // implemented via proper GPUI actions below
+        self.global_input
+            .register_action_handler("focus_editor".to_string(), || {
+                nucleotide_logging::debug!("Global input action: focus_editor")
+            });
+
+        self.global_input
+            .register_action_handler("focus_file_tree".to_string(), || {
+                nucleotide_logging::debug!("Global input action: focus_file_tree")
+            });
+
+        self.global_input
+            .register_action_handler("toggle_file_tree".to_string(), || {
+                nucleotide_logging::debug!("Global input action: toggle_file_tree")
+            });
+
+        self.global_input
+            .register_action_handler("trigger_completion".to_string(), || {
+                nucleotide_logging::debug!("Global input action: trigger_completion")
+            });
+
+        self.global_input
+            .register_action_handler("open_file_picker".to_string(), || {
+                nucleotide_logging::debug!("Global input action: open_file_picker")
+            });
+
+        self.global_input
+            .register_action_handler("open_command_palette".to_string(), || {
+                nucleotide_logging::debug!("Global input action: open_command_palette")
+            });
+
+        nucleotide_logging::info!("Successfully registered all action handlers");
+    }
+
+    /// Handle keyboard shortcuts detected by the global input system
+    fn handle_global_input_shortcuts(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let modifiers = &event.keystroke.modifiers;
+        let key = &event.keystroke.key;
+
+        // Check for Ctrl+B (toggle file tree)
+        if key == "b" && modifiers.control {
+            nucleotide_logging::debug!("Handling ToggleFileTree shortcut");
+            self.show_file_tree = !self.show_file_tree;
+            cx.notify();
+            return;
+        }
+
+        // For focus management shortcuts, we need window context,
+        // so we'll handle them in the regular key processing flow instead.
+        // This method handles shortcuts that don't require window access.
+    }
+
+    // === Action Handler Implementations ===
+
+    /// Focus the main editor area
+    pub fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        nucleotide_logging::debug!("Focusing editor area");
+
+        // Find the currently active document view and focus it
+        if let Some(view_id) = self.focused_view_id {
+            if let Some(doc_view) = self.documents.get(&view_id) {
+                let doc_focus = doc_view.focus_handle(cx);
+                window.focus(&doc_focus);
+                nucleotide_logging::debug!(view_id = ?view_id, "Focused active document view");
+                return;
+            }
+        }
+
+        // If no specific document, focus the main workspace
+        window.focus(&self.focus_handle);
+        nucleotide_logging::debug!("Focused main workspace");
+    }
+
+    /// Focus the file tree if it exists and is visible
+    pub fn focus_file_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        nucleotide_logging::debug!("Focusing file tree");
+
+        if let Some(file_tree) = &self.file_tree {
+            if self.show_file_tree {
+                let file_tree_focus = file_tree.focus_handle(cx);
+                window.focus(&file_tree_focus);
+                nucleotide_logging::debug!("Focused file tree");
+                return;
+            }
+        }
+
+        nucleotide_logging::warn!(
+            "File tree not available or not visible, focusing editor instead"
+        );
+        self.focus_editor(window, cx);
+    }
+
+    /// Toggle file tree visibility
+    pub fn toggle_file_tree_visibility(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_file_tree = !self.show_file_tree;
+        nucleotide_logging::debug!(
+            visible = self.show_file_tree,
+            "Toggled file tree visibility"
+        );
+
+        if self.show_file_tree {
+            // If we're showing the file tree, focus it
+            self.focus_file_tree(window, cx);
+        } else {
+            // If we're hiding the file tree, focus the editor
+            self.focus_editor(window, cx);
+        }
+
+        cx.notify(); // Trigger re-render
+    }
+
+    /// Trigger completion in the active editor
+    pub fn trigger_completion(&mut self, cx: &mut Context<Self>) {
+        nucleotide_logging::debug!("Triggering completion in active editor");
+
+        // Send Ctrl+Space to the Helix core to trigger completion
+        let key_event = KeyEvent {
+            code: KeyCode::Char(' '),
+            modifiers: KeyModifiers::CONTROL,
+        };
+
+        self.input.update(cx, |_, cx| {
+            cx.emit(crate::InputEvent::Key(key_event));
+        });
+        nucleotide_logging::debug!("Sent Ctrl+Space to Helix core for completion");
+    }
+
+    /// Accept the current completion selection
+    pub fn accept_completion(&mut self, cx: &mut Context<Self>) {
+        nucleotide_logging::debug!("Accepting current completion selection");
+
+        // Send Enter to accept completion
+        let key_event = KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::empty(),
+        };
+
+        self.input.update(cx, |_, cx| {
+            cx.emit(crate::InputEvent::Key(key_event));
+        });
+        nucleotide_logging::debug!("Sent Enter to accept completion");
+    }
+
+    /// Open file picker
+    pub fn open_file_picker(&mut self, cx: &mut Context<Self>) {
+        nucleotide_logging::debug!("Opening file picker");
+
+        // Send the space+f shortcut to open file picker (common Helix shortcut)
+        let key_event = KeyEvent {
+            code: KeyCode::Char('f'),
+            modifiers: KeyModifiers::empty(),
+        };
+
+        self.input.update(cx, |_, cx| {
+            cx.emit(crate::InputEvent::Key(key_event));
+        });
+        nucleotide_logging::debug!("Sent 'f' key to open file picker");
+    }
+
+    /// Open command palette  
+    pub fn open_command_palette(&mut self, cx: &mut Context<Self>) {
+        nucleotide_logging::debug!("Opening command palette");
+
+        // Send ':' to enter command mode (command palette)
+        let key_event = KeyEvent {
+            code: KeyCode::Char(':'),
+            modifiers: KeyModifiers::empty(),
+        };
+
+        self.input.update(cx, |_, cx| {
+            cx.emit(crate::InputEvent::Key(key_event));
+        });
+        nucleotide_logging::debug!("Opened command mode (command palette)");
+    }
+
+    /// Start local search in current document
+    pub fn start_search(&mut self, cx: &mut Context<Self>) {
+        nucleotide_logging::debug!("Starting local search");
+
+        // Send '/' to start search mode
+        let key_event = KeyEvent {
+            code: KeyCode::Char('/'),
+            modifiers: KeyModifiers::empty(),
+        };
+
+        self.input.update(cx, |_, cx| {
+            cx.emit(crate::InputEvent::Key(key_event));
+        });
+        nucleotide_logging::debug!("Started search mode");
+    }
+
+    /// Start global search across files
+    pub fn start_global_search(&mut self, cx: &mut Context<Self>) {
+        nucleotide_logging::debug!("Starting global search");
+
+        // For now, this is the same as local search
+        // In a full implementation, this would open a global search interface
+        self.start_search(cx);
+    }
+
     fn update_document_views(&mut self, cx: &mut Context<Self>) {
         let mut view_ids = HashSet::new();
         let mut right_borders = HashSet::new();
@@ -2608,29 +3284,6 @@ impl Workspace {
     }
 
     /// Trigger completion UI based on current editor state
-    fn trigger_completion(&mut self, cx: &mut Context<Self>) {
-        println!("COMP: trigger_completion called - creating completion view");
-        // Create a completion view with sample items for now
-        // In a full implementation, this would query the LSP for actual completions
-        self.core.update(cx, |core, cx| {
-            let items = core.create_sample_completion_items();
-            println!("COMP: Created {} sample completion items", items.len());
-            // Create the completion view with a default anchor position
-            let _anchor_position = gpui::Point::new(gpui::Pixels(100.0), gpui::Pixels(100.0));
-
-            // Create completion view as an entity
-            let completion_view = cx.new(|cx| {
-                let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
-                view.set_items(items, cx);
-                println!("COMP: Created completion view entity");
-                view
-            });
-
-            println!("COMP: Emitting completion update event");
-
-            cx.emit(crate::Update::Completion(completion_view));
-        });
-    }
 
     /// Send a key directly to Helix, ensuring the editor has focus
     fn send_helix_key(&mut self, key: &str, cx: &mut Context<Self>) {
