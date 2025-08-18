@@ -656,7 +656,12 @@ impl RuntimeThemeSwitcher {
                 Ok(())
             }
             StorageBackend::Environment => {
-                std::env::set_var(&self.config.storage_key, theme_name);
+                // SAFETY: Setting environment variables in a multi-threaded context can lead to 
+                // undefined behavior. This is acceptable here as theme switching is rare and
+                // the environment variable is only used for theme persistence.
+                unsafe {
+                    std::env::set_var(&self.config.storage_key, theme_name);
+                }
                 Ok(())
             }
             StorageBackend::Memory => {

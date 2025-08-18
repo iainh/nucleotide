@@ -46,7 +46,7 @@ impl<S: EditorState> DocumentRenderer<S> {
     }
 
     /// Render a single line
-    fn render_line(&self, line_number: usize, content: &str) -> impl IntoElement {
+    fn render_line(&self, line_number: usize, content: &str) -> impl IntoElement + use<S> {
         div()
             .flex()
             .flex_row()

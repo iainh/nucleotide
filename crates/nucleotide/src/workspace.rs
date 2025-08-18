@@ -465,7 +465,7 @@ impl Workspace {
             let window_title: id = msg_send![window, title];
             let title_str = if window_title != nil {
                 let cstr: *const i8 = msg_send![window_title, UTF8String];
-                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
+                unsafe { std::ffi::CStr::from_ptr(cstr) }.to_str().unwrap_or("unknown")
             } else {
                 "nil"
             };
@@ -565,8 +565,9 @@ impl Workspace {
             match system_appearance {
                 SystemAppearance::Dark => {
                     // Set to dark appearance explicitly
-                    let dark_appearance_name =
-                        NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua");
+                    let dark_appearance_name = unsafe {
+                        NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua")
+                    };
                     let dark_appearance: id =
                         msg_send![class!(NSAppearance), appearanceNamed: dark_appearance_name];
                     let _: () = msg_send![window, setAppearance: dark_appearance];
@@ -574,8 +575,9 @@ impl Workspace {
                 }
                 SystemAppearance::Light => {
                     // Set to light appearance explicitly
-                    let light_appearance_name =
-                        NSString::alloc(nil).init_str("NSAppearanceNameAqua");
+                    let light_appearance_name = unsafe {
+                        NSString::alloc(nil).init_str("NSAppearanceNameAqua")
+                    };
                     let light_appearance: id =
                         msg_send![class!(NSAppearance), appearanceNamed: light_appearance_name];
                     let _: () = msg_send![window, setAppearance: light_appearance];
@@ -593,7 +595,7 @@ impl Workspace {
 
             let appearance_name_str = if new_appearance_name != nil {
                 let cstr: *const i8 = msg_send![new_appearance_name, UTF8String];
-                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
+                unsafe { std::ffi::CStr::from_ptr(cstr) }.to_str().unwrap_or("unknown")
             } else {
                 "nil"
             };
@@ -615,7 +617,7 @@ impl Workspace {
 
             let effective_name_str = if effective_appearance_name != nil {
                 let cstr: *const i8 = msg_send![effective_appearance_name, UTF8String];
-                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
+                unsafe { std::ffi::CStr::from_ptr(cstr) }.to_str().unwrap_or("unknown")
             } else {
                 "nil"
             };
@@ -712,7 +714,7 @@ impl Workspace {
             let window_title: id = msg_send![window, title];
             let title_str = if window_title != nil {
                 let cstr: *const i8 = msg_send![window_title, UTF8String];
-                std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
+                unsafe { std::ffi::CStr::from_ptr(cstr) }.to_str().unwrap_or("unknown")
             } else {
                 "nil"
             };
@@ -755,8 +757,9 @@ impl Workspace {
         let window = target_window;
         match system_appearance {
             SystemAppearance::Dark => {
-                let dark_appearance_name =
-                    NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua");
+                let dark_appearance_name = unsafe {
+                    NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua")
+                };
                 let dark_appearance: id =
                     msg_send![class!(NSAppearance), appearanceNamed: dark_appearance_name];
                 let _: () = msg_send![window, setAppearance: dark_appearance];
@@ -766,7 +769,9 @@ impl Workspace {
                 );
             }
             SystemAppearance::Light => {
-                let light_appearance_name = NSString::alloc(nil).init_str("NSAppearanceNameAqua");
+                let light_appearance_name = unsafe {
+                    NSString::alloc(nil).init_str("NSAppearanceNameAqua")
+                };
                 let light_appearance: id =
                     msg_send![class!(NSAppearance), appearanceNamed: light_appearance_name];
                 let _: () = msg_send![window, setAppearance: light_appearance];

@@ -1018,7 +1018,7 @@ impl FileTreeView {
     }
 
     /// Render a single file tree entry using enhanced ListItem component with wrapped GPUI div
-    fn render_entry(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_entry(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_selected = self.selected_path.as_ref() == Some(&entry.path);
 
         // Use provider hooks to get theme and animation preferences

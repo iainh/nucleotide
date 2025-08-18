@@ -15,7 +15,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 authors = ["The Nucleotide Contributors"]
-edition = "2021"
+edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/spiralpoint/nucleotide"
 homepage = "https://github.com/spiralpoint/nucleotide"

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+rust-version = "1.88"
 
 [dependencies]
 nucleotide-types = { workspace = true, features = ["gpui-bridge"] }

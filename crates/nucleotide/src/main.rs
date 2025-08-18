@@ -122,7 +122,11 @@ fn _early_runtime_init() {
 
     if needs_override {
         if let Some(rt) = nucleotide::utils::detect_bundle_runtime() {
-            std::env::set_var("HELIX_RUNTIME", &rt);
+            // SAFETY: Setting HELIX_RUNTIME environment variable during startup
+            // before any threads are spawned is safe.
+            unsafe {
+                std::env::set_var("HELIX_RUNTIME", &rt);
+            }
         }
     }
 }
@@ -133,7 +137,11 @@ fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
     if std::env::var("HELIX_RUNTIME").is_err() {
         if let Some(rt) = nucleotide::utils::detect_bundle_runtime() {
-            std::env::set_var("HELIX_RUNTIME", &rt);
+            // SAFETY: Setting HELIX_RUNTIME environment variable during startup
+            // before any threads are spawned is safe.
+            unsafe {
+                std::env::set_var("HELIX_RUNTIME", &rt);
+            }
         }
     }
 
