@@ -4089,31 +4089,38 @@ impl Render for Workspace {
         // Completion trigger action
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::completion::TriggerCompletion, _window, cx| {
-                println!("COMP: TriggerCompletion action received - manual completion triggered");
+                // Check if we're in insert mode - completion should only work in insert mode
+                let core = workspace.core.read(cx);
+                let current_mode = core.editor.mode();
 
-                // Get current view and document IDs
-                let (doc_id, view_id) = {
-                    let core = workspace.core.read(cx);
-                    let view_id = core.editor.tree.focus;
-                    let doc_id = core
-                        .editor
-                        .tree
-                        .try_get(view_id)
-                        .map(|view| view.doc)
-                        .unwrap_or_default();
-                    println!(
-                        "COMP: Manual completion: doc_id={:?}, view_id={:?}",
-                        doc_id, view_id
-                    );
-                    (doc_id, view_id)
-                };
+                match current_mode {
+                    helix_view::document::Mode::Insert => {
+                        // Get current view and document IDs
+                        let (doc_id, view_id) = {
+                            let view_id = core.editor.tree.focus;
+                            let doc_id = core
+                                .editor
+                                .tree
+                                .try_get(view_id)
+                                .map(|view| view.doc)
+                                .unwrap_or_default();
+                            (doc_id, view_id)
+                        };
 
-                workspace.handle_completion_requested(
-                    doc_id,
-                    view_id,
-                    &crate::types::CompletionTrigger::Manual,
-                    cx,
-                );
+                        // Release the core read lock before calling handle_completion_requested
+                        drop(core);
+
+                        workspace.handle_completion_requested(
+                            doc_id,
+                            view_id,
+                            &crate::types::CompletionTrigger::Manual,
+                            cx,
+                        );
+                    }
+                    _ => {
+                        // Do nothing - completion is only available in insert mode
+                    }
+                }
             },
         ));
 
