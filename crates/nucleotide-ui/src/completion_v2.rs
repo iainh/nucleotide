@@ -10,6 +10,9 @@ use gpui::{
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::completion_cache::{CacheKey, CompletionCache};
+use crate::completion_perf::{PerformanceMonitor, PerformanceTimer};
+use crate::debouncer::{CompletionDebouncer, create_completion_debouncer};
 use crate::fuzzy::{FuzzyConfig, match_strings};
 
 /// Candidate for fuzzy matching - lightweight representation of completion items
@@ -150,7 +153,7 @@ impl CompletionItem {
 }
 
 /// Position tracking for query optimization
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Position {
     pub line: usize,
     pub column: usize,
@@ -187,6 +190,12 @@ pub struct CompletionView {
     sort_completions: bool,
     max_items: usize,
 
+    // Performance Optimization
+    cache: CompletionCache,
+    debouncer: CompletionDebouncer,
+    items_hash: u64,
+    performance_monitor: PerformanceMonitor,
+
     // GPUI Requirements
     focus_handle: FocusHandle,
 }
@@ -207,13 +216,31 @@ impl CompletionView {
             show_documentation: true,
             sort_completions: true,
             max_items: 50,
+            cache: CompletionCache::new(),
+            debouncer: create_completion_debouncer(),
+            items_hash: 0,
+            performance_monitor: PerformanceMonitor::new(),
             focus_handle: cx.focus_handle(),
         }
     }
 
     /// Set all completion items and prepare candidates for filtering
     pub fn set_items(&mut self, items: Vec<CompletionItem>, cx: &mut Context<Self>) {
+        // Calculate hash for cache invalidation
+        let new_hash = self.calculate_items_hash(&items);
+
+        // If items haven't changed, no need to update
+        if new_hash == self.items_hash && !self.all_items.is_empty() {
+            return;
+        }
+
+        // Invalidate cache for old items
+        if self.items_hash != 0 {
+            self.cache.invalidate_items(self.items_hash);
+        }
+
         self.all_items = items;
+        self.items_hash = new_hash;
 
         // Prepare match candidates
         self.match_candidates = self
@@ -229,11 +256,34 @@ impl CompletionView {
         self.initial_position = None;
         self.current_query = None;
 
-        // Cancel any ongoing filtering
+        // Cancel any ongoing filtering and reset debouncer
         self.cancel_current_filter();
+        self.debouncer.reset();
+
+        // Update performance monitor
+        self.performance_monitor
+            .update_memory_usage(self.all_items.len(), self.cache.size());
 
         self.visible = !self.all_items.is_empty();
         cx.notify();
+    }
+
+    /// Calculate a hash for the completion items to detect changes
+    fn calculate_items_hash(&self, items: &[CompletionItem]) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        for item in items {
+            item.text.hash(&mut hasher);
+            if let Some(ref desc) = item.description {
+                desc.hash(&mut hasher);
+            }
+            if let Some(ref display) = item.display_text {
+                display.hash(&mut hasher);
+            }
+        }
+        hasher.finish()
     }
 
     /// Check if a new query is just an extension of the previous one
@@ -270,14 +320,42 @@ impl CompletionView {
         self.cancel_flag = Arc::new(AtomicBool::new(false));
     }
 
-    /// Start async filtering with the given query
+    /// Start async filtering with the given query (with debouncing)
     pub fn filter_async(
         &mut self,
         query: String,
         position: Option<Position>,
         cx: &mut Context<Self>,
     ) {
-        // Check if we need to refilter
+        // For now, just do immediate filtering
+        // TODO: Implement proper debouncing with weak entity references
+        self.filter_immediate(query, position, cx);
+    }
+
+    /// Immediate filtering without debouncing (for internal use)
+    fn filter_immediate(
+        &mut self,
+        query: String,
+        position: Option<Position>,
+        cx: &mut Context<Self>,
+    ) {
+        let timer = PerformanceTimer::start("filter_immediate");
+
+        // Check cache first
+        let cache_key = CacheKey::new(query.clone(), position.clone(), self.items_hash);
+        if let Some(cached_results) = self.cache.get(&cache_key) {
+            let (_, duration) = timer.stop();
+            self.performance_monitor
+                .record_filter(duration, true, false);
+
+            self.filtered_entries = cached_results;
+            self.selected_index = 0;
+            self.current_query = Some(query);
+            cx.notify();
+            return;
+        }
+
+        // Check if we can optimize using query extension
         if !self.should_refilter(&query, position.as_ref()) {
             // Can optimize by filtering existing results
             self.filter_existing_results(&query, cx);
@@ -290,19 +368,36 @@ impl CompletionView {
         // Store initial state if this is the first filter
         if self.initial_query.is_none() {
             self.initial_query = Some(query.clone());
-            self.initial_position = position;
+            self.initial_position = position.clone();
         }
 
         self.current_query = Some(query.clone());
 
         // If query is empty, show all items
         if query.is_empty() {
-            self.filtered_entries = self
+            let results: Vec<StringMatch> = self
                 .match_candidates
                 .iter()
                 .enumerate()
                 .map(|(_idx, candidate)| StringMatch::new(candidate.id, 100, vec![]))
+                .take(self.max_items)
                 .collect();
+
+            // Cache the results
+            self.cache.insert(cache_key, results.clone());
+
+            self.filtered_entries = results;
+            self.selected_index = 0;
+            cx.notify();
+            return;
+        }
+
+        // Check if we can use optimization base from cache
+        if let Some(base_results) = self.try_optimization_from_cache(&query) {
+            // Filter the base results for the new query
+            let optimized_results = self.filter_cached_results(base_results, &query);
+            self.cache.insert(cache_key, optimized_results.clone());
+            self.filtered_entries = optimized_results;
             self.selected_index = 0;
             cx.notify();
             return;
@@ -316,11 +411,57 @@ impl CompletionView {
         self.filter_task = Some(cx.spawn(async move |_this, _cx| {
             // Use real fuzzy matching
             let config = FuzzyConfig::default();
+            let results =
+                match_strings(candidates, query.clone(), config, max_items, cancel_flag).await;
 
-            match_strings(candidates, query, config, max_items, cancel_flag).await
+            // For now, return the results
+            // TODO: Implement proper entity update mechanism
+            results
         }));
 
         cx.notify();
+    }
+
+    /// Try to get optimization base from cache
+    fn try_optimization_from_cache(&mut self, query: &str) -> Option<Vec<StringMatch>> {
+        // Look for shorter queries that we can build upon
+        for len in (1..query.len()).rev() {
+            let base_query = &query[..len];
+            if let Some(results) = self
+                .cache
+                .get_optimization_base(base_query, self.items_hash)
+            {
+                return Some(results);
+            }
+        }
+        None
+    }
+
+    /// Filter cached results for a more specific query
+    fn filter_cached_results(
+        &self,
+        cached_results: Vec<StringMatch>,
+        query: &str,
+    ) -> Vec<StringMatch> {
+        cached_results
+            .into_iter()
+            .filter(|string_match| {
+                // Find the candidate and check if it still matches the new query
+                if let Some(candidate) = self
+                    .match_candidates
+                    .iter()
+                    .find(|c| c.id == string_match.candidate_id)
+                {
+                    candidate
+                        .text
+                        .to_lowercase()
+                        .contains(&query.to_lowercase())
+                } else {
+                    false
+                }
+            })
+            .take(self.max_items)
+            .collect()
     }
 
     /// Filter existing results for query extensions (optimization)
