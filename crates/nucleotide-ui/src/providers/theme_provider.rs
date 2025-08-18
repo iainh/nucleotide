@@ -1,7 +1,7 @@
 // ABOUTME: Theme provider component for distributing theme state across the component tree
 // ABOUTME: Enables theme switching, inheritance, and context-aware styling
 
-use super::{use_provider, use_provider_or_default, Provider, ProviderContainer};
+use super::{Provider, ProviderContainer, use_provider, use_provider_or_default};
 use crate::Theme;
 use gpui::{AnyElement, App, IntoElement, SharedString};
 use std::collections::HashMap;
@@ -83,8 +83,10 @@ impl ThemeProvider {
     /// Create a new theme provider with a default theme
     pub fn new(default_theme: Theme) -> Self {
         use nucleotide_logging::debug;
-        debug!("TITLEBAR THEME_PROVIDER: Creating new ThemeProvider with surface={:?}, background={:?}",
-            default_theme.tokens.colors.surface, default_theme.tokens.colors.background);
+        debug!(
+            "TITLEBAR THEME_PROVIDER: Creating new ThemeProvider with surface={:?}, background={:?}",
+            default_theme.tokens.colors.surface, default_theme.tokens.colors.background
+        );
 
         let mut available_themes = HashMap::new();
         let theme_name: SharedString = if default_theme.is_dark() {
@@ -128,8 +130,12 @@ impl ThemeProvider {
             self.theme_inheritance = vec![theme_name.to_string().into()];
 
             nucleotide_logging::info!(theme_name = theme_name, "Theme switched");
-            nucleotide_logging::debug!("TITLEBAR THEME_PROVIDER: Switched to theme '{}' with surface={:?}, background={:?}",
-                theme_name, self.current_theme.tokens.colors.surface, self.current_theme.tokens.colors.background);
+            nucleotide_logging::debug!(
+                "TITLEBAR THEME_PROVIDER: Switched to theme '{}' with surface={:?}, background={:?}",
+                theme_name,
+                self.current_theme.tokens.colors.surface,
+                self.current_theme.tokens.colors.background
+            );
 
             true
         } else {

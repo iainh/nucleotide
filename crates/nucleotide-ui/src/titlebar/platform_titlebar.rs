@@ -3,8 +3,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, Context, Decorations, ElementId, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, Render, Styled, Window, WindowControlArea,
+    Context, Decorations, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Pixels, Render, Styled, Window, WindowControlArea, div, px,
 };
 
 use crate::titlebar::window_controls::WindowControls;
@@ -88,15 +88,19 @@ impl Render for PlatformTitleBar {
         let titlebar_tokens = if let Some(provider) = theme_provider {
             // Use OnSurface context for standard titlebar appearance
             let tokens = provider.titlebar_tokens(ColorContext::OnSurface);
-            debug!("TITLEBAR RENDER: Using theme provider tokens - bg={:?}, fg={:?}, border={:?}, height={:?}", 
-                tokens.background, tokens.foreground, tokens.border, tokens.height);
+            debug!(
+                "TITLEBAR RENDER: Using theme provider tokens - bg={:?}, fg={:?}, border={:?}, height={:?}",
+                tokens.background, tokens.foreground, tokens.border, tokens.height
+            );
             tokens
         } else {
             // Fallback: use global theme for tokens
             let ui_theme = cx.global::<crate::Theme>();
             let tokens = TitleBarTokens::on_surface(&ui_theme.tokens);
-            debug!("TITLEBAR RENDER: Using fallback global theme tokens - bg={:?}, fg={:?}, border={:?}, height={:?}", 
-                tokens.background, tokens.foreground, tokens.border, tokens.height);
+            debug!(
+                "TITLEBAR RENDER: Using fallback global theme tokens - bg={:?}, fg={:?}, border={:?}, height={:?}",
+                tokens.background, tokens.foreground, tokens.border, tokens.height
+            );
             tokens
         };
 

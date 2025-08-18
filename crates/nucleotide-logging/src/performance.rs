@@ -2,7 +2,7 @@
 // ABOUTME: Provides macros and helpers for tracking operation timing and performance metrics
 
 use std::time::{Duration, Instant};
-use tracing::{field, span, warn, Level, Span};
+use tracing::{Level, Span, field, span, warn};
 
 /// Create a performance monitoring span for timing operations
 #[macro_export]

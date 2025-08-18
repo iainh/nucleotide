@@ -656,7 +656,7 @@ impl RuntimeThemeSwitcher {
                 Ok(())
             }
             StorageBackend::Environment => {
-                // SAFETY: Setting environment variables in a multi-threaded context can lead to 
+                // SAFETY: Setting environment variables in a multi-threaded context can lead to
                 // undefined behavior. This is acceptable here as theme switching is rare and
                 // the environment variable is only used for theme persistence.
                 unsafe {

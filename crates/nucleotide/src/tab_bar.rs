@@ -2,7 +2,7 @@
 // ABOUTME: Manages tab layout and provides callbacks for tab interactions
 
 use gpui::prelude::FluentBuilder;
-use gpui::{div, px, App, IntoElement, ParentElement, RenderOnce, Styled, Window};
+use gpui::{App, IntoElement, ParentElement, RenderOnce, Styled, Window, div, px};
 use helix_view::DocumentId;
 use nucleotide_ui::ThemedContext;
 use nucleotide_ui::VcsStatus;

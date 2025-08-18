@@ -1,7 +1,7 @@
 // ABOUTME: Line layout cache for mouse interaction in document view
 // ABOUTME: Stores line layouts in element-local coordinates (text-area relative) for fast mouse hit testing
 
-use gpui::{size, Bounds, Pixels, ShapedLine};
+use gpui::{Bounds, Pixels, ShapedLine, size};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -396,9 +396,11 @@ mod tests {
 
         // Test lookups on empty cache
         assert!(cache.find_line_by_index(0).is_none());
-        assert!(cache
-            .find_line_at_position(point(px(50.0), px(12.0)), px(800.0), px(24.0))
-            .is_none());
+        assert!(
+            cache
+                .find_line_at_position(point(px(50.0), px(12.0)), px(800.0), px(24.0))
+                .is_none()
+        );
     }
 
     #[test]
@@ -502,9 +504,11 @@ mod tests {
         let bounds_width = px(800.0);
 
         // Test empty cache
-        assert!(cache
-            .find_line_at_position(point(px(50.0), px(12.0)), bounds_width, line_height)
-            .is_none());
+        assert!(
+            cache
+                .find_line_at_position(point(px(50.0), px(12.0)), bounds_width, line_height)
+                .is_none()
+        );
 
         // Test single line
         let layout = LineLayout {
@@ -517,13 +521,17 @@ mod tests {
         cache.push(layout);
 
         // Should find the single line
-        assert!(cache
-            .find_line_at_position(point(px(50.0), px(12.0)), bounds_width, line_height)
-            .is_some());
+        assert!(
+            cache
+                .find_line_at_position(point(px(50.0), px(12.0)), bounds_width, line_height)
+                .is_some()
+        );
         // Should not find outside the line bounds
-        assert!(cache
-            .find_line_at_position(point(px(50.0), px(30.0)), bounds_width, line_height)
-            .is_none());
+        assert!(
+            cache
+                .find_line_at_position(point(px(50.0), px(30.0)), bounds_width, line_height)
+                .is_none()
+        );
 
         // Test two lines (boundary case for binary search)
         let layout2 = LineLayout {

@@ -4,8 +4,8 @@
 #[cfg(test)]
 mod tests {
     use crate::{
-        compute_component_state, Component, ComponentFactory, ComponentState, ComponentStyles,
-        Styled, Theme, ThemedContext, Tooltipped, ValidationState,
+        Component, ComponentFactory, ComponentState, ComponentStyles, Styled, Theme, ThemedContext,
+        Tooltipped, ValidationState, compute_component_state,
     };
     use gpui::{ElementId, SharedString};
 

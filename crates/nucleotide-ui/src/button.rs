@@ -3,14 +3,14 @@
 
 use crate::spacing;
 use crate::{
-    compute_component_style, is_feature_enabled, should_enable_animations, ComponentFactory,
-    Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant, Styled as UIStyled,
+    ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
+    Styled as UIStyled, compute_component_style, is_feature_enabled, should_enable_animations,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, svg, App, ElementId, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    MouseUpEvent, ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement,
-    Styled, Window,
+    App, ElementId, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseUpEvent,
+    ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, px, svg,
 };
 
 /// Button variant styles (backward compatibility)

@@ -3,15 +3,14 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, App, CursorStyle, ElementId, InteractiveElement, IntoElement, MouseButton,
-    MouseUpEvent, ParentElement, RenderOnce, SharedString, Styled, Window,
+    App, CursorStyle, ElementId, InteractiveElement, IntoElement, MouseButton, MouseUpEvent,
+    ParentElement, RenderOnce, SharedString, Styled, Window, div, px,
 };
 use helix_view::DocumentId;
 use nucleotide_ui::ThemedContext;
 use nucleotide_ui::{
-    compute_component_state, Button, ButtonSize, ButtonVariant, Component, ComponentFactory,
-    ComponentState, Interactive, StyleVariant, Styled as UIStyled, Tooltipped, VcsIndicator,
-    VcsStatus,
+    Button, ButtonSize, ButtonVariant, Component, ComponentFactory, ComponentState, Interactive,
+    StyleVariant, Styled as UIStyled, Tooltipped, VcsIndicator, VcsStatus, compute_component_state,
 };
 
 /// Type alias for mouse event handlers in tabs

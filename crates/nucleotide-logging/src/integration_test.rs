@@ -67,22 +67,28 @@ mod tests {
     #[test]
     fn test_environment_config_integration() {
         // Test that environment variables are properly handled
-        std::env::set_var("NUCLEOTIDE_LOG", "trace");
+        unsafe {
+            std::env::set_var("NUCLEOTIDE_LOG", "trace");
+        }
 
         let config = LoggingConfig::from_env().expect("Should parse env config");
         assert_eq!(config.level.0, tracing::Level::TRACE);
 
         // Clean up
-        std::env::remove_var("NUCLEOTIDE_LOG");
+        unsafe {
+            std::env::remove_var("NUCLEOTIDE_LOG");
+        }
     }
 
     #[test]
     fn test_module_level_filtering() {
         // Test RUST_LOG style module filtering
-        std::env::set_var(
-            "RUST_LOG",
-            "info,nucleotide_core=debug,nucleotide_lsp=trace",
-        );
+        unsafe {
+            std::env::set_var(
+                "RUST_LOG",
+                "info,nucleotide_core=debug,nucleotide_lsp=trace",
+            );
+        }
 
         let config = LoggingConfig::from_env().expect("Should parse RUST_LOG");
         assert_eq!(config.level.0, tracing::Level::INFO);
@@ -96,6 +102,8 @@ mod tests {
         );
 
         // Clean up
-        std::env::remove_var("RUST_LOG");
+        unsafe {
+            std::env::remove_var("RUST_LOG");
+        }
     }
 }

@@ -1,7 +1,7 @@
 // ABOUTME: Common UI utilities and helper functions for nucleotide-ui components
 // ABOUTME: Provides layout, styling, and interaction utilities for component development
 
-use gpui::{px, ElementId, Hsla, Pixels, Point, SharedString, Size};
+use gpui::{ElementId, Hsla, Pixels, Point, SharedString, Size, px};
 use std::time::Duration;
 
 /// Layout helper utilities

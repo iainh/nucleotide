@@ -1,22 +1,21 @@
 use std::collections::{HashMap, HashSet};
 
-use gpui::prelude::FluentBuilder;
 use gpui::FontFeatures;
+use gpui::prelude::FluentBuilder;
 use gpui::{
-    black, div, hsla, px, white, App, AppContext, BorrowAppContext, Context, DismissEvent, Entity,
-    EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render,
-    StatefulInteractiveElement, Styled, TextStyle, Window, WindowAppearance,
-    WindowBackgroundAppearance,
+    App, AppContext, BorrowAppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Render, StatefulInteractiveElement, Styled,
+    TextStyle, Window, WindowAppearance, WindowBackgroundAppearance, black, div, hsla, px, white,
 };
 use helix_core::Selection;
 use helix_view::ViewId;
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
-use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::ThemedContext as UIThemedContext;
+use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::{
-    compute_component_style, Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant,
+    Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant, compute_component_style,
 };
 
 use crate::application::find_workspace_root_from;
@@ -465,7 +464,9 @@ impl Workspace {
             let window_title: id = msg_send![window, title];
             let title_str = if window_title != nil {
                 let cstr: *const i8 = msg_send![window_title, UTF8String];
-                unsafe { std::ffi::CStr::from_ptr(cstr) }.to_str().unwrap_or("unknown")
+                unsafe { std::ffi::CStr::from_ptr(cstr) }
+                    .to_str()
+                    .unwrap_or("unknown")
             } else {
                 "nil"
             };
@@ -565,9 +566,8 @@ impl Workspace {
             match system_appearance {
                 SystemAppearance::Dark => {
                     // Set to dark appearance explicitly
-                    let dark_appearance_name = unsafe {
-                        NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua")
-                    };
+                    let dark_appearance_name =
+                        unsafe { NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua") };
                     let dark_appearance: id =
                         msg_send![class!(NSAppearance), appearanceNamed: dark_appearance_name];
                     let _: () = msg_send![window, setAppearance: dark_appearance];
@@ -575,9 +575,8 @@ impl Workspace {
                 }
                 SystemAppearance::Light => {
                     // Set to light appearance explicitly
-                    let light_appearance_name = unsafe {
-                        NSString::alloc(nil).init_str("NSAppearanceNameAqua")
-                    };
+                    let light_appearance_name =
+                        unsafe { NSString::alloc(nil).init_str("NSAppearanceNameAqua") };
                     let light_appearance: id =
                         msg_send![class!(NSAppearance), appearanceNamed: light_appearance_name];
                     let _: () = msg_send![window, setAppearance: light_appearance];
@@ -595,7 +594,9 @@ impl Workspace {
 
             let appearance_name_str = if new_appearance_name != nil {
                 let cstr: *const i8 = msg_send![new_appearance_name, UTF8String];
-                unsafe { std::ffi::CStr::from_ptr(cstr) }.to_str().unwrap_or("unknown")
+                unsafe { std::ffi::CStr::from_ptr(cstr) }
+                    .to_str()
+                    .unwrap_or("unknown")
             } else {
                 "nil"
             };
@@ -617,7 +618,9 @@ impl Workspace {
 
             let effective_name_str = if effective_appearance_name != nil {
                 let cstr: *const i8 = msg_send![effective_appearance_name, UTF8String];
-                unsafe { std::ffi::CStr::from_ptr(cstr) }.to_str().unwrap_or("unknown")
+                unsafe { std::ffi::CStr::from_ptr(cstr) }
+                    .to_str()
+                    .unwrap_or("unknown")
             } else {
                 "nil"
             };
@@ -714,7 +717,9 @@ impl Workspace {
             let window_title: id = msg_send![window, title];
             let title_str = if window_title != nil {
                 let cstr: *const i8 = msg_send![window_title, UTF8String];
-                unsafe { std::ffi::CStr::from_ptr(cstr) }.to_str().unwrap_or("unknown")
+                unsafe { std::ffi::CStr::from_ptr(cstr) }
+                    .to_str()
+                    .unwrap_or("unknown")
             } else {
                 "nil"
             };
@@ -757,9 +762,8 @@ impl Workspace {
         let window = target_window;
         match system_appearance {
             SystemAppearance::Dark => {
-                let dark_appearance_name = unsafe {
-                    NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua")
-                };
+                let dark_appearance_name =
+                    unsafe { NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua") };
                 let dark_appearance: id =
                     msg_send![class!(NSAppearance), appearanceNamed: dark_appearance_name];
                 let _: () = msg_send![window, setAppearance: dark_appearance];
@@ -769,9 +773,8 @@ impl Workspace {
                 );
             }
             SystemAppearance::Light => {
-                let light_appearance_name = unsafe {
-                    NSString::alloc(nil).init_str("NSAppearanceNameAqua")
-                };
+                let light_appearance_name =
+                    unsafe { NSString::alloc(nil).init_str("NSAppearanceNameAqua") };
                 let light_appearance: id =
                     msg_send![class!(NSAppearance), appearanceNamed: light_appearance_name];
                 let _: () = msg_send![window, setAppearance: light_appearance];
@@ -1245,7 +1248,7 @@ impl Workspace {
     }
 
     fn execute_typed_command(&mut self, command: nucleotide_core::Command, cx: &mut Context<Self>) {
-        use nucleotide_core::{command_system::SplitDirection, Command};
+        use nucleotide_core::{Command, command_system::SplitDirection};
 
         match command {
             Command::Quit { force } => {

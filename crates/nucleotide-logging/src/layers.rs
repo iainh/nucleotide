@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use std::fs;
 use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::{
-    fmt::{self, format::FmtSpan},
     EnvFilter, Layer, Registry,
+    fmt::{self, format::FmtSpan},
 };
 
 use crate::config::{FileConfig, LoggingConfig, OutputConfig};

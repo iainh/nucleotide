@@ -11,7 +11,7 @@ pub use nucleotide_ui::theme_utils::color_to_hsla;
 
 /// Load the Helix tutor document
 pub fn load_tutor(editor: &mut helix_view::editor::Editor) -> Result<(), anyhow::Error> {
-    use helix_core::{pos_at_coords, Position, Selection};
+    use helix_core::{Position, Selection, pos_at_coords};
     use helix_view::doc_mut;
     use helix_view::editor::Action;
     use std::path::Path;

@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, Context, DismissEvent, EventEmitter, FontWeight, IntoElement, ParentElement, Render,
-    SharedString, Style, Styled, Window,
+    Context, DismissEvent, EventEmitter, FontWeight, IntoElement, ParentElement, Render,
+    SharedString, Style, Styled, Window, div, px,
 };
 use helix_view::info::Info;
 use nucleotide_events::{AppEvent, UiEvent};

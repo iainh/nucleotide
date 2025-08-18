@@ -7,7 +7,9 @@ pub mod assets;
 pub mod button;
 pub mod common;
 pub mod completion;
+pub mod completion_v2;
 pub mod file_icon;
+pub mod fuzzy;
 pub mod info_box;
 pub mod key_hint_view;
 pub mod keyboard_navigation;
@@ -62,30 +64,30 @@ pub use list_item::{
 pub use picker::Picker;
 pub use prompt::{Prompt, PromptElement};
 pub use providers::{
-    provider_tree, use_provider, use_provider_or_default, AccessibilityConfiguration,
-    ConfigurationProvider, CustomEventData, CustomEventDetails, EventHandlingProvider, EventResult,
-    PerformanceConfiguration, Provider, ProviderComposition, ProviderContainer, ProviderHooks,
-    ThemeProvider, UIConfiguration,
+    AccessibilityConfiguration, ConfigurationProvider, CustomEventData, CustomEventDetails,
+    EventHandlingProvider, EventResult, PerformanceConfiguration, Provider, ProviderComposition,
+    ProviderContainer, ProviderHooks, ThemeProvider, UIConfiguration, provider_tree, use_provider,
+    use_provider_or_default,
 };
 pub use styling::{
-    compute_component_style, compute_contextual_style, compute_style_for_states, merge_styles,
-    should_enable_animations, AnimationConfig, AnimationDuration, AnimationPreset,
-    AnimationProperty, AnimationType, BoxShadow, Breakpoint, ColorTheory, ComputedStyle,
-    ConditionalStyle, ContextualColors, ContrastRatios, MergeStrategy, ResponsiveSizes,
-    ResponsiveTypography, ResponsiveValue, StyleCombiner, StyleComposer, StyleContext,
-    StylePresets, StyleSize, StyleState, StyleUtils, StyleVariant, TimingFunction, Transition,
-    TransitionProperty, VariantColors, VariantStyle, VariantStyler, ViewportContext,
+    AnimationConfig, AnimationDuration, AnimationPreset, AnimationProperty, AnimationType,
+    BoxShadow, Breakpoint, ColorTheory, ComputedStyle, ConditionalStyle, ContextualColors,
+    ContrastRatios, MergeStrategy, ResponsiveSizes, ResponsiveTypography, ResponsiveValue,
+    StyleCombiner, StyleComposer, StyleContext, StylePresets, StyleSize, StyleState, StyleUtils,
+    StyleVariant, TimingFunction, Transition, TransitionProperty, VariantColors, VariantStyle,
+    VariantStyler, ViewportContext, compute_component_style, compute_contextual_style,
+    compute_style_for_states, merge_styles, should_enable_animations,
 };
 pub use tokens::{ColorContext, DesignTokens, SemanticColors, SizeTokens, TitleBarTokens};
 pub use traits::{
-    compute_component_state, Component, ComponentBuilder, ComponentFactory, ComponentState,
-    ComponentStyles, Composable, Interactive, KeyboardNavigable, Loadable, Measurable, Slotted,
-    Styled, ThemedContext, Tooltipped, Validatable, ValidationState,
+    Component, ComponentBuilder, ComponentFactory, ComponentState, ComponentStyles, Composable,
+    Interactive, KeyboardNavigable, Loadable, Measurable, Slotted, Styled, ThemedContext,
+    Tooltipped, Validatable, ValidationState, compute_component_state,
 };
 pub use utils::{
-    is_feature_enabled as is_utils_feature_enabled, is_named_feature_enabled, ExperimentalFeatures,
-    FeatureFlags, FocusGroup, FocusManager, KeyboardShortcut, MemoryTracker, PerfTimer,
-    PerformanceFeatures, Profiler, ShortcutRegistry,
+    ExperimentalFeatures, FeatureFlags, FocusGroup, FocusManager, KeyboardShortcut, MemoryTracker,
+    PerfTimer, PerformanceFeatures, Profiler, ShortcutRegistry,
+    is_feature_enabled as is_utils_feature_enabled, is_named_feature_enabled,
 };
 pub use vcs_indicator::{VcsIndicator, VcsStatus};
 

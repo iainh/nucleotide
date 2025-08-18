@@ -2,11 +2,11 @@
 // ABOUTME: Provides minimize, maximize/restore, and close buttons with platform-specific styling
 
 use gpui::{
-    hsla, svg, App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce,
-    Styled, Window, WindowControlArea,
+    App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce, Styled,
+    Window, WindowControlArea, hsla, svg,
 };
 
-use crate::styling::{compute_component_style, ColorTheory, StyleSize, StyleState, StyleVariant};
+use crate::styling::{ColorTheory, StyleSize, StyleState, StyleVariant, compute_component_style};
 use crate::titlebar::platform_titlebar::PlatformStyle;
 use crate::tokens::TitleBarTokens;
 use nucleotide_logging::debug;
@@ -50,8 +50,10 @@ impl WindowControlStyle {
         // Create hover background that's subtle on titlebar
         let hover_bg = ColorTheory::lighten(bg, 0.05);
 
-        debug!("TITLEBAR WINDOW_CONTROL: Creating default control style - bg={:?}, fg={:?}, hover_bg={:?}", 
-            bg, fg, hover_bg);
+        debug!(
+            "TITLEBAR WINDOW_CONTROL: Creating default control style - bg={:?}, fg={:?}, hover_bg={:?}",
+            bg, fg, hover_bg
+        );
 
         let icon_color = ColorTheory::mix(fg, bg, 0.3);
         debug!(
@@ -104,8 +106,10 @@ impl WindowControlStyle {
         let fg = titlebar_tokens.foreground;
         let error_color = theme_tokens.colors.error;
 
-        debug!("TITLEBAR WINDOW_CONTROL: Creating close button style - bg={:?}, fg={:?}, error_color={:?}", 
-            bg, fg, error_color);
+        debug!(
+            "TITLEBAR WINDOW_CONTROL: Creating close button style - bg={:?}, fg={:?}, error_color={:?}",
+            bg, fg, error_color
+        );
 
         let icon_color = ColorTheory::mix(fg, bg, 0.3);
         let icon_hover = ColorTheory::best_text_color(error_color, theme_tokens);
@@ -190,8 +194,10 @@ impl WindowControl {
 
 impl RenderOnce for WindowControl {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        debug!("TITLEBAR WINDOW_CONTROL: Rendering {:?} control with colors - icon={:?}, icon_hover={:?}, bg_hover={:?}",
-            self.control_type, self.style.icon, self.style.icon_hover, self.style.background_hover);
+        debug!(
+            "TITLEBAR WINDOW_CONTROL: Rendering {:?} control with colors - icon={:?}, icon_hover={:?}, bg_hover={:?}",
+            self.control_type, self.style.icon, self.style.icon_hover, self.style.background_hover
+        );
 
         let icon = svg()
             .size_4()
@@ -280,8 +286,10 @@ impl RenderOnce for WindowControls {
 
         // Use tokens if available, otherwise fallback to old system
         if let Some(titlebar_tokens) = self.titlebar_tokens {
-            debug!("TITLEBAR WINDOW_CONTROLS: Using titlebar tokens for controls - bg={:?}, fg={:?}, border={:?}", 
-                titlebar_tokens.background, titlebar_tokens.foreground, titlebar_tokens.border);
+            debug!(
+                "TITLEBAR WINDOW_CONTROLS: Using titlebar tokens for controls - bg={:?}, fg={:?}, border={:?}",
+                titlebar_tokens.background, titlebar_tokens.foreground, titlebar_tokens.border
+            );
 
             // Get theme tokens for creating controls
             let theme_tokens = if let Some(theme_provider) =
@@ -351,7 +359,9 @@ impl RenderOnce for WindowControls {
                 }
             }
         } else {
-            debug!("TITLEBAR WINDOW_CONTROLS: No titlebar tokens available, using fallback styling system");
+            debug!(
+                "TITLEBAR WINDOW_CONTROLS: No titlebar tokens available, using fallback styling system"
+            );
             // Fallback to old system without tokens
             match self.platform_style {
                 PlatformStyle::Linux => controls

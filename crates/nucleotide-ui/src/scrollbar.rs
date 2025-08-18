@@ -4,11 +4,11 @@
 use std::{any::Any, cell::Cell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
 
 use gpui::{
-    hsla, px, quad, relative, Along, App, Axis, BorderStyle, Bounds, ContentMask, Corners,
-    CursorStyle, Edges, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, IntoElement, IsZero, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, ScrollHandle, ScrollWheelEvent, Size, Style,
-    UniformListScrollHandle, Window,
+    Along, App, Axis, BorderStyle, Bounds, ContentMask, Corners, CursorStyle, Edges, Element,
+    ElementId, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
+    IsZero, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    ScrollHandle, ScrollWheelEvent, Size, Style, UniformListScrollHandle, Window, hsla, px, quad,
+    relative,
 };
 
 /// A scrollbar component that can be attached to scrollable content

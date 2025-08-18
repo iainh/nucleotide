@@ -1,6 +1,6 @@
 use crate::Core;
 use gpui::{
-    div, px, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Window,
+    Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Window, div, px,
 };
 use helix_view::{DocumentId, ViewId};
 use nucleotide_ui::ThemedContext;

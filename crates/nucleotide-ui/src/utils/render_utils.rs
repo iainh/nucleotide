@@ -581,9 +581,11 @@ mod tests {
         let palette = PaletteUtils::generate_palette(base_color, 5);
 
         assert_eq!(palette.len(), 5);
-        assert!(palette
-            .iter()
-            .all(|c| c.h == base_color.h && c.s == base_color.s));
+        assert!(
+            palette
+                .iter()
+                .all(|c| c.h == base_color.h && c.s == base_color.s)
+        );
 
         let complementary = PaletteUtils::complementary_color(base_color);
         assert_eq!(complementary.h, 20.0); // 200 + 180 - 360

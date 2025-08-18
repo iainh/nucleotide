@@ -1,9 +1,9 @@
 // ABOUTME: Event bridge between Helix's event system and GPUI's Update events
 // ABOUTME: Provides a channel-based system to forward Helix events to GPUI UI updates
 
-use helix_view::document::Mode;
 use helix_view::DocumentId;
 use helix_view::ViewId;
+use helix_view::document::Mode;
 use nucleotide_logging::{debug, info, instrument, warn};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;

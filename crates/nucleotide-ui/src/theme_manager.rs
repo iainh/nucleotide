@@ -1,9 +1,9 @@
 // ABOUTME: Unified theme management for consistent styling across the application
 // ABOUTME: Bridges between Helix themes and GPUI styling requirements
 
-use crate::theme_utils::color_to_hsla;
 use crate::Theme as UITheme;
-use gpui::{hsla, App, Global, Hsla, WindowAppearance};
+use crate::theme_utils::color_to_hsla;
+use gpui::{App, Global, Hsla, WindowAppearance, hsla};
 use helix_view::Theme as HelixTheme;
 
 /// Extracted colors from Helix theme for comprehensive design token creation

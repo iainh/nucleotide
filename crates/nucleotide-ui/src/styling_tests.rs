@@ -5,12 +5,12 @@
 mod tests {
     use crate::styling::animations::TimingFunction;
     use crate::{
-        compute_component_style, compute_style_for_states, AnimationConfig, AnimationDuration,
-        AnimationPreset, AnimationType, Breakpoint, ResponsiveValue, StyleCombiner, StyleContext,
-        StylePresets, StyleSize, StyleState, StyleUtils, StyleVariant, Theme, VariantColors,
-        VariantStyler, ViewportContext,
+        AnimationConfig, AnimationDuration, AnimationPreset, AnimationType, Breakpoint,
+        ResponsiveValue, StyleCombiner, StyleContext, StylePresets, StyleSize, StyleState,
+        StyleUtils, StyleVariant, Theme, VariantColors, VariantStyler, ViewportContext,
+        compute_component_style, compute_style_for_states,
     };
-    use gpui::{hsla, px, Size};
+    use gpui::{Size, hsla, px};
 
     #[test]
     fn test_style_state_properties() {
@@ -297,15 +297,19 @@ mod tests {
         let button_hover = AnimationPreset::button_hover();
         assert_eq!(button_hover.duration, AnimationDuration::Fast);
         assert_eq!(button_hover.timing_function, TimingFunction::EaseOut);
-        assert!(button_hover
-            .properties
-            .contains(&crate::styling::animations::AnimationProperty::Background));
+        assert!(
+            button_hover
+                .properties
+                .contains(&crate::styling::animations::AnimationProperty::Background)
+        );
 
         let focus_ring = AnimationPreset::focus_ring();
         assert_eq!(focus_ring.duration, AnimationDuration::Normal);
-        assert!(focus_ring
-            .properties
-            .contains(&crate::styling::animations::AnimationProperty::BorderColor));
+        assert!(
+            focus_ring
+                .properties
+                .contains(&crate::styling::animations::AnimationProperty::BorderColor)
+        );
     }
 
     #[test]

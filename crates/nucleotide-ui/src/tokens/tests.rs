@@ -1,9 +1,9 @@
 // ABOUTME: WCAG contrast compliance tests for TitleBarTokens
 // ABOUTME: Ensures titlebar colors meet accessibility standards across all themes
 
+use crate::DesignTokens;
 use crate::styling::ColorTheory;
 use crate::tokens::{ColorContext, TitleBarTokens};
-use crate::DesignTokens;
 
 #[cfg(test)]
 mod titlebar_contrast_tests {
@@ -57,7 +57,9 @@ mod titlebar_contrast_tests {
                 assert!(
                     border_contrast >= 2.5,
                     "{} {} titlebar border contrast ratio {:.2} is below recommended standard (2.5:1)",
-                    theme_name, context_name, border_contrast
+                    theme_name,
+                    context_name,
+                    border_contrast
                 );
 
                 println!(

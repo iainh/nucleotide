@@ -35,14 +35,15 @@ pub use event_aggregator::{EventAggregator, EventAggregatorHandle};
 
 // Event bridge exports
 pub use event_bridge::{
-    create_bridge_channel, initialize_bridge, register_event_hooks, send_bridged_event,
-    BridgedEvent, BridgedEventReceiver, CompletionTrigger,
+    BridgedEvent, BridgedEventReceiver, CompletionTrigger, create_bridge_channel,
+    initialize_bridge, register_event_hooks, send_bridged_event,
 };
 
 // GPUI to Helix bridge exports
 pub use gpui_to_helix_bridge::{
-    create_gpui_to_helix_channel, handle_gpui_event_in_helix, initialize_gpui_to_helix_bridge,
-    register_gpui_event_handlers, send_gpui_event_to_helix, GpuiToHelixEvent, MemoryPressureLevel,
+    GpuiToHelixEvent, MemoryPressureLevel, create_gpui_to_helix_channel,
+    handle_gpui_event_in_helix, initialize_gpui_to_helix_bridge, register_gpui_event_handlers,
+    send_gpui_event_to_helix,
 };
 
 // Document manager exports

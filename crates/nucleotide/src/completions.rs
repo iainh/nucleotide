@@ -2,7 +2,7 @@
 // ABOUTME: Bridges between Helix's completion system and Nucleotide's UI layer
 
 use helix_core::fuzzy::fuzzy_match;
-use helix_term::commands::{TypableCommand, TYPABLE_COMMAND_LIST};
+use helix_term::commands::{TYPABLE_COMMAND_LIST, TypableCommand};
 use helix_term::ui::completers;
 use helix_view::Editor;
 use nucleotide_ui::prompt_view::CompletionItem;

@@ -1,7 +1,7 @@
 // ABOUTME: Responsive design system for nucleotide-ui components
 // ABOUTME: Provides breakpoints, responsive tokens, and adaptive styling
 
-use gpui::{px, Pixels, Size};
+use gpui::{Pixels, Size, px};
 use std::collections::HashMap;
 
 /// Standard responsive breakpoints

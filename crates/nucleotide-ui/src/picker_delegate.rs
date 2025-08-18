@@ -5,8 +5,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, hsla, px, AnyElement, App, Context, DismissEvent, Div, EventEmitter, FontWeight, Hsla,
-    IntoElement, ParentElement, SharedString, Styled, Task, Window,
+    AnyElement, App, Context, DismissEvent, Div, EventEmitter, FontWeight, Hsla, IntoElement,
+    ParentElement, SharedString, Styled, Task, Window, div, hsla, px,
 };
 use std::sync::Arc;
 

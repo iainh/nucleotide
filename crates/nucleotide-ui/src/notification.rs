@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use gpui::{
-    div, prelude::FluentBuilder, px, App, Context, DefiniteLength, FontWeight, Hsla, IntoElement,
-    ParentElement, Render, RenderOnce, Result, Styled, Window,
+    App, Context, DefiniteLength, FontWeight, Hsla, IntoElement, ParentElement, Render, RenderOnce,
+    Result, Styled, Window, div, prelude::FluentBuilder, px,
 };
 use helix_lsp::LanguageServerId;
 use helix_view::document::DocumentSavedEvent;

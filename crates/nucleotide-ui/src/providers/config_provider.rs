@@ -1,9 +1,9 @@
 // ABOUTME: Configuration provider component for app-wide settings and preferences
 // ABOUTME: Manages user preferences, accessibility settings, and runtime configuration
 
-use super::{use_provider, use_provider_or_default, Provider, ProviderContainer};
+use super::{Provider, ProviderContainer, use_provider, use_provider_or_default};
 use crate::utils::FeatureFlags;
-use gpui::{px, AnyElement, App, IntoElement, Pixels, SharedString};
+use gpui::{AnyElement, App, IntoElement, Pixels, SharedString, px};
 use std::collections::HashMap;
 use std::time::Duration;
 

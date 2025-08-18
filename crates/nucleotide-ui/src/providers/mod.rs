@@ -2,8 +2,8 @@
 // ABOUTME: Implements React-style provider patterns adapted for GPUI's reactive system
 
 use gpui::{
-    div, AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, Window,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, Window, div,
 };
 use std::any::{Any, TypeId};
 use std::collections::HashMap;

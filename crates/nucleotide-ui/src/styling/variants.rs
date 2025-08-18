@@ -2,7 +2,7 @@
 // ABOUTME: Provides variant definitions and style computations
 
 use crate::{DesignTokens, Theme};
-use gpui::{px, Hsla, Pixels};
+use gpui::{Hsla, Pixels, px};
 
 /// Standard component variants
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

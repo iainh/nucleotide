@@ -4,25 +4,25 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    black, div, fill, px, relative, white, App, Bounds, Context, DefiniteLength, DismissEvent,
-    Element, ElementId, Entity, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId,
-    Hitbox, Hsla, InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId,
-    ParentElement, Pixels, Point, Render, ShapedLine, SharedString, Size,
-    StatefulInteractiveElement, Style, Styled, TextStyle, Window, WindowTextSystem,
+    App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, Font, GlobalElementId, Hitbox, Hsla, InspectorElementId,
+    InteractiveElement, Interactivity, IntoElement, LayoutId, ParentElement, Pixels, Point, Render,
+    ShapedLine, SharedString, Size, StatefulInteractiveElement, Style, Styled, TextStyle, Window,
+    WindowTextSystem, black, div, fill, px, relative, white,
 };
-use gpui::{point, size, TextRun};
+use gpui::{TextRun, point, size};
 use helix_core::{
+    Uri,
     doc_formatter::{DocumentFormatter, TextFormat},
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     ropey::RopeSlice,
     syntax::{self, Highlight, HighlightEvent, OverlayHighlights},
     text_annotations::TextAnnotations,
-    Uri,
 };
 use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
 use helix_view::{
-    graphics::CursorKind, view::ViewPosition, Document, DocumentId, Editor, Theme, View, ViewId,
+    Document, DocumentId, Editor, Theme, View, ViewId, graphics::CursorKind, view::ViewPosition,
 };
 use nucleotide_logging::{debug, error};
 use nucleotide_ui::theme_manager::HelixThemedContext;
@@ -1837,7 +1837,7 @@ impl Element for DocumentElement {
                         .advance(font_id, font_size, 'm')
                         .map(|advance| advance.width)
                         .unwrap_or(em_width); // Use em_width as fallback
-                                              // Division of Pixels returns f32
+                    // Division of Pixels returns f32
                     let columns_f32 = (bounds.size.width / em_width).floor();
                     let rows_f32 = (bounds.size.height / line_height).floor();
                     let columns = (columns_f32 as usize).max(1);
@@ -3885,7 +3885,7 @@ fn safe_highlight(theme: &Theme, highlight: syntax::Highlight) -> helix_view::gr
     // This can happen when syntax highlighting returns indices for highlights that
     // don't exist in the current theme. We handle this gracefully by returning
     // a default style instead of panicking.
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     match catch_unwind(AssertUnwindSafe(|| theme.highlight(highlight))) {
         Ok(style) => style,
@@ -4009,7 +4009,7 @@ impl<'t> OverlayHighlighter<'t> {
 #[cfg(test)]
 mod coordinate_transformation_tests {
     use super::*;
-    use gpui::{point, px, size, Bounds};
+    use gpui::{Bounds, point, px, size};
     use helix_view::view::ViewPosition;
 
     fn create_test_text_bounds() -> Bounds<Pixels> {

@@ -1,7 +1,7 @@
 // ABOUTME: Design token system providing semantic color and spacing values
 // ABOUTME: Replaces hardcoded values with systematic, theme-aware design tokens
 
-use gpui::{hsla, px, Hsla, Pixels};
+use gpui::{Hsla, Pixels, hsla, px};
 use nucleotide_logging::debug;
 
 /// Base color palette - raw color definitions
@@ -726,8 +726,10 @@ impl TitleBarTokens {
         let border = crate::styling::ColorTheory::subtle_border_color(bg, dt);
         let height = dt.sizes.titlebar_height;
 
-        debug!("TITLEBAR TOKENS: Creating on_surface tokens - bg={:?}, fg={:?}, border={:?}, height={:?}", 
-            bg, fg, border, height);
+        debug!(
+            "TITLEBAR TOKENS: Creating on_surface tokens - bg={:?}, fg={:?}, border={:?}, height={:?}",
+            bg, fg, border, height
+        );
 
         Self {
             background: bg,
@@ -743,8 +745,10 @@ impl TitleBarTokens {
         let border = crate::styling::ColorTheory::subtle_border_color(bg, dt);
         let height = dt.sizes.titlebar_height;
 
-        debug!("TITLEBAR TOKENS: Creating on_primary tokens - bg={:?}, fg={:?}, border={:?}, height={:?}", 
-            bg, fg, border, height);
+        debug!(
+            "TITLEBAR TOKENS: Creating on_primary tokens - bg={:?}, fg={:?}, border={:?}, height={:?}",
+            bg, fg, border, height
+        );
 
         Self {
             background: bg,
@@ -760,8 +764,10 @@ impl TitleBarTokens {
         let border = crate::styling::ColorTheory::subtle_border_color(bg, dt);
         let height = dt.sizes.titlebar_height;
 
-        debug!("TITLEBAR TOKENS: Creating floating tokens - bg={:?}, fg={:?}, border={:?}, height={:?}", 
-            bg, fg, border, height);
+        debug!(
+            "TITLEBAR TOKENS: Creating floating tokens - bg={:?}, fg={:?}, border={:?}, height={:?}",
+            bg, fg, border, height
+        );
 
         Self {
             background: bg,

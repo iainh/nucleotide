@@ -2,8 +2,8 @@
 // ABOUTME: when a pending keymap state is active (e.g., after pressing space leader)
 
 use gpui::{
-    div, px, rgb, AnyElement, Context, EventEmitter, Hsla, IntoElement, ParentElement, Render,
-    Styled, Window,
+    AnyElement, Context, EventEmitter, Hsla, IntoElement, ParentElement, Render, Styled, Window,
+    div, px, rgb,
 };
 use helix_view::{info::Info, theme::Theme};
 

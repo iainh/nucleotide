@@ -1,7 +1,7 @@
 // ABOUTME: Event handling provider component for centralized event management and distribution
 // ABOUTME: Manages global event listeners, custom events, and event delegation patterns
 
-use super::{use_provider, Provider, ProviderContainer};
+use super::{Provider, ProviderContainer, use_provider};
 use gpui::{AnyElement, App, ElementId, IntoElement, KeyDownEvent, SharedString};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -1039,22 +1039,30 @@ mod tests {
         {
             let custom_events = provider.custom_events.read().unwrap();
             // Check that events are in separate priority queues
-            assert!(custom_events
-                .event_queues
-                .get(&EventPriority::Critical)
-                .is_some());
-            assert!(custom_events
-                .event_queues
-                .get(&EventPriority::High)
-                .is_some());
-            assert!(custom_events
-                .event_queues
-                .get(&EventPriority::Normal)
-                .is_some());
-            assert!(custom_events
-                .event_queues
-                .get(&EventPriority::Low)
-                .is_some());
+            assert!(
+                custom_events
+                    .event_queues
+                    .get(&EventPriority::Critical)
+                    .is_some()
+            );
+            assert!(
+                custom_events
+                    .event_queues
+                    .get(&EventPriority::High)
+                    .is_some()
+            );
+            assert!(
+                custom_events
+                    .event_queues
+                    .get(&EventPriority::Normal)
+                    .is_some()
+            );
+            assert!(
+                custom_events
+                    .event_queues
+                    .get(&EventPriority::Low)
+                    .is_some()
+            );
         }
     }
 
@@ -1073,7 +1081,9 @@ mod tests {
             &CustomEventData::Object(HashMap::new()),
             EventDataType::Object
         ));
-        assert!(provider.check_data_type(&CustomEventData::Array(Vec::new()), EventDataType::Array));
+        assert!(
+            provider.check_data_type(&CustomEventData::Array(Vec::new()), EventDataType::Array)
+        );
 
         // Test Any type
         assert!(

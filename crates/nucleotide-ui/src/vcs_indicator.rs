@@ -1,7 +1,7 @@
 // ABOUTME: VCS status indicator component for consistent git status display
 // ABOUTME: Provides colored dots and overlays showing file modification status
 
-use gpui::{div, px, IntoElement, Styled};
+use gpui::{IntoElement, Styled, div, px};
 use std::path::Path;
 
 /// Git status types for VCS indicators

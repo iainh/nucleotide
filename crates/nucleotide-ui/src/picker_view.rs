@@ -4,9 +4,9 @@
 use crate::common::{FocusableModal, ModalStyle, SearchInput};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, hsla, px, uniform_list, App, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, Result,
-    SharedString, Size, Styled, Task, UniformListScrollHandle,
+    App, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, Pixels, Render, Result, SharedString, Size, Styled, Task,
+    UniformListScrollHandle, div, hsla, px, uniform_list,
 };
 use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;

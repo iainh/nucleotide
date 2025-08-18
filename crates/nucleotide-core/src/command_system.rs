@@ -1,7 +1,7 @@
 // ABOUTME: Command system module that provides a typed interface for Helix commands
 // ABOUTME: Includes parsing, validation, and execution of commands with proper error handling
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::fmt;
 
 /// Represents a parsed command with its name and arguments

@@ -3,13 +3,13 @@
 
 use crate::spacing;
 use crate::{
-    compute_component_style, is_feature_enabled, should_enable_animations, ComponentFactory,
-    Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant, Styled as UIStyled,
+    ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
+    Styled as UIStyled, compute_component_style, is_feature_enabled, should_enable_animations,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels,
-    RenderOnce, SharedString, StatefulInteractiveElement, Styled, TextOverflow, Window,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
+    SharedString, StatefulInteractiveElement, Styled, TextOverflow, Window, div,
 };
 use smallvec::SmallVec;
 

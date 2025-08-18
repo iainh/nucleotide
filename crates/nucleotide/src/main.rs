@@ -9,14 +9,14 @@ use helix_term::args::Args;
 use nucleotide_logging::{error, info, instrument, warn};
 
 use gpui::{
-    px, App, AppContext, Menu, MenuItem, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
-    WindowKind, WindowOptions,
+    App, AppContext, Menu, MenuItem, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
+    WindowKind, WindowOptions, px,
 };
 
 // Import from the library crate instead of re-declaring modules
 use nucleotide::application::Application;
 use nucleotide::{
-    application, config, info_box, notification, overlay, types, workspace, ThemeManager,
+    ThemeManager, application, config, info_box, notification, overlay, types, workspace,
 };
 
 // Import nucleotide-ui enhanced components
@@ -31,7 +31,7 @@ pub type Core = Application;
 pub use types::{EditorStatus, Update};
 
 fn setup_logging(verbosity: u64) -> Result<()> {
-    use nucleotide_logging::{init_logging_with_reload, LoggingConfig};
+    use nucleotide_logging::{LoggingConfig, init_logging_with_reload};
 
     // Create configuration based on verbosity level
     let mut config =

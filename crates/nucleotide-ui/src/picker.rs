@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, App, FocusHandle, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    RenderOnce, SharedString, Styled, Window,
+    App, FocusHandle, FontWeight, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, Styled, Window, div, px,
 };
 use std::sync::Arc;
 

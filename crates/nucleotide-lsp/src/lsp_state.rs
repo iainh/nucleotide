@@ -1,8 +1,8 @@
 // ABOUTME: LSP state management for reactive UI updates
 // ABOUTME: Provides a GPUI Model for LSP status, diagnostics, and progress
 
-use helix_core::diagnostic::Diagnostic;
 use helix_core::Uri;
+use helix_core::diagnostic::Diagnostic;
 use helix_lsp::LanguageServerId;
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};

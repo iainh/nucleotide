@@ -2,7 +2,7 @@
 // ABOUTME: Provides WCAG-compliant contrast calculations and contextual color awareness
 
 use crate::DesignTokens;
-use gpui::{hsla, Hsla};
+use gpui::{Hsla, hsla};
 
 /// WCAG contrast ratios for accessibility compliance
 pub struct ContrastRatios;

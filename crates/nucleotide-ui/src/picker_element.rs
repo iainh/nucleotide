@@ -9,9 +9,9 @@ use crate::actions::picker::{
 use crate::picker_delegate::PickerDelegate;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, hsla, px, uniform_list, App, Context, DismissEvent, Element, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy,
-    Styled, UniformListScrollHandle, Window,
+    App, Context, DismissEvent, Element, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy, Styled,
+    UniformListScrollHandle, Window, div, hsla, px, uniform_list,
 };
 
 /// Generic picker element that works with any PickerDelegate

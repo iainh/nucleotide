@@ -1,7 +1,7 @@
 // ABOUTME: Lucide icon system for file tree using SVG files from assets
 // ABOUTME: Provides scalable vector icons for files, folders, and UI elements
 
-use gpui::{svg, Svg};
+use gpui::{Svg, svg};
 
 /// Create a folder icon
 pub fn folder_icon(open: bool) -> Svg {

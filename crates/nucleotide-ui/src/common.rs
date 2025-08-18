@@ -5,8 +5,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    black, div, hsla, px, Div, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Stateful, Styled, Window,
+    Div, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement, Stateful,
+    Styled, Window, black, div, hsla, px,
 };
 
 /// Common modal container styling

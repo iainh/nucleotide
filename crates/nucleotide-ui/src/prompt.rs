@@ -1,6 +1,6 @@
 use gpui::{
-    div, hsla, px, App, FocusHandle, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, Styled, TextStyle, Window,
+    App, FocusHandle, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    Styled, TextStyle, Window, div, hsla, px,
 };
 use std::sync::Arc;
 

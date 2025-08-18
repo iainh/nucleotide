@@ -1,7 +1,7 @@
 // ABOUTME: Style conversion utilities for Helix text modifiers to GPUI rendering
 // ABOUTME: Handles bold, italic, dim, reversed, and crossed_out modifiers
 
-use gpui::{px, Font, FontStyle, FontWeight, Hsla, StrikethroughStyle, TextRun, UnderlineStyle};
+use gpui::{Font, FontStyle, FontWeight, Hsla, StrikethroughStyle, TextRun, UnderlineStyle, px};
 use helix_view::graphics::{Modifier, Style};
 
 /// Apply text modifiers to create a modified font variant

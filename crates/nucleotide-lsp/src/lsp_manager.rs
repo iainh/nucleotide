@@ -3,8 +3,8 @@
 
 use helix_core::diagnostic::{DiagnosticProvider, Severity};
 use helix_lsp::{
-    lsp::{self},
     Call, LanguageServerId, LspProgressMap, MethodCall, Notification,
+    lsp::{self},
 };
 use helix_view::Editor;
 use nucleotide_logging::{error, info, instrument, timed, warn};
@@ -400,7 +400,9 @@ impl<'a> LspManager<'a> {
                                 // case but that rejects the registration promise in the server which causes an
                                 // exit. So we work around this by ignoring the request and sending back an OK
                                 // response.
-                                warn!("Ignoring a client/registerCapability request because dynamic capability registration is not enabled. Please report this upstream to the language server");
+                                warn!(
+                                    "Ignoring a client/registerCapability request because dynamic capability registration is not enabled. Please report this upstream to the language server"
+                                );
                             }
                         }
                     }

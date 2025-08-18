@@ -1,7 +1,7 @@
 // ABOUTME: Shared file icon component using SVG assets for consistent UI
 // ABOUTME: Provides type-aware icons for files and folders across the application
 
-use gpui::{svg, Hsla, IntoElement, Styled, Svg};
+use gpui::{Hsla, IntoElement, Styled, Svg, svg};
 use std::path::Path;
 
 /// File icon component that provides consistent icons across the application

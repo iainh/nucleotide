@@ -3,10 +3,10 @@ use std::{
     sync::Arc,
 };
 
-use arc_swap::{access::Map, ArcSwap};
+use arc_swap::{ArcSwap, access::Map};
 use futures_util::FutureExt;
-use helix_core::{pos_at_coords, syntax, Position, Selection};
-use helix_lsp::{lsp, LanguageServerId, LspProgressMap};
+use helix_core::{Position, Selection, pos_at_coords, syntax};
+use helix_lsp::{LanguageServerId, LspProgressMap, lsp};
 use helix_stdx::path::get_relative_path;
 use helix_term::ui::FilePickerData;
 use nucleotide_lsp::ServerStatus;
@@ -19,9 +19,9 @@ use helix_term::{
     keymap::Keymaps,
     ui::EditorView,
 };
-use helix_view::document::DocumentSavedEventResult;
 use helix_view::DocumentId;
-use helix_view::{doc_mut, graphics::Rect, handlers::Handlers, Editor};
+use helix_view::document::DocumentSavedEventResult;
+use helix_view::{Editor, doc_mut, graphics::Rect, handlers::Handlers};
 
 // Helper function to find workspace root from a specific directory
 #[instrument]
@@ -243,7 +243,7 @@ impl Application {
     /// Check if helix created a picker and emit the appropriate event
     #[instrument(skip(self, cx))]
     pub fn check_for_picker_and_emit_event(&mut self, cx: &mut gpui::Context<crate::Core>) -> bool {
-        use helix_term::ui::{overlay::Overlay, Picker};
+        use helix_term::ui::{Picker, overlay::Overlay};
 
         // Check for file picker first
         if self
@@ -265,7 +265,9 @@ impl Application {
         if self.compositor.remove(helix_term::ui::picker::ID).is_some() {
             info!("Found and removed picker from compositor");
             if self.editor.documents.len() > 1 {
-                info!("Multiple documents open, assuming buffer picker, emitting ShowBufferPicker event");
+                info!(
+                    "Multiple documents open, assuming buffer picker, emitting ShowBufferPicker event"
+                );
                 cx.emit(Update::Event(AppEvent::Ui(UiEvent::ShowPicker {
                     picker_type: PickerType::Buffer,
                     picker_object: None,
@@ -1083,7 +1085,9 @@ pub fn init_editor(
         .unwrap_or(false);
 
     let theme = if disable_theme_loading {
-        warn!("Theme loading disabled via NUCLEOTIDE_DISABLE_THEME_LOADING - using default theme but derive_ui_theme will ignore it");
+        warn!(
+            "Theme loading disabled via NUCLEOTIDE_DISABLE_THEME_LOADING - using default theme but derive_ui_theme will ignore it"
+        );
         // Use any theme here - the derive_ui_theme function will ignore it when testing mode is enabled
         helix_view::Theme::default()
     } else {
@@ -1277,8 +1281,8 @@ pub fn init_editor(
 #[allow(dead_code)]
 mod tests {
     use crate::test_utils::test_support::{
-        create_counting_channel, create_test_diagnostic_events, create_test_document_events,
-        create_test_selection_events, TestUpdate,
+        TestUpdate, create_counting_channel, create_test_diagnostic_events,
+        create_test_document_events, create_test_selection_events,
     };
     use std::time::Duration;
 

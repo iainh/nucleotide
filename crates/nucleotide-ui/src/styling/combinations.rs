@@ -2,7 +2,7 @@
 // ABOUTME: Provides utilities for combining styles, handling conflicts, and creating complex compositions
 
 use super::{BoxShadow, ComputedStyle, StyleState, Transition};
-use gpui::{px, Hsla};
+use gpui::{Hsla, px};
 use std::collections::HashMap;
 
 /// Style merge strategy for handling conflicts

@@ -3,8 +3,9 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement,
+    App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement,
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
+    div,
 };
 
 /// LSP completion view component

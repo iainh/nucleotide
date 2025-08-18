@@ -2,7 +2,7 @@
 // ABOUTME: Provides fluent API for theme construction, validation, and serialization
 
 use crate::Theme;
-use gpui::{px, Hsla, Pixels, SharedString};
+use gpui::{Hsla, Pixels, SharedString, px};
 use std::collections::HashMap;
 
 /// Fluent theme builder for creating custom themes

@@ -3,9 +3,9 @@
 
 use crate::lsp_state::LspState;
 use gpui::{
-    div, hsla, px, App, Bounds, Context, Element, ElementId, Entity, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Render, SharedString, Style,
-    Styled, TextRun, TextStyle, Window,
+    App, Bounds, Context, Element, ElementId, Entity, GlobalElementId, InspectorElementId,
+    IntoElement, LayoutId, ParentElement, Pixels, Render, SharedString, Style, Styled, TextRun,
+    TextStyle, Window, div, hsla, px,
 };
 use nucleotide_logging::error;
 

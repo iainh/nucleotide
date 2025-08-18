@@ -3,21 +3,21 @@
 
 use crate::file_tree::watcher::FileTreeWatcher;
 use crate::file_tree::{
-    icons::chevron_icon, FileTree, FileTreeConfig, FileTreeEntry, FileTreeEvent,
+    FileTree, FileTreeConfig, FileTreeEntry, FileTreeEvent, icons::chevron_icon,
 };
 use crate::vcs_service::VcsServiceHandle;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, uniform_list, App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled,
-    UniformListScrollHandle, Window,
+    App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled,
+    UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::{
+    ComponentState, FileIcon, ListItem, ListItemSpacing, ListItemVariant, Theme, VcsStatus,
     compute_component_state,
     scrollbar::{Scrollbar, ScrollbarState},
-    ComponentState, FileIcon, ListItem, ListItemSpacing, ListItemVariant, Theme, VcsStatus,
 };
 use std::path::{Path, PathBuf};
 
@@ -1018,7 +1018,11 @@ impl FileTreeView {
     }
 
     /// Render a single file tree entry using enhanced ListItem component with wrapped GPUI div
-    fn render_entry(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_entry(
+        &self,
+        entry: &FileTreeEntry,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let is_selected = self.selected_path.as_ref() == Some(&entry.path);
 
         // Use provider hooks to get theme and animation preferences

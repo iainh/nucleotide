@@ -2,7 +2,7 @@
 // ABOUTME: Provides style computation, variants, responsive design, and animations
 
 use crate::{DesignTokens, Theme};
-use gpui::{px, Hsla, Pixels};
+use gpui::{Hsla, Pixels, px};
 use std::time::Duration;
 
 pub mod animations;

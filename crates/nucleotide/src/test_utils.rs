@@ -5,9 +5,9 @@
 pub mod test_support {
     use helix_view::document::Mode;
     use helix_view::{DocumentId, ViewId};
-    use nucleotide_core::event_bridge::{create_bridge_channel, BridgedEvent};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use nucleotide_core::event_bridge::{BridgedEvent, create_bridge_channel};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::mpsc;
 
     // Test-only Update enum that doesn't include GPUI entities to avoid compilation issues

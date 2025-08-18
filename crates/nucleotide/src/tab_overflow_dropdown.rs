@@ -3,8 +3,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, App, CursorStyle, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    RenderOnce, SharedString, Styled, Window,
+    App, CursorStyle, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce,
+    SharedString, Styled, Window, div, px,
 };
 use helix_view::DocumentId;
 use nucleotide_ui::ThemedContext as UIThemedContext;

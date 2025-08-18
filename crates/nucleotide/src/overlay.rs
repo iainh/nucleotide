@@ -1,15 +1,15 @@
 use gpui::{
-    div, App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Render, Styled, Window,
+    App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Render, Styled, Window, div,
 };
 
+use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion::CompletionView;
 use nucleotide_ui::picker::Picker;
 use nucleotide_ui::picker_view::{PickerItem, PickerView};
 use nucleotide_ui::prompt::{Prompt, PromptElement};
 use nucleotide_ui::prompt_view::PromptView;
 use nucleotide_ui::theme_manager::HelixThemedContext;
-use nucleotide_ui::ThemedContext as UIThemedContext;
 
 pub struct OverlayView {
     prompt: Option<Prompt>,

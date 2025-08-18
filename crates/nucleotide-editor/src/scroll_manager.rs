@@ -1,7 +1,7 @@
 // ABOUTME: Manages scroll state synchronization between Helix editor and GPUI UI
 // ABOUTME: Converts between pixel-based scrolling (GPUI) and line-based anchors (Helix)
 
-use gpui::{point, px, size, Pixels, Point, Size};
+use gpui::{Pixels, Point, Size, point, px, size};
 use helix_view::Document;
 use nucleotide_logging::debug;
 use std::cell::Cell;

@@ -23,7 +23,7 @@ mod level_filtering_tests;
 mod simple_mock_tests;
 
 // Re-export tracing macros for convenience
-pub use tracing::{debug, error, info, instrument, span, trace, warn, Level, Span};
+pub use tracing::{Level, Span, debug, error, info, instrument, span, trace, warn};
 
 use std::sync::OnceLock;
 
