@@ -408,13 +408,17 @@ pub fn render_completion_list<F, T: 'static>(
 where
     F: Fn(usize, &CompletionItem, &StringMatch, bool) -> CompletionItemElement + 'static + Clone,
 {
-    println!("COMP: render_completion_list called with {} items, {} matches", items.len(), matches.len());
-    
+    println!(
+        "COMP: render_completion_list called with {} items, {} matches",
+        items.len(),
+        matches.len()
+    );
+
     let theme = match cx.try_global::<crate::Theme>() {
         Some(theme) => {
             println!("COMP: render_completion_list got theme successfully");
             theme
-        },
+        }
         None => {
             println!("COMP: render_completion_list - no theme found, returning empty div");
             return div().id("completion-list-no-theme");
@@ -428,14 +432,17 @@ where
         .iter()
         .enumerate()
         .filter_map(|(index, string_match)| {
-            println!("COMP: Processing match {} with candidate_id {}", index, string_match.candidate_id);
-            
+            println!(
+                "COMP: Processing match {} with candidate_id {}",
+                index, string_match.candidate_id
+            );
+
             // Use the candidate_id as the direct index into the items array
             let item = items.get(string_match.candidate_id)?;
             println!("COMP: Got item: {}", item.text);
 
             println!("COMP: About to create simple div for item: {}", item.text);
-            
+
             // Create a simple div element instead of using CompletionItemElement for now
             let element = div()
                 .flex()
@@ -452,14 +459,14 @@ where
                     div()
                         .text_sm()
                         .text_color(tokens.colors.text_primary)
-                        .child(item.text.clone())
+                        .child(item.text.clone()),
                 );
-            
+
             println!("COMP: Created simple div, converting to AnyElement");
             Some(element.into_any_element())
         })
         .collect();
-    
+
     println!("COMP: Created {} rendered_items", rendered_items.len());
 
     println!("COMP: About to create final div container");
@@ -476,7 +483,7 @@ where
         .min_h(px(list_state.item_height * 3.0))
         .overflow_y_scroll()
         .children(rendered_items);
-    
+
     println!("COMP: render_completion_list returning successfully");
     result
 }

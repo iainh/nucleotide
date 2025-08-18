@@ -4,7 +4,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, 
+    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
     Styled, Task, Window, div, px,
 };
 use std::sync::Arc;
@@ -292,8 +292,14 @@ impl CompletionView {
 
         // Initialize filtered_entries with all items when no filter is applied
         if !self.all_items.is_empty() {
-            println!("COMP: Populating filtered_entries with {} items", self.all_items.len());
-            self.filtered_entries = self.all_items.iter().enumerate()
+            println!(
+                "COMP: Populating filtered_entries with {} items",
+                self.all_items.len()
+            );
+            self.filtered_entries = self
+                .all_items
+                .iter()
+                .enumerate()
                 .map(|(index, _item)| StringMatch {
                     candidate_id: index,
                     score: 100,
@@ -301,7 +307,10 @@ impl CompletionView {
                 })
                 .collect();
             self.visible = true;
-            println!("COMP: Set visible=true with {} filtered_entries", self.filtered_entries.len());
+            println!(
+                "COMP: Set visible=true with {} filtered_entries",
+                self.filtered_entries.len()
+            );
         } else {
             self.visible = false;
         }
@@ -924,20 +933,23 @@ impl Render for CompletionView {
         if !self.is_visible() {
             return div().id("completion-hidden");
         }
-        
+
         // Access theme - if not available, return empty
         let theme = match cx.try_global::<crate::Theme>() {
             Some(theme) => theme,
             None => return div().id("completion-no-theme"),
         };
         let tokens = &theme.tokens;
-        
+
         // Create completion items directly without external functions
-        let completion_items: Vec<gpui::AnyElement> = self.filtered_entries.iter().enumerate()
+        let completion_items: Vec<gpui::AnyElement> = self
+            .filtered_entries
+            .iter()
+            .enumerate()
             .filter_map(|(index, string_match)| {
                 let item = self.all_items.get(string_match.candidate_id)?;
                 let is_selected = index == self.selected_index;
-                
+
                 let element = div()
                     .flex()
                     .flex_row()
@@ -945,45 +957,40 @@ impl Render for CompletionView {
                     .w_full()
                     .px_2()
                     .py_1()
-                    .when(is_selected, |div| {
-                        div.bg(tokens.colors.selection_primary)
-                    })
+                    .when(is_selected, |div| div.bg(tokens.colors.selection_primary))
                     .child(
                         div()
                             .text_sm()
                             .text_color(tokens.colors.text_primary)
-                            .child(item.text.clone())
+                            .child(item.text.clone()),
                     );
-                
+
                 Some(element.into_any_element())
             })
             .collect();
 
         // Simple container without key handling - let workspace handle escape
-        let container = div()
-            .id("completion-popup-v2");
+        let container = div().id("completion-popup-v2");
 
         // Don't focus the completion view - let the editor keep focus
         // We'll handle escape through the workspace level instead
 
-        container
-            .flex()
-            .child(
-                div()
-                    .id("completion-list")
-                    .flex()
-                    .flex_col()
-                    .min_w_64()
-                    .max_w_96()
-                    .bg(tokens.colors.popup_background)
-                    .border_1()
-                    .border_color(tokens.colors.popup_border)
-                    .rounded_md()
-                    .shadow_lg()
-                    .max_h(px(300.0))
-                    .overflow_y_scroll()
-                    .children(completion_items)
-            )
+        container.flex().child(
+            div()
+                .id("completion-list")
+                .flex()
+                .flex_col()
+                .min_w_64()
+                .max_w_96()
+                .bg(tokens.colors.popup_background)
+                .border_1()
+                .border_color(tokens.colors.popup_border)
+                .rounded_md()
+                .shadow_lg()
+                .max_h(px(300.0))
+                .overflow_y_scroll()
+                .children(completion_items),
+        )
     }
 }
 

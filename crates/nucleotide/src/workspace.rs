@@ -2466,7 +2466,10 @@ impl Workspace {
     }
 
     fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
-        eprintln!("DEBUG: Workspace handle_key received: '{}'", ev.keystroke.key);
+        eprintln!(
+            "DEBUG: Workspace handle_key received: '{}'",
+            ev.keystroke.key
+        );
         // Wrap the entire key handling in a catch to prevent panics from propagating to FFI
         if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Check if the file tree has focus - if so, don't consume the event
@@ -2622,7 +2625,7 @@ impl Workspace {
                 println!("COMP: Created completion view entity");
                 view
             });
-            
+
             println!("COMP: Emitting completion update event");
 
             cx.emit(crate::Update::Completion(completion_view));
@@ -3152,7 +3155,7 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::completion::TriggerCompletion, _window, cx| {
                 println!("COMP: TriggerCompletion action received - manual completion triggered");
-                
+
                 // Get current view and document IDs
                 let (doc_id, view_id) = {
                     let core = workspace.core.read(cx);
@@ -3163,7 +3166,10 @@ impl Render for Workspace {
                         .try_get(view_id)
                         .map(|view| view.doc)
                         .unwrap_or_default();
-                    println!("COMP: Manual completion: doc_id={:?}, view_id={:?}", doc_id, view_id);
+                    println!(
+                        "COMP: Manual completion: doc_id={:?}, view_id={:?}",
+                        doc_id, view_id
+                    );
                     (doc_id, view_id)
                 };
 
