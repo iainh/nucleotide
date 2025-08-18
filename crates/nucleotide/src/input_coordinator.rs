@@ -4,10 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use gpui::{
-    actions, Context, Entity, FocusHandle, KeyDownEvent,
-    Window,
-};
+use gpui::{Context, Entity, FocusHandle, KeyDownEvent, Window, actions};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 
 // Import for Helix integration
@@ -118,26 +115,22 @@ actions!(
     [
         // Global navigation
         ToggleFileTree,
-        ShowFileFinder, 
+        ShowFileFinder,
         ShowCommandPalette,
         ShowBufferPicker,
-        
         // Focus group navigation
         NextFocusGroup,
         PrevFocusGroup,
         FocusEditor,
         FocusFileTree,
         FocusStatusBar,
-        
         // Modal handling
         Escape,
-        
         // Quick navigation
         QuickNav1,
-        QuickNav2, 
+        QuickNav2,
         QuickNav3,
         QuickNav0,
-        
         // Editor actions
         SaveFile,
         CloseFile,
@@ -150,7 +143,7 @@ impl InputCoordinator {
     /// Create a new input coordinator
     pub fn new() -> Self {
         debug!("Creating new InputCoordinator");
-        
+
         let coordinator = Self {
             active_context: Arc::new(RwLock::new(InputContext::Normal)),
             context_stack: Arc::new(RwLock::new(Vec::new())),
@@ -158,7 +151,7 @@ impl InputCoordinator {
             focus_groups: Arc::new(RwLock::new(FocusGroupManager::new())),
             active_focus_group: Arc::new(RwLock::new(None)),
         };
-        
+
         coordinator.setup_default_handlers();
         coordinator
     }
@@ -166,7 +159,7 @@ impl InputCoordinator {
     /// Set up default action handlers for common shortcuts
     fn setup_default_handlers(&self) {
         debug!("Setting up default action handlers");
-        
+
         // Initialize context handlers for all contexts
         let mut handlers = self.action_handlers.write().unwrap();
         for context in [
@@ -187,7 +180,7 @@ impl InputCoordinator {
         let mut active = self.active_context.write().unwrap();
         let old_context = *active;
         *active = new_context;
-        
+
         info!(
             old_context = ?old_context,
             new_context = ?new_context,
@@ -201,9 +194,9 @@ impl InputCoordinator {
         let mut stack = self.context_stack.write().unwrap();
         stack.push(*self.active_context.read().unwrap());
         drop(stack);
-        
+
         self.switch_context(context);
-        
+
         debug!(context = ?context, "Pushed context onto stack");
     }
 
@@ -237,13 +230,12 @@ impl InputCoordinator {
     ) {
         let action_name = action_name.into();
         let mut handlers = self.action_handlers.write().unwrap();
-        
+
         if let Some(context_handlers) = handlers.get_mut(&context) {
-            context_handlers.global_handlers.insert(
-                action_name.clone(),
-                Arc::new(handler),
-            );
-            
+            context_handlers
+                .global_handlers
+                .insert(action_name.clone(), Arc::new(handler));
+
             debug!(
                 action = %action_name,
                 context = ?context,
@@ -260,7 +252,7 @@ impl InputCoordinator {
     ) {
         let action_name = action_name.into();
         let handler = Arc::new(handler);
-        
+
         // Register for all contexts
         for context in [
             InputContext::Normal,
@@ -272,13 +264,12 @@ impl InputCoordinator {
         ] {
             let mut handlers = self.action_handlers.write().unwrap();
             if let Some(context_handlers) = handlers.get_mut(&context) {
-                context_handlers.global_handlers.insert(
-                    action_name.clone(),
-                    handler.clone(),
-                );
+                context_handlers
+                    .global_handlers
+                    .insert(action_name.clone(), handler.clone());
             }
         }
-        
+
         debug!(action = %action_name, "Registered global action handler");
     }
 
@@ -286,7 +277,7 @@ impl InputCoordinator {
     #[instrument(skip(self, event, window))]
     pub fn handle_key_event(&self, event: &KeyDownEvent, window: &Window) -> InputResult {
         let current_context = self.current_context();
-        
+
         debug!(
             key = %event.keystroke,
             context = ?current_context,
@@ -316,9 +307,21 @@ impl InputCoordinator {
     /// Handle Escape key behavior
     fn handle_escape(&self, event: &KeyDownEvent) -> Option<InputResult> {
         if event.keystroke.key.as_str() == "escape" {
-            debug!("Escape key pressed, attempting to pop context");
-            self.pop_context();
-            return Some(InputResult::Handled);
+            let current_context = self.current_context();
+
+            // Only consume ESC if we're not in Normal context
+            // In Normal context, ESC should go to Helix for mode switching
+            match current_context {
+                InputContext::Normal => {
+                    debug!("ESC in Normal context - passing to Helix for mode switching");
+                    return None; // Let it pass through to Helix
+                }
+                _ => {
+                    debug!("ESC in {:?} context - popping context", current_context);
+                    self.pop_context();
+                    return Some(InputResult::Handled);
+                }
+            }
         }
         None
     }
@@ -330,7 +333,7 @@ impl InputCoordinator {
                 debug!("Shift+Tab pressed, navigating to previous focus group");
                 self.navigate_focus_group(false);
             } else {
-                debug!("Tab pressed, navigating to next focus group");  
+                debug!("Tab pressed, navigating to next focus group");
                 self.navigate_focus_group(true);
             }
             return Some(InputResult::Handled);
@@ -344,7 +347,7 @@ impl InputCoordinator {
 
         // Translate GPUI key event to Helix key event
         let helix_key = utils::translate_key(&event.keystroke);
-        
+
         debug!(
             key = ?helix_key,
             "Sending key to Helix editor"
@@ -355,7 +358,7 @@ impl InputCoordinator {
 
     fn handle_completion_context(&self, event: &KeyDownEvent, _window: &Window) -> InputResult {
         debug!("Handling completion context input");
-        
+
         // For completion context, we might want to handle some keys specially
         // but for now, also send to Helix
         let helix_key = utils::translate_key(&event.keystroke);
@@ -364,28 +367,28 @@ impl InputCoordinator {
 
     fn handle_file_tree_context(&self, _event: &KeyDownEvent, _window: &Window) -> InputResult {
         debug!("Handling file tree context input");
-        
+
         // File tree should handle its own input, so don't send to Helix
         InputResult::NotHandled
     }
 
     fn handle_picker_context(&self, _event: &KeyDownEvent, _window: &Window) -> InputResult {
         debug!("Handling picker context input");
-        
+
         // Picker should handle its own input, so don't send to Helix
         InputResult::NotHandled
     }
 
     fn handle_modal_context(&self, _event: &KeyDownEvent, _window: &Window) -> InputResult {
         debug!("Handling modal context input");
-        
+
         // Modal should handle its own input, so don't send to Helix
         InputResult::NotHandled
     }
 
     fn handle_prompt_context(&self, _event: &KeyDownEvent, _window: &Window) -> InputResult {
         debug!("Handling prompt context input");
-        
+
         // Prompt should handle its own input, so don't send to Helix
         InputResult::NotHandled
     }
@@ -394,7 +397,7 @@ impl InputCoordinator {
     fn navigate_focus_group(&self, forward: bool) {
         let mut focus_manager = self.focus_groups.write().unwrap();
         focus_manager.navigate(forward);
-        
+
         if let Some(new_group) = focus_manager.active_group {
             *self.active_focus_group.write().unwrap() = Some(new_group);
             debug!(group = ?new_group, forward = forward, "Navigated to focus group");
@@ -442,11 +445,14 @@ impl FocusGroupManager {
 
         // Initialize all groups as unavailable
         for &group in &manager.navigation_order {
-            manager.groups.insert(group, FocusGroupState {
-                available: false,
-                focus_handle: None,
-                activate_callback: None,
-            });
+            manager.groups.insert(
+                group,
+                FocusGroupState {
+                    available: false,
+                    focus_handle: None,
+                    activate_callback: None,
+                },
+            );
         }
 
         manager
@@ -475,10 +481,12 @@ impl FocusGroupManager {
 
     /// Navigate to the next/previous focus group
     pub fn navigate(&mut self, forward: bool) {
-        let available_groups: Vec<_> = self.navigation_order
+        let available_groups: Vec<_> = self
+            .navigation_order
             .iter()
             .filter(|&&group| {
-                self.groups.get(&group)
+                self.groups
+                    .get(&group)
                     .map(|state| state.available)
                     .unwrap_or(false)
             })
@@ -535,14 +543,14 @@ mod tests {
     #[test]
     fn test_context_switching() {
         let coordinator = InputCoordinator::new();
-        
+
         // Initial context should be Normal
         assert_eq!(coordinator.current_context(), InputContext::Normal);
-        
+
         // Switch to FileTree
         coordinator.switch_context(InputContext::FileTree);
         assert_eq!(coordinator.current_context(), InputContext::FileTree);
-        
+
         // Switch to Modal
         coordinator.switch_context(InputContext::Modal);
         assert_eq!(coordinator.current_context(), InputContext::Modal);
@@ -551,28 +559,28 @@ mod tests {
     #[test]
     fn test_context_stack() {
         let coordinator = InputCoordinator::new();
-        
+
         // Start in Normal
         assert_eq!(coordinator.current_context(), InputContext::Normal);
-        
+
         // Push FileTree context
         coordinator.push_context(InputContext::FileTree);
         assert_eq!(coordinator.current_context(), InputContext::FileTree);
-        
+
         // Push Modal context
         coordinator.push_context(InputContext::Modal);
         assert_eq!(coordinator.current_context(), InputContext::Modal);
-        
+
         // Pop back to FileTree
         let popped = coordinator.pop_context();
         assert_eq!(popped, Some(InputContext::FileTree));
         assert_eq!(coordinator.current_context(), InputContext::FileTree);
-        
+
         // Pop back to Normal
         let popped = coordinator.pop_context();
         assert_eq!(popped, Some(InputContext::Normal));
         assert_eq!(coordinator.current_context(), InputContext::Normal);
-        
+
         // Pop from empty stack should return None and stay Normal
         let popped = coordinator.pop_context();
         assert_eq!(popped, None);
@@ -582,32 +590,26 @@ mod tests {
     #[test]
     fn test_action_registration() {
         let coordinator = InputCoordinator::new();
-        
+
         // This should not panic
-        coordinator.register_action(
-            InputContext::Normal,
-            "test_action",
-            || { /* test handler */ }
-        );
-        
-        coordinator.register_global_action(
-            "global_test_action",
-            || { /* global test handler */ }
-        );
+        coordinator.register_action(InputContext::Normal, "test_action", || { /* test handler */
+        });
+
+        coordinator.register_global_action("global_test_action", || { /* global test handler */ });
     }
 
     #[test]
     fn test_focus_group_management() {
         let coordinator = InputCoordinator::new();
-        
+
         // Register focus groups
         coordinator.register_focus_group(FocusGroup::Editor, None, None);
         coordinator.register_focus_group(FocusGroup::FileTree, None, None);
-        
+
         // Set availability
         coordinator.set_focus_group_available(FocusGroup::Editor, true);
         coordinator.set_focus_group_available(FocusGroup::FileTree, true);
-        
+
         // Initially no focus group should be active
         assert_eq!(coordinator.active_focus_group(), None);
     }

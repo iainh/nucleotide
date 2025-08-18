@@ -45,7 +45,6 @@ impl OverlayView {
 
     pub fn dismiss_completion(&mut self, cx: &mut Context<Self>) {
         if self.completion_view.is_some() {
-            eprintln!("DEBUG: Dismissing completion view");
             self.completion_view = None;
             cx.notify();
         }

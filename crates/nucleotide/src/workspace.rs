@@ -2744,9 +2744,7 @@ impl Workspace {
 
                 // Then check if we should dismiss the completion popup
                 let has_completion = self.overlay.read(cx).has_completion();
-                eprintln!("DEBUG: Escape - has_completion: {}", has_completion);
                 if has_completion {
-                    eprintln!("DEBUG: Escape pressed - dismissing completion popup");
                     self.overlay.update(cx, |overlay, cx| {
                         overlay.dismiss_completion(cx);
                     });
