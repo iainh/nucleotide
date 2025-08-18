@@ -6,7 +6,7 @@ pub mod advanced_theming;
 pub mod assets;
 pub mod button;
 pub mod common;
-pub mod completion;
+// Old completion module removed - now using completion_v2
 pub mod completion_cache;
 pub mod completion_docs;
 pub mod completion_error;

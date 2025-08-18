@@ -4,7 +4,7 @@ use gpui::{
 };
 
 use nucleotide_ui::ThemedContext as UIThemedContext;
-use nucleotide_ui::completion::CompletionView;
+use nucleotide_ui::completion_v2::CompletionView;
 use nucleotide_ui::picker::Picker;
 use nucleotide_ui::picker_view::{PickerItem, PickerView};
 use nucleotide_ui::prompt::{Prompt, PromptElement};

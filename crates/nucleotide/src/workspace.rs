@@ -2598,8 +2598,8 @@ impl Workspace {
 
             // Create completion view as an entity
             let completion_view = cx.new(|cx| {
-                let mut view = crate::completion::CompletionView::new(cx);
-                view.set_items(items);
+                let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
+                view.set_items(items, cx);
                 view
             });
 
@@ -3672,8 +3672,8 @@ fn test_completion(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
 
     // Create completion view
     let completion_view = cx.new(|cx| {
-        let mut view = crate::completion::CompletionView::new(cx);
-        view.set_items(items);
+        let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
+        view.set_items(items, cx);
         view
     });
 

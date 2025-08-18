@@ -26,8 +26,8 @@ pub use nucleotide_core::preview_tracker;
 
 // Re-export modules that were moved to other crates
 pub use nucleotide_ui::{
-    Picker, Prompt, PromptElement, completion, info_box, key_hint_view, notification, picker,
-    picker_view, prompt, prompt_view, titlebar,
+    Picker, Prompt, PromptElement, completion_v2 as completion, info_box, key_hint_view,
+    notification, picker, picker_view, prompt, prompt_view, titlebar,
 };
 
 // Re-export commonly used items

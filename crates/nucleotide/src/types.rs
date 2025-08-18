@@ -26,7 +26,7 @@ pub enum Update {
     Prompt(crate::prompt::Prompt),
     Picker(crate::picker::Picker),
     DirectoryPicker(crate::picker::Picker),
-    Completion(gpui::Entity<crate::completion::CompletionView>),
+    Completion(gpui::Entity<nucleotide_ui::completion_v2::CompletionView>),
     Info(helix_view::info::Info),
 
     // Legacy events still being migrated

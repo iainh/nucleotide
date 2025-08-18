@@ -299,31 +299,40 @@ impl Application {
         })
     }
 
-    pub fn create_sample_completion_items(&self) -> Vec<crate::completion::CompletionItem> {
-        use crate::completion::{CompletionItem, CompletionItemKind};
+    pub fn create_sample_completion_items(
+        &self,
+    ) -> Vec<nucleotide_ui::completion_v2::CompletionItem> {
+        use nucleotide_ui::completion_v2::{CompletionItem, CompletionItemKind};
 
         // Create sample completion items
         vec![
-            CompletionItem::new("println!", CompletionItemKind::Snippet)
-                .with_detail("macro")
+            CompletionItem::new("println!")
+                .with_kind(CompletionItemKind::Snippet)
+                .with_description("macro")
                 .with_documentation("Prints to the standard output, with a newline."),
-            CompletionItem::new("String", CompletionItemKind::Struct)
-                .with_detail("std::string::String")
+            CompletionItem::new("String")
+                .with_kind(CompletionItemKind::Struct)
+                .with_description("std::string::String")
                 .with_documentation("A UTF-8 encoded, growable string."),
-            CompletionItem::new("Vec", CompletionItemKind::Struct)
-                .with_detail("std::vec::Vec<T>")
+            CompletionItem::new("Vec")
+                .with_kind(CompletionItemKind::Struct)
+                .with_description("std::vec::Vec<T>")
                 .with_documentation("A contiguous growable array type."),
-            CompletionItem::new("HashMap", CompletionItemKind::Struct)
-                .with_detail("std::collections::HashMap<K, V>")
+            CompletionItem::new("HashMap")
+                .with_kind(CompletionItemKind::Struct)
+                .with_description("std::collections::HashMap<K, V>")
                 .with_documentation("A hash map implementation."),
-            CompletionItem::new("println", CompletionItemKind::Function)
-                .with_detail("fn println(&str)")
+            CompletionItem::new("println")
+                .with_kind(CompletionItemKind::Function)
+                .with_description("fn println(&str)")
                 .with_documentation("Print to stdout with newline"),
-            CompletionItem::new("print", CompletionItemKind::Function)
-                .with_detail("fn print(&str)")
+            CompletionItem::new("print")
+                .with_kind(CompletionItemKind::Function)
+                .with_description("fn print(&str)")
                 .with_documentation("Print to stdout without newline"),
-            CompletionItem::new("format", CompletionItemKind::Function)
-                .with_detail("fn format(&str, ...) -> String")
+            CompletionItem::new("format")
+                .with_kind(CompletionItemKind::Function)
+                .with_description("fn format(&str, ...) -> String")
                 .with_documentation("Create a formatted string"),
         ]
     }
