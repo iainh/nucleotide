@@ -1058,21 +1058,23 @@ impl Workspace {
             doc_id, view_id, trigger
         );
 
-        // Only show completion for certain triggers (not every character)
+        // Only show completion for manual triggers for now to avoid blocking
         match trigger {
             crate::types::CompletionTrigger::Manual => {
                 // Always show for manual triggers
                 self.trigger_completion(cx);
             }
-            crate::types::CompletionTrigger::Character(c) => {
-                // Only trigger for certain characters that typically start identifiers
-                if c.is_alphabetic() || *c == '_' || *c == '.' {
-                    self.trigger_completion(cx);
-                }
+            crate::types::CompletionTrigger::Character(_c) => {
+                // Disable automatic completion on character input to prevent blocking
+                // TODO: Re-enable with proper debouncing and async handling
+                // if c.is_alphabetic() || *c == '_' || *c == '.' {
+                //     self.trigger_completion(cx);
+                // }
             }
             crate::types::CompletionTrigger::Automatic => {
-                // Re-filter existing completion
-                self.trigger_completion(cx);
+                // Disable automatic completion for now
+                // TODO: Re-enable with proper debouncing
+                // self.trigger_completion(cx);
             }
         }
 
