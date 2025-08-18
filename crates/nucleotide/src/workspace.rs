@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use gpui::FontFeatures;
 use gpui::prelude::FluentBuilder;
@@ -18,9 +19,11 @@ use nucleotide_logging::{debug, error, info, instrument, warn};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::{
-    Button, ButtonSize, ButtonVariant, GlobalInputDispatcher, StyleSize, StyleState, StyleVariant,
+    Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant,
     compute_component_style,
 };
+
+use crate::input_coordinator::{InputCoordinator, InputContext, FocusGroup};
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;
@@ -58,7 +61,7 @@ pub struct Workspace {
     pending_appearance: Option<gpui::WindowAppearance>,
     tab_overflow_dropdown_open: bool,
     document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
-    global_input: GlobalInputDispatcher,         // Global input event dispatcher
+    input_coordinator: Arc<InputCoordinator>,   // Central input coordination system
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -97,6 +100,7 @@ impl Workspace {
         overlay: Entity<OverlayView>,
         notifications: Entity<NotificationView>,
         info: Entity<InfoBoxView>,
+        input_coordinator: Arc<InputCoordinator>,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
@@ -161,9 +165,8 @@ impl Workspace {
             info!("Workspace: No file tree to subscribe to");
         }
 
-        // Initialize global input dispatcher
-        let mut global_input = GlobalInputDispatcher::new();
-        global_input.initialize(cx);
+        // Initialize workspace-specific actions with the input coordinator
+        Self::register_workspace_actions(&input_coordinator);
 
         let mut workspace = Self {
             core,
@@ -177,7 +180,7 @@ impl Workspace {
             key_hints,
             notifications,
             focus_handle,
-            needs_focus_restore: false,
+            needs_focus_restore: true, // Ensure workspace gets initial focus for global shortcuts
             file_tree,
             show_file_tree: true,
             file_tree_width: 250.0, // Default width
@@ -190,7 +193,7 @@ impl Workspace {
             pending_appearance: None,
             tab_overflow_dropdown_open: false,
             document_order: Vec::new(),
-            global_input,
+            input_coordinator,
         };
 
         // Register focus groups for main UI areas
@@ -211,6 +214,150 @@ impl Workspace {
         }
 
         workspace
+    }
+
+    /// Register workspace-specific actions with the input coordinator
+    fn register_workspace_actions(coordinator: &Arc<InputCoordinator>) {
+        info!("Registering workspace actions with InputCoordinator");
+        
+        // Register ToggleFileTree action (Ctrl+B)
+        coordinator.register_global_action(
+            "ToggleFileTree",
+            || {
+                info!("ToggleFileTree action triggered");
+                // This will need to be implemented differently - we need access to workspace
+                // For now, this is just a placeholder structure
+            }
+        );
+        
+        // Register ShowFileFinder action (Ctrl+P)
+        coordinator.register_global_action(
+            "ShowFileFinder", 
+            || {
+                info!("ShowFileFinder action triggered");
+                // Placeholder
+            }
+        );
+        
+        // Register ShowCommandPalette action (Ctrl+Shift+P)
+        coordinator.register_global_action(
+            "ShowCommandPalette",
+            || {
+                info!("ShowCommandPalette action triggered");
+                // Placeholder
+            }
+        );
+        
+        // Register ShowBufferPicker action
+        coordinator.register_global_action(
+            "ShowBufferPicker",
+            || {
+                info!("ShowBufferPicker action triggered");
+                // Placeholder
+            }
+        );
+        
+        // Register focus group navigation actions
+        coordinator.register_global_action(
+            "FocusEditor",
+            || {
+                info!("FocusEditor action triggered");
+                // Placeholder
+            }
+        );
+        
+        coordinator.register_global_action(
+            "FocusFileTree", 
+            || {
+                info!("FocusFileTree action triggered");
+                // Placeholder
+            }
+        );
+        
+        info!("Completed workspace action registration");
+    }
+
+    /// Update the input context based on current focus state
+    fn update_input_context(&mut self, window: &Window, cx: &mut Context<Self>) {
+        // Determine the current context based on focus state
+        let new_context = if let Some(file_tree) = &self.file_tree {
+            if file_tree.focus_handle(cx).is_focused(window) {
+                InputContext::FileTree
+            } else if self.focused_view_id.is_some() {
+                InputContext::Normal  // Editor context
+            } else {
+                InputContext::Normal
+            }
+        } else if self.focused_view_id.is_some() {
+            InputContext::Normal  // Editor context
+        } else {
+            InputContext::Normal
+        };
+
+        // Switch to the appropriate context
+        self.input_coordinator.switch_context(new_context);
+        
+        debug!(context = ?new_context, "Updated input context");
+    }
+
+    /// Handle workspace actions triggered by InputCoordinator
+    fn handle_workspace_action(&mut self, action: &str, cx: &mut Context<Self>) {
+        match action {
+            "ToggleFileTree" => {
+                info!("Toggling file tree");
+                self.show_file_tree = !self.show_file_tree;
+                cx.notify();
+            }
+            "ShowFileFinder" => {
+                info!("Showing file finder");
+                // Implementation will be added later
+            }
+            "ShowCommandPalette" => {
+                info!("Showing command palette");
+                // Implementation will be added later
+            }
+            _ => {
+                warn!(action = %action, "Unknown workspace action");
+            }
+        }
+    }
+
+    /// Simplified key handler that delegates to the InputCoordinator
+    fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
+        debug!(
+            key = %ev.keystroke.key,
+            modifiers = ?ev.keystroke.modifiers,
+            "Workspace received key event"
+        );
+
+        // Update input context based on current focus state
+        self.update_input_context(window, cx);
+        
+        // Delegate to InputCoordinator for processing
+        let result = self.input_coordinator.handle_key_event(ev, window);
+        
+        // Handle the result
+        use crate::input_coordinator::InputResult;
+        match result {
+            InputResult::NotHandled => {
+                debug!("Key event not handled by InputCoordinator");
+            }
+            InputResult::Handled => {
+                debug!("Key event handled by InputCoordinator");
+            }
+            InputResult::SendToHelix(helix_key) => {
+                debug!(key = ?helix_key, "Sending key to Helix editor");
+                
+                // Send the key to Helix
+                self.input.update(cx, |_, cx| {
+                    cx.emit(crate::InputEvent::Key(helix_key));
+                });
+            }
+            InputResult::WorkspaceAction(action) => {
+                debug!(action = %action, "Executing workspace action");
+                self.handle_workspace_action(&action, cx);
+            }
+        }
     }
 
     pub fn new(
@@ -2494,48 +2641,81 @@ impl Workspace {
         }
     }
 
-    fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
+    /// Simplified key handler that delegates to the InputCoordinator
+    fn handle_key_old(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
         eprintln!(
             "DEBUG: Workspace handle_key received: '{}'",
             ev.keystroke.key
         );
 
-        // First, try to handle the event through the global input system
-        use nucleotide_ui::providers::EventResult;
-        let global_result = self.global_input.handle_key_event(ev);
+        // Add detailed focus debugging
+        let workspace_focused = self.focus_handle.is_focused(window);
+        let file_tree_focused = self.file_tree.as_ref()
+            .map(|ft| ft.focus_handle(cx).is_focused(window))
+            .unwrap_or(false);
+        let doc_view_focused = self.focused_view_id
+            .and_then(|view_id| self.documents.get(&view_id))
+            .map(|doc_view| doc_view.focus_handle(cx).is_focused(window))
+            .unwrap_or(false);
 
-        match global_result {
-            EventResult::HandledAndStop | EventResult::PreventDefault => {
-                // Event was fully handled by global input system, don't continue processing
-                eprintln!(
-                    "DEBUG: Event fully handled by global input system: {:?}",
-                    global_result
-                );
-                return;
-            }
-            EventResult::Handled => {
-                // Event was handled but should continue processing
-                eprintln!("DEBUG: Event partially handled by global input system, continuing");
-
-                // Handle any shortcuts that the global input system detected
-                self.handle_global_input_shortcuts(ev, cx);
-
-                // For some shortcuts like completion dismiss, we want both global handling AND normal processing
-            }
-            EventResult::NotHandled => {
-                // Event not handled by global input system, continue with normal processing
-            }
-        }
+        eprintln!(
+            "DEBUG: Focus state - workspace: {}, file_tree: {}, doc_view: {}, focused_view_id: {:?}",
+            workspace_focused, file_tree_focused, doc_view_focused, self.focused_view_id
+        );
 
         // Wrap the entire key handling in a catch to prevent panics from propagating to FFI
         if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // Check if the file tree has focus - if so, don't consume the event
+            // Check if the file tree has focus - if so, only handle global shortcuts, don't interfere with normal keys
             if let Some(file_tree) = &self.file_tree {
                 if file_tree.focus_handle(cx).is_focused(window) {
-                    debug!("File tree has focus, not forwarding key to editor");
+                    eprintln!("DEBUG: File tree has focus, only handling global shortcuts");
+                    // Only handle truly global shortcuts when file tree has focus
+                    self.handle_global_shortcuts_only(ev, cx);
                     return; // Let the file tree handle its own key events
                 }
             }
+
+            // Check if a document view has focus - only handle global shortcuts
+            if let Some(view_id) = self.focused_view_id {
+                if let Some(doc_view) = self.documents.get(&view_id) {
+                    if doc_view.focus_handle(cx).is_focused(window) {
+                        eprintln!("DEBUG: Document view has focus, only handling global shortcuts");
+                        // Only handle truly global shortcuts when editor has focus
+                        self.handle_global_shortcuts_only(ev, cx);
+                        return; // Let the document view handle its own key events
+                    }
+                }
+            }
+
+            // If no specific component has focus, handle through the full global input system
+            // DISABLED: Old global input system handling
+            /*
+            use nucleotide_ui::providers::EventResult;
+            let global_result = // OLD: self.global_input.handle_key_event(ev);
+
+            match global_result {
+                EventResult::HandledAndStop | EventResult::PreventDefault => {
+                    // Event was fully handled by global input system, don't continue processing
+                    eprintln!(
+                        "DEBUG: Event fully handled by global input system: {:?}",
+                        global_result
+                    );
+                    return;
+                }
+                EventResult::Handled => {
+                    // Event was handled but should continue processing
+                    eprintln!("DEBUG: Event partially handled by global input system, continuing");
+
+                    // Handle any shortcuts that the global input system detected
+                    self.handle_global_input_shortcuts(ev, cx);
+
+                    // For some shortcuts like completion dismiss, we want both global handling AND normal processing
+                }
+                EventResult::NotHandled => {
+                    // Event not handled by global input system, continue with normal processing
+                }
+            }
+            */
 
             // Check if we should dismiss UI elements on escape
             if ev.keystroke.key == "escape" {
@@ -2615,30 +2795,49 @@ impl Workspace {
         });
     }
 
-    /// Register focus groups for main UI areas
+    /// Register focus groups for main UI areas with InputCoordinator
     fn register_focus_groups(&mut self, cx: &mut Context<Self>) {
-        use nucleotide_ui::{FocusElement, FocusElementType, FocusPriority, GlobalFocusGroup};
+        info!("Registering focus groups with InputCoordinator");
 
         // Register editor focus group
-        let editor_group = GlobalFocusGroup {
-            id: "editor".to_string(),
-            name: "Editor".to_string(),
-            priority: FocusPriority::High,
-            elements: vec![FocusElement {
-                id: "document_view".to_string(),
-                name: "Document View".to_string(),
-                focus_handle: Some(self.focus_handle.clone()),
-                tab_index: 1,
-                enabled: true,
-                element_type: FocusElementType::Editor,
-            }],
-            active_element: Some(0),
-            enabled: true,
-        };
-        self.global_input.register_focus_group(editor_group);
+        self.input_coordinator.register_focus_group(
+            FocusGroup::Editor,
+            Some(self.focus_handle.clone()),
+            Some(Box::new(|| {
+                debug!("Editor focus group activated");
+            }))
+        );
 
         // Register file tree focus group if available
         if let Some(ref file_tree) = self.file_tree {
+            self.input_coordinator.register_focus_group(
+                FocusGroup::FileTree,
+                Some(file_tree.focus_handle(cx)),
+                Some(Box::new(|| {
+                    debug!("FileTree focus group activated");
+                }))
+            );
+        }
+
+        // Register overlay focus group
+        self.input_coordinator.register_focus_group(
+            FocusGroup::Overlays,
+            Some(self.overlay.focus_handle(cx)),
+            Some(Box::new(|| {
+                debug!("Overlays focus group activated");
+            }))
+        );
+
+        // Set editor and file tree as available if they exist
+        self.input_coordinator.set_focus_group_available(FocusGroup::Editor, true);
+        if self.file_tree.is_some() && self.show_file_tree {
+            self.input_coordinator.set_focus_group_available(FocusGroup::FileTree, true);
+        }
+
+        info!("Registered focus groups for main UI areas with InputCoordinator");
+
+        // OLD CODE - disabled
+        /*
             let file_tree_group = GlobalFocusGroup {
                 id: "file_tree".to_string(),
                 name: "File Tree".to_string(),
@@ -2654,7 +2853,7 @@ impl Workspace {
                 active_element: Some(0),
                 enabled: true,
             };
-            self.global_input.register_focus_group(file_tree_group);
+            // DISABLED: // OLD: self.global_input.register_focus_group(file_tree_group);
         }
 
         // Register overlay focus group
@@ -2673,13 +2872,16 @@ impl Workspace {
             active_element: Some(0),
             enabled: true,
         };
-        self.global_input.register_focus_group(overlay_group);
+        // DISABLED: // OLD: self.global_input.register_focus_group(overlay_group);
+        */
 
-        nucleotide_logging::info!("Registered focus groups for main UI areas");
+        // Method completed with InputCoordinator integration
     }
 
     /// Setup completion-specific shortcuts and input contexts
     fn setup_completion_shortcuts(&mut self) {
+        // TODO: Re-implement with InputCoordinator
+        /*
         use nucleotide_ui::providers::EventPriority;
         use nucleotide_ui::{
             DismissTarget, GlobalNavigationDirection, ShortcutAction, ShortcutDefinition,
@@ -2694,7 +2896,7 @@ impl Workspace {
             priority: EventPriority::Critical,
             enabled: true,
         };
-        self.global_input.register_shortcut(escape_shortcut);
+        // DISABLED: // OLD: self.global_input.register_shortcut(escape_shortcut);
 
         // Register Ctrl+Space to trigger completion
         let trigger_completion_shortcut = ShortcutDefinition {
@@ -2705,7 +2907,7 @@ impl Workspace {
             priority: EventPriority::High,
             enabled: true,
         };
-        self.global_input
+        // OLD: self.global_input
             .register_shortcut(trigger_completion_shortcut);
 
         // Register Tab for completion navigation
@@ -2717,7 +2919,7 @@ impl Workspace {
             priority: EventPriority::High,
             enabled: true,
         };
-        self.global_input.register_shortcut(tab_shortcut);
+        // DISABLED: // OLD: self.global_input.register_shortcut(tab_shortcut);
 
         // Register Shift+Tab for reverse completion navigation
         let shift_tab_shortcut = ShortcutDefinition {
@@ -2728,7 +2930,7 @@ impl Workspace {
             priority: EventPriority::High,
             enabled: true,
         };
-        self.global_input.register_shortcut(shift_tab_shortcut);
+        // DISABLED: // OLD: self.global_input.register_shortcut(shift_tab_shortcut);
 
         // Register additional keyboard navigation shortcuts
         self.setup_additional_navigation_shortcuts();
@@ -2736,7 +2938,9 @@ impl Workspace {
         // Register dismiss handler for completion
         // Note: The actual dismissal is handled by the global input system returning HandledAndStop
         // which prevents the key from reaching the normal escape handling logic
-        self.global_input.register_dismiss_handler(
+        // DISABLED: Method call to global_input system
+        /*
+        // OLD: self.global_input.register_dismiss_handler(
             nucleotide_ui::DismissTarget::Completion,
             move || {
                 eprintln!("DEBUG: Global input dispatcher handling completion dismiss signal");
@@ -2744,26 +2948,32 @@ impl Workspace {
                 // The actual dismissal happens in the normal key handling flow
             },
         );
-
+        */
+        
         nucleotide_logging::info!("Setup completion-specific shortcuts");
+        */
     }
 
     /// Manage completion input context based on completion state
     fn manage_completion_context(&mut self, has_completion: bool) {
         // Check current context stack to see if completion context is active
-        let completion_context_active = self.global_input.is_context_active("completion");
+        let completion_context_active = false; // TODO: Replace with InputCoordinator call
 
         match (has_completion, completion_context_active) {
             (true, false) => {
                 // Completion appeared, push completion context
-                self.global_input.push_context("completion");
+                // DISABLED: // OLD: self.global_input.push_context("completion");
                 nucleotide_logging::debug!("Pushed completion context");
             }
             (false, true) => {
                 // Completion disappeared, pop completion context
-                if let Some(popped) = self.global_input.pop_context() {
+                // DISABLED: Completion context management
+                /*
+                if let Some(popped) = // OLD: self.global_input.pop_context() {
                     nucleotide_logging::debug!(context = popped, "Popped completion context");
                 }
+                */
+                debug!("Completion disappeared - context management disabled");
             }
             _ => {
                 // No context change needed
@@ -2773,19 +2983,23 @@ impl Workspace {
 
     /// Manage file tree input context based on focus state
     fn manage_file_tree_context(&mut self, has_file_tree_focus: bool) {
-        let file_tree_context_active = self.global_input.is_context_active("file_tree");
+        let file_tree_context_active = false; // TODO: Replace with InputCoordinator call
 
         match (has_file_tree_focus, file_tree_context_active) {
             (true, false) => {
                 // File tree gained focus, push file tree context
-                self.global_input.push_context("file_tree");
+                // DISABLED: // OLD: self.global_input.push_context("file_tree");
                 nucleotide_logging::debug!("Pushed file_tree context");
             }
             (false, true) => {
                 // File tree lost focus, pop file tree context
-                if let Some(popped) = self.global_input.pop_context() {
+                // DISABLED: File tree context management
+                /*
+                if let Some(popped) = // OLD: self.global_input.pop_context() {
                     nucleotide_logging::debug!(context = popped, "Popped file_tree context");
                 }
+                */
+                debug!("File tree lost focus - context management disabled");
             }
             _ => {
                 // No context change needed
@@ -3010,7 +3224,7 @@ impl Workspace {
             .chain(file_tree_shortcuts.into_iter())
             .chain(completion_shortcuts.into_iter())
         {
-            self.global_input.register_shortcut(shortcut);
+            // DISABLED: // OLD: self.global_input.register_shortcut(shortcut);
         }
 
         // Register action handlers
@@ -3035,52 +3249,73 @@ impl Workspace {
 
         // For now, register simple logging handlers - the real functionality will be
         // implemented via proper GPUI actions below
-        self.global_input
-            .register_action_handler("focus_editor".to_string(), || {
-                nucleotide_logging::debug!("Global input action: focus_editor")
-            });
+        // OLD: self.global_input.register_action_handler("focus_editor".to_string(), || {
+        //     nucleotide_logging::debug!("Global input action: focus_editor")
+        // });
 
-        self.global_input
-            .register_action_handler("focus_file_tree".to_string(), || {
-                nucleotide_logging::debug!("Global input action: focus_file_tree")
-            });
+        // OLD: self.global_input.register_action_handler("focus_file_tree".to_string(), || {
+        //     nucleotide_logging::debug!("Global input action: focus_file_tree")
+        // });
 
-        self.global_input
-            .register_action_handler("toggle_file_tree".to_string(), || {
-                nucleotide_logging::debug!("Global input action: toggle_file_tree")
-            });
+        // OLD: self.global_input.register_action_handler("toggle_file_tree".to_string(), || {
+        //     nucleotide_logging::debug!("Global input action: toggle_file_tree")
+        // });
 
-        self.global_input
-            .register_action_handler("trigger_completion".to_string(), || {
-                nucleotide_logging::debug!("Global input action: trigger_completion")
-            });
+        // OLD: self.global_input.register_action_handler("trigger_completion".to_string(), || {
+        //     nucleotide_logging::debug!("Global input action: trigger_completion")
+        // });
 
-        self.global_input
-            .register_action_handler("open_file_picker".to_string(), || {
-                nucleotide_logging::debug!("Global input action: open_file_picker")
-            });
+        // OLD: self.global_input.register_action_handler("open_file_picker".to_string(), || {
+        //     nucleotide_logging::debug!("Global input action: open_file_picker")
+        // });
 
-        self.global_input
-            .register_action_handler("open_command_palette".to_string(), || {
-                nucleotide_logging::debug!("Global input action: open_command_palette")
-            });
+        // OLD: self.global_input.register_action_handler("open_command_palette".to_string(), || {
+        //     nucleotide_logging::debug!("Global input action: open_command_palette")
+        // });
 
         nucleotide_logging::info!("Successfully registered all action handlers");
     }
 
-    /// Handle keyboard shortcuts detected by the global input system
+    /// Handle only truly global shortcuts that should work regardless of focus state
+    fn handle_global_shortcuts_only(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let modifiers = &event.keystroke.modifiers;
+        let key = &event.keystroke.key;
+
+        eprintln!("DEBUG: handle_global_shortcuts_only called for key: '{}', ctrl: {}", key, modifiers.control);
+
+        // Only handle shortcuts that are truly global and don't interfere with component input
+
+        // Ctrl+B (toggle file tree) - should work from anywhere
+        if key == "b" && modifiers.control {
+            eprintln!("DEBUG: Handling global ToggleFileTree shortcut in handle_global_shortcuts_only");
+            nucleotide_logging::debug!("Handling global ToggleFileTree shortcut");
+            self.show_file_tree = !self.show_file_tree;
+            cx.notify();
+            return;
+        }
+
+        eprintln!("DEBUG: No global shortcuts matched in handle_global_shortcuts_only");
+        // Add other truly global shortcuts here (window management, app-level commands, etc.)
+        // but NOT shortcuts that should be handled by focused components
+    }
+
+    /// Handle keyboard shortcuts detected by the global input system (full processing)
     fn handle_global_input_shortcuts(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let modifiers = &event.keystroke.modifiers;
         let key = &event.keystroke.key;
 
+        eprintln!("DEBUG: handle_global_input_shortcuts called for key: '{}', ctrl: {}", key, modifiers.control);
+
         // Check for Ctrl+B (toggle file tree)
         if key == "b" && modifiers.control {
+            eprintln!("DEBUG: Handling global ToggleFileTree shortcut in handle_global_input_shortcuts");
             nucleotide_logging::debug!("Handling ToggleFileTree shortcut");
             self.show_file_tree = !self.show_file_tree;
             cx.notify();
             return;
         }
 
+        eprintln!("DEBUG: No shortcuts matched in handle_global_input_shortcuts");
         // For focus management shortcuts, we need window context,
         // so we'll handle them in the regular key processing flow instead.
         // This method handles shortcuts that don't require window access.
@@ -3489,12 +3724,9 @@ impl Render for Workspace {
 
         // Handle focus restoration if needed
         if self.needs_focus_restore {
-            if let Some(view_id) = self.focused_view_id {
-                if let Some(doc_view) = self.documents.get(&view_id) {
-                    let doc_focus = doc_view.focus_handle(cx);
-                    window.focus(&doc_focus);
-                }
-            }
+            // ALWAYS focus the workspace for key handling, not individual document views
+            // The InputCoordinator will handle routing keys to the appropriate context
+            window.focus(&self.focus_handle);
             self.needs_focus_restore = false;
         }
         // Don't create views during render - just use existing ones
@@ -3661,14 +3893,13 @@ impl Render for Workspace {
             .h_full()
             .focusable();
 
-        // Add focus handling conditionally
-        if !has_overlay {
-            workspace_div = workspace_div
-                .track_focus(&self.focus_handle)
-                .on_key_down(cx.listener(|view, ev, window, cx| {
-                    view.handle_key(ev, window, cx);
-                }));
-        }
+        // Always add global key handling - the workspace should always capture key events
+        // regardless of focus state or overlay presence for global shortcuts to work
+        workspace_div = workspace_div
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|view, ev, window, cx| {
+                view.handle_key(ev, window, cx);
+            }));
 
         // Add resize cursor when needed
         if self.is_resizing_file_tree {
@@ -3710,6 +3941,10 @@ impl Render for Workspace {
                         workspace.tab_overflow_dropdown_open = false;
                         cx.notify();
                     }
+                    
+                    // Ensure workspace regains focus when clicked, so global shortcuts work
+                    workspace.needs_focus_restore = true;
+                    cx.notify();
                 }),
             );
 

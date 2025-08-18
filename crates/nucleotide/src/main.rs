@@ -18,6 +18,8 @@ use nucleotide::application::Application;
 use nucleotide::{
     ThemeManager, application, config, info_box, notification, overlay, types, workspace,
 };
+use nucleotide::input_coordinator::InputCoordinator;
+use std::sync::Arc;
 
 // Import nucleotide-ui enhanced components
 // Note: These traits will be used in the workspace and component integration
@@ -671,10 +673,13 @@ fn gui_main(
                         if let Err(e) = cx.update(|cx| {
                             lsp_state_clone.update(cx, |state, cx| {
                                 // Update LSP indicator - shows static when idle, animated when busy
+                                let old_message = state.status_message.clone();
                                 state.status_message = state.get_lsp_indicator();
 
-                                // Only notify if there's a change
-                                cx.notify();
+                                // Only notify if there's actually a change
+                                if state.status_message != old_message {
+                                    cx.notify();
+                                }
                             });
                         }) {
                             warn!(error = ?e, "Failed to update LSP indicator");
@@ -712,7 +717,7 @@ fn gui_main(
 
             // Import workspace actions for global bindings
             use nucleotide::actions::workspace::{
-                NewFile, NewWindow, ShowBufferPicker, ShowCommandPalette, ShowFileFinder,
+                NewFile, NewWindow, ShowBufferPicker, ShowCommandPalette, ShowFileFinder, ToggleFileTree,
             };
 
             // Global actions - work regardless of focus (no context specified)
@@ -737,6 +742,8 @@ fn gui_main(
                 gpui::KeyBinding::new("cmd--", DecreaseFontSize, None),
                 // Completion trigger
                 gpui::KeyBinding::new("ctrl-space", TriggerCompletion, None),
+                // File tree toggle
+                gpui::KeyBinding::new("ctrl-b", ToggleFileTree, None),
             ]);
 
             // General editor actions
@@ -851,6 +858,9 @@ fn gui_main(
             // Create info box view with default style
             let info = cx.new(|_cx| info_box::InfoBoxView::new(gpui::Style::default()));
 
+            // Create InputCoordinator for centralized input handling
+            let input_coordinator = Arc::new(InputCoordinator::new());
+
             // Create workspace
 
             let workspace = cx.new(|cx| {
@@ -861,6 +871,7 @@ fn gui_main(
                     overlay,
                     notifications,
                     info,
+                    input_coordinator,
                     cx,
                 );
 
