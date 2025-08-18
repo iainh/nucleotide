@@ -3,17 +3,14 @@
 
 use gpui::{App, SharedString};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 /// Global feature flag state
-static mut FEATURE_FLAGS: Option<Arc<RwLock<FeatureFlags>>> = None;
-static INIT_FLAGS: std::sync::Once = std::sync::Once::new();
+static FEATURE_FLAGS: OnceLock<Arc<RwLock<FeatureFlags>>> = OnceLock::new();
 
 /// Initialize the feature flag system
 pub fn init_feature_flags() {
-    INIT_FLAGS.call_once(|| unsafe {
-        FEATURE_FLAGS = Some(Arc::new(RwLock::new(FeatureFlags::default())));
-    });
+    FEATURE_FLAGS.get_or_init(|| Arc::new(RwLock::new(FeatureFlags::default())));
 }
 
 /// Get access to the global feature flags
@@ -21,11 +18,9 @@ pub fn with_feature_flags<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&FeatureFlags) -> R,
 {
-    unsafe {
-        FEATURE_FLAGS
-            .as_ref()
-            .and_then(|flags| flags.read().ok().map(|guard| f(&*guard)))
-    }
+    FEATURE_FLAGS
+        .get()
+        .and_then(|flags| flags.read().ok().map(|guard| f(&*guard)))
 }
 
 /// Update feature flags
@@ -33,17 +28,15 @@ pub fn update_feature_flags<F>(f: F) -> bool
 where
     F: FnOnce(&mut FeatureFlags),
 {
-    unsafe {
-        FEATURE_FLAGS.as_ref().map_or(false, |flags| {
-            flags
-                .write()
-                .map(|mut guard| {
-                    f(&mut *guard);
-                    true
-                })
-                .unwrap_or(false)
-        })
-    }
+    FEATURE_FLAGS.get().map_or(false, |flags| {
+        flags
+            .write()
+            .map(|mut guard| {
+                f(&mut *guard);
+                true
+            })
+            .unwrap_or(false)
+    })
 }
 
 /// Feature flag configuration

@@ -1,12 +1,9 @@
-use crate::utils::color_to_hsla;
 use crate::Core;
 use gpui::{
-    div, px, App, Context, Entity, EventEmitter, Hsla, IntoElement, ParentElement, Render, Styled,
-    Window,
+    div, px, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Window,
 };
 use helix_view::{DocumentId, ViewId};
 use nucleotide_ui::ThemedContext;
-use nucleotide_ui::{compute_component_style, StyleSize, StyleState, StyleVariant};
 
 /// StatusLineView is a proper GPUI View that can observe model changes
 pub struct StatusLineView {

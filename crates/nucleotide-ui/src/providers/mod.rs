@@ -7,7 +7,7 @@ use gpui::{
 };
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 pub mod config_provider;
 pub mod event_provider;
@@ -18,14 +18,11 @@ pub use event_provider::*;
 pub use theme_provider::*;
 
 /// Global provider context storage
-static mut PROVIDER_CONTEXT: Option<Arc<RwLock<ProviderContext>>> = None;
-static INIT_PROVIDERS: std::sync::Once = std::sync::Once::new();
+static PROVIDER_CONTEXT: OnceLock<Arc<RwLock<ProviderContext>>> = OnceLock::new();
 
 /// Initialize the provider system
 pub fn init_provider_system() {
-    INIT_PROVIDERS.call_once(|| unsafe {
-        PROVIDER_CONTEXT = Some(Arc::new(RwLock::new(ProviderContext::new())));
-    });
+    PROVIDER_CONTEXT.get_or_init(|| Arc::new(RwLock::new(ProviderContext::new())));
 }
 
 /// Get access to the global provider context
@@ -33,11 +30,9 @@ pub fn with_provider_context<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&ProviderContext) -> R,
 {
-    unsafe {
-        PROVIDER_CONTEXT
-            .as_ref()
-            .and_then(|context| context.read().ok().map(|guard| f(&*guard)))
-    }
+    PROVIDER_CONTEXT
+        .get()
+        .and_then(|context| context.read().ok().map(|guard| f(&*guard)))
 }
 
 /// Update provider context
@@ -45,17 +40,15 @@ pub fn update_provider_context<F>(f: F) -> bool
 where
     F: FnOnce(&mut ProviderContext),
 {
-    unsafe {
-        PROVIDER_CONTEXT.as_ref().map_or(false, |context| {
-            context
-                .write()
-                .map(|mut guard| {
-                    f(&mut *guard);
-                    true
-                })
-                .unwrap_or(false)
-        })
-    }
+    PROVIDER_CONTEXT.get().map_or(false, |context| {
+        context
+            .write()
+            .map(|mut guard| {
+                f(&mut *guard);
+                true
+            })
+            .unwrap_or(false)
+    })
 }
 
 /// Provider context for managing shared state

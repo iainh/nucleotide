@@ -13,8 +13,6 @@ use gpui::{
     UniformListScrollHandle, Window,
 };
 use nucleotide_logging::{debug, error, warn};
-use nucleotide_ui::theme_manager::HelixThemedContext;
-use nucleotide_ui::theme_utils::color_to_hsla;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::{
     compute_component_state,

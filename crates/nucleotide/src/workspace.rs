@@ -627,7 +627,7 @@ impl Workspace {
 
             // Check if the appearance gets reset by something else shortly after
             // Schedule a delayed check to see if our setting persists
-            let window_ptr = window as *const _ as usize;
+            let _window_ptr = window as *const _ as usize;
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 unsafe {

@@ -1,6 +1,6 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, hsla, px, App, FocusHandle, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    div, px, App, FocusHandle, FontWeight, InteractiveElement, IntoElement, ParentElement,
     RenderOnce, SharedString, Styled, Window,
 };
 use std::sync::Arc;

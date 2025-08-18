@@ -4,14 +4,10 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, App, CursorStyle, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
+    RenderOnce, SharedString, Styled, Window,
 };
 use helix_view::DocumentId;
-use nucleotide_ui::theme_manager::HelixThemedContext;
-use nucleotide_ui::{
-    compute_contextual_style, ColorContext, StyleSize, StyleState, StyleVariant,
-    ThemedContext as UIThemedContext,
-};
+use nucleotide_ui::ThemedContext as UIThemedContext;
 use std::path::PathBuf;
 use std::sync::Arc;
 

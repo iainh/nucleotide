@@ -2,7 +2,6 @@
 // ABOUTME: Displays buffer name, modified indicator, and handles click events
 
 use gpui::prelude::FluentBuilder;
-use gpui::prelude::*;
 use gpui::{
     div, px, App, CursorStyle, ElementId, InteractiveElement, IntoElement, MouseButton,
     MouseUpEvent, ParentElement, RenderOnce, SharedString, Styled, Window,
@@ -240,7 +239,7 @@ impl RenderOnce for Tab {
 
         // Compute component styles using nucleotide-ui styling system
         let component_state = self.component_state();
-        let style_variant: StyleVariant = self.variant.into();
+        let _style_variant: StyleVariant = self.variant.into();
 
         // Use design tokens for consistent theming
         let (bg_color, text_color, hover_bg, border_color) = match component_state {

@@ -6,7 +6,7 @@ mod window_controls;
 
 pub use platform_titlebar::PlatformTitleBar;
 
-use gpui::{px, AppContext, Context, Entity, IntoElement, Render, Window};
+use gpui::{AppContext, Context, Entity, IntoElement, Render, Window};
 
 pub struct TitleBar {
     platform_titlebar: Entity<PlatformTitleBar>,

@@ -3,6 +3,7 @@
 
 use gpui::{App, SharedString};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 pub mod feature_flags;
@@ -20,14 +21,11 @@ pub use render_utils::*;
 pub use ui_helpers::*;
 
 /// Global performance monitoring state
-static mut PERFORMANCE_MONITOR: Option<PerformanceMonitor> = None;
-static INIT_MONITOR: std::sync::Once = std::sync::Once::new();
+static PERFORMANCE_MONITOR: OnceLock<std::sync::Mutex<PerformanceMonitor>> = OnceLock::new();
 
 /// Initialize the performance monitoring system
 pub fn init_performance_monitoring(config: PerformanceConfig) {
-    INIT_MONITOR.call_once(|| unsafe {
-        PERFORMANCE_MONITOR = Some(PerformanceMonitor::new(config));
-    });
+    PERFORMANCE_MONITOR.get_or_init(|| std::sync::Mutex::new(PerformanceMonitor::new(config)));
 }
 
 /// Get access to the global performance monitor
@@ -35,7 +33,9 @@ pub fn with_performance_monitor<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut PerformanceMonitor) -> R,
 {
-    unsafe { PERFORMANCE_MONITOR.as_mut().map(f) }
+    PERFORMANCE_MONITOR
+        .get()
+        .and_then(|monitor| monitor.lock().ok().map(|mut guard| f(&mut *guard)))
 }
 
 /// Performance monitoring configuration

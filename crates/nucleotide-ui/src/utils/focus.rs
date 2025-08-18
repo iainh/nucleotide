@@ -3,16 +3,14 @@
 
 use gpui::{App, ElementId, SharedString};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Focus manager for handling component focus state
-static mut FOCUS_MANAGER: Option<FocusManager> = None;
-static INIT_FOCUS: std::sync::Once = std::sync::Once::new();
+static FOCUS_MANAGER: OnceLock<std::sync::Mutex<FocusManager>> = OnceLock::new();
 
 /// Initialize the focus management system
 pub fn init_focus_management(_cx: &mut App) {
-    INIT_FOCUS.call_once(|| unsafe {
-        FOCUS_MANAGER = Some(FocusManager::new());
-    });
+    FOCUS_MANAGER.get_or_init(|| std::sync::Mutex::new(FocusManager::new()));
 }
 
 /// Get access to the global focus manager
@@ -20,7 +18,9 @@ pub fn with_focus_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut FocusManager) -> R,
 {
-    unsafe { FOCUS_MANAGER.as_mut().map(f) }
+    FOCUS_MANAGER
+        .get()
+        .and_then(|manager| manager.lock().ok().map(|mut guard| f(&mut *guard)))
 }
 
 /// Focus direction for navigation

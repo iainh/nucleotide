@@ -4,10 +4,10 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    black, div, fill, hsla, px, relative, white, App, Bounds, Context, DefiniteLength,
-    DismissEvent, Element, ElementId, Entity, EventEmitter, FocusHandle, Focusable, Font,
-    GlobalElementId, Hitbox, Hsla, InspectorElementId, InteractiveElement, Interactivity,
-    IntoElement, LayoutId, ParentElement, Pixels, Point, Render, ShapedLine, SharedString, Size,
+    black, div, fill, px, relative, white, App, Bounds, Context, DefiniteLength, DismissEvent,
+    Element, ElementId, Entity, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId,
+    Hitbox, Hsla, InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId,
+    ParentElement, Pixels, Point, Render, ShapedLine, SharedString, Size,
     StatefulInteractiveElement, Style, Styled, TextStyle, Window, WindowTextSystem,
 };
 use gpui::{point, size, TextRun};
@@ -77,7 +77,7 @@ fn test_synthetic_click_accuracy(
 }
 
 #[cfg(debug_assertions)]
-fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, font_size: f32) {
+fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, _font_size: f32) {
     use nucleotide_logging::debug;
 
     // Test various x positions and see if they map to sensible character indices
@@ -90,12 +90,12 @@ fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, fo
         shaped_line.width.0 + 10.0, // Beyond end
     ];
 
-    for (i, x_pos) in test_positions.iter().enumerate() {
+    for (_i, x_pos) in test_positions.iter().enumerate() {
         let px_x = gpui::px(*x_pos);
         let byte_index = shaped_line.index_for_x(px_x).unwrap_or(0);
 
         // Convert byte index to character index for validation
-        let char_index = line_text
+        let _char_index = line_text
             .char_indices()
             .take_while(|(byte_idx, _)| *byte_idx < byte_index)
             .count();
@@ -1515,7 +1515,7 @@ impl Element for DocumentElement {
                     }
                 };
 
-                let expected_text_origin_x =
+                let _expected_text_origin_x =
                     element_bounds.origin.x + Pixels::from(gutter_offset as f32 * cell_width.0);
 
                 // STEP 1: Convert window coordinates to text-area coordinates
@@ -1633,7 +1633,7 @@ impl Element for DocumentElement {
 
                 // For now, clamp content position without x-overshoot tracking
                 // X-overshoot will be calculated later when we have line width information
-                let clamped_content_pos = Point {
+                let _clamped_content_pos = Point {
                     x: content_pos.x.max(px(0.0)), // Will be updated with x-overshoot tracking below
                     y: content_pos.y.max(px(0.0)).min(total_content_height),
                 };
@@ -1663,7 +1663,7 @@ impl Element for DocumentElement {
                     // STEP 4.5: Calculate and track x-overshoot for selection dragging
                     let line_width = line_layout.shaped_line.width;
                     let raw_content_x = content_pos.x.max(px(0.0));
-                    let (clamped_x, x_overshoot) = if raw_content_x > line_width {
+                    let (_clamped_x, x_overshoot) = if raw_content_x > line_width {
                         let overshoot = raw_content_x - line_width;
                         (line_width, overshoot)
                     } else {
@@ -2263,7 +2263,7 @@ impl Element for DocumentElement {
                 }
 
                 // Extract necessary values before the loop to avoid borrowing issues
-                let editor_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+                let _editor_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
                 let editor_mode = editor.mode();
                 let cursor_shape = editor.config().cursor_shape.clone();
                 let syn_loader = editor.syn_loader.clone();
@@ -3014,9 +3014,9 @@ impl Element for DocumentElement {
 
                     // Render tilde lines for empty viewport space (soft-wrap mode)
                     // Calculate how many visual lines we've rendered vs viewport capacity
-                    let visual_lines_rendered = visual_line - view_offset.vertical_offset;
+                    let _visual_lines_rendered = visual_line - view_offset.vertical_offset;
                     let viewport_height_in_lines = (bounds.size.height - px(2.0)) / after_layout.line_height;
-                    let viewport_capacity = viewport_height_in_lines as usize;
+                    let _viewport_capacity = viewport_height_in_lines as usize;
 
                     // Note: Tilde rendering is handled by the gutter for consistency with Helix
                     // The gutter shows "~" for phantom lines in the line number area
@@ -3026,7 +3026,7 @@ impl Element for DocumentElement {
                 }
 
                 // Original rendering loop (without soft wrap)
-                for (loop_index, line_idx) in (first_row..last_row).enumerate() {
+                for (_loop_index, line_idx) in (first_row..last_row).enumerate() {
                     // Handle phantom line (empty line at EOF when file ends with newline)
                     // For a file ending with \n, the last line is empty and is the phantom line
                     // Also treat any empty line at the end as phantom line
@@ -3248,7 +3248,7 @@ impl Element for DocumentElement {
                     }
                 }
                 let viewport_height_in_lines = (bounds.size.height - px(2.0)) / after_layout.line_height;
-                let viewport_capacity = viewport_height_in_lines as usize;
+                let _viewport_capacity = viewport_height_in_lines as usize;
 
                 // Note: Tilde rendering is handled by the gutter for consistency with Helix
                 // The gutter shows "~" for phantom lines in the line number area
