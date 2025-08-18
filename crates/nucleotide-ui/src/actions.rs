@@ -26,6 +26,7 @@ pub mod completion {
     actions!(
         completion,
         [
+            TriggerCompletion,
             CompletionSelectNext,
             CompletionSelectPrev,
             CompletionSelectFirst,

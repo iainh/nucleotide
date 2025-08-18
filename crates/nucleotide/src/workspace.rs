@@ -3128,6 +3128,31 @@ impl Render for Workspace {
             },
         ));
 
+        // Completion trigger action
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::completion::TriggerCompletion, _window, cx| {
+                // Get current view and document IDs
+                let (doc_id, view_id) = {
+                    let core = workspace.core.read(cx);
+                    let view_id = core.editor.tree.focus;
+                    let doc_id = core
+                        .editor
+                        .tree
+                        .try_get(view_id)
+                        .map(|view| view.doc)
+                        .unwrap_or_default();
+                    (doc_id, view_id)
+                };
+
+                workspace.handle_completion_requested(
+                    doc_id,
+                    view_id,
+                    &crate::types::CompletionTrigger::Manual,
+                    cx,
+                );
+            },
+        ));
+
         // Workspace actions
         let handle = self.handle.clone();
         let core = self.core.clone();

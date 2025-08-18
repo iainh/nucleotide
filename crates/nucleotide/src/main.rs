@@ -257,7 +257,7 @@ use nucleotide::actions::{
     common::{Cancel, Confirm, MoveDown, MoveLeft, MoveRight, MoveUp},
     completion::{
         CompletionConfirm, CompletionDismiss, CompletionSelectFirst, CompletionSelectLast,
-        CompletionSelectNext, CompletionSelectPrev,
+        CompletionSelectNext, CompletionSelectPrev, TriggerCompletion,
     },
     editor::{
         CloseFile, Copy, DecreaseFontSize, IncreaseFontSize, OpenDirectory, OpenFile, Paste, Quit,
@@ -735,6 +735,8 @@ fn gui_main(
                 gpui::KeyBinding::new("cmd-+", IncreaseFontSize, None),
                 gpui::KeyBinding::new("cmd-=", IncreaseFontSize, None), // Also bind = key since + requires shift
                 gpui::KeyBinding::new("cmd--", DecreaseFontSize, None),
+                // Completion trigger
+                gpui::KeyBinding::new("ctrl-space", TriggerCompletion, None),
             ]);
 
             // General editor actions
