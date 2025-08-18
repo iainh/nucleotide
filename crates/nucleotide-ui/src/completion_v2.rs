@@ -11,7 +11,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::completion_cache::{CacheKey, CompletionCache};
+use crate::completion_docs::{
+    DocumentationCacheConfig, DocumentationContent, DocumentationLoader, DocumentationPanel,
+};
+use crate::completion_error::{
+    CompletionError, CompletionErrorHandler, ErrorContext, ErrorHandlingResult, ErrorSeverity,
+};
 use crate::completion_perf::{PerformanceMonitor, PerformanceTimer};
+use crate::completion_popup::{PopupConstraints, PopupPlacement, PopupPositioner, SmartPopup};
+use crate::completion_renderer::{
+    CompletionItemElement, CompletionListState, render_completion_list,
+};
 use crate::debouncer::{CompletionDebouncer, create_completion_debouncer};
 use crate::fuzzy::{FuzzyConfig, match_strings};
 
@@ -195,6 +205,16 @@ pub struct CompletionView {
     debouncer: CompletionDebouncer,
     items_hash: u64,
     performance_monitor: PerformanceMonitor,
+    // Error Handling
+    error_handler: CompletionErrorHandler,
+    last_error: Option<ErrorContext>,
+
+    // Advanced UI Components
+    documentation_loader: DocumentationLoader,
+    documentation_panel: DocumentationPanel,
+    list_state: CompletionListState,
+    popup_positioner: PopupPositioner,
+    current_documentation: Option<DocumentationContent>,
 
     // GPUI Requirements
     focus_handle: FocusHandle,
@@ -220,6 +240,13 @@ impl CompletionView {
             debouncer: create_completion_debouncer(),
             items_hash: 0,
             performance_monitor: PerformanceMonitor::new(),
+            error_handler: CompletionErrorHandler::new(),
+            last_error: None,
+            documentation_loader: DocumentationLoader::new(DocumentationCacheConfig::default()),
+            documentation_panel: DocumentationPanel::new(),
+            list_state: CompletionListState::new(24.0, 400.0),
+            popup_positioner: PopupPositioner::new(PopupConstraints::default()),
+            current_documentation: None,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -341,6 +368,19 @@ impl CompletionView {
     ) {
         let timer = PerformanceTimer::start("filter_immediate");
 
+        // Check for very large item counts that might cause performance issues
+        if self.all_items.len() > 10000 {
+            self.handle_error(
+                CompletionError::ResourceError {
+                    resource_type: "completion_items".to_string(),
+                    current_usage: self.all_items.len() as u64,
+                    limit: 10000,
+                },
+                cx,
+            );
+            return;
+        }
+
         // Check cache first
         let cache_key = CacheKey::new(query.clone(), position.clone(), self.items_hash);
         if let Some(cached_results) = self.cache.get(&cache_key) {
@@ -351,6 +391,8 @@ impl CompletionView {
             self.filtered_entries = cached_results;
             self.selected_index = 0;
             self.current_query = Some(query);
+            self.update_list_state();
+            self.update_documentation_for_selection(cx);
             cx.notify();
             return;
         }
@@ -388,6 +430,8 @@ impl CompletionView {
 
             self.filtered_entries = results;
             self.selected_index = 0;
+            self.update_list_state();
+            self.update_documentation_for_selection(cx);
             cx.notify();
             return;
         }
@@ -399,6 +443,8 @@ impl CompletionView {
             self.cache.insert(cache_key, optimized_results.clone());
             self.filtered_entries = optimized_results;
             self.selected_index = 0;
+            self.update_list_state();
+            self.update_documentation_for_selection(cx);
             cx.notify();
             return;
         }
@@ -486,6 +532,8 @@ impl CompletionView {
 
             self.selected_index = 0;
             self.current_query = Some(query.to_string());
+            self.update_list_state();
+            self.update_documentation_for_selection(cx);
             cx.notify();
         } else {
             // Fall back to full refiltering
@@ -498,6 +546,8 @@ impl CompletionView {
         self.filtered_entries = matches;
         self.selected_index = 0;
         self.filter_task = None;
+        self.update_list_state();
+        self.update_documentation_for_selection(cx);
         cx.notify();
     }
 
@@ -518,6 +568,7 @@ impl CompletionView {
     pub fn select_next(&mut self, cx: &mut Context<Self>) {
         if !self.filtered_entries.is_empty() {
             self.selected_index = (self.selected_index + 1) % self.filtered_entries.len();
+            self.update_documentation_for_selection(cx);
             cx.notify();
         }
     }
@@ -529,6 +580,7 @@ impl CompletionView {
             } else {
                 self.selected_index - 1
             };
+            self.update_documentation_for_selection(cx);
             cx.notify();
         }
     }
@@ -556,6 +608,290 @@ impl CompletionView {
     pub fn item_count(&self) -> usize {
         self.filtered_entries.len()
     }
+
+    /// Update documentation for the currently selected item
+    fn update_documentation_for_selection(&mut self, cx: &mut Context<Self>) {
+        let selected_item =
+            if let Some(string_match) = self.filtered_entries.get(self.selected_index) {
+                // Find the original item by matching candidate ID
+                self.all_items
+                    .iter()
+                    .find(|item| {
+                        let candidate = StringMatchCandidate::from(*item);
+                        candidate.id == string_match.candidate_id
+                    })
+                    .cloned()
+            } else {
+                None
+            };
+
+        if let Some(item) = selected_item {
+            self.current_documentation = self.documentation_loader.load_documentation(&item, cx);
+            self.documentation_panel
+                .set_content(self.current_documentation.clone());
+        } else {
+            self.current_documentation = None;
+            self.documentation_panel.set_content(None);
+        }
+    }
+
+    /// Update the list state with current item count
+    fn update_list_state(&mut self) {
+        self.list_state
+            .update_item_count(self.filtered_entries.len());
+    }
+
+    /// Get the list state for rendering
+    pub fn list_state(&self) -> &CompletionListState {
+        &self.list_state
+    }
+
+    /// Set documentation panel visibility
+    pub fn set_documentation_visible(&mut self, visible: bool) {
+        self.documentation_panel.set_visible(visible);
+    }
+
+    // Error Handling Methods
+
+    /// Handle an error with automatic recovery
+    pub fn handle_error(&mut self, error: CompletionError, cx: &mut Context<Self>) {
+        let result = self.error_handler.handle_error(error);
+
+        match result {
+            ErrorHandlingResult::Continue => {
+                // Log and continue normal operation
+            }
+            ErrorHandlingResult::ShowWarning(context) => {
+                self.last_error = Some(context.clone());
+                if let Some(message) = &context.user_message {
+                    // TODO: Show user notification
+                    eprintln!("Completion warning: {}", message);
+                }
+            }
+            ErrorHandlingResult::Recover(action, context) => {
+                self.last_error = Some(context.clone());
+                self.execute_recovery_action(action, cx);
+            }
+            ErrorHandlingResult::Degrade(context) => {
+                self.last_error = Some(context.clone());
+                self.enter_degraded_mode(cx);
+            }
+            ErrorHandlingResult::Shutdown(context) => {
+                self.last_error = Some(context);
+                self.shutdown_completion_system(cx);
+            }
+        }
+    }
+
+    /// Execute a recovery action
+    fn execute_recovery_action(
+        &mut self,
+        action: crate::completion_error::RecoveryAction,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::completion_error::RecoveryAction;
+
+        match action {
+            RecoveryAction::Retry {
+                delay,
+                max_attempts: _,
+            } => {
+                // Retry the last operation after delay
+                let delay_duration = delay;
+                cx.spawn(async move |_this, _cx| {
+                    tokio::time::sleep(delay_duration).await;
+                    // TODO: Retry the last failed operation
+                })
+                .detach();
+            }
+            RecoveryAction::Fallback {
+                action: _,
+                description,
+            } => {
+                // Switch to basic completion mode
+                eprintln!("Fallback activated: {}", description);
+                self.enter_fallback_mode();
+            }
+            RecoveryAction::ClearCache { cache_types: _ } => {
+                // Clear the completion cache
+                self.cache.clear();
+            }
+            RecoveryAction::OfflineMode { duration: _ } => {
+                // Disable network-dependent features
+                self.enter_offline_mode();
+            }
+            RecoveryAction::RestartComponent { component: _ } => {
+                // Restart the completion system
+                self.restart_completion_system(cx);
+            }
+            RecoveryAction::NotifyUser {
+                message,
+                action_text: _,
+            } => {
+                // Show user notification
+                eprintln!("Completion system: {}", message);
+            }
+        }
+    }
+
+    /// Enter degraded mode with reduced functionality
+    fn enter_degraded_mode(&mut self, cx: &mut Context<Self>) {
+        self.max_items = 10; // Reduce item count
+        self.show_documentation = false; // Disable documentation
+        self.cache.clear(); // Clear cache to free memory
+        cx.notify();
+    }
+
+    /// Enter fallback mode with basic completion only
+    fn enter_fallback_mode(&mut self) {
+        self.sort_completions = false;
+        self.show_documentation = false;
+        self.max_items = 5;
+    }
+
+    /// Enter offline mode
+    fn enter_offline_mode(&mut self) {
+        // Disable network-dependent features
+        self.show_documentation = false;
+    }
+
+    /// Restart the completion system
+    fn restart_completion_system(&mut self, cx: &mut Context<Self>) {
+        // Cancel any running tasks
+        self.cancel_current_filter();
+
+        // Reset state
+        self.filtered_entries.clear();
+        self.selected_index = 0;
+        self.cache.clear();
+        self.last_error = None;
+
+        // Reset configuration to defaults
+        self.show_documentation = true;
+        self.sort_completions = true;
+        self.max_items = 50;
+
+        cx.notify();
+    }
+
+    /// Shutdown the completion system
+    fn shutdown_completion_system(&mut self, cx: &mut Context<Self>) {
+        self.cancel_current_filter();
+        self.visible = false;
+        self.filtered_entries.clear();
+        cx.notify();
+    }
+
+    /// Get the last error that occurred
+    pub fn last_error(&self) -> Option<&ErrorContext> {
+        self.last_error.as_ref()
+    }
+
+    /// Clear the last error
+    pub fn clear_last_error(&mut self) {
+        self.last_error = None;
+    }
+
+    /// Check if error rate is concerning
+    pub fn is_error_rate_high(&self) -> bool {
+        self.error_handler.is_error_rate_high()
+    }
+
+    /// Get error statistics
+    pub fn error_stats(&self) -> crate::completion_error::ErrorStats {
+        self.error_handler
+            .get_error_stats(std::time::Duration::from_secs(300))
+    }
+
+    // Performance Monitoring Methods
+
+    /// Get current performance metrics
+    pub fn performance_metrics(&self) -> &PerformanceMonitor {
+        &self.performance_monitor
+    }
+
+    /// Check if performance is degraded
+    pub fn is_performance_degraded(&self) -> bool {
+        let recommendations = self.performance_monitor.get_recommendations();
+        !recommendations.is_empty()
+    }
+
+    /// Get performance recommendations
+    pub fn get_performance_recommendations(&self) -> Vec<String> {
+        self.performance_monitor.get_recommendations()
+    }
+
+    /// Optimize performance based on current metrics
+    pub fn optimize_performance(&mut self) {
+        let recommendations = self.performance_monitor.get_recommendations();
+
+        for recommendation in recommendations {
+            match recommendation.as_str() {
+                "Reduce max items" => {
+                    self.max_items = (self.max_items * 3 / 4).max(10);
+                }
+                "Disable documentation" => {
+                    self.show_documentation = false;
+                }
+                "Clear cache" => {
+                    self.cache.clear();
+                }
+                "Disable sorting" => {
+                    self.sort_completions = false;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Monitor memory usage and take action if needed
+    pub fn monitor_memory_usage(&mut self, cx: &mut Context<Self>) {
+        let current_memory = self.estimate_memory_usage();
+
+        // If memory usage is too high, take corrective action
+        if current_memory > 50 * 1024 * 1024 {
+            // 50MB threshold
+            self.handle_error(
+                CompletionError::ResourceError {
+                    resource_type: "memory".to_string(),
+                    current_usage: current_memory,
+                    limit: 50 * 1024 * 1024,
+                },
+                cx,
+            );
+        }
+    }
+
+    /// Estimate current memory usage
+    fn estimate_memory_usage(&self) -> u64 {
+        // Rough estimation of memory usage
+        let items_memory = self.all_items.len() * 200; // ~200 bytes per item
+        let candidates_memory = self.match_candidates.len() * 100; // ~100 bytes per candidate
+        let filtered_memory = self.filtered_entries.len() * 50; // ~50 bytes per match
+        let cache_memory = self.cache.size() * 300; // ~300 bytes per cache entry
+
+        (items_memory + candidates_memory + filtered_memory + cache_memory) as u64
+    }
+
+    /// Tune performance parameters based on system capabilities
+    pub fn tune_performance_parameters(&mut self) {
+        // Adjust parameters based on current performance
+        let avg_filter_time = self.performance_monitor.get_average_filter_time();
+
+        if avg_filter_time > std::time::Duration::from_millis(100) {
+            // Filtering is too slow, reduce scope
+            self.max_items = (self.max_items * 3 / 4).max(5);
+
+            if avg_filter_time > std::time::Duration::from_millis(200) {
+                // Very slow, disable expensive features
+                self.show_documentation = false;
+                self.sort_completions = false;
+            }
+        } else if avg_filter_time < std::time::Duration::from_millis(20) {
+            // Filtering is fast, can increase scope
+            self.max_items = (self.max_items * 5 / 4).min(100);
+        }
+    }
 }
 
 impl Focusable for CompletionView {
@@ -572,70 +908,49 @@ impl Render for CompletionView {
             return div().id("completion-hidden");
         }
 
-        // Access theme from global state
-        let theme = cx.global::<crate::Theme>();
-        let tokens = &theme.tokens;
+        // Access theme from global state and clone needed data
+        let theme = cx.global::<crate::Theme>().clone();
+        let tokens = theme.tokens.clone();
+        let show_documentation = self.show_documentation;
+        let documentation_panel = self.documentation_panel.clone();
 
+        let completion_list = render_completion_list(
+            &self.all_items,
+            &self.filtered_entries,
+            self.selected_index,
+            &self.list_state,
+            cx,
+            |_index, item, string_match, is_selected| {
+                CompletionItemElement::new(item.clone(), string_match.clone(), is_selected)
+            },
+        );
+
+        // Main container with completion list and optional documentation panel
         div()
             .id("completion-popup-v2")
             .key_context("CompletionView")
             .track_focus(&self.focus_handle)
-            .bg(tokens.colors.popup_background)
-            .border_1()
-            .border_color(tokens.colors.popup_border)
-            .rounded_md()
-            .shadow_lg()
-            .max_h_48()
-            .overflow_y_scroll()
+            .flex()
+            .flex_row()
             .child(
-                div().flex().flex_col().children(
-                    self.filtered_entries
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, string_match)| {
-                            // Find the original completion item
-                            let item = self.all_items.iter().find(|item| {
-                                let candidate = StringMatchCandidate::from(*item);
-                                candidate.id == string_match.candidate_id
-                            })?;
-
-                            let is_selected = index == self.selected_index;
-                            Some(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .when(is_selected, |div| {
-                                        div.bg(tokens.colors.selection_primary)
-                                    })
-                                    .when(!is_selected, |div| {
-                                        div.hover(|style| {
-                                            style.bg(tokens.colors.selection_secondary)
-                                        })
-                                    })
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(tokens.colors.text_primary)
-                                            .child(
-                                                item.display_text
-                                                    .as_ref()
-                                                    .unwrap_or(&item.text)
-                                                    .clone(),
-                                            ),
-                                    )
-                                    .when_some(item.description.as_ref(), |el, desc| {
-                                        el.child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(tokens.colors.text_secondary)
-                                                .child(desc.clone()),
-                                        )
-                                    }),
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                ),
+                // Completion list container
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w_64()
+                    .max_w_96()
+                    .child(completion_list),
             )
+            .when(show_documentation, |container| {
+                container.child(
+                    // Documentation panel
+                    div()
+                        .w_80()
+                        .border_l_1()
+                        .border_color(tokens.colors.border_muted)
+                        .child(documentation_panel),
+                )
+            })
     }
 }
 

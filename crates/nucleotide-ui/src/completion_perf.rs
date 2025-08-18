@@ -325,6 +325,16 @@ impl PerformanceMonitor {
         recommendations
     }
 
+    /// Get average filter time
+    pub fn get_average_filter_time(&self) -> Duration {
+        if self.filter_times.values.is_empty() {
+            Duration::ZERO
+        } else {
+            let total_time: Duration = self.filter_times.values.iter().sum();
+            total_time / self.filter_times.values.len() as u32
+        }
+    }
+
     /// Print performance summary
     pub fn print_summary(&self) {
         if !self.enabled {

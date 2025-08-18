@@ -1,0 +1,547 @@
+// ABOUTME: Advanced rendering system for completion items with icons and documentation
+// ABOUTME: Provides rich visual presentation using GPUI components and virtual scrolling
+
+use gpui::prelude::FluentBuilder;
+use gpui::{
+    AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    StatefulInteractiveElement, Styled, UniformListScrollHandle, div, px, relative, uniform_list,
+};
+use std::sync::Arc;
+
+use crate::completion_v2::{CompletionItem, CompletionItemKind, StringMatch};
+
+/// Icon information for completion items
+#[derive(Debug, Clone)]
+pub struct CompletionIcon {
+    /// Unicode character or emoji for the icon
+    pub character: String,
+    /// Color of the icon
+    pub color: Hsla,
+    /// Optional tooltip text
+    pub tooltip: Option<String>,
+}
+
+impl CompletionIcon {
+    pub fn new(character: impl Into<String>, color: Hsla) -> Self {
+        Self {
+            character: character.into(),
+            color,
+            tooltip: None,
+        }
+    }
+
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+}
+
+/// Get icon for completion item kind
+pub fn get_completion_icon(kind: &CompletionItemKind, theme: &crate::Theme) -> CompletionIcon {
+    let tokens = &theme.tokens;
+
+    match kind {
+        CompletionItemKind::Text => CompletionIcon::new("T", tokens.colors.text_secondary),
+        CompletionItemKind::Method => {
+            CompletionIcon::new("m", tokens.colors.primary).with_tooltip("Method")
+        }
+        CompletionItemKind::Function => {
+            CompletionIcon::new("f", tokens.colors.primary).with_tooltip("Function")
+        }
+        CompletionItemKind::Constructor => {
+            CompletionIcon::new("C", tokens.colors.info).with_tooltip("Constructor")
+        }
+        CompletionItemKind::Field => {
+            CompletionIcon::new("F", tokens.colors.success).with_tooltip("Field")
+        }
+        CompletionItemKind::Variable => {
+            CompletionIcon::new("v", tokens.colors.text_primary).with_tooltip("Variable")
+        }
+        CompletionItemKind::Class => {
+            CompletionIcon::new("c", tokens.colors.warning).with_tooltip("Class")
+        }
+        CompletionItemKind::Interface => {
+            CompletionIcon::new("i", tokens.colors.warning).with_tooltip("Interface")
+        }
+        CompletionItemKind::Module => {
+            CompletionIcon::new("M", tokens.colors.info).with_tooltip("Module")
+        }
+        CompletionItemKind::Property => {
+            CompletionIcon::new("p", tokens.colors.success).with_tooltip("Property")
+        }
+        CompletionItemKind::Unit => {
+            CompletionIcon::new("u", tokens.colors.text_secondary).with_tooltip("Unit")
+        }
+        CompletionItemKind::Value => {
+            CompletionIcon::new("V", tokens.colors.primary_hover).with_tooltip("Value")
+        }
+        CompletionItemKind::Enum => {
+            CompletionIcon::new("e", tokens.colors.warning).with_tooltip("Enum")
+        }
+        CompletionItemKind::Keyword => {
+            CompletionIcon::new("k", tokens.colors.error).with_tooltip("Keyword")
+        }
+        CompletionItemKind::Snippet => {
+            CompletionIcon::new("s", tokens.colors.success).with_tooltip("Snippet")
+        }
+        CompletionItemKind::Color => {
+            CompletionIcon::new("🎨", tokens.colors.primary_hover).with_tooltip("Color")
+        }
+        CompletionItemKind::File => {
+            CompletionIcon::new("📄", tokens.colors.text_secondary).with_tooltip("File")
+        }
+        CompletionItemKind::Reference => {
+            CompletionIcon::new("&", tokens.colors.text_primary).with_tooltip("Reference")
+        }
+        CompletionItemKind::Folder => {
+            CompletionIcon::new("📁", tokens.colors.text_secondary).with_tooltip("Folder")
+        }
+        CompletionItemKind::EnumMember => {
+            CompletionIcon::new("E", tokens.colors.primary_hover).with_tooltip("Enum Member")
+        }
+        CompletionItemKind::Constant => {
+            CompletionIcon::new("C", tokens.colors.primary_hover).with_tooltip("Constant")
+        }
+        CompletionItemKind::Struct => {
+            CompletionIcon::new("S", tokens.colors.warning).with_tooltip("Struct")
+        }
+        CompletionItemKind::Event => {
+            CompletionIcon::new("⚡", tokens.colors.primary).with_tooltip("Event")
+        }
+        CompletionItemKind::Operator => {
+            CompletionIcon::new("⊕", tokens.colors.error).with_tooltip("Operator")
+        }
+        CompletionItemKind::TypeParameter => {
+            CompletionIcon::new("T", tokens.colors.warning).with_tooltip("Type Parameter")
+        }
+    }
+}
+
+/// Rendered completion item with rich formatting
+pub struct CompletionItemElement {
+    item: CompletionItem,
+    string_match: StringMatch,
+    is_selected: bool,
+    show_icon: bool,
+    show_kind: bool,
+    compact: bool,
+}
+
+impl CompletionItemElement {
+    pub fn new(item: CompletionItem, string_match: StringMatch, is_selected: bool) -> Self {
+        Self {
+            item,
+            string_match,
+            is_selected,
+            show_icon: true,
+            show_kind: true,
+            compact: false,
+        }
+    }
+
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
+    pub fn hide_icon(mut self) -> Self {
+        self.show_icon = false;
+        self
+    }
+
+    pub fn hide_kind(mut self) -> Self {
+        self.show_kind = false;
+        self
+    }
+
+    /// Render highlighted text with match positions
+    fn render_highlighted_text(
+        &self,
+        text: &str,
+        positions: &[usize],
+        theme: &crate::Theme,
+    ) -> impl IntoElement {
+        let tokens = &theme.tokens;
+
+        if positions.is_empty() {
+            // No highlighting needed
+            return div().child(text.to_string());
+        }
+
+        let chars: Vec<char> = text.chars().collect();
+        let mut elements = Vec::new();
+        let mut last_pos = 0;
+
+        for &pos in positions {
+            if pos >= chars.len() {
+                continue;
+            }
+
+            // Add non-highlighted text before this position
+            if pos > last_pos {
+                let before: String = chars[last_pos..pos].iter().collect();
+                if !before.is_empty() {
+                    elements.push(
+                        div()
+                            .text_color(tokens.colors.text_primary)
+                            .child(before)
+                            .into_any_element(),
+                    );
+                }
+            }
+
+            // Add highlighted character
+            let highlighted_char = chars[pos];
+            elements.push(
+                div()
+                    .text_color(tokens.colors.primary)
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child(highlighted_char.to_string())
+                    .into_any_element(),
+            );
+
+            last_pos = pos + 1;
+        }
+
+        // Add remaining text
+        if last_pos < chars.len() {
+            let remaining: String = chars[last_pos..].iter().collect();
+            if !remaining.is_empty() {
+                elements.push(
+                    div()
+                        .text_color(tokens.colors.text_primary)
+                        .child(remaining)
+                        .into_any_element(),
+                );
+            }
+        }
+
+        div().flex().flex_row().children(elements)
+    }
+}
+
+impl RenderOnce for CompletionItemElement {
+    fn render(self, _window: &mut gpui::Window, cx: &mut gpui::App) -> impl IntoElement {
+        let theme = cx.global::<crate::Theme>();
+        let tokens = &theme.tokens;
+
+        let display_text = self.item.display_text.as_ref().unwrap_or(&self.item.text);
+
+        let base_container = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .px_2()
+            .py(if self.compact { px(4.0) } else { px(6.0) })
+            .gap_2()
+            .when(self.is_selected, |div| {
+                div.bg(tokens.colors.selection_primary)
+                    .border_l_2()
+                    .border_color(tokens.colors.primary)
+            })
+            .when(!self.is_selected, |div| {
+                div.hover(|style| style.bg(tokens.colors.selection_secondary))
+            });
+
+        // Icon section
+        let with_icon = if self.show_icon && self.item.kind.is_some() {
+            let icon = get_completion_icon(self.item.kind.as_ref().unwrap(), &theme);
+            base_container.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w_6()
+                    .h_6()
+                    .text_color(icon.color)
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(icon.character),
+            )
+        } else if self.show_icon {
+            base_container.child(
+                div()
+                    .w_6()
+                    .h_6()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(tokens.colors.text_tertiary)
+                    .text_xs()
+                    .child("•"),
+            )
+        } else {
+            base_container
+        };
+
+        // Main content section
+        let with_content = with_icon.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .min_w_0() // Allow text to truncate
+                .child(
+                    // Primary text with highlighting
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(if self.is_selected {
+                                    gpui::FontWeight::MEDIUM
+                                } else {
+                                    gpui::FontWeight::NORMAL
+                                })
+                                .child(self.render_highlighted_text(
+                                    display_text,
+                                    &self.string_match.positions,
+                                    &theme,
+                                )),
+                        )
+                        .when(self.show_kind && self.item.kind.is_some(), |div_el| {
+                            div_el.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(tokens.colors.text_tertiary)
+                                    .px_1()
+                                    .py_0p5()
+                                    .bg(tokens.colors.surface_elevated)
+                                    .rounded_sm()
+                                    .child(format!("{:?}", self.item.kind.as_ref().unwrap())),
+                            )
+                        }),
+                )
+                .when(self.item.description.is_some() && !self.compact, |div_el| {
+                    let description = self.item.description.as_ref().unwrap().to_string();
+                    div_el.child(
+                        div()
+                            .text_xs()
+                            .text_color(tokens.colors.text_secondary)
+                            .max_w_80()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(description),
+                    )
+                }),
+        );
+
+        // Score indicator (for debugging/development)
+        #[cfg(debug_assertions)]
+        let with_score = with_content.child(
+            div()
+                .ml_auto()
+                .text_xs()
+                .text_color(tokens.colors.text_tertiary)
+                .px_1()
+                .child(format!("{}", self.string_match.score)),
+        );
+
+        #[cfg(not(debug_assertions))]
+        let with_score = with_content;
+
+        with_score
+    }
+}
+
+impl IntoElement for CompletionItemElement {
+    type Element = AnyElement;
+
+    fn into_element(self) -> Self::Element {
+        self.into_any_element()
+    }
+}
+
+/// Virtual list state for completion items
+pub struct CompletionListState {
+    /// Scroll handle for the virtual list
+    pub scroll_handle: UniformListScrollHandle,
+    /// Number of items to render
+    pub item_count: usize,
+    /// Height of each item in pixels
+    pub item_height: f32,
+    /// Maximum height of the list
+    pub max_height: f32,
+}
+
+impl CompletionListState {
+    pub fn new(item_height: f32, max_height: f32) -> Self {
+        Self {
+            scroll_handle: UniformListScrollHandle::new(),
+            item_count: 0,
+            item_height,
+            max_height,
+        }
+    }
+
+    pub fn update_item_count(&mut self, count: usize) {
+        self.item_count = count;
+    }
+
+    pub fn scroll_to_item(&mut self, index: usize) {
+        // TODO: Implement proper scroll-to-item functionality
+        // For now, just store the index for future scroll operations
+        let _ = index;
+    }
+
+    pub fn visible_range(&self) -> std::ops::Range<usize> {
+        let visible_items = (self.max_height / self.item_height).ceil() as usize;
+        let start_idx = 0; // Simplified for now - would need access to scroll position
+        let end_idx = visible_items.min(self.item_count);
+
+        start_idx..end_idx
+    }
+}
+
+/// Render completion items using virtual scrolling
+pub fn render_completion_list<F, T: 'static>(
+    items: &[CompletionItem],
+    matches: &[StringMatch],
+    selected_index: usize,
+    list_state: &CompletionListState,
+    cx: &mut Context<T>,
+    render_item: F,
+) -> impl IntoElement
+where
+    F: Fn(usize, &CompletionItem, &StringMatch, bool) -> CompletionItemElement + 'static + Clone,
+{
+    let theme = cx.global::<crate::Theme>();
+    let tokens = &theme.tokens;
+
+    // Create items vector with proper matching
+    let rendered_items: Vec<AnyElement> = matches
+        .iter()
+        .enumerate()
+        .filter_map(|(index, string_match)| {
+            // Find the corresponding completion item by ID
+            let item = items.iter().find(|item| {
+                let candidate = crate::completion_v2::StringMatchCandidate::from(*item);
+                candidate.id == string_match.candidate_id
+            })?;
+
+            let element = render_item(index, item, string_match, index == selected_index);
+            Some(element.into_any_element())
+        })
+        .collect();
+
+    div()
+        .id("completion-list")
+        .flex()
+        .flex_col()
+        .bg(tokens.colors.popup_background)
+        .border_1()
+        .border_color(tokens.colors.popup_border)
+        .rounded_md()
+        .shadow_lg()
+        .max_h(px(list_state.max_height))
+        .min_h(px(list_state.item_height * 3.0))
+        .overflow_y_scroll()
+        .children(rendered_items)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_completion_icon_creation() {
+        use crate::Theme;
+        use gpui::hsla;
+
+        // Create a minimal theme for testing
+        let theme = Theme::default();
+
+        let icon = get_completion_icon(&CompletionItemKind::Function, &theme);
+        assert_eq!(icon.character, "f");
+        assert!(icon.tooltip.is_some());
+        assert_eq!(icon.tooltip.unwrap(), "Function");
+    }
+
+    #[test]
+    fn test_completion_icon_kinds() {
+        use crate::Theme;
+
+        let theme = Theme::default();
+
+        // Test that all kinds have icons
+        let kinds = vec![
+            CompletionItemKind::Text,
+            CompletionItemKind::Method,
+            CompletionItemKind::Function,
+            CompletionItemKind::Constructor,
+            CompletionItemKind::Field,
+            CompletionItemKind::Variable,
+            CompletionItemKind::Class,
+            CompletionItemKind::Interface,
+            CompletionItemKind::Module,
+            CompletionItemKind::Property,
+            CompletionItemKind::Unit,
+            CompletionItemKind::Value,
+            CompletionItemKind::Enum,
+            CompletionItemKind::Keyword,
+            CompletionItemKind::Snippet,
+            CompletionItemKind::Color,
+            CompletionItemKind::File,
+            CompletionItemKind::Reference,
+            CompletionItemKind::Folder,
+            CompletionItemKind::EnumMember,
+            CompletionItemKind::Constant,
+            CompletionItemKind::Struct,
+            CompletionItemKind::Event,
+            CompletionItemKind::Operator,
+            CompletionItemKind::TypeParameter,
+        ];
+
+        for kind in kinds {
+            let icon = get_completion_icon(&kind, &theme);
+            assert!(!icon.character.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_completion_list_state() {
+        let mut state = CompletionListState::new(24.0, 300.0);
+
+        assert_eq!(state.item_count, 0);
+        assert_eq!(state.item_height, 24.0);
+        assert_eq!(state.max_height, 300.0);
+
+        state.update_item_count(50);
+        assert_eq!(state.item_count, 50);
+
+        // Test visible range calculation
+        let range = state.visible_range();
+        assert!(range.start <= range.end);
+        assert!(range.end <= state.item_count);
+    }
+
+    #[test]
+    fn test_completion_item_element_builder() {
+        let item = CompletionItem::new("test_function")
+            .with_kind(CompletionItemKind::Function)
+            .with_description("A test function");
+
+        let string_match = StringMatch::new(1, 100, vec![0, 1, 2]);
+
+        let element = CompletionItemElement::new(item, string_match, true);
+        assert!(element.is_selected);
+        assert!(element.show_icon);
+        assert!(element.show_kind);
+        assert!(!element.compact);
+
+        let compact_element = CompletionItemElement::new(
+            CompletionItem::new("test"),
+            StringMatch::new(1, 100, vec![]),
+            false,
+        )
+        .compact()
+        .hide_icon();
+
+        assert!(!compact_element.is_selected);
+        assert!(!compact_element.show_icon);
+        assert!(compact_element.compact);
+    }
+}

@@ -8,7 +8,12 @@ pub mod button;
 pub mod common;
 pub mod completion;
 pub mod completion_cache;
+pub mod completion_docs;
+pub mod completion_error;
+pub mod completion_keyboard;
 pub mod completion_perf;
+pub mod completion_popup;
+pub mod completion_renderer;
 pub mod completion_v2;
 pub mod debouncer;
 pub mod file_icon;
@@ -56,6 +61,27 @@ pub use advanced_theming::{
 };
 pub use assets::Assets;
 pub use button::{Button, ButtonSize, ButtonVariant, IconPosition};
+pub use completion_docs::{
+    DocumentationCache, DocumentationCacheConfig, DocumentationContent, DocumentationLoader,
+    DocumentationPanel, DocumentationSource, DocumentationState, MarkdownRenderer,
+};
+pub use completion_error::{
+    CompletionError, CompletionErrorHandler, ErrorContext, ErrorHandlingConfig,
+    ErrorHandlingResult, ErrorRecoveryExecutor, ErrorSeverity, ErrorStats, RecoveryAction,
+    RecoveryResult,
+};
+pub use completion_keyboard::{
+    CompletionAction, CompletionFocusManager, CompletionKeyboardHandler, KeyboardConfig,
+    KeyboardNavigationResult, TriggerDetector,
+};
+pub use completion_popup::{
+    AvailableSpace, PopupConstraints, PopupPlacement, PopupPosition, PopupPositioner, SmartPopup,
+    create_completion_popup,
+};
+pub use completion_renderer::{
+    CompletionIcon, CompletionItemElement, CompletionListState, get_completion_icon,
+    render_completion_list,
+};
 pub use file_icon::FileIcon;
 pub use keyboard_navigation::{
     KeyboardNavigationHandler, ListVirtualization, NavigationAction, NavigationDirection,
@@ -371,6 +397,10 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     registry.register_component("FileIcon");
     registry.register_component("Picker");
     registry.register_component("Prompt");
+    registry.register_component("CompletionView");
+    registry.register_component("CompletionRenderer");
+    registry.register_component("SmartPopup");
+    registry.register_component("DocumentationPanel");
 
     cx.set_global(registry);
 
