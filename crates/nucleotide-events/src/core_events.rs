@@ -67,6 +67,13 @@ pub enum CoreEvent {
         view_id: ViewId,
         trigger: CompletionTrigger,
     },
+
+    /// Completion accepted - insert the selected completion text
+    CompletionAccepted {
+        text: String,
+        doc_id: Option<DocumentId>,
+        view_id: Option<ViewId>,
+    },
 }
 
 /// Message severity levels

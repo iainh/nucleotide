@@ -219,6 +219,25 @@ impl OverlayView {
                 )
                 .detach();
 
+                // Subscribe to completion accepted events from the completion view
+                cx.subscribe(
+                    completion_view,
+                    |_this,
+                     _completion_view,
+                     event: &nucleotide_ui::completion_v2::CompletionAcceptedEvent,
+                     cx| {
+                        println!(
+                            "COMP: OverlayView received completion accepted event: {}",
+                            event.text
+                        );
+                        // Forward the completion accepted event to the workspace
+                        cx.emit(nucleotide_ui::completion_v2::CompletionAcceptedEvent {
+                            text: event.text.clone(),
+                        });
+                    },
+                )
+                .detach();
+
                 self.completion_view = Some(completion_view.clone());
                 println!("COMP: OverlayView set completion_view and notifying");
                 cx.notify();
@@ -520,6 +539,7 @@ impl Focusable for OverlayView {
     }
 }
 impl EventEmitter<DismissEvent> for OverlayView {}
+impl EventEmitter<nucleotide_ui::completion_v2::CompletionAcceptedEvent> for OverlayView {}
 
 impl Render for OverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -581,8 +601,15 @@ impl Render for OverlayView {
         }
 
         if let Some(completion_view) = &self.completion_view {
-            // Render completion view directly without cloning
-            return div().child(completion_view.clone()).into_any_element();
+            // Render completion view positioned near cursor without full overlay
+            return div()
+                .key_context("Overlay")
+                .absolute()
+                .size_full()
+                .top_0()
+                .left_0()
+                .child(completion_view.clone())
+                .into_any_element();
         }
 
         // Legacy prompt fallback

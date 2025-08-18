@@ -25,6 +25,12 @@ use crate::completion_renderer::{
 use crate::debouncer::{CompletionDebouncer, create_completion_debouncer};
 use crate::fuzzy::{FuzzyConfig, match_strings};
 
+/// Event emitted when a completion item is accepted by the user
+#[derive(Debug, Clone)]
+pub struct CompletionAcceptedEvent {
+    pub text: String,
+}
+
 /// Candidate for fuzzy matching - lightweight representation of completion items
 #[derive(Debug, Clone)]
 pub struct StringMatchCandidate {
@@ -297,11 +303,10 @@ impl CompletionView {
                 self.all_items.len()
             );
             self.filtered_entries = self
-                .all_items
+                .match_candidates
                 .iter()
-                .enumerate()
-                .map(|(index, _item)| StringMatch {
-                    candidate_id: index,
+                .map(|candidate| StringMatch {
+                    candidate_id: candidate.id,
                     score: 100,
                     positions: Vec::new(),
                 })
@@ -927,6 +932,7 @@ impl Focusable for CompletionView {
 }
 
 impl EventEmitter<DismissEvent> for CompletionView {}
+impl EventEmitter<CompletionAcceptedEvent> for CompletionView {}
 
 impl Render for CompletionView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -947,7 +953,11 @@ impl Render for CompletionView {
             .iter()
             .enumerate()
             .filter_map(|(index, string_match)| {
-                let item = self.all_items.get(string_match.candidate_id)?;
+                // Find the item by matching candidate ID
+                let item = self.all_items.iter().find(|item| {
+                    let candidate = StringMatchCandidate::from(*item);
+                    candidate.id == string_match.candidate_id
+                })?;
                 let is_selected = index == self.selected_index;
 
                 let element = div()
@@ -969,28 +979,64 @@ impl Render for CompletionView {
             })
             .collect();
 
-        // Simple container without key handling - let workspace handle escape
-        let container = div().id("completion-popup-v2");
+        // Focusable container with key handling for completion navigation
+        let container = div()
+            .id("completion-popup-v2")
+            .focusable()
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|view, ev: &KeyDownEvent, _window, cx| {
+                match ev.keystroke.key.as_str() {
+                    "escape" => {
+                        // Emit dismiss event to close the completion popup
+                        cx.emit(DismissEvent);
+                    }
+                    "tab" => {
+                        if ev.keystroke.modifiers.shift {
+                            // Shift+Tab: Move to previous item
+                            view.select_prev(cx);
+                        } else {
+                            // Tab: Move to next item
+                            view.select_next(cx);
+                        }
+                    }
+                    "enter" => {
+                        // Accept the currently selected completion item
+                        if let Some(selected_item) = view.selected_item() {
+                            // Emit completion accepted event with the selected text
+                            cx.emit(CompletionAcceptedEvent {
+                                text: selected_item.text.to_string(),
+                            });
+                            // Also dismiss the completion popup
+                            cx.emit(DismissEvent);
+                        }
+                    }
+                    _ => {}
+                }
+            }));
 
-        // Don't focus the completion view - let the editor keep focus
-        // We'll handle escape through the workspace level instead
+        // Focus the completion view when it's first shown
+        window.focus(&self.focus_handle);
 
-        container.flex().child(
-            div()
-                .id("completion-list")
-                .flex()
-                .flex_col()
-                .min_w_64()
-                .max_w_96()
-                .bg(tokens.colors.popup_background)
-                .border_1()
-                .border_color(tokens.colors.popup_border)
-                .rounded_md()
-                .shadow_lg()
-                .max_h(px(300.0))
-                .overflow_y_scroll()
-                .children(completion_items),
-        )
+        container
+            .absolute()
+            .top(px(50.0)) // Position below cursor area
+            .left(px(100.0)) // Position to the right of typical cursor position
+            .child(
+                div()
+                    .id("completion-list")
+                    .flex()
+                    .flex_col()
+                    .min_w_64()
+                    .max_w_96()
+                    .bg(tokens.colors.popup_background)
+                    .border_1()
+                    .border_color(tokens.colors.popup_border)
+                    .rounded_md()
+                    .shadow_lg()
+                    .max_h(px(300.0))
+                    .overflow_y_scroll()
+                    .children(completion_items),
+            )
     }
 }
 

@@ -19,11 +19,10 @@ use nucleotide_logging::{debug, error, info, instrument, warn};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::{
-    Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant,
-    compute_component_style,
+    Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant, compute_component_style,
 };
 
-use crate::input_coordinator::{InputCoordinator, InputContext, FocusGroup};
+use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;
@@ -61,7 +60,7 @@ pub struct Workspace {
     pending_appearance: Option<gpui::WindowAppearance>,
     tab_overflow_dropdown_open: bool,
     document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
-    input_coordinator: Arc<InputCoordinator>,   // Central input coordination system
+    input_coordinator: Arc<InputCoordinator>,    // Central input coordination system
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -117,6 +116,22 @@ impl Workspace {
                 workspace.manage_completion_context(has_completion);
 
                 cx.notify();
+            },
+        )
+        .detach();
+
+        // Subscribe to completion accepted events to insert text
+        cx.subscribe(
+            &overlay,
+            |workspace,
+             _overlay,
+             event: &nucleotide_ui::completion_v2::CompletionAcceptedEvent,
+             cx| {
+                println!(
+                    "COMP: Workspace received completion accepted event: {}",
+                    event.text
+                );
+                workspace.handle_completion_accepted(&event.text, cx);
             },
         )
         .detach();
@@ -219,61 +234,43 @@ impl Workspace {
     /// Register workspace-specific actions with the input coordinator
     fn register_workspace_actions(coordinator: &Arc<InputCoordinator>) {
         info!("Registering workspace actions with InputCoordinator");
-        
+
         // Register ToggleFileTree action (Ctrl+B)
-        coordinator.register_global_action(
-            "ToggleFileTree",
-            || {
-                info!("ToggleFileTree action triggered");
-                // This will need to be implemented differently - we need access to workspace
-                // For now, this is just a placeholder structure
-            }
-        );
-        
+        coordinator.register_global_action("ToggleFileTree", || {
+            info!("ToggleFileTree action triggered");
+            // This will need to be implemented differently - we need access to workspace
+            // For now, this is just a placeholder structure
+        });
+
         // Register ShowFileFinder action (Ctrl+P)
-        coordinator.register_global_action(
-            "ShowFileFinder", 
-            || {
-                info!("ShowFileFinder action triggered");
-                // Placeholder
-            }
-        );
-        
+        coordinator.register_global_action("ShowFileFinder", || {
+            info!("ShowFileFinder action triggered");
+            // Placeholder
+        });
+
         // Register ShowCommandPalette action (Ctrl+Shift+P)
-        coordinator.register_global_action(
-            "ShowCommandPalette",
-            || {
-                info!("ShowCommandPalette action triggered");
-                // Placeholder
-            }
-        );
-        
+        coordinator.register_global_action("ShowCommandPalette", || {
+            info!("ShowCommandPalette action triggered");
+            // Placeholder
+        });
+
         // Register ShowBufferPicker action
-        coordinator.register_global_action(
-            "ShowBufferPicker",
-            || {
-                info!("ShowBufferPicker action triggered");
-                // Placeholder
-            }
-        );
-        
+        coordinator.register_global_action("ShowBufferPicker", || {
+            info!("ShowBufferPicker action triggered");
+            // Placeholder
+        });
+
         // Register focus group navigation actions
-        coordinator.register_global_action(
-            "FocusEditor",
-            || {
-                info!("FocusEditor action triggered");
-                // Placeholder
-            }
-        );
-        
-        coordinator.register_global_action(
-            "FocusFileTree", 
-            || {
-                info!("FocusFileTree action triggered");
-                // Placeholder
-            }
-        );
-        
+        coordinator.register_global_action("FocusEditor", || {
+            info!("FocusEditor action triggered");
+            // Placeholder
+        });
+
+        coordinator.register_global_action("FocusFileTree", || {
+            info!("FocusFileTree action triggered");
+            // Placeholder
+        });
+
         info!("Completed workspace action registration");
     }
 
@@ -284,19 +281,19 @@ impl Workspace {
             if file_tree.focus_handle(cx).is_focused(window) {
                 InputContext::FileTree
             } else if self.focused_view_id.is_some() {
-                InputContext::Normal  // Editor context
+                InputContext::Normal // Editor context
             } else {
                 InputContext::Normal
             }
         } else if self.focused_view_id.is_some() {
-            InputContext::Normal  // Editor context
+            InputContext::Normal // Editor context
         } else {
             InputContext::Normal
         };
 
         // Switch to the appropriate context
         self.input_coordinator.switch_context(new_context);
-        
+
         debug!(context = ?new_context, "Updated input context");
     }
 
@@ -332,10 +329,10 @@ impl Workspace {
 
         // Update input context based on current focus state
         self.update_input_context(window, cx);
-        
+
         // Delegate to InputCoordinator for processing
         let result = self.input_coordinator.handle_key_event(ev, window);
-        
+
         // Handle the result
         use crate::input_coordinator::InputResult;
         match result {
@@ -347,7 +344,7 @@ impl Workspace {
             }
             InputResult::SendToHelix(helix_key) => {
                 debug!(key = ?helix_key, "Sending key to Helix editor");
-                
+
                 // Send the key to Helix
                 self.input.update(cx, |_, cx| {
                     cx.emit(crate::InputEvent::Key(helix_key));
@@ -2650,10 +2647,13 @@ impl Workspace {
 
         // Add detailed focus debugging
         let workspace_focused = self.focus_handle.is_focused(window);
-        let file_tree_focused = self.file_tree.as_ref()
+        let file_tree_focused = self
+            .file_tree
+            .as_ref()
             .map(|ft| ft.focus_handle(cx).is_focused(window))
             .unwrap_or(false);
-        let doc_view_focused = self.focused_view_id
+        let doc_view_focused = self
+            .focused_view_id
             .and_then(|view_id| self.documents.get(&view_id))
             .map(|doc_view| doc_view.focus_handle(cx).is_focused(window))
             .unwrap_or(false);
@@ -2759,6 +2759,10 @@ impl Workspace {
             // Let GPUI actions bubble up to the native components instead
             let overlay_view = &self.overlay.read(cx);
             if !overlay_view.is_empty() {
+                println!(
+                    "DEBUG: Workspace skipping key '{}' because overlay is not empty",
+                    ev.keystroke.key
+                );
                 // Skip helix key processing when overlay is not empty
                 // The native components (picker, prompt, completion) will handle their own key events via GPUI actions
                 return;
@@ -2805,7 +2809,7 @@ impl Workspace {
             Some(self.focus_handle.clone()),
             Some(Box::new(|| {
                 debug!("Editor focus group activated");
-            }))
+            })),
         );
 
         // Register file tree focus group if available
@@ -2815,7 +2819,7 @@ impl Workspace {
                 Some(file_tree.focus_handle(cx)),
                 Some(Box::new(|| {
                     debug!("FileTree focus group activated");
-                }))
+                })),
             );
         }
 
@@ -2825,13 +2829,15 @@ impl Workspace {
             Some(self.overlay.focus_handle(cx)),
             Some(Box::new(|| {
                 debug!("Overlays focus group activated");
-            }))
+            })),
         );
 
         // Set editor and file tree as available if they exist
-        self.input_coordinator.set_focus_group_available(FocusGroup::Editor, true);
+        self.input_coordinator
+            .set_focus_group_available(FocusGroup::Editor, true);
         if self.file_tree.is_some() && self.show_file_tree {
-            self.input_coordinator.set_focus_group_available(FocusGroup::FileTree, true);
+            self.input_coordinator
+                .set_focus_group_available(FocusGroup::FileTree, true);
         }
 
         info!("Registered focus groups for main UI areas with InputCoordinator");
@@ -2949,7 +2955,7 @@ impl Workspace {
             },
         );
         */
-        
+
         nucleotide_logging::info!("Setup completion-specific shortcuts");
         */
     }
@@ -3281,13 +3287,18 @@ impl Workspace {
         let modifiers = &event.keystroke.modifiers;
         let key = &event.keystroke.key;
 
-        eprintln!("DEBUG: handle_global_shortcuts_only called for key: '{}', ctrl: {}", key, modifiers.control);
+        eprintln!(
+            "DEBUG: handle_global_shortcuts_only called for key: '{}', ctrl: {}",
+            key, modifiers.control
+        );
 
         // Only handle shortcuts that are truly global and don't interfere with component input
 
         // Ctrl+B (toggle file tree) - should work from anywhere
         if key == "b" && modifiers.control {
-            eprintln!("DEBUG: Handling global ToggleFileTree shortcut in handle_global_shortcuts_only");
+            eprintln!(
+                "DEBUG: Handling global ToggleFileTree shortcut in handle_global_shortcuts_only"
+            );
             nucleotide_logging::debug!("Handling global ToggleFileTree shortcut");
             self.show_file_tree = !self.show_file_tree;
             cx.notify();
@@ -3304,11 +3315,16 @@ impl Workspace {
         let modifiers = &event.keystroke.modifiers;
         let key = &event.keystroke.key;
 
-        eprintln!("DEBUG: handle_global_input_shortcuts called for key: '{}', ctrl: {}", key, modifiers.control);
+        eprintln!(
+            "DEBUG: handle_global_input_shortcuts called for key: '{}', ctrl: {}",
+            key, modifiers.control
+        );
 
         // Check for Ctrl+B (toggle file tree)
         if key == "b" && modifiers.control {
-            eprintln!("DEBUG: Handling global ToggleFileTree shortcut in handle_global_input_shortcuts");
+            eprintln!(
+                "DEBUG: Handling global ToggleFileTree shortcut in handle_global_input_shortcuts"
+            );
             nucleotide_logging::debug!("Handling ToggleFileTree shortcut");
             self.show_file_tree = !self.show_file_tree;
             cx.notify();
@@ -3384,16 +3400,49 @@ impl Workspace {
     pub fn trigger_completion(&mut self, cx: &mut Context<Self>) {
         nucleotide_logging::debug!("Triggering completion in active editor");
 
-        // Send Ctrl+Space to the Helix core to trigger completion
-        let key_event = KeyEvent {
-            code: KeyCode::Char(' '),
-            modifiers: KeyModifiers::CONTROL,
-        };
+        // Create sample completion items using the same method as the test function
+        let items = self.core.read(cx).create_sample_completion_items();
 
-        self.input.update(cx, |_, cx| {
-            cx.emit(crate::InputEvent::Key(key_event));
+        nucleotide_logging::debug!(
+            item_count = items.len(),
+            "Creating completion view with items"
+        );
+
+        // Create completion view
+        let completion_view = cx.new(|cx| {
+            let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
+            view.set_items(items, cx);
+            view
         });
-        nucleotide_logging::debug!("Sent Ctrl+Space to Helix core for completion");
+
+        nucleotide_logging::debug!("Emitting completion view to overlay");
+
+        // Emit completion event to show it in the overlay
+        self.core.update(cx, |_core, cx| {
+            cx.emit(crate::Update::Completion(completion_view));
+        });
+
+        nucleotide_logging::debug!("Completion trigger completed - UI should now be visible");
+    }
+
+    /// Handle completion acceptance - insert the selected text into the editor
+    fn handle_completion_accepted(&mut self, text: &str, cx: &mut Context<Self>) {
+        nucleotide_logging::info!(completion_text = %text, "Handling completion acceptance");
+
+        // Convert the completion text to individual key events and send them to Helix
+        // This simulates typing the completion text
+        for ch in text.chars() {
+            let key_event = helix_view::input::KeyEvent {
+                code: helix_view::keyboard::KeyCode::Char(ch),
+                modifiers: helix_view::keyboard::KeyModifiers::NONE,
+            };
+
+            self.input.update(cx, |_, cx| {
+                cx.emit(crate::InputEvent::Key(key_event));
+            });
+        }
+
+        nucleotide_logging::info!("Completion text sent to Helix editor");
     }
 
     /// Accept the current completion selection
@@ -3941,7 +3990,7 @@ impl Render for Workspace {
                         workspace.tab_overflow_dropdown_open = false;
                         cx.notify();
                     }
-                    
+
                     // Ensure workspace regains focus when clicked, so global shortcuts work
                     workspace.needs_focus_restore = true;
                     cx.notify();
