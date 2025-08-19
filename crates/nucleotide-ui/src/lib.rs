@@ -84,6 +84,10 @@ pub use completion_renderer::{
     CompletionIcon, CompletionItemElement, CompletionListState, get_completion_icon,
     render_completion_list,
 };
+pub use completion_v2::{
+    CompletionAcceptedEvent, CompletionItem, CompletionItemKind, CompletionView, Position,
+    StringMatch, StringMatchCandidate,
+};
 pub use file_icon::FileIcon;
 pub use focus_indicator::{
     FocusIndicator, focused_element, high_contrast_focus_ring, subtle_focus_ring,
