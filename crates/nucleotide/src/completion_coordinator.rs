@@ -124,7 +124,7 @@ impl CompletionCoordinator {
                     "Handling auto completion trigger"
                 );
 
-                // Request completions for auto triggers as well
+                // Request real LSP completions instead of showing samples
                 self.request_lsp_completions(cursor, doc, view).await?;
             }
             CompletionEvent::TriggerChar { cursor, doc, view } => {
@@ -135,7 +135,7 @@ impl CompletionCoordinator {
                     "Handling trigger character completion"
                 );
 
-                // Request completions for trigger characters
+                // Request real LSP completions instead of showing samples
                 self.request_lsp_completions(cursor, doc, view).await?;
             }
             CompletionEvent::DeleteText { cursor } => {
@@ -195,8 +195,9 @@ impl CompletionCoordinator {
             Ok(response) => {
                 if let Some(error) = response.error {
                     warn!(error = %error, "LSP completion request failed");
-                    // Still send the items we have (might be empty)
-                    self.send_completion_results(response.items, cursor, doc_id, view_id)
+                    // Send the LSP items as-is
+                    let items = response.items;
+                    self.send_completion_results(items, cursor, doc_id, view_id)
                         .await?;
                 } else {
                     info!(
@@ -204,7 +205,9 @@ impl CompletionCoordinator {
                         is_incomplete = response.is_incomplete,
                         "Received LSP completion response from main thread"
                     );
-                    self.send_completion_results(response.items, cursor, doc_id, view_id)
+                    // Send LSP results as-is - let rust-analyzer handle standard library items
+                    let items = response.items;
+                    self.send_completion_results(items, cursor, doc_id, view_id)
                         .await?;
                 }
             }
@@ -275,6 +278,12 @@ impl CompletionCoordinator {
 
         // Create sample completion items
         let items = vec![
+            CompletionEventItem {
+                text: "print!".to_string(),
+                kind: "Function".to_string(),
+                description: Some("Print to stdout".to_string()),
+                documentation: Some("Prints to the standard output.".to_string()),
+            },
             CompletionEventItem {
                 text: "println!".to_string(),
                 kind: "Function".to_string(),

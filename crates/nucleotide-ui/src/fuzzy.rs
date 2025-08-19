@@ -1,34 +1,56 @@
-// ABOUTME: Fuzzy matching implementation for completion filtering
-// ABOUTME: Based on modern fuzzy matching algorithms with score calculation and highlighting
+// ABOUTME: Fuzzy matching implementation using nucleo (same as Helix)
+// ABOUTME: High-performance fuzzy matcher with prefix preference and sophisticated scoring
 
+use std::ops::DerefMut;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+// Import nucleo components like Helix does
+use nucleo::pattern::{Atom, AtomKind, CaseMatching, Normalization};
+use nucleo::{Config, Utf32Str};
+use parking_lot::Mutex;
+
 use crate::completion_v2::{StringMatch, StringMatchCandidate};
 
-/// Configuration for fuzzy matching behavior
+/// LazyMutex implementation exactly like Helix
+pub struct LazyMutex<T> {
+    inner: Mutex<Option<T>>,
+    init: fn() -> T,
+}
+
+impl<T> LazyMutex<T> {
+    pub const fn new(init: fn() -> T) -> Self {
+        Self {
+            inner: Mutex::new(None),
+            init,
+        }
+    }
+
+    pub fn lock(&self) -> impl DerefMut<Target = T> + '_ {
+        parking_lot::MutexGuard::map(self.inner.lock(), |val| val.get_or_insert_with(self.init))
+    }
+}
+
+/// Global matcher instance, exactly like Helix
+pub static MATCHER: LazyMutex<nucleo::Matcher> = LazyMutex::new(nucleo::Matcher::default);
+
+/// Configuration for fuzzy matching behavior - using nucleo defaults
 #[derive(Debug, Clone)]
 pub struct FuzzyConfig {
-    /// Whether matching should be case sensitive
-    pub case_sensitive: bool,
-    /// Bonus score for consecutive character matches
-    pub consecutive_bonus: u16,
-    /// Bonus score for word boundary matches
-    pub word_boundary_bonus: u16,
-    /// Bonus score for prefix matches
-    pub prefix_bonus: u16,
-    /// Penalty for gaps between matches
-    pub gap_penalty: u16,
+    /// Whether to prefer prefix matches (like Helix)
+    pub prefer_prefix: bool,
+    /// Case matching strategy
+    pub case_matching: CaseMatching,
+    /// Text normalization strategy  
+    pub normalization: Normalization,
 }
 
 impl Default for FuzzyConfig {
     fn default() -> Self {
         Self {
-            case_sensitive: false,
-            consecutive_bonus: 15,
-            word_boundary_bonus: 30,
-            prefix_bonus: 50,
-            gap_penalty: 3,
+            prefer_prefix: true,                 // Key setting from Helix!
+            case_matching: CaseMatching::Ignore, // Like Helix for completions
+            normalization: Normalization::Smart,
         }
     }
 }
@@ -60,27 +82,49 @@ pub async fn match_strings(
             .collect();
     }
 
+    // Use nucleo matcher exactly like Helix
+    let mut matcher = MATCHER.lock();
+    matcher.config = Config::DEFAULT;
+    matcher.config.prefer_prefix = config.prefer_prefix;
+
+    // Create atom pattern like Helix does for completions
+    let pattern = Atom::new(
+        &query,
+        config.case_matching,
+        config.normalization,
+        AtomKind::Fuzzy,
+        false,
+    );
+
     let mut matches = Vec::new();
-    let query_lower = if config.case_sensitive {
-        query.clone()
-    } else {
-        query.to_lowercase()
-    };
+    let mut utf32_buf = Vec::new();
+
+    // Calculate minimum score threshold like Helix does
+    let min_score = (7 + query.len() as u32 * 14) / 3;
 
     for candidate in candidates {
         // Check for cancellation periodically
         if cancel_flag.load(Ordering::Relaxed) {
-            return Vec::new();
+            break;
         }
 
-        let text = if config.case_sensitive {
-            candidate.text.clone()
-        } else {
-            candidate.text.to_lowercase()
-        };
+        let text = &candidate.text;
 
-        if let Some((score, positions)) = fuzzy_match_score(&text, &query_lower, &config) {
-            matches.push(StringMatch::new(candidate.id, score, positions));
+        // Score using nucleo
+        if let Some(score) = pattern.score(Utf32Str::new(text, &mut utf32_buf), &mut matcher) {
+            // Normalize score like Helix (divide by 3 for full matches)
+            let normalized_score = (score as u32) / 3;
+
+            // Only include matches above minimum threshold
+            if normalized_score > min_score {
+                // For now, we don't extract positions from nucleo (would require more complex integration)
+                // TODO: Extract match positions for highlighting
+                matches.push(StringMatch::new(
+                    candidate.id,
+                    normalized_score as u16,
+                    vec![],
+                ));
+            }
         }
 
         // Yield control periodically for async cancellation
@@ -89,8 +133,8 @@ pub async fn match_strings(
         }
     }
 
-    // Sort by score (highest first)
-    matches.sort();
+    // Sort by score (higher first)
+    matches.sort_by(|a, b| b.score.cmp(&a.score));
 
     // Limit results
     matches.truncate(max_results);
@@ -98,113 +142,27 @@ pub async fn match_strings(
     matches
 }
 
-/// Calculate fuzzy match score and positions for a single string
-///
-/// Returns None if the query doesn't match the text at all
-/// Returns Some((score, positions)) where positions are character indices that matched
-fn fuzzy_match_score(text: &str, query: &str, config: &FuzzyConfig) -> Option<(u16, Vec<usize>)> {
-    if query.is_empty() {
-        return Some((100, vec![]));
-    }
+/// Convenience function for simple fuzzy matching (following Helix pattern)
+/// This is similar to Helix's fuzzy_match function but adapted for our types
+pub fn fuzzy_match<T: AsRef<str>>(
+    pattern: &str,
+    items: impl IntoIterator<Item = T>,
+    prefer_prefix: bool,
+) -> Vec<(T, u16)> {
+    let mut matcher = MATCHER.lock();
+    matcher.config = Config::DEFAULT;
+    matcher.config.prefer_prefix = prefer_prefix;
 
-    let text_chars: Vec<char> = text.chars().collect();
-    let query_chars: Vec<char> = query.chars().collect();
+    let pattern = Atom::new(
+        pattern,
+        CaseMatching::Ignore, // Like Helix for completions
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+        false,
+    );
 
-    // Check if all query characters exist in the text
-    let mut text_idx = 0;
-    let mut matched_positions = Vec::new();
-
-    for &query_char in &query_chars {
-        let mut found = false;
-        while text_idx < text_chars.len() {
-            if text_chars[text_idx] == query_char {
-                matched_positions.push(text_idx);
-                text_idx += 1;
-                found = true;
-                break;
-            }
-            text_idx += 1;
-        }
-        if !found {
-            return None; // Query character not found
-        }
-    }
-
-    // Calculate score based on match quality
-    let score = calculate_match_score(&text_chars, &matched_positions, config);
-
-    Some((score, matched_positions))
-}
-
-/// Calculate the quality score for a match
-fn calculate_match_score(text_chars: &[char], positions: &[usize], config: &FuzzyConfig) -> u16 {
-    if positions.is_empty() {
-        return 0;
-    }
-
-    let mut score = 100; // Base score
-
-    // Prefix bonus - higher score if match starts at beginning
-    if positions[0] == 0 {
-        score += config.prefix_bonus;
-    }
-
-    // Consecutive character bonus
-    let mut consecutive_count = 0;
-    for i in 1..positions.len() {
-        if positions[i] == positions[i - 1] + 1 {
-            consecutive_count += 1;
-            score += config.consecutive_bonus;
-        } else {
-            consecutive_count = 0;
-        }
-    }
-
-    // Word boundary bonus
-    for &pos in positions {
-        if is_word_boundary(text_chars, pos) {
-            score += config.word_boundary_bonus;
-        }
-    }
-
-    // Gap penalty - reduce score for large gaps between matches
-    for i in 1..positions.len() {
-        let gap = positions[i] - positions[i - 1] - 1;
-        if gap > 0 {
-            score = score.saturating_sub(config.gap_penalty * gap as u16);
-        }
-    }
-
-    // Length bonus - shorter strings with matches are better
-    let length_penalty = (text_chars.len() as u16).saturating_sub(100) / 10;
-    score = score.saturating_sub(length_penalty);
-
-    score
-}
-
-/// Check if a position is at a word boundary
-fn is_word_boundary(text_chars: &[char], pos: usize) -> bool {
-    if pos == 0 {
-        return true; // Start of string is always word boundary
-    }
-
-    let current_char = text_chars[pos];
-    let prev_char = text_chars[pos - 1];
-
-    // Word boundary if:
-    // - Previous char is not alphanumeric and current is
-    // - Previous char is lowercase and current is uppercase
-    // - Previous char is separator (_ - . / \ etc.)
-
-    if !prev_char.is_alphanumeric() && current_char.is_alphanumeric() {
-        return true;
-    }
-
-    if prev_char.is_lowercase() && current_char.is_uppercase() {
-        return true;
-    }
-
-    matches!(prev_char, '_' | '-' | '.' | '/' | '\\' | ' ' | '\t')
+    // Use nucleo's built-in match_list method
+    pattern.match_list(items, &mut matcher)
 }
 
 #[cfg(test)]
@@ -212,98 +170,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_exact_match() {
-        let candidates = vec![StringMatchCandidate::new(1, "hello".to_string())];
-        let config = FuzzyConfig::default();
+    fn test_fuzzy_match_simple() {
+        let items: Vec<&str> = vec!["hello", "help", "world"];
+        let matches = fuzzy_match("hel", items, true);
 
-        let result = fuzzy_match_score("hello", "hello", &config);
-        assert!(result.is_some());
-        let (score, positions) = result.unwrap();
-        assert!(score > 200); // Should have high score due to prefix bonus
-        assert_eq!(positions, vec![0, 1, 2, 3, 4]);
+        // Should find matches for "hello" and "help"
+        assert!(matches.len() >= 2);
+        assert!(matches.iter().any(|(item, _)| *item == "hello"));
+        assert!(matches.iter().any(|(item, _)| *item == "help"));
     }
 
     #[test]
-    fn test_prefix_match() {
-        let config = FuzzyConfig::default();
+    fn test_fuzzy_match_prefix_preference() {
+        let items: Vec<&str> = vec!["print_hello", "hello_print", "printf"];
+        let matches = fuzzy_match("print", items, true);
 
-        let result = fuzzy_match_score("hello_world", "hello", &config);
-        assert!(result.is_some());
-        let (score, positions) = result.unwrap();
-        assert!(score > 200); // Should have high score due to prefix bonus
-        assert_eq!(positions, vec![0, 1, 2, 3, 4]);
-    }
+        // Should prefer prefix matches
+        assert!(!matches.is_empty());
+        // print_hello and printf should score higher than hello_print
+        let print_hello_score = matches
+            .iter()
+            .find(|(item, _)| *item == "print_hello")
+            .map(|(_, score)| *score);
+        let hello_print_score = matches
+            .iter()
+            .find(|(item, _)| *item == "hello_print")
+            .map(|(_, score)| *score);
 
-    #[test]
-    fn test_subsequence_match() {
-        let config = FuzzyConfig::default();
-
-        let result = fuzzy_match_score("hello_world", "hlwrd", &config);
-        assert!(result.is_some());
-        let (score, positions) = result.unwrap();
-        assert!(score > 100); // Should match but with lower score
-        assert_eq!(positions, vec![0, 2, 6, 8, 10]);
-    }
-
-    #[test]
-    fn test_no_match() {
-        let config = FuzzyConfig::default();
-
-        let result = fuzzy_match_score("hello", "xyz", &config);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_case_sensitivity() {
-        let config_sensitive = FuzzyConfig {
-            case_sensitive: true,
-            ..Default::default()
-        };
-
-        let config_insensitive = FuzzyConfig {
-            case_sensitive: false,
-            ..Default::default()
-        };
-
-        // Case sensitive should not match
-        assert!(fuzzy_match_score("Hello", "hello", &config_sensitive).is_none());
-
-        // Case insensitive should match
-        assert!(fuzzy_match_score("hello", "hello", &config_insensitive).is_some());
-    }
-
-    #[test]
-    fn test_word_boundary_detection() {
-        // Start of string
-        assert!(is_word_boundary(&['h', 'e', 'l', 'l', 'o'], 0));
-
-        // After underscore
-        assert!(is_word_boundary(&['h', 'e', '_', 'w', 'o'], 3));
-
-        // After dash
-        assert!(is_word_boundary(&['h', 'e', '-', 'w', 'o'], 3));
-
-        // Camel case
-        assert!(is_word_boundary(&['h', 'e', 'l', 'W', 'o'], 3));
-
-        // Not word boundary
-        assert!(!is_word_boundary(&['h', 'e', 'l', 'l', 'o'], 2));
-    }
-
-    #[test]
-    fn test_consecutive_bonus() {
-        let config = FuzzyConfig::default();
-
-        // "hel" should get consecutive bonus
-        let result1 = fuzzy_match_score("hello", "hel", &config);
-        assert!(result1.is_some());
-
-        // "heo" should not get consecutive bonus
-        let result2 = fuzzy_match_score("hello", "heo", &config);
-        assert!(result2.is_some());
-
-        // Consecutive match should score higher
-        assert!(result1.unwrap().0 > result2.unwrap().0);
+        if let (Some(prefix_score), Some(suffix_score)) = (print_hello_score, hello_print_score) {
+            assert!(prefix_score >= suffix_score);
+        }
     }
 
     #[tokio::test]
@@ -346,12 +242,10 @@ mod tests {
 
     #[test]
     fn test_empty_query() {
-        let config = FuzzyConfig::default();
+        let items: Vec<&str> = vec!["hello", "world"];
+        let matches = fuzzy_match("", items, false);
 
-        let result = fuzzy_match_score("hello", "", &config);
-        assert!(result.is_some());
-        let (score, positions) = result.unwrap();
-        assert_eq!(score, 100);
-        assert!(positions.is_empty());
+        // Empty query should return all items
+        assert_eq!(matches.len(), 2);
     }
 }

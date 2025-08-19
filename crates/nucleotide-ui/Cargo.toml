@@ -20,6 +20,7 @@ helix-term.workspace = true
 helix-loader.workspace = true
 smallvec.workspace = true
 nucleo.workspace = true
+parking_lot.workspace = true
 anyhow.workspace = true
 rust-embed.workspace = true
 dirs = "5.0"

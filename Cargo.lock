@@ -4631,6 +4631,7 @@ dependencies = [
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-types",
+ "parking_lot",
  "rust-embed",
  "serde",
  "smallvec",
