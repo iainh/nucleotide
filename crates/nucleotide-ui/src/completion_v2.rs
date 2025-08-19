@@ -19,9 +19,7 @@ use crate::completion_error::{
 };
 use crate::completion_perf::{PerformanceMonitor, PerformanceTimer};
 use crate::completion_popup::{PopupConstraints, PopupPlacement, PopupPositioner, SmartPopup};
-use crate::completion_renderer::{
-    CompletionItemElement, CompletionListState, render_completion_list,
-};
+use crate::completion_renderer::{CompletionItemElement, CompletionListState};
 use crate::debouncer::{CompletionDebouncer, create_completion_debouncer};
 use crate::fuzzy::{FuzzyConfig, match_strings};
 
@@ -947,7 +945,7 @@ impl Render for CompletionView {
         };
         let tokens = &theme.tokens;
 
-        // Create completion items directly without external functions
+        // Create completion items using the enhanced CompletionItemElement
         let completion_items: Vec<gpui::AnyElement> = self
             .filtered_entries
             .iter()
@@ -960,20 +958,9 @@ impl Render for CompletionView {
                 })?;
                 let is_selected = index == self.selected_index;
 
-                let element = div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .when(is_selected, |div| div.bg(tokens.colors.selection_primary))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(tokens.colors.text_primary)
-                            .child(item.text.clone()),
-                    );
+                // Use the rich CompletionItemElement with full feature set
+                let element =
+                    CompletionItemElement::new(item.clone(), string_match.clone(), is_selected);
 
                 Some(element.into_any_element())
             })
@@ -1027,7 +1014,7 @@ impl Render for CompletionView {
                     .flex()
                     .flex_col()
                     .min_w_64()
-                    .max_w_96()
+                    .max_w(px(400.0))
                     .bg(tokens.colors.popup_background)
                     .border_1()
                     .border_color(tokens.colors.popup_border)
@@ -1035,6 +1022,7 @@ impl Render for CompletionView {
                     .shadow_lg()
                     .max_h(px(300.0))
                     .overflow_y_scroll()
+                    .py_1()
                     .children(completion_items),
             )
     }

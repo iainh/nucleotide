@@ -36,82 +36,105 @@ impl CompletionIcon {
     }
 }
 
-/// Get icon for completion item kind
+/// Get icon for completion item kind using VS Code-style simple shapes and letters
 pub fn get_completion_icon(kind: &CompletionItemKind, theme: &crate::Theme) -> CompletionIcon {
     let tokens = &theme.tokens;
 
     match kind {
         CompletionItemKind::Text => CompletionIcon::new("T", tokens.colors.text_secondary),
         CompletionItemKind::Method => {
-            CompletionIcon::new("m", tokens.colors.primary).with_tooltip("Method")
+            // Using 'M' for method - simple and clean
+            CompletionIcon::new("M", tokens.colors.info).with_tooltip("Method")
         }
         CompletionItemKind::Function => {
-            CompletionIcon::new("f", tokens.colors.primary).with_tooltip("Function")
+            // Using 'f' for function
+            CompletionIcon::new("f", tokens.colors.info).with_tooltip("Function")
         }
         CompletionItemKind::Constructor => {
-            CompletionIcon::new("C", tokens.colors.info).with_tooltip("Constructor")
+            // Using 'C' for constructor
+            CompletionIcon::new("C", tokens.colors.warning).with_tooltip("Constructor")
         }
         CompletionItemKind::Field => {
+            // Using 'F' for field
             CompletionIcon::new("F", tokens.colors.success).with_tooltip("Field")
         }
         CompletionItemKind::Variable => {
-            CompletionIcon::new("v", tokens.colors.text_primary).with_tooltip("Variable")
+            // Using 'v' for variable
+            CompletionIcon::new("v", tokens.colors.primary).with_tooltip("Variable")
         }
         CompletionItemKind::Class => {
-            CompletionIcon::new("c", tokens.colors.warning).with_tooltip("Class")
+            // Using 'C' for class
+            CompletionIcon::new("C", tokens.colors.warning).with_tooltip("Class")
         }
         CompletionItemKind::Interface => {
-            CompletionIcon::new("i", tokens.colors.warning).with_tooltip("Interface")
+            // Using 'I' for interface
+            CompletionIcon::new("I", tokens.colors.info).with_tooltip("Interface")
         }
         CompletionItemKind::Module => {
-            CompletionIcon::new("M", tokens.colors.info).with_tooltip("Module")
+            // Using 'M' for module
+            CompletionIcon::new("M", tokens.colors.text_primary).with_tooltip("Module")
         }
         CompletionItemKind::Property => {
-            CompletionIcon::new("p", tokens.colors.success).with_tooltip("Property")
+            // Using 'P' for property
+            CompletionIcon::new("P", tokens.colors.success).with_tooltip("Property")
         }
         CompletionItemKind::Unit => {
-            CompletionIcon::new("u", tokens.colors.text_secondary).with_tooltip("Unit")
+            CompletionIcon::new("U", tokens.colors.text_secondary).with_tooltip("Unit")
         }
         CompletionItemKind::Value => {
-            CompletionIcon::new("V", tokens.colors.primary_hover).with_tooltip("Value")
+            // Using 'V' for value
+            CompletionIcon::new("V", tokens.colors.primary).with_tooltip("Value")
         }
         CompletionItemKind::Enum => {
-            CompletionIcon::new("e", tokens.colors.warning).with_tooltip("Enum")
+            // Using 'E' for enum
+            CompletionIcon::new("E", tokens.colors.warning).with_tooltip("Enum")
         }
         CompletionItemKind::Keyword => {
-            CompletionIcon::new("k", tokens.colors.error).with_tooltip("Keyword")
+            // Using 'K' for keyword
+            CompletionIcon::new("K", tokens.colors.error).with_tooltip("Keyword")
         }
         CompletionItemKind::Snippet => {
-            CompletionIcon::new("s", tokens.colors.success).with_tooltip("Snippet")
+            // Using 'S' for snippet
+            CompletionIcon::new("S", tokens.colors.info).with_tooltip("Snippet")
         }
         CompletionItemKind::Color => {
-            CompletionIcon::new("🎨", tokens.colors.primary_hover).with_tooltip("Color")
+            // Using square for color
+            CompletionIcon::new("■", tokens.colors.primary).with_tooltip("Color")
         }
         CompletionItemKind::File => {
-            CompletionIcon::new("📄", tokens.colors.text_secondary).with_tooltip("File")
+            // Using 'F' for file
+            CompletionIcon::new("F", tokens.colors.text_secondary).with_tooltip("File")
         }
         CompletionItemKind::Reference => {
-            CompletionIcon::new("&", tokens.colors.text_primary).with_tooltip("Reference")
+            // Using 'R' for reference
+            CompletionIcon::new("R", tokens.colors.text_primary).with_tooltip("Reference")
         }
         CompletionItemKind::Folder => {
+            // Using folder icon
             CompletionIcon::new("📁", tokens.colors.text_secondary).with_tooltip("Folder")
         }
         CompletionItemKind::EnumMember => {
-            CompletionIcon::new("E", tokens.colors.primary_hover).with_tooltip("Enum Member")
+            // Using 'e' for enum member
+            CompletionIcon::new("e", tokens.colors.primary).with_tooltip("Enum Member")
         }
         CompletionItemKind::Constant => {
-            CompletionIcon::new("C", tokens.colors.primary_hover).with_tooltip("Constant")
+            // Using 'c' for constant
+            CompletionIcon::new("c", tokens.colors.primary).with_tooltip("Constant")
         }
         CompletionItemKind::Struct => {
+            // Using 'S' for struct
             CompletionIcon::new("S", tokens.colors.warning).with_tooltip("Struct")
         }
         CompletionItemKind::Event => {
-            CompletionIcon::new("⚡", tokens.colors.primary).with_tooltip("Event")
+            // Using 'E' for event
+            CompletionIcon::new("E", tokens.colors.primary).with_tooltip("Event")
         }
         CompletionItemKind::Operator => {
-            CompletionIcon::new("⊕", tokens.colors.error).with_tooltip("Operator")
+            // Using 'O' for operator
+            CompletionIcon::new("O", tokens.colors.error).with_tooltip("Operator")
         }
         CompletionItemKind::TypeParameter => {
+            // Using 'T' for type parameter
             CompletionIcon::new("T", tokens.colors.warning).with_tooltip("Type Parameter")
         }
     }
@@ -190,12 +213,12 @@ impl CompletionItemElement {
                 }
             }
 
-            // Add highlighted character
+            // Add highlighted character - VS Code style subtle highlighting
             let highlighted_char = chars[pos];
             elements.push(
                 div()
                     .text_color(tokens.colors.primary)
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(highlighted_char.to_string())
                     .into_any_element(),
             );
@@ -220,10 +243,14 @@ impl CompletionItemElement {
     }
 }
 
-impl RenderOnce for CompletionItemElement {
-    fn render(self, _window: &mut gpui::Window, cx: &mut gpui::App) -> impl IntoElement {
-        let theme = cx.global::<crate::Theme>();
-        let tokens = &theme.tokens;
+impl IntoElement for CompletionItemElement {
+    type Element = AnyElement;
+
+    fn into_element(self) -> Self::Element {
+        // Use a default theme since IntoElement doesn't provide context access
+        // In practice, the theme should be passed in constructor for proper styling
+        let default_theme = crate::Theme::default();
+        let tokens = &default_theme.tokens;
 
         let display_text = self.item.display_text.as_ref().unwrap_or(&self.item.text);
 
@@ -233,96 +260,80 @@ impl RenderOnce for CompletionItemElement {
             .items_center()
             .w_full()
             .px_2()
-            .py(if self.compact { px(4.0) } else { px(6.0) })
+            .py(px(3.0))
             .gap_2()
             .when(self.is_selected, |div| {
                 div.bg(tokens.colors.selection_primary)
-                    .border_l_2()
-                    .border_color(tokens.colors.primary)
             })
             .when(!self.is_selected, |div| {
                 div.hover(|style| style.bg(tokens.colors.selection_secondary))
             });
 
-        // Icon section
+        // Icon section - compact VS Code style
         let with_icon = if self.show_icon && self.item.kind.is_some() {
-            let icon = get_completion_icon(self.item.kind.as_ref().unwrap(), &theme);
+            let icon = get_completion_icon(self.item.kind.as_ref().unwrap(), &default_theme);
             base_container.child(
                 div()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .w_6()
-                    .h_6()
-                    .text_color(icon.color)
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .w_4()
+                    .h_4()
+                    .rounded_sm()
+                    .bg(icon.color)
+                    .text_color(gpui::white())
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::BOLD)
                     .child(icon.character),
             )
         } else if self.show_icon {
             base_container.child(
                 div()
-                    .w_6()
-                    .h_6()
+                    .w_4()
+                    .h_4()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_color(tokens.colors.text_tertiary)
+                    .rounded_sm()
+                    .bg(tokens.colors.text_tertiary)
+                    .text_color(gpui::white())
                     .text_xs()
-                    .child("•"),
+                    .child("?"),
             )
         } else {
             base_container
         };
 
-        // Main content section
+        // Main content section - VS Code style compact layout
         let with_content = with_icon.child(
             div()
                 .flex()
-                .flex_col()
-                .gap_1()
+                .flex_row()
+                .items_center()
                 .min_w_0() // Allow text to truncate
+                .flex_1() // Take up remaining space
+                .gap_2()
                 .child(
                     // Primary text with highlighting
                     div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(if self.is_selected {
-                                    gpui::FontWeight::MEDIUM
-                                } else {
-                                    gpui::FontWeight::NORMAL
-                                })
-                                .child(self.render_highlighted_text(
-                                    display_text,
-                                    &self.string_match.positions,
-                                    &theme,
-                                )),
-                        )
-                        .when(self.show_kind && self.item.kind.is_some(), |div_el| {
-                            div_el.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(tokens.colors.text_tertiary)
-                                    .px_1()
-                                    .py_0p5()
-                                    .bg(tokens.colors.surface_elevated)
-                                    .rounded_sm()
-                                    .child(format!("{:?}", self.item.kind.as_ref().unwrap())),
-                            )
-                        }),
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::NORMAL)
+                        .text_color(tokens.colors.text_primary)
+                        .child(self.render_highlighted_text(
+                            display_text,
+                            &self.string_match.positions,
+                            &default_theme,
+                        )),
                 )
-                .when(self.item.description.is_some() && !self.compact, |div_el| {
+                .when(self.item.description.is_some(), |div_el| {
                     let description = self.item.description.as_ref().unwrap().to_string();
                     div_el.child(
                         div()
                             .text_xs()
-                            .text_color(tokens.colors.text_secondary)
-                            .max_w_80()
+                            .text_color(tokens.colors.text_tertiary)
+                            .max_w_full()
                             .overflow_hidden()
+                            .text_ellipsis()
                             .whitespace_nowrap()
                             .child(description),
                     )
@@ -343,17 +354,13 @@ impl RenderOnce for CompletionItemElement {
         #[cfg(not(debug_assertions))]
         let with_score = with_content;
 
-        with_score
+        with_score.into_any_element()
     }
 }
 
-impl IntoElement for CompletionItemElement {
-    type Element = AnyElement;
-
-    fn into_element(self) -> Self::Element {
-        self.into_any_element()
-    }
-}
+// Note: CompletionItemElement implements IntoElement directly rather than RenderOnce
+// to avoid trait conflicts and recursion issues. This provides a clean interface
+// for using it as a child element in GPUI layouts.
 
 /// Virtual list state for completion items
 pub struct CompletionListState {
