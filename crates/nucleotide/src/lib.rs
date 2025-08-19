@@ -3,12 +3,15 @@
 
 pub mod actions;
 pub mod application;
+pub mod completion_coordinator;
 pub mod completions;
 pub mod config;
 pub mod document;
 pub mod editor_capabilities_impl;
 pub mod editor_provider;
 pub mod file_tree;
+pub mod input_coordinator;
+pub mod lsp_completion_trigger;
 pub mod overlay;
 pub mod statusline;
 pub mod tab;

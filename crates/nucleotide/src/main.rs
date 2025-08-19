@@ -15,10 +15,10 @@ use gpui::{
 
 // Import from the library crate instead of re-declaring modules
 use nucleotide::application::Application;
+use nucleotide::input_coordinator::InputCoordinator;
 use nucleotide::{
     ThemeManager, application, config, info_box, notification, overlay, types, workspace,
 };
-use nucleotide::input_coordinator::InputCoordinator;
 use std::sync::Arc;
 
 // Import nucleotide-ui enhanced components
@@ -717,7 +717,8 @@ fn gui_main(
 
             // Import workspace actions for global bindings
             use nucleotide::actions::workspace::{
-                NewFile, NewWindow, ShowBufferPicker, ShowCommandPalette, ShowFileFinder, ToggleFileTree,
+                NewFile, NewWindow, ShowBufferPicker, ShowCommandPalette, ShowFileFinder,
+                ToggleFileTree,
             };
 
             // Global actions - work regardless of focus (no context specified)

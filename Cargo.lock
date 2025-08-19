@@ -3036,6 +3036,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_tokio"
+version = "0.1.0"
+source = "git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7#faa45c53d7754cfdd91d2f7edd3c786abc703ec7"
+dependencies = [
+ "gpui",
+ "tokio",
+ "util",
+ "workspace-hack",
+]
+
+[[package]]
 name = "grep-matcher"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4462,6 +4473,7 @@ dependencies = [
  "fern 0.6.2",
  "futures-util",
  "gpui",
+ "gpui_tokio",
  "grep-regex",
  "grep-searcher",
  "helix-core",
@@ -4553,6 +4565,7 @@ dependencies = [
  "helix-view",
  "nucleotide-types",
  "serde",
+ "tokio",
 ]
 
 [[package]]

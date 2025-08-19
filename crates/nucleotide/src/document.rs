@@ -45,8 +45,6 @@ fn test_synthetic_click_accuracy(
     bounds_width: gpui::Pixels,
     line_height: gpui::Pixels,
 ) -> Option<(usize, usize)> {
-    use nucleotide_logging::debug;
-
     // Find the target line in the cache
     if let Some(line_layout) = line_cache.find_line_by_index(target_line_idx) {
         // Calculate approximate pixel position for the target character
@@ -78,8 +76,6 @@ fn test_synthetic_click_accuracy(
 
 #[cfg(debug_assertions)]
 fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, _font_size: f32) {
-    use nucleotide_logging::debug;
-
     // Test various x positions and see if they map to sensible character indices
     let test_positions = vec![
         0.0,                        // Start of line
@@ -863,7 +859,8 @@ impl DocumentElement {
             scrollbar_state,
             x_overshoot: Rc::new(Cell::new(px(0.0))),
         }
-        .track_focus(focus)
+        // Focus tracking removed - now handled by InputCoordinator
+        // .track_focus(focus)
     }
 
     /// Get the TextFormat for soft wrap support

@@ -36,6 +36,7 @@ nucleotide-workspace.workspace = true
 
 # External dependencies
 gpui.workspace = true
+gpui_tokio.workspace = true
 sum_tree.workspace = true
 
 helix-stdx.workspace = true

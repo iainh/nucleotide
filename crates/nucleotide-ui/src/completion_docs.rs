@@ -261,7 +261,8 @@ impl DocumentationLoader {
         let task = cx.spawn(async move |_this, _cx| {
             // Simulate async documentation fetching
             // In a real implementation, this would call the language server
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Remove the artificial delay since this is just simulation
+            // In a real implementation, this would be the actual async LSP call time
 
             // Generate sample documentation based on item
             let markdown = generate_sample_documentation(&item_text, &item_kind);

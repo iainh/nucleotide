@@ -11,6 +11,7 @@ use helix_stdx::path::get_relative_path;
 use helix_term::ui::FilePickerData;
 use nucleotide_lsp::ServerStatus;
 
+use gpui::AppContext;
 use helix_term::{
     args::Args,
     compositor::{self, Compositor},
@@ -64,6 +65,18 @@ pub struct Application {
     pub project_directory: Option<PathBuf>,
     pub event_bridge_rx: Option<event_bridge::BridgedEventReceiver>,
     pub gpui_to_helix_rx: Option<gpui_to_helix_bridge::GpuiToHelixEventReceiver>,
+    pub completion_rx:
+        Option<tokio::sync::mpsc::Receiver<helix_view::handlers::completion::CompletionEvent>>,
+    pub completion_results_rx:
+        Option<tokio::sync::mpsc::Receiver<nucleotide_events::completion_events::CompletionResult>>,
+    pub completion_results_tx:
+        Option<tokio::sync::mpsc::Sender<nucleotide_events::completion_events::CompletionResult>>,
+    pub lsp_completion_requests_rx: Option<
+        tokio::sync::mpsc::Receiver<nucleotide_events::completion_events::LspCompletionRequest>,
+    >,
+    pub lsp_completion_requests_tx: Option<
+        tokio::sync::mpsc::Sender<nucleotide_events::completion_events::LspCompletionRequest>,
+    >,
     pub config: crate::config::Config,
     pub helix_config_arc: Arc<ArcSwap<helix_term::config::Config>>,
 }
@@ -802,6 +815,12 @@ impl Application {
     ) {
         let _guard = handle.enter();
 
+        // Process any pending completion results from the coordinator
+        self.process_completion_results(cx);
+
+        // Process any pending LSP completion requests from the coordinator
+        self.process_lsp_completion_requests(cx);
+
         self.step(cx).now_or_never();
 
         // Sync LSP state periodically
@@ -1040,6 +1059,390 @@ impl nucleotide_core::JobSystemAccess for Application {
     }
 }
 
+impl Application {
+    /// Take the completion receiver, leaving None in its place
+    pub fn take_completion_receiver(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Receiver<helix_view::handlers::completion::CompletionEvent>>
+    {
+        let receiver = self.completion_rx.take();
+        nucleotide_logging::info!(
+            "take_completion_receiver called - receiver present: {}",
+            receiver.is_some()
+        );
+        receiver
+    }
+
+    /// Take the completion results receiver, leaving None in its place
+    pub fn take_completion_results_receiver(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Receiver<nucleotide_events::completion_events::CompletionResult>>
+    {
+        let receiver = self.completion_results_rx.take();
+        nucleotide_logging::info!(
+            "take_completion_results_receiver called - receiver present: {}",
+            receiver.is_some()
+        );
+        receiver
+    }
+
+    /// Take the completion results sender, leaving None in its place
+    pub fn take_completion_results_sender(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Sender<nucleotide_events::completion_events::CompletionResult>>
+    {
+        let sender = self.completion_results_tx.take();
+        nucleotide_logging::info!(
+            "take_completion_results_sender called - sender present: {}",
+            sender.is_some()
+        );
+        sender
+    }
+
+    /// Take the LSP completion requests receiver, leaving None in its place
+    pub fn take_lsp_completion_requests_receiver(
+        &mut self,
+    ) -> Option<
+        tokio::sync::mpsc::Receiver<nucleotide_events::completion_events::LspCompletionRequest>,
+    > {
+        let receiver = self.lsp_completion_requests_rx.take();
+        nucleotide_logging::info!(
+            "take_lsp_completion_requests_receiver called - receiver present: {}",
+            receiver.is_some()
+        );
+        receiver
+    }
+
+    /// Take the LSP completion requests sender, leaving None in its place
+    pub fn take_lsp_completion_requests_sender(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Sender<nucleotide_events::completion_events::LspCompletionRequest>>
+    {
+        let sender = self.lsp_completion_requests_tx.take();
+        nucleotide_logging::info!(
+            "take_lsp_completion_requests_sender called - sender present: {}",
+            sender.is_some()
+        );
+        sender
+    }
+
+    /// Process completion results from the coordinator and emit Update::Completion events
+    /// This implements the event-based approach suggested by the user
+    #[instrument(skip(self, cx))]
+    pub fn process_completion_results(&mut self, cx: &mut gpui::Context<Self>) {
+        // Check if we have completion results to process
+        if let Some(ref mut completion_results_rx) = self.completion_results_rx {
+            // Process all available completion results from the coordinator
+            while let Ok(completion_result) = completion_results_rx.try_recv() {
+                nucleotide_logging::info!(
+                    "Application processing completion result: {:?}",
+                    completion_result
+                );
+
+                match completion_result {
+                    nucleotide_events::completion_events::CompletionResult::ShowCompletions {
+                        items,
+                        cursor,
+                        doc_id,
+                        view_id,
+                    } => {
+                        nucleotide_logging::info!(
+                            "Creating CompletionView entity for {} items",
+                            items.len()
+                        );
+
+                        // Create completion view entity
+                        let completion_view = cx.new(|cx| {
+                            let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
+
+                            // Convert CompletionEventItem to the format expected by CompletionView
+                            let completion_items: Vec<
+                                nucleotide_ui::completion_v2::CompletionItem,
+                            > = items
+                                .into_iter()
+                                .map(|item| {
+                                    use nucleotide_ui::completion_v2::CompletionItemKind;
+
+                                    // Convert string kind to CompletionItemKind enum
+                                    let kind = match item.kind.as_str() {
+                                        "Function" => Some(CompletionItemKind::Function),
+                                        "Constructor" => Some(CompletionItemKind::Constructor),
+                                        "Method" => Some(CompletionItemKind::Method),
+                                        "Variable" => Some(CompletionItemKind::Variable),
+                                        "Field" => Some(CompletionItemKind::Field),
+                                        "Class" => Some(CompletionItemKind::Class),
+                                        "Interface" => Some(CompletionItemKind::Interface),
+                                        "Module" => Some(CompletionItemKind::Module),
+                                        "Property" => Some(CompletionItemKind::Property),
+                                        "Enum" => Some(CompletionItemKind::Enum),
+                                        "Keyword" => Some(CompletionItemKind::Keyword),
+                                        "File" => Some(CompletionItemKind::File),
+                                        _ => Some(CompletionItemKind::Text), // Default fallback
+                                    };
+
+                                    nucleotide_ui::completion_v2::CompletionItem {
+                                        text: item.text.into(),
+                                        kind,
+                                        description: item.description.map(|s| s.into()),
+                                        display_text: None, // Use default display text
+                                        documentation: item.documentation.map(|s| s.into()),
+                                    }
+                                })
+                                .collect();
+
+                            view.set_items(completion_items, cx);
+                            // Note: cursor position handling could be added here if needed
+                            view
+                        });
+
+                        nucleotide_logging::info!(
+                            "Emitting Update::Completion event with CompletionView entity"
+                        );
+
+                        // Emit the completion view via the event system
+                        cx.emit(crate::Update::Completion(completion_view));
+                    }
+                    nucleotide_events::completion_events::CompletionResult::HideCompletions => {
+                        nucleotide_logging::info!(
+                            "Completion coordinator requested to hide completions"
+                        );
+
+                        // Create an empty completion view to effectively hide completions
+                        let empty_completion_view =
+                            cx.new(|cx| nucleotide_ui::completion_v2::CompletionView::new(cx));
+
+                        cx.emit(crate::Update::Completion(empty_completion_view));
+                    }
+                    nucleotide_events::completion_events::CompletionResult::Error {
+                        message,
+                        doc_id,
+                        view_id,
+                    } => {
+                        nucleotide_logging::error!(
+                            error_message = %message,
+                            doc_id = ?doc_id,
+                            view_id = ?view_id,
+                            "Completion coordinator reported error"
+                        );
+
+                        // For now, just hide completions on error
+                        let empty_completion_view =
+                            cx.new(|cx| nucleotide_ui::completion_v2::CompletionView::new(cx));
+
+                        cx.emit(crate::Update::Completion(empty_completion_view));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Process LSP completion requests from the coordinator
+    /// This method handles requests for real LSP completion data from language servers
+    #[instrument(skip(self, cx))]
+    pub fn process_lsp_completion_requests(&mut self, cx: &mut gpui::Context<Self>) {
+        // Check if we have LSP completion requests to process
+        if let Some(ref mut lsp_completion_requests_rx) = self.lsp_completion_requests_rx {
+            // Collect all available requests first to avoid borrow checker issues
+            let mut requests = Vec::new();
+            while let Ok(request) = lsp_completion_requests_rx.try_recv() {
+                requests.push(request);
+            }
+
+            // Process the collected requests
+            for request in requests {
+                nucleotide_logging::info!(
+                    cursor = request.cursor,
+                    doc_id = ?request.doc_id,
+                    view_id = ?request.view_id,
+                    "Application processing LSP completion request"
+                );
+
+                // Handle the request in the main thread context where we have access to editor and LSP clients
+                self.handle_lsp_completion_request(request, cx);
+            }
+        }
+    }
+
+    /// Handle a single LSP completion request
+    #[instrument(skip(self, request, cx))]
+    fn handle_lsp_completion_request(
+        &mut self,
+        request: nucleotide_events::completion_events::LspCompletionRequest,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        use nucleotide_events::completion_events::{CompletionEventItem, LspCompletionResponse};
+
+        nucleotide_logging::info!(
+            cursor = request.cursor,
+            doc_id = ?request.doc_id,
+            view_id = ?request.view_id,
+            "Handling LSP completion request with real language server access"
+        );
+
+        // Try to get the document
+        let doc = match self.editor.documents.get(&request.doc_id) {
+            Some(doc) => doc,
+            None => {
+                nucleotide_logging::error!(doc_id = ?request.doc_id, "Document not found for completion request");
+                let response = LspCompletionResponse {
+                    items: vec![],
+                    is_incomplete: false,
+                    error: Some("Document not found".to_string()),
+                };
+                let _ = request.response_tx.send(response);
+                return;
+            }
+        };
+
+        // Get language servers that support completion for this document
+        let language_servers: Vec<_> = self
+            .editor
+            .language_servers
+            .iter_clients()
+            .filter(|client| {
+                if client.is_initialized() {
+                    client.capabilities().completion_provider.is_some()
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        if language_servers.is_empty() {
+            nucleotide_logging::warn!(doc_id = ?request.doc_id, "No language servers with completion support available for document");
+            let response = LspCompletionResponse {
+                items: vec![],
+                is_incomplete: false,
+                error: Some("No completion-capable language servers available".to_string()),
+            };
+            let _ = request.response_tx.send(response);
+            return;
+        }
+
+        nucleotide_logging::info!(
+            language_server_count = language_servers.len(),
+            "Found language servers with completion support - making real LSP completion request"
+        );
+
+        // Convert cursor position to LSP position
+        let text = doc.text();
+        let cursor_pos = std::cmp::min(request.cursor, text.len_chars());
+        let lsp_pos =
+            helix_lsp::util::pos_to_lsp_pos(text, cursor_pos, helix_lsp::OffsetEncoding::Utf16);
+        let doc_identifier = doc.identifier();
+
+        // Use the first available language server for completion
+        let language_server = &language_servers[0];
+
+        // Create completion context - for now use manual trigger
+        let context = helix_lsp::lsp::CompletionContext {
+            trigger_kind: helix_lsp::lsp::CompletionTriggerKind::INVOKED,
+            trigger_character: None,
+        };
+
+        // Make the completion request
+        match language_server.completion(doc_identifier, lsp_pos, None, context) {
+            Some(completion_future) => {
+                // Spawn the future directly with tokio
+                let response_tx = request.response_tx;
+                let lsp_id = language_server.id();
+
+                cx.background_executor().spawn(async move {
+                    nucleotide_logging::info!(
+                        lsp_id = %lsp_id,
+                        "Making async LSP completion request - using thread spawn with dedicated Tokio runtime"
+                    );
+                    // Use std::thread::spawn with a dedicated Tokio runtime
+                    // This avoids the issue with tokio::task::spawn_blocking requiring an existing runtime
+                    let handle = std::thread::spawn(move || {
+                        let rt = tokio::runtime::Runtime::new().unwrap();
+                        rt.block_on(completion_future)
+                    });
+                    match handle.join() {
+                        Ok(lsp_result) => match lsp_result {
+                        Ok(Some(lsp_response)) => {
+                            nucleotide_logging::info!("Received LSP completion response, converting to our format");
+                            // Convert LSP completion response to our format
+                            let (items, is_incomplete) = match lsp_response {
+                                helix_lsp::lsp::CompletionResponse::Array(items) => (items, false),
+                                helix_lsp::lsp::CompletionResponse::List(list) => (list.items, list.is_incomplete),
+                            };
+                            let completion_items: Vec<CompletionEventItem> = items.into_iter().map(|lsp_item| {
+                                CompletionEventItem {
+                                    text: lsp_item.label.clone(),
+                                    kind: lsp_item.kind
+                                        .map(|k| format!("{:?}", k))
+                                        .unwrap_or_else(|| "Unknown".to_string()),
+                                    description: lsp_item.detail,
+                                    documentation: lsp_item.documentation
+                                        .map(|doc| match doc {
+                                            helix_lsp::lsp::Documentation::String(s) => s,
+                                            helix_lsp::lsp::Documentation::MarkupContent(markup) => markup.value,
+                                        }),
+                                }
+                            }).collect();
+                            nucleotide_logging::info!(
+                                item_count = completion_items.len(),
+                                is_incomplete = is_incomplete,
+                                "Converted LSP completion response to nucleotide format"
+                            );
+                            let response = LspCompletionResponse {
+                                items: completion_items,
+                                is_incomplete,
+                                error: None,
+                            };
+                            if let Err(_) = response_tx.send(response) {
+                                nucleotide_logging::error!("Failed to send LSP completion response - receiver dropped");
+                            } else {
+                                nucleotide_logging::info!("Successfully sent real LSP completion response");
+                            }
+                        },
+                        Ok(None) => {
+                            nucleotide_logging::info!("LSP server returned no completions");
+                            let response = LspCompletionResponse {
+                                items: vec![],
+                                is_incomplete: false,
+                                error: None,
+                            };
+                            let _ = response_tx.send(response);
+                        },
+                        Err(e) => {
+                            nucleotide_logging::error!(error = %e, "LSP completion request failed");
+                            let response = LspCompletionResponse {
+                                items: vec![],
+                                is_incomplete: false,
+                                error: Some(format!("LSP completion request failed: {}", e)),
+                            };
+                            let _ = response_tx.send(response);
+                        }
+                        },
+                        Err(e) => {
+                            nucleotide_logging::error!("Thread join failed for LSP completion: {:?}", e);
+                            let response = LspCompletionResponse {
+                                items: vec![],
+                                is_incomplete: false,
+                                error: Some("Thread execution failed".to_string()),
+                            };
+                            let _ = response_tx.send(response);
+                        }
+                    }
+                }).detach();
+            }
+            None => {
+                nucleotide_logging::warn!("Language server does not support completion");
+                let response = LspCompletionResponse {
+                    items: vec![],
+                    is_incomplete: false,
+                    error: Some("Language server does not support completion".to_string()),
+                };
+                let _ = request.response_tx.send(response);
+            }
+        }
+    }
+
+    // NOTE: handle_crank_event is defined earlier in the file and includes completion processing
+}
+
 pub fn init_editor(
     args: Args,
     helix_config: Config,
@@ -1132,7 +1535,20 @@ pub fn init_editor(
     // CRITICAL: Register events FIRST, before creating handlers
     helix_term::events::register();
 
-    let (completion_tx, _completion_rx) = tokio::sync::mpsc::channel(1);
+    let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(1);
+    nucleotide_logging::info!("Created completion channel (tx/rx) for helix completion events");
+
+    // Create completion results channel for coordinator -> workspace communication
+    let (completion_results_tx, completion_results_rx) = tokio::sync::mpsc::channel(32);
+    nucleotide_logging::info!(
+        "Created completion results channel for coordinator->workspace communication"
+    );
+
+    // Create LSP completion request channel for coordinator -> application communication
+    let (lsp_completion_requests_tx, lsp_completion_requests_rx) = tokio::sync::mpsc::channel(32);
+    nucleotide_logging::info!(
+        "Created LSP completion requests channel for coordinator->application communication"
+    );
     let (signature_tx, _signature_rx) = tokio::sync::mpsc::channel(1);
     let (auto_save_tx, _auto_save_rx) = tokio::sync::mpsc::channel(1);
     let (doc_colors_tx, _doc_colors_rx) = tokio::sync::mpsc::channel(1);
@@ -1268,6 +1684,13 @@ pub fn init_editor(
     let view = EditorView::new(keymaps);
     let jobs = Jobs::new();
 
+    // Initialize completion coordinator - but we need to do this after Application is created
+    // since it needs access to the Core. This will be done in the workspace.
+
+    nucleotide_logging::info!(
+        "Application created with completion_rx stored - ready for coordinator initialization"
+    );
+
     Ok(Application {
         editor,
         compositor,
@@ -1278,6 +1701,11 @@ pub fn init_editor(
         project_directory,
         event_bridge_rx: Some(bridge_rx),
         gpui_to_helix_rx: Some(gpui_to_helix_rx),
+        completion_rx: Some(completion_rx),
+        completion_results_rx: Some(completion_results_rx),
+        completion_results_tx: Some(completion_results_tx),
+        lsp_completion_requests_rx: Some(lsp_completion_requests_rx),
+        lsp_completion_requests_tx: Some(lsp_completion_requests_tx),
         config: gui_config,
         helix_config_arc: config,
     })

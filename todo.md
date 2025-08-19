@@ -1,163 +1,229 @@
-# Nucleotide UI Enhancement Implementation Todo
+# Global Input System Refactoring - Todo Tracker
 
-## Phase 1: Foundation Enhancement (Weeks 1-2)
+## Status: Planning Complete
+**Created**: 2025-08-18
+**Last Updated**: 2025-08-18
 
-### Step 1.1: Design Token System Foundation
-**Size**: Small (2-3 hours)
-**Dependencies**: None
-**Deliverable**: Basic design token infrastructure
+## Overview
+This tracks the implementation of the comprehensive global input system refactoring outlined in `plan.md`. The refactoring addresses fundamental architectural issues with keyboard input routing and focus management.
 
-- [ ] Create `src/tokens/mod.rs` with semantic color naming
-- [ ] Define base color palette structure
-- [ ] Create size/spacing token system
-- [ ] Add token utility functions
-- [ ] Wire into existing Theme struct
+## Chunk Progress
 
-### Step 1.2: Component Trait System
-**Size**: Small (2-3 hours) 
-**Dependencies**: 1.1
-**Deliverable**: Core component traits
+### ✅ Planning Phase
+- [x] Analyze current architecture issues
+- [x] Design new InputCoordinator-based architecture  
+- [x] Break down implementation into manageable chunks
+- [x] Create detailed implementation prompts
+- [x] Define success criteria and validation checklist
 
-- [ ] Create `src/traits/mod.rs` with component traits
-- [ ] Define `Component`, `Styled`, `Interactive` traits
-- [ ] Create extension traits for common patterns
-- [ ] Update existing components to implement traits
-- [ ] Add trait documentation
+### 🔲 Chunk 1: InputCoordinator Foundation
+**Status**: Not Started  
+**Dependencies**: None  
+**Estimated Complexity**: Medium  
+**Risk Level**: Medium  
 
-### Step 1.3: Centralized Initialization
-**Size**: Small (1-2 hours)
-**Dependencies**: 1.2
-**Deliverable**: Library initialization system
+**Tasks**:
+- [ ] Create `crates/nucleotide/src/input_coordinator.rs`
+- [ ] Define InputCoordinator struct with GPUI integration
+- [ ] Implement InputContext enum and priority system
+- [ ] Create action handler registration system
+- [ ] Set up basic focus group foundation
+- [ ] Integrate with GPUI actions system
 
-- [ ] Create `init()` function in lib.rs
-- [ ] Setup global state management
-- [ ] Add component registration system
-- [ ] Create configuration loading
-- [ ] Update main app to use init()
+**Success Criteria**:
+- [ ] InputCoordinator compiles and can be instantiated
+- [ ] Basic action registration works
+- [ ] Context switching mechanism functional
+- [ ] Thread-safe shared coordinator instance
 
-## Phase 2: Component Enhancement (Weeks 3-4)
+### 🔲 Chunk 2: Workspace Input Delegation  
+**Status**: Not Started  
+**Dependencies**: Chunk 1  
+**Estimated Complexity**: Small  
+**Risk Level**: Low  
 
-### Step 2.1: Style Computation System
-**Size**: Medium (3-4 hours)
-**Dependencies**: 1.1, 1.2
-**Deliverable**: Advanced styling utilities
+**Tasks**:
+- [ ] Remove existing key handlers from Workspace
+- [ ] Add InputCoordinator integration to Workspace
+- [ ] Update workspace constructor to accept coordinator
+- [ ] Register workspace actions with coordinator
+- [ ] Implement context switching for overlays
+- [ ] Update main.rs to create and pass coordinator
 
-- [ ] Create `src/styling/mod.rs` with style computation
-- [ ] Implement style variant system
-- [ ] Add responsive design tokens
-- [ ] Create style combination utilities
-- [ ] Add animation/transition helpers
+**Success Criteria**:
+- [ ] Workspace compiles with new architecture
+- [ ] File tree toggle works through coordinator
+- [ ] Focus restoration still functions
+- [ ] No regression in workspace functionality
 
-### Step 2.2: Enhanced Button Component
-**Size**: Medium (2-3 hours)
-**Dependencies**: 2.1
-**Deliverable**: Improved button with new patterns
+### 🔲 Chunk 3: Document View Input Cleanup
+**Status**: Not Started  
+**Dependencies**: Chunks 1-2  
+**Estimated Complexity**: Small-Medium  
+**Risk Level**: Medium  
 
-- [ ] Refactor button.rs to use new traits
-- [ ] Add style variants using new system
-- [ ] Implement slot-based composition
-- [ ] Add advanced interaction states
-- [ ] Create button documentation/examples
+**Tasks**:
+- [ ] Remove focus tracking from DocumentElement
+- [ ] Create editor input bridge to coordinator
+- [ ] Implement editor context switching
+- [ ] Preserve Helix editor functionality
+- [ ] Update focus restoration logic
+- [ ] Ensure global shortcuts work when editor focused
 
-### Step 2.3: Enhanced List Component
-**Size**: Medium (2-3 hours)
-**Dependencies**: 2.1, 2.2
-**Deliverable**: Improved list component
+**Success Criteria**:
+- [ ] Editor input flows to Helix core properly
+- [ ] No regression in text editing functionality
+- [ ] Global shortcuts work from editor context
+- [ ] Scroll and selection behavior preserved
 
-- [ ] Refactor list_item.rs to use new patterns
-- [ ] Add virtualization support
-- [ ] Implement selection state management
-- [ ] Add keyboard navigation helpers
-- [ ] Create list documentation/examples
+### 🔲 Chunk 4: Component Input Standardization
+**Status**: Not Started  
+**Dependencies**: Chunks 1-3  
+**Estimated Complexity**: Small  
+**Risk Level**: Low  
 
-### Step 2.4: Performance & Utilities Library
-**Size**: Medium (3-4 hours)
-**Dependencies**: 1.3
-**Deliverable**: Performance monitoring and utilities
+**Tasks**:
+- [ ] Standardize FileTree input handling
+- [ ] Update completion system integration
+- [ ] Standardize picker input handling
+- [ ] Remove redundant input systems
+- [ ] Implement context switching for all components
+- [ ] Register component-specific actions
 
-- [ ] Create `src/utils/mod.rs` with utility functions
-- [ ] Add performance measurement utilities
-- [ ] Implement conditional compilation helpers
-- [ ] Create common UI utilities (focus, keyboard, etc.)
-- [ ] Add utility documentation
+**Success Criteria**:
+- [ ] All components use consistent input patterns
+- [ ] Context switching works between components
+- [ ] Component-specific shortcuts still functional
+- [ ] No independent input handling systems remain
 
-## Phase 3: Advanced Features (Weeks 5-6)
+### 🔲 Chunk 5: Focus Groups and Tab Navigation
+**Status**: Not Started  
+**Dependencies**: Chunks 1-4  
+**Estimated Complexity**: Medium  
+**Risk Level**: Low-Medium  
 
-### Step 3.1: Provider System Foundation
-**Size**: Large (4-5 hours)
-**Dependencies**: All Phase 2
-**Deliverable**: Component provider architecture
+**Tasks**:
+- [ ] Complete focus group implementation
+- [ ] Add visual focus indicators
+- [ ] Implement Tab/Shift+Tab navigation
+- [ ] Create focus group registration API
+- [ ] Handle dynamic group availability
+- [ ] Integrate with existing components
 
-- [ ] Create `src/providers/mod.rs` with provider patterns
-- [ ] Implement Theme provider component
-- [ ] Create Configuration provider
-- [ ] Add Event handling providers
-- [ ] Create provider composition patterns
+**Success Criteria**:
+- [ ] Tab navigation works between UI areas
+- [ ] Visual focus indicators functional
+- [ ] Focus groups integrate with components
+- [ ] Context-aware navigation behavior
 
-### Step 3.2: Advanced Theme System
-**Size**: Large (5-6 hours)
-**Dependencies**: 3.1
-**Deliverable**: Runtime theme system
+### 🔲 Chunk 6: Advanced Shortcuts and Navigation
+**Status**: Not Started  
+**Dependencies**: Chunks 1-5  
+**Estimated Complexity**: Large  
+**Risk Level**: Low  
 
-- [ ] Implement runtime theme switching
-- [ ] Create theme validation system
-- [ ] Add custom theme creation tools
-- [ ] Enhance Helix theme bridge
-- [ ] Add theme animation support
+**Tasks**:
+- [ ] Implement quick navigation (Ctrl+1, Ctrl+2, etc.)
+- [ ] Add context-aware shortcut behavior
+- [ ] Enhance Escape key handling with context stack
+- [ ] Add advanced picker integration
+- [ ] Create customizable keybinding system
+- [ ] Implement accessibility improvements
 
-### Step 3.3: Component Testing Framework
-**Size**: Large (4-5 hours)
-**Dependencies**: 3.1
-**Deliverable**: Testing utilities and patterns
+**Success Criteria**:
+- [ ] All advanced shortcuts functional
+- [ ] Context stack works for modal dismissal
+- [ ] Customizable keybindings system works
+- [ ] Accessibility features functional
 
-- [ ] Create `src/testing/mod.rs` with test utilities
-- [ ] Implement component test helpers
-- [ ] Add visual regression testing support
-- [ ] Create interaction testing utilities
-- [ ] Add performance testing framework
+### 🔲 Chunk 7: Integration, Testing, and Cleanup
+**Status**: Not Started  
+**Dependencies**: All previous chunks  
+**Estimated Complexity**: Medium  
+**Risk Level**: Low  
 
-### Step 3.4: Developer Tools & Documentation
-**Size**: Large (3-4 hours)
-**Dependencies**: All previous
-**Deliverable**: Development experience improvements
+**Tasks**:
+- [ ] Complete final integration
+- [ ] Perform comprehensive testing
+- [ ] Optimize performance
+- [ ] Clean up old code and debug logs
+- [ ] Add error handling and robustness
+- [ ] Update documentation
 
-- [ ] Create component storybook/showcase
-- [ ] Add development-time helpers
-- [ ] Generate component documentation
-- [ ] Create migration guides
-- [ ] Add debugging utilities
+**Success Criteria**:
+- [ ] All validation checklist items pass
+- [ ] Performance matches or exceeds current system
+- [ ] Old input system code completely removed
+- [ ] Documentation reflects new architecture
 
-## Implementation Rules
+## Current Issues to Address
+Based on previous session debugging:
 
-### Step Size Guidelines
-- **Small (1-3 hours)**: Single focused change, minimal risk
-- **Medium (2-4 hours)**: Multiple related changes, moderate complexity
-- **Large (4-6 hours)**: Significant architectural changes, higher complexity
+### High Priority
+1. **DocumentElement Focus Capture**: DocumentElement has focus but no key handlers
+2. **Fragmented Input Routing**: Components handle input independently
+3. **Global Shortcut Failures**: Ctrl+B and other shortcuts don't work from all contexts
 
-### Quality Gates
-- [ ] Each step must compile and pass existing tests
-- [ ] Each step must maintain backward compatibility
-- [ ] Each step must include documentation updates
-- [ ] Each step must be reviewed for performance impact
+### Medium Priority
+1. **Complex Focus Restoration**: Current logic is complex and error-prone
+2. **Debug Logging Cleanup**: Remove temporary debug output
+3. **Performance**: Multiple event handlers may impact performance
 
-### Integration Requirements
-- [ ] All new code follows existing code style
-- [ ] New patterns are consistent across components
-- [ ] Changes integrate with existing Helix bridge
-- [ ] No breaking changes to public APIs
+### Low Priority
+1. **Code Consistency**: Standardize patterns across components
+2. **Documentation**: Update architectural documentation
+3. **Testing Coverage**: Add comprehensive input system tests
 
-## Status Tracking
+## Architecture Goals
 
-### Completed Steps
-- [ ] None yet
+### Before (Current Issues)
+```
+Application
+├── Workspace (complex key handling + focus management)
+│   ├── DocumentView → DocumentElement (focus capture, no handlers)
+│   ├── FileTree (independent key handling)
+│   └── GlobalInputDispatcher (isolated, not integrated)
+```
 
-### In Progress
-- [ ] None yet
+### After (Target State)
+```
+Application  
+├── InputCoordinator (centralized routing + GPUI integration)
+├── Workspace (clean UI logic, delegates to coordinator)
+│   ├── DocumentView (pure rendering)
+│   ├── FileTree (component logic only)
+│   └── Other Components (pure rendering)
+```
 
-### Blocked/Issues
-- [ ] None yet
+## Key Principles for Implementation
 
-### Notes
-- Priority can be adjusted based on user feedback
-- Some steps may be combined if they're smaller than expected
-- Additional steps may be needed based on implementation discoveries
+1. **Incremental Changes**: Each chunk should compile and run
+2. **Preserve Functionality**: No regressions in existing features
+3. **Clean Interfaces**: Components shouldn't know about global input concerns
+4. **GPUI Native**: Use GPUI patterns rather than fighting them
+5. **Testable**: Each chunk should be independently testable
+
+## Notes and Decisions
+
+### Design Decisions
+- Use GPUI actions instead of custom event routing for global shortcuts
+- Centralize all input logic in InputCoordinator rather than distributed handling
+- Keep focus handles for UI state but not for input routing
+- Implement context stack for proper modal behavior
+
+### Implementation Notes
+- InputCoordinator should be created once and shared via Arc
+- Context switching should be explicit and auditable
+- Components register actions rather than handling keys directly
+- Priority system prevents context conflicts
+
+### Risk Mitigation
+- Test each chunk thoroughly before proceeding
+- Keep rollback capability by preserving working states
+- Focus on editor functionality preservation (highest risk area)
+- Use feature flags if needed for gradual rollout
+
+---
+
+**Next Step**: Begin Chunk 1 - InputCoordinator Foundation
+**Prompt to Use**: Prompt 1 from plan.md

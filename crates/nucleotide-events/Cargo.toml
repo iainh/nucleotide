@@ -17,5 +17,6 @@ nucleotide-types = { path = "../nucleotide-types" }
 
 # External dependencies
 serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["sync"] }
 helix-view = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
 helix-lsp = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }

@@ -4,11 +4,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use gpui::{Context, Entity, FocusHandle, KeyDownEvent, Window, actions};
-use nucleotide_logging::{debug, error, info, instrument, warn};
+use gpui::{FocusHandle, KeyDownEvent, Window, actions};
+use nucleotide_logging::{debug, info, instrument, warn};
 
 // Import for Helix integration
-use crate::{Core, Input, InputEvent, utils};
+use crate::utils;
 use helix_view::input::KeyEvent;
 
 /// Result of input coordinator processing

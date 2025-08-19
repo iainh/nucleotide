@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
 use std::sync::Arc;
 
 use gpui::FontFeatures;
@@ -61,6 +60,7 @@ pub struct Workspace {
     tab_overflow_dropdown_open: bool,
     document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
     input_coordinator: Arc<InputCoordinator>,    // Central input coordination system
+                                                 // REMOVED: completion_results_rx - now using event-based approach via Application
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -209,6 +209,7 @@ impl Workspace {
             tab_overflow_dropdown_open: false,
             document_order: Vec::new(),
             input_coordinator,
+            // REMOVED: completion_results_rx - now using event-based approach via Application
         };
 
         // Register focus groups for main UI areas
@@ -216,6 +217,13 @@ impl Workspace {
 
         // Setup completion-specific shortcuts
         workspace.setup_completion_shortcuts();
+
+        // Initialize completion coordinator
+        nucleotide_logging::info!(
+            "About to initialize completion coordinator in workspace creation"
+        );
+        workspace.initialize_completion_coordinator(cx);
+        nucleotide_logging::info!("Completion coordinator initialization call completed");
 
         // Register action handlers for global input system
         workspace.register_action_handlers(cx);
@@ -591,8 +599,6 @@ impl Workspace {
         &self,
         system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
     ) {
-        use nucleotide_ui::theme_manager::SystemAppearance;
-
         nucleotide_logging::info!(
             system_appearance = ?system_appearance,
             "Setting NSWindow appearance to follow system"
@@ -608,14 +614,12 @@ impl Workspace {
     unsafe fn update_titlebar_appearance_native(
         system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
     ) {
-        use cocoa::appkit::{NSAppearance, NSWindow};
         use cocoa::base::{id, nil};
         use cocoa::foundation::NSString;
         use nucleotide_ui::theme_manager::SystemAppearance;
         use objc::{class, msg_send, sel, sel_impl};
 
         // Get all windows from NSApplication instead of just the main window
-        use cocoa::appkit::NSApplication;
 
         let app: id = msg_send![class!(NSApplication), sharedApplication];
         let windows: id = msg_send![app, windows];
@@ -856,7 +860,6 @@ impl Workspace {
         system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
         attempt: u32,
     ) -> bool {
-        use cocoa::appkit::{NSAppearance, NSWindow};
         use cocoa::base::{id, nil};
         use cocoa::foundation::NSString;
         use nucleotide_ui::theme_manager::SystemAppearance;
@@ -3014,9 +3017,7 @@ impl Workspace {
     /// Setup additional keyboard navigation shortcuts for comprehensive app navigation
     fn setup_additional_navigation_shortcuts(&mut self) {
         use nucleotide_ui::providers::EventPriority;
-        use nucleotide_ui::{
-            DismissTarget, GlobalNavigationDirection, ShortcutAction, ShortcutDefinition,
-        };
+        use nucleotide_ui::{GlobalNavigationDirection, ShortcutAction, ShortcutDefinition};
 
         // Global shortcuts that work in any context
         let global_shortcuts = vec![
@@ -3396,32 +3397,24 @@ impl Workspace {
 
     /// Trigger completion in the active editor
     pub fn trigger_completion(&mut self, cx: &mut Context<Self>) {
-        nucleotide_logging::debug!("Triggering completion in active editor");
+        nucleotide_logging::debug!("Triggering LSP completion in active editor");
 
-        // Create sample completion items using the same method as the test function
-        let items = self.core.read(cx).create_sample_completion_items();
+        // Trigger LSP completion through helix's completion system
+        // The completion coordinator will receive the event and handle the UI
+        let editor = &self.core.read(cx).editor;
+        crate::lsp_completion_trigger::trigger_completion(editor, true);
 
-        nucleotide_logging::debug!(
-            item_count = items.len(),
-            "Creating completion view with items"
+        nucleotide_logging::info!(
+            "LSP completion trigger sent to helix handlers - coordinator will handle response and UI display"
         );
-
-        // Create completion view
-        let completion_view = cx.new(|cx| {
-            let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
-            view.set_items(items, cx);
-            view
-        });
-
-        nucleotide_logging::debug!("Emitting completion view to overlay");
-
-        // Emit completion event to show it in the overlay
-        self.core.update(cx, |_core, cx| {
-            cx.emit(crate::Update::Completion(completion_view));
-        });
-
-        nucleotide_logging::debug!("Completion trigger completed - UI should now be visible");
     }
+
+    // REMOVED: Old completion coordinator initialization method replaced by event-based approach
+    // See the implementation at the end of the file that uses the event system
+
+    // REMOVED: Complex cross-thread completion methods replaced by event-based approach
+    // The Application now handles completion results and emits Update::Completion events
+    // which the workspace receives via the existing event subscription
 
     /// Handle completion acceptance - insert the selected text into the editor
     fn handle_completion_accepted(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -4696,4 +4689,61 @@ fn quit(core: Entity<Core>, rt: tokio::runtime::Handle, cx: &mut App) {
             }
         }
     });
+}
+
+impl Workspace {
+    /// Initialize the completion coordinator with the Application
+    fn initialize_completion_coordinator(&mut self, cx: &mut Context<Self>) {
+        nucleotide_logging::info!("Initializing completion coordinator with LSP support");
+
+        // Extract the completion channels from the Application
+        let (completion_rx, completion_results_tx, lsp_completion_requests_tx) =
+            self.core.update(cx, |core, _cx| {
+                nucleotide_logging::info!("Extracting completion channels from Application");
+                let completion_rx = core.take_completion_receiver();
+                let completion_results_tx = core.take_completion_results_sender();
+                let lsp_completion_requests_tx = core.take_lsp_completion_requests_sender();
+                (
+                    completion_rx,
+                    completion_results_tx,
+                    lsp_completion_requests_tx,
+                )
+            });
+
+        if let (
+            Some(completion_rx),
+            Some(completion_results_tx),
+            Some(lsp_completion_requests_tx),
+        ) = (
+            completion_rx,
+            completion_results_tx,
+            lsp_completion_requests_tx,
+        ) {
+            nucleotide_logging::info!(
+                "Successfully extracted all completion channels - creating coordinator"
+            );
+
+            // Create and spawn the completion coordinator
+            let coordinator = crate::completion_coordinator::CompletionCoordinator::new(
+                completion_rx,
+                completion_results_tx,
+                lsp_completion_requests_tx,
+                self.core.clone(),
+                cx.background_executor().clone(),
+            );
+
+            nucleotide_logging::info!("Spawning completion coordinator task with LSP support");
+
+            // Spawn the coordinator task
+            coordinator.spawn();
+
+            nucleotide_logging::info!(
+                "Completion coordinator task spawned successfully with LSP integration"
+            );
+        } else {
+            nucleotide_logging::error!(
+                "Missing completion channels for coordinator - this should not happen!"
+            );
+        }
+    }
 }
