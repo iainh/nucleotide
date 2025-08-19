@@ -554,7 +554,6 @@ impl Render for OverlayView {
                 .size_full()
                 .bottom_0()
                 .left_0()
-                .bg(tokens.colors.surface_overlay)
                 .occlude()
                 .on_mouse_down(MouseButton::Left, |_, _, _| {
                     // Prevent click-through to elements below
@@ -582,7 +581,6 @@ impl Render for OverlayView {
                 .size_full()
                 .bottom_0()
                 .left_0()
-                .bg(tokens.colors.surface_overlay)
                 .occlude()
                 .on_mouse_down(MouseButton::Left, |_, _, _| {
                     // Prevent click-through to elements below
@@ -632,7 +630,6 @@ impl Render for OverlayView {
                 .size_full()
                 .bottom_0()
                 .left_0()
-                .bg(tokens.colors.surface_overlay)
                 .occlude()
                 .child(
                     div()
