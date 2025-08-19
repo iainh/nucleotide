@@ -2406,14 +2406,13 @@ impl Workspace {
 
     /// Render unified status bar with file tree toggle and status information
     fn render_unified_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui_theme = cx.global::<nucleotide_ui::Theme>();
-
         // Use statusline theme colors
         let statusline_style = cx.theme_style("ui.statusline");
         let bg_color = statusline_style
             .bg
             .and_then(crate::utils::color_to_hsla)
             .unwrap_or_else(|| {
+                let ui_theme = cx.global::<nucleotide_ui::Theme>();
                 let base = cx
                     .theme_style("ui.background")
                     .bg
@@ -2424,60 +2423,89 @@ impl Workspace {
         let fg_color = statusline_style
             .fg
             .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(ui_theme.tokens.colors.text_primary);
+            .unwrap_or_else(|| {
+                let ui_theme = cx.global::<nucleotide_ui::Theme>();
+                ui_theme.tokens.colors.text_primary
+            });
 
         // Get UI font configuration
         let ui_font_config = cx.global::<crate::types::UiFontConfig>();
         let font = gpui::font(&ui_font_config.family);
         let font_size = gpui::px(ui_font_config.size);
 
-        // Get current document info
-        let core = self.core.read(cx);
-        let editor = &core.editor;
+        // Get current document info first (without LSP indicator to avoid borrow conflicts)
+        let (mode_name, file_name, position_text, has_lsp_state) = {
+            let core = self.core.read(cx);
+            let editor = &core.editor;
 
-        let mut mode_name = "NOR";
-        let mut file_name = "[no file]".to_string();
-        let mut position_text = "1:1".to_string();
+            let mut mode_name = "NOR";
+            let mut file_name = "[no file]".to_string();
+            let mut position_text = "1:1".to_string();
 
-        // Get info from focused view if available
-        if let Some(view_id) = self.focused_view_id {
-            if let Some((view, doc)) = editor
-                .tree
-                .try_get(view_id)
-                .and_then(|v| editor.document(v.doc).map(|d| (v, d)))
-            {
-                mode_name = match editor.mode() {
-                    helix_view::document::Mode::Normal => "NOR",
-                    helix_view::document::Mode::Insert => "INS",
-                    helix_view::document::Mode::Select => "SEL",
-                };
+            // Get info from focused view if available
+            if let Some(view_id) = self.focused_view_id {
+                if let Some((view, doc)) = editor
+                    .tree
+                    .try_get(view_id)
+                    .and_then(|v| editor.document(v.doc).map(|d| (v, d)))
+                {
+                    mode_name = match editor.mode() {
+                        helix_view::document::Mode::Normal => "NOR",
+                        helix_view::document::Mode::Insert => "INS",
+                        helix_view::document::Mode::Select => "SEL",
+                    };
 
-                file_name = doc
-                    .path()
-                    .map(|p| {
-                        let path_str = p.to_string_lossy().to_string();
-                        // Truncate long paths
-                        if path_str.len() > 50 {
-                            if let Some(file_name) = p.file_name() {
-                                format!(".../{}", file_name.to_string_lossy())
+                    file_name = doc
+                        .path()
+                        .map(|p| {
+                            let path_str = p.to_string_lossy().to_string();
+                            // Truncate long paths
+                            if path_str.len() > 50 {
+                                if let Some(file_name) = p.file_name() {
+                                    format!(".../{}", file_name.to_string_lossy())
+                                } else {
+                                    "...".to_string()
+                                }
                             } else {
-                                "...".to_string()
+                                path_str
                             }
-                        } else {
-                            path_str
-                        }
-                    })
-                    .unwrap_or_else(|| "[scratch]".to_string());
+                        })
+                        .unwrap_or_else(|| "[scratch]".to_string());
 
-                let position = helix_core::coords_at_pos(
-                    doc.text().slice(..),
-                    doc.selection(view.id)
-                        .primary()
-                        .cursor(doc.text().slice(..)),
-                );
-                position_text = format!("{}:{}", position.row + 1, position.col + 1);
+                    let position = helix_core::coords_at_pos(
+                        doc.text().slice(..),
+                        doc.selection(view.id)
+                            .primary()
+                            .cursor(doc.text().slice(..)),
+                    );
+                    position_text = format!("{}:{}", position.row + 1, position.col + 1);
+                }
             }
-        }
+
+            let has_lsp_state = core.lsp_state.is_some();
+            (mode_name, file_name, position_text, has_lsp_state)
+        };
+
+        // Get LSP indicator separately to avoid borrowing conflicts
+        let lsp_indicator = if has_lsp_state {
+            // Clone the lsp_state entity to avoid borrowing conflicts
+            let lsp_state_entity = {
+                let core = self.core.read(cx);
+                core.lsp_state.clone()
+            };
+            if let Some(lsp_state) = lsp_state_entity {
+                lsp_state.update(cx, |state, _| state.get_lsp_indicator())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Create border color
+        let ui_theme = cx.global::<nucleotide_ui::Theme>();
+        let border_color =
+            nucleotide_ui::styling::ColorTheory::subtle_border_color(bg_color, &ui_theme.tokens);
 
         // Create divider color
         let divider_color = Hsla {
@@ -2486,9 +2514,6 @@ impl Workspace {
             l: fg_color.l,
             a: 0.3,
         };
-
-        let border_color =
-            nucleotide_ui::styling::ColorTheory::subtle_border_color(bg_color, &ui_theme.tokens);
         div()
             .h(px(28.0))
             .w_full()
@@ -2562,8 +2587,28 @@ impl Workspace {
                     )
                     .child(
                         // Position
-                        div().child(position_text).min_w(px(80.)).pr_2(),
-                    ),
+                        div().child(position_text).min_w(px(80.)),
+                    )
+                    .when_some(lsp_indicator, |status_bar, indicator| {
+                        status_bar
+                            .child(
+                                // Divider before LSP
+                                div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2(),
+                            )
+                            .child(
+                                // LSP indicator - dynamic width based on content using design tokens
+                                div()
+                                    .child(indicator.clone())
+                                    .flex_shrink() // Allow shrinking when space is limited
+                                    .max_w(px(400.)) // Max width prevents taking over the entire status bar
+                                    .min_w(px(16.)) // Minimum for icon-only display
+                                    .overflow_hidden()
+                                    .text_ellipsis() // Graceful text truncation
+                                    .px(ui_theme.tokens.sizes.space_3) // Use design token spacing
+                                    .text_size(ui_theme.tokens.sizes.text_sm) // Use design token text sizing
+                                    .whitespace_nowrap(), // Prevent text wrapping
+                            )
+                    }),
             )
     }
 

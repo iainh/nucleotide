@@ -69,14 +69,19 @@ pub struct LspState {
 
 impl LspState {
     pub fn new() -> Self {
-        Self {
+        let mut state = Self {
             servers: HashMap::new(),
             progress: HashMap::new(),
             diagnostics: BTreeMap::new(),
             status_message: None,
             spinner_frame: 0,
             last_spinner_update: Instant::now(),
-        }
+        };
+        
+        // TEMPORARY: Test progress will be added via real LSP integration
+        nucleotide_logging::debug!("LSP state initialized - ready for server registration and progress tracking");
+        
+        state
     }
 
     /// Get the current spinner frame, advancing if needed
@@ -262,51 +267,169 @@ impl LspState {
         !self.servers.is_empty()
     }
 
-    /// Get the appropriate LSP indicator character
+    /// Get the appropriate LSP indicator with server name and progress messages (like Helix)
+    /// Returns different variants based on available space and content priority
     pub fn get_lsp_indicator(&mut self) -> Option<String> {
+        self.get_lsp_indicator_with_max_width(None)
+    }
+    
+    /// Get LSP indicator with intelligent content adaptation based on max width
+    pub fn get_lsp_indicator_with_max_width(&mut self, max_width: Option<usize>) -> Option<String> {
         if !self.has_any_lsp_server() {
             return None;
         }
 
-        let indicator = if self.should_show_spinner() {
-            // If there's activity, use the animated spinner frame
-            self.get_spinner_frame().to_string()
-        } else {
-            // Otherwise, use a static indicator showing LSP is present but idle
-            "◉".to_string() // Static dot indicating LSP presence
-        };
 
-        // Add any progress message if available
-        if !self.progress.is_empty() {
-            // Get the most recent progress message
-            if let Some(progress) = self.progress.values().next() {
-                let mut result = indicator;
-                result.push(' ');
-
-                // Build the message
-                let mut message = progress.title.clone();
-                if let Some(msg) = &progress.message {
-                    message.push_str(": ");
-                    message.push_str(msg);
-                }
-                if let Some(pct) = progress.percentage {
-                    message.push_str(&format!(" ({pct}%)"));
-                }
-
-                // Truncate if too long (max 40 chars for the message part)
-                const MAX_MESSAGE_LEN: usize = 40;
-                if message.len() > MAX_MESSAGE_LEN {
-                    message.truncate(MAX_MESSAGE_LEN - 3);
-                    message.push_str("...");
-                }
-
-                result.push_str(&message);
-                return Some(result);
+        // If we have active progress, show detailed status like Helix
+        if let Some(progress) = self.get_most_important_progress() {
+            // Get server name and clone progress to avoid borrow conflicts
+            let server_name = self.servers.get(&progress.server_id)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| "LSP".to_string());
+            let progress_clone = progress.clone();
+            
+            // Try different detail levels based on available space
+            if let Some(max_len) = max_width {
+                return self.format_progress_adaptive(&progress_clone, &server_name, max_len);
+            } else {
+                // Default behavior - full message with reasonable truncation
+                return self.format_progress_full(&progress_clone, &server_name);
             }
         }
-
-        // Just return the indicator if no progress messages
-        Some(indicator)
+        
+        // If no progress but servers are running, show appropriate indicator
+        let indicator = if self.should_show_spinner() {
+            self.get_spinner_frame().to_string()
+        } else {
+            "◉".to_string()
+        };
+        
+        // Show server count if multiple servers
+        let server_count = self.servers.len();
+        if server_count > 1 {
+            Some(format!("{} {}x", indicator, server_count))
+        } else if let Some(server) = self.servers.values().next() {
+            // Show single server name if space permits
+            let display = format!("{} {}", indicator, server.name);
+            if max_width.map_or(true, |max| display.len() <= max) {
+                Some(display)
+            } else {
+                Some(indicator)
+            }
+        } else {
+            Some(indicator)
+        }
+    }
+    
+    /// Format progress with full detail
+    fn format_progress_full(&self, progress: &LspProgress, server_name: &str) -> Option<String> {
+        let mut status = format!("{}: ", server_name);
+        
+        // Add percentage if available
+        if let Some(percentage) = progress.percentage {
+            status.push_str(&format!("{:>2}% ", percentage));
+        }
+        
+        // Add title
+        status.push_str(&progress.title);
+        
+        // Add message with separator if both exist
+        if let Some(message) = &progress.message {
+            status.push_str(" ⋅ ");
+            status.push_str(message);
+        }
+        
+        Some(status)
+    }
+    
+    /// Format progress adaptively based on available space
+    fn format_progress_adaptive(&mut self, progress: &LspProgress, server_name: &str, max_len: usize) -> Option<String> {
+        // Strategy: Try progressively simpler formats until we fit
+        
+        // Full format: "ServerName: 85% Title ⋅ Message"
+        if let Some(full) = self.format_progress_full(progress, server_name) {
+            if full.len() <= max_len {
+                return Some(full);
+            }
+        }
+        
+        // Medium format: "ServerName: 85% Title"
+        let mut medium = format!("{}: ", server_name);
+        if let Some(percentage) = progress.percentage {
+            medium.push_str(&format!("{:>2}% ", percentage));
+        }
+        medium.push_str(&progress.title);
+        if medium.len() <= max_len {
+            return Some(medium);
+        }
+        
+        // Compact format: "ServerName: Title"
+        let compact = format!("{}: {}", server_name, progress.title);
+        if compact.len() <= max_len {
+            return Some(compact);
+        }
+        
+        // Short server format: "Server: Title"
+        let short_server = self.get_short_server_name(server_name);
+        let short_format = format!("{}: {}", short_server, progress.title);
+        if short_format.len() <= max_len {
+            return Some(short_format);
+        }
+        
+        // Minimal format: "Server" or spinner only
+        if short_server.len() <= max_len {
+            Some(short_server)
+        } else if self.should_show_spinner() {
+            Some(self.get_spinner_frame().to_string())
+        } else {
+            Some("◉".to_string())
+        }
+    }
+    
+    /// Get abbreviated server name for compact display
+    fn get_short_server_name(&self, server_name: &str) -> String {
+        match server_name {
+            "rust-analyzer" => "rust".to_string(),
+            "typescript-language-server" => "ts".to_string(), 
+            "pyright" => "py".to_string(),
+            "clangd" => "cpp".to_string(),
+            "gopls" => "go".to_string(),
+            "java-language-server" => "java".to_string(),
+            name if name.len() > 8 => {
+                // Take first 6 chars + ".."
+                format!("{}..", &name[..6.min(name.len())])
+            }
+            name => name.to_string(),
+        }
+    }
+    
+    /// Get the most important progress message (prioritize those with messages)
+    fn get_most_important_progress(&self) -> Option<&LspProgress> {
+        // First priority: progress with both title and message
+        if let Some(progress) = self.progress.values()
+            .find(|p| p.message.is_some() && !p.title.is_empty()) {
+            return Some(progress);
+        }
+        
+        // Second priority: progress with just a message
+        if let Some(progress) = self.progress.values()
+            .find(|p| p.message.is_some()) {
+            return Some(progress);
+        }
+        
+        // Third priority: any progress with a title
+        self.progress.values()
+            .find(|p| !p.title.is_empty())
+    }
+    
+    /// Add a progress message (for testing and integration)
+    pub fn add_progress(&mut self, progress: LspProgress) {
+        self.progress.insert(progress.token.clone(), progress);
+    }
+    
+    /// Remove a progress message
+    pub fn remove_progress(&mut self, token: &str) {
+        self.progress.remove(token);
     }
 }
 

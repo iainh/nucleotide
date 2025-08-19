@@ -209,11 +209,17 @@ impl Render for StatusLineView {
                     div().w(px(1.)).h(px(16.)).bg(tokens.colors.border_muted),
                 )
                 .child(
-                    // LSP indicator
+                    // LSP indicator - dynamic width using design tokens
                     div()
                         .child(indicator)
-                        .min_w(px(16.))
-                        .px(tokens.sizes.space_2),
+                        .flex_shrink() // Allow shrinking when space is limited
+                        .max_w(px(400.)) // Max width prevents taking over the entire status bar
+                        .min_w(px(16.)) // Minimum for icon-only display
+                        .overflow_hidden()
+                        .text_ellipsis() // Graceful text truncation
+                        .px(tokens.sizes.space_3) // Use design token spacing
+                        .text_size(tokens.sizes.text_sm) // Use design token text sizing
+                        .whitespace_nowrap(), // Prevent text wrapping
                 );
         }
 
