@@ -6,7 +6,7 @@ use std::{
 use arc_swap::{ArcSwap, access::Map};
 use futures_util::FutureExt;
 use helix_core::{Position, Selection, pos_at_coords, syntax};
-use helix_lsp::{LanguageServerId, LspProgressMap, lsp};
+use helix_lsp::{LanguageServerId, LspProgressMap};
 use helix_stdx::path::get_relative_path;
 use helix_term::ui::FilePickerData;
 use nucleotide_lsp::ServerStatus;
@@ -127,84 +127,257 @@ impl Application {
                 .map(|(id, _)| *id)
                 .collect();
 
+            info!(
+                progressing_servers = ?progressing_servers,
+                "Servers currently progressing according to lsp_progress"
+            );
+
+            // Get editor status for detailed logging
+            let editor_status = self.editor.get_status();
+            info!(
+                editor_status = ?editor_status,
+                "Current editor status from Helix"
+            );
+
             lsp_state.update(cx, |state, _cx| {
+                // Log current state before clearing
+                let old_progress_count = state.progress.len();
+                info!(
+                    old_progress_count = old_progress_count,
+                    "UI state before sync - clearing old progress"
+                );
+
                 // Clear old progress state
                 state.progress.clear();
 
                 // Update server info if we have new servers
-                for (id, name) in active_servers {
-                    if !state.servers.contains_key(&id) {
-                        state.register_server(id, name, None);
-                        state.update_server_status(id, ServerStatus::Running);
+                for (id, name) in &active_servers {
+                    if !state.servers.contains_key(id) {
+                        info!(
+                            server_id = ?id,
+                            server_name = %name,
+                            "Registering new LSP server"
+                        );
+                        state.register_server(*id, name.clone(), None);
+                        state.update_server_status(*id, ServerStatus::Running);
                     }
                 }
 
-                // Extract actual progress information from LspProgressMap
-                for id in progressing_servers {
-                    // Get the progress map for this server
-                    if let Some(progress_map) = self.lsp_progress.progress_map(id) {
-                        // Only process if we have actual progress items
-                        if !progress_map.is_empty() {
-                            debug!(server_id = ?id, progress_items = progress_map.len(), "LSP server has progress items");
+                // Ensure servers without progress still show status (idle state)
+                for (server_id, server_name) in &active_servers {
+                    if !progressing_servers.contains(server_id) {
+                        // Server is active but not progressing - show idle status
+                        let progress = nucleotide_lsp::LspProgress {
+                            server_id: *server_id,
+                            token: "idle".to_string(),
+                            title: "Connected".to_string(),
+                            message: Some("Ready".to_string()),
+                            percentage: None,
+                        };
 
-                            // Add each progress operation
-                            for (token, status) in progress_map {
-                                match status {
-                                    helix_lsp::ProgressStatus::Created => {
-                                        // Progress created but not started yet - skip these
-                                        info!(token = ?token, "Skipping LSP progress token - in Created state (not started yet)");
-                                        continue;
-                                    }
-                                    helix_lsp::ProgressStatus::Started { title, progress } => {
-                                        let key = format!("{id}-{token:?}");
-                                        let (message, percentage) = match progress {
-                                            lsp::WorkDoneProgress::Begin(begin) => {
-                                                (begin.message.clone(), begin.percentage)
-                                            }
-                                            lsp::WorkDoneProgress::Report(report) => {
-                                                (report.message.clone(), report.percentage)
-                                            }
-                                            lsp::WorkDoneProgress::End(_) => {
-                                                // Progress ended, skip
-                                                continue;
-                                            }
-                                        };
-
-                                        info!(
-                                            title = ?title,
-                                            message = ?message,
-                                            percentage = percentage.unwrap_or(0),
-                                            "LSP progress active"
-                                        );
-
-                                        state.progress.insert(key, nucleotide_lsp::LspProgress {
-                                            server_id: id,
-                                            token: format!("{token:?}"),
-                                            title: title.clone(),
-                                            message,
-                                            percentage,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Log current state for debugging
-                if !state.progress.is_empty() {
-                    debug!(progress_count = state.progress.len(), "LSP servers with progress");
-                    for progress in state.progress.values() {
-                        debug!(
-                            title = ?progress.title,
-                            message = ?progress.message,
-                            percentage = progress.percentage.unwrap_or(0),
-                            "LSP progress item"
+                        let key = format!("{}-idle", server_id);
+                        state.progress.insert(key, progress);
+                        info!(
+                            server_id = ?server_id,
+                            server_name = %server_name,
+                            "Added idle indicator for ready LSP server"
                         );
                     }
                 }
-                if !state.servers.is_empty() {
-                    debug!(server_count = state.servers.len(), "Active LSP servers");
+
+                // Use editor status for progressing servers to show real LSP messages
+                // The LSP manager calls editor.set_status() with progress messages
+                if !progressing_servers.is_empty() {
+                    info!(
+                        progressing_count = progressing_servers.len(),
+                        "Processing progressing servers"
+                    );
+
+                    for server_id in &progressing_servers {
+                        // Find the server name from active_servers
+                        let server_name = active_servers.iter()
+                            .find(|(id, _)| id == server_id)
+                            .map(|(_, name)| name.as_str())
+                            .unwrap_or("LSP Server");
+
+                        // Get the most recent progress information for this specific server
+                        // from the LspProgressMap instead of using global editor status
+                        let current_progress = self.lsp_progress.progress_map(*server_id);
+                        let active_token_count = current_progress.map(|p| p.len()).unwrap_or(0);
+
+                        let message = if active_token_count > 0 {
+                            // We have active progress tokens - try to get the most relevant one
+                            if let Some(progress_map) = current_progress {
+                                // Look for progress tokens with meaningful information
+                                // Priority: 1) Progress messages, 2) Progress titles, 3) Editor status
+                                let active_progress = progress_map
+                                    .iter()
+                                    .find_map(|(token, status)| {
+                                        info!(
+                                            server_id = ?server_id,
+                                            token = ?token,
+                                            status = ?status,
+                                            "Examining progress token"
+                                        );
+
+                                        match status {
+                                            helix_lsp::ProgressStatus::Started { title, progress } => {
+                                                // Extract message from WorkDoneProgress variants
+                                                let message_from_progress = match progress {
+                                                    helix_lsp::lsp::WorkDoneProgress::Begin(begin) => {
+                                                        begin.message.as_ref().or(Some(&begin.title))
+                                                    }
+                                                    helix_lsp::lsp::WorkDoneProgress::Report(report) => {
+                                                        report.message.as_ref()
+                                                    }
+                                                    helix_lsp::lsp::WorkDoneProgress::End(end) => {
+                                                        end.message.as_ref()
+                                                    }
+                                                };
+
+                                                // Prioritize progress message, then title
+                                                if let Some(msg) = message_from_progress.filter(|m| !m.is_empty()) {
+                                                    info!(
+                                                        message = %msg,
+                                                        token = ?token,
+                                                        "Using progress message"
+                                                    );
+                                                    Some(msg.clone())
+                                                } else if !title.is_empty() {
+                                                    info!(
+                                                        title = %title,
+                                                        token = ?token,
+                                                        "Using progress title"
+                                                    );
+                                                    Some(title.clone())
+                                                } else {
+                                                    None
+                                                }
+                                            }
+                                            helix_lsp::ProgressStatus::Created => {
+                                                info!(
+                                                    token = ?token,
+                                                    "Skipping Created progress token"
+                                                );
+                                                None
+                                            }
+                                        }
+                                    })
+                                    .or_else(|| {
+                                        // Only use editor status if we have no progress tokens at all
+                                        // If we have Created tokens, it means new work is starting and old status should be ignored
+                                        let has_created_tokens = progress_map.values().any(|status| {
+                                            matches!(status, helix_lsp::ProgressStatus::Created)
+                                        });
+
+                                        if has_created_tokens {
+                                            // We have Created tokens, but check if editor status indicates ongoing work
+                                            // If editor status contains meaningful work info, use it; otherwise ignore stale status
+                                            if let Some((status_msg, _)) = &editor_status {
+                                                if !status_msg.is_empty() && !status_msg.contains("building proc-macros") {
+                                                    // Editor status looks like active work, not stale build messages
+                                                    info!("Have Created tokens but editor status shows active work");
+                                                    return Some(status_msg.to_string());
+                                                }
+                                            }
+                                            info!("Have Created progress tokens - ignoring stale/irrelevant editor status");
+                                            None
+                                        } else {
+                                            // Fallback to editor status only if no progress tokens exist at all
+                                            info!("No progress tokens found, checking editor status");
+                                            editor_status.as_ref()
+                                                .filter(|(msg, _)| !msg.is_empty())
+                                                .map(|(msg, _)| {
+                                                    info!(
+                                                        editor_message = %msg,
+                                                        "Using editor status as fallback"
+                                                    );
+                                                    msg.to_string()
+                                                })
+                                        }
+                                    })
+                                    .unwrap_or_else(|| {
+                                        info!("No active progress or meaningful editor status - showing idle");
+                                        "Ready".to_string()
+                                    });
+                                Some(active_progress)
+                            } else {
+                                Some("Indexing project".to_string())
+                            }
+                        } else if let Some((status_msg, _severity)) = &editor_status {
+                            if !status_msg.is_empty() {
+                                Some(status_msg.to_string())
+                            } else {
+                                Some("Indexing project".to_string())
+                            }
+                        } else {
+                            Some("Indexing project".to_string())
+                        };
+
+                        // Choose appropriate token and title based on whether we have meaningful progress
+                        let (token, title) = if message.as_ref().map_or(false, |m| m == "Ready") {
+                            ("idle".to_string(), "Connected".to_string())
+                        } else {
+                            ("activity".to_string(), "Processing".to_string())
+                        };
+
+                        let progress = nucleotide_lsp::LspProgress {
+                            server_id: *server_id,
+                            token,
+                            title,
+                            message: message.clone(),
+                            percentage: None,
+                        };
+
+                        let key = if message.as_ref().map_or(false, |m| m == "Ready") {
+                            format!("{}-idle", server_id)
+                        } else {
+                            format!("{}-activity", server_id)
+                        };
+
+                        let is_idle = progress.token == "idle";
+                        let token_clone = progress.token.clone();
+                        let title_clone = progress.title.clone();
+
+                        state.progress.insert(key, progress);
+                        info!(
+                            server_id = ?server_id,
+                            server_name = %server_name,
+                            progress_message = ?message,
+                            token = %token_clone,
+                            title = %title_clone,
+                            is_idle = is_idle,
+                            active_token_count = active_token_count,
+                            editor_status = ?editor_status,
+                            "Added LSP indicator with appropriate visual state"
+                        );
+                    }
+                } else {
+                    // No progressing servers - ensure we're not stuck with old progress
+                    info!(
+                        active_servers_count = active_servers.len(),
+                        "No progressing servers - should show idle indicators only"
+                    );
+                }
+
+                // Log final state for debugging
+                info!(
+                    final_progress_count = state.progress.len(),
+                    server_count = state.servers.len(),
+                    "UI state after sync"
+                );
+
+                if !state.progress.is_empty() {
+                    for (key, progress) in &state.progress {
+                        info!(
+                            progress_key = %key,
+                            server_id = ?progress.server_id,
+                            title = %progress.title,
+                            message = ?progress.message,
+                            token = %progress.token,
+                            "Final progress item in UI state"
+                        );
+                    }
                 }
             });
         }

@@ -19,6 +19,7 @@ use nucleotide::input_coordinator::InputCoordinator;
 use nucleotide::{
     ThemeManager, application, config, info_box, notification, overlay, types, workspace,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
 
 // Import nucleotide-ui enhanced components
@@ -131,6 +132,56 @@ fn _early_runtime_init() {
             }
         }
     }
+}
+
+/// Determine the optimal workspace root directory for LSP servers
+/// Priority: explicit working directory > first file parent > git repo root > current dir
+#[instrument(skip(args))]
+fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
+    // Priority 1: Explicit working directory
+    if let Some(dir) = &args.working_directory {
+        info!(directory = ?dir, "Using explicit working directory as workspace root");
+        return Ok(Some(dir.clone()));
+    }
+
+    // Priority 2: If first file is a directory, use it
+    if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
+        info!(directory = ?path, "Using directory argument as workspace root");
+        return Ok(Some(path.clone()));
+    }
+
+    // Priority 3: For file arguments, find the workspace root of the first file's parent
+    if let Some((first_file, _)) = args.files.first() {
+        if let Some(parent) = first_file.parent() {
+            if parent.exists() {
+                let workspace_root = nucleotide::application::find_workspace_root_from(parent);
+                info!(
+                    file = ?first_file,
+                    parent = ?parent,
+                    workspace_root = ?workspace_root,
+                    "Found workspace root from file parent"
+                );
+                return Ok(Some(workspace_root));
+            }
+        }
+    }
+
+    // Priority 4: Try to find workspace root from current directory
+    if let Ok(current_dir) = std::env::current_dir() {
+        let workspace_root = nucleotide::application::find_workspace_root_from(&current_dir);
+        if workspace_root != current_dir {
+            info!(
+                current_dir = ?current_dir,
+                workspace_root = ?workspace_root,
+                "Found workspace root from current directory"
+            );
+            return Ok(Some(workspace_root));
+        }
+    }
+
+    // No specific workspace root found
+    info!("No specific workspace root detected, using default working directory logic");
+    Ok(None)
 }
 
 #[instrument]
@@ -1076,13 +1127,21 @@ FLAGS:
         .map(|(path, pos)| (helix_stdx::path::canonicalize(&path), pos))
         .collect();
 
-    // NOTE: Set the working directory early so the correct configuration is loaded. Be aware that
-    // Application::new() depends on this logic so it must be updated if this changes.
-    if let Some(path) = &args.working_directory {
-        helix_stdx::env::set_current_working_dir(path)?;
-    } else if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
-        // If the first file is a directory, it will be the working directory unless -w was specified
-        helix_stdx::env::set_current_working_dir(path)?;
+    // CRITICAL: Determine and set workspace root BEFORE Editor/LSP initialization
+    // This ensures LSP servers receive proper workspace folder information for indexing
+    let workspace_root = determine_workspace_root(&args)?;
+    if let Some(root) = &workspace_root {
+        info!(workspace_root = ?root, "Setting workspace root before Editor/LSP initialization");
+        helix_stdx::env::set_current_working_dir(root)?;
+    } else {
+        // NOTE: Set the working directory early so the correct configuration is loaded. Be aware that
+        // Application::new() depends on this logic so it must be updated if this changes.
+        if let Some(path) = &args.working_directory {
+            helix_stdx::env::set_current_working_dir(path)?;
+        } else if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
+            // If the first file is a directory, it will be the working directory unless -w was specified
+            helix_stdx::env::set_current_working_dir(path)?;
+        }
     }
 
     // Load our combined configuration (helix + gui)

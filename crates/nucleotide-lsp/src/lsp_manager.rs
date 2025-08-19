@@ -38,14 +38,26 @@ impl<'a> LspManager<'a> {
 
         match call {
             Call::Notification(helix_lsp::jsonrpc::Notification { method, params, .. }) => {
+                info!(
+                    server_id = ?server_id,
+                    method = %method,
+                    "Received LSP notification"
+                );
+
                 let notification = match Notification::parse(&method, params) {
                     Ok(notification) => notification,
                     Err(helix_lsp::Error::Unhandled) => {
-                        info!("Ignoring Unhandled notification from Language Server");
+                        info!(
+                            server_id = ?server_id,
+                            method = %method,
+                            "Ignoring Unhandled notification from Language Server"
+                        );
                         return;
                     }
                     Err(err) => {
                         error!(
+                            server_id = ?server_id,
+                            method = %method,
                             error = %err,
                             "Ignoring unknown notification from Language Server"
                         );
@@ -55,15 +67,37 @@ impl<'a> LspManager<'a> {
 
                 match notification {
                     Notification::PublishDiagnostics(params) => {
+                        info!(
+                            server_id = ?server_id,
+                            uri = %params.uri,
+                            diagnostics_count = params.diagnostics.len(),
+                            "Processing PublishDiagnostics notification"
+                        );
                         self.handle_diagnostics_published(params, server_id);
                     }
                     Notification::ProgressMessage(params) => {
+                        info!(
+                            server_id = ?server_id,
+                            token = ?params.token,
+                            "Processing ProgressMessage notification"
+                        );
                         self.handle_progress_notification(params, server_id);
                     }
                     Notification::LogMessage(params) => {
-                        info!(message = %params.message, "LSP Log");
+                        info!(
+                            server_id = ?server_id,
+                            message = %params.message,
+                            message_type = ?params.typ,
+                            "LSP Log Message"
+                        );
                     }
                     Notification::ShowMessage(params) => {
+                        info!(
+                            server_id = ?server_id,
+                            message = %params.message,
+                            message_type = ?params.typ,
+                            "LSP Show Message"
+                        );
                         let _severity = match params.typ {
                             helix_lsp::lsp::MessageType::ERROR => Severity::Error,
                             helix_lsp::lsp::MessageType::WARNING => Severity::Warning,
@@ -74,18 +108,36 @@ impl<'a> LspManager<'a> {
                         self.editor.set_status(params.message);
                     }
                     Notification::Initialized => {
+                        info!(
+                            server_id = ?server_id,
+                            "LSP server initialized"
+                        );
                         self.handle_initialized_notification(server_id);
                     }
                     Notification::Exit => {
+                        info!(
+                            server_id = ?server_id,
+                            "LSP server exited"
+                        );
                         self.handle_exit_notification(server_id);
                     }
                 }
             }
             Call::MethodCall(method_call) => {
+                info!(
+                    server_id = ?server_id,
+                    method = %method_call.method,
+                    request_id = %method_call.id,
+                    "Received LSP method call"
+                );
                 self.handle_method_call(method_call, server_id).await;
             }
             Call::Invalid { id } => {
-                error!(id = ?id, "LSP invalid method call");
+                error!(
+                    server_id = ?server_id,
+                    id = ?id,
+                    "LSP invalid method call"
+                );
             }
         }
         }); // Close the timed block
@@ -237,28 +289,99 @@ impl<'a> LspManager<'a> {
 
         let token = params.token.clone();
 
+        // Log all progress notifications for debugging
+        info!(
+            server_id = ?server_id,
+            token = ?token,
+            "Received LSP progress notification"
+        );
+
         match params.value {
             ProgressParamsValue::WorkDone(progress) => {
                 use helix_lsp::lsp::WorkDoneProgress;
 
                 match progress {
                     WorkDoneProgress::Begin(begin) => {
+                        info!(
+                            server_id = ?server_id,
+                            token = ?token,
+                            title = %begin.title,
+                            message = ?begin.message,
+                            percentage = ?begin.percentage,
+                            "LSP WorkDoneProgress::Begin"
+                        );
+
                         self.lsp_progress.create(server_id, token.clone());
 
                         if let Some(message) = begin.message {
+                            info!(
+                                server_id = ?server_id,
+                                message = %message,
+                                "Set editor status from Begin message"
+                            );
                             self.editor.set_status(message);
                         }
                     }
                     WorkDoneProgress::Report(report) => {
+                        info!(
+                            server_id = ?server_id,
+                            token = ?token,
+                            message = ?report.message,
+                            percentage = ?report.percentage,
+                            "LSP WorkDoneProgress::Report"
+                        );
+
                         if let Some(message) = report.message {
+                            info!(
+                                server_id = ?server_id,
+                                message = %message,
+                                "Set editor status from Report message"
+                            );
                             self.editor.set_status(message);
                         }
                     }
                     WorkDoneProgress::End(end) => {
+                        info!(
+                            server_id = ?server_id,
+                            token = ?token,
+                            message = ?end.message,
+                            "LSP WorkDoneProgress::End"
+                        );
+
+                        let was_progressing = self.lsp_progress.is_progressing(server_id);
                         self.lsp_progress.end_progress(server_id, &token);
+                        let still_progressing = self.lsp_progress.is_progressing(server_id);
+
+                        info!(
+                            server_id = ?server_id,
+                            token = ?token,
+                            was_progressing = was_progressing,
+                            still_progressing = still_progressing,
+                            "LSP progress state after end_progress"
+                        );
 
                         if let Some(message) = end.message {
+                            info!(
+                                server_id = ?server_id,
+                                message = %message,
+                                "Set editor status from End message"
+                            );
                             self.editor.set_status(message);
+                        } else {
+                            // Follow Helix's pattern: clear editor status when progress ends
+                            // and no more progress is active for this server
+                            if !self.lsp_progress.is_progressing(server_id) {
+                                self.editor.clear_status();
+                                info!(
+                                    server_id = ?server_id,
+                                    "LSP progress completed - cleared editor status"
+                                );
+                            } else {
+                                info!(
+                                    server_id = ?server_id,
+                                    "LSP progress ended but other progress still active - not clearing status"
+                                );
+                            }
                         }
                     }
                 }

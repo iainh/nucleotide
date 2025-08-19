@@ -324,9 +324,20 @@ impl LspState {
         }
     }
 
-    /// Format progress with full detail
-    fn format_progress_full(&self, progress: &LspProgress, server_name: &str) -> Option<String> {
-        let mut status = format!("{}: ", server_name);
+    /// Format progress with full detail including visual indicator
+    fn format_progress_full(
+        &mut self,
+        progress: &LspProgress,
+        server_name: &str,
+    ) -> Option<String> {
+        // Get visual indicator (spinner for active, solid for idle)
+        let visual_indicator = if progress.token == "idle" {
+            "◉".to_string() // Solid circle for idle/ready state
+        } else {
+            self.get_spinner_frame().to_string() // Animated spinner for active progress
+        };
+
+        let mut status = format!("{} {}: ", visual_indicator, server_name);
 
         // Add percentage if available
         if let Some(percentage) = progress.percentage {
