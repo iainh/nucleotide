@@ -75,7 +75,7 @@ fn main() {
 #[tokio::test]
 async fn test_project_lsp_manager_creation() {
     let config = ProjectLspConfig::default();
-    let manager = ProjectLspManager::new(config);
+    let manager = ProjectLspManager::new(config, None);
 
     // Test that we can get an event sender
     let _event_sender = manager.get_event_sender();
@@ -91,7 +91,7 @@ async fn test_project_lsp_manager_creation() {
 #[tokio::test]
 async fn test_project_detection_rust() {
     let config = ProjectLspConfig::default();
-    let manager = ProjectLspManager::new(config);
+    let manager = ProjectLspManager::new(config, None);
 
     let project_dir = create_test_project_dir();
     create_rust_project(&project_dir);
@@ -196,7 +196,7 @@ async fn test_fallback_mechanism() {
 #[tokio::test]
 async fn test_helix_lsp_bridge_creation() {
     let config = ProjectLspConfig::default();
-    let manager = ProjectLspManager::new(config);
+    let manager = ProjectLspManager::new(config, None);
 
     let event_sender = manager.get_event_sender();
     let _bridge = HelixLspBridge::new(event_sender);
@@ -207,7 +207,7 @@ async fn test_helix_lsp_bridge_creation() {
 
 #[tokio::test]
 async fn test_project_type_detection() {
-    let detector = nucleotide_lsp::ProjectDetector::new();
+    let detector = nucleotide_lsp::ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
 
     // Test language ID mapping (which is public)
     assert_eq!(detector.get_primary_language_id(&ProjectType::Rust), "rust");
@@ -237,7 +237,7 @@ async fn test_project_type_detection() {
 
 #[tokio::test]
 async fn test_language_id_mapping() {
-    let detector = nucleotide_lsp::ProjectDetector::new();
+    let detector = nucleotide_lsp::ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
 
     assert_eq!(detector.get_primary_language_id(&ProjectType::Rust), "rust");
     assert_eq!(
@@ -368,7 +368,7 @@ async fn test_integration_workflow() {
 
     // Create ProjectLspManager
     let project_config = ProjectLspConfig::default();
-    let manager = ProjectLspManager::new(project_config);
+    let manager = ProjectLspManager::new(project_config, None);
 
     // Start manager
     manager.start().await.expect("Failed to start manager");
@@ -410,7 +410,7 @@ async fn test_integration_workflow() {
 async fn test_error_recovery() {
     // Test project detection with invalid directory
     let config = ProjectLspConfig::default();
-    let manager = ProjectLspManager::new(config);
+    let manager = ProjectLspManager::new(config, None);
 
     manager.start().await.expect("Failed to start manager");
 
@@ -429,7 +429,7 @@ async fn test_concurrent_operations() {
     use tokio::join;
 
     let config = ProjectLspConfig::default();
-    let manager = Arc::new(ProjectLspManager::new(config));
+    let manager = Arc::new(ProjectLspManager::new(config, None));
 
     manager.start().await.expect("Failed to start manager");
 

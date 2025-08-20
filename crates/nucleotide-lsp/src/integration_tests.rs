@@ -275,7 +275,7 @@ edition = "2021"
             max_concurrent_startups: 3,
         };
 
-        let manager = ProjectLspManager::new(config);
+        let manager = ProjectLspManager::new(config, None);
         let collector = EventCollector::new();
 
         (manager, collector)
@@ -763,7 +763,7 @@ edition = "2021"
             max_concurrent_startups: 3,
         };
 
-        let manager = ProjectLspManager::new(config);
+        let manager = ProjectLspManager::new(config, None);
         let collector = EventCollector::new();
 
         manager.start().await.expect("Failed to start manager");
@@ -806,7 +806,7 @@ edition = "2021"
         let helper = ProjectTestHelper::new();
         let _ = helper.cleanup_test_directory().await;
 
-        let detector = ProjectDetector::new();
+        let detector = ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
 
         // Test Rust project detection
         let rust_project = helper

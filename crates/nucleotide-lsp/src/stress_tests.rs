@@ -220,7 +220,7 @@ edition = "2021"
             max_concurrent_startups: 10,
         };
 
-        let manager = ProjectLspManager::new(lsp_config);
+        let manager = ProjectLspManager::new(lsp_config, None);
         let mut results = StressTestResults::new();
 
         manager.start().await.expect("Manager should start");
@@ -323,7 +323,7 @@ edition = "2021"
             max_concurrent_startups: 5,
         };
 
-        let manager = ProjectLspManager::new(lsp_config);
+        let manager = ProjectLspManager::new(lsp_config, None);
         let mut registry = MockServerRegistry::new();
 
         manager.start().await.expect("Manager should start");
@@ -403,7 +403,7 @@ edition = "2021"
             max_concurrent_startups: 3,
         };
 
-        let manager = ProjectLspManager::new(lsp_config);
+        let manager = ProjectLspManager::new(lsp_config, None);
         let mut results = StressTestResults::new();
 
         manager.start().await.expect("Manager should start");
@@ -475,7 +475,7 @@ edition = "2021"
         let helper = StressTestHelper::new();
         let _ = helper.cleanup().await;
 
-        let manager = ProjectLspManager::new(ProjectLspConfig::default());
+        let manager = ProjectLspManager::new(ProjectLspConfig::default(), None);
         let mut registry = MockServerRegistry::new();
 
         manager.start().await.expect("Manager should start");
@@ -578,7 +578,7 @@ edition = "2021"
         let helper = StressTestHelper::new();
         let _ = helper.cleanup().await;
 
-        let manager = ProjectLspManager::new(ProjectLspConfig::default());
+        let manager = ProjectLspManager::new(ProjectLspConfig::default(), None);
         let mut results = StressTestResults::new();
 
         manager.start().await.expect("Manager should start");
@@ -656,7 +656,7 @@ edition = "2021"
         let helper = StressTestHelper::new();
         let _ = helper.cleanup().await;
 
-        let manager = ProjectLspManager::new(ProjectLspConfig::default());
+        let manager = ProjectLspManager::new(ProjectLspConfig::default(), None);
         manager.start().await.expect("Manager should start");
 
         // Test various edge case project structures
@@ -754,7 +754,7 @@ edition = "2021"
             max_concurrent_startups: 5,
             startup_timeout: Duration::from_millis(200),
             ..Default::default()
-        });
+        }, None);
 
         manager.start().await.expect("Manager should start");
 

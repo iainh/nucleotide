@@ -102,6 +102,7 @@ unicode-width.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+slotmap.workspace = true
 
 [package.metadata.bundle]
 name = "Nucleotide"
