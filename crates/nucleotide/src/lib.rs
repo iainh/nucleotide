@@ -11,14 +11,21 @@ pub mod editor_capabilities_impl;
 pub mod editor_provider;
 pub mod file_tree;
 pub mod input_coordinator;
+#[cfg(test)]
+pub mod integration_test_phase2;
 pub mod lsp_completion_trigger;
+pub mod lsp_manager;
 pub mod overlay;
+pub mod project_indicator;
+pub mod project_status_service;
 pub mod statusline;
 pub mod tab;
 pub mod tab_bar;
 pub mod tab_overflow_dropdown;
 #[cfg(test)]
 pub mod test_utils;
+#[cfg(test)]
+pub mod tests;
 pub mod types;
 pub mod utils;
 pub mod vcs_service;

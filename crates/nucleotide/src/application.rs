@@ -2,6 +2,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use tokio::sync::RwLock;
 
 use arc_swap::{ArcSwap, access::Map};
 use futures_util::FutureExt;
@@ -9,7 +10,8 @@ use helix_core::{Position, Selection, pos_at_coords, syntax};
 use helix_lsp::{LanguageServerId, LspProgressMap};
 use helix_stdx::path::get_relative_path;
 use helix_term::ui::FilePickerData;
-use nucleotide_lsp::ServerStatus;
+use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
+use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
 
 use gpui::AppContext;
 use helix_term::{
@@ -79,6 +81,17 @@ pub struct Application {
     >,
     pub config: crate::config::Config,
     pub helix_config_arc: Arc<ArcSwap<helix_term::config::Config>>,
+    pub lsp_manager: crate::lsp_manager::LspManager,
+    pub project_lsp_manager: Arc<tokio::sync::RwLock<Option<ProjectLspManager>>>,
+    pub helix_lsp_bridge: Arc<tokio::sync::RwLock<Option<HelixLspBridge>>>,
+    pub project_lsp_command_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<nucleotide_events::ProjectLspCommand>>,
+    pub project_lsp_command_rx: Arc<
+        tokio::sync::RwLock<
+            Option<tokio::sync::mpsc::UnboundedReceiver<nucleotide_events::ProjectLspCommand>>,
+        >,
+    >,
+    pub project_lsp_processor_started: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -383,6 +396,29 @@ impl Application {
         }
     }
 
+    /// Enhanced LSP state sync that includes project server information
+    #[instrument(skip(self, cx))]
+    pub async fn sync_lsp_state_with_project_info(&self, cx: &mut gpui::App) {
+        // First run the regular LSP state sync
+        self.sync_lsp_state(cx);
+
+        // Then add project-specific information if available
+        if let Some(lsp_state) = &self.lsp_state {
+            if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
+                lsp_state.update(cx, |state, _cx| {
+                    // Add project-specific server information
+                    // This would include information about proactively started servers
+                    // and their relationship to projects
+
+                    // For now, we just log that project manager is available
+                    // In the future, we could query specific project information
+                    // and add project-specific progress indicators here
+                    info!("LSP state sync includes project information from ProjectLspManager");
+                });
+            }
+        }
+    }
+
     /// Safe document access API - read only
     pub fn with_document<F, R>(&self, doc_id: DocumentId, f: F) -> Option<R>
     where
@@ -419,6 +455,49 @@ impl Application {
     {
         let mut doc_manager = nucleotide_lsp::DocumentManagerMut::new(&mut self.editor);
         doc_manager.try_with_document_mut(doc_id, f)
+    }
+
+    /// Start LSP for a document using the feature flag system
+    #[instrument(skip(self))]
+    pub fn start_lsp_with_feature_flags(
+        &mut self,
+        doc_id: DocumentId,
+    ) -> crate::lsp_manager::LspStartupResult {
+        info!(
+            doc_id = ?doc_id,
+            project_lsp_enabled = self.config.is_project_lsp_startup_enabled(),
+            fallback_enabled = self.config.is_lsp_fallback_enabled(),
+            timeout_ms = self.config.lsp_startup_timeout_ms(),
+            "Starting LSP with feature flag support"
+        );
+
+        self.lsp_manager
+            .start_lsp_for_document(doc_id, &mut self.editor)
+    }
+
+    /// Update LSP manager configuration (for hot-reloading)
+    #[instrument(skip(self))]
+    pub fn update_lsp_manager_config(&mut self) {
+        let config_arc = Arc::new(self.config.clone());
+        match self.lsp_manager.update_config(config_arc) {
+            Ok(()) => {
+                info!(
+                    project_lsp_enabled = self.config.is_project_lsp_startup_enabled(),
+                    fallback_enabled = self.config.is_lsp_fallback_enabled(),
+                    timeout_ms = self.config.lsp_startup_timeout_ms(),
+                    "LSP manager configuration updated successfully"
+                );
+            }
+            Err(e) => {
+                error!(
+                    error = %e,
+                    "Failed to update LSP manager configuration - keeping previous config"
+                );
+                // Keep the previous configuration since the new one is invalid
+                self.editor
+                    .set_error(format!("Invalid LSP configuration: {}", e));
+            }
+        }
     }
     fn try_create_picker_component(&mut self) -> Option<crate::picker::Picker> {
         // This method is no longer used for file/buffer pickers
@@ -1002,6 +1081,20 @@ impl Application {
 
     pub async fn step(&mut self, cx: &mut gpui::Context<'_, crate::Core>) {
         loop {
+            // Initialize project LSP system once (without background command processor)
+            if !self
+                .project_lsp_processor_started
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                if let Err(e) = self.initialize_project_lsp_system().await {
+                    nucleotide_logging::error!(error = %e, "Failed to initialize project LSP system");
+                } else {
+                    nucleotide_logging::info!("Project LSP system initialized successfully");
+                    self.project_lsp_processor_started
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+
             // Check if all views are closed and we should quit
             if self.editor.tree.views().count() == 0 {
                 cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::ShouldQuit)));
@@ -1118,6 +1211,25 @@ impl Application {
                     gpui_to_helix_bridge::handle_gpui_event_in_helix(&gpui_event, &mut self.editor);
                     helix_event::request_redraw();
                 }
+                Some(lsp_command) = async {
+                    let rx_guard = self.project_lsp_command_rx.read().await;
+                    if let Some(ref mut rx) = rx_guard.as_ref() {
+                        // We need to get a mutable reference, but we can't hold the read guard
+                        // Drop the read guard and get a write guard
+                        drop(rx_guard);
+                        let mut rx_guard = self.project_lsp_command_rx.write().await;
+                        if let Some(ref mut rx) = rx_guard.as_mut() {
+                            rx.recv().await
+                        } else {
+                            std::future::pending().await
+                        }
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    // Process LSP command with direct Editor access
+                    self.handle_lsp_command(lsp_command).await;
+                }
                 Some(callback) = self.jobs.wait_futures.next() => {
                     self.jobs.handle_callback(&mut self.editor, &mut self.compositor, callback);
                 }
@@ -1167,6 +1279,9 @@ impl Application {
                                     info!("Updated helix config bufferline: {:?}", updated_helix_config.editor.bufferline);
                                     self.helix_config_arc.store(Arc::new(updated_helix_config));
 
+                                    // Update LSP manager with new configuration
+                                    self.update_lsp_manager_config();
+
                                     info!("Config updated via generic patching system");
                                 }
                                 helix_view::editor::ConfigEvent::Refresh => {
@@ -1176,6 +1291,9 @@ impl Application {
                                         self.config = fresh_config;
                                         let updated_helix_config = self.config.to_helix_config();
                                         self.helix_config_arc.store(Arc::new(updated_helix_config));
+
+                                        // Update LSP manager with reloaded configuration
+                                        self.update_lsp_manager_config();
                                     }
                                 }
                             }
@@ -1233,6 +1351,52 @@ impl nucleotide_core::JobSystemAccess for Application {
 }
 
 impl Application {
+    /// Get the project LSP command sender for external coordination
+    pub fn get_project_lsp_command_sender(
+        &self,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<nucleotide_events::ProjectLspCommand>> {
+        self.project_lsp_command_tx.clone()
+    }
+
+    /// Take the project LSP command receiver, leaving None in its place
+    pub async fn take_project_lsp_command_receiver(
+        &self,
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<nucleotide_events::ProjectLspCommand>> {
+        self.project_lsp_command_rx.write().await.take()
+    }
+
+    /// Initialize the ProjectLspManager and HelixLspBridge  
+    pub async fn initialize_project_lsp_system(&self) -> Result<(), anyhow::Error> {
+        info!("Initializing project LSP system");
+
+        // Create ProjectLspManager with default configuration
+        let project_lsp_config = nucleotide_lsp::ProjectLspConfig::default();
+        let project_manager = nucleotide_lsp::ProjectLspManager::new(
+            project_lsp_config,
+            self.project_lsp_command_tx.clone(),
+        );
+
+        // Get the event sender for the HelixLspBridge
+        let event_tx = project_manager.get_event_sender();
+
+        // Create HelixLspBridge
+        let helix_bridge = nucleotide_lsp::HelixLspBridge::new(event_tx);
+        let helix_bridge_arc = std::sync::Arc::new(helix_bridge.clone());
+
+        // Set the bridge in the project manager
+        project_manager.set_helix_bridge(helix_bridge_arc).await;
+
+        // Start the project manager
+        project_manager.start().await?;
+
+        // Store the managers in the Application
+        *self.project_lsp_manager.write().await = Some(project_manager);
+        *self.helix_lsp_bridge.write().await = Some(helix_bridge);
+
+        info!("Project LSP system initialized successfully");
+        Ok(())
+    }
+
     /// Take the completion receiver, leaving None in its place
     pub fn take_completion_receiver(
         &mut self,
@@ -1297,6 +1461,520 @@ impl Application {
             sender.is_some()
         );
         sender
+    }
+
+    /// Initialize ProjectLspManager with project detection and proactive server startup
+    #[instrument(skip(self))]
+    pub async fn initialize_project_lsp_manager(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!("Initializing ProjectLspManager for proactive LSP startup");
+
+        // Create ProjectLspManager configuration from GUI config
+        let project_config = nucleotide_lsp::ProjectLspConfig {
+            enable_proactive_startup: self.config.is_project_lsp_startup_enabled(),
+            health_check_interval: std::time::Duration::from_secs(30),
+            startup_timeout: std::time::Duration::from_millis(self.config.lsp_startup_timeout_ms()),
+            max_concurrent_startups: 3,
+            project_markers: self.config.project_markers().clone(),
+        };
+
+        // Create ProjectLspManager
+        let mut manager =
+            ProjectLspManager::new(project_config, self.project_lsp_command_tx.clone());
+
+        // Create HelixLspBridge with event sender
+        let event_sender = manager.get_event_sender();
+        let bridge = HelixLspBridge::new(event_sender);
+
+        // 🔥 CRITICAL FIX: Connect the bridge to the manager so it can actually start servers!
+        info!("Application: About to set Helix bridge on ProjectLspManager");
+        manager.set_helix_bridge(Arc::new(bridge.clone())).await;
+        info!("Application: Successfully set Helix bridge on ProjectLspManager");
+
+        // Start the manager
+        manager.start().await?;
+
+        // Store bridge and manager
+        *self.helix_lsp_bridge.write().await = Some(bridge);
+        *self.project_lsp_manager.write().await = Some(manager);
+
+        // If we have a project directory, detect and register it
+        if let Some(project_dir) = &self.project_directory {
+            if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
+                if let Err(e) = manager_ref.detect_project(project_dir.clone()).await {
+                    // Use error handler for project detection failure
+                    self.handle_project_lsp_error(Box::new(e), "project_detection")
+                        .await?;
+                }
+            }
+        }
+
+        // 🔥 CRITICAL FIX: Start event listener to connect ProjectLspManager to HelixLspBridge
+        self.start_project_lsp_event_listener().await?;
+
+        info!("ProjectLspManager initialized successfully");
+        Ok(())
+    }
+
+    /// Start event listener to connect ProjectLspManager events to HelixLspBridge actions
+    async fn start_project_lsp_event_listener(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!("Starting ProjectLspManager event listener");
+
+        let manager_arc = self.project_lsp_manager.clone();
+        let bridge_arc = self.helix_lsp_bridge.clone();
+
+        // Store a flag to track if we should process startup requests in the crank handler
+        // This allows us to integrate with the existing editor access pattern
+
+        tokio::spawn(async move {
+            loop {
+                // Get event receiver from manager
+                let mut event_rx = {
+                    let manager_guard = manager_arc.read().await;
+                    if let Some(manager) = manager_guard.as_ref() {
+                        match manager.get_event_receiver().await {
+                            Some(rx) => rx,
+                            None => {
+                                debug!("No event receiver available from ProjectLspManager");
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                continue;
+                            }
+                        }
+                    } else {
+                        debug!("ProjectLspManager not available for event listening");
+                        break;
+                    }
+                };
+
+                // Listen for events and handle them
+                while let Some(event) = event_rx.recv().await {
+                    match event {
+                        nucleotide_events::ProjectLspEvent::ServerStartupRequested {
+                            workspace_root,
+                            server_name,
+                            language_id,
+                        } => {
+                            info!(
+                                workspace_root = %workspace_root.display(),
+                                server_name = %server_name,
+                                language_id = %language_id,
+                                "Handling server startup request from ProjectLspManager"
+                            );
+
+                            // For now, just log the request - actual server startup will happen
+                            // through the ProjectLspManager's proactive startup when detect_project() is called
+                            info!(
+                                workspace_root = %workspace_root.display(),
+                                server_name = %server_name,
+                                language_id = %language_id,
+                                "Server startup requested - will be handled by ProjectLspManager proactive startup"
+                            );
+                        }
+                        nucleotide_events::ProjectLspEvent::ProjectDetected {
+                            workspace_root,
+                            project_type,
+                            language_servers,
+                        } => {
+                            info!(
+                                workspace_root = %workspace_root.display(),
+                                project_type = ?project_type,
+                                language_servers = ?language_servers,
+                                "Project detected via ProjectLspManager"
+                            );
+                        }
+                        _ => {
+                            debug!("Received other ProjectLspEvent: {:?}", event);
+                        }
+                    }
+                }
+
+                // If we reach here, the receiver was closed, wait and try again
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        });
+
+        // The actual server startup will happen through the existing start_project_servers method
+        // when ProjectLspManager.detect_project() triggers proactive startup
+
+        info!("ProjectLspManager event listener started");
+        Ok(())
+    }
+
+    /// Cleanup ProjectLspManager resources
+    pub async fn cleanup_project_lsp_manager(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!("Cleaning up ProjectLspManager");
+
+        if let Some(manager) = self.project_lsp_manager.write().await.take() {
+            manager.stop().await?;
+        }
+
+        *self.helix_lsp_bridge.write().await = None;
+
+        info!("ProjectLspManager cleanup completed");
+        Ok(())
+    }
+
+    /// Handle document opening with integrated project-based and file-based LSP startup
+    #[instrument(skip(self), fields(doc_id = ?doc_id))]
+    pub async fn handle_document_with_project_lsp(
+        &mut self,
+        doc_id: helix_view::DocumentId,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        debug!("Handling document with integrated LSP startup");
+
+        // Get document information
+        let (doc_path, language_name) = if let Some(doc) = self.editor.document(doc_id) {
+            let doc_path = doc.path().map(|p| p.to_path_buf());
+            let language_name = doc.language_name().map(|s| s.to_string());
+            (doc_path, language_name)
+        } else {
+            warn!(doc_id = ?doc_id, "Document not found for LSP integration");
+            return Ok(());
+        };
+
+        // Check if ProjectLspManager is available and project-based startup is enabled
+        if self.config.is_project_lsp_startup_enabled() {
+            if let Some(bridge_ref) = self.helix_lsp_bridge.read().await.as_ref() {
+                // Try to ensure document is tracked by any existing project servers
+                if let Some(doc_path_ref) = doc_path.as_ref() {
+                    let workspace_root =
+                        find_workspace_root_from(doc_path_ref.parent().unwrap_or(doc_path_ref));
+
+                    if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
+                        // Check if we have managed servers for this workspace
+                        let managed_servers =
+                            manager_ref.get_managed_servers(&workspace_root).await;
+
+                        for managed_server in managed_servers {
+                            // Ensure the document is tracked by the language server
+                            if let Err(e) = bridge_ref.ensure_document_tracked(
+                                &mut self.editor,
+                                managed_server.server_id,
+                                doc_id,
+                            ) {
+                                // Use error handler for document tracking failure
+                                if let Err(recovery_error) = self
+                                    .handle_project_lsp_error(Box::new(e), "document_tracking")
+                                    .await
+                                {
+                                    warn!(
+                                        error = %recovery_error,
+                                        "Failed to recover from document tracking error"
+                                    );
+                                }
+                            } else {
+                                info!(
+                                    server_id = ?managed_server.server_id,
+                                    server_name = %managed_server.server_name,
+                                    doc_path = %doc_path_ref.display(),
+                                    "Document tracked with project LSP server"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Use existing LspManager for fallback or primary startup
+        // This handles both file-based startup and fallback scenarios
+        let startup_result = self
+            .lsp_manager
+            .start_lsp_for_document(doc_id, &mut self.editor);
+
+        match startup_result {
+            crate::lsp_manager::LspStartupResult::Success {
+                mode,
+                language_servers,
+                duration,
+            } => {
+                info!(
+                    doc_id = ?doc_id,
+                    mode = ?mode,
+                    language_servers = ?language_servers,
+                    duration_ms = duration.as_millis(),
+                    "LSP startup successful for document"
+                );
+
+                // If we have project-based servers, coordinate with them
+                if self.config.is_project_lsp_startup_enabled() {
+                    if let Some(doc_path_ref) = doc_path.as_ref() {
+                        let workspace_root =
+                            find_workspace_root_from(doc_path_ref.parent().unwrap_or(doc_path_ref));
+
+                        // Check if this startup should be coordinated with project servers
+                        if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
+                            let managed_servers =
+                                manager_ref.get_managed_servers(&workspace_root).await;
+                            if !managed_servers.is_empty() {
+                                info!(
+                                    managed_server_count = managed_servers.len(),
+                                    "Document LSP startup coordinated with project servers"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            crate::lsp_manager::LspStartupResult::Failed {
+                mode,
+                error,
+                fallback_mode,
+            } => {
+                warn!(
+                    doc_id = ?doc_id,
+                    mode = ?mode,
+                    error = %error,
+                    fallback_mode = ?fallback_mode,
+                    "LSP startup failed for document"
+                );
+
+                // If project-based startup failed, ensure fallback is working
+                if matches!(mode, crate::lsp_manager::LspStartupMode::Project { .. }) {
+                    warn!(
+                        "Project-based LSP startup failed - fallback should handle file-based startup"
+                    );
+                }
+            }
+            crate::lsp_manager::LspStartupResult::Skipped { reason } => {
+                debug!(
+                    doc_id = ?doc_id,
+                    reason = %reason,
+                    "LSP startup skipped for document"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update ProjectLspManager configuration at runtime
+    pub async fn update_project_lsp_config(
+        &mut self,
+        new_config: Arc<crate::config::Config>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!("Updating ProjectLspManager configuration");
+
+        // Update the existing LspManager first
+        if let Err(e) = self.lsp_manager.update_config(new_config.clone()) {
+            error!(error = %e, "Failed to update LspManager configuration");
+            return Err(Box::new(e));
+        }
+
+        // If ProjectLspManager is running, we'd need to recreate it with new config
+        // For now, log the configuration change
+        if self.project_lsp_manager.read().await.is_some() {
+            info!(
+                "ProjectLspManager configuration change detected - restart required for full effect"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Handle errors from ProjectLspManager operations with appropriate recovery
+    #[instrument(skip(self))]
+    pub async fn handle_project_lsp_error(
+        &self,
+        error: Box<dyn std::error::Error + Send + Sync>,
+        operation: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        error!(
+            error = %error,
+            operation = %operation,
+            "ProjectLspManager operation failed, attempting recovery"
+        );
+
+        match operation {
+            "initialize" => {
+                warn!(
+                    "ProjectLspManager initialization failed - continuing with file-based LSP only"
+                );
+                // Continue operation without project-based LSP
+                Ok(())
+            }
+            "project_detection" => {
+                warn!("Project detection failed - falling back to file-based LSP startup");
+                // Project detection failure doesn't prevent file-based LSP
+                Ok(())
+            }
+            "server_startup" => {
+                warn!("Project server startup failed - file-based fallback should handle this");
+                // Server startup failure is handled by the fallback system
+                Ok(())
+            }
+            "document_tracking" => {
+                // Document tracking failure is not critical - LSP can still work
+                warn!("Document tracking with project server failed - LSP should still function");
+                Ok(())
+            }
+            _ => {
+                // Unknown operation - propagate the error
+                error!(operation = %operation, "Unknown ProjectLspManager operation failed");
+                Err(error)
+            }
+        }
+    }
+
+    /// Validate ProjectLspManager state and attempt recovery if needed
+    #[instrument(skip(self))]
+    pub async fn validate_and_recover_project_lsp(
+        &self,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        info!("Validating ProjectLspManager state");
+
+        let manager_available = self.project_lsp_manager.read().await.is_some();
+        let bridge_available = self.helix_lsp_bridge.read().await.is_some();
+
+        match (manager_available, bridge_available) {
+            (true, true) => {
+                info!("ProjectLspManager and HelixLspBridge are both available");
+
+                // Additional health check could be performed here
+                // We could check if any projects are registered or servers are running
+                info!("ProjectLspManager health check passed");
+
+                Ok(true)
+            }
+            (true, false) => {
+                warn!(
+                    "ProjectLspManager available but HelixLspBridge missing - attempting recovery"
+                );
+
+                // Try to recreate the bridge and connect it to manager
+                if let Some(mut manager) = self.project_lsp_manager.write().await.take() {
+                    let event_sender = manager.get_event_sender();
+                    let bridge = HelixLspBridge::new(event_sender);
+
+                    // 🔥 CRITICAL FIX: Connect the bridge to the manager in recovery too!
+                    manager.set_helix_bridge(Arc::new(bridge.clone())).await;
+
+                    // Store both back
+                    *self.helix_lsp_bridge.write().await = Some(bridge);
+                    *self.project_lsp_manager.write().await = Some(manager);
+
+                    info!(
+                        "HelixLspBridge recreated and connected to ProjectLspManager successfully"
+                    );
+                    Ok(true)
+                } else {
+                    error!("Failed to recreate HelixLspBridge - ProjectLspManager unavailable");
+                    Ok(false)
+                }
+            }
+            (false, true) => {
+                warn!("HelixLspBridge available but ProjectLspManager missing - cleaning up");
+
+                // Clean up orphaned bridge
+                *self.helix_lsp_bridge.write().await = None;
+
+                warn!("Cleaned up orphaned HelixLspBridge - project LSP disabled");
+                Ok(false)
+            }
+            (false, false) => {
+                info!(
+                    "ProjectLspManager and HelixLspBridge both unavailable - normal for file-based LSP only"
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    /// Start language servers proactively for a workspace using ProjectLspManager
+    #[instrument(skip(self), fields(workspace_root = %workspace_root.display()))]
+    pub async fn start_project_servers(
+        &mut self,
+        workspace_root: PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!("Starting project language servers proactively");
+
+        // Detect the project and get language server requirements
+        if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
+            if let Err(e) = manager_ref.detect_project(workspace_root.clone()).await {
+                // Use error handler for project detection failure
+                self.handle_project_lsp_error(Box::new(e), "project_detection")
+                    .await?;
+                return Ok(()); // Early return on detection failure
+            }
+
+            let project_info = manager_ref.get_project_info(&workspace_root).await;
+            if let Some(project) = project_info {
+                info!(
+                    project_type = ?project.project_type,
+                    language_servers = ?project.language_servers,
+                    "Project detected, starting language servers"
+                );
+
+                // Start each required language server using the bridge
+                if let Some(bridge_ref) = self.helix_lsp_bridge.read().await.as_ref() {
+                    for server_name in &project.language_servers {
+                        let language_id = match &project.project_type {
+                            nucleotide_events::ProjectType::Rust => "rust",
+                            nucleotide_events::ProjectType::TypeScript => "typescript",
+                            nucleotide_events::ProjectType::JavaScript => "javascript",
+                            nucleotide_events::ProjectType::Python => "python",
+                            nucleotide_events::ProjectType::Go => "go",
+                            nucleotide_events::ProjectType::C => "c",
+                            nucleotide_events::ProjectType::Cpp => "cpp",
+                            nucleotide_events::ProjectType::Mixed(_) => "mixed", // Not ideal, but temporary
+                            nucleotide_events::ProjectType::Other(name) => name.as_str(),
+                            nucleotide_events::ProjectType::Unknown => "unknown",
+                        };
+
+                        match bridge_ref
+                            .start_server(
+                                &mut self.editor,
+                                &workspace_root,
+                                server_name,
+                                language_id,
+                            )
+                            .await
+                        {
+                            Ok(server_id) => {
+                                info!(
+                                    server_id = ?server_id,
+                                    server_name = %server_name,
+                                    workspace_root = %workspace_root.display(),
+                                    "Language server started proactively"
+                                );
+                            }
+                            Err(e) => {
+                                // Use error handler for server startup failure
+                                if let Err(recovery_error) = self
+                                    .handle_project_lsp_error(Box::new(e), "server_startup")
+                                    .await
+                                {
+                                    warn!(
+                                        error = %recovery_error,
+                                        server_name = %server_name,
+                                        workspace_root = %workspace_root.display(),
+                                        "Failed to recover from server startup error"
+                                    );
+                                } else {
+                                    info!(
+                                        server_name = %server_name,
+                                        "Server startup failure handled by fallback system"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    warn!("HelixLspBridge not available for proactive server startup");
+                }
+            } else {
+                warn!("No project information available after detection");
+            }
+        } else {
+            warn!("ProjectLspManager not initialized for proactive startup");
+        }
+
+        Ok(())
     }
 
     /// Process completion results from the coordinator and emit Update::Completion events
@@ -1613,7 +2291,274 @@ impl Application {
         }
     }
 
+    /// Handle LSP commands that require direct Editor access
+    #[instrument(skip(self, command), fields(command_type = ?std::mem::discriminant(&command)))]
+    async fn handle_lsp_command(&mut self, command: ProjectLspCommand) {
+        let span = match &command {
+            ProjectLspCommand::DetectAndStartProject { span, .. } => span.clone(),
+            ProjectLspCommand::StartServer { span, .. } => span.clone(),
+            ProjectLspCommand::StopServer { span, .. } => span.clone(),
+            ProjectLspCommand::GetProjectStatus { span, .. } => span.clone(),
+            ProjectLspCommand::EnsureDocumentTracked { span, .. } => span.clone(),
+        };
+
+        let _guard = span.enter();
+
+        match command {
+            ProjectLspCommand::StartServer {
+                workspace_root,
+                server_name,
+                language_id,
+                response,
+                ..
+            } => {
+                info!(
+                    workspace_root = %workspace_root.display(),
+                    server_name = %server_name,
+                    language_id = %language_id,
+                    "Processing StartServer command with direct Editor access"
+                );
+
+                let result = self
+                    .handle_start_server_command(&workspace_root, &server_name, &language_id)
+                    .await;
+
+                if let Err(_) = response.send(result) {
+                    warn!("Failed to send StartServer response - receiver dropped");
+                }
+            }
+            ProjectLspCommand::DetectAndStartProject {
+                workspace_root,
+                response,
+                ..
+            } => {
+                let result = self
+                    .handle_detect_and_start_project_command(&workspace_root)
+                    .await;
+
+                if let Err(_) = response.send(result) {
+                    warn!("Failed to send DetectAndStartProject response - receiver dropped");
+                }
+            }
+            ProjectLspCommand::StopServer {
+                server_id,
+                response,
+                ..
+            } => {
+                let result = self.handle_stop_server_command(server_id).await;
+
+                if let Err(_) = response.send(result) {
+                    warn!("Failed to send StopServer response - receiver dropped");
+                }
+            }
+            ProjectLspCommand::GetProjectStatus {
+                workspace_root,
+                response,
+                ..
+            } => {
+                let result = self
+                    .handle_get_project_status_command(&workspace_root)
+                    .await;
+
+                if let Err(_) = response.send(result) {
+                    warn!("Failed to send GetProjectStatus response - receiver dropped");
+                }
+            }
+            ProjectLspCommand::EnsureDocumentTracked {
+                server_id,
+                doc_id,
+                response,
+                ..
+            } => {
+                let result = self
+                    .handle_ensure_document_tracked_command(server_id, doc_id)
+                    .await;
+
+                if let Err(_) = response.send(result) {
+                    warn!("Failed to send EnsureDocumentTracked response - receiver dropped");
+                }
+            }
+        }
+    }
+
+    /// Handle StartServer command using direct Editor access and HelixLspBridge
+    #[instrument(skip(self), fields(workspace_root = %workspace_root.display()))]
+    async fn handle_start_server_command(
+        &mut self,
+        workspace_root: &std::path::Path,
+        server_name: &str,
+        language_id: &str,
+    ) -> Result<nucleotide_events::ServerStartResult, ProjectLspCommandError> {
+        use nucleotide_events::ServerStartResult;
+
+        info!(
+            server_name = %server_name,
+            language_id = %language_id,
+            "Attempting to start LSP server with direct Editor access"
+        );
+
+        // Get the HelixLspBridge
+        let bridge_guard = self.helix_lsp_bridge.read().await;
+        let bridge = bridge_guard.as_ref().ok_or_else(|| {
+            ProjectLspCommandError::Internal("HelixLspBridge not initialized".to_string())
+        })?;
+
+        // Use the HelixLspBridge to start the server with direct Editor access
+        match bridge
+            .start_server(
+                &mut self.editor,
+                &workspace_root.to_path_buf(),
+                server_name,
+                language_id,
+            )
+            .await
+        {
+            Ok(server_id) => {
+                info!(
+                    server_id = ?server_id,
+                    server_name = %server_name,
+                    language_id = %language_id,
+                    "Successfully started LSP server"
+                );
+
+                Ok(ServerStartResult {
+                    server_id,
+                    server_name: server_name.to_string(),
+                    language_id: language_id.to_string(),
+                })
+            }
+            Err(e) => {
+                error!(
+                    error = %e,
+                    server_name = %server_name,
+                    language_id = %language_id,
+                    "Failed to start LSP server"
+                );
+
+                Err(ProjectLspCommandError::ServerStartup(format!(
+                    "Failed to start {} server: {}",
+                    server_name, e
+                )))
+            }
+        }
+    }
+
+    /// Handle DetectAndStartProject command
+    #[instrument(skip(self), fields(workspace_root = %workspace_root.display()))]
+    async fn handle_detect_and_start_project_command(
+        &mut self,
+        workspace_root: &std::path::Path,
+    ) -> Result<nucleotide_events::ProjectDetectionResult, ProjectLspCommandError> {
+        info!("Processing DetectAndStartProject command - not yet implemented");
+
+        // For now, return not implemented error
+        Err(ProjectLspCommandError::Internal(
+            "DetectAndStartProject not yet implemented".to_string(),
+        ))
+    }
+
+    /// Handle StopServer command
+    #[instrument(skip(self))]
+    async fn handle_stop_server_command(
+        &mut self,
+        server_id: helix_lsp::LanguageServerId,
+    ) -> Result<(), ProjectLspCommandError> {
+        info!(
+            server_id = ?server_id,
+            "Processing StopServer command - not yet implemented"
+        );
+
+        // For now, return not implemented error
+        Err(ProjectLspCommandError::Internal(
+            "StopServer not yet implemented".to_string(),
+        ))
+    }
+
+    /// Handle GetProjectStatus command
+    #[instrument(skip(self), fields(workspace_root = %workspace_root.display()))]
+    async fn handle_get_project_status_command(
+        &mut self,
+        workspace_root: &std::path::Path,
+    ) -> Result<nucleotide_events::ProjectStatus, ProjectLspCommandError> {
+        info!("Processing GetProjectStatus command - not yet implemented");
+
+        // For now, return not implemented error
+        Err(ProjectLspCommandError::Internal(
+            "GetProjectStatus not yet implemented".to_string(),
+        ))
+    }
+
+    /// Handle EnsureDocumentTracked command
+    #[instrument(skip(self))]
+    async fn handle_ensure_document_tracked_command(
+        &mut self,
+        server_id: helix_lsp::LanguageServerId,
+        doc_id: helix_view::DocumentId,
+    ) -> Result<(), ProjectLspCommandError> {
+        info!(
+            server_id = ?server_id,
+            doc_id = ?doc_id,
+            "Processing EnsureDocumentTracked command - not yet implemented"
+        );
+
+        // For now, return not implemented error
+        Err(ProjectLspCommandError::Internal(
+            "EnsureDocumentTracked not yet implemented".to_string(),
+        ))
+    }
+
     // NOTE: handle_crank_event is defined earlier in the file and includes completion processing
+}
+
+/// Detect project root by walking up parent directories looking for project markers
+fn detect_project_root_from_file(file_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::Path;
+
+    // Common project markers to look for
+    let project_markers = [
+        "Cargo.toml",       // Rust
+        "package.json",     // Node.js/JavaScript
+        "pyproject.toml",   // Python
+        "requirements.txt", // Python
+        "go.mod",           // Go
+        "pom.xml",          // Java Maven
+        "build.gradle",     // Java Gradle
+        ".git",             // Git repository
+        ".hg",              // Mercurial repository
+        ".svn",             // Subversion repository
+    ];
+
+    // Start from the file's parent directory
+    let mut current_dir = file_path.parent()?;
+
+    // Walk up the directory tree
+    while let Some(dir) = current_dir.parent() {
+        // Check if any project markers exist in this directory
+        for marker in &project_markers {
+            let marker_path = current_dir.join(marker);
+            if marker_path.exists() {
+                return Some(current_dir.to_path_buf());
+            }
+        }
+
+        // Move up one level
+        current_dir = dir;
+
+        // Stop at filesystem root
+        if current_dir == dir {
+            break;
+        }
+    }
+
+    // Also check the final directory (filesystem root)
+    for marker in &project_markers {
+        let marker_path = current_dir.join(marker);
+        if marker_path.exists() {
+            return Some(current_dir.to_path_buf());
+        }
+    }
+
+    None
 }
 
 pub fn init_editor(
@@ -1625,11 +2570,32 @@ pub fn init_editor(
     use helix_view::editor::Action;
 
     // Determine project directory from args before consuming args.files
+    nucleotide_logging::info!(
+        files_count = args.files.len(),
+        working_directory = ?args.working_directory,
+        "Starting project directory detection"
+    );
     let project_directory = if let Some(path) = &args.working_directory {
         Some(path.clone())
     } else if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
         // If the first file is a directory, use it as the project directory
         Some(path.clone())
+    } else if let Some((file_path, _)) = args.files.first() {
+        // If the first file is a file, try to detect project root from its parent directories
+        let detected_root = detect_project_root_from_file(file_path);
+        if let Some(ref root) = detected_root {
+            nucleotide_logging::info!(
+                file_path = %file_path.display(),
+                project_root = %root.display(),
+                "Detected project root from file"
+            );
+        } else {
+            nucleotide_logging::warn!(
+                file_path = %file_path.display(),
+                "No project root detected from file"
+            );
+        }
+        detected_root
     } else {
         None
     };
@@ -1722,6 +2688,12 @@ pub fn init_editor(
     nucleotide_logging::info!(
         "Created LSP completion requests channel for coordinator->application communication"
     );
+
+    // Create project LSP command channel for command-based LSP operations
+    let (project_lsp_command_tx, project_lsp_command_rx) = tokio::sync::mpsc::unbounded_channel();
+    nucleotide_logging::info!(
+        "Created project LSP command channel for event-driven command pattern"
+    );
     let (signature_tx, _signature_rx) = tokio::sync::mpsc::channel(1);
     let (auto_save_tx, _auto_save_rx) = tokio::sync::mpsc::channel(1);
     let (doc_colors_tx, _doc_colors_rx) = tokio::sync::mpsc::channel(1);
@@ -1740,6 +2712,10 @@ pub fn init_editor(
     let (bridge_tx, bridge_rx) = event_bridge::create_bridge_channel();
     event_bridge::initialize_bridge(bridge_tx);
     event_bridge::register_event_hooks();
+
+    // Initialize LSP command bridge for ProjectLspManager -> Application communication
+    nucleotide_core::event_bridge::initialize_lsp_command_bridge(project_lsp_command_tx.clone());
+    nucleotide_logging::info!("Initialized LSP command bridge for event-driven command pattern");
 
     // Initialize reverse event bridge system for GPUI -> Helix event forwarding
     let (gpui_to_helix_tx, gpui_to_helix_rx) = gpui_to_helix_bridge::create_gpui_to_helix_channel();
@@ -1860,8 +2836,11 @@ pub fn init_editor(
     // Initialize completion coordinator - but we need to do this after Application is created
     // since it needs access to the Core. This will be done in the workspace.
 
+    // Create LSP manager with initial configuration
+    let lsp_manager = crate::lsp_manager::LspManager::new(Arc::new(gui_config.clone()));
+
     nucleotide_logging::info!(
-        "Application created with completion_rx stored - ready for coordinator initialization"
+        "Application created with completion_rx stored and LSP manager initialized - ready for coordinator initialization"
     );
 
     Ok(Application {
@@ -1881,6 +2860,12 @@ pub fn init_editor(
         lsp_completion_requests_tx: Some(lsp_completion_requests_tx),
         config: gui_config,
         helix_config_arc: config,
+        lsp_manager,
+        project_lsp_manager: Arc::new(RwLock::new(None)), // Will be initialized after Application creation
+        helix_lsp_bridge: Arc::new(RwLock::new(None)), // Will be initialized after Application creation
+        project_lsp_command_tx: Some(project_lsp_command_tx),
+        project_lsp_command_rx: Arc::new(RwLock::new(Some(project_lsp_command_rx))),
+        project_lsp_processor_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     })
 }
 

@@ -210,10 +210,10 @@ fn main() -> Result<()> {
     };
     let handle = rt.handle();
     let _guard = handle.enter();
-    let (app, config) = match init_editor() {
-        Ok(Some((app, config))) => {
+    let (app, config, workspace_root) = match init_editor() {
+        Ok(Some((app, config, workspace_root))) => {
             info!("Editor initialized successfully");
-            (app, config)
+            (app, config, workspace_root)
         }
         Ok(None) => {
             eprintln!("Editor initialization returned None");
@@ -226,7 +226,7 @@ fn main() -> Result<()> {
     };
     drop(_guard);
     info!("Starting GUI main loop");
-    gui_main(app, config, handle.clone());
+    gui_main(app, config, handle.clone(), workspace_root);
     info!("Application shutting down");
     Ok(())
 }
@@ -523,6 +523,7 @@ fn gui_main(
     mut app: Application,
     config: nucleotide::config::Config,
     handle: tokio::runtime::Handle,
+    workspace_root: Option<std::path::PathBuf>,
 ) {
     // Store a channel for sending file open requests from macOS
     let (file_open_tx, mut file_open_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<String>>();
@@ -554,7 +555,10 @@ fn gui_main(
         }
     });
 
-    gpui_app.run(move |cx| {
+    gpui_app.run({
+        let workspace_root_for_closure = workspace_root.clone();
+        move |cx| {
+            let workspace_root = workspace_root_for_closure;
         // Initialize the enhanced UI system
         use nucleotide_ui::providers::init_provider_system;
 
@@ -726,6 +730,12 @@ fn gui_main(
                                 // Update LSP indicator - shows static when idle, animated when busy
                                 let old_message = state.status_message.clone();
                                 state.status_message = state.get_lsp_indicator();
+
+                                // Update project status service with current LSP state
+                                if let Some(project_status) = cx.try_global::<nucleotide::project_status_service::ProjectStatusHandle>() {
+                                    let project_status = project_status.clone();
+                                    project_status.update_lsp_state(state, cx);
+                                }
 
                                 // Only notify if there's actually a change
                                 if state.status_message != old_message {
@@ -913,10 +923,12 @@ fn gui_main(
             // Create InputCoordinator for centralized input handling
             let input_coordinator = Arc::new(InputCoordinator::new());
 
+            // Project LSP command processor will be started automatically when the Application runs
+
             // Create workspace
 
             let workspace = cx.new(|cx| {
-                let workspace = workspace::Workspace::with_views(
+                let mut workspace = workspace::Workspace::with_views(
                     app,
                     input_1.clone(),
                     handle,
@@ -926,6 +938,11 @@ fn gui_main(
                     input_coordinator,
                     cx,
                 );
+
+                // Set the current project root explicitly using the workspace root that was successfully determined
+                if let Some(root) = workspace_root.as_ref() {
+                    workspace.set_current_project_root(Some(root.clone()));
+                }
 
                 // Subscribe to self to handle Update events
                 cx.subscribe(&cx.entity(), |w: &mut workspace::Workspace, _, ev, cx| {
@@ -1040,10 +1057,17 @@ fn gui_main(
 
             workspace
         });
+        }
     })
 }
 
-fn init_editor() -> Result<Option<(Application, crate::config::Config)>> {
+fn init_editor() -> Result<
+    Option<(
+        Application,
+        crate::config::Config,
+        Option<std::path::PathBuf>,
+    )>,
+> {
     let help = format!(
         "\
 {} {}
@@ -1127,23 +1151,6 @@ FLAGS:
         .map(|(path, pos)| (helix_stdx::path::canonicalize(&path), pos))
         .collect();
 
-    // CRITICAL: Determine and set workspace root BEFORE Editor/LSP initialization
-    // This ensures LSP servers receive proper workspace folder information for indexing
-    let workspace_root = determine_workspace_root(&args)?;
-    if let Some(root) = &workspace_root {
-        info!(workspace_root = ?root, "Setting workspace root before Editor/LSP initialization");
-        helix_stdx::env::set_current_working_dir(root)?;
-    } else {
-        // NOTE: Set the working directory early so the correct configuration is loaded. Be aware that
-        // Application::new() depends on this logic so it must be updated if this changes.
-        if let Some(path) = &args.working_directory {
-            helix_stdx::env::set_current_working_dir(path)?;
-        } else if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
-            // If the first file is a directory, it will be the working directory unless -w was specified
-            helix_stdx::env::set_current_working_dir(path)?;
-        }
-    }
-
     // Load our combined configuration (helix + gui)
     let config = match crate::config::Config::load() {
         Ok(config) => config,
@@ -1167,10 +1174,28 @@ FLAGS:
     });
 
     // TODO: use the thread local executor to spawn the application task separately from the work pool
+    // Determine workspace root before creating application
+    let workspace_root = determine_workspace_root(&args)?;
+
+    // Set the working directory based on workspace root determination
+    if let Some(root) = &workspace_root {
+        info!(workspace_root = ?root, "Setting workspace root before Editor/LSP initialization");
+        helix_stdx::env::set_current_working_dir(root)?;
+    } else {
+        // NOTE: Set the working directory early so the correct configuration is loaded. Be aware that
+        // Application::new() depends on this logic so it must be updated if this changes.
+        if let Some(path) = &args.working_directory {
+            helix_stdx::env::set_current_working_dir(path)?;
+        } else if let Some((path, _)) = args.files.first().filter(|p| p.0.is_dir()) {
+            // If the first file is a directory, it will be the working directory unless -w was specified
+            helix_stdx::env::set_current_working_dir(path)?;
+        }
+    }
+
     let app = application::init_editor(args, config.helix.clone(), config.clone(), lang_loader)
         .context("unable to create new application")?;
 
-    Ok(Some((app, config)))
+    Ok(Some((app, config, workspace_root)))
 }
 
 /// Setup provider lifecycle management for proper cleanup and state management
