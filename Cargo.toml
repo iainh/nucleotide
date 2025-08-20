@@ -8,6 +8,7 @@ members = [
     "crates/nucleotide-ui",
     "crates/nucleotide-workspace",
     "crates/nucleotide-lsp",
+    "crates/nucleotide-project",
     "crates/nucleotide",
 ]
 resolver = "2"
@@ -77,6 +78,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 tracing-appender = "0.2"
 dirs = "5.0"
+thiserror = "1.0"
+rand = "0.8"
+slotmap = "1.0"
 
 # macOS framework bindings
 objc = "0.2"
@@ -91,6 +95,7 @@ nucleotide-editor = { path = "crates/nucleotide-editor" }
 nucleotide-ui = { path = "crates/nucleotide-ui" }
 nucleotide-workspace = { path = "crates/nucleotide-workspace" }
 nucleotide-lsp = { path = "crates/nucleotide-lsp" }
+nucleotide-project = { path = "crates/nucleotide-project" }
 
 [profile.dev]
 opt-level = 1

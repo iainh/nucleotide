@@ -52,6 +52,7 @@ helix-term.workspace = true
 anyhow.workspace = true
 arc-swap.workspace = true
 ctor.workspace = true
+parking_lot.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 futures-util.workspace = true
@@ -83,6 +84,9 @@ url.workspace = true
 toml.workspace = true
 serde_json.workspace = true
 serde.workspace = true
+
+# error handling
+thiserror.workspace = true
 
 # macOS integration
 [target.'cfg(target_os = "macos")'.dependencies]
