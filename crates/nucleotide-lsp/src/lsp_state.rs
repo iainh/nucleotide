@@ -49,6 +49,7 @@ pub struct DiagnosticInfo {
 }
 
 /// LSP state that can be observed by UI components
+#[derive(Clone)]
 pub struct LspState {
     /// Active language servers
     pub servers: HashMap<LanguageServerId, ServerInfo>,
@@ -69,7 +70,7 @@ pub struct LspState {
 
 impl LspState {
     pub fn new() -> Self {
-        let mut state = Self {
+        let state = Self {
             servers: HashMap::new(),
             progress: HashMap::new(),
             diagnostics: BTreeMap::new(),

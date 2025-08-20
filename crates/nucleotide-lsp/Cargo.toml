@@ -14,7 +14,9 @@ rust-version = "1.88"
 [dependencies]
 # Internal crates
 nucleotide-core.workspace = true
+nucleotide-events.workspace = true
 nucleotide-logging.workspace = true
+nucleotide-types.workspace = true
 
 # Helix dependencies
 helix-core.workspace = true
@@ -35,3 +37,9 @@ arc-swap.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+rand.workspace = true
+slotmap.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"
