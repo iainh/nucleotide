@@ -14,6 +14,10 @@ pub use app_event::AppEvent;
 pub use completion_events::*;
 pub use core_events::*;
 pub use event_bus::{EventBus, EventHandler};
-pub use lsp_events::*;
+pub use lsp_events::{
+    LspEvent, ProjectLspEvent, ProjectType, ServerHealthStatus, ServerStartupResult,
+    ProjectLspCommand, ProjectLspCommandError, ProjectDetectionResult, ServerStartResult,
+    ProjectStatus, ActiveServerInfo, ProjectHealthStatus
+};
 pub use ui_events::*;
 pub use workspace_events::*;
