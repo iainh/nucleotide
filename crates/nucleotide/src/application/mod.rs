@@ -229,18 +229,35 @@ impl Application {
             }
 
             event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
-                // Extract actual selection from the view
-                let (selection, was_movement) = if let Some(view) = self.editor.tree.get(*view_id) {
-                    (view.doc_selection(*doc_id).clone(), true) // Assume movement for now
+                // Extract actual selection from the document
+                let view = self.editor.tree.get(*view_id);
+                let selection = if let Some(doc) = self.editor.document(view.doc) {
+                    doc.selection(view.id).clone()
                 } else {
-                    warn!(view_id = ?view_id, "View not found when processing SelectionChanged event");
-                    (helix_core::Selection::point(0), false)
+                    helix_core::Selection::point(0)
+                };
+                let was_movement = true; // Assume movement for now
+
+                // Convert helix selection to V2 event selection
+                let v2_selection = nucleotide_events::view::Selection {
+                    ranges: selection
+                        .ranges()
+                        .iter()
+                        .map(|range| nucleotide_events::view::SelectionRange {
+                            anchor: nucleotide_events::view::Position::new(
+                                range.anchor,
+                                range.anchor,
+                            ),
+                            head: nucleotide_events::view::Position::new(range.head, range.head),
+                        })
+                        .collect(),
+                    primary_index: selection.primary_index(),
                 };
 
                 let v2_event = nucleotide_events::v2::view::Event::SelectionChanged {
                     view_id: *view_id,
                     doc_id: *doc_id,
-                    selection,
+                    selection: v2_selection,
                     was_movement,
                 };
 
@@ -363,14 +380,9 @@ impl Application {
 
             event_bridge::BridgedEvent::ViewFocused { view_id } => {
                 // Extract associated document ID from the view
-                let (doc_id, previous_view) = if let Some(view) = self.editor.tree.get(*view_id) {
-                    let doc_id = view.doc;
-                    let previous_view = self.core.view_handler.get_focused_view();
-                    (doc_id, previous_view)
-                } else {
-                    warn!(view_id = ?view_id, "View not found when processing ViewFocused event");
-                    (DocumentId::default(), None)
-                };
+                let view = self.editor.tree.get(*view_id);
+                let doc_id = view.doc;
+                let previous_view = self.core.view_handler.get_focused_view();
 
                 let v2_event = nucleotide_events::v2::view::Event::Focused {
                     view_id: *view_id,

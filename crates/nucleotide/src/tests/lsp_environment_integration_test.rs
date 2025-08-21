@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 /// Mock environment provider for testing
 struct MockEnvironmentProvider {
@@ -52,8 +52,8 @@ impl EnvironmentProvider for MockEnvironmentProvider {
 
 #[tokio::test]
 async fn test_helix_lsp_bridge_environment_injection() {
-    // Create event channel for the bridge
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<ProjectLspEvent>();
+    // Create event channel for the bridge (using broadcast channel)
+    let (event_tx, _event_rx) = broadcast::channel::<ProjectLspEvent>(100);
 
     // Create mock environment provider
     let env_provider = Arc::new(MockEnvironmentProvider::new());
@@ -150,8 +150,8 @@ async fn test_environment_injection_flow() {
     use crate::application::ProjectEnvironmentProvider;
     let env_provider = Arc::new(ProjectEnvironmentProvider::new(project_env));
 
-    // 3. Create HelixLspBridge with the environment provider
-    let (event_tx, _event_rx) = mpsc::unbounded_channel::<ProjectLspEvent>();
+    // 3. Create HelixLspBridge with the environment provider (using broadcast channel)
+    let (event_tx, _event_rx) = broadcast::channel::<ProjectLspEvent>(100);
     let _bridge = HelixLspBridge::new_with_environment(event_tx, env_provider.clone());
 
     // 4. Verify the environment is available for LSP server startup

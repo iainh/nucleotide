@@ -106,6 +106,7 @@ impl PerformanceTimer {
 }
 
 /// Rolling window for tracking recent performance data
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct RollingWindow {
     values: VecDeque<Duration>,
     max_size: usize,
@@ -133,6 +134,14 @@ impl RollingWindow {
             let total_nanos: u64 = self.values.iter().map(|d| d.as_nanos() as u64).sum();
             Duration::from_nanos(total_nanos / self.values.len() as u64)
         }
+    }
+
+    fn max_value(&self) -> Duration {
+        self.values.iter().max().copied().unwrap_or(Duration::ZERO)
+    }
+
+    fn min_value(&self) -> Duration {
+        self.values.iter().min().copied().unwrap_or(Duration::ZERO)
     }
 }
 
@@ -411,8 +420,8 @@ mod tests {
         window.push(Duration::from_millis(30));
 
         assert_eq!(window.average(), Duration::from_millis(20));
-        assert_eq!(window.max(), Duration::from_millis(30));
-        assert_eq!(window.min(), Duration::from_millis(10));
+        assert_eq!(window.max_value(), Duration::from_millis(30));
+        assert_eq!(window.min_value(), Duration::from_millis(10));
 
         // Test overflow
         window.push(Duration::from_millis(40));

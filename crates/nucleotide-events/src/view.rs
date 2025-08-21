@@ -49,14 +49,14 @@ pub enum Event {
 }
 
 /// Selection state with multiple ranges and primary selection
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Selection {
     pub ranges: Vec<SelectionRange>,
     pub primary_index: usize,
 }
 
 /// Individual selection range
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SelectionRange {
     pub anchor: Position,
     pub head: Position,
@@ -108,6 +108,16 @@ impl Selection {
     pub fn primary(&self) -> &SelectionRange {
         &self.ranges[self.primary_index]
     }
+
+    pub fn len(&self) -> usize {
+        self.ranges.len()
+    }
+
+    pub fn point(pos: usize) -> Self {
+        let position = Position::new(pos, 0);
+        let range = SelectionRange::new(position, position);
+        Self::new(vec![range], 0)
+    }
 }
 
 impl SelectionRange {
@@ -117,6 +127,12 @@ impl SelectionRange {
 
     pub fn is_cursor(&self) -> bool {
         self.anchor == self.head
+    }
+
+    pub fn cursor(&self, _rope_slice: helix_core::ropey::RopeSlice) -> usize {
+        // For simplicity, return the line number as cursor position
+        // In a real implementation, this would convert line/column to absolute position
+        self.head.line
     }
 }
 

@@ -1046,7 +1046,8 @@ mod tests {
         let lifecycle_manager = ServerLifecycleManager::new(config);
 
         // Should be created without bridge initially
-        assert!(lifecycle_manager.helix_bridge.is_none());
+        let bridge_guard = lifecycle_manager.helix_bridge.blocking_read();
+        assert!(bridge_guard.is_none());
     }
 
     #[test]

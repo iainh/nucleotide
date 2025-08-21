@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
+use tracing::Span;
 
 #[tokio::test]
 async fn test_command_types_compile() {
@@ -14,6 +15,7 @@ async fn test_command_types_compile() {
     let _command = ProjectLspCommand::DetectAndStartProject {
         workspace_root,
         response: tx,
+        span: Span::current(),
     };
 
     println!("✓ Command types compile successfully");

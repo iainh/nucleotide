@@ -386,7 +386,7 @@ mod tests {
         let mut handler = LspHandler::new();
         handler.initialize().unwrap();
 
-        let server_id = LanguageServerId(1);
+        let server_id = LanguageServerId::default();
         let workspace_root = PathBuf::from("/test/workspace");
 
         // Test server initialization
@@ -435,7 +435,7 @@ mod tests {
         let mut handler = LspHandler::new();
         handler.initialize().unwrap();
 
-        let server_id = LanguageServerId(1);
+        let server_id = LanguageServerId::default();
 
         let health_event = Event::HealthCheckCompleted {
             server_id,

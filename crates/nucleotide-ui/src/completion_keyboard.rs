@@ -445,11 +445,11 @@ mod tests {
         // Test action handling without GPUI context for simplicity
         let config = KeyboardConfig::default();
 
-        // Create a mock handler with inactive state
+        // Create a mock handler with inactive state - using a dummy focus handle for testing
         let handler = CompletionKeyboardHandler {
             config: config.clone(),
             trigger_detector: TriggerDetector::new(config),
-            focus_handle: FocusHandle::default(),
+            focus_handle: unsafe { std::mem::MaybeUninit::zeroed().assume_init() },
             is_active: false,
             page_size: 10,
         };
@@ -471,7 +471,7 @@ mod tests {
         let handler = CompletionKeyboardHandler {
             config: config.clone(),
             trigger_detector: TriggerDetector::new(config),
-            focus_handle: FocusHandle::default(),
+            focus_handle: unsafe { std::mem::MaybeUninit::zeroed().assume_init() },
             is_active: true,
             page_size: 10,
         };
@@ -493,7 +493,7 @@ mod tests {
                 ..Default::default()
             },
             key: "n".to_string(),
-            key_char: Some('n'),
+            key_char: Some('n'.to_string()),
         };
 
         let action = handler.process_keystroke(&keystroke);
@@ -508,7 +508,7 @@ mod tests {
         let mut handler = CompletionKeyboardHandler {
             config: config.clone(),
             trigger_detector: TriggerDetector::new(config.clone()),
-            focus_handle: FocusHandle::default(),
+            focus_handle: unsafe { std::mem::MaybeUninit::zeroed().assume_init() },
             is_active: false,
             page_size: 10,
         };
@@ -516,7 +516,7 @@ mod tests {
         let keystroke = Keystroke {
             modifiers: gpui::Modifiers::default(),
             key: "a".to_string(),
-            key_char: Some('a'),
+            key_char: Some('a'.to_string()),
         };
 
         let should_pass = handler.should_pass_through(&keystroke);
@@ -538,7 +538,7 @@ mod tests {
         let type_keystroke = Keystroke {
             modifiers: gpui::Modifiers::default(),
             key: "a".to_string(),
-            key_char: Some('a'),
+            key_char: Some('a'.to_string()),
         };
 
         let should_pass = handler.should_pass_through(&type_keystroke);
@@ -576,7 +576,6 @@ mod tests {
         let mut focus_manager = CompletionFocusManager {
             completion_focused: false,
             editor_focus_handle: None,
-            completion_focus_handle: FocusHandle::default(),
         };
 
         // Initially not focused

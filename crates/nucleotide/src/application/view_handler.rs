@@ -6,8 +6,8 @@ use nucleotide_events::handler::{EventHandler, HandlerError};
 use nucleotide_events::v2::view::Event as ViewEvent;
 use nucleotide_logging::{debug, error, info, instrument, warn};
 
-use helix_core::Selection;
 use helix_view::{DocumentId, ViewId};
+use nucleotide_events::view::Selection;
 use std::collections::HashMap;
 
 /// Handler for view domain events
@@ -92,7 +92,7 @@ impl ViewHandler {
         info!(
             view_id = ?view_id,
             doc_id = ?doc_id,
-            primary_cursor = ?selection.primary().cursor(helix_core::ropey::Rope::from("")),
+            primary_cursor = ?selection.primary().cursor(helix_core::ropey::Rope::from("").slice(..)),
             "View selection change processed successfully"
         );
 
@@ -224,6 +224,21 @@ impl EventHandler<ViewEvent> for ViewHandler {
             } => {
                 self.handle_scrolled(view_id, scroll_position, direction)
                     .await
+            }
+            ViewEvent::CursorMoved { .. } => {
+                // TODO: Implement cursor moved handling
+                debug!("CursorMoved event received but not yet implemented");
+                Ok(())
+            }
+            ViewEvent::SplitCreated { .. } => {
+                // TODO: Implement split created handling
+                debug!("SplitCreated event received but not yet implemented");
+                Ok(())
+            }
+            ViewEvent::Closed { .. } => {
+                // TODO: Implement view closed handling
+                debug!("Closed event received but not yet implemented");
+                Ok(())
             }
         }
     }

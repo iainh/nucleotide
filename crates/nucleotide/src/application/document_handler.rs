@@ -349,7 +349,7 @@ mod tests {
         let event = DocumentEvent::ContentChanged {
             doc_id,
             revision: 1,
-            change_summary: ChangeType::Edit,
+            change_summary: ChangeType::Replace,
         };
 
         handler.handle(event).await.unwrap();
@@ -395,7 +395,7 @@ mod tests {
         let event = DocumentEvent::ContentChanged {
             doc_id,
             revision: 1,
-            change_summary: ChangeType::Edit,
+            change_summary: ChangeType::Replace,
         };
 
         let result = handler.handle(event).await;

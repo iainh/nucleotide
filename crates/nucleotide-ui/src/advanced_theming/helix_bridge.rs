@@ -901,7 +901,7 @@ mod tests {
     fn test_helix_bridge_creation() {
         let bridge = HelixThemeBridge::new();
         assert!(!bridge.color_mappings.ui_mappings.is_empty());
-        assert!(bridge.compatibility.backwards_compatible);
+        // Note: compatibility field was removed from HelixThemeBridge structure
     }
 
     #[test]

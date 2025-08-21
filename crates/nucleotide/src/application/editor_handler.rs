@@ -288,7 +288,7 @@ mod tests {
             command_name: "open_file".to_string(),
             execution_time_ms: 50,
             success: true,
-            context: CommandContext::UserInput,
+            context: CommandContext::new(nucleotide_events::v2::editor::CommandSource::Keyboard),
         };
 
         handler.handle(event).await.unwrap();
@@ -342,7 +342,9 @@ mod tests {
                 command_name: format!("command_{}", i),
                 execution_time_ms: 10,
                 success: true,
-                context: CommandContext::UserInput,
+                context: CommandContext::new(
+                    nucleotide_events::v2::editor::CommandSource::Keyboard,
+                ),
             };
             handler.handle(event).await.unwrap();
         }

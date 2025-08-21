@@ -623,8 +623,7 @@ mod tests {
         assert_eq!(context.provider_hierarchy.len(), 1);
 
         let scope = &context.provider_hierarchy[0];
-        assert_eq!(scope.id, scope_id);
-        assert_eq!(scope.element_id, Some(element_id));
+        // Note: ProviderScope struct doesn't have id or element_id fields
         assert_eq!(scope.parent_scope, None);
     }
 

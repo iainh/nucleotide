@@ -3,7 +3,7 @@
 
 use crate::document::DocumentView;
 use crate::workspace::Workspace;
-use gpui::{Context, Entity, Focusable, SharedString, Window};
+use gpui::{AppContext, Context, Entity, Focusable, SharedString, Window};
 use helix_view::ViewId;
 use nucleotide_logging::{debug, info, instrument, warn};
 use std::collections::{HashMap, HashSet};
@@ -92,39 +92,69 @@ impl ViewManager {
         let mut view_ids = HashSet::new();
         let mut focused_file_name = None;
 
-        // Read editor state to get current views
+        // Read editor state to get current views and collect view information
         let workspace = cx.entity();
         let core = workspace.read(cx).core.clone();
-        let editor = &core.read(cx).editor;
+
+        // Collect all the data we need in one go to avoid borrowing conflicts
+        // Clone the necessary data to avoid lifetime issues
+        let (view_data, right_borders_set, focused_file_name_result, focused_view_id_result) = {
+            let core_read = core.read(cx);
+            let editor = &core_read.editor;
+
+            // Clone view data to avoid borrowing issues
+            let view_data: Vec<(helix_view::View, bool)> = editor
+                .tree
+                .views()
+                .map(|(view, is_focused)| (view.clone(), is_focused))
+                .collect();
+
+            let mut right_borders = HashSet::new();
+            let mut focused_file_name = None;
+            let mut focused_view_id = None;
+
+            for (view, is_focused) in &view_data {
+                let view_id = view.id;
+
+                // Check if this view has a right border (part of split layout)
+                if editor
+                    .tree
+                    .find_split_in_direction(view_id, helix_view::tree::Direction::Right)
+                    .is_some()
+                {
+                    right_borders.insert(view_id);
+                }
+
+                // Get filename for focused view
+                if *is_focused {
+                    if let Some(doc) = editor.document(view.doc) {
+                        focused_file_name = doc.path().and_then(|p| {
+                            p.file_name()
+                                .and_then(|name| name.to_str())
+                                .map(|s| SharedString::from(s.to_string()))
+                        });
+                    }
+                    focused_view_id = Some(view_id);
+                }
+            }
+
+            (view_data, right_borders, focused_file_name, focused_view_id)
+        };
+        // Important: core_read is dropped here
+
+        // Update the focused file name and view ID
+        focused_file_name = focused_file_name_result;
+        if let Some(fv_id) = focused_view_id_result {
+            self.focused_view_id = Some(fv_id);
+        }
 
         // Track which views have right borders (split layout detection)
-        let mut right_borders = HashSet::new();
+        let right_borders = right_borders_set;
 
         // Update or create document views for all active views
-        for (view, is_focused) in editor.tree.views() {
+        for (view, is_focused) in view_data {
             let view_id = view.id;
             view_ids.insert(view_id);
-
-            // Check if this view has a right border (part of split layout)
-            if editor
-                .tree
-                .find_split_in_direction(view_id, helix_view::tree::Direction::Right)
-                .is_some()
-            {
-                right_borders.insert(view_id);
-            }
-
-            // Get filename for focused view
-            if is_focused {
-                if let Some(doc) = editor.document(view.doc) {
-                    focused_file_name = doc.path().and_then(|p| {
-                        p.file_name()
-                            .and_then(|name| name.to_str())
-                            .map(SharedString::from)
-                    });
-                }
-                self.focused_view_id = Some(view_id);
-            }
 
             // Update existing view or create new one
             if let Some(view_entity) = self.documents.get(&view_id) {
@@ -142,7 +172,7 @@ impl ViewManager {
                         font_family: gpui::SharedString::from("Monaco"),
                         font_fallbacks: Default::default(),
                         font_features: Default::default(),
-                        font_size: gpui::px(14.0),
+                        font_size: gpui::AbsoluteLength::Pixels(gpui::px(14.0)),
                         font_weight: Default::default(),
                         font_style: Default::default(),
                         line_height: Default::default(),
@@ -152,6 +182,7 @@ impl ViewManager {
                         strikethrough: Default::default(),
                         white_space: Default::default(),
                         text_align: Default::default(),
+                        text_overflow: Default::default(),
                     };
                     DocumentView::new(
                         core.clone(),
@@ -186,7 +217,7 @@ impl ViewManager {
 
     /// Focus the editor area by focusing the active document view
     #[instrument(skip(self, cx, window))]
-    pub fn focus_editor_area(&mut self, cx: &mut Context<Workspace>, window: &Window) {
+    pub fn focus_editor_area(&mut self, cx: &mut Context<Workspace>, window: &mut Window) {
         debug!("Focusing editor area");
 
         // Find the currently active document view and focus it

@@ -218,6 +218,7 @@ edition = "2021"
             health_check_interval: Duration::from_millis(100),
             startup_timeout: Duration::from_millis(500),
             max_concurrent_startups: 10,
+            project_markers: nucleotide_types::ProjectMarkersConfig::default(),
         };
 
         let manager = ProjectLspManager::new(lsp_config, None);
@@ -321,6 +322,7 @@ edition = "2021"
             health_check_interval: Duration::from_millis(10), // Very frequent
             startup_timeout: Duration::from_millis(100),
             max_concurrent_startups: 5,
+            project_markers: nucleotide_types::ProjectMarkersConfig::default(),
         };
 
         let manager = ProjectLspManager::new(lsp_config, None);
@@ -401,6 +403,7 @@ edition = "2021"
             health_check_interval: Duration::from_millis(100),
             startup_timeout: Duration::from_millis(50), // Very short timeout
             max_concurrent_startups: 3,
+            project_markers: nucleotide_types::ProjectMarkersConfig::default(),
         };
 
         let manager = ProjectLspManager::new(lsp_config, None);
