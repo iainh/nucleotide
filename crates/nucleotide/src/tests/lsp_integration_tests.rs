@@ -207,7 +207,8 @@ async fn test_helix_lsp_bridge_creation() {
 
 #[tokio::test]
 async fn test_project_type_detection() {
-    let detector = nucleotide_lsp::ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
+    let detector =
+        nucleotide_lsp::ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
 
     // Test language ID mapping (which is public)
     assert_eq!(detector.get_primary_language_id(&ProjectType::Rust), "rust");
@@ -237,7 +238,8 @@ async fn test_project_type_detection() {
 
 #[tokio::test]
 async fn test_language_id_mapping() {
-    let detector = nucleotide_lsp::ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
+    let detector =
+        nucleotide_lsp::ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
 
     assert_eq!(detector.get_primary_language_id(&ProjectType::Rust), "rust");
     assert_eq!(

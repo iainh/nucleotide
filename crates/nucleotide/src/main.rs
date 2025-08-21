@@ -132,6 +132,16 @@ fn _early_runtime_init() {
             }
         }
     }
+
+    // Set RUST_LOG to info level for bundled app to show our debugging messages
+    // Only set if not already configured by user
+    if std::env::var("RUST_LOG").is_err() {
+        // SAFETY: Setting RUST_LOG environment variable during startup
+        // before any threads are spawned is safe.
+        unsafe {
+            std::env::set_var("RUST_LOG", "info");
+        }
+    }
 }
 
 /// Determine the optimal workspace root directory for LSP servers
@@ -952,6 +962,12 @@ fn gui_main(
 
                 workspace
             });
+
+            // Initialize ProjectLspManager for project detection and proactive LSP startup
+            // This must be done after workspace creation to ensure proper initialization
+            // NOTE: We cannot do this asynchronously here due to GPUI context limitations,
+            // so we'll trigger it in the Application itself during startup
+            nucleotide_logging::info!("Workspace created - ProjectLspManager will be initialized automatically");
 
             // Spawn a task to handle file open requests from macOS
             let workspace_clone = workspace.clone();

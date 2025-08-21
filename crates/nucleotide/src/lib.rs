@@ -18,6 +18,9 @@ pub mod lsp_manager;
 pub mod overlay;
 pub mod project_indicator;
 pub mod project_status_service;
+pub mod shell_env;
+#[cfg(test)]
+pub mod shell_env_focused_test;
 pub mod statusline;
 pub mod tab;
 pub mod tab_bar;

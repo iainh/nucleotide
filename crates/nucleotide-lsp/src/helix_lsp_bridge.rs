@@ -1,28 +1,66 @@
 // ABOUTME: Bridge between ProjectLspManager and Helix's LSP Registry system
 // ABOUTME: Provides seamless integration without breaking existing LSP infrastructure
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
 
 use helix_lsp::LanguageServerId;
 use helix_view::Editor;
 use nucleotide_events::{ProjectLspEvent, ServerStartupResult};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use serde_json::Value as JsonValue;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 use crate::{ProjectLspError, ProjectLspManager};
+
+// Define a dyn-compatible trait for environment providers using boxed futures
+pub trait EnvironmentProvider: Send + Sync {
+    /// Get environment variables for LSP servers in the given directory
+    fn get_lsp_environment(
+        &self,
+        directory: &std::path::Path,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        std::collections::HashMap<String, String>,
+                        Box<dyn std::error::Error + Send + Sync>,
+                    >,
+                > + Send
+                + '_,
+        >,
+    >;
+}
 
 /// Bridge between ProjectLspManager and Helix's LSP system
 #[derive(Clone)]
 pub struct HelixLspBridge {
     /// Event sender for project events
-    project_event_tx: mpsc::UnboundedSender<ProjectLspEvent>,
+    project_event_tx: broadcast::Sender<ProjectLspEvent>,
+    /// Environment provider for LSP server startup
+    environment_provider: Option<Arc<dyn EnvironmentProvider>>,
 }
 
 impl HelixLspBridge {
-    /// Create a new bridge
-    pub fn new(project_event_tx: mpsc::UnboundedSender<ProjectLspEvent>) -> Self {
-        Self { project_event_tx }
+    /// Create a new bridge without environment provider (legacy)
+    pub fn new(project_event_tx: broadcast::Sender<ProjectLspEvent>) -> Self {
+        Self {
+            project_event_tx,
+            environment_provider: None,
+        }
+    }
+
+    /// Create a new bridge with environment provider for dynamic environment injection
+    pub fn new_with_environment(
+        project_event_tx: broadcast::Sender<ProjectLspEvent>,
+        environment_provider: Arc<dyn EnvironmentProvider>,
+    ) -> Self {
+        Self {
+            project_event_tx,
+            environment_provider: Some(environment_provider),
+        }
     }
 
     /// Start a language server through Helix's registry
@@ -125,17 +163,110 @@ impl HelixLspBridge {
                 ))
             })?;
 
+        // Inject environment variables if environment provider is available
+        let mut original_env_vars = Vec::new();
+
+        if let Some(ref env_provider) = self.environment_provider {
+            debug!("Injecting environment variables for LSP server startup");
+
+            match env_provider.get_lsp_environment(workspace_root).await {
+                Ok(project_env) => {
+                    info!(
+                        env_count = project_env.len(),
+                        workspace_root = %workspace_root.display(),
+                        "Successfully retrieved project environment for LSP server"
+                    );
+
+                    // TEMPORARY SOLUTION: Set environment variables in the current process
+                    // This works because Helix will inherit the environment when starting servers
+                    // TODO: This is not ideal as it affects the entire process, but it's a working solution
+                    for (key, value) in &project_env {
+                        // Store original value for restoration
+                        let original = std::env::var(key).ok();
+                        original_env_vars.push((key.clone(), original));
+
+                        // Set the new environment variable
+                        // SAFETY: This is safe because we're setting environment variables
+                        // in a single-threaded context during server startup
+                        unsafe {
+                            std::env::set_var(key, value);
+                        }
+
+                        // Log key variables for debugging
+                        if key == "PATH" || key == "CARGO_HOME" || key == "RUSTC" || key == "CARGO"
+                        {
+                            debug!(key = %key, value = %value, "Set environment variable for LSP server");
+                        }
+                    }
+
+                    info!(
+                        "Temporarily set {} environment variables for LSP server startup",
+                        project_env.len()
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        workspace_root = %workspace_root.display(),
+                        "Failed to get project environment, using default"
+                    );
+                }
+            }
+        } else {
+            debug!("No environment provider configured, using default environment");
+        }
+
         // Create root directories for server startup
         let root_dirs = vec![workspace_root.clone()];
 
         // Get language servers for this configuration
         // This integrates with the existing Helix LSP infrastructure
-        let mut servers = editor.language_servers.get(
-            language_config,
-            Some(workspace_root),
-            &root_dirs,
-            true, // enable_snippets
+        // The environment variables we just set will be inherited by the server process
+        //
+        // NOTE: This call can potentially hang if the server binary is not found
+        // The outer timeout in handle_start_server_command should catch this
+        info!(
+            server_name = %server_name,
+            language_id = %language_id,
+            workspace_root = %workspace_root.display(),
+            "Starting language server lookup through Helix registry"
         );
+
+        let mut servers: Vec<_> = editor
+            .language_servers
+            .get(
+                language_config,
+                Some(workspace_root),
+                &root_dirs,
+                true, // enable_snippets
+            )
+            .collect();
+
+        let server_count = servers.len();
+        info!(
+            server_count = server_count,
+            "Language server lookup completed"
+        );
+
+        // Restore original environment variables after server startup
+        for (key, original_value) in original_env_vars {
+            match original_value {
+                Some(value) => {
+                    // SAFETY: This is safe because we're restoring environment variables
+                    // in a single-threaded context after server startup
+                    unsafe {
+                        std::env::set_var(&key, &value);
+                    }
+                }
+                None => {
+                    // SAFETY: This is safe because we're removing environment variables
+                    // in a single-threaded context after server startup
+                    unsafe {
+                        std::env::remove_var(&key);
+                    }
+                }
+            }
+        }
 
         // Find the server with matching name
         for (name, result) in &mut servers {
@@ -276,7 +407,7 @@ pub trait EditorLspIntegration {
 #[derive(Clone)]
 pub struct MockHelixLspBridge {
     /// Event sender for project events
-    project_event_tx: mpsc::UnboundedSender<ProjectLspEvent>,
+    project_event_tx: broadcast::Sender<ProjectLspEvent>,
     /// Predefined responses for testing
     pub should_fail: bool,
     pub mock_server_id: Option<LanguageServerId>,
@@ -285,7 +416,7 @@ pub struct MockHelixLspBridge {
 #[cfg(test)]
 impl MockHelixLspBridge {
     /// Create a new mock bridge
-    pub fn new(project_event_tx: mpsc::UnboundedSender<ProjectLspEvent>) -> Self {
+    pub fn new(project_event_tx: broadcast::Sender<ProjectLspEvent>) -> Self {
         Self {
             project_event_tx,
             should_fail: false,
@@ -294,7 +425,7 @@ impl MockHelixLspBridge {
     }
 
     /// Create a mock bridge that will fail server startup
-    pub fn new_failing(project_event_tx: mpsc::UnboundedSender<ProjectLspEvent>) -> Self {
+    pub fn new_failing(project_event_tx: broadcast::Sender<ProjectLspEvent>) -> Self {
         Self {
             project_event_tx,
             should_fail: true,

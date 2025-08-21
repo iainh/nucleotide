@@ -116,7 +116,9 @@ mod directory_shell_tests {
         let project_env = ProjectEnvironment::new(None);
         let temp_dir = create_test_dir();
 
-        let result = project_env.get_environment_for_directory(temp_dir.path()).await;
+        let result = project_env
+            .get_environment_for_directory(temp_dir.path())
+            .await;
 
         // This will initially fail - no directory shell capture implemented
         assert!(result.is_ok());
@@ -307,7 +309,7 @@ mod priority_system_tests {
         if let Ok(env) = result {
             // Process variables should be preserved in directory environment
             assert_eq!(env.get("TEST_OVERRIDE"), Some(&"process_value".to_string()));
-            
+
             // TODO: When we implement actual direnv/asdf integration, directory-specific
             // environment files could override process variables. For now, verify that
             // process environment is properly merged with directory shell environment.
@@ -464,7 +466,7 @@ mod direnv_integration_tests {
                 // If DIRENV_DIR exists, it should point to a valid directory
                 assert!(!env.get("DIRENV_DIR").unwrap().is_empty());
             }
-            
+
             // TODO: Set up actual .envrc file in test directory to test real direnv integration
             // For now, verify basic shell environment capture is working
         }

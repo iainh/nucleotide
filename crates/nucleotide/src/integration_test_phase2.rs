@@ -134,7 +134,8 @@ async fn test_event_driven_command_pattern_end_to_end() {
         std::sync::Arc::new(tokio::sync::RwLock::new(Some(project_lsp_command_rx)));
 
     // Note: Simplified test without actual LSP bridge
-    let (_event_tx, _event_rx): (_, tokio::sync::mpsc::UnboundedReceiver<String>) = tokio::sync::mpsc::unbounded_channel();
+    let (_event_tx, _event_rx): (_, tokio::sync::mpsc::UnboundedReceiver<String>) =
+        tokio::sync::mpsc::unbounded_channel();
 
     // Simulate Application command processor (simplified)
     let processor_handle = {

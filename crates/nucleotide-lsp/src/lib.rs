@@ -21,7 +21,7 @@ pub mod stress_tests;
 pub mod command_flow_test;
 
 pub use document_manager::{DocumentManager, DocumentManagerMut};
-pub use helix_lsp_bridge::{EditorLspIntegration, HelixLspBridge};
+pub use helix_lsp_bridge::{EditorLspIntegration, EnvironmentProvider, HelixLspBridge};
 pub use lsp_manager::LspManager;
 pub use lsp_state::{LspProgress, LspState, ServerStatus};
 pub use lsp_status::LspStatus;

@@ -479,6 +479,13 @@ impl Workspace {
         // Check if this is a project root change
         let is_project_change = self.current_project_root.as_ref() != Some(&dir);
 
+        debug!(
+            current_root = ?self.current_project_root,
+            new_dir = %dir.display(),
+            is_change = is_project_change,
+            "Evaluating project directory change"
+        );
+
         self.core.update(cx, |core, _cx| {
             core.project_directory = Some(dir.clone());
         });
@@ -504,61 +511,197 @@ impl Workspace {
             // Update current project root tracking
             self.current_project_root = Some(dir.clone());
 
-            // Initialize ProjectLspManager if not already present
-            if self.project_lsp_manager.is_none() {
-                info!("Initializing ProjectLspManager for new project directory");
-                // Get configuration from the core
-                let core_config = self.core.read(cx).config.clone();
-                let config = nucleotide_lsp::ProjectLspConfig {
-                    enable_proactive_startup: core_config.is_project_lsp_startup_enabled(),
-                    health_check_interval: std::time::Duration::from_secs(30),
-                    startup_timeout: std::time::Duration::from_millis(
-                        core_config.lsp_startup_timeout_ms(),
-                    ),
-                    max_concurrent_startups: 3,
-                    project_markers: core_config.project_markers().clone(),
-                };
-                // Get LSP command sender from Application for event-driven command pattern
-                let lsp_command_sender = self.core.read(cx).get_project_lsp_command_sender();
-
-                let manager = Arc::new(nucleotide_lsp::ProjectLspManager::new(
-                    config,
-                    lsp_command_sender,
-                ));
-
-                // 🔥 CRITICAL FIX: Set up HelixLspBridge for the ProjectLspManager
-                let event_sender = manager.get_event_sender();
-                let helix_bridge = nucleotide_lsp::HelixLspBridge::new(event_sender);
-
-                // Connect the bridge to the manager
-                let manager_for_bridge = manager.clone();
-                let bridge_clone = helix_bridge.clone();
+            // Shutdown existing ProjectLspManager if present (workspace root changed)
+            if let Some(existing_manager) = self.project_lsp_manager.take() {
+                info!("Shutting down existing ProjectLspManager due to workspace change");
                 let runtime_handle = self.handle.clone();
-                runtime_handle.spawn(async move {
-                    info!("Workspace: Setting Helix bridge on ProjectLspManager");
-                    manager_for_bridge
-                        .set_helix_bridge(Arc::new(bridge_clone))
-                        .await;
-                    info!("Workspace: Successfully set Helix bridge on ProjectLspManager");
-                });
 
-                // Start the manager
-                let manager_clone = manager.clone();
-                let runtime_handle = self.handle.clone();
-                runtime_handle.spawn(async move {
-                    if let Err(e) = manager_clone.start().await {
-                        error!(error = %e, "Failed to start ProjectLspManager");
+                // Wait for shutdown to complete before proceeding
+                let shutdown_complete = runtime_handle.block_on(async move {
+                    match existing_manager.stop().await {
+                        Ok(()) => {
+                            info!("Successfully stopped existing ProjectLspManager");
+                            true
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to stop existing ProjectLspManager");
+                            false
+                        }
                     }
                 });
 
-                self.project_lsp_manager = Some(manager);
+                if !shutdown_complete {
+                    warn!(
+                        "Previous ProjectLspManager shutdown failed, proceeding with new manager anyway"
+                    );
+                }
             }
+
+            // Create new ProjectLspManager for the new workspace root
+            info!("Creating new ProjectLspManager for new project directory");
+            // Get configuration from the core
+            let core_config = self.core.read(cx).config.clone();
+            let config = nucleotide_lsp::ProjectLspConfig {
+                enable_proactive_startup: core_config.is_project_lsp_startup_enabled(),
+                health_check_interval: std::time::Duration::from_secs(30),
+                startup_timeout: std::time::Duration::from_millis(
+                    core_config.lsp_startup_timeout_ms(),
+                ),
+                max_concurrent_startups: 3,
+                project_markers: core_config.project_markers().clone(),
+            };
+            // Get LSP command sender from Application for event-driven command pattern
+            let lsp_command_sender = self.core.read(cx).get_project_lsp_command_sender();
+
+            let manager = Arc::new(nucleotide_lsp::ProjectLspManager::new(
+                config,
+                lsp_command_sender,
+            ));
+
+            // 🔥 CRITICAL FIX: Set up HelixLspBridge for the ProjectLspManager
+            let event_sender = manager.get_event_sender();
+            let helix_bridge = nucleotide_lsp::HelixLspBridge::new(event_sender);
+
+            // Connect the bridge to the manager
+            let manager_for_bridge = manager.clone();
+            let bridge_clone = helix_bridge.clone();
+            let runtime_handle = self.handle.clone();
+            runtime_handle.spawn(async move {
+                info!("Workspace: Setting Helix bridge on ProjectLspManager");
+                manager_for_bridge
+                    .set_helix_bridge(Arc::new(bridge_clone))
+                    .await;
+                info!("Workspace: Successfully set Helix bridge on ProjectLspManager");
+            });
+
+            // Start the manager
+            let manager_clone = manager.clone();
+            let runtime_handle = self.handle.clone();
+            runtime_handle.spawn(async move {
+                if let Err(e) = manager_clone.start().await {
+                    error!(error = %e, "Failed to start ProjectLspManager");
+                }
+            });
+
+            self.project_lsp_manager = Some(manager);
+
+            // ⚡ CRITICAL: Restart LSP servers with new workspace root
+            self.restart_lsp_servers_for_workspace_change(&dir, cx);
 
             // Trigger project detection and LSP coordination
             self.trigger_project_detection_and_lsp_startup(dir, cx);
 
             // Refresh UI indicators
             self.refresh_project_indicators(cx);
+        }
+    }
+
+    /// Restart LSP servers with new workspace root when project directory changes
+    #[instrument(skip(self, cx))]
+    fn restart_lsp_servers_for_workspace_change(
+        &mut self,
+        new_project_root: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) {
+        info!(
+            new_project_root = %new_project_root.display(),
+            "Restarting LSP servers for workspace change"
+        );
+
+        // Get the old project root from the workspace state
+        let old_project_root = self.current_project_root.clone();
+
+        // Get the LSP command sender from the Application
+        let lsp_command_sender = self.core.read(cx).get_project_lsp_command_sender();
+
+        if let Some(sender) = lsp_command_sender {
+            info!(
+                old_project_root = ?old_project_root.as_ref().map(|p| p.display()),
+                new_project_root = %new_project_root.display(),
+                "Sending RestartServersForWorkspaceChange command to Application"
+            );
+
+            // Create the command with a span for tracing
+            let span = tracing::info_span!("workspace_lsp_restart",
+                old_workspace = ?old_project_root.as_ref().map(|p| p.display()),
+                new_workspace = %new_project_root.display()
+            );
+
+            // Create response channel
+            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+            // Send the command using the event-driven pattern
+            let command = nucleotide_events::ProjectLspCommand::RestartServersForWorkspaceChange {
+                old_workspace_root: old_project_root,
+                new_workspace_root: new_project_root.to_path_buf(),
+                response: response_tx,
+                span,
+            };
+
+            if let Err(e) = sender.send(command) {
+                error!(
+                    error = %e,
+                    new_project_root = %new_project_root.display(),
+                    "Failed to send RestartServersForWorkspaceChange command"
+                );
+                return;
+            }
+
+            // Spawn a task to handle the response asynchronously using the runtime handle
+            let new_project_root_display = new_project_root.display().to_string();
+            self.handle.spawn(async move {
+                // Add a timeout to prevent indefinite waiting
+                let timeout_duration = tokio::time::Duration::from_secs(30); // 30 second timeout for LSP operations
+                match tokio::time::timeout(timeout_duration, response_rx).await {
+                    Ok(response_result) => match response_result {
+                        Ok(Ok(results)) => {
+                            info!(
+                                restart_count = results.len(),
+                                new_project_root = %new_project_root_display,
+                                "LSP server restart completed successfully"
+                            );
+                            for result in results {
+                                info!(
+                                    server_name = %result.server_name,
+                                    language_id = %result.language_id,
+                                    server_id = ?result.server_id,
+                                    "Server restarted successfully"
+                                );
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            error!(
+                                error = %e,
+                                new_project_root = %new_project_root_display,
+                                "LSP server restart failed"
+                            );
+                        }
+                        Err(_) => {
+                            warn!(
+                                new_project_root = %new_project_root_display,
+                                "RestartServersForWorkspaceChange response channel was dropped"
+                            );
+                        }
+                    }
+                    Err(_timeout) => {
+                        error!(
+                            new_project_root = %new_project_root_display,
+                            timeout_seconds = 30,
+                            "LSP server restart timed out - this may indicate environment capture is taking too long"
+                        );
+                    }
+                }
+            });
+
+            info!(
+                new_project_root = %new_project_root.display(),
+                "RestartServersForWorkspaceChange command sent successfully"
+            );
+        } else {
+            warn!(
+                new_project_root = %new_project_root.display(),
+                "No LSP command sender available - cannot restart LSP servers"
+            );
         }
     }
 

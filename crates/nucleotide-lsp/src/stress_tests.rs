@@ -750,11 +750,14 @@ edition = "2021"
         let helper = StressTestHelper::new();
         let _ = helper.cleanup().await;
 
-        let manager = ProjectLspManager::new(ProjectLspConfig {
-            max_concurrent_startups: 5,
-            startup_timeout: Duration::from_millis(200),
-            ..Default::default()
-        }, None);
+        let manager = ProjectLspManager::new(
+            ProjectLspConfig {
+                max_concurrent_startups: 5,
+                startup_timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
+            None,
+        );
 
         manager.start().await.expect("Manager should start");
 

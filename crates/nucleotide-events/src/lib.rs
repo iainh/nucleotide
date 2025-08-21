@@ -15,9 +15,9 @@ pub use completion_events::*;
 pub use core_events::*;
 pub use event_bus::{EventBus, EventHandler};
 pub use lsp_events::{
-    LspEvent, ProjectLspEvent, ProjectType, ServerHealthStatus, ServerStartupResult,
-    ProjectLspCommand, ProjectLspCommandError, ProjectDetectionResult, ServerStartResult,
-    ProjectStatus, ActiveServerInfo, ProjectHealthStatus
+    ActiveServerInfo, LspEvent, ProjectDetectionResult, ProjectHealthStatus, ProjectLspCommand,
+    ProjectLspCommandError, ProjectLspEvent, ProjectStatus, ProjectType, ServerHealthStatus,
+    ServerStartResult, ServerStartupResult,
 };
 pub use ui_events::*;
 pub use workspace_events::*;

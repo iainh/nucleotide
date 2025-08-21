@@ -4531,6 +4531,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "slotmap",
  "smallvec",
  "sum_tree",
  "tempfile",
@@ -4668,6 +4669,7 @@ dependencies = [
  "gpui 0.1.0 (git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7)",
  "helix-core",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

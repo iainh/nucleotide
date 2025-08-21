@@ -4,10 +4,11 @@
 #[cfg(test)]
 mod tests {
     use crate::config::{
-        Config, EditorGuiConfig, GuiConfig, ThemeConfig, ThemeMode, UiConfig, WindowConfig,
+        Config, EditorGuiConfig, GuiConfig, LspConfig, ThemeConfig, ThemeMode, UiConfig,
+        WindowConfig,
     };
     use helix_term::config::Config as HelixConfig;
-    use nucleotide_types::{FontConfig, FontWeight};
+    use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;

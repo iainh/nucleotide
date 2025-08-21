@@ -63,9 +63,7 @@ pub enum ProjectLspEvent {
     },
 
     /// Project cleanup requested
-    ProjectCleanupRequested {
-        workspace_root: PathBuf,
-    },
+    ProjectCleanupRequested { workspace_root: PathBuf },
 
     /// Server cleanup completed  
     ServerCleanupCompleted {
@@ -133,6 +131,14 @@ pub enum ProjectLspCommand {
         span: Span,
     },
 
+    /// Restart LSP servers for workspace directory change
+    RestartServersForWorkspaceChange {
+        old_workspace_root: Option<PathBuf>,
+        new_workspace_root: PathBuf,
+        response: oneshot::Sender<Result<Vec<ServerStartResult>, ProjectLspCommandError>>,
+        span: Span,
+    },
+
     /// Get project status
     GetProjectStatus {
         workspace_root: PathBuf,
@@ -192,7 +198,7 @@ pub enum ProjectHealthStatus {
 }
 
 /// Command execution errors
-#[derive(Debug, Clone, thiserror::Error)]  
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ProjectLspCommandError {
     #[error("Project detection failed: {0}")]
     ProjectDetection(String),

@@ -88,15 +88,15 @@ impl ProjectEnvironment {
         // Priority 1: CLI environment has highest priority but merges with process environment
         if let Some(cli_env) = &self.cli_environment {
             debug!("Using CLI environment (highest priority)");
-            
+
             // Start with process environment, then let CLI override
             let mut combined_env: HashMap<String, String> = std::env::vars().collect();
-            
+
             // CLI environment takes precedence over process environment
             for (key, value) in cli_env {
                 combined_env.insert(key.clone(), value.clone());
             }
-            
+
             return Ok(combined_env);
         }
 
@@ -160,8 +160,8 @@ impl ProjectEnvironment {
             tokio_command.current_dir(dir);
         }
 
-        // Execute with timeout
-        let result = timeout(Duration::from_secs(10), tokio_command.output()).await;
+        // Execute with timeout - use 2 seconds to ensure we timeout before caller's 3-second limit
+        let result = timeout(Duration::from_secs(2), tokio_command.output()).await;
 
         match result {
             Ok(Ok(output)) => {
@@ -170,14 +170,15 @@ impl ProjectEnvironment {
 
                     // Start with process environment as base, then let directory shell override
                     let mut combined_env: HashMap<String, String> = std::env::vars().collect();
-                    
+
                     // Directory shell environment takes precedence over process environment
                     for (key, value) in directory_env {
                         combined_env.insert(key, value);
                     }
 
                     // Add origin marker for directory shell environment
-                    combined_env.insert("ZED_ENVIRONMENT".to_string(), "worktree-shell".to_string());
+                    combined_env
+                        .insert("ZED_ENVIRONMENT".to_string(), "worktree-shell".to_string());
 
                     // Cache successful result
                     let cached_env = CachedEnvironment {
@@ -223,7 +224,7 @@ impl ProjectEnvironment {
                 Err(error)
             }
             Err(_timeout_error) => {
-                let error = ShellEnvironmentError::Timeout(10);
+                let error = ShellEnvironmentError::Timeout(2);
                 warn!(directory = %directory.display(), "Shell environment capture timed out");
 
                 // Cache timeout error
@@ -271,7 +272,6 @@ impl ProjectEnvironment {
         let cache = self.directory_environments.read().await;
         cache.keys().cloned().collect()
     }
-
 
     /// Invalidate cache for specific directory
     pub async fn invalidate_directory_cache(&self, directory: &Path) {
