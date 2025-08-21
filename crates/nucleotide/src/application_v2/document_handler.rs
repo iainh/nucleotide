@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use nucleotide_events::handler::{EventHandler, HandlerError};
 use nucleotide_events::v2::document::Event as DocumentEvent;
-use nucleotide_logging::{debug, info, warn, instrument, error};
+use nucleotide_logging::{debug, error, info, instrument, warn};
 
 use helix_view::DocumentId;
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 pub struct DocumentHandler {
     /// Cache of document metadata for quick access
     document_metadata: HashMap<DocumentId, DocumentMetadata>,
-    
+
     /// Flag to track if handler is initialized
     initialized: bool,
 }
@@ -223,19 +223,33 @@ impl EventHandler<DocumentEvent> for DocumentHandler {
         }
 
         match event {
-            DocumentEvent::ContentChanged { doc_id, revision, change_summary } => {
-                self.handle_content_changed(doc_id, revision, change_summary).await
+            DocumentEvent::ContentChanged {
+                doc_id,
+                revision,
+                change_summary,
+            } => {
+                self.handle_content_changed(doc_id, revision, change_summary)
+                    .await
             }
-            DocumentEvent::Opened { doc_id, path, language_id } => {
-                self.handle_opened(doc_id, path, language_id).await
-            }
-            DocumentEvent::Closed { doc_id, was_modified } => {
-                self.handle_closed(doc_id, was_modified).await
-            }
-            DocumentEvent::Saved { doc_id, path, revision } => {
-                self.handle_saved(doc_id, path, revision).await
-            }
-            DocumentEvent::SaveFailed { doc_id, path, error } => {
+            DocumentEvent::Opened {
+                doc_id,
+                path,
+                language_id,
+            } => self.handle_opened(doc_id, path, language_id).await,
+            DocumentEvent::Closed {
+                doc_id,
+                was_modified,
+            } => self.handle_closed(doc_id, was_modified).await,
+            DocumentEvent::Saved {
+                doc_id,
+                path,
+                revision,
+            } => self.handle_saved(doc_id, path, revision).await,
+            DocumentEvent::SaveFailed {
+                doc_id,
+                path,
+                error,
+            } => {
                 warn!(
                     doc_id = ?doc_id,
                     path = %path.display(),
@@ -245,22 +259,30 @@ impl EventHandler<DocumentEvent> for DocumentHandler {
                 // TODO: Emit UI event to show save failure
                 Ok(())
             }
-            DocumentEvent::LanguageDetected { doc_id, language_id } => {
+            DocumentEvent::LanguageDetected {
+                doc_id,
+                language_id,
+            } => {
                 debug!(
                     doc_id = ?doc_id,
                     language_id = ?language_id,
                     "Language detected for document"
                 );
-                
+
                 // Update metadata cache
                 if let Some(metadata) = self.document_metadata.get_mut(&doc_id) {
                     metadata.language_id = Some(language_id.clone());
                 }
-                
+
                 // TODO: Emit integration event for LSP server association
                 Ok(())
             }
-            DocumentEvent::DiagnosticsUpdated { doc_id, diagnostic_count, error_count, warning_count } => {
+            DocumentEvent::DiagnosticsUpdated {
+                doc_id,
+                diagnostic_count,
+                error_count,
+                warning_count,
+            } => {
                 debug!(
                     doc_id = ?doc_id,
                     diagnostic_count = diagnostic_count,
@@ -284,15 +306,15 @@ impl Default for DocumentHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nucleotide_events::v2::document::{Event as DocumentEvent, ChangeType};
     use helix_view::DocumentId;
+    use nucleotide_events::v2::document::{ChangeType, Event as DocumentEvent};
     use std::path::PathBuf;
 
     #[tokio::test]
     async fn test_document_handler_initialization() {
         let mut handler = DocumentHandler::new();
         assert!(!handler.initialized);
-        
+
         handler.initialize().unwrap();
         assert!(handler.initialized);
     }
@@ -301,7 +323,7 @@ mod tests {
     async fn test_document_opened_event() {
         let mut handler = DocumentHandler::new();
         handler.initialize().unwrap();
-        
+
         let doc_id = DocumentId::default();
         let path = PathBuf::from("/test/file.rs");
         let event = DocumentEvent::Opened {
@@ -309,9 +331,9 @@ mod tests {
             path: path.clone(),
             language_id: Some("rust".to_string()),
         };
-        
+
         handler.handle(event).await.unwrap();
-        
+
         let metadata = handler.get_metadata(&doc_id).unwrap();
         assert_eq!(metadata.path, Some(path));
         assert_eq!(metadata.language_id, Some("rust".to_string()));
@@ -321,16 +343,16 @@ mod tests {
     async fn test_document_content_changed_event() {
         let mut handler = DocumentHandler::new();
         handler.initialize().unwrap();
-        
+
         let doc_id = DocumentId::default();
         let event = DocumentEvent::ContentChanged {
             doc_id,
             revision: 1,
             change_summary: ChangeType::Edit,
         };
-        
+
         handler.handle(event).await.unwrap();
-        
+
         let metadata = handler.get_metadata(&doc_id).unwrap();
         assert_eq!(metadata.revision, 1);
         assert!(metadata.is_modified);
@@ -340,9 +362,9 @@ mod tests {
     async fn test_document_closed_event() {
         let mut handler = DocumentHandler::new();
         handler.initialize().unwrap();
-        
+
         let doc_id = DocumentId::default();
-        
+
         // First open the document
         let open_event = DocumentEvent::Opened {
             doc_id,
@@ -350,17 +372,17 @@ mod tests {
             language_id: Some("rust".to_string()),
         };
         handler.handle(open_event).await.unwrap();
-        
+
         // Verify it exists
         assert!(handler.get_metadata(&doc_id).is_some());
-        
+
         // Close the document
         let close_event = DocumentEvent::Closed {
             doc_id,
             was_modified: false,
         };
         handler.handle(close_event).await.unwrap();
-        
+
         // Verify it was removed
         assert!(handler.get_metadata(&doc_id).is_none());
     }
@@ -374,7 +396,7 @@ mod tests {
             revision: 1,
             change_summary: ChangeType::Edit,
         };
-        
+
         let result = handler.handle(event).await;
         assert!(matches!(result, Err(HandlerError::NotInitialized)));
     }

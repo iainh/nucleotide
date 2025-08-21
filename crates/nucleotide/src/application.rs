@@ -170,28 +170,134 @@ impl gpui::EventEmitter<()> for Crank {}
 impl Application {
     /// Process events through V2 event system domain handlers
     #[instrument(skip(self, bridged_event))]
-    async fn process_v2_event(&mut self, bridged_event: &event_bridge::BridgedEvent) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        use nucleotide_events::v2::document::Event as DocumentEvent;
+    async fn process_v2_event(
+        &mut self,
+        bridged_event: &event_bridge::BridgedEvent,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use nucleotide_events::v2::document::ChangeType;
+        use nucleotide_events::v2::document::Event as DocumentEvent;
         use nucleotide_events::v2::handler::EventHandler;
 
-        // For now, demonstrate V2 processing only for DocumentChanged events
+        // Process V2 events for all supported event types
         match bridged_event {
             event_bridge::BridgedEvent::DocumentChanged { doc_id } => {
-                // Create a V2 document event
+                // Extract actual document revision
+                let revision = if let Some(document) = self.editor.document_mut(*doc_id) {
+                    document.get_current_revision() as u64
+                } else {
+                    warn!(doc_id = ?doc_id, "Document not found when processing DocumentChanged event");
+                    0
+                };
+
+                // Create a V2 document event with actual revision
                 let v2_event = DocumentEvent::ContentChanged {
                     doc_id: *doc_id,
-                    revision: 0, // TODO: Extract actual revision
-                    change_summary: ChangeType::Insert,
+                    revision,
+                    change_summary: ChangeType::Insert, // TODO: Determine actual change type based on operation
                 };
-                
-                debug!(doc_id = ?doc_id, "Processing DocumentChanged through V2 handler");
-                self.document_handler.handle(v2_event).await
+
+                debug!(
+                    doc_id = ?doc_id, 
+                    revision = revision,
+                    "Processing DocumentChanged through V2 handler"
+                );
+                self.document_handler
+                    .handle(v2_event)
+                    .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
+            
+            event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
+                // TODO: Implement ViewHandler and process SelectionChanged events
+                debug!(
+                    doc_id = ?doc_id,
+                    view_id = ?view_id,
+                    "V2 processing for SelectionChanged - ViewHandler not yet implemented"
+                );
+            }
+            
+            event_bridge::BridgedEvent::ModeChanged { old_mode, new_mode } => {
+                // TODO: Implement EditorHandler and process ModeChanged events
+                debug!(
+                    old_mode = ?old_mode,
+                    new_mode = ?new_mode,
+                    "V2 processing for ModeChanged - EditorHandler not yet implemented"
+                );
+            }
+            
+            event_bridge::BridgedEvent::DocumentOpened { doc_id } => {
+                // Extract document information for enriched event
+                let (path, language_id) = if let Some(document) = self.editor.document(*doc_id) {
+                    let path = document.path().cloned().unwrap_or_else(|| std::path::PathBuf::from("untitled"));
+                    let language_id = document.language().map(|lang| lang.to_string());
+                    (path, language_id)
+                } else {
+                    (std::path::PathBuf::from("unknown"), None)
+                };
+
+                let v2_event = DocumentEvent::Opened {
+                    doc_id: *doc_id,
+                    path,
+                    language_id,
+                };
+
+                debug!(doc_id = ?doc_id, "Processing DocumentOpened through V2 handler");
+                self.document_handler
+                    .handle(v2_event)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            }
+            
+            event_bridge::BridgedEvent::DocumentClosed { doc_id } => {
+                // Note: By the time we get this event, the document might already be removed
+                // So we use placeholder data
+                let v2_event = DocumentEvent::Closed {
+                    doc_id: *doc_id,
+                    was_modified: false, // TODO: Track modification status before close
+                };
+
+                debug!(doc_id = ?doc_id, "Processing DocumentClosed through V2 handler");
+                self.document_handler
+                    .handle(v2_event)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            }
+            
+            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
+                // Extract diagnostic counts from the document
+                let (diagnostic_count, error_count, warning_count) = 
+                    if let Some(document) = self.editor.document(*doc_id) {
+                        let diagnostics = document.diagnostics();
+                        let total = diagnostics.len();
+                        let errors = diagnostics.iter().filter(|d| d.severity == Some(helix_lsp::lsp::DiagnosticSeverity::ERROR)).count();
+                        let warnings = diagnostics.iter().filter(|d| d.severity == Some(helix_lsp::lsp::DiagnosticSeverity::WARNING)).count();
+                        (total, errors, warnings)
+                    } else {
+                        (0, 0, 0)
+                    };
+
+                let v2_event = DocumentEvent::DiagnosticsUpdated {
+                    doc_id: *doc_id,
+                    diagnostic_count,
+                    error_count,
+                    warning_count,
+                };
+
+                debug!(
+                    doc_id = ?doc_id,
+                    diagnostic_count = diagnostic_count,
+                    "Processing DiagnosticsChanged through V2 handler"
+                );
+                self.document_handler
+                    .handle(v2_event)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            }
+
             _ => {
                 debug!(event = ?bridged_event, "V2 processing not yet implemented for this event type");
-                // TODO: Add processing for other event types as handlers are implemented
+                // Other events (ViewFocused, LanguageServer events, Completion) will be handled
+                // as we implement their respective handlers in future phases
             }
         }
 
@@ -3153,7 +3259,9 @@ pub fn init_editor(
         // V2 Event System Handlers
         document_handler: {
             let mut handler = crate::application_v2::DocumentHandler::new();
-            handler.initialize().expect("Failed to initialize DocumentHandler");
+            handler
+                .initialize()
+                .expect("Failed to initialize DocumentHandler");
             handler
         },
     })
