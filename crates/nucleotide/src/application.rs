@@ -141,6 +141,8 @@ pub struct Application {
     pub project_environment: Arc<ProjectEnvironment>,
     // V2 Event System Handlers
     pub document_handler: crate::application_v2::DocumentHandler,
+    pub view_handler: crate::application_v2::ViewHandler,
+    pub editor_handler: crate::application_v2::EditorHandler,
 }
 
 #[derive(Debug, Clone)]
@@ -197,7 +199,7 @@ impl Application {
                 };
 
                 debug!(
-                    doc_id = ?doc_id, 
+                    doc_id = ?doc_id,
                     revision = revision,
                     "Processing DocumentChanged through V2 handler"
                 );
@@ -206,29 +208,59 @@ impl Application {
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
-            
+
             event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
-                // TODO: Implement ViewHandler and process SelectionChanged events
+                // Extract actual selection from the view
+                let (selection, was_movement) = if let Some(view) = self.editor.tree.get(*view_id) {
+                    (view.doc_selection(*doc_id).clone(), true) // Assume movement for now
+                } else {
+                    warn!(view_id = ?view_id, "View not found when processing SelectionChanged event");
+                    (helix_core::Selection::point(0), false)
+                };
+
+                let v2_event = nucleotide_events::v2::view::Event::SelectionChanged {
+                    view_id: *view_id,
+                    doc_id: *doc_id,
+                    selection,
+                    was_movement,
+                };
+
                 debug!(
                     doc_id = ?doc_id,
                     view_id = ?view_id,
-                    "V2 processing for SelectionChanged - ViewHandler not yet implemented"
+                    "Processing SelectionChanged through V2 ViewHandler"
                 );
+                self.view_handler
+                    .handle(v2_event)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
-            
+
             event_bridge::BridgedEvent::ModeChanged { old_mode, new_mode } => {
-                // TODO: Implement EditorHandler and process ModeChanged events
+                let v2_event = nucleotide_events::v2::editor::Event::ModeChanged {
+                    previous_mode: *old_mode,
+                    new_mode: *new_mode,
+                    context: nucleotide_events::v2::editor::ModeChangeContext::UserAction,
+                };
+
                 debug!(
                     old_mode = ?old_mode,
                     new_mode = ?new_mode,
-                    "V2 processing for ModeChanged - EditorHandler not yet implemented"
+                    "Processing ModeChanged through V2 EditorHandler"
                 );
+                self.editor_handler
+                    .handle(v2_event)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
-            
+
             event_bridge::BridgedEvent::DocumentOpened { doc_id } => {
                 // Extract document information for enriched event
                 let (path, language_id) = if let Some(document) = self.editor.document(*doc_id) {
-                    let path = document.path().cloned().unwrap_or_else(|| std::path::PathBuf::from("untitled"));
+                    let path = document
+                        .path()
+                        .cloned()
+                        .unwrap_or_else(|| std::path::PathBuf::from("untitled"));
                     let language_id = document.language().map(|lang| lang.to_string());
                     (path, language_id)
                 } else {
@@ -247,7 +279,7 @@ impl Application {
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
-            
+
             event_bridge::BridgedEvent::DocumentClosed { doc_id } => {
                 // Note: By the time we get this event, the document might already be removed
                 // So we use placeholder data
@@ -262,19 +294,26 @@ impl Application {
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
-            
+
             event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
                 // Extract diagnostic counts from the document
-                let (diagnostic_count, error_count, warning_count) = 
-                    if let Some(document) = self.editor.document(*doc_id) {
-                        let diagnostics = document.diagnostics();
-                        let total = diagnostics.len();
-                        let errors = diagnostics.iter().filter(|d| d.severity == Some(helix_lsp::lsp::DiagnosticSeverity::ERROR)).count();
-                        let warnings = diagnostics.iter().filter(|d| d.severity == Some(helix_lsp::lsp::DiagnosticSeverity::WARNING)).count();
-                        (total, errors, warnings)
-                    } else {
-                        (0, 0, 0)
-                    };
+                let (diagnostic_count, error_count, warning_count) = if let Some(document) =
+                    self.editor.document(*doc_id)
+                {
+                    let diagnostics = document.diagnostics();
+                    let total = diagnostics.len();
+                    let errors = diagnostics
+                        .iter()
+                        .filter(|d| d.severity == Some(helix_lsp::lsp::DiagnosticSeverity::ERROR))
+                        .count();
+                    let warnings = diagnostics
+                        .iter()
+                        .filter(|d| d.severity == Some(helix_lsp::lsp::DiagnosticSeverity::WARNING))
+                        .count();
+                    (total, errors, warnings)
+                } else {
+                    (0, 0, 0)
+                };
 
                 let v2_event = DocumentEvent::DiagnosticsUpdated {
                     doc_id: *doc_id,
@@ -294,9 +333,37 @@ impl Application {
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
 
+            event_bridge::BridgedEvent::ViewFocused { view_id } => {
+                // Extract associated document ID from the view
+                let (doc_id, previous_view) = if let Some(view) = self.editor.tree.get(*view_id) {
+                    let doc_id = view.doc;
+                    let previous_view = self.view_handler.get_focused_view();
+                    (doc_id, previous_view)
+                } else {
+                    warn!(view_id = ?view_id, "View not found when processing ViewFocused event");
+                    (DocumentId::default(), None)
+                };
+
+                let v2_event = nucleotide_events::v2::view::Event::Focused {
+                    view_id: *view_id,
+                    doc_id,
+                    previous_view,
+                };
+
+                debug!(
+                    view_id = ?view_id,
+                    doc_id = ?doc_id,
+                    "Processing ViewFocused through V2 ViewHandler"
+                );
+                self.view_handler
+                    .handle(v2_event)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            }
+
             _ => {
                 debug!(event = ?bridged_event, "V2 processing not yet implemented for this event type");
-                // Other events (ViewFocused, LanguageServer events, Completion) will be handled
+                // Other events (LanguageServer events, Completion) will be handled
                 // as we implement their respective handlers in future phases
             }
         }
@@ -3262,6 +3329,20 @@ pub fn init_editor(
             handler
                 .initialize()
                 .expect("Failed to initialize DocumentHandler");
+            handler
+        },
+        view_handler: {
+            let mut handler = crate::application_v2::ViewHandler::new();
+            handler
+                .initialize()
+                .expect("Failed to initialize ViewHandler");
+            handler
+        },
+        editor_handler: {
+            let mut handler = crate::application_v2::EditorHandler::new();
+            handler
+                .initialize()
+                .expect("Failed to initialize EditorHandler");
             handler
         },
     })
