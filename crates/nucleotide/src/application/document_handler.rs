@@ -262,6 +262,7 @@ impl EventHandler<DocumentEvent> for DocumentHandler {
             DocumentEvent::LanguageDetected {
                 doc_id,
                 language_id,
+                previous_language,
             } => {
                 debug!(
                     doc_id = ?doc_id,

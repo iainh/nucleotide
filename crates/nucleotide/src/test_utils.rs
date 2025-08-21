@@ -53,8 +53,8 @@ pub mod test_support {
     #[derive(Debug, Clone)]
     pub enum CompletionTrigger {
         Character(char),
-        Invoked,
-        TriggerForIncompleteCompletions,
+        Manual,
+        Automatic,
     }
 
     /// Mock update counter for tracking how many updates are emitted
@@ -136,17 +136,21 @@ pub mod test_support {
                             nucleotide_core::CompletionTrigger::Character(c) => {
                                 CompletionTrigger::Character(c)
                             }
-                            nucleotide_core::CompletionTrigger::Manual => {
-                                CompletionTrigger::Invoked
-                            }
+                            nucleotide_core::CompletionTrigger::Manual => CompletionTrigger::Manual,
                             nucleotide_core::CompletionTrigger::Automatic => {
-                                CompletionTrigger::TriggerForIncompleteCompletions
+                                CompletionTrigger::Automatic
                             }
                         };
                         TestUpdate::CompletionRequested {
                             doc_id,
                             view_id,
                             trigger: test_trigger,
+                        }
+                    }
+                    BridgedEvent::LspServerStartupRequested { .. } => {
+                        // For testing, we can ignore LSP server startup events
+                        TestUpdate::DocumentChanged {
+                            doc_id: helix_view::DocumentId::default(),
                         }
                     }
                 };

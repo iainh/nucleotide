@@ -6,7 +6,7 @@ pub mod view_manager;
 pub use view_manager::ViewManager;
 
 // Main workspace implementation
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::FontFeatures;
@@ -120,7 +120,7 @@ impl Workspace {
             &overlay,
             |workspace, _overlay, _event: &DismissEvent, cx| {
                 // Mark that we need to restore focus in the next render
-                workspace.needs_focus_restore = true;
+                workspace.view_manager.set_needs_focus_restore(true);
 
                 // Check if completion was dismissed and manage context
                 let has_completion = workspace.overlay.read(cx).has_completion();
@@ -274,8 +274,7 @@ impl Workspace {
         let mut workspace = Self {
             core,
             input,
-            focused_view_id: None,
-            documents: HashMap::new(),
+            view_manager: ViewManager::new(),
             handle,
             overlay,
             info,
@@ -283,7 +282,6 @@ impl Workspace {
             key_hints,
             notifications,
             focus_handle,
-            needs_focus_restore: true, // Ensure workspace gets initial focus for global shortcuts
             file_tree,
             show_file_tree: true,
             file_tree_width: 250.0, // Default width
@@ -302,6 +300,9 @@ impl Workspace {
             pending_lsp_startup: None,
             // REMOVED: completion_results_rx - now using event-based approach via Application
         };
+
+        // Set initial focus restore state
+        workspace.view_manager.set_needs_focus_restore(true);
 
         // Register focus groups for main UI areas
         workspace.register_focus_groups(cx);
@@ -323,8 +324,8 @@ impl Workspace {
         workspace.update_document_views(cx);
 
         // Auto-focus the first document view on startup
-        if workspace.focused_view_id.is_some() {
-            workspace.needs_focus_restore = true;
+        if workspace.view_manager.focused_view_id().is_some() {
+            workspace.view_manager.set_needs_focus_restore(true);
         }
 
         // Setup LSP state subscription for project status updates
@@ -390,12 +391,12 @@ impl Workspace {
         let new_context = if let Some(file_tree) = &self.file_tree {
             if file_tree.focus_handle(cx).is_focused(window) {
                 InputContext::FileTree
-            } else if self.focused_view_id.is_some() {
+            } else if self.view_manager.focused_view_id().is_some() {
                 InputContext::Normal // Editor context
             } else {
                 InputContext::Normal
             }
-        } else if self.focused_view_id.is_some() {
+        } else if self.view_manager.focused_view_id().is_some() {
             InputContext::Normal // Editor context
         } else {
             InputContext::Normal
@@ -1510,7 +1511,11 @@ impl Workspace {
         }
 
         // Minimal redraw - most updates now come through specific events
-        if let Some(view) = self.focused_view_id.and_then(|id| self.documents.get(&id)) {
+        if let Some(view) = self
+            .view_manager
+            .focused_view_id()
+            .and_then(|id| self.view_manager.get_document_view(&id))
+        {
             view.update(cx, |_view, cx| {
                 cx.notify();
             })
@@ -1648,7 +1653,7 @@ impl Workspace {
     fn handle_view_focused(&mut self, view_id: helix_view::ViewId, cx: &mut Context<Self>) {
         // View focus changed - just update focus state
         info!("View focused: {:?}", view_id);
-        self.focused_view_id = Some(view_id);
+        self.view_manager.set_focused_view_id(Some(view_id));
 
         // TODO: Update titlebar with current filename
         // AnyView doesn't have update method, need to refactor titlebar storage
@@ -2377,8 +2382,8 @@ impl Workspace {
         }
 
         // Only focus the editor if requested (not when opening from file tree)
-        if should_focus && self.focused_view_id.is_some() {
-            self.needs_focus_restore = true;
+        if should_focus && self.view_manager.focused_view_id().is_some() {
+            self.view_manager.set_needs_focus_restore(true);
         }
 
         // Force a redraw
@@ -2624,7 +2629,8 @@ impl Workspace {
 
         // Get the currently active document ID
         let active_doc_id = self
-            .focused_view_id
+            .view_manager
+            .focused_view_id()
             .and_then(|focused_view_id| editor.tree.try_get(focused_view_id))
             .map(|view| view.doc);
 
@@ -2803,7 +2809,8 @@ impl Workspace {
 
         // Get the currently active document ID
         let active_doc_id = self
-            .focused_view_id
+            .view_manager
+            .focused_view_id()
             .and_then(|focused_view_id| editor.tree.try_get(focused_view_id))
             .map(|view| view.doc);
 
@@ -2947,7 +2954,7 @@ impl Workspace {
             let mut position_text = "1:1".to_string();
 
             // Get info from focused view if available
-            if let Some(view_id) = self.focused_view_id {
+            if let Some(view_id) = self.view_manager.focused_view_id() {
                 if let Some((view, doc)) = editor
                     .tree
                     .try_get(view_id)
@@ -3219,14 +3226,18 @@ impl Workspace {
             .map(|ft| ft.focus_handle(cx).is_focused(window))
             .unwrap_or(false);
         let doc_view_focused = self
-            .focused_view_id
-            .and_then(|view_id| self.documents.get(&view_id))
+            .view_manager
+            .focused_view_id()
+            .and_then(|view_id| self.view_manager.get_document_view(&view_id))
             .map(|doc_view| doc_view.focus_handle(cx).is_focused(window))
             .unwrap_or(false);
 
         eprintln!(
             "DEBUG: Focus state - workspace: {}, file_tree: {}, doc_view: {}, focused_view_id: {:?}",
-            workspace_focused, file_tree_focused, doc_view_focused, self.focused_view_id
+            workspace_focused,
+            file_tree_focused,
+            doc_view_focused,
+            self.view_manager.focused_view_id()
         );
 
         // Wrap the entire key handling in a catch to prevent panics from propagating to FFI
@@ -3242,8 +3253,8 @@ impl Workspace {
             }
 
             // Check if a document view has focus - only handle global shortcuts
-            if let Some(view_id) = self.focused_view_id {
-                if let Some(doc_view) = self.documents.get(&view_id) {
+            if let Some(view_id) = self.view_manager.focused_view_id() {
+                if let Some(doc_view) = self.view_manager.get_document_view(&view_id) {
                     if doc_view.focus_handle(cx).is_focused(window) {
                         eprintln!("DEBUG: Document view has focus, only handling global shortcuts");
                         // Only handle truly global shortcuts when editor has focus
@@ -3906,8 +3917,8 @@ impl Workspace {
         nucleotide_logging::debug!("Focusing editor area");
 
         // Find the currently active document view and focus it
-        if let Some(view_id) = self.focused_view_id {
-            if let Some(doc_view) = self.documents.get(&view_id) {
+        if let Some(view_id) = self.view_manager.focused_view_id() {
+            if let Some(doc_view) = self.view_manager.get_document_view(&view_id) {
                 let doc_focus = doc_view.focus_handle(cx);
                 window.focus(&doc_focus);
                 nucleotide_logging::debug!(view_id = ?view_id, "Focused active document view");
@@ -4102,7 +4113,7 @@ impl Workspace {
 
         // Update only the views for this document
         for view_id in view_ids {
-            if let Some(view_entity) = self.documents.get(&view_id) {
+            if let Some(view_entity) = self.view_manager.get_document_view(&view_id) {
                 view_entity.update(cx, |_view, cx| {
                     cx.notify();
                 });
@@ -4112,8 +4123,8 @@ impl Workspace {
 
     /// Update only the currently focused document view
     fn update_current_document_view(&mut self, cx: &mut Context<Self>) {
-        if let Some(focused_view_id) = self.focused_view_id {
-            if let Some(view_entity) = self.documents.get(&focused_view_id) {
+        if let Some(focused_view_id) = self.view_manager.focused_view_id() {
+            if let Some(view_entity) = self.view_manager.get_document_view(&focused_view_id) {
                 view_entity.update(cx, |_view, cx| {
                     cx.notify();
                 });
@@ -4126,8 +4137,8 @@ impl Workspace {
     /// Send a key directly to Helix, ensuring the editor has focus
     fn send_helix_key(&mut self, key: &str, cx: &mut Context<Self>) {
         // Ensure an editor view has focus
-        if self.focused_view_id.is_some() {
-            self.needs_focus_restore = true;
+        if self.view_manager.focused_view_id().is_some() {
+            self.view_manager.set_needs_focus_restore(true);
         }
 
         // Parse the key string and send it to Helix
@@ -4194,7 +4205,7 @@ impl Workspace {
                     // Verify the view still exists in the tree before accessing
                     if editor.tree.contains(view_id) {
                         if let Some(doc) = editor.document(view.doc) {
-                            self.focused_view_id = Some(view_id);
+                            self.view_manager.set_focused_view_id(Some(view_id));
                             let doc_path = doc.path();
                             focused_file_name = doc_path.map(|p| p.display().to_string());
                             focused_doc_path = doc_path.map(|p| p.to_path_buf());
@@ -4215,19 +4226,20 @@ impl Workspace {
 
         // Remove views that are no longer active
         let to_remove: Vec<_> = self
-            .documents
+            .view_manager
+            .document_views()
             .keys()
             .copied()
             .filter(|id| !view_ids.contains(id))
             .collect();
         for view_id in to_remove {
-            self.documents.remove(&view_id);
+            self.view_manager.remove_document_view(&view_id);
         }
 
         // Second pass: create or update views
         for view_id in view_ids.iter() {
             let view_id = *view_id;
-            let is_focused = self.focused_view_id == Some(view_id);
+            let is_focused = self.view_manager.focused_view_id() == Some(view_id);
             let editor_font = cx.global::<crate::types::EditorFontConfig>();
             let style = TextStyle {
                 color: gpui::black(),
@@ -4254,7 +4266,7 @@ impl Workspace {
             let core = self.core.clone();
 
             // Check if view exists and update its style if it does
-            if let Some(view) = self.documents.get(&view_id) {
+            if let Some(view) = self.view_manager.get_document_view(&view_id) {
                 view.update(cx, |view, _cx| {
                     view.set_focused(is_focused);
                     view.update_text_style(style.clone());
@@ -4265,7 +4277,7 @@ impl Workspace {
                     let doc_focus_handle = cx.focus_handle();
                     DocumentView::new(core, view_id, style.clone(), &doc_focus_handle, is_focused)
                 });
-                self.documents.insert(view_id, view);
+                self.view_manager.insert_document_view(view_id, view);
             }
         }
         focused_file_name
@@ -4326,11 +4338,11 @@ impl Render for Workspace {
         }
 
         // Handle focus restoration if needed
-        if self.needs_focus_restore {
+        if self.view_manager.needs_focus_restore() {
             // ALWAYS focus the workspace for key handling, not individual document views
             // The InputCoordinator will handle routing keys to the appropriate context
             window.focus(&self.focus_handle);
-            self.needs_focus_restore = false;
+            self.view_manager.set_needs_focus_restore(false);
         }
         // Don't create views during render - just use existing ones
         let mut view_ids = HashSet::new();
@@ -4409,8 +4421,8 @@ impl Render for Workspace {
             ; // No gap needed for documents
 
         // Only render the focused view, not all views
-        if let Some(focused_view_id) = self.focused_view_id {
-            if let Some(doc_view) = self.documents.get(&focused_view_id) {
+        if let Some(focused_view_id) = self.view_manager.focused_view_id() {
+            if let Some(doc_view) = self.view_manager.get_document_view(&focused_view_id) {
                 let has_border = right_borders.contains(&focused_view_id);
                 // Create document element container with semantic styling
                 let doc_element = div()
@@ -4427,8 +4439,9 @@ impl Render for Workspace {
         }
 
         let focused_view = self
-            .focused_view_id
-            .and_then(|id| self.documents.get(&id))
+            .view_manager
+            .focused_view_id()
+            .and_then(|id| self.view_manager.get_document_view(&id))
             .cloned();
         if let Some(_view) = &focused_view {
             // Focus is managed by DocumentView's focus state
@@ -4546,7 +4559,7 @@ impl Render for Workspace {
                     }
 
                     // Ensure workspace regains focus when clicked, so global shortcuts work
-                    workspace.needs_focus_restore = true;
+                    workspace.view_manager.set_needs_focus_restore(true);
                     cx.notify();
                 }),
             );

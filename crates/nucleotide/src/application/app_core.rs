@@ -1,11 +1,9 @@
 // ABOUTME: Core application logic extracted from Application struct
 // ABOUTME: Handles V2 event processing and central coordination logic
 
-use helix_view::graphics::Rect;
-use helix_view::{DocumentId, ViewId};
+use helix_view::DocumentId;
 use nucleotide_events::v2::handler::EventHandler;
 use nucleotide_logging::{debug, error, info, instrument, warn};
-use std::sync::Arc;
 
 use crate::application::{
     CompletionHandler, DocumentHandler, EditorHandler, LspHandler, ViewHandler, WorkspaceHandler,
@@ -54,26 +52,14 @@ impl ApplicationCore {
         info!("Initializing ApplicationCore with V2 event handlers");
 
         // Initialize Phase 1 handlers
-        self.document_handler
-            .initialize()
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-        self.view_handler
-            .initialize()
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-        self.editor_handler
-            .initialize()
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        self.document_handler.initialize().map_err(|e| e)?;
+        self.view_handler.initialize().map_err(|e| e)?;
+        self.editor_handler.initialize().map_err(|e| e)?;
 
         // Initialize Phase 2 handlers
-        self.lsp_handler
-            .initialize()
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-        self.completion_handler
-            .initialize()
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-        self.workspace_handler
-            .initialize()
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        self.lsp_handler.initialize().map_err(|e| e)?;
+        self.completion_handler.initialize().map_err(|e| e)?;
+        self.workspace_handler.initialize().map_err(|e| e)?;
 
         self.initialized = true;
         info!("ApplicationCore initialized successfully");
@@ -123,13 +109,15 @@ impl ApplicationCore {
                 self.document_handler
                     .handle(v2_event)
                     .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                    .map_err(|e| e)?;
             }
 
             event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
                 // Extract actual selection from the view
-                let (selection, was_movement) = if let Some(view) = editor.tree.get(*view_id) {
-                    (view.doc_selection(*doc_id).clone(), true) // Assume movement for now
+                let (selection, was_movement) = if let Some(Some(view)) = editor.tree.get(*view_id)
+                {
+                    let selection: helix_core::Selection = view.doc_selection(*doc_id).clone();
+                    (selection, true) // Assume movement for now
                 } else {
                     warn!(view_id = ?view_id, "View not found when processing SelectionChanged event");
                     (helix_core::Selection::point(0), false)
@@ -148,10 +136,7 @@ impl ApplicationCore {
                     "Processing SelectionChanged through V2 ViewHandler"
                 );
 
-                self.view_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                self.view_handler.handle(v2_event).await.map_err(|e| e)?;
             }
 
             event_bridge::BridgedEvent::ModeChanged { old_mode, new_mode } => {
@@ -167,10 +152,7 @@ impl ApplicationCore {
                     "Processing ModeChanged through V2 EditorHandler"
                 );
 
-                self.editor_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                self.editor_handler.handle(v2_event).await.map_err(|e| e)?;
             }
 
             event_bridge::BridgedEvent::DocumentOpened { doc_id } => {
@@ -180,7 +162,7 @@ impl ApplicationCore {
                         .path()
                         .cloned()
                         .unwrap_or_else(|| std::path::PathBuf::from("untitled"));
-                    let language_id = document.language().map(|lang| lang.to_string());
+                    let language_id = document.language_name().map(|lang| lang.to_string());
                     (path, language_id)
                 } else {
                     warn!(doc_id = ?doc_id, "Document not found when processing DocumentOpened event");
@@ -198,7 +180,7 @@ impl ApplicationCore {
                 self.document_handler
                     .handle(v2_event)
                     .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                    .map_err(|e| e)?;
             }
 
             event_bridge::BridgedEvent::DocumentClosed { doc_id } => {
@@ -206,7 +188,7 @@ impl ApplicationCore {
                 // So we use placeholder data
                 let v2_event = DocumentEvent::Closed {
                     doc_id: *doc_id,
-                    path: std::path::PathBuf::from("closed_document"),
+                    was_modified: false, // TODO: Extract actual modification state
                 };
 
                 debug!(doc_id = ?doc_id, "Processing DocumentClosed through V2 DocumentHandler");
@@ -214,7 +196,7 @@ impl ApplicationCore {
                 self.document_handler
                     .handle(v2_event)
                     .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                    .map_err(|e| e)?;
             }
 
             event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
@@ -226,11 +208,15 @@ impl ApplicationCore {
                     let total = diagnostics.len();
                     let errors = diagnostics
                         .iter()
-                        .filter(|d| d.severity == Some(helix_lsp::lsp::DiagnosticSeverity::ERROR))
+                        .filter(|d| {
+                            matches!(d.severity, Some(helix_core::diagnostic::Severity::Error))
+                        })
                         .count();
                     let warnings = diagnostics
                         .iter()
-                        .filter(|d| d.severity == Some(helix_lsp::lsp::DiagnosticSeverity::WARNING))
+                        .filter(|d| {
+                            matches!(d.severity, Some(helix_core::diagnostic::Severity::Warning))
+                        })
                         .count();
                     (total, errors, warnings)
                 } else {
@@ -239,9 +225,9 @@ impl ApplicationCore {
 
                 let v2_event = DocumentEvent::DiagnosticsUpdated {
                     doc_id: *doc_id,
-                    diagnostic_count: diagnostic_count as u32,
-                    error_count: error_count as u32,
-                    warning_count: warning_count as u32,
+                    diagnostic_count: diagnostic_count,
+                    error_count: error_count,
+                    warning_count: warning_count,
                 };
 
                 debug!(
@@ -255,12 +241,12 @@ impl ApplicationCore {
                 self.document_handler
                     .handle(v2_event)
                     .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                    .map_err(|e| e)?;
             }
 
             event_bridge::BridgedEvent::ViewFocused { view_id } => {
                 // Extract associated document ID from the view
-                let (doc_id, previous_view) = if let Some(view) = editor.tree.get(*view_id) {
+                let (doc_id, previous_view) = if let Some(Some(view)) = editor.tree.get(*view_id) {
                     let doc_id = view.doc;
                     let previous_view = self.view_handler.get_focused_view();
                     (doc_id, previous_view)
@@ -281,10 +267,7 @@ impl ApplicationCore {
                     "Processing ViewFocused through V2 ViewHandler"
                 );
 
-                self.view_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                self.view_handler.handle(v2_event).await.map_err(|e| e)?;
             }
 
             // Phase 2 Events - LSP Integration
@@ -302,10 +285,7 @@ impl ApplicationCore {
                     "Processing LanguageServerInitialized through V2 LspHandler"
                 );
 
-                self.lsp_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                self.lsp_handler.handle(v2_event).await.map_err(|e| e)?;
             }
 
             event_bridge::BridgedEvent::LanguageServerExited { server_id } => {
@@ -321,10 +301,7 @@ impl ApplicationCore {
                     "Processing LanguageServerExited through V2 LspHandler"
                 );
 
-                self.lsp_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                self.lsp_handler.handle(v2_event).await.map_err(|e| e)?;
             }
 
             event_bridge::BridgedEvent::LspServerStartupRequested {
@@ -345,10 +322,7 @@ impl ApplicationCore {
                     "Processing LspServerStartupRequested through V2 LspHandler"
                 );
 
-                self.lsp_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                self.lsp_handler.handle(v2_event).await.map_err(|e| e)?;
             }
 
             // Phase 2 Events - Completion Integration
@@ -364,13 +338,13 @@ impl ApplicationCore {
                     doc_id: *doc_id,
                     view_id: *view_id,
                     trigger: match trigger {
-                        nucleotide_types::CompletionTrigger::Invoked => {
+                        nucleotide_types::CompletionTrigger::Manual => {
                             nucleotide_events::v2::completion::CompletionTrigger::Manual
                         }
-                        nucleotide_types::CompletionTrigger::TriggerCharacter(ch) => {
+                        nucleotide_types::CompletionTrigger::Character(ch) => {
                             nucleotide_events::v2::completion::CompletionTrigger::Character(*ch)
                         }
-                        nucleotide_types::CompletionTrigger::TriggerForIncompleteCompletions => {
+                        nucleotide_types::CompletionTrigger::Automatic => {
                             nucleotide_events::v2::completion::CompletionTrigger::Automatic
                         }
                     },
@@ -391,7 +365,7 @@ impl ApplicationCore {
                 self.completion_handler
                     .handle(v2_event)
                     .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                    .map_err(|e| e)?;
             }
 
             _ => {

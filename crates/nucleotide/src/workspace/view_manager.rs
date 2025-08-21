@@ -3,7 +3,7 @@
 
 use crate::document::DocumentView;
 use crate::workspace::Workspace;
-use gpui::{Context, Entity, FocusHandle, SharedString, Window};
+use gpui::{Context, Entity, Focusable, SharedString, Window};
 use helix_view::ViewId;
 use nucleotide_logging::{debug, info, instrument, warn};
 use std::collections::{HashMap, HashSet};
@@ -46,6 +46,31 @@ impl ViewManager {
         &self.documents
     }
 
+    /// Set the focused view ID
+    pub fn set_focused_view_id(&mut self, view_id: Option<ViewId>) {
+        self.focused_view_id = view_id;
+    }
+
+    /// Check if focus needs to be restored
+    pub fn needs_focus_restore(&self) -> bool {
+        self.needs_focus_restore
+    }
+
+    /// Set whether focus needs to be restored
+    pub fn set_needs_focus_restore(&mut self, needs_restore: bool) {
+        self.needs_focus_restore = needs_restore;
+    }
+
+    /// Insert a document view
+    pub fn insert_document_view(&mut self, view_id: ViewId, view: Entity<DocumentView>) {
+        self.documents.insert(view_id, view);
+    }
+
+    /// Remove a document view
+    pub fn remove_document_view(&mut self, view_id: &ViewId) -> Option<Entity<DocumentView>> {
+        self.documents.remove(view_id)
+    }
+
     /// Handle view focus change
     #[instrument(skip(self, cx))]
     pub fn handle_view_focused(&mut self, view_id: ViewId, cx: &mut Context<Workspace>) {
@@ -62,17 +87,14 @@ impl ViewManager {
     }
 
     /// Update document views based on editor state
-    #[instrument(skip(self, cx, core, style))]
-    pub fn update_document_views(
-        &mut self,
-        cx: &mut Context<Workspace>,
-        core: &Entity<crate::Application>,
-        style: (), // TODO: Fix EditorStyle type
-    ) -> Option<SharedString> {
+    #[instrument(skip(self, cx))]
+    pub fn update_document_views(&mut self, cx: &mut Context<Workspace>) -> Option<SharedString> {
         let mut view_ids = HashSet::new();
         let mut focused_file_name = None;
 
         // Read editor state to get current views
+        let workspace = cx.entity();
+        let core = workspace.read(cx).core.clone();
         let editor = &core.read(cx).editor;
 
         // Track which views have right borders (split layout detection)
@@ -108,13 +130,36 @@ impl ViewManager {
             if let Some(view_entity) = self.documents.get(&view_id) {
                 view_entity.update(cx, |view, _cx| {
                     view.set_focused(is_focused);
-                    view.update_text_style(style.clone());
+                    // TODO: Update text style when needed
                 });
             } else {
                 // Create new view if it doesn't exist
                 let view_entity = cx.new(|cx| {
                     let doc_focus_handle = cx.focus_handle();
-                    DocumentView::new(core, view_id, style.clone(), &doc_focus_handle, is_focused)
+                    // Create default text style
+                    let default_style = gpui::TextStyle {
+                        color: gpui::white(),
+                        font_family: gpui::SharedString::from("Monaco"),
+                        font_fallbacks: Default::default(),
+                        font_features: Default::default(),
+                        font_size: gpui::px(14.0),
+                        font_weight: Default::default(),
+                        font_style: Default::default(),
+                        line_height: Default::default(),
+                        line_clamp: Default::default(),
+                        background_color: None,
+                        underline: Default::default(),
+                        strikethrough: Default::default(),
+                        white_space: Default::default(),
+                        text_align: Default::default(),
+                    };
+                    DocumentView::new(
+                        core.clone(),
+                        view_id,
+                        default_style,
+                        &doc_focus_handle,
+                        is_focused,
+                    )
                 });
                 self.documents.insert(view_id, view_entity);
             }
@@ -176,16 +221,6 @@ impl ViewManager {
     pub fn get_focused_document_view(&self) -> Option<&Entity<DocumentView>> {
         self.focused_view_id
             .and_then(|view_id| self.documents.get(&view_id))
-    }
-
-    /// Set focus restoration flag
-    pub fn set_needs_focus_restore(&mut self, needs_restore: bool) {
-        self.needs_focus_restore = needs_restore;
-    }
-
-    /// Check if focus needs to be restored
-    pub fn needs_focus_restore(&self) -> bool {
-        self.needs_focus_restore
     }
 
     /// Clear all document views (useful for cleanup)

@@ -221,7 +221,8 @@ impl Application {
                     revision = revision,
                     "Processing DocumentChanged through V2 handler"
                 );
-                self.document_handler
+                self.core
+                    .document_handler
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -248,7 +249,8 @@ impl Application {
                     view_id = ?view_id,
                     "Processing SelectionChanged through V2 ViewHandler"
                 );
-                self.view_handler
+                self.core
+                    .view_handler
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -266,7 +268,8 @@ impl Application {
                     new_mode = ?new_mode,
                     "Processing ModeChanged through V2 EditorHandler"
                 );
-                self.editor_handler
+                self.core
+                    .editor_handler
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -279,7 +282,7 @@ impl Application {
                         .path()
                         .cloned()
                         .unwrap_or_else(|| std::path::PathBuf::from("untitled"));
-                    let language_id = document.language().map(|lang| lang.to_string());
+                    let language_id = document.language_name().map(|lang| lang.to_string());
                     (path, language_id)
                 } else {
                     (std::path::PathBuf::from("unknown"), None)
@@ -292,7 +295,8 @@ impl Application {
                 };
 
                 debug!(doc_id = ?doc_id, "Processing DocumentOpened through V2 handler");
-                self.document_handler
+                self.core
+                    .document_handler
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -307,7 +311,8 @@ impl Application {
                 };
 
                 debug!(doc_id = ?doc_id, "Processing DocumentClosed through V2 handler");
-                self.document_handler
+                self.core
+                    .document_handler
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -322,11 +327,15 @@ impl Application {
                     let total = diagnostics.len();
                     let errors = diagnostics
                         .iter()
-                        .filter(|d| d.severity == Some(helix_lsp::lsp::DiagnosticSeverity::ERROR))
+                        .filter(|d| {
+                            matches!(d.severity, Some(helix_core::diagnostic::Severity::Error))
+                        })
                         .count();
                     let warnings = diagnostics
                         .iter()
-                        .filter(|d| d.severity == Some(helix_lsp::lsp::DiagnosticSeverity::WARNING))
+                        .filter(|d| {
+                            matches!(d.severity, Some(helix_core::diagnostic::Severity::Warning))
+                        })
                         .count();
                     (total, errors, warnings)
                 } else {
@@ -345,7 +354,8 @@ impl Application {
                     diagnostic_count = diagnostic_count,
                     "Processing DiagnosticsChanged through V2 handler"
                 );
-                self.document_handler
+                self.core
+                    .document_handler
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -355,7 +365,7 @@ impl Application {
                 // Extract associated document ID from the view
                 let (doc_id, previous_view) = if let Some(view) = self.editor.tree.get(*view_id) {
                     let doc_id = view.doc;
-                    let previous_view = self.view_handler.get_focused_view();
+                    let previous_view = self.core.view_handler.get_focused_view();
                     (doc_id, previous_view)
                 } else {
                     warn!(view_id = ?view_id, "View not found when processing ViewFocused event");
@@ -373,7 +383,8 @@ impl Application {
                     doc_id = ?doc_id,
                     "Processing ViewFocused through V2 ViewHandler"
                 );
-                self.view_handler
+                self.core
+                    .view_handler
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -2219,9 +2230,9 @@ impl Application {
                 match completion_result {
                     nucleotide_events::completion_events::CompletionResult::ShowCompletions {
                         items,
-                        cursor,
-                        doc_id,
-                        view_id,
+                        cursor: _,
+                        doc_id: _,
+                        view_id: _,
                     } => {
                         nucleotide_logging::info!(
                             "Creating CompletionView entity for {} items",
