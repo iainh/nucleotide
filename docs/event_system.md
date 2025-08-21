@@ -6,13 +6,22 @@ The helix-gpui project implements a sophisticated bidirectional event system tha
 
 ## Architecture Overview
 
-The event system consists of three main layers:
+The event system has evolved through phases, with the V2 system introducing domain-driven event handling:
 
-1. **GPUI Layer**: Native UI components, user input handling, and visual feedback
+### Legacy System (Phase 0)
+Three main layers:
+1. **GPUI Layer**: Native UI components, user input handling, and visual feedback  
 2. **Bridge Layer**: Event transformation and channel-based communication
 3. **Helix Layer**: Core editor logic, document management, and LSP integration
 
-Communication flows bidirectionally through async channels, with specialized bridges handling event transformation between the two systems.
+### V2 Event System (Phase 1+)
+Domain-driven architecture with bounded contexts:
+1. **UI Layer**: GPUI components and user interactions
+2. **Application Core**: Centralized event coordination and processing
+3. **Domain Handlers**: Specialized handlers for document, view, and editor events
+4. **Helix Integration**: Direct integration with Helix editor state
+
+Communication flows through both legacy channels (for backward compatibility) and the new V2 domain event system.
 
 ## Architecture Diagrams
 
@@ -158,6 +167,173 @@ graph LR
     FTE --> WS
 ```
 
+### 5. V2 Event System Architecture (Phase 1+)
+
+```mermaid
+graph TB
+    subgraph "UI Layer"
+        GPUI[GPUI Components]
+        WS[Workspace]
+        DV[Document Views]
+        FT[File Tree]
+    end
+    
+    subgraph "Application Layer"
+        APP[Application]
+        CORE[ApplicationCore]
+        BRIDGE[Event Bridge]
+    end
+    
+    subgraph "Domain Handlers"
+        DH[DocumentHandler]
+        VH[ViewHandler]
+        EH[EditorHandler]
+    end
+    
+    subgraph "V2 Events"
+        DE[Document Events]
+        VE[View Events]
+        EE[Editor Events]
+    end
+    
+    subgraph "Helix Integration"
+        EDITOR[Helix Editor]
+        DOCS[Documents]
+        VIEWS[Views]
+        LSP[LSP System]
+    end
+    
+    GPUI --> APP
+    WS --> APP
+    APP --> CORE
+    CORE --> DH
+    CORE --> VH
+    CORE --> EH
+    
+    DH --> DE
+    VH --> VE
+    EH --> EE
+    
+    DE --> DOCS
+    VE --> VIEWS
+    EE --> EDITOR
+    
+    EDITOR --> BRIDGE
+    BRIDGE --> CORE
+    CORE --> APP
+    APP --> WS
+    WS --> GPUI
+```
+
+### 6. V2 Domain Event Flow
+
+```mermaid
+sequenceDiagram
+    participant Helix
+    participant Bridge
+    participant AppCore
+    participant DocumentHandler
+    participant ViewHandler
+    participant EditorHandler
+    participant UI
+    
+    Helix->>Bridge: BridgedEvent::DocumentChanged
+    Bridge->>AppCore: process_v2_event()
+    AppCore->>AppCore: Extract document data
+    AppCore->>DocumentHandler: handle(ContentChanged)
+    DocumentHandler->>DocumentHandler: Update metadata cache
+    DocumentHandler-->>AppCore: Success
+    
+    Helix->>Bridge: BridgedEvent::SelectionChanged
+    Bridge->>AppCore: process_v2_event()
+    AppCore->>AppCore: Extract selection data
+    AppCore->>ViewHandler: handle(SelectionChanged)
+    ViewHandler->>ViewHandler: Update view state
+    ViewHandler-->>AppCore: Success
+    
+    Helix->>Bridge: BridgedEvent::ModeChanged
+    Bridge->>AppCore: process_v2_event()
+    AppCore->>EditorHandler: handle(ModeChanged)
+    EditorHandler->>EditorHandler: Track mode statistics
+    EditorHandler-->>AppCore: Success
+    
+    AppCore-->>UI: State synchronized
+```
+
+### 7. V2 Domain Events (Phase 1+)
+
+The V2 system introduces structured domain events with rich context and metadata:
+
+#### Document Domain Events
+```rust
+pub enum Event {
+    ContentChanged {
+        doc_id: DocumentId,
+        revision: u64,
+        change_summary: ChangeType,
+    },
+    Opened {
+        doc_id: DocumentId,
+        path: PathBuf,
+        language_id: Option<String>,
+    },
+    Closed {
+        doc_id: DocumentId,
+        path: PathBuf,
+    },
+    DiagnosticsUpdated {
+        doc_id: DocumentId,
+        diagnostic_count: u32,
+        error_count: u32,
+        warning_count: u32,
+    },
+    LanguageChanged {
+        doc_id: DocumentId,
+        old_language: Option<String>,
+        new_language: Option<String>,
+    },
+}
+```
+
+#### View Domain Events
+```rust
+pub enum Event {
+    SelectionChanged {
+        view_id: ViewId,
+        doc_id: DocumentId,
+        selection: Selection,
+        was_movement: bool,
+    },
+    Focused {
+        view_id: ViewId,
+        doc_id: DocumentId,
+        previous_view: Option<ViewId>,
+    },
+    Scrolled {
+        view_id: ViewId,
+        scroll_position: ScrollPosition,
+        direction: ScrollDirection,
+    },
+}
+```
+
+#### Editor Domain Events
+```rust
+pub enum Event {
+    ModeChanged {
+        previous_mode: Mode,
+        new_mode: Mode,
+        context: ModeChangeContext,
+    },
+    CommandExecuted {
+        command_name: String,
+        execution_time_ms: u64,
+        success: bool,
+        context: CommandContext,
+    },
+}
+```
+
 ## Event Types
 
 ### 1. BridgedEvent (Helix → GPUI)
@@ -284,6 +460,56 @@ Handles GPUI → Helix communication:
 - Theme and accessibility updates
 - Performance monitoring
 
+### V2 System Components (Phase 1+)
+
+#### ApplicationCore (src/application/app_core.rs)
+
+Centralized event processing core extracted from the main Application:
+
+- **`process_v2_event()`**: Main V2 event processing pipeline
+- **Domain handler management**: Coordinates document, view, and editor handlers
+- **State extraction**: Enriches events with real data from Helix editor state
+- **Error handling**: Provides centralized error management for V2 events
+
+#### DocumentHandler (src/application_v2/document_handler.rs)
+
+Handles document-related events with rich metadata:
+
+- **Document lifecycle**: Tracks open, close, and content change events
+- **Revision tracking**: Maintains document revision history
+- **Language detection**: Monitors language changes and updates
+- **Diagnostics aggregation**: Collects and processes LSP diagnostic information
+- **Metadata caching**: Maintains document metadata for performance
+
+#### ViewHandler (src/application_v2/view_handler.rs)
+
+Manages view-related events and state:
+
+- **Selection tracking**: Monitors cursor and selection changes with movement detection
+- **Focus management**: Tracks view focus changes and maintains focus history
+- **Scroll coordination**: Handles view scrolling and position updates
+- **View metadata**: Caches view state for quick access and performance
+- **Split layout support**: Manages multiple view configurations
+
+#### EditorHandler (src/application_v2/editor_handler.rs)
+
+Coordinates global editor state and command execution:
+
+- **Mode transitions**: Tracks editor mode changes with context and timing
+- **Command monitoring**: Records command execution with performance metrics
+- **Session tracking**: Maintains mode usage statistics and session timing
+- **Performance profiling**: Monitors slow commands and execution patterns
+- **History management**: Maintains command history with configurable limits
+
+#### ViewManager (src/workspace/view_manager.rs)
+
+Extracted view management logic from Workspace:
+
+- **Document view lifecycle**: Creates and manages DocumentView entities
+- **Focus coordination**: Handles view focus changes and restoration
+- **View state synchronization**: Keeps UI views in sync with editor state
+- **Performance optimization**: Reduces workspace complexity and improves modularity
+
 ## Communication Mechanisms
 
 ### 1. Async Channels
@@ -384,13 +610,56 @@ The system maintains focus awareness to route events correctly:
 3. Use tracing spans for async event flows
 4. Check focus state for input routing issues
 
+## V2 System Benefits (Phase 1)
+
+### Domain-Driven Design
+- **Bounded contexts**: Clear separation between document, view, and editor concerns
+- **Rich events**: Events carry structured data and context rather than simple notifications
+- **Type safety**: Compile-time guarantees for event structure and handling
+
+### Performance Improvements
+- **Metadata caching**: Handlers maintain caches to avoid repeated editor state queries
+- **Selective processing**: Only relevant domain handlers process specific event types
+- **Async coordination**: Event handlers use async/await for non-blocking processing
+
+### Maintainability Enhancements
+- **Modular architecture**: Core logic extracted into focused, testable components
+- **Single responsibility**: Each handler focuses on a specific domain
+- **Comprehensive testing**: Full test coverage for all domain handlers
+
+### Observability Features
+- **Structured logging**: All handlers use structured logging with rich context
+- **Performance monitoring**: Built-in timing and performance tracking
+- **Debug capabilities**: Detailed event tracing and state inspection
+
+## Migration Strategy
+
+### Phase 1 (Completed)
+✅ **Foundation**: Domain event structure and basic handlers  
+✅ **Document Events**: ContentChanged, Opened, Closed, DiagnosticsUpdated  
+✅ **View Events**: SelectionChanged, Focused, Scrolled  
+✅ **Editor Events**: ModeChanged, CommandExecuted  
+✅ **Core Extraction**: ApplicationCore and ViewManager  
+
+### Phase 2 (Planned)
+- **LSP Events**: LanguageServerStarted, DiagnosticsReceived, CompletionAvailable
+- **Completion Events**: CompletionRequested, CompletionSelected, CompletionCancelled  
+- **File System Events**: FileChanged, DirectoryChanged, ProjectDetected
+- **Search Events**: SearchStarted, ResultsFound, SearchCompleted
+
+### Phase 3 (Future)
+- **Performance Events**: MemoryPressure, RenderingLag, InputDelay
+- **Accessibility Events**: ScreenReaderToggled, HighContrastChanged
+- **System Events**: WindowStateChanged, FocusChanged, ThemeChanged
+
 ## Future Enhancements
 
 1. **Event Filtering**: Add event filtering to reduce unnecessary updates
-2. **Event Batching**: Combine rapid sequential updates
+2. **Event Batching**: Combine rapid sequential updates  
 3. **Priority System**: Implement event priority for critical updates
 4. **Metrics**: Add event system performance monitoring
 5. **Testing**: Develop event simulation framework for testing
+6. **Hot Reloading**: Support runtime handler updates and configuration changes
 
 ## Conclusion
 

@@ -1,3 +1,11 @@
+// ABOUTME: Workspace module decomposition for cleaner architecture
+// ABOUTME: Separates view management from workspace coordination logic
+
+pub mod view_manager;
+
+pub use view_manager::ViewManager;
+
+// Main workspace implementation
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -18,6 +26,8 @@ use nucleotide_logging::{debug, error, info, instrument, warn};
 use nucleotide_lsp::HelixLspBridge;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
+
+// ViewManager already imported above via pub use
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant, compute_component_style,
 };
@@ -34,12 +44,10 @@ use crate::overlay::OverlayView;
 use crate::utils;
 use crate::vcs_service::VcsServiceHandle;
 use crate::{Core, Input, InputEvent};
-
 pub struct Workspace {
     core: Entity<Core>,
     input: Entity<Input>,
-    focused_view_id: Option<ViewId>,
-    documents: HashMap<ViewId, Entity<DocumentView>>,
+    view_manager: ViewManager,
     handle: tokio::runtime::Handle,
     overlay: Entity<OverlayView>,
     info: Entity<InfoBoxView>,
@@ -47,7 +55,6 @@ pub struct Workspace {
     key_hints: Entity<KeyHintView>,
     notifications: Entity<NotificationView>,
     focus_handle: FocusHandle,
-    needs_focus_restore: bool,
     file_tree: Option<Entity<FileTreeView>>,
     show_file_tree: bool,
     file_tree_width: f32,

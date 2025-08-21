@@ -222,6 +222,11 @@ impl EventHandler<EditorEvent> for EditorHandler {
                 self.handle_command_executed(command_name, execution_time_ms, success, context)
                     .await
             }
+            _ => {
+                // Other events not yet implemented - log for future reference
+                debug!(event = ?event, "Editor event not yet handled by V2 system");
+                Ok(())
+            }
         }
     }
 }

@@ -1,3 +1,16 @@
+// ABOUTME: Application module decomposition for V2 event system migration
+// ABOUTME: Contains domain-specific handlers and main Application implementation
+
+pub mod app_core;
+pub mod document_handler;
+pub mod editor_handler;
+pub mod view_handler;
+
+pub use app_core::ApplicationCore;
+pub use document_handler::DocumentHandler;
+pub use editor_handler::EditorHandler;
+pub use view_handler::ViewHandler;
+
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -98,6 +111,7 @@ use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, timed, warn};
 
 use crate::types::{AppEvent, CoreEvent, LspEvent, MessageSeverity, PickerType, UiEvent, Update};
+// ApplicationCore already imported above via pub use
 use gpui::EventEmitter;
 use tokio_stream::StreamExt;
 
@@ -139,10 +153,8 @@ pub struct Application {
     pub project_lsp_system_initialized: Arc<std::sync::atomic::AtomicBool>,
     pub shell_env_cache: Arc<tokio::sync::Mutex<crate::shell_env::ShellEnvironmentCache>>,
     pub project_environment: Arc<ProjectEnvironment>,
-    // V2 Event System Handlers
-    pub document_handler: crate::application_v2::DocumentHandler,
-    pub view_handler: crate::application_v2::ViewHandler,
-    pub editor_handler: crate::application_v2::EditorHandler,
+    // V2 Event System Core
+    pub core: crate::application::ApplicationCore,
 }
 
 #[derive(Debug, Clone)]
@@ -3323,27 +3335,12 @@ pub fn init_editor(
             crate::shell_env::ShellEnvironmentCache::new(),
         )),
         project_environment: Arc::new(ProjectEnvironment::new(None)), // TODO: Detect CLI environment
-        // V2 Event System Handlers
-        document_handler: {
-            let mut handler = crate::application_v2::DocumentHandler::new();
-            handler
-                .initialize()
-                .expect("Failed to initialize DocumentHandler");
-            handler
-        },
-        view_handler: {
-            let mut handler = crate::application_v2::ViewHandler::new();
-            handler
-                .initialize()
-                .expect("Failed to initialize ViewHandler");
-            handler
-        },
-        editor_handler: {
-            let mut handler = crate::application_v2::EditorHandler::new();
-            handler
-                .initialize()
-                .expect("Failed to initialize EditorHandler");
-            handler
+        // V2 Event System Core
+        core: {
+            let mut core = ApplicationCore::new();
+            core.initialize()
+                .expect("Failed to initialize ApplicationCore");
+            core
         },
     })
 }
