@@ -13,7 +13,7 @@ use nucleotide_events::{
     ServerStartResult,
 };
 use nucleotide_logging::{debug, error, info, instrument, warn};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, broadcast};
 
 use crate::HelixLspBridge;
 
@@ -79,9 +79,8 @@ pub struct ProjectLspManager {
     /// Managed servers by workspace root
     servers: Arc<RwLock<HashMap<PathBuf, Vec<ManagedServer>>>>,
 
-    /// Event channel for project LSP events
-    event_tx: mpsc::UnboundedSender<ProjectLspEvent>,
-    event_rx: Arc<RwLock<Option<mpsc::UnboundedReceiver<ProjectLspEvent>>>>,
+    /// Event channel for project LSP events (broadcast for multiple listeners)
+    event_tx: broadcast::Sender<ProjectLspEvent>,
 
     /// Project detector
     project_detector: Arc<ProjectDetector>,
@@ -106,7 +105,7 @@ impl ProjectLspManager {
             tokio::sync::mpsc::UnboundedSender<nucleotide_events::ProjectLspCommand>,
         >,
     ) -> Self {
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (event_tx, _) = broadcast::channel(1000); // Buffer for 1000 events
 
         let project_detector = Arc::new(ProjectDetector::new(config.project_markers.clone()));
         let lifecycle_manager = Arc::new(ServerLifecycleManager::new(config.clone()));
@@ -116,7 +115,6 @@ impl ProjectLspManager {
             projects: Arc::new(RwLock::new(HashMap::new())),
             servers: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
-            event_rx: Arc::new(RwLock::new(Some(event_rx))),
             project_detector,
             lifecycle_manager,
             health_check_handle: Arc::new(RwLock::new(None)),
@@ -215,6 +213,16 @@ impl ProjectLspManager {
         &self,
         project_info: &ProjectInfo,
     ) -> Result<(), ProjectLspError> {
+        // Skip LSP server startup if workspace root is the system root (/)
+        // This happens when the app starts without a proper project directory
+        if project_info.workspace_root == std::path::Path::new("/") {
+            info!(
+                workspace_root = %project_info.workspace_root.display(),
+                "Skipping LSP server startup for system root - waiting for proper project directory to be set"
+            );
+            return Ok(());
+        }
+
         info!("Requesting server startup for project");
 
         for server_name in &project_info.language_servers {
@@ -222,11 +230,21 @@ impl ProjectLspManager {
                 .project_detector
                 .get_primary_language_id(&project_info.project_type);
 
-            let _ = self.event_tx.send(ProjectLspEvent::ServerStartupRequested {
-                workspace_root: project_info.workspace_root.clone(),
-                server_name: server_name.clone(),
-                language_id,
-            });
+            // Send LSP server startup event through the existing event bridge
+            nucleotide_core::event_bridge::send_bridged_event(
+                nucleotide_core::event_bridge::BridgedEvent::LspServerStartupRequested {
+                    workspace_root: project_info.workspace_root.clone(),
+                    server_name: server_name.clone(),
+                    language_id: language_id.clone(),
+                },
+            );
+
+            info!(
+                server_name = %server_name,
+                language_id = %language_id,
+                workspace_root = %project_info.workspace_root.display(),
+                "Successfully sent LspServerStartupRequested event through event bridge"
+            );
         }
 
         Ok(())
@@ -263,37 +281,28 @@ impl ProjectLspManager {
         *self.health_check_handle.write().await = Some(handle);
     }
 
-    /// Start event processing background task
+    /// Start event processing background task (deprecated - events now handled by Application)
     async fn start_event_processing_task(&self) {
-        let event_rx = self.event_rx.write().await.take();
-        if let Some(mut rx) = event_rx {
-            let servers = Arc::clone(&self.servers);
-            let lifecycle_manager = Arc::clone(&self.lifecycle_manager);
-            let lsp_command_sender = self.lsp_command_sender.clone();
-
-            tokio::spawn(async move {
-                while let Some(event) = rx.recv().await {
-                    Self::handle_project_lsp_event(
-                        &servers,
-                        &lifecycle_manager,
-                        &lsp_command_sender,
-                        event,
-                    )
-                    .await;
-                }
-            });
-        }
+        debug!(
+            "Event processing task not needed - Application handles events directly via broadcast channel"
+        );
     }
 
-    /// Handle a project LSP event
+    /// Handle a project LSP event (deprecated - now handled by Application)
     async fn handle_project_lsp_event(
-        servers: &Arc<RwLock<HashMap<PathBuf, Vec<ManagedServer>>>>,
-        lifecycle_manager: &Arc<ServerLifecycleManager>,
-        lsp_command_sender: &Option<
+        _servers: &Arc<RwLock<HashMap<PathBuf, Vec<ManagedServer>>>>,
+        _lifecycle_manager: &Arc<ServerLifecycleManager>,
+        _lsp_command_sender: &Option<
             tokio::sync::mpsc::UnboundedSender<nucleotide_events::ProjectLspCommand>,
         >,
-        event: ProjectLspEvent,
+        _event_sender: &broadcast::Sender<ProjectLspEvent>,
+        _event: ProjectLspEvent,
     ) {
+        // Deprecated - Application now handles events directly
+        debug!(
+            "handle_project_lsp_event called but deprecated - events now handled by Application"
+        );
+        /*
         match event {
             ProjectLspEvent::ServerStartupRequested {
                 workspace_root,
@@ -304,75 +313,80 @@ impl ProjectLspManager {
                     workspace_root = %workspace_root.display(),
                     server_name = %server_name,
                     language_id = %language_id,
-                    "Processing server startup request"
+                    "ServerStartupRequested event processed - Application should handle this"
                 );
 
-                // Use Event-Driven Command Pattern to start server through Application
-                if let Some(command_sender) = lsp_command_sender {
-                    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-                    let span = tracing::info_span!(
-                        "lsp_start_server_command",
-                        workspace_root = %workspace_root.display(),
-                        server_name = %server_name,
-                        language_id = %language_id
-                    );
+                // ARCHITECTURE SIMPLIFICATION: This event should be handled by the Application
+                // The ProjectLspManager's role is just to emit these events once during project detection
+                // The Application's event listener will pick these up and queue them for processing
+                // We don't re-emit here to avoid infinite loops
 
-                    let command = nucleotide_events::ProjectLspCommand::StartServer {
-                        workspace_root: workspace_root.clone(),
-                        server_name: server_name.to_string(),
-                        language_id: language_id.to_string(),
-                        response: response_tx,
-                        span,
-                    };
+                debug!("ServerStartupRequested event acknowledged - waiting for Application to process");
+            }
 
-                    // Send command through event bridge
-                    if let Err(e) = command_sender.send(command) {
-                        error!(error = %e, "Failed to send LSP start server command");
-                        return;
+            ProjectLspEvent::ServerStartupCompleted {
+                workspace_root,
+                server_name,
+                server_id,
+                status,
+            } => {
+                info!(
+                    workspace_root = %workspace_root.display(),
+                    server_name = %server_name,
+                    server_id = ?server_id,
+                    status = ?status,
+                    "Received ServerStartupCompleted event from Application"
+                );
+
+                match status {
+                    nucleotide_events::ServerStartupResult::Success => {
+                        let server_info = ManagedServer {
+                            server_id,
+                            server_name: server_name.clone(),
+                            language_id: "rust".to_string(), // TODO: get from event
+                            workspace_root: workspace_root.clone(),
+                            started_at: std::time::Instant::now(),
+                            last_health_check: Some(std::time::Instant::now()),
+                            health_status: nucleotide_events::ServerHealthStatus::Healthy,
+                        };
+
+                        // Add to managed servers
+                        servers
+                            .write()
+                            .await
+                            .entry(workspace_root.clone())
+                            .or_default()
+                            .push(server_info.clone());
+
+                        info!(
+                            server_id = ?server_id,
+                            server_name = %server_name,
+                            "LSP server started successfully via event system"
+                        );
                     }
-
-                    // Wait for response from Application
-                    match tokio::time::timeout(std::time::Duration::from_secs(10), response_rx)
-                        .await
-                    {
-                        Ok(Ok(Ok(server_result))) => {
-                            let server_info = ManagedServer {
-                                server_id: server_result.server_id,
-                                server_name: server_result.server_name,
-                                language_id: server_result.language_id,
-                                workspace_root: workspace_root.clone(),
-                                started_at: std::time::Instant::now(),
-                                last_health_check: Some(std::time::Instant::now()),
-                                health_status: nucleotide_events::ServerHealthStatus::Healthy,
-                            };
-
-                            // Add to managed servers
-                            servers
-                                .write()
-                                .await
-                                .entry(workspace_root.clone())
-                                .or_default()
-                                .push(server_info.clone());
-
-                            info!(
-                                server_id = ?server_info.server_id,
-                                "Server startup completed successfully via Event-Driven Command Pattern"
-                            );
-                        }
-                        Ok(Ok(Err(e))) => {
-                            error!(error = %e, "LSP server startup failed");
-                        }
-                        Ok(Err(_)) => {
-                            error!("LSP command response channel closed");
-                        }
-                        Err(_) => {
-                            error!("LSP server startup timeout");
-                        }
+                    nucleotide_events::ServerStartupResult::Failed { error } => {
+                        error!(
+                            error = %error,
+                            server_name = %server_name,
+                            workspace_root = %workspace_root.display(),
+                            "LSP server startup failed"
+                        );
                     }
-                } else {
-                    error!(
-                        "No LSP command sender available - Event-Driven Command Pattern not initialized"
-                    );
+                    nucleotide_events::ServerStartupResult::Timeout => {
+                        error!(
+                            server_name = %server_name,
+                            workspace_root = %workspace_root.display(),
+                            "LSP server startup timed out"
+                        );
+                    }
+                    nucleotide_events::ServerStartupResult::ConfigurationError { error } => {
+                        error!(
+                            error = %error,
+                            server_name = %server_name,
+                            workspace_root = %workspace_root.display(),
+                            "LSP server startup configuration error"
+                        );
+                    }
                 }
             }
 
@@ -414,6 +428,7 @@ impl ProjectLspManager {
                 debug!(event = ?event, "Unhandled project LSP event");
             }
         }
+        */
     }
 
     /// Perform health check on a server
@@ -448,14 +463,14 @@ impl ProjectLspManager {
     }
 
     /// Get event sender for external coordination
-    pub fn get_event_sender(&self) -> mpsc::UnboundedSender<ProjectLspEvent> {
+    pub fn get_event_sender(&self) -> broadcast::Sender<ProjectLspEvent> {
         self.event_tx.clone()
     }
 
     /// Get event receiver for listening to ProjectLsp events
-    /// Note: This can only be called once as it takes ownership of the receiver
-    pub async fn get_event_receiver(&self) -> Option<mpsc::UnboundedReceiver<ProjectLspEvent>> {
-        self.event_rx.write().await.take()
+    /// Creates a new receiver that can be called multiple times
+    pub fn get_event_receiver(&self) -> Option<broadcast::Receiver<ProjectLspEvent>> {
+        Some(self.event_tx.subscribe())
     }
 
     /// Set the Helix bridge for actual LSP server integration
@@ -514,53 +529,68 @@ impl ProjectLspManager {
                 )));
             }
 
-            // Wait for response from Application
-            match response_rx.await {
-                Ok(Ok(server_result)) => {
-                    info!(
-                        server_id = ?server_result.server_id,
-                        server_name = %server_result.server_name,
-                        "Successfully started LSP server via event bridge"
-                    );
+            // Wait for response from Application with timeout to prevent indefinite blocking
+            let response_timeout = tokio::time::Duration::from_secs(30); // 30 second timeout for LSP server startup
+            match tokio::time::timeout(response_timeout, response_rx).await {
+                Ok(response_result) => match response_result {
+                    Ok(Ok(server_result)) => {
+                        info!(
+                            server_id = ?server_result.server_id,
+                            server_name = %server_result.server_name,
+                            "Successfully started LSP server via event bridge"
+                        );
 
-                    let server_id = server_result.server_id;
+                        let server_id = server_result.server_id;
 
-                    let managed_server = ManagedServer {
-                        server_id,
-                        server_name: server_name.to_string(),
-                        language_id: language_id.to_string(),
-                        workspace_root: workspace_root.clone(),
-                        started_at: Instant::now(),
-                        last_health_check: None,
-                        health_status: ServerHealthStatus::Healthy,
-                    };
+                        let managed_server = ManagedServer {
+                            server_id,
+                            server_name: server_name.to_string(),
+                            language_id: language_id.to_string(),
+                            workspace_root: workspace_root.clone(),
+                            started_at: Instant::now(),
+                            last_health_check: None,
+                            health_status: ServerHealthStatus::Healthy,
+                        };
 
-                    info!(
-                        server_id = ?server_id,
-                        "Language server started successfully via event bridge"
-                    );
+                        info!(
+                            server_id = ?server_id,
+                            "Language server started successfully via event bridge"
+                        );
 
-                    Ok(managed_server)
-                }
-                Ok(Err(e)) => {
+                        Ok(managed_server)
+                    }
+                    Ok(Err(e)) => {
+                        error!(
+                            error = %e,
+                            "Application failed to start LSP server"
+                        );
+                        Err(ProjectLspError::ServerStartup(format!(
+                            "Server startup failed: {}",
+                            e
+                        )))
+                    }
+                    Err(e) => {
+                        error!(
+                            error = %e,
+                            "Failed to receive response from Application"
+                        );
+                        Err(ProjectLspError::ServerStartup(format!(
+                            "Event bridge response failed: {}",
+                            e
+                        )))
+                    }
+                },
+                Err(_timeout) => {
                     error!(
-                        error = %e,
-                        "Application failed to start LSP server"
+                        timeout_seconds = 30,
+                        workspace_root = %workspace_root.display(),
+                        server_name = %server_name,
+                        language_id = %language_id,
+                        "LSP server startup timed out - Application may be blocked on environment capture"
                     );
-                    Err(ProjectLspError::ServerStartup(format!(
-                        "Server startup failed: {}",
-                        e
-                    )))
-                }
-                Err(e) => {
-                    error!(
-                        error = %e,
-                        "Failed to receive response from Application"
-                    );
-                    Err(ProjectLspError::ServerStartup(format!(
-                        "Event bridge response failed: {}",
-                        e
-                    )))
+                    Err(ProjectLspError::ServerStartup(
+                        "LSP server startup timed out after 30 seconds".to_string(),
+                    ))
                 }
             }
         } else {
@@ -962,7 +992,7 @@ mod tests {
 
     #[test]
     fn test_project_detector_rust_detection() {
-        let detector = ProjectDetector::new();
+        let detector = ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
         let servers = detector.get_language_servers_for_project(&ProjectType::Rust);
 
         assert_eq!(servers, vec!["rust-analyzer".to_string()]);
@@ -970,7 +1000,7 @@ mod tests {
 
     #[test]
     fn test_project_detector_typescript_detection() {
-        let detector = ProjectDetector::new();
+        let detector = ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
         let servers = detector.get_language_servers_for_project(&ProjectType::TypeScript);
 
         assert_eq!(servers, vec!["typescript-language-server".to_string()]);
@@ -978,7 +1008,7 @@ mod tests {
 
     #[test]
     fn test_project_detector_mixed_detection() {
-        let detector = ProjectDetector::new();
+        let detector = ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
         let mixed_type = ProjectType::Mixed(vec![ProjectType::Rust, ProjectType::TypeScript]);
         let servers = detector.get_language_servers_for_project(&mixed_type);
 
@@ -988,7 +1018,7 @@ mod tests {
 
     #[test]
     fn test_project_detector_language_id_mapping() {
-        let detector = ProjectDetector::new();
+        let detector = ProjectDetector::new(nucleotide_types::ProjectMarkersConfig::default());
 
         assert_eq!(detector.get_primary_language_id(&ProjectType::Rust), "rust");
         assert_eq!(
@@ -1008,7 +1038,7 @@ mod tests {
     #[tokio::test]
     async fn test_project_lsp_manager_creation() {
         let config = ProjectLspConfig::default();
-        let manager = ProjectLspManager::new(config);
+        let manager = ProjectLspManager::new(config, None);
 
         // Test that we can get an event sender
         let _event_sender = manager.get_event_sender();
