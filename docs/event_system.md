@@ -641,16 +641,91 @@ The system maintains focus awareness to route events correctly:
 ✅ **Editor Events**: ModeChanged, CommandExecuted  
 ✅ **Core Extraction**: ApplicationCore and ViewManager  
 
-### Phase 2 (Planned)
-- **LSP Events**: LanguageServerStarted, DiagnosticsReceived, CompletionAvailable
-- **Completion Events**: CompletionRequested, CompletionSelected, CompletionCancelled  
-- **File System Events**: FileChanged, DirectoryChanged, ProjectDetected
-- **Search Events**: SearchStarted, ResultsFound, SearchCompleted
+### Phase 2 (Completed ✅)
+- **LSP Events**: LanguageServerInitialized, LanguageServerExited, ServerStartupRequested
+  - LspHandler processes server lifecycle and health monitoring
+  - Tracks active servers per workspace with capabilities and health status
+  - Handles progress reporting and error recovery
+- **Completion Events**: CompletionRequested, ResultsAvailable, ItemSelected, ItemAccepted
+  - CompletionHandler manages completion request lifecycle and user interactions
+  - Tracks active sessions with request IDs and performance metrics
+  - Supports multiple providers (LSP, Buffer, Snippet, Path)
+- **Workspace Events**: ProjectOpened, FileTreeToggled, TabCreated, LayoutChanged
+  - WorkspaceHandler coordinates file operations and workspace state
+  - Manages panel visibility, tab lifecycle, and directory expansion
+  - Tracks current project type and workspace configuration
 
 ### Phase 3 (Future)
 - **Performance Events**: MemoryPressure, RenderingLag, InputDelay
 - **Accessibility Events**: ScreenReaderToggled, HighContrastChanged
 - **System Events**: WindowStateChanged, FocusChanged, ThemeChanged
+
+## Phase 2 Architecture Integration
+
+### ApplicationCore Handler Coordination
+
+The ApplicationCore now orchestrates six domain-specific handlers:
+
+**Phase 1 Handlers:**
+- `DocumentHandler`: Document lifecycle and content changes  
+- `ViewHandler`: View focus and selection management
+- `EditorHandler`: Mode changes and command execution
+
+**Phase 2 Handlers:**
+- `LspHandler`: Language server lifecycle and diagnostics
+- `CompletionHandler`: Completion request/response coordination  
+- `WorkspaceHandler`: File operations and workspace state
+
+### Event Processing Flow
+
+```rust
+// ApplicationCore processes both legacy and V2 events
+impl ApplicationCore {
+    async fn process_v2_event(&mut self, event: &BridgedEvent, editor: &mut Editor) {
+        match event {
+            // Phase 1 Events
+            BridgedEvent::DocumentChanged { doc_id } => {
+                let v2_event = DocumentEvent::ContentChanged { .. };
+                self.document_handler.handle(v2_event).await?;
+            }
+            
+            // Phase 2 Events  
+            BridgedEvent::LanguageServerInitialized { server_id } => {
+                let v2_event = LspEvent::ServerInitialized { .. };
+                self.lsp_handler.handle(v2_event).await?;
+            }
+            
+            BridgedEvent::CompletionRequested { doc_id, view_id, trigger } => {
+                let request_id = self.completion_handler.next_request_id().await;
+                let v2_event = CompletionEvent::Requested { .. };
+                self.completion_handler.handle(v2_event).await?;
+            }
+        }
+    }
+}
+```
+
+### Domain Event Enrichment
+
+Phase 2 events include rich contextual information:
+
+**LSP Events:**
+- Server capabilities and health status
+- Workspace root association  
+- Progress tracking with tokens
+- Error classification (fatal/recoverable)
+
+**Completion Events:**
+- Unique request ID tracking
+- Performance metrics (latency, filter time)
+- Provider attribution (LSP/Buffer/Snippet)
+- Selection method tracking (keyboard/mouse)
+
+**Workspace Events:** 
+- Project type detection
+- Panel configuration state
+- File operation sources  
+- Tab metadata and lifecycle
 
 ## Future Enhancements
 

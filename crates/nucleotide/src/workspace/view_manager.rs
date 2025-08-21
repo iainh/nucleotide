@@ -2,6 +2,7 @@
 // ABOUTME: Handles document view creation, focus management, and view state coordination
 
 use crate::document::DocumentView;
+use crate::workspace::Workspace;
 use gpui::{Context, Entity, FocusHandle, SharedString, Window};
 use helix_view::ViewId;
 use nucleotide_logging::{debug, info, instrument, warn};
@@ -47,7 +48,7 @@ impl ViewManager {
 
     /// Handle view focus change
     #[instrument(skip(self, cx))]
-    pub fn handle_view_focused(&mut self, view_id: ViewId, cx: &mut Context<crate::Workspace>) {
+    pub fn handle_view_focused(&mut self, view_id: ViewId, cx: &mut Context<Workspace>) {
         info!(view_id = ?view_id, "View focused");
         self.focused_view_id = Some(view_id);
 
@@ -64,9 +65,9 @@ impl ViewManager {
     #[instrument(skip(self, cx, core, style))]
     pub fn update_document_views(
         &mut self,
-        cx: &mut Context<crate::Workspace>,
+        cx: &mut Context<Workspace>,
         core: &Entity<crate::Application>,
-        style: crate::types::EditorStyle,
+        style: (), // TODO: Fix EditorStyle type
     ) -> Option<SharedString> {
         let mut view_ids = HashSet::new();
         let mut focused_file_name = None;
@@ -128,7 +129,7 @@ impl ViewManager {
 
     /// Update only the currently focused document view
     #[instrument(skip(self, cx))]
-    pub fn update_current_document_view(&mut self, cx: &mut Context<crate::Workspace>) {
+    pub fn update_current_document_view(&mut self, cx: &mut Context<Workspace>) {
         if let Some(focused_view_id) = self.focused_view_id {
             if let Some(view_entity) = self.documents.get(&focused_view_id) {
                 view_entity.update(cx, |_view, cx| {
@@ -140,7 +141,7 @@ impl ViewManager {
 
     /// Focus the editor area by focusing the active document view
     #[instrument(skip(self, cx, window))]
-    pub fn focus_editor_area(&mut self, cx: &mut Context<crate::Workspace>, window: &Window) {
+    pub fn focus_editor_area(&mut self, cx: &mut Context<Workspace>, window: &Window) {
         debug!("Focusing editor area");
 
         // Find the currently active document view and focus it
@@ -164,11 +165,7 @@ impl ViewManager {
 
     /// Check if any document view is focused
     #[instrument(skip(self, cx, window))]
-    pub fn is_document_view_focused(
-        &self,
-        cx: &Context<crate::Workspace>,
-        window: &Window,
-    ) -> bool {
+    pub fn is_document_view_focused(&self, cx: &Context<Workspace>, window: &Window) -> bool {
         self.focused_view_id
             .and_then(|view_id| self.documents.get(&view_id))
             .map(|doc_view| doc_view.focus_handle(cx).is_focused(window))

@@ -2,14 +2,20 @@
 // ABOUTME: Contains domain-specific handlers and main Application implementation
 
 pub mod app_core;
+pub mod completion_handler;
 pub mod document_handler;
 pub mod editor_handler;
+pub mod lsp_handler;
 pub mod view_handler;
+pub mod workspace_handler;
 
 pub use app_core::ApplicationCore;
+pub use completion_handler::CompletionHandler;
 pub use document_handler::DocumentHandler;
 pub use editor_handler::EditorHandler;
+pub use lsp_handler::LspHandler;
 pub use view_handler::ViewHandler;
+pub use workspace_handler::WorkspaceHandler;
 
 use std::{
     path::{Path, PathBuf},

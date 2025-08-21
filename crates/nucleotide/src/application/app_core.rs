@@ -7,16 +7,23 @@ use nucleotide_events::v2::handler::EventHandler;
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use std::sync::Arc;
 
-use crate::application::{DocumentHandler, EditorHandler, ViewHandler};
+use crate::application::{
+    CompletionHandler, DocumentHandler, EditorHandler, LspHandler, ViewHandler, WorkspaceHandler,
+};
 use nucleotide_core::event_bridge;
 
 /// Core application logic for event processing and coordination
 /// Separated from the main Application struct to reduce complexity
 pub struct ApplicationCore {
-    /// V2 Event System Handlers
+    /// V2 Event System Handlers - Phase 1
     pub document_handler: DocumentHandler,
     pub view_handler: ViewHandler,
     pub editor_handler: EditorHandler,
+
+    /// V2 Event System Handlers - Phase 2
+    pub lsp_handler: LspHandler,
+    pub completion_handler: CompletionHandler,
+    pub workspace_handler: WorkspaceHandler,
 
     /// Initialization state
     initialized: bool,
@@ -29,6 +36,9 @@ impl ApplicationCore {
             document_handler: DocumentHandler::new(),
             view_handler: ViewHandler::new(),
             editor_handler: EditorHandler::new(),
+            lsp_handler: LspHandler::new(),
+            completion_handler: CompletionHandler::new(),
+            workspace_handler: WorkspaceHandler::new(),
             initialized: false,
         }
     }
@@ -43,7 +53,7 @@ impl ApplicationCore {
 
         info!("Initializing ApplicationCore with V2 event handlers");
 
-        // Initialize all handlers
+        // Initialize Phase 1 handlers
         self.document_handler
             .initialize()
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
@@ -51,6 +61,17 @@ impl ApplicationCore {
             .initialize()
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         self.editor_handler
+            .initialize()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+        // Initialize Phase 2 handlers
+        self.lsp_handler
+            .initialize()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        self.completion_handler
+            .initialize()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        self.workspace_handler
             .initialize()
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
@@ -266,10 +287,116 @@ impl ApplicationCore {
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             }
 
+            // Phase 2 Events - LSP Integration
+            event_bridge::BridgedEvent::LanguageServerInitialized { server_id } => {
+                // Create LSP server initialized event
+                let v2_event = nucleotide_events::v2::lsp::Event::ServerInitialized {
+                    server_id: *server_id,
+                    server_name: "unknown".to_string(), // TODO: Extract actual server name
+                    capabilities: nucleotide_events::v2::lsp::ServerCapabilities::new(),
+                    workspace_root: std::path::PathBuf::from("unknown"), // TODO: Extract workspace root
+                };
+
+                debug!(
+                    server_id = ?server_id,
+                    "Processing LanguageServerInitialized through V2 LspHandler"
+                );
+
+                self.lsp_handler
+                    .handle(v2_event)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            }
+
+            event_bridge::BridgedEvent::LanguageServerExited { server_id } => {
+                let v2_event = nucleotide_events::v2::lsp::Event::ServerExited {
+                    server_id: *server_id,
+                    server_name: "unknown".to_string(), // TODO: Extract actual server name
+                    exit_code: None,                    // TODO: Extract actual exit code
+                    workspace_root: std::path::PathBuf::from("unknown"), // TODO: Extract workspace root
+                };
+
+                debug!(
+                    server_id = ?server_id,
+                    "Processing LanguageServerExited through V2 LspHandler"
+                );
+
+                self.lsp_handler
+                    .handle(v2_event)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            }
+
+            event_bridge::BridgedEvent::LspServerStartupRequested {
+                workspace_root,
+                server_name,
+                language_id,
+            } => {
+                let v2_event = nucleotide_events::v2::lsp::Event::ServerStartupRequested {
+                    workspace_root: workspace_root.clone(),
+                    server_name: server_name.clone(),
+                    language_id: language_id.clone(),
+                };
+
+                debug!(
+                    workspace = %workspace_root.display(),
+                    server_name = %server_name,
+                    language_id = %language_id,
+                    "Processing LspServerStartupRequested through V2 LspHandler"
+                );
+
+                self.lsp_handler
+                    .handle(v2_event)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            }
+
+            // Phase 2 Events - Completion Integration
+            event_bridge::BridgedEvent::CompletionRequested {
+                doc_id,
+                view_id,
+                trigger,
+            } => {
+                // Generate a unique request ID
+                let request_id = self.completion_handler.next_request_id().await;
+
+                let v2_event = nucleotide_events::v2::completion::Event::Requested {
+                    doc_id: *doc_id,
+                    view_id: *view_id,
+                    trigger: match trigger {
+                        nucleotide_types::CompletionTrigger::Invoked => {
+                            nucleotide_events::v2::completion::CompletionTrigger::Manual
+                        }
+                        nucleotide_types::CompletionTrigger::TriggerCharacter(ch) => {
+                            nucleotide_events::v2::completion::CompletionTrigger::Character(*ch)
+                        }
+                        nucleotide_types::CompletionTrigger::TriggerForIncompleteCompletions => {
+                            nucleotide_events::v2::completion::CompletionTrigger::Automatic
+                        }
+                    },
+                    cursor_position: nucleotide_events::v2::completion::Position {
+                        line: 0,
+                        column: 0,
+                    }, // TODO: Extract actual cursor position
+                    request_id,
+                };
+
+                debug!(
+                    doc_id = ?doc_id,
+                    view_id = ?view_id,
+                    request_id = ?request_id,
+                    "Processing CompletionRequested through V2 CompletionHandler"
+                );
+
+                self.completion_handler
+                    .handle(v2_event)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            }
+
             _ => {
                 debug!(event = ?bridged_event, "V2 processing not yet implemented for this event type");
-                // Other events (LanguageServer events, Completion) will be handled
-                // as we implement their respective handlers in future phases
+                // Other workspace events will be integrated as needed
             }
         }
 
@@ -304,6 +431,36 @@ impl ApplicationCore {
     /// Get mutable access to editor handler
     pub fn editor_handler_mut(&mut self) -> &mut EditorHandler {
         &mut self.editor_handler
+    }
+
+    /// Get access to LSP handler for external coordination
+    pub fn lsp_handler(&self) -> &LspHandler {
+        &self.lsp_handler
+    }
+
+    /// Get mutable access to LSP handler
+    pub fn lsp_handler_mut(&mut self) -> &mut LspHandler {
+        &mut self.lsp_handler
+    }
+
+    /// Get access to completion handler for external coordination
+    pub fn completion_handler(&self) -> &CompletionHandler {
+        &self.completion_handler
+    }
+
+    /// Get mutable access to completion handler
+    pub fn completion_handler_mut(&mut self) -> &mut CompletionHandler {
+        &mut self.completion_handler
+    }
+
+    /// Get access to workspace handler for external coordination
+    pub fn workspace_handler(&self) -> &WorkspaceHandler {
+        &self.workspace_handler
+    }
+
+    /// Get mutable access to workspace handler
+    pub fn workspace_handler_mut(&mut self) -> &mut WorkspaceHandler {
+        &mut self.workspace_handler
     }
 
     /// Check if the core is initialized
