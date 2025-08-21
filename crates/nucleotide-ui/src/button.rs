@@ -9,8 +9,7 @@ use crate::{
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, ElementId, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseUpEvent,
-    ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window,
-    div, px, svg,
+    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, svg,
 };
 
 /// Button variant styles (backward compatibility)
@@ -90,27 +89,7 @@ impl From<StyleSize> for ButtonSize {
     }
 }
 
-impl ButtonSize {
-    fn padding(&self) -> (Pixels, Pixels) {
-        match self {
-            Self::ExtraSmall => (spacing::XS, spacing::XS),
-            Self::Small => (spacing::XS, spacing::SM),
-            Self::Medium => (spacing::SM, spacing::MD),
-            Self::Large => (spacing::MD, spacing::LG),
-            Self::ExtraLarge => (spacing::LG, spacing::LG),
-        }
-    }
-
-    fn text_size(&self) -> Pixels {
-        match self {
-            Self::ExtraSmall => px(10.),
-            Self::Small => px(12.),
-            Self::Medium => px(14.),
-            Self::Large => px(16.),
-            Self::ExtraLarge => px(18.),
-        }
-    }
-}
+impl ButtonSize {}
 
 /// Button interaction states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

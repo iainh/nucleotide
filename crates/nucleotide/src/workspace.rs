@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::panic::UnwindSafe;
 use std::sync::Arc;
 
 use gpui::FontFeatures;
@@ -4658,7 +4657,7 @@ impl Render for Workspace {
                         };
 
                         // Release the core read lock before calling handle_completion_requested
-                        drop(core);
+                        let _ = core;
 
                         workspace.handle_completion_requested(
                             doc_id,

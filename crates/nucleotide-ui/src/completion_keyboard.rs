@@ -1,9 +1,7 @@
 // ABOUTME: Keyboard navigation and input handling for completion system
 // ABOUTME: Provides smooth integration between editor input and completion UI
 
-use gpui::{
-    Action, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, KeyBinding, Keystroke,
-};
+use gpui::{App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Keystroke};
 use std::collections::HashMap;
 
 /// Keyboard navigation actions for completion system
@@ -355,15 +353,13 @@ pub enum KeyboardNavigationResult {
 pub struct CompletionFocusManager {
     completion_focused: bool,
     editor_focus_handle: Option<FocusHandle>,
-    completion_focus_handle: FocusHandle,
 }
 
 impl CompletionFocusManager {
-    pub fn new<V: 'static>(cx: &mut Context<V>) -> Self {
+    pub fn new<V: 'static>(_cx: &mut Context<V>) -> Self {
         Self {
             completion_focused: false,
             editor_focus_handle: None,
-            completion_focus_handle: cx.focus_handle(),
         }
     }
 

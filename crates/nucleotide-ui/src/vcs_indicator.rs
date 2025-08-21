@@ -63,19 +63,6 @@ impl VcsIndicator {
         self
     }
 
-    /// Get the color for this VCS status
-    fn get_color(&self, theme: &crate::Theme) -> gpui::Hsla {
-        match self.status {
-            VcsStatus::Modified => theme.warning,
-            VcsStatus::Added => theme.success,
-            VcsStatus::Deleted => theme.error,
-            VcsStatus::Untracked => theme.text_muted,
-            VcsStatus::Renamed => theme.accent,
-            VcsStatus::Conflicted => theme.error,
-            VcsStatus::UpToDate => return theme.background.opacity(0.0), // Invisible for up-to-date
-        }
-    }
-
     /// Check if this status should be visible
     fn should_show(&self) -> bool {
         !matches!(self.status, VcsStatus::UpToDate)

@@ -1,7 +1,6 @@
 // ABOUTME: Enhanced completion system with async filtering and smart query optimization
 // ABOUTME: Professional-grade completion view based on Zed's architecture
 
-use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, InteractiveElement,
     IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
@@ -15,10 +14,9 @@ use crate::completion_docs::{
     DocumentationCacheConfig, DocumentationContent, DocumentationLoader, DocumentationPanel,
 };
 use crate::completion_error::{
-    CompletionError, CompletionErrorHandler, ErrorContext, ErrorHandlingResult, ErrorSeverity,
+    CompletionError, CompletionErrorHandler, ErrorContext, ErrorHandlingResult,
 };
 use crate::completion_perf::{PerformanceMonitor, PerformanceTimer};
-use crate::completion_popup::{PopupConstraints, PopupPlacement, PopupPositioner, SmartPopup};
 use crate::completion_renderer::{CompletionItemElement, CompletionListState};
 use crate::debouncer::{CompletionDebouncer, create_completion_debouncer};
 use crate::fuzzy::{FuzzyConfig, match_strings};
@@ -217,7 +215,6 @@ pub struct CompletionView {
     documentation_loader: DocumentationLoader,
     documentation_panel: DocumentationPanel,
     list_state: CompletionListState,
-    popup_positioner: PopupPositioner,
     current_documentation: Option<DocumentationContent>,
 
     // GPUI Requirements
@@ -250,7 +247,6 @@ impl CompletionView {
             documentation_loader: DocumentationLoader::new(DocumentationCacheConfig::default()),
             documentation_panel: DocumentationPanel::new(),
             list_state: CompletionListState::new(24.0, 400.0),
-            popup_positioner: PopupPositioner::new(PopupConstraints::default()),
             current_documentation: None,
             focus_handle: cx.focus_handle(),
         }

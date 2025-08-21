@@ -141,8 +141,7 @@ impl ProjectEnvironment {
         debug!(shell = %shell, directory = %directory.display(), "Executing shell environment capture");
 
         // Build shell-specific command
-        let mut command =
-            shell_command_builder::build_environment_capture_command(&shell, directory)?;
+        let command = shell_command_builder::build_environment_capture_command(&shell, directory)?;
 
         // Convert to tokio command for async execution
         let mut tokio_command = tokio::process::Command::new(command.get_program());

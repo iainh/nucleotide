@@ -3,10 +3,9 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Window, div, px,
+    Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Window, div,
 };
 use nucleotide_ui::ThemedContext;
-use nucleotide_ui::{Button, ButtonSize, ButtonVariant, VcsIndicator, VcsStatus};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

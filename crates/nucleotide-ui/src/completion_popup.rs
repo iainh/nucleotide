@@ -5,7 +5,7 @@ use gpui::{
     Bounds, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, Size,
     Styled, div, point, px, size,
 };
-use std::cmp::{max, min};
+use std::cmp::max;
 
 /// Position preference for popup placement
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -155,7 +155,7 @@ impl PopupPositioner {
     fn calculate_optimal_size(
         &self,
         content_size: Size<Pixels>,
-        available_space: &AvailableSpace,
+        _available_space: &AvailableSpace,
     ) -> Size<Pixels> {
         let width = content_size
             .width
@@ -381,7 +381,7 @@ impl<T> Render for SmartPopup<T>
 where
     T: IntoElement + Clone + 'static,
 {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().id("hidden-popup");
         }

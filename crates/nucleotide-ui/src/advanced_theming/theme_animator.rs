@@ -64,8 +64,6 @@ pub struct PerformanceMonitor {
     frame_times: Vec<Duration>,
     /// Dropped frame count
     dropped_frames: u32,
-    /// Last performance check
-    last_check: Instant,
     /// Performance warnings issued
     warnings_issued: u32,
 }
@@ -185,7 +183,6 @@ impl Default for PerformanceMonitor {
         Self {
             frame_times: Vec::with_capacity(60), // Track last 60 frames
             dropped_frames: 0,
-            last_check: Instant::now(),
             warnings_issued: 0,
         }
     }

@@ -1,7 +1,6 @@
 // ABOUTME: Service for managing project status and detection state
 // ABOUTME: Coordinates between project detection, LSP state, and UI updates
 
-use crate::project_indicator::{ProjectInfo, ProjectLspStatus};
 use gpui::Global;
 use nucleotide_logging::{debug, info, warn};
 use std::path::{Path, PathBuf};

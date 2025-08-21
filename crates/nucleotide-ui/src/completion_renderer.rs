@@ -3,10 +3,9 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    StatefulInteractiveElement, Styled, UniformListScrollHandle, div, px, relative, uniform_list,
+    AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement, Styled, UniformListScrollHandle, div, px,
 };
-use std::sync::Arc;
 
 use crate::completion_v2::{CompletionItem, CompletionItemKind, StringMatch};
 
@@ -410,7 +409,7 @@ pub fn render_completion_list<F, T: 'static>(
     selected_index: usize,
     list_state: &CompletionListState,
     cx: &mut Context<T>,
-    render_item: F,
+    _render_item: F,
 ) -> impl IntoElement
 where
     F: Fn(usize, &CompletionItem, &StringMatch, bool) -> CompletionItemElement + 'static + Clone,

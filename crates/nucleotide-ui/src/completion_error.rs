@@ -1,7 +1,7 @@
 // ABOUTME: Comprehensive error handling and resilience for completion system
 // ABOUTME: Provides graceful degradation and user-friendly error reporting
 
-use gpui::{Context, EventEmitter, Task};
+use gpui::{Context, Task};
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -511,7 +511,7 @@ impl ErrorRecoveryExecutor {
     pub fn execute_recovery<V: 'static>(
         &mut self,
         action: RecoveryAction,
-        cx: &mut Context<V>,
+        _cx: &mut Context<V>,
     ) -> Task<RecoveryResult> {
         // For now, we'll simulate the async operations synchronously
         // Real implementation would use proper GPUI async patterns
@@ -565,7 +565,7 @@ impl ErrorRecoveryExecutor {
 
     /// Check and process completed recovery tasks
     pub fn process_completed_recoveries(&mut self) -> Vec<RecoveryResult> {
-        let mut completed = Vec::new();
+        let completed = Vec::new();
         let mut active = Vec::new();
 
         for task in self.active_recoveries.drain(..) {

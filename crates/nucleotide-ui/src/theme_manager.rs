@@ -430,11 +430,6 @@ impl ThemeManager {
         bg.l < 0.5
     }
 
-    /// Derive a UI theme from a Helix theme
-    fn derive_ui_theme(helix_theme: &HelixTheme) -> UITheme {
-        Self::derive_ui_theme_with_appearance(helix_theme, SystemAppearance::default())
-    }
-
     /// Derive a UI theme from a Helix theme with system appearance for fallback colors
     fn derive_ui_theme_with_appearance(
         helix_theme: &HelixTheme,

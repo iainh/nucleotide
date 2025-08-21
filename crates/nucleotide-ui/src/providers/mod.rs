@@ -66,8 +66,6 @@ pub struct ProviderScopeId(usize);
 /// Provider scope for managing nested contexts
 #[derive(Debug)]
 pub struct ProviderScope {
-    id: ProviderScopeId,
-    element_id: Option<ElementId>,
     providers: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     parent_scope: Option<ProviderScopeId>,
 }
@@ -106,11 +104,9 @@ impl ProviderContext {
     }
 
     /// Create a new provider scope
-    pub fn create_scope(&mut self, element_id: Option<ElementId>) -> ProviderScopeId {
+    pub fn create_scope(&mut self, _element_id: Option<ElementId>) -> ProviderScopeId {
         let id = ProviderScopeId(self.provider_hierarchy.len());
         let scope = ProviderScope {
-            id,
-            element_id,
             providers: HashMap::new(),
             parent_scope: self.active_scope,
         };
@@ -379,7 +375,6 @@ pub struct ProviderTreeBuilder {
 
 /// Provider entry for the tree builder
 struct ProviderEntry {
-    provider: Box<dyn Any + Send + Sync>,
     type_name: &'static str,
 }
 
@@ -391,12 +386,11 @@ impl ProviderTreeBuilder {
         }
     }
 
-    pub fn with_provider<T>(mut self, provider: T) -> Self
+    pub fn with_provider<T>(mut self, _provider: T) -> Self
     where
         T: Provider + Clone + 'static,
     {
         self.providers.push(ProviderEntry {
-            provider: Box::new(provider),
             type_name: std::any::type_name::<T>(),
         });
         self

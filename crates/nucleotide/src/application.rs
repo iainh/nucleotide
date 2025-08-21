@@ -1838,7 +1838,7 @@ impl Application {
                 );
 
                 // Try to recreate the bridge and connect it to manager
-                if let Some(mut manager) = self.project_lsp_manager.write().await.take() {
+                if let Some(manager) = self.project_lsp_manager.write().await.take() {
                     let event_sender = manager.get_event_sender();
                     let env_provider = Arc::new(ProjectEnvironmentProvider::new(
                         self.project_environment.clone(),
@@ -2600,7 +2600,7 @@ impl Application {
             "Processing RestartServersForWorkspaceChange command with direct Editor access"
         );
 
-        let mut results = Vec::new();
+        let results = Vec::new();
 
         // CRITICAL FIX: Update the Editor's working directory so Helix LSP initialization uses the correct workspace root
         if let Err(e) = self.editor.set_cwd(new_workspace_root) {
@@ -2628,7 +2628,8 @@ impl Application {
                 self.shell_env_cache
                     .lock()
                     .await
-                    .clear_directory_cache(old_root);
+                    .clear_directory_cache(old_root)
+                    .await;
                 debug!(
                     old_workspace_root = %old_root.display(),
                     "Cleared shell environment cache for old workspace"
@@ -2751,8 +2752,6 @@ impl Application {
 
 /// Detect project root by walking up parent directories looking for project markers
 fn detect_project_root_from_file(file_path: &std::path::Path) -> Option<std::path::PathBuf> {
-    use std::path::Path;
-
     // Common project markers to look for
     let project_markers = [
         "Cargo.toml",       // Rust

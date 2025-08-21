@@ -8,7 +8,7 @@ use crate::{
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     SharedString, StatefulInteractiveElement, Styled, TextOverflow, Window, div,
 };
 use smallvec::SmallVec;
@@ -148,15 +148,7 @@ impl From<ListItemState> for StyleState {
     }
 }
 
-impl ListItemSpacing {
-    fn padding(&self) -> (Pixels, Pixels) {
-        match self {
-            Self::Compact => (spacing::XS, spacing::SM),
-            Self::Default => (spacing::SM, spacing::MD),
-            Self::Spacious => (spacing::MD, spacing::LG),
-        }
-    }
-}
+impl ListItemSpacing {}
 
 // Type alias for GPUI event listeners - these will be applied to the rendered element
 type EventListener =

@@ -13,8 +13,6 @@ pub struct HelixThemeBridge {
     discovery_config: ThemeDiscoveryConfig,
     /// Conversion mappings
     color_mappings: ColorMappings,
-    /// Compatibility settings
-    compatibility: CompatibilitySettings,
     /// Cache for loaded themes
     theme_cache: HashMap<String, CachedHelixTheme>,
 }
@@ -296,7 +294,6 @@ impl HelixThemeBridge {
         Self {
             discovery_config: ThemeDiscoveryConfig::default(),
             color_mappings: ColorMappings::default(),
-            compatibility: CompatibilitySettings::default(),
             theme_cache: HashMap::new(),
         }
     }
@@ -305,12 +302,11 @@ impl HelixThemeBridge {
     pub fn with_config(
         discovery_config: ThemeDiscoveryConfig,
         color_mappings: ColorMappings,
-        compatibility: CompatibilitySettings,
+        _compatibility: CompatibilitySettings,
     ) -> Self {
         Self {
             discovery_config,
             color_mappings,
-            compatibility,
             theme_cache: HashMap::new(),
         }
     }

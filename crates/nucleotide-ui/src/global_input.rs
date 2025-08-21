@@ -90,8 +90,6 @@ pub struct ShortcutRegistry {
     global_shortcuts: HashMap<String, ShortcutDefinition>,
     /// Context-specific shortcuts
     context_shortcuts: HashMap<String, HashMap<String, ShortcutDefinition>>,
-    /// Shortcut conflicts and resolutions
-    conflicts: HashMap<String, ConflictResolution>,
 }
 
 /// Shortcut definition
@@ -1173,7 +1171,7 @@ impl GlobalInputDispatcher {
 
         if let Ok(manager) = self.focus_groups.read() {
             // Check for available focus groups
-            for (group_id, group) in &manager.groups {
+            for (_group_id, group) in &manager.groups {
                 if group.enabled && !group.elements.is_empty() {
                     options.available_groups.push(FocusGroupInfo {
                         id: group.id.clone(),

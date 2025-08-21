@@ -2,11 +2,10 @@
 // ABOUTME: Provides cached markdown rendering and side panel documentation display
 
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle,
-    StatefulInteractiveElement, Styled, Task, div, px, relative,
+    Context, InteractiveElement, IntoElement, ParentElement, Render, Styled, Task, div, px,
+    relative,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::completion_v2::CompletionItem;
@@ -275,13 +274,13 @@ impl DocumentationLoader {
 
     /// Update with completed documentation loading
     pub fn update_completed_requests(&mut self) {
-        let mut completed = Vec::new();
+        let completed = Vec::new();
 
         // TODO: Check if tasks are completed when API is available
         // For now, just assume all requests complete immediately
 
         for key in completed {
-            if let Some(task) = self.pending_requests.remove(&key) {
+            if let Some(_task) = self.pending_requests.remove(&key) {
                 // In a real implementation, we'd get the result and cache it
                 // For now, we'll just simulate successful completion
                 let content = DocumentationContent::new(
@@ -484,7 +483,6 @@ fn html_escape(text: &str) -> String {
 pub struct DocumentationPanel {
     content: Option<DocumentationContent>,
     renderer: MarkdownRenderer,
-    scroll_handle: ScrollHandle,
     visible: bool,
     width: f32,
 }
@@ -494,7 +492,6 @@ impl DocumentationPanel {
         Self {
             content: None,
             renderer: MarkdownRenderer::new(),
-            scroll_handle: ScrollHandle::new(),
             visible: false,
             width: 300.0,
         }
@@ -601,7 +598,7 @@ impl DocumentationPanel {
                         )
                     } else {
                         // Render markdown content
-                        let html = self.renderer.render(&content.markdown);
+                        let _html = self.renderer.render(&content.markdown);
                         div()
                             .text_sm()
                             .text_color(tokens.colors.text_primary)

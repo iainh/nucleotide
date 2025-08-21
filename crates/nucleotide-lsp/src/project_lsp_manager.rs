@@ -7,11 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use helix_lsp::LanguageServerId;
-use helix_view::Editor;
-use nucleotide_events::{
-    ProjectLspCommand, ProjectLspCommandError, ProjectLspEvent, ProjectType, ServerHealthStatus,
-    ServerStartResult,
-};
+use nucleotide_events::{ProjectLspCommand, ProjectLspEvent, ProjectType, ServerHealthStatus};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use tokio::sync::{RwLock, broadcast};
 
@@ -606,26 +602,22 @@ impl ProjectLspManager {
 pub struct ProjectDetector {
     /// Custom project markers configuration
     project_markers_config: ProjectMarkersConfig,
-    /// Maximum depth for ancestor directory traversal
-    max_traversal_depth: usize,
 }
 
 impl ProjectDetector {
     pub fn new(project_markers_config: ProjectMarkersConfig) -> Self {
         Self {
             project_markers_config,
-            max_traversal_depth: 10, // Reasonable default
         }
     }
 
     /// Create a new ProjectDetector with custom configuration
     pub fn with_config(
         project_markers_config: ProjectMarkersConfig,
-        max_traversal_depth: usize,
+        _max_traversal_depth: usize,
     ) -> Self {
         Self {
             project_markers_config,
-            max_traversal_depth,
         }
     }
 
