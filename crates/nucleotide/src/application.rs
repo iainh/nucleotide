@@ -13,6 +13,50 @@ use helix_term::ui::FilePickerData;
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
 
+// Import our shell environment system
+use crate::shell_env::ProjectEnvironment;
+
+/// Implementation of EnvironmentProvider trait for our ProjectEnvironment
+/// This bridges our environment system with the LSP system
+pub struct ProjectEnvironmentProvider {
+    project_environment: Arc<ProjectEnvironment>,
+}
+
+impl ProjectEnvironmentProvider {
+    pub fn new(project_environment: Arc<ProjectEnvironment>) -> Self {
+        Self {
+            project_environment,
+        }
+    }
+}
+
+impl nucleotide_lsp::EnvironmentProvider for ProjectEnvironmentProvider {
+    fn get_lsp_environment(
+        &self,
+        directory: &std::path::Path,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        std::collections::HashMap<String, String>,
+                        Box<dyn std::error::Error + Send + Sync>,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        let project_env = self.project_environment.clone();
+        let directory = directory.to_path_buf();
+
+        Box::pin(async move {
+            match project_env.get_lsp_environment(&directory).await {
+                Ok(env) => Ok(env),
+                Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
+            }
+        })
+    }
+}
+
 use gpui::AppContext;
 use helix_term::{
     args::Args,
@@ -92,6 +136,9 @@ pub struct Application {
         >,
     >,
     pub project_lsp_processor_started: Arc<std::sync::atomic::AtomicBool>,
+    pub project_lsp_system_initialized: Arc<std::sync::atomic::AtomicBool>,
+    pub shell_env_cache: Arc<tokio::sync::Mutex<crate::shell_env::ShellEnvironmentCache>>,
+    pub project_environment: Arc<ProjectEnvironment>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,7 +199,7 @@ impl Application {
                 "Current editor status from Helix"
             );
 
-            lsp_state.update(cx, |state, _cx| {
+            lsp_state.update(cx, |state, cx| {
                 // Log current state before clearing
                 let old_progress_count = state.progress.len();
                 info!(
@@ -392,6 +439,9 @@ impl Application {
                         );
                     }
                 }
+
+                // Notify GPUI that the model changed to trigger UI re-render
+                cx.notify();
             });
         }
     }
@@ -405,7 +455,7 @@ impl Application {
         // Then add project-specific information if available
         if let Some(lsp_state) = &self.lsp_state {
             if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
-                lsp_state.update(cx, |state, _cx| {
+                lsp_state.update(cx, |state, cx| {
                     // Add project-specific server information
                     // This would include information about proactively started servers
                     // and their relationship to projects
@@ -414,6 +464,9 @@ impl Application {
                     // In the future, we could query specific project information
                     // and add project-specific progress indicators here
                     info!("LSP state sync includes project information from ProjectLspManager");
+
+                    // Notify GPUI that the model changed
+                    cx.notify();
                 });
             }
         }
@@ -1095,6 +1148,8 @@ impl Application {
                 }
             }
 
+            // LSP server startup requests are now handled directly in the event bridge processing loop above
+
             // Check if all views are closed and we should quit
             if self.editor.tree.views().count() == 0 {
                 cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::ShouldQuit)));
@@ -1189,6 +1244,11 @@ impl Application {
                             }
                             event_bridge::BridgedEvent::CompletionRequested { doc_id, view_id, trigger } => {
                                 crate::Update::Event(AppEvent::Core(CoreEvent::CompletionRequested { doc_id, view_id, trigger }))
+                            }
+                            event_bridge::BridgedEvent::LspServerStartupRequested { workspace_root, server_name, language_id } => {
+                                // Handle LSP server startup directly here instead of routing through more events
+                                self.handle_lsp_server_startup_request(workspace_root, server_name, language_id).await;
+                                continue; // Don't emit a GPUI event for this, it's handled internally
                             }
                         };
                         cx.emit(update);
@@ -1366,8 +1426,34 @@ impl Application {
     }
 
     /// Initialize the ProjectLspManager and HelixLspBridge  
-    pub async fn initialize_project_lsp_system(&self) -> Result<(), anyhow::Error> {
+    pub async fn initialize_project_lsp_system(&mut self) -> Result<(), anyhow::Error> {
+        // Check if already initialized
+        if self
+            .project_lsp_system_initialized
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            debug!("Project LSP system already initialized, skipping");
+            return Ok(());
+        }
+
         info!("Initializing project LSP system");
+
+        // Check if managers already exist and only start event listener if needed
+        let manager_guard = self.project_lsp_manager.read().await;
+        if manager_guard.is_some() {
+            info!("ProjectLspManager already exists, attempting to start event listener");
+            drop(manager_guard);
+
+            // Event processing is now handled directly in the main event bridge loop
+
+            info!("Project LSP system initialized successfully with existing manager");
+            self.project_lsp_system_initialized
+                .store(true, std::sync::atomic::Ordering::Release);
+            return Ok(());
+        }
+        drop(manager_guard);
+
+        info!("Creating new ProjectLspManager and HelixLspBridge");
 
         // Create ProjectLspManager with default configuration
         let project_lsp_config = nucleotide_lsp::ProjectLspConfig::default();
@@ -1379,21 +1465,64 @@ impl Application {
         // Get the event sender for the HelixLspBridge
         let event_tx = project_manager.get_event_sender();
 
-        // Create HelixLspBridge
-        let helix_bridge = nucleotide_lsp::HelixLspBridge::new(event_tx);
+        // Create HelixLspBridge with environment provider
+        let env_provider = Arc::new(ProjectEnvironmentProvider::new(
+            self.project_environment.clone(),
+        ));
+        let helix_bridge =
+            nucleotide_lsp::HelixLspBridge::new_with_environment(event_tx, env_provider);
         let helix_bridge_arc = std::sync::Arc::new(helix_bridge.clone());
 
         // Set the bridge in the project manager
-        project_manager.set_helix_bridge(helix_bridge_arc).await;
+        project_manager
+            .set_helix_bridge(helix_bridge_arc.clone())
+            .await;
 
-        // Start the project manager
-        project_manager.start().await?;
-
-        // Store the managers in the Application
+        // Store the managers in the Application FIRST so the event listener can access them
         *self.project_lsp_manager.write().await = Some(project_manager);
         *self.helix_lsp_bridge.write().await = Some(helix_bridge);
 
-        info!("Project LSP system initialized successfully");
+        // Event processing is now handled directly in the main event bridge loop
+        // No separate event listener setup needed
+
+        // Now start the project manager and detect projects using the stored manager
+        {
+            let manager_guard = self.project_lsp_manager.read().await;
+            if let Some(ref manager) = *manager_guard {
+                // Start the project manager
+                manager.start().await?;
+
+                // CRITICAL FIX: Trigger project detection if we have a project directory
+                // Now it's safe to emit events - the listener is already subscribed
+                if let Some(project_dir) = &self.project_directory {
+                    info!(
+                        project_directory = %project_dir.display(),
+                        "Triggering project detection for automatic LSP server startup"
+                    );
+
+                    if let Err(e) = manager.detect_project(project_dir.clone()).await {
+                        nucleotide_logging::warn!(
+                            error = %e,
+                            project_directory = %project_dir.display(),
+                            "Project detection failed - LSP servers may need to be started manually"
+                        );
+                    } else {
+                        info!("Project detection completed successfully");
+                    }
+                } else {
+                    nucleotide_logging::warn!(
+                        "No project directory set - LSP will use file-based mode"
+                    );
+                }
+            }
+        }
+
+        info!("Project LSP system initialized successfully with project detection");
+
+        // Mark as initialized to prevent duplicate initialization
+        self.project_lsp_system_initialized
+            .store(true, std::sync::atomic::Ordering::Release);
+
         Ok(())
     }
 
@@ -1463,145 +1592,7 @@ impl Application {
         sender
     }
 
-    /// Initialize ProjectLspManager with project detection and proactive server startup
-    #[instrument(skip(self))]
-    pub async fn initialize_project_lsp_manager(
-        &self,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!("Initializing ProjectLspManager for proactive LSP startup");
-
-        // Create ProjectLspManager configuration from GUI config
-        let project_config = nucleotide_lsp::ProjectLspConfig {
-            enable_proactive_startup: self.config.is_project_lsp_startup_enabled(),
-            health_check_interval: std::time::Duration::from_secs(30),
-            startup_timeout: std::time::Duration::from_millis(self.config.lsp_startup_timeout_ms()),
-            max_concurrent_startups: 3,
-            project_markers: self.config.project_markers().clone(),
-        };
-
-        // Create ProjectLspManager
-        let mut manager =
-            ProjectLspManager::new(project_config, self.project_lsp_command_tx.clone());
-
-        // Create HelixLspBridge with event sender
-        let event_sender = manager.get_event_sender();
-        let bridge = HelixLspBridge::new(event_sender);
-
-        // 🔥 CRITICAL FIX: Connect the bridge to the manager so it can actually start servers!
-        info!("Application: About to set Helix bridge on ProjectLspManager");
-        manager.set_helix_bridge(Arc::new(bridge.clone())).await;
-        info!("Application: Successfully set Helix bridge on ProjectLspManager");
-
-        // Start the manager
-        manager.start().await?;
-
-        // Store bridge and manager
-        *self.helix_lsp_bridge.write().await = Some(bridge);
-        *self.project_lsp_manager.write().await = Some(manager);
-
-        // If we have a project directory, detect and register it
-        if let Some(project_dir) = &self.project_directory {
-            if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
-                if let Err(e) = manager_ref.detect_project(project_dir.clone()).await {
-                    // Use error handler for project detection failure
-                    self.handle_project_lsp_error(Box::new(e), "project_detection")
-                        .await?;
-                }
-            }
-        }
-
-        // 🔥 CRITICAL FIX: Start event listener to connect ProjectLspManager to HelixLspBridge
-        self.start_project_lsp_event_listener().await?;
-
-        info!("ProjectLspManager initialized successfully");
-        Ok(())
-    }
-
-    /// Start event listener to connect ProjectLspManager events to HelixLspBridge actions
-    async fn start_project_lsp_event_listener(
-        &self,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!("Starting ProjectLspManager event listener");
-
-        let manager_arc = self.project_lsp_manager.clone();
-        let bridge_arc = self.helix_lsp_bridge.clone();
-
-        // Store a flag to track if we should process startup requests in the crank handler
-        // This allows us to integrate with the existing editor access pattern
-
-        tokio::spawn(async move {
-            loop {
-                // Get event receiver from manager
-                let mut event_rx = {
-                    let manager_guard = manager_arc.read().await;
-                    if let Some(manager) = manager_guard.as_ref() {
-                        match manager.get_event_receiver().await {
-                            Some(rx) => rx,
-                            None => {
-                                debug!("No event receiver available from ProjectLspManager");
-                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                                continue;
-                            }
-                        }
-                    } else {
-                        debug!("ProjectLspManager not available for event listening");
-                        break;
-                    }
-                };
-
-                // Listen for events and handle them
-                while let Some(event) = event_rx.recv().await {
-                    match event {
-                        nucleotide_events::ProjectLspEvent::ServerStartupRequested {
-                            workspace_root,
-                            server_name,
-                            language_id,
-                        } => {
-                            info!(
-                                workspace_root = %workspace_root.display(),
-                                server_name = %server_name,
-                                language_id = %language_id,
-                                "Handling server startup request from ProjectLspManager"
-                            );
-
-                            // For now, just log the request - actual server startup will happen
-                            // through the ProjectLspManager's proactive startup when detect_project() is called
-                            info!(
-                                workspace_root = %workspace_root.display(),
-                                server_name = %server_name,
-                                language_id = %language_id,
-                                "Server startup requested - will be handled by ProjectLspManager proactive startup"
-                            );
-                        }
-                        nucleotide_events::ProjectLspEvent::ProjectDetected {
-                            workspace_root,
-                            project_type,
-                            language_servers,
-                        } => {
-                            info!(
-                                workspace_root = %workspace_root.display(),
-                                project_type = ?project_type,
-                                language_servers = ?language_servers,
-                                "Project detected via ProjectLspManager"
-                            );
-                        }
-                        _ => {
-                            debug!("Received other ProjectLspEvent: {:?}", event);
-                        }
-                    }
-                }
-
-                // If we reach here, the receiver was closed, wait and try again
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        });
-
-        // The actual server startup will happen through the existing start_project_servers method
-        // when ProjectLspManager.detect_project() triggers proactive startup
-
-        info!("ProjectLspManager event listener started");
-        Ok(())
-    }
+    // Removed redundant initialize_project_lsp_manager - functionality moved to initialize_project_lsp_system
 
     /// Cleanup ProjectLspManager resources
     pub async fn cleanup_project_lsp_manager(
@@ -1849,7 +1840,10 @@ impl Application {
                 // Try to recreate the bridge and connect it to manager
                 if let Some(mut manager) = self.project_lsp_manager.write().await.take() {
                     let event_sender = manager.get_event_sender();
-                    let bridge = HelixLspBridge::new(event_sender);
+                    let env_provider = Arc::new(ProjectEnvironmentProvider::new(
+                        self.project_environment.clone(),
+                    ));
+                    let bridge = HelixLspBridge::new_with_environment(event_sender, env_provider);
 
                     // 🔥 CRITICAL FIX: Connect the bridge to the manager in recovery too!
                     manager.set_helix_bridge(Arc::new(bridge.clone())).await;
@@ -2291,6 +2285,68 @@ impl Application {
         }
     }
 
+    /// Handle a single LSP server startup request from the event bridge
+    /// This method runs in the main thread where it has mutable access to the editor
+    #[instrument(skip(self), fields(
+        workspace_root = %workspace_root.display(),
+        server_name = %server_name,
+        language_id = %language_id
+    ))]
+    async fn handle_lsp_server_startup_request(
+        &mut self,
+        workspace_root: std::path::PathBuf,
+        server_name: String,
+        language_id: String,
+    ) {
+        debug!("Handling LSP server startup request through event bridge");
+
+        // Get the bridge and start the server with timeout
+        let bridge_guard = self.helix_lsp_bridge.read().await;
+        if let Some(ref bridge) = *bridge_guard {
+            // Add timeout to prevent hanging during server lookup
+            let startup_timeout = std::time::Duration::from_secs(30);
+
+            match tokio::time::timeout(
+                startup_timeout,
+                bridge.start_server(
+                    &mut self.editor,
+                    &workspace_root,
+                    &server_name,
+                    &language_id,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(server_id)) => {
+                    info!(
+                        server_id = ?server_id,
+                        server_name = %server_name,
+                        workspace_root = %workspace_root.display(),
+                        "Successfully started LSP server"
+                    );
+                }
+                Ok(Err(e)) => {
+                    error!(
+                        error = %e,
+                        server_name = %server_name,
+                        workspace_root = %workspace_root.display(),
+                        "Failed to start LSP server"
+                    );
+                }
+                Err(_) => {
+                    error!(
+                        server_name = %server_name,
+                        workspace_root = %workspace_root.display(),
+                        timeout_seconds = startup_timeout.as_secs(),
+                        "LSP server startup timed out - server binary might not be found or startup is taking too long"
+                    );
+                }
+            }
+        } else {
+            warn!("HelixLspBridge not available for server startup");
+        }
+    }
+
     /// Handle LSP commands that require direct Editor access
     #[instrument(skip(self, command), fields(command_type = ?std::mem::discriminant(&command)))]
     async fn handle_lsp_command(&mut self, command: ProjectLspCommand) {
@@ -2298,6 +2354,7 @@ impl Application {
             ProjectLspCommand::DetectAndStartProject { span, .. } => span.clone(),
             ProjectLspCommand::StartServer { span, .. } => span.clone(),
             ProjectLspCommand::StopServer { span, .. } => span.clone(),
+            ProjectLspCommand::RestartServersForWorkspaceChange { span, .. } => span.clone(),
             ProjectLspCommand::GetProjectStatus { span, .. } => span.clone(),
             ProjectLspCommand::EnsureDocumentTracked { span, .. } => span.clone(),
         };
@@ -2364,6 +2421,31 @@ impl Application {
                     warn!("Failed to send GetProjectStatus response - receiver dropped");
                 }
             }
+            ProjectLspCommand::RestartServersForWorkspaceChange {
+                old_workspace_root,
+                new_workspace_root,
+                response,
+                ..
+            } => {
+                info!(
+                    old_workspace_root = ?old_workspace_root.as_ref().map(|p| p.display()),
+                    new_workspace_root = %new_workspace_root.display(),
+                    "Processing RestartServersForWorkspaceChange command with direct Editor access"
+                );
+
+                let result = self
+                    .handle_restart_servers_for_workspace_change_command(
+                        old_workspace_root.as_deref(),
+                        &new_workspace_root,
+                    )
+                    .await;
+
+                if let Err(_) = response.send(result) {
+                    warn!(
+                        "Failed to send RestartServersForWorkspaceChange response - receiver dropped"
+                    );
+                }
+            }
             ProjectLspCommand::EnsureDocumentTracked {
                 server_id,
                 doc_id,
@@ -2404,16 +2486,20 @@ impl Application {
         })?;
 
         // Use the HelixLspBridge to start the server with direct Editor access
-        match bridge
-            .start_server(
+        // Add timeout to prevent hanging when server binary is not found
+        let server_start_timeout = tokio::time::Duration::from_secs(15); // Generous timeout for server startup
+        match tokio::time::timeout(
+            server_start_timeout,
+            bridge.start_server(
                 &mut self.editor,
                 &workspace_root.to_path_buf(),
                 server_name,
                 language_id,
-            )
-            .await
+            ),
+        )
+        .await
         {
-            Ok(server_id) => {
+            Ok(Ok(server_id)) => {
                 info!(
                     server_id = ?server_id,
                     server_name = %server_name,
@@ -2427,7 +2513,7 @@ impl Application {
                     language_id: language_id.to_string(),
                 })
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 error!(
                     error = %e,
                     server_name = %server_name,
@@ -2438,6 +2524,19 @@ impl Application {
                 Err(ProjectLspCommandError::ServerStartup(format!(
                     "Failed to start {} server: {}",
                     server_name, e
+                )))
+            }
+            Err(_timeout) => {
+                error!(
+                    server_name = %server_name,
+                    language_id = %language_id,
+                    timeout_seconds = 15,
+                    "LSP server startup timed out - this usually indicates the server binary cannot be found in PATH"
+                );
+
+                Err(ProjectLspCommandError::ServerStartup(format!(
+                    "Timeout starting {} server after 15 seconds - check that {} is installed and in PATH",
+                    server_name, server_name
                 )))
             }
         }
@@ -2490,6 +2589,146 @@ impl Application {
 
     /// Handle EnsureDocumentTracked command
     #[instrument(skip(self))]
+    async fn handle_restart_servers_for_workspace_change_command(
+        &mut self,
+        old_workspace_root: Option<&std::path::Path>,
+        new_workspace_root: &std::path::Path,
+    ) -> Result<Vec<nucleotide_events::ServerStartResult>, ProjectLspCommandError> {
+        info!(
+            old_workspace_root = ?old_workspace_root.map(|p| p.display()),
+            new_workspace_root = %new_workspace_root.display(),
+            "Processing RestartServersForWorkspaceChange command with direct Editor access"
+        );
+
+        let mut results = Vec::new();
+
+        // CRITICAL FIX: Update the Editor's working directory so Helix LSP initialization uses the correct workspace root
+        if let Err(e) = self.editor.set_cwd(new_workspace_root) {
+            warn!(
+                error = %e,
+                workspace_root = %new_workspace_root.display(),
+                "Failed to update Editor working directory - LSP servers may still use wrong workspace root"
+            );
+        } else {
+            info!(
+                new_workspace_root = %new_workspace_root.display(),
+                "Successfully updated Editor working directory - new LSP servers will use correct workspace root"
+            );
+        }
+
+        // SHELL ENVIRONMENT CAPTURE: Get shell environment for new workspace to solve macOS app bundle PATH issues
+        info!(
+            new_workspace_root = %new_workspace_root.display(),
+            "Capturing shell environment for LSP servers to access cargo/rustc tools (with fast timeout)"
+        );
+
+        // Clear cache for old workspace if different
+        if let Some(old_root) = old_workspace_root {
+            if old_root != new_workspace_root {
+                self.shell_env_cache
+                    .lock()
+                    .await
+                    .clear_directory_cache(old_root);
+                debug!(
+                    old_workspace_root = %old_root.display(),
+                    "Cleared shell environment cache for old workspace"
+                );
+            }
+        }
+
+        // Capture environment for new workspace (this will cache it for LSP server startup)
+        // Use aggressive timeout to prevent blocking the UI - fast fallback is better than hanging
+        let env_capture_timeout = tokio::time::Duration::from_secs(3); // 3 second timeout for shell capture
+        let env_result = tokio::time::timeout(env_capture_timeout, async {
+            let mut cache = self.shell_env_cache.lock().await;
+            cache.get_environment(new_workspace_root).await
+        })
+        .await;
+
+        let env_result = match env_result {
+            Ok(result) => result,
+            Err(_timeout) => {
+                warn!(
+                    new_workspace_root = %new_workspace_root.display(),
+                    timeout_seconds = 3,
+                    "Shell environment capture timed out - using process environment as fallback for LSP servers"
+                );
+                info!(
+                    "Using fast fallback to ensure LSP startup is not blocked - this should still provide basic PATH resolution"
+                );
+                // Fallback: use current process environment which should still have basic Nix PATH
+                Ok(std::env::vars().collect())
+            }
+        };
+        match env_result {
+            Ok(env) => {
+                info!(
+                    new_workspace_root = %new_workspace_root.display(),
+                    env_var_count = env.len(),
+                    path_length = env.get("PATH").map(|p| p.len()).unwrap_or(0),
+                    "Successfully captured shell environment for LSP servers"
+                );
+
+                // CRITICAL: Set environment variables globally so LSP servers inherit them
+                // This solves the macOS app bundle PATH isolation issue
+                let mut env_updates = 0;
+                for (key, value) in &env {
+                    // Only update important environment variables to avoid side effects
+                    if should_update_env_var(key) {
+                        // SAFETY: Setting environment variables for LSP server inheritance
+                        // This is safe because we're controlling which variables get set
+                        unsafe {
+                            std::env::set_var(key, value);
+                        }
+                        env_updates += 1;
+                    }
+                }
+
+                info!(
+                    env_updates = env_updates,
+                    "Updated global environment variables for LSP server inheritance"
+                );
+
+                // Log PATH for debugging (truncated)
+                if let Some(path) = env.get("PATH") {
+                    let path_preview = if path.len() > 200 {
+                        format!("{}... ({} chars total)", &path[..200], path.len())
+                    } else {
+                        path.clone()
+                    };
+                    debug!(
+                        path_preview = %path_preview,
+                        "Shell environment PATH set globally for LSP tools"
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    new_workspace_root = %new_workspace_root.display(),
+                    "Failed to capture shell environment - LSP servers may not find cargo/rustc tools"
+                );
+            }
+        }
+
+        info!(
+            old_workspace_root = ?old_workspace_root.as_ref().map(|p| p.display()),
+            new_workspace_root = %new_workspace_root.display(),
+            "Workspace root changed - Editor working directory updated for correct LSP initialization"
+        );
+
+        if results.is_empty() {
+            info!("No rust-analyzer servers were restarted for workspace change");
+        } else {
+            info!(
+                restart_count = results.len(),
+                "Successfully restarted rust-analyzer servers with new workspace root"
+            );
+        }
+
+        Ok(results)
+    }
+
     async fn handle_ensure_document_tracked_command(
         &mut self,
         server_id: helix_lsp::LanguageServerId,
@@ -2866,7 +3105,46 @@ pub fn init_editor(
         project_lsp_command_tx: Some(project_lsp_command_tx),
         project_lsp_command_rx: Arc::new(RwLock::new(Some(project_lsp_command_rx))),
         project_lsp_processor_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        project_lsp_system_initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        shell_env_cache: Arc::new(tokio::sync::Mutex::new(
+            crate::shell_env::ShellEnvironmentCache::new(),
+        )),
+        project_environment: Arc::new(ProjectEnvironment::new(None)), // TODO: Detect CLI environment
     })
+}
+
+/// Determines which environment variables should be updated globally for LSP servers
+/// This is a safelist approach to avoid unintended side effects from shell environment
+fn should_update_env_var(key: &str) -> bool {
+    match key {
+        // PATH is critical for finding cargo, rustc, and other tools
+        "PATH" => true,
+
+        // Rust-specific environment variables
+        "RUSTUP_HOME" | "CARGO_HOME" | "RUSTC_WRAPPER" | "RUSTFLAGS" => true,
+
+        // Development environment variables that tools depend on
+        "JAVA_HOME" | "NODE_PATH" | "PYTHON_PATH" | "GOPATH" | "GOROOT" => true,
+
+        // Nix environment variables (common on macOS with Nix)
+        var if var.starts_with("NIX_") => true,
+
+        // asdf version manager
+        "ASDF_DATA_DIR" | "ASDF_DIR" => true,
+
+        // Skip system and session variables that could cause issues
+        "HOME" | "USER" | "SHELL" | "PWD" | "OLDPWD" => false,
+        "XDG_SESSION_TYPE" | "XDG_SESSION_ID" | "SESSION_MANAGER" => false,
+        "DISPLAY" | "WAYLAND_DISPLAY" | "SSH_AUTH_SOCK" | "SSH_AGENT_PID" => false,
+
+        // Skip potentially sensitive or system-specific variables
+        var if var.starts_with("LC_") => false,
+        var if var.starts_with("LANG") => false,
+        var if var.starts_with("DBUS_") => false,
+
+        // Default: only allow explicitly safe variables
+        _ => false,
+    }
 }
 
 // Tests moved to tests/integration_test.rs to avoid GPUI proc macro compilation issues
