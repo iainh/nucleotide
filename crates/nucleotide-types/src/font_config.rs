@@ -2,8 +2,10 @@
 // ABOUTME: Pure data structures for font settings
 
 use crate::config::FontWeight;
-use gpui::FontFeatures;
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "gpui-bridge")]
+use gpui::FontFeatures;
 
 /// Font descriptor - lightweight representation of a font
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,7 +67,10 @@ impl From<Font> for gpui::Font {
                 FontStyle::Italic => gpui::FontStyle::Italic,
                 FontStyle::Oblique => gpui::FontStyle::Oblique,
             },
+            #[cfg(feature = "gpui-bridge")]
             features: FontFeatures::default(),
+            #[cfg(not(feature = "gpui-bridge"))]
+            features: Default::default(),
             fallbacks: None,
         }
     }

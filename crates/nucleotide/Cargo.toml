@@ -63,6 +63,7 @@ fern.workspace = true
 chrono.workspace = true
 tracing.workspace = true
 once_cell.workspace = true
+async-trait = "0.1"
 
 # File picker
 nucleo.workspace = true

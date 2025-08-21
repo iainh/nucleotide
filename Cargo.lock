@@ -4494,6 +4494,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "async-trait",
  "chrono",
  "cocoa 0.25.0",
  "content_inspector",
@@ -4592,6 +4593,8 @@ dependencies = [
 name = "nucleotide-events"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "helix-core",
  "helix-lsp",
  "helix-view",
  "nucleotide-types",

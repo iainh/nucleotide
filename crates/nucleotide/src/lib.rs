@@ -3,6 +3,7 @@
 
 pub mod actions;
 pub mod application;
+pub mod application_v2;
 pub mod completion_coordinator;
 pub mod completions;
 pub mod config;

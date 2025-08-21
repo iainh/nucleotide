@@ -139,6 +139,8 @@ pub struct Application {
     pub project_lsp_system_initialized: Arc<std::sync::atomic::AtomicBool>,
     pub shell_env_cache: Arc<tokio::sync::Mutex<crate::shell_env::ShellEnvironmentCache>>,
     pub project_environment: Arc<ProjectEnvironment>,
+    // V2 Event System Handlers
+    pub document_handler: crate::application_v2::DocumentHandler,
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +168,36 @@ pub struct Crank;
 impl gpui::EventEmitter<()> for Crank {}
 
 impl Application {
+    /// Process events through V2 event system domain handlers
+    #[instrument(skip(self, bridged_event))]
+    async fn process_v2_event(&mut self, bridged_event: &event_bridge::BridgedEvent) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use nucleotide_events::v2::document::Event as DocumentEvent;
+        use nucleotide_events::v2::document::ChangeType;
+        use nucleotide_events::v2::handler::EventHandler;
+
+        // For now, demonstrate V2 processing only for DocumentChanged events
+        match bridged_event {
+            event_bridge::BridgedEvent::DocumentChanged { doc_id } => {
+                // Create a V2 document event
+                let v2_event = DocumentEvent::ContentChanged {
+                    doc_id: *doc_id,
+                    revision: 0, // TODO: Extract actual revision
+                    change_summary: ChangeType::Insert,
+                };
+                
+                debug!(doc_id = ?doc_id, "Processing DocumentChanged through V2 handler");
+                self.document_handler.handle(v2_event).await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            }
+            _ => {
+                debug!(event = ?bridged_event, "V2 processing not yet implemented for this event type");
+                // TODO: Add processing for other event types as handlers are implemented
+            }
+        }
+
+        Ok(())
+    }
+
     /// Sync LSP state from the editor and progress map
     #[instrument(skip(self, cx))]
     pub fn sync_lsp_state(&self, cx: &mut gpui::App) {
@@ -1214,6 +1246,15 @@ impl Application {
 
                     // Convert all bridged events to Update events and emit them
                     for bridged_event in events {
+                        // V2 Event System: Process events through domain handlers
+                        if let Err(e) = self.process_v2_event(&bridged_event).await {
+                            warn!(
+                                error = %e,
+                                bridged_event = ?bridged_event,
+                                "Failed to process V2 event"
+                            );
+                        }
+
                         let update = match bridged_event {
                             event_bridge::BridgedEvent::DocumentChanged { doc_id } => {
                                 crate::Update::Event(AppEvent::Core(CoreEvent::DocumentChanged { doc_id }))
@@ -3109,6 +3150,12 @@ pub fn init_editor(
             crate::shell_env::ShellEnvironmentCache::new(),
         )),
         project_environment: Arc::new(ProjectEnvironment::new(None)), // TODO: Detect CLI environment
+        // V2 Event System Handlers
+        document_handler: {
+            let mut handler = crate::application_v2::DocumentHandler::new();
+            handler.initialize().expect("Failed to initialize DocumentHandler");
+            handler
+        },
     })
 }
 

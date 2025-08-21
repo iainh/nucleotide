@@ -11,9 +11,11 @@ pub mod ui_events;
 pub mod workspace_events;
 
 // V2 Bounded Context Event Modules
+pub mod bridge;
 pub mod completion;
 pub mod document;
 pub mod editor;
+pub mod handler;
 pub mod integration;
 pub mod lsp;
 pub mod ui;
@@ -22,9 +24,11 @@ pub mod workspace;
 
 // Re-export V2 bounded context events
 pub mod v2 {
+    pub use crate::bridge;
     pub use crate::completion;
     pub use crate::document;
     pub use crate::editor;
+    pub use crate::handler;
     pub use crate::integration;
     pub use crate::lsp;
     pub use crate::ui;
