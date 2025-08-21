@@ -4,10 +4,10 @@
 use helix_view::DocumentId;
 use helix_view::ViewId;
 use helix_view::document::Mode;
+use nucleotide_events::ProjectLspCommand;
 use nucleotide_logging::{debug, info, instrument, warn};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
-use nucleotide_events::ProjectLspCommand;
 
 /// Events that can be bridged from Helix to GPUI
 #[derive(Debug, Clone)]
@@ -45,6 +45,12 @@ pub enum BridgedEvent {
         doc_id: DocumentId,
         view_id: ViewId,
         trigger: CompletionTrigger,
+    },
+    /// LSP server startup requested for a project
+    LspServerStartupRequested {
+        workspace_root: std::path::PathBuf,
+        server_name: String,
+        language_id: String,
     },
 }
 
@@ -259,6 +265,7 @@ pub fn create_bridge_channel() -> (mpsc::UnboundedSender<BridgedEvent>, BridgedE
 }
 
 /// Create a channel pair for LSP commands
-pub fn create_lsp_command_channel() -> (mpsc::UnboundedSender<ProjectLspCommand>, LspCommandReceiver) {
+pub fn create_lsp_command_channel() -> (mpsc::UnboundedSender<ProjectLspCommand>, LspCommandReceiver)
+{
     mpsc::unbounded_channel()
 }
