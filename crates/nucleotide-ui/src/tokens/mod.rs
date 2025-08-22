@@ -785,9 +785,21 @@ impl EditorTokens {
             cursor_select: base_colors.warning_500,
             cursor_match: base_colors.info_500,
 
-            text_primary: if is_dark { base_colors.neutral_900 } else { base_colors.neutral_100 },
-            text_secondary: if is_dark { base_colors.neutral_700 } else { base_colors.neutral_300 },
-            text_on_primary: if is_dark { base_colors.neutral_100 } else { base_colors.neutral_900 },
+            text_primary: if is_dark {
+                base_colors.neutral_900
+            } else {
+                base_colors.neutral_100
+            },
+            text_secondary: if is_dark {
+                base_colors.neutral_700
+            } else {
+                base_colors.neutral_300
+            },
+            text_on_primary: if is_dark {
+                base_colors.neutral_100
+            } else {
+                base_colors.neutral_900
+            },
 
             error: base_colors.error_500,
             warning: base_colors.warning_500,
@@ -797,16 +809,43 @@ impl EditorTokens {
             diagnostic_error: base_colors.error_500,
             diagnostic_warning: base_colors.warning_500,
             diagnostic_info: base_colors.success_500,
-            diagnostic_hint: if is_dark { base_colors.neutral_600 } else { base_colors.neutral_400 },
+            diagnostic_hint: if is_dark {
+                base_colors.neutral_600
+            } else {
+                base_colors.neutral_400
+            },
             diagnostic_error_bg: utils::with_alpha(base_colors.error_500, 0.1),
             diagnostic_warning_bg: utils::with_alpha(base_colors.warning_500, 0.1),
             diagnostic_info_bg: utils::with_alpha(base_colors.success_500, 0.1),
-            diagnostic_hint_bg: utils::with_alpha(if is_dark { base_colors.neutral_600 } else { base_colors.neutral_400 }, 0.1),
+            diagnostic_hint_bg: utils::with_alpha(
+                if is_dark {
+                    base_colors.neutral_600
+                } else {
+                    base_colors.neutral_400
+                },
+                0.1,
+            ),
 
-            gutter_background: if is_dark { base_colors.neutral_50 } else { base_colors.neutral_100 },
-            gutter_selected: if is_dark { base_colors.neutral_100 } else { base_colors.neutral_200 },
-            line_number: if is_dark { base_colors.neutral_500 } else { base_colors.neutral_500 },
-            line_number_active: if is_dark { base_colors.neutral_700 } else { base_colors.neutral_700 },
+            gutter_background: if is_dark {
+                base_colors.neutral_50
+            } else {
+                base_colors.neutral_100
+            },
+            gutter_selected: if is_dark {
+                base_colors.neutral_100
+            } else {
+                base_colors.neutral_200
+            },
+            line_number: if is_dark {
+                base_colors.neutral_500
+            } else {
+                base_colors.neutral_500
+            },
+            line_number_active: if is_dark {
+                base_colors.neutral_700
+            } else {
+                base_colors.neutral_700
+            },
 
             focus_ring: base_colors.primary_500,
             focus_ring_error: base_colors.error_500,
@@ -1194,7 +1233,7 @@ pub struct FileTreeTokens {
 }
 
 impl FileTreeTokens {
-    /// Create file tree tokens using computed chrome colors for backgrounds 
+    /// Create file tree tokens using computed chrome colors for backgrounds
     /// and editor colors for content
     pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
         let bg = chrome.file_tree_background;
@@ -1347,6 +1386,319 @@ impl TabBarTokens {
     }
 }
 
+/// Button component tokens using hybrid color system
+#[derive(Debug, Clone)]
+pub struct ButtonTokens {
+    // Primary button (main actions) - use chrome colors for consistency
+    pub primary_background: Hsla,
+    pub primary_background_hover: Hsla,
+    pub primary_background_active: Hsla,
+    pub primary_text: Hsla,
+    pub primary_border: Hsla,
+
+    // Secondary button (alternative actions) - chrome-based but differentiated
+    pub secondary_background: Hsla,
+    pub secondary_background_hover: Hsla,
+    pub secondary_background_active: Hsla,
+    pub secondary_text: Hsla,
+    pub secondary_border: Hsla,
+
+    // Ghost button (subtle actions) - transparent with chrome-based hover
+    pub ghost_background: Hsla,
+    pub ghost_background_hover: Hsla,
+    pub ghost_background_active: Hsla,
+    pub ghost_text: Hsla,
+
+    // Semantic variants (preserve Helix editor colors for familiarity)
+    pub danger_background: Hsla,
+    pub danger_background_hover: Hsla,
+    pub danger_text: Hsla,
+    pub success_background: Hsla,
+    pub success_background_hover: Hsla,
+    pub success_text: Hsla,
+    pub warning_background: Hsla,
+    pub warning_background_hover: Hsla,
+    pub warning_text: Hsla,
+    pub info_background: Hsla,
+    pub info_background_hover: Hsla,
+    pub info_text: Hsla,
+
+    // Disabled states
+    pub disabled_background: Hsla,
+    pub disabled_text: Hsla,
+    pub disabled_border: Hsla,
+
+    // Focus states (use Helix focus colors)
+    pub focus_ring: Hsla,
+    pub focus_ring_danger: Hsla,
+}
+
+impl ButtonTokens {
+    /// Create button tokens using hybrid color approach
+    pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
+        use crate::styling::color_theory::ColorTheory;
+
+        // Primary buttons use chrome colors for UI consistency
+        let primary_bg = chrome.surface_hover; // Interactive chrome surface
+        let primary_bg_hover = ColorTheory::lighten(primary_bg, 0.1);
+        let primary_bg_active = ColorTheory::darken(primary_bg, 0.1);
+        let primary_text = chrome.text_on_chrome;
+        let primary_border = chrome.border_strong;
+
+        // Secondary buttons are more subtle chrome variations
+        let secondary_bg = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
+        let secondary_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.5);
+        let secondary_bg_active = ColorTheory::with_alpha(chrome.surface_hover, 0.7);
+        let secondary_text = chrome.text_on_chrome;
+        let secondary_border = chrome.border_muted;
+
+        // Ghost buttons are transparent until hovered
+        let ghost_bg = ColorTheory::transparent();
+        let ghost_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.2);
+        let ghost_bg_active = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
+        let ghost_text = chrome.text_on_chrome;
+
+        // Semantic buttons use Helix editor colors for familiarity
+        let danger_bg = editor.error;
+        let danger_bg_hover = ColorTheory::lighten(danger_bg, 0.1);
+        let danger_text = ColorTheory::ensure_contrast(danger_bg, editor.text_on_primary, 4.5);
+
+        let success_bg = editor.success;
+        let success_bg_hover = ColorTheory::lighten(success_bg, 0.1);
+        let success_text = ColorTheory::ensure_contrast(success_bg, editor.text_on_primary, 4.5);
+
+        let warning_bg = editor.warning;
+        let warning_bg_hover = ColorTheory::lighten(warning_bg, 0.1);
+        let warning_text = ColorTheory::ensure_contrast(warning_bg, editor.text_on_primary, 4.5);
+
+        let info_bg = editor.info;
+        let info_bg_hover = ColorTheory::lighten(info_bg, 0.1);
+        let info_text = ColorTheory::ensure_contrast(info_bg, editor.text_on_primary, 4.5);
+
+        // Disabled states are muted versions
+        let disabled_bg = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
+        let disabled_text = ColorTheory::with_alpha(chrome.text_on_chrome, 0.5);
+        let disabled_border = ColorTheory::with_alpha(chrome.border_muted, 0.5);
+
+        // Focus rings use Helix focus colors
+        let focus_ring = editor.focus_ring;
+        let focus_ring_danger = editor.focus_ring_error;
+
+        Self {
+            primary_background: primary_bg,
+            primary_background_hover: primary_bg_hover,
+            primary_background_active: primary_bg_active,
+            primary_text,
+            primary_border,
+
+            secondary_background: secondary_bg,
+            secondary_background_hover: secondary_bg_hover,
+            secondary_background_active: secondary_bg_active,
+            secondary_text,
+            secondary_border,
+
+            ghost_background: ghost_bg,
+            ghost_background_hover: ghost_bg_hover,
+            ghost_background_active: ghost_bg_active,
+            ghost_text,
+
+            danger_background: danger_bg,
+            danger_background_hover: danger_bg_hover,
+            danger_text,
+            success_background: success_bg,
+            success_background_hover: success_bg_hover,
+            success_text,
+            warning_background: warning_bg,
+            warning_background_hover: warning_bg_hover,
+            warning_text,
+            info_background: info_bg,
+            info_background_hover: info_bg_hover,
+            info_text,
+
+            disabled_background: disabled_bg,
+            disabled_text,
+            disabled_border,
+
+            focus_ring,
+            focus_ring_danger,
+        }
+    }
+}
+
+/// Picker/Modal component tokens using hybrid color system
+#[derive(Debug, Clone)]
+pub struct PickerTokens {
+    // Container backgrounds (use chrome colors for UI consistency)
+    pub container_background: Hsla,
+    pub overlay_background: Hsla, // Semi-transparent overlay
+
+    // Header chrome elements
+    pub header_background: Hsla,
+    pub header_text: Hsla,
+    pub header_border: Hsla,
+
+    // Item states (use editor colors for content familiarity)
+    pub item_background: Hsla,
+    pub item_background_hover: Hsla,
+    pub item_background_selected: Hsla, // Use Helix selection
+    pub item_text: Hsla,
+    pub item_text_secondary: Hsla,
+    pub item_text_selected: Hsla,
+
+    // Input field colors (for search, etc.)
+    pub input_background: Hsla,
+    pub input_text: Hsla,
+    pub input_border: Hsla,
+    pub input_border_focus: Hsla, // Use Helix focus color
+    pub input_placeholder: Hsla,
+
+    // Chrome elements
+    pub border: Hsla,
+    pub separator: Hsla,
+    pub shadow: Hsla,
+}
+
+impl PickerTokens {
+    /// Create picker tokens using hybrid color approach
+    pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
+        use crate::styling::color_theory::ColorTheory;
+
+        // Container uses chrome colors for UI consistency
+        let container_bg = chrome.surface_elevated; // Elevated surface for modals
+        let overlay_bg = ColorTheory::with_alpha(chrome.surface, 0.7); // Semi-transparent backdrop
+
+        // Header uses chrome colors for consistency with titlebar
+        let header_bg = chrome.titlebar_background;
+        let header_text = chrome.text_on_chrome;
+        let header_border = chrome.border_muted;
+
+        // Items use transparent backgrounds with Helix selection colors
+        let item_bg = ColorTheory::transparent();
+        let item_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
+        let item_bg_selected = editor.selection_primary; // Use Helix selection
+        let item_text = chrome.text_on_chrome;
+        let item_text_secondary = chrome.text_chrome_secondary;
+        let item_text_selected = editor.text_on_primary;
+
+        // Input fields use chrome backgrounds with Helix focus
+        let input_bg = chrome.surface_hover;
+        let input_text = chrome.text_on_chrome;
+        let input_border = chrome.border_muted;
+        let input_border_focus = editor.focus_ring; // Use Helix focus color
+        let input_placeholder = chrome.text_chrome_secondary;
+
+        // Chrome elements
+        let border = chrome.border_strong;
+        let separator = chrome.separator_color;
+        let shadow = ColorTheory::with_alpha(chrome.surface, 0.3);
+
+        Self {
+            container_background: container_bg,
+            overlay_background: overlay_bg,
+            header_background: header_bg,
+            header_text,
+            header_border,
+            item_background: item_bg,
+            item_background_hover: item_bg_hover,
+            item_background_selected: item_bg_selected,
+            item_text,
+            item_text_secondary,
+            item_text_selected,
+            input_background: input_bg,
+            input_text,
+            input_border,
+            input_border_focus,
+            input_placeholder,
+            border,
+            separator,
+            shadow,
+        }
+    }
+}
+
+/// Dropdown/Menu component tokens using hybrid color system
+#[derive(Debug, Clone)]
+pub struct DropdownTokens {
+    // Container (chrome colors for UI consistency)
+    pub container_background: Hsla,
+    pub border: Hsla,
+    pub shadow: Hsla,
+
+    // Items (editor colors for content familiarity)
+    pub item_background: Hsla,
+    pub item_background_hover: Hsla,
+    pub item_background_selected: Hsla,
+    pub item_text: Hsla,
+    pub item_text_secondary: Hsla,
+    pub item_text_selected: Hsla,
+    pub item_text_disabled: Hsla,
+
+    // Trigger button (chrome colors)
+    pub trigger_background: Hsla,
+    pub trigger_background_hover: Hsla,
+    pub trigger_text: Hsla,
+    pub trigger_border: Hsla,
+
+    // Separators
+    pub separator: Hsla,
+
+    // Icons and indicators
+    pub icon_color: Hsla,
+    pub icon_color_disabled: Hsla,
+}
+
+impl DropdownTokens {
+    /// Create dropdown tokens using hybrid color approach
+    pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
+        use crate::styling::color_theory::ColorTheory;
+
+        // Container uses elevated chrome surface
+        let container_bg = chrome.surface_elevated;
+        let border = chrome.border_strong;
+        let shadow = ColorTheory::with_alpha(chrome.surface, 0.3);
+
+        // Items use transparent backgrounds with Helix selection
+        let item_bg = ColorTheory::transparent();
+        let item_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
+        let item_bg_selected = editor.selection_primary;
+        let item_text = chrome.text_on_chrome;
+        let item_text_secondary = chrome.text_chrome_secondary;
+        let item_text_selected = editor.text_on_primary;
+        let item_text_disabled = ColorTheory::with_alpha(chrome.text_on_chrome, 0.5);
+
+        // Trigger button uses chrome colors for consistency
+        let trigger_bg = chrome.surface_hover;
+        let trigger_bg_hover = ColorTheory::lighten(chrome.surface_hover, 0.1);
+        let trigger_text = chrome.text_on_chrome;
+        let trigger_border = chrome.border_muted;
+
+        // Separators and icons
+        let separator = chrome.separator_color;
+        let icon_color = chrome.text_chrome_secondary;
+        let icon_color_disabled = ColorTheory::with_alpha(chrome.text_chrome_secondary, 0.5);
+
+        Self {
+            container_background: container_bg,
+            border,
+            shadow,
+            item_background: item_bg,
+            item_background_hover: item_bg_hover,
+            item_background_selected: item_bg_selected,
+            item_text,
+            item_text_secondary,
+            item_text_selected,
+            item_text_disabled,
+            trigger_background: trigger_bg,
+            trigger_background_hover: trigger_bg_hover,
+            trigger_text,
+            trigger_border,
+            separator,
+            icon_color,
+            icon_color_disabled,
+        }
+    }
+}
+
 /// Extension methods for ChromeTokens to generate component-specific tokens
 impl ChromeTokens {
     /// Generate titlebar tokens from chrome colors
@@ -1367,6 +1719,21 @@ impl ChromeTokens {
     /// Generate tab bar tokens (requires editor tokens for content colors)
     pub fn tab_bar_tokens(&self, editor: &EditorTokens) -> TabBarTokens {
         TabBarTokens::from_tokens(self, editor)
+    }
+
+    /// Generate button tokens using hybrid color approach
+    pub fn button_tokens(&self, editor: &EditorTokens) -> ButtonTokens {
+        ButtonTokens::from_tokens(self, editor)
+    }
+
+    /// Generate picker tokens using hybrid color approach
+    pub fn picker_tokens(&self, editor: &EditorTokens) -> PickerTokens {
+        PickerTokens::from_tokens(self, editor)
+    }
+
+    /// Generate dropdown tokens using hybrid color approach
+    pub fn dropdown_tokens(&self, editor: &EditorTokens) -> DropdownTokens {
+        DropdownTokens::from_tokens(self, editor)
     }
 }
 
@@ -1390,6 +1757,208 @@ impl DesignTokens {
     /// Generate tab bar tokens using the hybrid system
     pub fn tab_bar_tokens(&self) -> TabBarTokens {
         self.chrome.tab_bar_tokens(&self.editor)
+    }
+
+    /// Generate button tokens using the hybrid system
+    pub fn button_tokens(&self) -> ButtonTokens {
+        self.chrome.button_tokens(&self.editor)
+    }
+
+    /// Generate picker tokens using the hybrid system
+    pub fn picker_tokens(&self) -> PickerTokens {
+        self.chrome.picker_tokens(&self.editor)
+    }
+
+    /// Generate dropdown tokens using the hybrid system
+    pub fn dropdown_tokens(&self) -> DropdownTokens {
+        self.chrome.dropdown_tokens(&self.editor)
+    }
+
+    /// Generate input tokens for the current theme
+    pub fn input_tokens(&self) -> InputTokens {
+        self.chrome.input_tokens(&self.editor)
+    }
+
+    /// Generate tooltip tokens for the current theme
+    pub fn tooltip_tokens(&self) -> TooltipTokens {
+        self.chrome.tooltip_tokens()
+    }
+
+    /// Generate notification tokens for the current theme
+    pub fn notification_tokens(&self) -> NotificationTokens {
+        self.chrome.notification_tokens(&self.editor)
+    }
+}
+
+/// Input field tokens for form elements
+#[derive(Debug, Clone)]
+pub struct InputTokens {
+    // Container colors
+    pub background: Hsla,
+    pub background_hover: Hsla,
+    pub background_focus: Hsla,
+    pub background_disabled: Hsla,
+
+    // Text colors
+    pub text: Hsla,
+    pub text_disabled: Hsla,
+    pub placeholder: Hsla,
+
+    // Border colors
+    pub border: Hsla,
+    pub border_hover: Hsla,
+    pub border_focus: Hsla, // Use Helix focus color
+    pub border_error: Hsla, // Use Helix error color
+    pub border_disabled: Hsla,
+
+    // State indicators
+    pub focus_ring: Hsla, // Use Helix focus color
+    pub error_text: Hsla, // Use Helix error color
+}
+
+/// Tooltip tokens for overlay elements
+#[derive(Debug, Clone)]
+pub struct TooltipTokens {
+    // Container colors (use chrome for consistency)
+    pub background: Hsla,
+    pub border: Hsla,
+    pub shadow: Hsla,
+
+    // Text colors
+    pub text: Hsla,
+    pub text_secondary: Hsla,
+
+    // Arrow/pointer colors
+    pub arrow_background: Hsla,
+    pub arrow_border: Hsla,
+}
+
+/// Notification tokens for alerts and messages
+#[derive(Debug, Clone)]
+pub struct NotificationTokens {
+    // Background colors (semantic use Helix colors)
+    pub info_background: Hsla,
+    pub success_background: Hsla, // Use Helix success
+    pub warning_background: Hsla, // Use Helix warning
+    pub error_background: Hsla,   // Use Helix error
+
+    // Text colors
+    pub info_text: Hsla,
+    pub success_text: Hsla,
+    pub warning_text: Hsla,
+    pub error_text: Hsla,
+
+    // Border colors
+    pub info_border: Hsla,
+    pub success_border: Hsla,
+    pub warning_border: Hsla,
+    pub error_border: Hsla,
+
+    // Close button colors
+    pub close_button_background: Hsla,
+    pub close_button_background_hover: Hsla,
+    pub close_button_text: Hsla,
+}
+
+impl ChromeTokens {
+    /// Generate input tokens using hybrid color system
+    pub fn input_tokens(&self, editor: &EditorTokens) -> InputTokens {
+        use crate::styling::ColorTheory;
+
+        // Input backgrounds use chrome surface colors
+        let input_bg = self.surface;
+        let input_bg_hover = ColorTheory::surface_variant(self.surface, 0.05);
+        let input_bg_focus = ColorTheory::surface_variant(self.surface, 0.08);
+
+        // Focus and error states use Helix colors for consistency
+        let focus_ring = editor.focus_ring;
+        let error_color = editor.error;
+
+        InputTokens {
+            // Container colors - chrome based
+            background: input_bg,
+            background_hover: input_bg_hover,
+            background_focus: input_bg_focus,
+            background_disabled: ColorTheory::with_alpha(input_bg, 0.3),
+
+            // Text colors - ensure contrast
+            text: ColorTheory::ensure_contrast(input_bg, self.text_on_chrome, 4.5),
+            text_disabled: ColorTheory::with_alpha(self.text_on_chrome, 0.5),
+            placeholder: ColorTheory::with_alpha(self.text_on_chrome, 0.6),
+
+            // Border colors
+            border: self.border_default,
+            border_hover: self.border_strong,
+            border_focus: focus_ring,
+            border_error: error_color,
+            border_disabled: ColorTheory::with_alpha(self.border_default, 0.5),
+
+            // State indicators - use Helix colors
+            focus_ring,
+            error_text: error_color,
+        }
+    }
+
+    /// Generate tooltip tokens using chrome colors
+    pub fn tooltip_tokens(&self) -> TooltipTokens {
+        use crate::styling::ColorTheory;
+
+        let tooltip_bg = self.surface_elevated;
+
+        TooltipTokens {
+            // Container colors - elevated chrome surface
+            background: tooltip_bg,
+            border: self.border_strong,
+            shadow: ColorTheory::with_alpha(self.surface, 0.3),
+
+            // Text colors
+            text: ColorTheory::ensure_contrast(tooltip_bg, self.text_on_chrome, 4.5),
+            text_secondary: ColorTheory::ensure_contrast(
+                tooltip_bg,
+                self.text_chrome_secondary,
+                4.5,
+            ),
+
+            // Arrow colors match container
+            arrow_background: tooltip_bg,
+            arrow_border: self.border_strong,
+        }
+    }
+
+    /// Generate notification tokens using hybrid color system  
+    pub fn notification_tokens(&self, editor: &EditorTokens) -> NotificationTokens {
+        use crate::styling::ColorTheory;
+
+        // Semantic backgrounds use Helix colors, others use chrome
+        let info_bg = ColorTheory::surface_variant(self.surface_elevated, 0.1);
+        let success_bg = ColorTheory::with_alpha(editor.success, 0.15);
+        let warning_bg = ColorTheory::with_alpha(editor.warning, 0.15);
+        let error_bg = ColorTheory::with_alpha(editor.error, 0.15);
+
+        NotificationTokens {
+            // Background colors
+            info_background: info_bg,
+            success_background: success_bg,
+            warning_background: warning_bg,
+            error_background: error_bg,
+
+            // Text colors - ensure contrast
+            info_text: ColorTheory::ensure_contrast(info_bg, self.text_on_chrome, 4.5),
+            success_text: ColorTheory::ensure_contrast(success_bg, editor.success, 4.5),
+            warning_text: ColorTheory::ensure_contrast(warning_bg, editor.warning, 4.5),
+            error_text: ColorTheory::ensure_contrast(error_bg, editor.error, 4.5),
+
+            // Border colors - match semantic colors
+            info_border: self.border_strong,
+            success_border: editor.success,
+            warning_border: editor.warning,
+            error_border: editor.error,
+
+            // Close button colors
+            close_button_background: ColorTheory::transparent(),
+            close_button_background_hover: ColorTheory::with_alpha(self.text_on_chrome, 0.1),
+            close_button_text: self.text_chrome_secondary,
+        }
     }
 }
 
