@@ -5,7 +5,7 @@ use gpui::{IntoElement, Styled, div, px};
 use std::path::Path;
 
 /// Git status types for VCS indicators
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VcsStatus {
     /// File is untracked
     Untracked,

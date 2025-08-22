@@ -2,17 +2,14 @@
 // ABOUTME: Manages file system hierarchy with support for lazy loading and filtering
 
 use anyhow::{Context, Result};
-use helix_vcs::{DiffProviderRegistry, FileChange};
 use nucleotide_logging::debug;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use sum_tree::SumTree;
 
 use crate::file_tree::entry::FileTreeEntryId;
 use crate::file_tree::{FileKind, FileTreeConfig, FileTreeEntry};
-use nucleotide_ui::VcsStatus;
 
 /// Core file tree data structure
 pub struct FileTree {
@@ -34,18 +31,11 @@ pub struct FileTree {
     visible_entries_cache: Option<Vec<FileTreeEntry>>,
     /// Set of directories currently being loaded
     loading_dirs: HashSet<PathBuf>,
-    /// VCS provider for git status
-    vcs_registry: Arc<DiffProviderRegistry>,
-    /// Map from path to git status
-    git_status_cache: HashMap<PathBuf, VcsStatus>,
-    /// Last time VCS refresh was attempted (to prevent rapid refresh loops)
-    last_vcs_refresh_attempt: Option<std::time::Instant>,
 }
 
 impl FileTree {
     /// Create a new file tree for the given root path
     pub fn new(root_path: PathBuf, config: FileTreeConfig) -> Self {
-        let vcs_registry = Arc::new(DiffProviderRegistry::default());
         Self {
             root_path,
             entries: SumTree::new(&()),
@@ -56,9 +46,6 @@ impl FileTree {
             is_loaded: false,
             visible_entries_cache: None,
             loading_dirs: HashSet::new(),
-            vcs_registry,
-            git_status_cache: HashMap::new(),
-            last_vcs_refresh_attempt: None,
         }
     }
 
@@ -107,7 +94,7 @@ impl FileTree {
         self.path_to_id.clear();
         self.next_id = 1;
         self.is_loaded = false;
-        self.git_status_cache.clear();
+        // VCS status is now handled by the global VCS service
         self.invalidate_cache();
         self.load()
     }
@@ -369,10 +356,7 @@ impl FileTree {
             child_entry.depth = entry.depth + 1;
             child_entry.is_visible = true;
 
-            // Set VCS status if available
-            if let Some(status) = self.get_vcs_status(&child_path) {
-                child_entry.git_status = Some(status);
-            }
+            // VCS status will be queried at render time via the global VCS service
 
             self.path_to_id.insert(child_path, id);
             children.push(child_entry);
@@ -585,10 +569,7 @@ impl FileTree {
             // Set visibility based on current filter settings
             file_entry.is_visible = self.should_be_visible(&file_entry);
 
-            // Set VCS status if available
-            if let Some(status) = self.get_vcs_status(&path) {
-                file_entry.git_status = Some(status);
-            }
+            // VCS status will be queried at render time via the global VCS service
 
             self.path_to_id.insert(path, id);
             entries.push(file_entry);
@@ -719,100 +700,8 @@ impl FileTree {
         false
     }
 
-    /// Convert helix_vcs FileChange to our GitStatus
-    #[allow(dead_code)]
-    fn file_change_to_git_status(change: &FileChange) -> VcsStatus {
-        match change {
-            FileChange::Untracked { .. } => VcsStatus::Untracked,
-            FileChange::Modified { .. } => VcsStatus::Modified,
-            FileChange::Conflict { .. } => VcsStatus::Conflicted,
-            FileChange::Deleted { .. } => VcsStatus::Deleted,
-            FileChange::Renamed { .. } => VcsStatus::Renamed,
-        }
-    }
-
-    /// Check if VCS status needs refresh
-    /// Uses rate limiting to prevent excessive refresh attempts
-    pub fn needs_vcs_refresh(&self) -> bool {
-        // Only refresh if loaded and we haven't attempted recently
-        if !self.is_loaded {
-            return false;
-        }
-
-        // Check if we have attempted a refresh recently (within last 5 seconds)
-        if let Some(last_attempt) = self.last_vcs_refresh_attempt {
-            if last_attempt.elapsed().as_secs() < 5 {
-                return false;
-            }
-        }
-
-        // Refresh if cache is empty or if it's been a while since last attempt
-        self.git_status_cache.is_empty()
-    }
-
-    /// Mark that a VCS refresh attempt is starting
-    pub fn mark_vcs_refresh_attempt(&mut self) {
-        self.last_vcs_refresh_attempt = Some(std::time::Instant::now());
-    }
-
-    /// Get VCS registry and root path for async refresh
-    pub fn get_vcs_info(&self) -> (Arc<DiffProviderRegistry>, PathBuf) {
-        (Arc::clone(&self.vcs_registry), self.root_path.clone())
-    }
-
-    /// Apply VCS status results
-    pub fn apply_vcs_status(&mut self, status_map: HashMap<PathBuf, VcsStatus>) {
-        self.git_status_cache = status_map;
-        self.update_entries_vcs_status();
-        self.invalidate_cache();
-    }
-
-    /// Update VCS status for all entries based on cache
-    fn update_entries_vcs_status(&mut self) {
-        let entries: Vec<_> = self.entries.iter().cloned().collect();
-        let mut updated_entries = Vec::new();
-
-        for mut entry in entries {
-            // Check if this entry has a VCS status
-            if let Some(status) = self.git_status_cache.get(&entry.path) {
-                entry.git_status = Some(status.clone());
-            } else {
-                // File is up to date (not in changed files list)
-                entry.git_status = None;
-            }
-            updated_entries.push(entry);
-        }
-
-        self.entries = SumTree::from_iter(updated_entries, &());
-    }
-
-    /// Get VCS status for a specific path
-    pub fn get_vcs_status(&self, path: &Path) -> Option<VcsStatus> {
-        self.git_status_cache.get(path).cloned()
-    }
-
-    /// Debug: Print all entries with their VCS status
-    pub fn debug_vcs_status(&self) {
-        debug!("=== VCS Status Debug ===");
-        debug!(
-            cache_size = self.git_status_cache.len(),
-            "Git status cache entries"
-        );
-        for (path, status) in &self.git_status_cache {
-            debug!(file_name = ?path.file_name(), git_status = ?status, "Cache entry");
-        }
-
-        let entries = self.entries.iter().collect::<Vec<_>>();
-        debug!(tree_size = entries.len(), "File tree entries");
-        for entry in entries {
-            if let Some(status) = &entry.git_status {
-                debug!(file_name = ?entry.path.file_name(), git_status = ?status, "Tree entry with status");
-            } else {
-                debug!(file_name = ?entry.path.file_name(), "Tree entry without status");
-            }
-        }
-        debug!("=== End VCS Status Debug ===");
-    }
+    // VCS status is now handled by the global VCS service
+    // The view layer queries VCS status at render time via get_vcs_status_for_entry
 }
 
 /// Statistics about the file tree

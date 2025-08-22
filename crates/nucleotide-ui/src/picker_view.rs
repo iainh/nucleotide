@@ -2,6 +2,7 @@
 // ABOUTME: Uses proper GPUI uniform_list for scrollable content like Zed
 
 use crate::common::{FocusableModal, ModalStyle, SearchInput};
+use crate::{VcsIcon, VcsStatus};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
@@ -20,6 +21,59 @@ pub struct PickerItem {
     pub label: SharedString,
     pub sublabel: Option<SharedString>,
     pub data: Arc<dyn std::any::Any + Send + Sync>,
+    /// Optional file path for VCS status lookup and icon rendering
+    pub file_path: Option<std::path::PathBuf>,
+    /// Optional VCS status for this item
+    pub vcs_status: Option<VcsStatus>,
+}
+
+impl PickerItem {
+    /// Create a new PickerItem for a file with path information
+    pub fn from_file_path(
+        label: impl Into<SharedString>,
+        file_path: std::path::PathBuf,
+        data: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            sublabel: None,
+            data,
+            file_path: Some(file_path),
+            vcs_status: None,
+        }
+    }
+
+    /// Create a new PickerItem for a file with path and VCS status
+    pub fn from_file_path_with_vcs(
+        label: impl Into<SharedString>,
+        file_path: std::path::PathBuf,
+        vcs_status: Option<VcsStatus>,
+        data: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            sublabel: None,
+            data,
+            file_path: Some(file_path),
+            vcs_status,
+        }
+    }
+
+    /// Create a new PickerItem with sublabel and file path
+    pub fn with_sublabel_and_path(
+        label: impl Into<SharedString>,
+        sublabel: impl Into<SharedString>,
+        file_path: std::path::PathBuf,
+        data: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            sublabel: Some(sublabel.into()),
+            data,
+            file_path: Some(file_path),
+            vcs_status: None,
+        }
+    }
 }
 
 // Type aliases for callbacks
@@ -195,6 +249,7 @@ impl PickerView {
         self.preview_doc_id = None;
         self.preview_view_id = None;
         self.preview_content = None;
+        // VCS status will be fetched from global service as needed
         self
     }
 
@@ -1014,15 +1069,34 @@ impl PickerView {
                                                                                 .child(path)
                                                                         )
                                                                     } else {
-                                                                        // Fallback for items that don't match the pattern
+                                                                        // File picker or other non-buffer items
                                                                         div()
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .gap_2()
                                                                             .overflow_hidden()
-                                                                            .text_ellipsis()
-                                                                            .font_family(
-                                                                                "monospace",
+                                                                            .when_some(
+                                                                                item.file_path.as_ref(),
+                                                                                |this, file_path| {
+                                                                                    // Render VcsIcon for file items
+                                                                                    this.child({
+                                                                                        // Create VcsIcon with embedded VCS status
+                                                                                        let vcs_icon = VcsIcon::from_path(file_path, false)
+                                                                                            .size(16.0)
+                                                                                            .vcs_status(item.vcs_status);
+
+                                                                                        // Use direct rendering since we don't have proper Context<Self>
+                                                                                        vcs_icon
+                                                                                    })
+                                                                                }
                                                                             )
                                                                             .child(
-                                                                                item.label.clone(),
+                                                                                div()
+                                                                                    .flex_1()
+                                                                                    .overflow_hidden()
+                                                                                    .text_ellipsis()
+                                                                                    .font_family("monospace")
+                                                                                    .child(item.label.clone())
                                                                             )
                                                                     }
                                                                 },

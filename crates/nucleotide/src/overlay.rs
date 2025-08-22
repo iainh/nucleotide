@@ -3,6 +3,7 @@ use gpui::{
     InteractiveElement, IntoElement, MouseButton, ParentElement, Render, Styled, Window, div,
 };
 
+use crate::vcs_service::VcsServiceHandle;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
 use nucleotide_ui::picker::Picker;

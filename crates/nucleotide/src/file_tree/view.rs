@@ -133,15 +133,8 @@ impl FileTreeView {
             instance.selected_path = Some(entries[0].path.clone());
         }
 
-        // Start async VCS loading if we have a runtime handle
-        if instance.tokio_handle.is_some() {
-            debug!("Starting async VCS refresh with Tokio handle");
-            instance.start_async_vcs_refresh(cx);
-        } else {
-            // Fallback to test statuses for demonstration
-            debug!("No Tokio handle available, using test statuses");
-            instance.apply_test_statuses(cx);
-        }
+        // VCS monitoring will be handled by the global VCS service
+        // The file tree will query VCS status at render time via get_vcs_status_for_entry
 
         // Start file watcher if enabled
         if instance.file_watcher.is_some() {
@@ -280,10 +273,7 @@ impl FileTreeView {
                             }
                         }
 
-                        // Refresh VCS status after expanding directory
-                        if view.tree.needs_vcs_refresh() {
-                            view.start_vcs_refresh(cx);
-                        }
+                        // VCS status is handled by the global VCS service
 
                         cx.notify();
                     });
@@ -467,7 +457,7 @@ impl FileTreeView {
         debug!(path = ?path, "File system change detected");
 
         // Only refresh VCS if the change is within our repository
-        let (_, root_path) = self.tree.get_vcs_info();
+        let root_path = self.tree.root_path().to_path_buf();
         if path.starts_with(&root_path) {
             debug!("File system change is within repository, triggering VCS refresh");
             // Trigger a VCS refresh after a file system change
@@ -488,8 +478,7 @@ impl FileTreeView {
 
     /// Start async VCS refresh
     fn start_vcs_refresh(&mut self, cx: &mut Context<Self>) {
-        // Mark that we're attempting a refresh to prevent rapid retries
-        self.tree.mark_vcs_refresh_attempt();
+        // VCS refresh rate limiting is now handled by the global VCS service
 
         if let Some(ref handle) = self.tokio_handle {
             self.start_async_vcs_refresh_with_handle(handle.clone(), cx);
@@ -514,7 +503,7 @@ impl FileTreeView {
         _handle: tokio::runtime::Handle,
         cx: &mut Context<Self>,
     ) {
-        let (_, root_path) = self.tree.get_vcs_info();
+        let root_path = self.tree.root_path().to_path_buf();
 
         debug!(root_path = ?root_path, "VCS refresh starting");
 
@@ -638,7 +627,7 @@ impl FileTreeView {
                     }
 
                     let affected_files: Vec<PathBuf> = status_map.keys().cloned().collect();
-                    view.tree.apply_vcs_status(status_map);
+                    // VCS status is now handled by the global VCS service
 
                     // Emit VCS status changed event
                     cx.emit(FileTreeEvent::VcsStatusChanged {
@@ -660,7 +649,7 @@ impl FileTreeView {
         let mut status_map = std::collections::HashMap::new();
 
         // Get the root path to create test paths
-        let (_, root_path) = self.tree.get_vcs_info();
+        let root_path = self.tree.root_path().to_path_buf();
         debug!(root_path = ?root_path, "Root path for VCS test");
 
         // Get current visible entries to see what files actually exist
@@ -741,10 +730,8 @@ impl FileTreeView {
             debug!(file_name = ?path.file_name(), status = ?status, "Test VCS status");
         }
 
-        self.tree.apply_vcs_status(status_map);
-
-        // Debug the VCS status after applying
-        self.tree.debug_vcs_status();
+        // VCS status is now handled by the global VCS service
+        // Test VCS status will be visible through get_vcs_status_for_entry
 
         cx.notify();
 

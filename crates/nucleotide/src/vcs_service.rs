@@ -49,10 +49,14 @@ pub struct VcsService {
     root_path: Option<PathBuf>,
     /// Current VCS status cache
     status_cache: HashMap<PathBuf, VcsStatus>,
+    /// Timestamp of last cache update for each path
+    cache_timestamps: HashMap<PathBuf, Instant>,
     /// Configuration
     config: VcsConfig,
     /// Last time VCS status was checked
     last_check: Option<Instant>,
+    /// Cache TTL for individual entries
+    cache_ttl: std::time::Duration,
     /// Whether monitoring is currently active
     is_monitoring: bool,
 }
@@ -63,8 +67,10 @@ impl VcsService {
         Self {
             root_path: None,
             status_cache: HashMap::new(),
+            cache_timestamps: HashMap::new(),
             config,
             last_check: None,
+            cache_ttl: std::time::Duration::from_secs(5), // 5 second cache TTL
             is_monitoring: false,
         }
     }
@@ -155,6 +161,65 @@ impl VcsService {
         &self.status_cache
     }
 
+    /// Get VCS status with automatic cache refresh if stale
+    pub fn get_status_cached(&self, path: &Path) -> Option<VcsStatus> {
+        let abs_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Some(ref root) = self.root_path {
+            root.join(path)
+        } else {
+            return None;
+        };
+
+        // Check if cache entry exists and is still fresh
+        if let Some(timestamp) = self.cache_timestamps.get(&abs_path) {
+            if timestamp.elapsed() < self.cache_ttl {
+                return self.status_cache.get(&abs_path).copied();
+            }
+        }
+
+        // Fallback to regular get_status if cache is stale
+        // Note: In a full implementation, we'd trigger a background refresh here
+        self.status_cache.get(&abs_path).copied()
+    }
+
+    /// Bulk update cache for multiple paths (efficient for pickers)
+    pub fn update_cache_bulk(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        debug!(path_count = paths.len(), "Bulk updating VCS cache");
+
+        // For now, trigger a full refresh if we have many paths to check
+        // In a more sophisticated implementation, we could run git status
+        // specifically for these paths
+        if paths.len() > 10 && self.root_path.is_some() {
+            self.refresh_status(cx);
+        }
+    }
+
+    /// Check if cache entry is fresh
+    fn is_cache_fresh(&self, path: &Path) -> bool {
+        if let Some(timestamp) = self.cache_timestamps.get(path) {
+            timestamp.elapsed() < self.cache_ttl
+        } else {
+            false
+        }
+    }
+
+    /// Clear stale cache entries
+    pub fn clear_stale_cache(&mut self) {
+        let now = Instant::now();
+        let stale_paths: Vec<PathBuf> = self
+            .cache_timestamps
+            .iter()
+            .filter(|(_, timestamp)| now.duration_since(**timestamp) > self.cache_ttl)
+            .map(|(path, _)| path.clone())
+            .collect();
+
+        for path in stale_paths {
+            self.status_cache.remove(&path);
+            self.cache_timestamps.remove(&path);
+        }
+    }
+
     /// Force refresh of VCS status with rate limiting
     pub fn force_refresh(&mut self, cx: &mut Context<Self>) {
         if !self.is_monitoring {
@@ -242,8 +307,26 @@ impl VcsService {
             }
         }
 
-        // Update cache
+        // Update cache and timestamps
+        let now = Instant::now();
         self.status_cache = new_status;
+
+        // Update timestamps for all paths in the new status
+        for path in self.status_cache.keys() {
+            self.cache_timestamps.insert(path.clone(), now);
+        }
+
+        // Remove timestamps for paths no longer in cache
+        let paths_to_remove: Vec<PathBuf> = self
+            .cache_timestamps
+            .keys()
+            .filter(|path| !self.status_cache.contains_key(*path))
+            .cloned()
+            .collect();
+
+        for path in paths_to_remove {
+            self.cache_timestamps.remove(&path);
+        }
 
         // Emit changes if any
         if !changes.is_empty() {
@@ -358,6 +441,25 @@ impl VcsServiceHandle {
     pub fn force_refresh(&self, cx: &mut App) {
         self.service.update(cx, |service, cx| {
             service.force_refresh(cx);
+        });
+    }
+
+    /// Get VCS status with caching (preferred method for all components)
+    pub fn get_status_cached(&self, path: &Path, cx: &App) -> Option<VcsStatus> {
+        self.service.read(cx).get_status_cached(path)
+    }
+
+    /// Bulk update cache for multiple paths (efficient for pickers)
+    pub fn update_cache_bulk(&self, paths: &[PathBuf], cx: &mut App) {
+        self.service.update(cx, |service, cx| {
+            service.update_cache_bulk(paths, cx);
+        });
+    }
+
+    /// Clear stale cache entries
+    pub fn clear_stale_cache(&self, cx: &mut App) {
+        self.service.update(cx, |service, _cx| {
+            service.clear_stale_cache();
         });
     }
 

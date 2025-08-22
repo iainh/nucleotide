@@ -76,7 +76,7 @@ impl nucleotide_lsp::EnvironmentProvider for ProjectEnvironmentProvider {
     }
 }
 
-use gpui::AppContext;
+use gpui::{App, AppContext};
 use helix_term::{
     args::Args,
     compositor::{self, Compositor},
@@ -908,7 +908,7 @@ impl Application {
     }
 
     #[allow(dead_code)]
-    fn create_file_picker_items(&self) -> Vec<crate::picker_view::PickerItem> {
+    fn create_file_picker_items(&self, cx: &mut App) -> Vec<crate::picker_view::PickerItem> {
         use crate::picker_view::PickerItem;
         use ignore::WalkBuilder;
         use std::sync::Arc;
@@ -956,6 +956,8 @@ impl Application {
                     label: label.into(),
                     sublabel: None, // No sublabel needed since full path is in label
                     data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
+                    file_path: Some(path.clone()),
+                    vcs_status: None, // Will be populated below using bulk VCS lookup
                 });
 
                 // Limit to reasonable number of files
@@ -971,14 +973,25 @@ impl Application {
                 label: "No files found".into(),
                 sublabel: Some("Workspace is empty or unreadable".into()),
                 data: Arc::new(std::path::PathBuf::new()) as Arc<dyn std::any::Any + Send + Sync>,
+                file_path: None, // No file path for placeholder items
+                vcs_status: None,
             });
+        }
+
+        // Populate VCS status for all file items using the global VCS service
+        if let Some(vcs_service) = cx.try_global::<crate::vcs_service::VcsServiceHandle>() {
+            for item in &mut items {
+                if let Some(ref file_path) = item.file_path {
+                    item.vcs_status = vcs_service.get_status_cached(file_path, cx);
+                }
+            }
         }
 
         items
     }
 
     #[allow(dead_code)]
-    fn create_buffer_picker(&self) -> Option<crate::picker::Picker> {
+    fn create_buffer_picker(&self, cx: &mut App) -> Option<crate::picker::Picker> {
         use crate::picker_view::PickerItem;
         use helix_view::DocumentId;
         use std::sync::Arc;
@@ -1067,12 +1080,23 @@ impl Application {
                 label: label.into(),
                 sublabel: None, // No sublabel for terminal-style display
                 data: Arc::new(meta.doc_id),
+                file_path: meta.path.clone(), // Include file path for VCS status if available
+                vcs_status: None,             // Will be populated below using bulk VCS lookup
             });
         }
 
         if items.is_empty() {
             // No buffers open
             return None;
+        }
+
+        // Populate VCS status for all buffer items using the global VCS service
+        if let Some(vcs_service) = cx.try_global::<crate::vcs_service::VcsServiceHandle>() {
+            for item in &mut items {
+                if let Some(ref file_path) = item.file_path {
+                    item.vcs_status = vcs_service.get_status_cached(file_path, cx);
+                }
+            }
         }
 
         // Create the picker

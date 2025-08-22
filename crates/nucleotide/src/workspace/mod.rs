@@ -5046,7 +5046,9 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
         items.push(PickerItem {
             label: path_str.clone().into(),
             sublabel: None,
-            data: Arc::new(path) as Arc<dyn std::any::Any + Send + Sync>,
+            data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
+            file_path: Some(path.clone()),
+            vcs_status: None, // Will be populated using global VCS service
         });
 
         // Limit to 1000 files to prevent hanging on large projects
@@ -5059,6 +5061,21 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     items.sort_by(|a, b| a.label.cmp(&b.label));
 
     info!("File picker has {} items", items.len());
+
+    // Populate VCS status for all file items using the global VCS service
+    let file_paths: Vec<std::path::PathBuf> = items
+        .iter()
+        .filter_map(|item| item.file_path.clone())
+        .collect();
+
+    // Populate VCS status for all file items using the global VCS service
+    if let Some(vcs_service) = cx.try_global::<crate::vcs_service::VcsServiceHandle>() {
+        for item in &mut items {
+            if let Some(ref file_path) = item.file_path {
+                item.vcs_status = vcs_service.get_status_cached(file_path, cx);
+            }
+        }
+    }
 
     // Create a simple native picker without callback - the overlay will handle file opening via events
     let file_picker = crate::picker::Picker::native("Open File", items, |_index| {
@@ -5207,6 +5224,8 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
             label: label.into(),
             sublabel: None, // No sublabel for terminal-style display
             data: picker_data,
+            file_path: meta.path.clone(), // Include file path for VCS status if available
+            vcs_status: None,             // Will be populated using global VCS service
         });
     }
 
