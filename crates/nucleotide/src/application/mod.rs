@@ -422,7 +422,7 @@ impl Application {
                 .map(|client| (client.id(), client.name().to_string()))
                 .collect();
 
-            info!(active_servers = ?active_servers, "Syncing LSP state");
+            debug!(active_servers = ?active_servers, "Syncing LSP state");
 
             // Check which servers are progressing
             let progressing_servers: Vec<LanguageServerId> = active_servers
@@ -431,14 +431,14 @@ impl Application {
                 .map(|(id, _)| *id)
                 .collect();
 
-            info!(
+            debug!(
                 progressing_servers = ?progressing_servers,
                 "Servers currently progressing according to lsp_progress"
             );
 
             // Get editor status for detailed logging
             let editor_status = self.editor.get_status();
-            info!(
+            debug!(
                 editor_status = ?editor_status,
                 "Current editor status from Helix"
             );
@@ -446,7 +446,7 @@ impl Application {
             lsp_state.update(cx, |state, cx| {
                 // Log current state before clearing
                 let old_progress_count = state.progress.len();
-                info!(
+                debug!(
                     old_progress_count = old_progress_count,
                     "UI state before sync - clearing old progress"
                 );
@@ -481,7 +481,7 @@ impl Application {
 
                         let key = format!("{}-idle", server_id);
                         state.progress.insert(key, progress);
-                        info!(
+                        debug!(
                             server_id = ?server_id,
                             server_name = %server_name,
                             "Added idle indicator for ready LSP server"
@@ -492,7 +492,7 @@ impl Application {
                 // Use editor status for progressing servers to show real LSP messages
                 // The LSP manager calls editor.set_status() with progress messages
                 if !progressing_servers.is_empty() {
-                    info!(
+                    debug!(
                         progressing_count = progressing_servers.len(),
                         "Processing progressing servers"
                     );
@@ -658,14 +658,14 @@ impl Application {
                     }
                 } else {
                     // No progressing servers - ensure we're not stuck with old progress
-                    info!(
+                    debug!(
                         active_servers_count = active_servers.len(),
                         "No progressing servers - should show idle indicators only"
                     );
                 }
 
                 // Log final state for debugging
-                info!(
+                debug!(
                     final_progress_count = state.progress.len(),
                     server_count = state.servers.len(),
                     "UI state after sync"
@@ -673,7 +673,7 @@ impl Application {
 
                 if !state.progress.is_empty() {
                     for (key, progress) in &state.progress {
-                        info!(
+                        debug!(
                             progress_key = %key,
                             server_id = ?progress.server_id,
                             title = %progress.title,
