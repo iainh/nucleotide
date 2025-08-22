@@ -3,7 +3,9 @@
 
 use crate::{
     ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
-    Styled as UIStyled, compute_component_style, is_feature_enabled, should_enable_animations,
+    Styled as UIStyled, is_feature_enabled, should_enable_animations,
+    styling::ComputedStyle,
+    tokens::{ButtonTokens, DesignTokens},
 };
 use gpui::prelude::FluentBuilder;
 use gpui::px;
@@ -266,6 +268,222 @@ impl Button {
         self.size = size;
         self
     }
+
+    /// Convert ButtonTokens to ComputedStyle based on variant and state
+    fn compute_style_from_tokens(
+        &self,
+        tokens: &ButtonTokens,
+        state: StyleState,
+        design_tokens: &DesignTokens,
+    ) -> ComputedStyle {
+        let (background, text, border) = match (&self.variant, state) {
+            // Primary button states
+            (ButtonVariant::Primary, StyleState::Default) => (
+                tokens.primary_background,
+                tokens.primary_text,
+                tokens.primary_border,
+            ),
+            (ButtonVariant::Primary, StyleState::Hover) => (
+                tokens.primary_background_hover,
+                tokens.primary_text,
+                tokens.primary_border,
+            ),
+            (ButtonVariant::Primary, StyleState::Active) => (
+                tokens.primary_background_active,
+                tokens.primary_text,
+                tokens.primary_border,
+            ),
+
+            // Secondary button states
+            (ButtonVariant::Secondary, StyleState::Default) => (
+                tokens.secondary_background,
+                tokens.secondary_text,
+                tokens.secondary_border,
+            ),
+            (ButtonVariant::Secondary, StyleState::Hover) => (
+                tokens.secondary_background_hover,
+                tokens.secondary_text,
+                tokens.secondary_border,
+            ),
+            (ButtonVariant::Secondary, StyleState::Active) => (
+                tokens.secondary_background_active,
+                tokens.secondary_text,
+                tokens.secondary_border,
+            ),
+
+            // Ghost button states
+            (ButtonVariant::Ghost, StyleState::Default) => (
+                tokens.ghost_background,
+                tokens.ghost_text,
+                tokens.ghost_background,
+            ),
+            (ButtonVariant::Ghost, StyleState::Hover) => (
+                tokens.ghost_background_hover,
+                tokens.ghost_text,
+                tokens.ghost_background,
+            ),
+            (ButtonVariant::Ghost, StyleState::Active) => (
+                tokens.ghost_background_active,
+                tokens.ghost_text,
+                tokens.ghost_background,
+            ),
+
+            // Semantic button states (use Helix colors)
+            (ButtonVariant::Danger, StyleState::Default) => (
+                tokens.danger_background,
+                tokens.danger_text,
+                tokens.danger_background,
+            ),
+            (ButtonVariant::Danger, StyleState::Hover) => (
+                tokens.danger_background,
+                tokens.danger_text,
+                tokens.danger_background,
+            ),
+            (ButtonVariant::Danger, StyleState::Active) => (
+                tokens.danger_background,
+                tokens.danger_text,
+                tokens.danger_background,
+            ),
+
+            (ButtonVariant::Success, StyleState::Default) => (
+                tokens.success_background,
+                tokens.success_text,
+                tokens.success_background,
+            ),
+            (ButtonVariant::Success, StyleState::Hover) => (
+                tokens.success_background,
+                tokens.success_text,
+                tokens.success_background,
+            ),
+            (ButtonVariant::Success, StyleState::Active) => (
+                tokens.success_background,
+                tokens.success_text,
+                tokens.success_background,
+            ),
+
+            (ButtonVariant::Warning, StyleState::Default) => (
+                tokens.warning_background,
+                tokens.warning_text,
+                tokens.warning_background,
+            ),
+            (ButtonVariant::Warning, StyleState::Hover) => (
+                tokens.warning_background,
+                tokens.warning_text,
+                tokens.warning_background,
+            ),
+            (ButtonVariant::Warning, StyleState::Active) => (
+                tokens.warning_background,
+                tokens.warning_text,
+                tokens.warning_background,
+            ),
+
+            (ButtonVariant::Info, StyleState::Default) => (
+                tokens.primary_background,
+                tokens.primary_text,
+                tokens.primary_border,
+            ),
+            (ButtonVariant::Info, StyleState::Hover) => (
+                tokens.primary_background_hover,
+                tokens.primary_text,
+                tokens.primary_border,
+            ),
+            (ButtonVariant::Info, StyleState::Active) => (
+                tokens.primary_background_active,
+                tokens.primary_text,
+                tokens.primary_border,
+            ),
+
+            // Disabled states
+            (_, StyleState::Disabled) => (
+                tokens.disabled_background,
+                tokens.disabled_text,
+                tokens.disabled_border,
+            ),
+            (_, StyleState::Loading) => (
+                tokens.disabled_background,
+                tokens.disabled_text,
+                tokens.disabled_border,
+            ),
+
+            // Focus states use focus ring but maintain background
+            (variant, StyleState::Focused) => {
+                let (bg, text, _) = match variant {
+                    ButtonVariant::Primary => (
+                        tokens.primary_background,
+                        tokens.primary_text,
+                        tokens.primary_border,
+                    ),
+                    ButtonVariant::Secondary => (
+                        tokens.secondary_background,
+                        tokens.secondary_text,
+                        tokens.secondary_border,
+                    ),
+                    ButtonVariant::Ghost => (
+                        tokens.ghost_background,
+                        tokens.ghost_text,
+                        tokens.ghost_background,
+                    ),
+                    ButtonVariant::Danger => (
+                        tokens.danger_background,
+                        tokens.danger_text,
+                        tokens.danger_background,
+                    ),
+                    ButtonVariant::Success => (
+                        tokens.success_background,
+                        tokens.success_text,
+                        tokens.success_background,
+                    ),
+                    ButtonVariant::Warning => (
+                        tokens.warning_background,
+                        tokens.warning_text,
+                        tokens.warning_background,
+                    ),
+                    ButtonVariant::Info => (
+                        tokens.primary_background,
+                        tokens.primary_text,
+                        tokens.primary_border,
+                    ),
+                };
+                (bg, text, tokens.focus_ring)
+            }
+
+            // Default fallback
+            _ => (
+                tokens.primary_background,
+                tokens.primary_text,
+                tokens.primary_border,
+            ),
+        };
+
+        // Get size-based properties
+        let style_size = StyleSize::from(self.size);
+        let (padding_x, padding_y) = style_size.padding(design_tokens);
+        let border_radius = style_size.border_radius(design_tokens);
+        let font_size = style_size.font_size(px(14.0));
+
+        ComputedStyle {
+            background,
+            foreground: text,
+            border_color: border,
+            border_width: if matches!(self.variant, ButtonVariant::Secondary) {
+                px(1.0)
+            } else {
+                px(0.0)
+            },
+            border_radius,
+            padding_x,
+            padding_y,
+            font_size,
+            font_weight: 500, // Medium weight for better readability
+            opacity: if matches!(state, StyleState::Disabled | StyleState::Loading) {
+                0.6
+            } else {
+                1.0
+            },
+            shadow: None,     // Simplified - no shadows for now
+            transition: None, // Simplified - no transitions for now
+        }
+    }
 }
 
 // Implement the Styled trait
@@ -348,6 +566,9 @@ impl RenderOnce for Button {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.global::<crate::Theme>();
 
+        // Get button tokens using hybrid color system
+        let button_tokens = theme.tokens.button_tokens();
+
         // Determine current style state based on component state and properties
         let current_state = if self.disabled {
             StyleState::Disabled
@@ -357,13 +578,15 @@ impl RenderOnce for Button {
             self.state.into()
         };
 
-        // Compute style using the new style system
-        let computed_style = compute_component_style(
-            theme,
-            current_state,
-            StyleVariant::from(self.variant).as_str(),
-            StyleSize::from(self.size).as_str(),
-        );
+        // Create computed style from button tokens based on variant and state
+        let computed_style =
+            self.compute_style_from_tokens(&button_tokens, current_state, &theme.tokens);
+
+        // Precompute hover and active styles for interactive states
+        let hover_style =
+            self.compute_style_from_tokens(&button_tokens, StyleState::Hover, &theme.tokens);
+        let active_style =
+            self.compute_style_from_tokens(&button_tokens, StyleState::Active, &theme.tokens);
 
         // Check if animations should be enabled
         let enable_animations = is_feature_enabled(cx, |features| features.enable_animations)
@@ -404,19 +627,6 @@ impl RenderOnce for Button {
 
         // Apply interactive hover/active states if enabled and not disabled/loading
         if current_state.is_interactive() && enable_animations {
-            let hover_style = compute_component_style(
-                theme,
-                StyleState::Hover,
-                StyleVariant::from(self.variant).as_str(),
-                StyleSize::from(self.size).as_str(),
-            );
-            let active_style = compute_component_style(
-                theme,
-                StyleState::Active,
-                StyleVariant::from(self.variant).as_str(),
-                StyleSize::from(self.size).as_str(),
-            );
-
             button = button
                 .hover(|this| {
                     let mut hovered = this

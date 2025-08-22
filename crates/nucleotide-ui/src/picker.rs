@@ -84,14 +84,9 @@ impl RenderOnce for PickerElement {
                     .into();
 
                 {
-                    // Use design tokens for theme-aware colors
-                    let tokens = crate::DesignTokens::dark();
-                    let background = tokens.colors.popup_background;
-                    let border = tokens.colors.border_default;
-                    let text = tokens.colors.text_primary;
-                    let selected_bg = tokens.colors.selection_primary;
-                    let selected_text = tokens.colors.text_on_primary;
-                    let prompt_text = tokens.colors.text_secondary;
+                    // Get picker tokens using hybrid color system
+                    let theme = cx.global::<crate::Theme>();
+                    let picker_tokens = theme.tokens.picker_tokens();
 
                     div()
                         .track_focus(&self.focus)
@@ -99,31 +94,32 @@ impl RenderOnce for PickerElement {
                         .flex_col()
                         .w(px(600.))
                         .max_h(px(400.))
-                        .bg(background)
+                        .bg(picker_tokens.container_background)
                         .border_1()
-                        .border_color(border)
+                        .border_color(picker_tokens.border)
                         .rounded_md()
                         .shadow_lg()
                         .font(font)
                         .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size))
                         .child(
-                            // Title bar
+                            // Title bar - uses chrome header colors
                             div()
                                 .flex()
                                 .items_center()
                                 .px_3()
                                 .py_2()
+                                .bg(picker_tokens.header_background)
                                 .border_b_1()
-                                .border_color(border)
+                                .border_color(picker_tokens.border)
                                 .child(
                                     div()
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(text)
+                                        .text_color(picker_tokens.header_text)
                                         .child(title.clone())
                                 )
                         )
                         .child(
-                            // Items list  
+                            // Items list - uses Helix selection colors for familiarity
                             div()
                                 .flex_1()
                                 .overflow_hidden()
@@ -136,18 +132,26 @@ impl RenderOnce for PickerElement {
                                         .px_3()
                                         .py_1()
                                         .when(is_selected, |this| {
-                                            this.bg(selected_bg)
-                                                .text_color(selected_text)
+                                            this.bg(picker_tokens.item_background_selected)
+                                                .text_color(picker_tokens.item_text_selected)
                                         })
                                         .when(!is_selected, |this| {
-                                            this.text_color(text)
+                                            this.bg(picker_tokens.item_background)
+                                                .text_color(picker_tokens.item_text)
+                                        })
+                                        .hover(|this| {
+                                            if !is_selected {
+                                                this.bg(picker_tokens.item_background_hover)
+                                            } else {
+                                                this
+                                            }
                                         })
                                         .child(item.label.clone())
                                         .when_some(item.sublabel.as_ref(), |this, sublabel| {
                                             this.child(
                                                 div()
                                                     .text_size(px(12.))
-                                                    .text_color(prompt_text)
+                                                    .text_color(picker_tokens.item_text_secondary)
                                                     .child(sublabel.clone())
                                             )
                                         })
@@ -162,9 +166,9 @@ impl RenderOnce for PickerElement {
                                 .px_3()
                                 .py_1()
                                 .border_t_1()
-                                .border_color(border)
+                                .border_color(picker_tokens.separator)
                                 .text_size(px(11.))
-                                .text_color(prompt_text)
+                                .text_color(picker_tokens.item_text_secondary)
                                 .child(format!(
                                     "Native GPUI Picker [{}/{}] - ↑↓ to navigate, Enter to select, Esc to cancel",
                                     self.selected_index + 1,
