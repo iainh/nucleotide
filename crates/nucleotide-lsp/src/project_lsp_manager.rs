@@ -235,11 +235,18 @@ impl ProjectLspManager {
                 },
             );
 
+            // Also send ProjectLspEvent for test listeners
+            let _ = self.event_tx.send(ProjectLspEvent::ServerStartupRequested {
+                workspace_root: project_info.workspace_root.clone(),
+                server_name: server_name.clone(),
+                language_id: language_id.clone(),
+            });
+
             info!(
                 server_name = %server_name,
                 language_id = %language_id,
                 workspace_root = %project_info.workspace_root.display(),
-                "Successfully sent LspServerStartupRequested event through event bridge"
+                "Successfully sent LspServerStartupRequested events through both event bridge and ProjectLsp event system"
             );
         }
 
@@ -1046,7 +1053,7 @@ mod tests {
         let lifecycle_manager = ServerLifecycleManager::new(config);
 
         // Should be created without bridge initially
-        let bridge_guard = lifecycle_manager.helix_bridge.blocking_read();
+        let bridge_guard = lifecycle_manager.helix_bridge.read().await;
         assert!(bridge_guard.is_none());
     }
 
