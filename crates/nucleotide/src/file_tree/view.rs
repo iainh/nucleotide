@@ -14,8 +14,8 @@ use gpui::{
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::{
-    ComponentState, ListItem, ListItemSpacing, ListItemVariant, Theme, VcsIcon, VcsIconRenderer,
-    VcsStatus, compute_component_state,
+    ListItem, ListItemSpacing, ListItemVariant, Theme, VcsIcon, VcsIconRenderer,
+    VcsStatus,
     scrollbar::{Scrollbar, ScrollbarState},
 };
 use nucleotide_vcs::VcsServiceHandle;
@@ -1021,6 +1021,9 @@ impl FileTreeView {
                 .map(|provider| provider.current_theme().clone())
                 .unwrap_or_else(|| cx.global::<Theme>().clone());
 
+        // Get FileTreeTokens for hybrid color system
+        let file_tree_tokens = theme.tokens.file_tree_tokens();
+
         let enable_animations = nucleotide_ui::providers::use_provider::<
             nucleotide_ui::providers::ConfigurationProvider,
         >()
@@ -1068,8 +1071,9 @@ impl FileTreeView {
                             let item = item.pl(indentation).pr(px(8.0)).h(px(24.0));
 
                             // Apply hover effects conditionally based on animation config
-                            if enable_animations {
-                                item.hover(|style| style.bg(theme.tokens.colors.surface_hover))
+                            // Use computed chrome hover color for non-selected items
+                            if enable_animations && !is_selected {
+                                item.hover(|style| style.bg(file_tree_tokens.item_background_hover))
                             } else {
                                 item
                             }
@@ -1102,10 +1106,11 @@ impl FileTreeView {
     /// Render the chevron for directories using design tokens
     fn render_chevron(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let file_tree_tokens = theme.tokens.file_tree_tokens();
 
         chevron_icon(if entry.is_expanded { "down" } else { "right" })
             .size_3()
-            .text_color(theme.tokens.colors.text_secondary) // Use design token for consistent color
+            .text_color(file_tree_tokens.item_text_secondary) // Use computed chrome text color
     }
 
     /// Render the file/directory icon with VCS status overlay using VcsIcon component
@@ -1145,9 +1150,10 @@ impl FileTreeView {
         self.render_vcs_icon(vcs_icon_with_status, cx)
     }
 
-    /// Render the filename using nucleotide-ui design tokens
+    /// Render the filename using computed chrome text colors
     fn render_filename(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let file_tree_tokens = theme.tokens.file_tree_tokens();
 
         // For root directory, show just the directory name
         let filename = if entry.depth == 0 && entry.is_directory() {
@@ -1168,14 +1174,14 @@ impl FileTreeView {
             entry.file_name().unwrap_or("?").to_string()
         };
 
-        // Use design tokens for consistent text styling
+        // Use computed chrome text colors for consistency with chrome background
         div()
             .flex_1()
             .text_size(px(14.0)) // Use consistent text size
             .text_color(if entry.is_hidden {
-                theme.tokens.colors.text_secondary
+                file_tree_tokens.item_text_secondary
             } else {
-                theme.tokens.colors.text_primary
+                file_tree_tokens.item_text
             })
             .child(filename)
     }
@@ -1200,21 +1206,9 @@ impl Render for FileTreeView {
         let theme = cx.theme();
         let entries = self.tree.visible_entries();
 
-        // Compute component state based on file tree status
-        let component_state = compute_component_state(
-            false,                                // disabled - file tree is never disabled
-            false,                                // loading - TODO: could be true during refresh
-            self.focus_handle.is_focused(window), // focused - check actual focus state
-            false,                                // hovered - handled by GPUI
-            !entries.is_empty(),                  // active when there are entries
-        );
-
-        // Get semantic background color using design tokens
-        let bg_color = match component_state {
-            ComponentState::Active => theme.tokens.colors.surface,
-            ComponentState::Disabled => theme.tokens.colors.surface,
-            _ => theme.tokens.colors.surface,
-        };
+        // Use FileTreeTokens from hybrid color system for chrome background
+        let file_tree_tokens = theme.tokens.file_tree_tokens();
+        let bg_color = file_tree_tokens.background;
 
         // Create semantic file tree container with nucleotide-ui design tokens
         div()

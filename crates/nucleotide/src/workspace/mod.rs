@@ -2936,27 +2936,17 @@ impl Workspace {
 
     /// Render unified status bar with file tree toggle and status information
     fn render_unified_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Use statusline theme colors
-        let statusline_style = cx.theme_style("ui.statusline");
-        let bg_color = statusline_style
-            .bg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or_else(|| {
-                let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                let base = cx
-                    .theme_style("ui.background")
-                    .bg
-                    .and_then(crate::utils::color_to_hsla)
-                    .unwrap_or(ui_theme.tokens.colors.background);
-                hsla(base.h, base.s, base.l * 0.9, base.a)
-            });
-        let fg_color = statusline_style
-            .fg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or_else(|| {
-                let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                ui_theme.tokens.colors.text_primary
-            });
+        // Use hybrid color system with StatusBarTokens
+        let ui_theme = cx.global::<nucleotide_ui::Theme>();
+        let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
+        
+        // Use the hybrid chrome background colors for consistent visual hierarchy
+        let bg_color = status_bar_tokens.background_active; // Always use active for unified bar
+        let fg_color = status_bar_tokens.text_primary;
+        
+        // Extract design token values before any mutable borrows
+        let space_3 = ui_theme.tokens.sizes.space_3;
+        let text_sm = ui_theme.tokens.sizes.text_sm;
 
         // Get UI font configuration
         let ui_font_config = cx.global::<crate::types::UiFontConfig>();
@@ -3031,18 +3021,9 @@ impl Workspace {
             None
         };
 
-        // Create border color
-        let ui_theme = cx.global::<nucleotide_ui::Theme>();
-        let border_color =
-            nucleotide_ui::styling::ColorTheory::subtle_border_color(bg_color, &ui_theme.tokens);
-
-        // Create divider color
-        let divider_color = Hsla {
-            h: fg_color.h,
-            s: fg_color.s,
-            l: fg_color.l,
-            a: 0.3,
-        };
+        // Use consistent border and divider colors from hybrid system
+        let border_color = status_bar_tokens.border;
+        let divider_color = status_bar_tokens.border;
         div()
             .h(px(28.0))
             .w_full()
@@ -3098,10 +3079,18 @@ impl Workspace {
                     .flex_1()
                     .flex_row()
                     .items_center()
-                    .child(
-                        // Mode indicator - absolutely no padding
-                        div().child(mode_name).min_w(px(50.)),
-                    )
+                    .child({
+                        // Mode indicator with appropriate color from hybrid system
+                        let mode_color = match mode_name {
+                            "INS" => status_bar_tokens.mode_insert,
+                            "SEL" => status_bar_tokens.mode_select,
+                            _ => status_bar_tokens.mode_normal, // Default for "NOR" and others
+                        };
+                        div()
+                            .child(mode_name)
+                            .min_w(px(50.))
+                            .text_color(mode_color)
+                    })
                     .child(
                         // Divider
                         div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2(),
@@ -3133,8 +3122,8 @@ impl Workspace {
                                     .min_w(px(16.)) // Minimum for icon-only display
                                     .overflow_hidden()
                                     .text_ellipsis() // Graceful text truncation
-                                    .px(ui_theme.tokens.sizes.space_3) // Use design token spacing
-                                    .text_size(ui_theme.tokens.sizes.text_sm) // Use design token text sizing
+                                    .px(space_3) // Use design token spacing
+                                    .text_size(text_sm) // Use design token text sizing
                                     .whitespace_nowrap(), // Prevent text wrapping
                             )
                     }), // .child({

@@ -124,7 +124,10 @@ pub use styling::{
     VariantStyler, ViewportContext, compute_component_style, compute_contextual_style,
     compute_style_for_states, merge_styles, should_enable_animations,
 };
-pub use tokens::{ColorContext, DesignTokens, SemanticColors, SizeTokens, TitleBarTokens};
+pub use tokens::{
+    ChromeTokens, ColorContext, DesignTokens, EditorTokens, FileTreeTokens, SemanticColors,
+    SizeTokens, StatusBarTokens, TabBarTokens, TitleBarTokens,
+};
 pub use traits::{
     Component, ComponentBuilder, ComponentFactory, ComponentState, ComponentStyles, Composable,
     Interactive, KeyboardNavigable, Loadable, Measurable, Slotted, Styled, ThemedContext,

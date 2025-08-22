@@ -49,11 +49,45 @@ impl StatusLineView {
     }
 
     fn get_status_color(&self, tokens: &nucleotide_ui::DesignTokens) -> gpui::Hsla {
-        if self.focused {
-            tokens.colors.statusline_active
-        } else {
-            tokens.colors.statusline_inactive
+        // Use StatusBarTokens from hybrid color system for chrome backgrounds
+        let status_bar_tokens = tokens.status_bar_tokens();
+        
+        // Debug logging to understand what's happening
+        let titlebar_tokens = tokens.titlebar_tokens();
+        
+        // CRITICAL CHECK: Assert that status bar and titlebar use same colors
+        if status_bar_tokens.background_active != titlebar_tokens.background {
+            nucleotide_logging::error!(
+                status_active = ?status_bar_tokens.background_active,
+                status_inactive = ?status_bar_tokens.background_inactive,
+                titlebar_bg = ?titlebar_tokens.background,
+                chrome_footer = ?tokens.chrome.footer_background,
+                chrome_titlebar = ?tokens.chrome.titlebar_background,
+                colors_should_match = (tokens.chrome.footer_background == tokens.chrome.titlebar_background),
+                "CRITICAL ERROR: Status bar and titlebar colors don't match!"
+            );
         }
+        
+        let selected_color = if self.focused {
+            status_bar_tokens.background_active
+        } else {
+            status_bar_tokens.background_inactive
+        };
+        
+        nucleotide_logging::debug!(
+            focused = self.focused,
+            active_bg = ?status_bar_tokens.background_active,
+            inactive_bg = ?status_bar_tokens.background_inactive,
+            titlebar_bg = ?titlebar_tokens.background,
+            selected_color = ?selected_color,
+            colors_match_active = (status_bar_tokens.background_active == titlebar_tokens.background),
+            colors_match_inactive = (status_bar_tokens.background_inactive == titlebar_tokens.background),
+            doc_id = ?self.doc_id,
+            view_id = ?self.view_id,
+            "GET_STATUS_COLOR: Color selection details"
+        );
+        
+        selected_color
     }
 }
 
@@ -109,6 +143,17 @@ impl Render for StatusLineView {
 
         // Get status bar background color based on focus state
         let status_bg = self.get_status_color(tokens);
+        
+        // Debug log the actual color being applied in render
+        nucleotide_logging::debug!(
+            actual_status_bg = ?status_bg,
+            focused = self.focused,
+            doc_id = ?self.doc_id,
+            view_id = ?self.view_id,
+            chrome_footer = ?tokens.chrome.footer_background,
+            chrome_titlebar = ?tokens.chrome.titlebar_background,
+            "RENDER: Applying status bar background color"
+        );
 
         // Build status components
         let position = helix_core::coords_at_pos(
@@ -152,15 +197,14 @@ impl Render for StatusLineView {
 
         let position_text = format!("{}:{}", position.row + 1, position.col + 1);
 
-        // Build the status line layout using design tokens
-        let border_color =
-            nucleotide_ui::styling::ColorTheory::subtle_border_color(status_bg, tokens);
+        // Build the status line layout using StatusBarTokens for chrome colors
+        let status_bar_tokens = tokens.status_bar_tokens();
         let mut status_bar = div()
             .h(tokens.sizes.button_height_sm)
             .w_full()
             .bg(status_bg)
             .border_t_1()
-            .border_color(border_color)
+            .border_color(status_bar_tokens.border)
             .flex()
             .flex_row()
             .items_center()
@@ -168,18 +212,18 @@ impl Render for StatusLineView {
             .gap(tokens.sizes.space_2)
             .font(font)
             .text_size(font_size)
-            .text_color(tokens.colors.text_primary)
+            .text_color(status_bar_tokens.text_primary)
             .child(
-                // Mode indicator
+                // Mode indicator - use accent color for mode as it's functional content
                 div()
                     .child(mode_name)
                     .min_w(px(24.))
                     .px(tokens.sizes.space_2)
-                    .text_color(tokens.colors.text_secondary),
+                    .text_color(status_bar_tokens.text_accent), // Use accent for mode visibility
             )
             .child(
                 // Divider
-                div().w(px(1.)).h(px(16.)).bg(tokens.colors.border_muted),
+                div().w(px(1.)).h(px(16.)).bg(status_bar_tokens.border),
             )
             .child(
                 // File name - takes up available space
@@ -191,7 +235,7 @@ impl Render for StatusLineView {
             )
             .child(
                 // Divider
-                div().w(px(1.)).h(px(16.)).bg(tokens.colors.border_muted),
+                div().w(px(1.)).h(px(16.)).bg(status_bar_tokens.border),
             )
             .child(
                 // Position
@@ -206,7 +250,7 @@ impl Render for StatusLineView {
             status_bar = status_bar
                 .child(
                     // Divider before LSP
-                    div().w(px(1.)).h(px(16.)).bg(tokens.colors.border_muted),
+                    div().w(px(1.)).h(px(16.)).bg(status_bar_tokens.border),
                 )
                 .child(
                     // LSP indicator - dynamic width using design tokens

@@ -292,15 +292,14 @@ impl RenderOnce for TabBar {
         let theme = cx.theme();
         let tokens = &theme.tokens;
 
-        // Get tab bar background using design tokens
-        let tabbar_bg = tokens.colors.bufferline_background;
-        let border_color =
-            nucleotide_ui::styling::ColorTheory::subtle_border_color(tabbar_bg, tokens);
+        // Get tab bar tokens for hybrid color system
+        let tab_bar_tokens = tokens.tab_bar_tokens();
+        let tabbar_bg = tab_bar_tokens.container_background;
+        let border_color = tab_bar_tokens.tab_border;
 
-        // Calculate inactive tab border color for empty tab bar sections
-        let inactive_tab_bg = tokens.colors.bufferline_inactive;
-        let inactive_border_color =
-            nucleotide_ui::styling::ColorTheory::subtle_border_color(inactive_tab_bg, tokens);
+        // For inactive tab areas, use the same container background and border
+        let inactive_tab_bg = tab_bar_tokens.container_background;
+        let inactive_border_color = tab_bar_tokens.tab_border;
 
         // Create tabs for visible documents
         let mut tabs = Vec::new();
@@ -380,7 +379,7 @@ impl RenderOnce for TabBar {
                                 .flex()
                                 .items_center()
                                 .px(tokens.sizes.space_4)
-                                .text_color(tokens.colors.text_disabled)
+                                .text_color(tab_bar_tokens.tab_text_inactive)
                                 .text_size(tokens.sizes.text_sm)
                                 .child("No open files"),
                         )

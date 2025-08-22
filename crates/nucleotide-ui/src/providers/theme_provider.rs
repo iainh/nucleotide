@@ -351,15 +351,19 @@ impl ThemeProvider {
 
         let tokens = match ctx {
             crate::tokens::ColorContext::OnSurface => {
-                crate::tokens::TitleBarTokens::on_surface(&self.current_theme.tokens)
+                // Use the new hybrid token system for surface context
+                self.current_theme.tokens.titlebar_tokens()
             }
             crate::tokens::ColorContext::OnPrimary => {
+                // Fallback to old system for specialized contexts until migrated
                 crate::tokens::TitleBarTokens::on_primary(&self.current_theme.tokens)
             }
             crate::tokens::ColorContext::Floating => {
+                // Fallback to old system for specialized contexts until migrated
                 crate::tokens::TitleBarTokens::floating(&self.current_theme.tokens)
             }
             crate::tokens::ColorContext::Overlay => {
+                // Fallback to old system for specialized contexts until migrated
                 crate::tokens::TitleBarTokens::overlay(&self.current_theme.tokens)
             }
         };

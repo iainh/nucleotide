@@ -55,6 +55,19 @@ pub enum SystemAppearance {
     Dark,
 }
 
+/// Source of surface color extraction for debugging and validation
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SurfaceColorSource {
+    /// Extracted from ui.background (preferred)
+    UiBackground,
+    /// Extracted from ui.window (secondary)
+    UiWindow,
+    /// Extracted from ui.menu (tertiary)
+    UiMenu,
+    /// Using system appearance fallback
+    SystemFallback,
+}
+
 impl From<WindowAppearance> for SystemAppearance {
     fn from(appearance: WindowAppearance) -> Self {
         match appearance {
@@ -430,6 +443,81 @@ impl ThemeManager {
         bg.l < 0.5
     }
 
+    /// Extract surface color from Helix theme with priority fallback system
+    /// Returns both the color and metadata about its source for debugging
+    pub fn extract_surface_color(
+        helix_theme: &HelixTheme,
+        system_appearance: SystemAppearance,
+    ) -> (Hsla, SurfaceColorSource) {
+        // Check if theme fallback testing is enabled
+        let test_fallback = std::env::var("NUCLEOTIDE_DISABLE_THEME_LOADING")
+            .map(|val| val == "1" || val.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        if test_fallback {
+            nucleotide_logging::warn!(
+                "TESTING MODE: Forcing fallback surface color computation"
+            );
+            let fallback_color = match system_appearance {
+                SystemAppearance::Light => hsla(0.0, 0.0, 0.98, 1.0), // Light background
+                SystemAppearance::Dark => hsla(0.0, 0.0, 0.05, 1.0),  // Dark background
+            };
+            return (fallback_color, SurfaceColorSource::SystemFallback);
+        }
+
+        // Priority order for surface color extraction
+        let extraction_attempts = [
+            ("ui.background", "Primary editor background"),
+            ("ui.window", "Window/container background"),
+            ("ui.menu", "Menu/surface background"),
+        ];
+
+        for (theme_key, description) in &extraction_attempts {
+            let style = helix_theme.get(theme_key);
+            if let Some(helix_color) = style.bg {
+                if let Some(hsla_color) = color_to_hsla(helix_color) {
+                    nucleotide_logging::info!(
+                        theme_key = theme_key,
+                        description = description,
+                        extracted_color = ?hsla_color,
+                        lightness = hsla_color.l,
+                        "Surface color extracted from Helix theme"
+                    );
+
+                    let source = match *theme_key {
+                        "ui.background" => SurfaceColorSource::UiBackground,
+                        "ui.window" => SurfaceColorSource::UiWindow,
+                        "ui.menu" => SurfaceColorSource::UiMenu,
+                        _ => SurfaceColorSource::UiBackground, // fallback
+                    };
+
+                    return (hsla_color, source);
+                }
+            }
+
+            nucleotide_logging::debug!(
+                theme_key = theme_key,
+                description = description,
+                style_bg = ?style.bg,
+                "Surface color not available from this theme key"
+            );
+        }
+
+        // No suitable color found in theme, use system appearance fallback
+        let fallback_color = match system_appearance {
+            SystemAppearance::Light => hsla(0.0, 0.0, 0.98, 1.0), // Light background
+            SystemAppearance::Dark => hsla(0.0, 0.0, 0.05, 1.0),  // Dark background
+        };
+
+        nucleotide_logging::warn!(
+            system_appearance = ?system_appearance,
+            fallback_color = ?fallback_color,
+            "No surface color found in Helix theme, using system appearance fallback"
+        );
+
+        (fallback_color, SurfaceColorSource::SystemFallback)
+    }
+
     /// Derive a UI theme from a Helix theme with system appearance for fallback colors
     fn derive_ui_theme_with_appearance(
         helix_theme: &HelixTheme,
@@ -602,26 +690,16 @@ impl ThemeManager {
             );
         }
 
-        // Convert to GPUI colors with sensible defaults based on system appearance
-        let background_from_theme = ui_bg.bg.and_then(color_to_hsla);
-        nucleotide_logging::debug!(
-            "TITLEBAR THEME_MANAGER: ui_bg.bg={:?}, converted background_from_theme={:?}",
-            ui_bg.bg,
-            background_from_theme
+        // Use enhanced surface color extraction with priority fallback system
+        let (background, surface_color_source) = Self::extract_surface_color(helix_theme, system_appearance);
+        
+        nucleotide_logging::info!(
+            background_color = ?background,
+            source = ?surface_color_source,
+            lightness = background.l,
+            is_dark = background.l < 0.5,
+            "Surface color extracted for theme derivation"
         );
-
-        let background = background_from_theme.unwrap_or_else(|| {
-            let fallback_color = match system_appearance {
-                SystemAppearance::Light => hsla(0.0, 0.0, 0.98, 1.0), // Light background
-                SystemAppearance::Dark => hsla(0.0, 0.0, 0.05, 1.0),  // Dark background
-            };
-            nucleotide_logging::debug!(
-                system_appearance = ?system_appearance,
-                fallback_background = ?fallback_color,
-                "TITLEBAR THEME_MANAGER: Using fallback background color (no theme background found)"
-            );
-            fallback_color
-        });
 
         let surface_from_theme = {
             let menu_color = ui_menu.bg.and_then(color_to_hsla);
@@ -750,7 +828,7 @@ impl ThemeManager {
 
         if test_fallback {
             nucleotide_logging::info!(
-                background_from_theme = background_from_theme.is_some(),
+                background_source = ?surface_color_source,
                 surface_from_theme = surface_from_theme.is_some(),
                 text_from_theme = text_from_theme.is_some(),
                 border_from_theme = border_from_theme.is_some(),
@@ -830,11 +908,19 @@ impl ThemeManager {
             focus: extract_color("ui.focus", accent),
         };
 
-        let mut tokens = if background.l < 0.5 {
-            crate::DesignTokens::dark_with_helix_colors(theme_colors)
-        } else {
-            crate::DesignTokens::light_with_helix_colors(theme_colors)
-        };
+        // Use the new hybrid token system that computes chrome colors from surface
+        let is_dark_theme = background.l < 0.5;
+        let mut tokens = crate::DesignTokens::from_helix_and_surface(
+            theme_colors,
+            background, // Use ui.background as the surface color for chrome computation
+            is_dark_theme,
+        );
+
+        nucleotide_logging::info!(
+            surface_color = ?background,
+            is_dark = is_dark_theme,
+            "Creating hybrid design tokens with computed chrome colors"
+        );
 
         // Inject the computed Helix-derived surface colors into the token system
         // This ensures TitleBarTokens and other components get the correct theme colors
