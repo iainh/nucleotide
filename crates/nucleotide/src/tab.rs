@@ -10,7 +10,7 @@ use helix_view::DocumentId;
 use nucleotide_ui::ThemedContext;
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, Component, ComponentFactory, ComponentState, Interactive,
-    StyleVariant, Styled as UIStyled, Tooltipped, VcsIndicator, VcsStatus, compute_component_state,
+    StyleVariant, Styled as UIStyled, Tooltipped, VcsIcon, VcsStatus, compute_component_state,
 };
 
 /// Type alias for mouse event handlers in tabs
@@ -338,20 +338,20 @@ impl RenderOnce for Tab {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(if let Some(ref path) = self.file_path {
-                                nucleotide_ui::FileIcon::from_path(path, false)
-                                    .size(tokens.sizes.text_lg.into()) // Convert Pixels to f32
-                                    .text_color(text_color)
-                            } else {
-                                nucleotide_ui::FileIcon::scratch()
-                                    .size(tokens.sizes.text_lg.into()) // Convert Pixels to f32
-                                    .text_color(text_color)
-                            })
-                            .when_some(git_status.as_ref(), |div, status| {
-                                let indicator = VcsIndicator::new(status.clone())
-                                    .size(tokens.sizes.space_3.into()) // Use space_3 (8px) for overlay indicator
-                                    .overlay();
-                                div.child(indicator)
+                            .child({
+                                // Create VcsIcon with appropriate file type and VCS status
+                                let vcs_icon = if let Some(ref path) = self.file_path {
+                                    VcsIcon::from_path(path, false)
+                                        .size(tokens.sizes.text_lg.into()) // Convert Pixels to f32
+                                        .text_color(text_color)
+                                } else {
+                                    VcsIcon::scratch()
+                                        .size(tokens.sizes.text_lg.into()) // Convert Pixels to f32
+                                        .text_color(text_color)
+                                };
+
+                                // Add VCS status if available and render directly
+                                vcs_icon.vcs_status(git_status.clone())
                             }),
                     )
                     .child(

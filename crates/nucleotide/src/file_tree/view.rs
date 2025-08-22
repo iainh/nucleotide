@@ -15,8 +15,8 @@ use gpui::{
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::{
-    ComponentState, FileIcon, ListItem, ListItemSpacing, ListItemVariant, Theme, VcsStatus,
-    compute_component_state,
+    ComponentState, ListItem, ListItemSpacing, ListItemVariant, Theme, VcsIcon, VcsIconRenderer,
+    VcsStatus, compute_component_state,
     scrollbar::{Scrollbar, ScrollbarState},
 };
 use std::path::{Path, PathBuf};
@@ -1121,7 +1121,7 @@ impl FileTreeView {
             .text_color(theme.tokens.colors.text_secondary) // Use design token for consistent color
     }
 
-    /// Render the file/directory icon with VCS status overlay
+    /// Render the file/directory icon with VCS status overlay using VcsIcon component
     fn render_icon_with_vcs_status(
         &self,
         entry: &FileTreeEntry,
@@ -1129,17 +1129,18 @@ impl FileTreeView {
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>();
 
-        let icon = match &entry.kind {
-            crate::file_tree::FileKind::Directory { .. } => FileIcon::directory(entry.is_expanded)
+        // Create the appropriate VcsIcon based on the entry type
+        let vcs_icon = match &entry.kind {
+            crate::file_tree::FileKind::Directory { .. } => VcsIcon::directory(entry.is_expanded)
                 .size(16.0)
                 .text_color(theme.text),
             crate::file_tree::FileKind::File { extension } => {
-                FileIcon::from_extension(extension.as_deref())
+                VcsIcon::from_extension(extension.as_deref())
                     .size(16.0)
                     .text_color(theme.text)
             }
             crate::file_tree::FileKind::Symlink { target_exists, .. } => {
-                FileIcon::symlink(*target_exists)
+                VcsIcon::symlink(*target_exists)
                     .size(16.0)
                     .text_color(if *target_exists {
                         theme.tokens.colors.primary
@@ -1149,20 +1150,12 @@ impl FileTreeView {
             }
         };
 
-        // Container with relative positioning for the icon and overlay
-        div()
-            .w_4()
-            .h_4()
-            .relative()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(icon)
-            .when_some(
-                // Always get VCS status from centralized service during rendering
-                self.get_vcs_status_for_entry(&entry.path, cx).as_ref(),
-                |div, status| div.child(self.render_vcs_status_overlay(status, cx)),
-            )
+        // Add VCS status if available
+        let vcs_icon_with_status =
+            vcs_icon.vcs_status(self.get_vcs_status_for_entry(&entry.path, cx));
+
+        // Use the VcsIconRenderer trait to render with proper theme context
+        self.render_vcs_icon(vcs_icon_with_status, cx)
     }
 
     /// Render the filename using nucleotide-ui design tokens
@@ -1198,38 +1191,6 @@ impl FileTreeView {
                 theme.tokens.colors.text_primary
             })
             .child(filename)
-    }
-
-    /// Render VCS status as an overlay dot positioned at bottom left of icon
-    fn render_vcs_status_overlay(
-        &self,
-        status: &VcsStatus,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
-
-        let color = match status {
-            VcsStatus::Modified => theme.warning,
-            VcsStatus::Added => theme.success,
-            VcsStatus::Deleted => theme.error,
-            VcsStatus::Untracked => theme.text_muted,
-            VcsStatus::Renamed => theme.tokens.colors.primary,
-            VcsStatus::Conflicted => theme.error,
-            VcsStatus::UpToDate => return div(), // Don't show anything for up-to-date files
-        };
-
-        // Position at bottom left of the icon (absolute positioning)
-        // Slightly offset so it doesn't completely cover the corner
-        div()
-            .absolute()
-            .bottom(px(-2.0)) // Slightly extend below the icon
-            .left(px(-2.0)) // Slightly extend to the left of the icon
-            .w(px(8.0)) // 8px diameter
-            .h(px(8.0))
-            .rounded_full()
-            .bg(color)
-            .border_1()
-            .border_color(theme.tokens.colors.background) // Add a small border to separate from icon
     }
 }
 
