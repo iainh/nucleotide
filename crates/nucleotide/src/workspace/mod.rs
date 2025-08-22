@@ -5030,10 +5030,36 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     });
     info!("Base directory for file picker: {:?}", base_dir);
 
-    // Use ignore::Walk to get files, respecting .gitignore
+    // Use ignore::Walk to get files, respecting .gitignore and other VCS ignore files
+    // Configure WalkBuilder like Helix does to properly respect all ignore files
     let mut walker = WalkBuilder::new(&base_dir);
+
+    // Enable all ignore file types that Helix uses by default
+    walker.git_ignore(true); // Respect .gitignore files
+    walker.git_global(true); // Respect global gitignore
+    walker.git_exclude(true); // Respect .git/info/exclude
+    walker.ignore(true); // Respect .ignore files
+    walker.parents(true); // Check parent directories for ignore files
+    walker.hidden(true); // Hide hidden files (files starting with .)
+
+    // Add Helix-specific ignore files
     walker.add_custom_ignore_filename(".helix/ignore");
-    walker.hidden(false); // Show hidden files like .gitignore
+
+    // Add standard editor ignore patterns
+    walker.filter_entry(|entry| {
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        // Skip common VCS directories that might not be caught by ignore files
+        if path.is_dir() {
+            match file_name {
+                ".git" | ".svn" | ".hg" | ".bzr" => return false,
+                _ => {}
+            }
+        }
+
+        true
+    });
 
     for entry in walker.build().filter_map(std::result::Result::ok) {
         let path = entry.path().to_path_buf();
