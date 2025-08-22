@@ -2,7 +2,7 @@
 // ABOUTME: Manages file system hierarchy with support for lazy loading and filtering
 
 use anyhow::{Context, Result};
-use nucleotide_logging::debug;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,11 +31,16 @@ pub struct FileTree {
     visible_entries_cache: Option<Vec<FileTreeEntry>>,
     /// Set of directories currently being loaded
     loading_dirs: HashSet<PathBuf>,
+    /// Gitignore matcher for filtering files
+    gitignore: Option<Gitignore>,
 }
 
 impl FileTree {
     /// Create a new file tree for the given root path
     pub fn new(root_path: PathBuf, config: FileTreeConfig) -> Self {
+        // Build gitignore matcher using the same patterns as the file picker
+        let gitignore = Self::build_gitignore_matcher(&root_path);
+
         Self {
             root_path,
             entries: SumTree::new(&()),
@@ -46,6 +51,7 @@ impl FileTree {
             is_loaded: false,
             visible_entries_cache: None,
             loading_dirs: HashSet::new(),
+            gitignore,
         }
     }
 
@@ -694,9 +700,68 @@ impl FileTree {
             .unwrap_or(false)
     }
 
-    /// Check if a file is ignored (simple implementation for now)
-    fn is_ignored_file(&self, _path: &Path) -> bool {
-        // TODO: Implement proper gitignore checking using the ignore crate
+    /// Build gitignore matcher using the same patterns as the file picker
+    fn build_gitignore_matcher(root_path: &Path) -> Option<Gitignore> {
+        let mut builder = GitignoreBuilder::new(root_path);
+
+        // Add .gitignore files
+        if let Ok(gitignore_path) = root_path.join(".gitignore").canonicalize() {
+            if gitignore_path.exists() {
+                let _ = builder.add(&gitignore_path);
+            }
+        }
+
+        // Add global gitignore
+        if let Some(git_config_dir) = dirs::config_dir() {
+            let global_gitignore = git_config_dir.join("git").join("ignore");
+            if global_gitignore.exists() {
+                let _ = builder.add(&global_gitignore);
+            }
+        }
+
+        // Add .git/info/exclude
+        let git_exclude = root_path.join(".git").join("info").join("exclude");
+        if git_exclude.exists() {
+            let _ = builder.add(&git_exclude);
+        }
+
+        // Add .ignore files
+        let ignore_file = root_path.join(".ignore");
+        if ignore_file.exists() {
+            let _ = builder.add(&ignore_file);
+        }
+
+        // Add Helix-specific ignore files
+        let helix_ignore = root_path.join(".helix").join("ignore");
+        if helix_ignore.exists() {
+            let _ = builder.add(&helix_ignore);
+        }
+
+        builder.build().ok()
+    }
+
+    /// Check if a file is ignored using the same patterns as the file picker
+    fn is_ignored_file(&self, path: &Path) -> bool {
+        // Check if path is inside VCS directories
+        for component in path.components() {
+            if let std::path::Component::Normal(name) = component {
+                if let Some(name_str) = name.to_str() {
+                    match name_str {
+                        ".git" | ".svn" | ".hg" | ".bzr" => return true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Check gitignore patterns
+        if let Some(ref gitignore) = self.gitignore {
+            if let Ok(relative_path) = path.strip_prefix(&self.root_path) {
+                let matched = gitignore.matched(relative_path, path.is_dir());
+                return matched.is_ignore();
+            }
+        }
+
         false
     }
 

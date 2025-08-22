@@ -2,6 +2,7 @@
 // ABOUTME: Monitors file system changes and emits events for tree synchronization
 
 use anyhow::{Context, Result};
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use nucleotide_logging::warn;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,8 @@ pub struct FileTreeWatcher {
     event_receiver: mpsc::UnboundedReceiver<Result<Event, notify::Error>>,
     /// Root path being watched
     root_path: PathBuf,
+    /// Gitignore matcher for filtering files
+    gitignore: Option<Gitignore>,
 }
 
 impl FileTreeWatcher {
@@ -36,10 +39,14 @@ impl FileTreeWatcher {
             .watch(&root_path, RecursiveMode::Recursive)
             .with_context(|| format!("Failed to watch directory: {}", root_path.display()))?;
 
+        // Build gitignore matcher using the same patterns as the file picker
+        let gitignore = Self::build_gitignore_matcher(&root_path);
+
         Ok(Self {
             _watcher: watcher,
             event_receiver: rx,
             root_path,
+            gitignore,
         })
     }
 
@@ -65,13 +72,89 @@ impl FileTreeWatcher {
         None
     }
 
+    /// Build gitignore matcher using the same patterns as the file picker
+    fn build_gitignore_matcher(root_path: &Path) -> Option<Gitignore> {
+        let mut builder = GitignoreBuilder::new(root_path);
+
+        // Add .gitignore files
+        if let Ok(gitignore_path) = root_path.join(".gitignore").canonicalize() {
+            if gitignore_path.exists() {
+                let _ = builder.add(&gitignore_path);
+            }
+        }
+
+        // Add global gitignore
+        if let Some(git_config_dir) = dirs::config_dir() {
+            let global_gitignore = git_config_dir.join("git").join("ignore");
+            if global_gitignore.exists() {
+                let _ = builder.add(&global_gitignore);
+            }
+        }
+
+        // Add .git/info/exclude
+        let git_exclude = root_path.join(".git").join("info").join("exclude");
+        if git_exclude.exists() {
+            let _ = builder.add(&git_exclude);
+        }
+
+        // Add .ignore files
+        let ignore_file = root_path.join(".ignore");
+        if ignore_file.exists() {
+            let _ = builder.add(&ignore_file);
+        }
+
+        // Add Helix-specific ignore files
+        let helix_ignore = root_path.join(".helix").join("ignore");
+        if helix_ignore.exists() {
+            let _ = builder.add(&helix_ignore);
+        }
+
+        builder.build().ok()
+    }
+
+    /// Check if a path should be ignored
+    fn should_ignore_path(&self, path: &Path) -> bool {
+        // Check if path is inside VCS directories
+        for component in path.components() {
+            if let std::path::Component::Normal(name) = component {
+                if let Some(name_str) = name.to_str() {
+                    match name_str {
+                        ".git" | ".svn" | ".hg" | ".bzr" => return true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        // Skip hidden files (files starting with .)
+        if file_name.starts_with('.') {
+            // Allow .gitignore and similar important config files
+            match file_name {
+                ".gitignore" | ".ignore" => return false,
+                _ => return true,
+            }
+        }
+
+        // Check gitignore patterns
+        if let Some(ref gitignore) = self.gitignore {
+            if let Ok(relative_path) = path.strip_prefix(&self.root_path) {
+                let matched = gitignore.matched(relative_path, path.is_dir());
+                return matched.is_ignore();
+            }
+        }
+
+        false
+    }
+
     /// Convert a notify Event to a FileTreeEvent
     fn convert_event(&self, event: Event) -> Option<FileTreeEvent> {
         // Filter out events for paths outside our root
         let paths: Vec<_> = event
             .paths
             .into_iter()
-            .filter(|path| path.starts_with(&self.root_path))
+            .filter(|path| path.starts_with(&self.root_path) && !self.should_ignore_path(path))
             .collect();
 
         if paths.is_empty() {

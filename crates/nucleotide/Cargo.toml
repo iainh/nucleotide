@@ -68,6 +68,7 @@ async-trait = "0.1"
 # File picker
 nucleo.workspace = true
 ignore.workspace = true
+dirs.workspace = true
 # markdown doc rendering
 pulldown-cmark = { version = "0.10", default-features = false }
 # file type detection
