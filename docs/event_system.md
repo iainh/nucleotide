@@ -1,27 +1,21 @@
-# Event Notification System Documentation
+# Event System Documentation
 
 ## Overview
 
-The helix-gpui project implements a sophisticated bidirectional event system that bridges GPUI's reactive UI framework with Helix's terminal-based editor core. The system uses multiple async channels, event transformation layers, and specialized bridges to achieve seamless integration between the native GUI and the powerful Helix editor.
+The Nucleotide project implements a sophisticated bidirectional event system that bridges GPUI's reactive UI framework with Helix's terminal-based editor core. The system uses domain-driven design principles with specialized event handlers to achieve seamless integration between the native GUI and the powerful Helix editor.
 
 ## Architecture Overview
 
-The event system has evolved through phases, with the V2 system introducing domain-driven event handling:
+The event system uses a modern domain-driven architecture with clear bounded contexts:
 
-### Legacy System (Phase 0)
-Three main layers:
-1. **GPUI Layer**: Native UI components, user input handling, and visual feedback  
-2. **Bridge Layer**: Event transformation and channel-based communication
-3. **Helix Layer**: Core editor logic, document management, and LSP integration
-
-### V2 Event System (Phase 1+)
-Domain-driven architecture with bounded contexts:
+### Current System Architecture
+The system is organized into four main layers:
 1. **UI Layer**: GPUI components and user interactions
 2. **Application Core**: Centralized event coordination and processing
-3. **Domain Handlers**: Specialized handlers for document, view, and editor events
+3. **Domain Handlers**: Specialized handlers for document, view, editor, LSP, completion, and workspace events
 4. **Helix Integration**: Direct integration with Helix editor state
 
-Communication flows through both legacy channels (for backward compatibility) and the new V2 domain event system.
+The system maintains backward compatibility with legacy channel-based communication while primarily operating through the domain event system.
 
 ## Architecture Diagrams
 
@@ -167,7 +161,7 @@ graph LR
     FTE --> WS
 ```
 
-### 5. V2 Event System Architecture (Phase 1+)
+### 5. Domain Event System Architecture
 
 ```mermaid
 graph TB
@@ -190,7 +184,7 @@ graph TB
         EH[EditorHandler]
     end
     
-    subgraph "V2 Events"
+    subgraph "Domain Events"
         DE[Document Events]
         VE[View Events]
         EE[Editor Events]
@@ -225,7 +219,7 @@ graph TB
     WS --> GPUI
 ```
 
-### 6. V2 Domain Event Flow
+### 6. Domain Event Flow
 
 ```mermaid
 sequenceDiagram
@@ -238,21 +232,21 @@ sequenceDiagram
     participant UI
     
     Helix->>Bridge: BridgedEvent::DocumentChanged
-    Bridge->>AppCore: process_v2_event()
+    Bridge->>AppCore: process_domain_event()
     AppCore->>AppCore: Extract document data
     AppCore->>DocumentHandler: handle(ContentChanged)
     DocumentHandler->>DocumentHandler: Update metadata cache
     DocumentHandler-->>AppCore: Success
     
     Helix->>Bridge: BridgedEvent::SelectionChanged
-    Bridge->>AppCore: process_v2_event()
+    Bridge->>AppCore: process_domain_event()
     AppCore->>AppCore: Extract selection data
     AppCore->>ViewHandler: handle(SelectionChanged)
     ViewHandler->>ViewHandler: Update view state
     ViewHandler-->>AppCore: Success
     
     Helix->>Bridge: BridgedEvent::ModeChanged
-    Bridge->>AppCore: process_v2_event()
+    Bridge->>AppCore: process_domain_event()
     AppCore->>EditorHandler: handle(ModeChanged)
     EditorHandler->>EditorHandler: Track mode statistics
     EditorHandler-->>AppCore: Success
@@ -260,9 +254,9 @@ sequenceDiagram
     AppCore-->>UI: State synchronized
 ```
 
-### 7. V2 Domain Events (Phase 1+)
+### 7. Domain Events
 
-The V2 system introduces structured domain events with rich context and metadata:
+The system uses structured domain events with rich context and metadata:
 
 #### Document Domain Events
 ```rust
@@ -460,18 +454,18 @@ Handles GPUI → Helix communication:
 - Theme and accessibility updates
 - Performance monitoring
 
-### V2 System Components (Phase 1+)
+### Domain System Components
 
 #### ApplicationCore (src/application/app_core.rs)
 
 Centralized event processing core extracted from the main Application:
 
-- **`process_v2_event()`**: Main V2 event processing pipeline
-- **Domain handler management**: Coordinates document, view, and editor handlers
+- **`process_domain_event()`**: Main domain event processing pipeline
+- **Domain handler management**: Coordinates document, view, editor, LSP, completion, and workspace handlers
 - **State extraction**: Enriches events with real data from Helix editor state
-- **Error handling**: Provides centralized error management for V2 events
+- **Error handling**: Provides centralized error management for domain events
 
-#### DocumentHandler (src/application_v2/document_handler.rs)
+#### DocumentHandler (src/application/document_handler.rs)
 
 Handles document-related events with rich metadata:
 
@@ -481,7 +475,7 @@ Handles document-related events with rich metadata:
 - **Diagnostics aggregation**: Collects and processes LSP diagnostic information
 - **Metadata caching**: Maintains document metadata for performance
 
-#### ViewHandler (src/application_v2/view_handler.rs)
+#### ViewHandler (src/application/view_handler.rs)
 
 Manages view-related events and state:
 
@@ -491,7 +485,7 @@ Manages view-related events and state:
 - **View metadata**: Caches view state for quick access and performance
 - **Split layout support**: Manages multiple view configurations
 
-#### EditorHandler (src/application_v2/editor_handler.rs)
+#### EditorHandler (src/application/editor_handler.rs)
 
 Coordinates global editor state and command execution:
 
@@ -610,10 +604,10 @@ The system maintains focus awareness to route events correctly:
 3. Use tracing spans for async event flows
 4. Check focus state for input routing issues
 
-## V2 System Benefits (Phase 1)
+## System Benefits
 
 ### Domain-Driven Design
-- **Bounded contexts**: Clear separation between document, view, and editor concerns
+- **Bounded contexts**: Clear separation between document, view, editor, LSP, completion, and workspace concerns
 - **Rich events**: Events carry structured data and context rather than simple notifications
 - **Type safety**: Compile-time guarantees for event structure and handling
 
@@ -632,63 +626,18 @@ The system maintains focus awareness to route events correctly:
 - **Performance monitoring**: Built-in timing and performance tracking
 - **Debug capabilities**: Detailed event tracing and state inspection
 
-## Migration Strategy
+## Current Implementation
 
-### Phase 1 (Completed)
-✅ **Foundation**: Domain event structure and basic handlers  
-✅ **Document Events**: ContentChanged, Opened, Closed, DiagnosticsUpdated  
-✅ **View Events**: SelectionChanged, Focused, Scrolled  
-✅ **Editor Events**: ModeChanged, CommandExecuted  
-✅ **Core Extraction**: ApplicationCore and ViewManager  
+### Domain Handler Architecture
 
-### Phase 2 (Completed ✅)
-- **LSP Events**: LanguageServerInitialized, LanguageServerExited, ServerStartupRequested
-  - LspHandler processes server lifecycle and health monitoring
-  - Tracks active servers per workspace with capabilities and health status
-  - Handles progress reporting and error recovery
-- **Completion Events**: CompletionRequested, ResultsAvailable, ItemSelected, ItemAccepted
-  - CompletionHandler manages completion request lifecycle and user interactions
-  - Tracks active sessions with request IDs and performance metrics
-  - Supports multiple providers (LSP, Buffer, Snippet, Path)
-- **Workspace Events**: ProjectOpened, FileTreeToggled, TabCreated, LayoutChanged
-  - WorkspaceHandler coordinates file operations and workspace state
-  - Manages panel visibility, tab lifecycle, and directory expansion
-  - Tracks current project type and workspace configuration
+The ApplicationCore orchestrates six domain-specific handlers:
 
-### Phase 3 (Completed ✅)
-**Phase 3.1: Legacy Infrastructure Cleanup**
-✅ **Removed obsolete infrastructure**: Eliminated unused BridgedEvent processing loops  
-✅ **Simplified Application event loop**: Streamlined to use only V2 event processing  
-✅ **Clean architecture preservation**: Maintained domain boundaries throughout cleanup  
-
-**Phase 3.2: EventBus Hardening (DEFERRED)**
-🔄 **Architecture evaluation**: Determined centralized EventBus would violate clean domain-driven design  
-🔄 **YAGNI principle applied**: Current distributed handler architecture sufficient for requirements  
-🔄 **Decision rationale**: Preserving bounded contexts over premature optimization  
-
-**Phase 3.3: Comprehensive Documentation (COMPLETED)**
-✅ **Event system documentation**: Complete architectural guide with industry best practices  
-✅ **Migration guide**: Detailed transition from channel-based to event-driven architecture  
-✅ **Implementation patterns**: EventHandler<T> pattern with Domain-Driven Design principles  
-✅ **Testing strategies**: Full test coverage for all domain handlers and event flows  
-
-### Phase 4 (Future)
-- **Performance Events**: MemoryPressure, RenderingLag, InputDelay
-- **Accessibility Events**: ScreenReaderToggled, HighContrastChanged
-- **System Events**: WindowStateChanged, FocusChanged, ThemeChanged
-
-## Phase 2 Architecture Integration
-
-### ApplicationCore Handler Coordination
-
-The ApplicationCore now orchestrates six domain-specific handlers:
-
-**Phase 1 Handlers:**
+**Core Event Handlers:**
 - `DocumentHandler`: Document lifecycle and content changes  
 - `ViewHandler`: View focus and selection management
 - `EditorHandler`: Mode changes and command execution
 
-**Phase 2 Handlers:**
+**Extended Event Handlers:**
 - `LspHandler`: Language server lifecycle and diagnostics
 - `CompletionHandler`: Completion request/response coordination  
 - `WorkspaceHandler`: File operations and workspace state
@@ -696,35 +645,36 @@ The ApplicationCore now orchestrates six domain-specific handlers:
 ### Event Processing Flow
 
 ```rust
-// ApplicationCore processes both legacy and V2 events
+// ApplicationCore processes domain events
 impl ApplicationCore {
-    async fn process_v2_event(&mut self, event: &BridgedEvent, editor: &mut Editor) {
+    async fn process_domain_event(&mut self, event: &BridgedEvent, editor: &mut Editor) {
         match event {
-            // Phase 1 Events
+            // Document Domain Events
             BridgedEvent::DocumentChanged { doc_id } => {
-                let v2_event = DocumentEvent::ContentChanged { .. };
-                self.document_handler.handle(v2_event).await?;
+                let domain_event = DocumentEvent::ContentChanged { .. };
+                self.document_handler.handle(domain_event).await?;
             }
             
-            // Phase 2 Events  
+            // LSP Domain Events  
             BridgedEvent::LanguageServerInitialized { server_id } => {
-                let v2_event = LspEvent::ServerInitialized { .. };
-                self.lsp_handler.handle(v2_event).await?;
+                let domain_event = LspEvent::ServerInitialized { .. };
+                self.lsp_handler.handle(domain_event).await?;
             }
             
+            // Completion Domain Events
             BridgedEvent::CompletionRequested { doc_id, view_id, trigger } => {
                 let request_id = self.completion_handler.next_request_id().await;
-                let v2_event = CompletionEvent::Requested { .. };
-                self.completion_handler.handle(v2_event).await?;
+                let domain_event = CompletionEvent::Requested { .. };
+                self.completion_handler.handle(domain_event).await?;
             }
         }
     }
 }
 ```
 
-### Domain Event Enrichment
+### Domain Event Features
 
-Phase 2 events include rich contextual information:
+All domain events include rich contextual information:
 
 **LSP Events:**
 - Server capabilities and health status
@@ -744,11 +694,29 @@ Phase 2 events include rich contextual information:
 - File operation sources  
 - Tab metadata and lifecycle
 
+**Document Events:**
+- Revision tracking and change summaries
+- Language detection and updates  
+- Diagnostic aggregation and counts
+- File path and metadata association
+
+**View Events:**
+- Selection state with movement detection
+- Focus tracking with timing information
+- Scroll position and direction tracking
+- Split layout and viewport management
+
+**Editor Events:**
+- Mode transition tracking with context
+- Command execution with performance metrics
+- Session timing and usage statistics
+- History management with configurable limits
+
 ## Architectural Patterns & Best Practices
 
 ### Domain-Driven Design (DDD) Implementation
 
-The V2 event system follows **Domain-Driven Design** principles as outlined by Eric Evans in "Domain-Driven Design: Tackling Complexity in the Heart of Software" (2004). Our implementation demonstrates:
+The event system follows **Domain-Driven Design** principles as outlined by Eric Evans in "Domain-Driven Design: Tackling Complexity in the Heart of Software" (2004). Our implementation demonstrates:
 
 **Bounded Contexts**: Each domain (Document, View, Editor, LSP, Completion, Workspace) maintains clear boundaries with explicit interfaces:
 
@@ -927,7 +895,7 @@ async fn handle_batch(&mut self, events: Vec<E>) -> Result<(), Self::Error> {
 ### Migration from Channel-Based to Event-Driven
 
 **Legacy System**: Point-to-point channels created tight coupling
-**V2 System**: Domain events provide loose coupling with clear boundaries
+**Current System**: Domain events provide loose coupling with clear boundaries
 
 **Migration Benefits**:
 - **Testability**: Domain handlers are easily unit tested in isolation
@@ -955,4 +923,6 @@ async fn handle_batch(&mut self, events: Vec<E>) -> Result<(), Self::Error> {
 
 ## Conclusion
 
-The helix-gpui event system successfully bridges two different paradigms - GPUI's reactive UI model and Helix's terminal-based architecture. Through careful use of async channels, event transformation, and focus management, it provides a responsive and intuitive editing experience while maintaining the power and flexibility of Helix's modal editing system.
+The Nucleotide event system successfully bridges two different paradigms - GPUI's reactive UI model and Helix's terminal-based architecture. Through domain-driven design, async event handling, and focused domain handlers, it provides a responsive and intuitive editing experience while maintaining the power and flexibility of Helix's modal editing system.
+
+The system demonstrates how modern software engineering principles can be applied to create maintainable, testable, and observable architectures that support complex interactions between different software paradigms.
