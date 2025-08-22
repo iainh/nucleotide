@@ -3,20 +3,19 @@
 
 #[cfg(test)]
 mod lsp_lifecycle_integration_tests {
-    use std::collections::HashMap;
+
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use helix_lsp::LanguageServerId;
     // use helix_view::{Editor, Document, DocumentId, ViewId};
-    use nucleotide_events::{ProjectLspEvent, ProjectType, ServerHealthStatus};
+    use nucleotide_events::{ProjectLspEvent, ProjectType};
     use nucleotide_logging::{info, warn};
     // use slotmap::SlotMap;
     use tokio::sync::RwLock;
     use tokio::time::sleep;
 
-    use crate::mock_server_tests::mock_lsp_servers::{MockLspServer, MockServerRegistry};
+    use crate::mock_server_tests::mock_lsp_servers::MockServerRegistry;
     use crate::{
         ProjectDetector, ProjectLspConfig, ProjectLspError, ProjectLspManager,
         ServerLifecycleManager,
@@ -882,7 +881,7 @@ edition = "2021"
         let _ = helper.cleanup_test_directory().await;
 
         let config = ProjectLspConfig::default();
-        let mut lifecycle_manager = ServerLifecycleManager::new(config);
+        let lifecycle_manager = ServerLifecycleManager::new(config);
 
         // Test without bridge (should use mock ID)
         let rust_project = helper

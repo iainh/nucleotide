@@ -1269,8 +1269,6 @@ impl Render for FileTreeView {
         };
 
         // Create semantic file tree container with nucleotide-ui design tokens
-        let border_color =
-            nucleotide_ui::styling::ColorTheory::subtle_border_color(bg_color, &theme.tokens);
         div()
             .id("file-tree")
             .key_context("FileTree")
@@ -1279,8 +1277,6 @@ impl Render for FileTreeView {
             .bg(bg_color) // Use semantic background color from design tokens
             .flex()
             .flex_col()
-            .border_r_1()
-            .border_color(border_color) // Use consistent subtle border color
             .track_focus(&self.focus_handle)
             .on_click(cx.listener(|view, _event, window, _cx| {
                 // Focus the tree view when clicked anywhere on it

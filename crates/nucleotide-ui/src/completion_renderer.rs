@@ -501,7 +501,6 @@ mod tests {
     #[test]
     fn test_completion_icon_creation() {
         use crate::Theme;
-        use gpui::hsla;
 
         // Create a minimal theme for testing
         let theme = Theme::default();

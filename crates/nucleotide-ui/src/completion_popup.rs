@@ -551,7 +551,7 @@ mod tests {
         let anchor = point(px(100.0), px(200.0));
         let content = "Test content";
 
-        let popup = SmartPopup::new(anchor, content.clone()).visible(false);
+        let popup = SmartPopup::new(anchor, content).visible(false);
         assert!(!popup.visible);
 
         let popup = popup.visible(true);

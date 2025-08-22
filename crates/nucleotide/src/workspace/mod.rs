@@ -28,9 +28,7 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 
 // ViewManager already imported above via pub use
-use nucleotide_ui::{
-    Button, ButtonSize, ButtonVariant, StyleSize, StyleState, StyleVariant, compute_component_style,
-};
+use nucleotide_ui::{Button, ButtonSize, ButtonVariant};
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 
@@ -4109,8 +4107,7 @@ impl Workspace {
 
     fn update_document_views(&mut self, cx: &mut Context<Self>) {
         let mut view_ids = HashSet::new();
-        let mut right_borders = HashSet::new();
-        self.make_views(&mut view_ids, &mut right_borders, cx);
+        self.make_views(&mut view_ids, cx);
     }
 
     /// Update only a specific document view - more efficient for targeted updates
@@ -4202,7 +4199,6 @@ impl Workspace {
     fn make_views(
         &mut self,
         view_ids: &mut HashSet<ViewId>,
-        right_borders: &mut HashSet<ViewId>,
         cx: &mut Context<Self>,
     ) -> Option<String> {
         let mut focused_file_name = None;
@@ -4214,14 +4210,6 @@ impl Workspace {
             // First pass: collect all active view IDs
             for (view, is_focused) in editor.tree.views() {
                 let view_id = view.id;
-
-                if editor
-                    .tree
-                    .find_split_in_direction(view_id, helix_view::tree::Direction::Right)
-                    .is_some()
-                {
-                    right_borders.insert(view_id);
-                }
 
                 view_ids.insert(view_id);
 
@@ -4369,27 +4357,14 @@ impl Render for Workspace {
             self.view_manager.set_needs_focus_restore(false);
         }
         // Don't create views during render - just use existing ones
-        let mut view_ids = HashSet::new();
-        let mut right_borders = HashSet::new();
         let mut focused_file_name = None;
 
         let editor = &self.core.read(cx).editor;
 
         for (view, is_focused) in editor.tree.views() {
-            let view_id = view.id;
-            view_ids.insert(view_id);
-
-            if editor
-                .tree
-                .find_split_in_direction(view_id, helix_view::tree::Direction::Right)
-                .is_some()
-            {
-                right_borders.insert(view_id);
-            }
-
             if is_focused {
                 // Verify the view still exists in the tree before accessing
-                if editor.tree.contains(view_id) {
+                if editor.tree.contains(view.id) {
                     if let Some(doc) = editor.document(view.doc) {
                         focused_file_name = doc.path().map(|p| {
                             p.file_name()
@@ -4399,6 +4374,7 @@ impl Render for Workspace {
                         });
                     }
                 }
+                break; // Only need the focused view
             }
         }
 
@@ -4447,17 +4423,14 @@ impl Render for Workspace {
         // Only render the focused view, not all views
         if let Some(focused_view_id) = self.view_manager.focused_view_id() {
             if let Some(doc_view) = self.view_manager.get_document_view(&focused_view_id) {
-                let has_border = right_borders.contains(&focused_view_id);
                 // Create document element container with semantic styling
+                // Note: Removed right border since resize handle now serves as the border
                 let doc_element = div()
                     .id("document-container")
                     .flex()
                     .size_full()
                     // Background color inherited
-                    .child(doc_view.clone())
-                    .when(has_border, |this| {
-                        this.border_color(border_color).border_r_1()
-                    });
+                    .child(doc_view.clone());
                 docs_root = docs_root.child(doc_element);
             }
         }
@@ -4822,7 +4795,7 @@ impl Render for Workspace {
         // Add file tree panel if needed, or show "Open a project" message
         if self.show_file_tree {
             let file_tree_left_offset = 0.0;
-            let resize_handle_width = 4.0;
+            let resize_handle_width = 3.0;
             let main_content_offset = self.file_tree_width + resize_handle_width;
 
             if let Some(file_tree) = &self.file_tree {
@@ -4843,27 +4816,19 @@ impl Render for Workspace {
                     .border_color(border_color)
                     .child(file_tree.clone());
 
-                // Create resize handle with computed styling
-                let handle_style = compute_component_style(
-                    &ui_theme,
-                    StyleState::Default,
-                    StyleVariant::Ghost.as_str(),
-                    StyleSize::Small.as_str(),
-                );
-                let hover_style = compute_component_style(
-                    &ui_theme,
-                    StyleState::Hover,
-                    StyleVariant::Ghost.as_str(),
-                    StyleSize::Small.as_str(),
+                // Create resize handle as border line
+                let border_color = nucleotide_ui::styling::ColorTheory::subtle_border_color(
+                    ui_theme.tokens.colors.surface,
+                    &ui_theme.tokens,
                 );
                 let resize_handle = div()
                     .absolute()
                     .left(px(self.file_tree_width))
                     .top_0()
                     .bottom_0()
-                    .w(px(resize_handle_width))
-                    .bg(handle_style.background)
-                    .hover(|style| style.bg(hover_style.background))
+                    .w(px(3.0)) // 3px wide drag handle
+                    .bg(border_color)
+                    .hover(|style| style.bg(ui_theme.tokens.colors.text_secondary))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .id("file-tree-resize-handle")
                     .on_mouse_down(
@@ -4893,7 +4858,7 @@ impl Render for Workspace {
             } else {
                 // No project directory set - show placeholder message
                 let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                let resize_handle_width = 4.0;
+                let resize_handle_width = 3.0;
                 let main_content_offset = self.file_tree_width + resize_handle_width;
 
                 // Use the same background color as the actual file tree for consistency
@@ -4936,27 +4901,19 @@ impl Render for Workspace {
                             })
                     }));
 
-                // Add resize handle with computed styling
-                let handle_style = compute_component_style(
-                    &ui_theme,
-                    StyleState::Default,
-                    StyleVariant::Ghost.as_str(),
-                    StyleSize::Small.as_str(),
-                );
-                let hover_style = compute_component_style(
-                    &ui_theme,
-                    StyleState::Hover,
-                    StyleVariant::Ghost.as_str(),
-                    StyleSize::Small.as_str(),
+                // Add resize handle as border line
+                let border_color = nucleotide_ui::styling::ColorTheory::subtle_border_color(
+                    ui_theme.tokens.colors.surface,
+                    &ui_theme.tokens,
                 );
                 let resize_handle = div()
                     .absolute()
                     .left(px(self.file_tree_width))
                     .top_0()
                     .bottom_0()
-                    .w(px(resize_handle_width))
-                    .bg(handle_style.background)
-                    .hover(|style| style.bg(hover_style.background))
+                    .w(px(3.0)) // 3px wide drag handle
+                    .bg(border_color)
+                    .hover(|style| style.bg(ui_theme.tokens.colors.text_secondary))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .id("file-tree-resize-handle-placeholder")
                     .on_mouse_down(

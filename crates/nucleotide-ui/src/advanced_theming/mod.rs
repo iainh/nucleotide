@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn test_theme_search() {
-        let mut manager = AdvancedThemeManager::new().with_default_themes();
+        let manager = AdvancedThemeManager::new().with_default_themes();
 
         let results = manager.search_themes("dark").unwrap();
         assert!(!results.is_empty());

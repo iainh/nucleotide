@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crate::theme_manager::HelixThemeColors;
     use crate::tokens::{BaseColors, SemanticColors};
     use gpui::hsla;
