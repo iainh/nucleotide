@@ -206,12 +206,12 @@ impl ViewManager {
     /// Update only the currently focused document view
     #[instrument(skip(self, cx))]
     pub fn update_current_document_view(&mut self, cx: &mut Context<Workspace>) {
-        if let Some(focused_view_id) = self.focused_view_id {
-            if let Some(view_entity) = self.documents.get(&focused_view_id) {
-                view_entity.update(cx, |_view, cx| {
-                    cx.notify();
-                });
-            }
+        if let Some(focused_view_id) = self.focused_view_id
+            && let Some(view_entity) = self.documents.get(&focused_view_id)
+        {
+            view_entity.update(cx, |_view, cx| {
+                cx.notify();
+            });
         }
     }
 
@@ -221,13 +221,13 @@ impl ViewManager {
         debug!("Focusing editor area");
 
         // Find the currently active document view and focus it
-        if let Some(view_id) = self.focused_view_id {
-            if let Some(doc_view) = self.documents.get(&view_id) {
-                let doc_focus = doc_view.focus_handle(cx);
-                window.focus(&doc_focus);
-                debug!(view_id = ?view_id, "Focused active document view");
-                return;
-            }
+        if let Some(view_id) = self.focused_view_id
+            && let Some(doc_view) = self.documents.get(&view_id)
+        {
+            let doc_focus = doc_view.focus_handle(cx);
+            window.focus(&doc_focus);
+            debug!(view_id = ?view_id, "Focused active document view");
+            return;
         }
 
         // If no focused view, try to focus the first available view

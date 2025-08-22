@@ -65,21 +65,21 @@ impl ManifestProvider for JavaManifestProvider {
         for ancestor in query.path.ancestors().take(query.max_depth) {
             // Check for Maven multi-module (parent pom)
             let pom_path = ancestor.join("pom.xml");
-            if query.delegate.exists(&pom_path, Some(false)).await {
-                if self.validate_manifest(&pom_path, &*query.delegate).await? {
-                    outermost_project = Some(ancestor.to_path_buf());
+            if query.delegate.exists(&pom_path, Some(false)).await
+                && self.validate_manifest(&pom_path, &*query.delegate).await?
+            {
+                outermost_project = Some(ancestor.to_path_buf());
 
-                    // Check if this is a parent POM (multi-module)
-                    if self
-                        .is_maven_parent_pom(&pom_path, &*query.delegate)
-                        .await?
-                    {
-                        nucleotide_logging::info!(
-                            maven_parent = %ancestor.display(),
-                            "Found Maven parent POM (multi-module project)"
-                        );
-                        return Ok(outermost_project);
-                    }
+                // Check if this is a parent POM (multi-module)
+                if self
+                    .is_maven_parent_pom(&pom_path, &*query.delegate)
+                    .await?
+                {
+                    nucleotide_logging::info!(
+                        maven_parent = %ancestor.display(),
+                        "Found Maven parent POM (multi-module project)"
+                    );
+                    return Ok(outermost_project);
                 }
             }
 

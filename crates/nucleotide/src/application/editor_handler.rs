@@ -99,12 +99,12 @@ impl EditorHandler {
         let now = std::time::Instant::now();
 
         // Update statistics for previous mode (end session)
-        if let Some(prev_stats) = self.mode_statistics.get_mut(&previous_mode) {
-            if let Some(session_start) = prev_stats.current_session_start {
-                let session_duration = now.duration_since(session_start).as_millis() as u64;
-                prev_stats.total_time_spent_ms += session_duration;
-                prev_stats.current_session_start = None;
-            }
+        if let Some(prev_stats) = self.mode_statistics.get_mut(&previous_mode)
+            && let Some(session_start) = prev_stats.current_session_start
+        {
+            let session_duration = now.duration_since(session_start).as_millis() as u64;
+            prev_stats.total_time_spent_ms += session_duration;
+            prev_stats.current_session_start = None;
         }
 
         // Update statistics for new mode (start session)

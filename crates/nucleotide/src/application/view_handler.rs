@@ -115,10 +115,10 @@ impl ViewHandler {
         );
 
         // Update previous view to unfocused
-        if let Some(prev_view) = previous_view {
-            if let Some(prev_metadata) = self.view_metadata.get_mut(&prev_view) {
-                prev_metadata.is_focused = false;
-            }
+        if let Some(prev_view) = previous_view
+            && let Some(prev_metadata) = self.view_metadata.get_mut(&prev_view)
+        {
+            prev_metadata.is_focused = false;
         }
 
         // Update current view to focused

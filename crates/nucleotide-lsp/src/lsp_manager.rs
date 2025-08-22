@@ -180,16 +180,16 @@ impl<'a> LspManager<'a> {
             .values_mut()
             .find(|doc| doc.path().map(|p| p == &path).unwrap_or(false))
             .filter(|doc| {
-                if let Some(version) = params.version {
-                    if version != doc.version() {
-                        info!(
-                            version = version,
-                            path = ?path,
-                            expected_version = doc.version(),
-                            "Version is out of date, dropping PublishDiagnostic notification"
-                        );
-                        return false;
-                    }
+                if let Some(version) = params.version
+                    && version != doc.version()
+                {
+                    info!(
+                        version = version,
+                        path = ?path,
+                        expected_version = doc.version(),
+                        "Version is out of date, dropping PublishDiagnostic notification"
+                    );
+                    return false;
                 }
                 true
             });
@@ -559,10 +559,10 @@ impl<'a> LspManager<'a> {
         };
 
         // Get language server again to send reply
-        if let Some(language_server) = self.editor.language_server_by_id(server_id) {
-            if let Err(err) = language_server.reply(method_call.id, reply) {
-                error!(error = %err, "Failed to reply to method call");
-            }
+        if let Some(language_server) = self.editor.language_server_by_id(server_id)
+            && let Err(err) = language_server.reply(method_call.id, reply)
+        {
+            error!(error = %err, "Failed to reply to method call");
         }
     }
 

@@ -315,7 +315,7 @@ impl LspState {
         } else if let Some(server) = self.servers.values().next() {
             // Show single server name if space permits
             let display = format!("{} {}", indicator, server.name);
-            if max_width.map_or(true, |max| display.len() <= max) {
+            if max_width.is_none_or(|max| display.len() <= max) {
                 Some(display)
             } else {
                 Some(indicator)
@@ -367,10 +367,10 @@ impl LspState {
         // Strategy: Try progressively simpler formats until we fit
 
         // Full format: "ServerName: 85% Title ⋅ Message"
-        if let Some(full) = self.format_progress_full(progress, server_name) {
-            if full.len() <= max_len {
-                return Some(full);
-            }
+        if let Some(full) = self.format_progress_full(progress, server_name)
+            && full.len() <= max_len
+        {
+            return Some(full);
         }
 
         // Medium format: "ServerName: 85% Title"

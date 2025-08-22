@@ -87,15 +87,13 @@ impl Workspace {
 
         // Get the currently focused view
         for (view, is_focused) in editor.tree.views() {
-            if is_focused {
-                if let Some(doc) = editor.document(view.doc) {
-                    return doc.path().map(|p| {
-                        p.file_name()
-                            .and_then(|name| name.to_str())
-                            .map(std::string::ToString::to_string)
-                            .unwrap_or_else(|| p.display().to_string())
-                    });
-                }
+            if is_focused && let Some(doc) = editor.document(view.doc) {
+                return doc.path().map(|p| {
+                    p.file_name()
+                        .and_then(|name| name.to_str())
+                        .map(std::string::ToString::to_string)
+                        .unwrap_or_else(|| p.display().to_string())
+                });
             }
         }
         None
@@ -1399,7 +1397,7 @@ impl Workspace {
             }
         }
 
-        return true;
+        true
     }
 
     fn ensure_window_follows_system_appearance(&self, _window: &mut Window) {
@@ -1636,12 +1634,12 @@ impl Workspace {
                 .map(|p| p.to_path_buf())
         };
 
-        if let Some(path) = doc_path {
-            if let Some(file_tree) = &self.file_tree {
-                file_tree.update(cx, |tree, cx| {
-                    tree.sync_selection_with_file(Some(path.as_path()), cx);
-                });
-            }
+        if let Some(path) = doc_path
+            && let Some(file_tree) = &self.file_tree
+        {
+            file_tree.update(cx, |tree, cx| {
+                tree.sync_selection_with_file(Some(path.as_path()), cx);
+            });
         }
 
         cx.notify();
@@ -1683,12 +1681,12 @@ impl Workspace {
             }
         };
 
-        if let Some(path) = doc_path {
-            if let Some(file_tree) = &self.file_tree {
-                file_tree.update(cx, |tree, cx| {
-                    tree.sync_selection_with_file(Some(path.as_path()), cx);
-                });
-            }
+        if let Some(path) = doc_path
+            && let Some(file_tree) = &self.file_tree
+        {
+            file_tree.update(cx, |tree, cx| {
+                tree.sync_selection_with_file(Some(path.as_path()), cx);
+            });
         }
 
         cx.notify();
@@ -2710,10 +2708,10 @@ impl Workspace {
             });
         }
 
-        // Update documents with VCS status
+        // Update documents with VCS status using cached method
         for doc_info in &mut documents {
             if let Some(ref path) = doc_info.path {
-                let status = cx.global::<VcsServiceHandle>().get_status(path, cx);
+                let status = cx.global::<VcsServiceHandle>().get_status_cached(path, cx);
                 debug!(file = %path.display(), vcs_status = ?status, "VCS status for tab");
                 doc_info.git_status = status;
             }
@@ -2871,10 +2869,10 @@ impl Workspace {
         const TAB_BAR_MARGIN: f32 = 20.0;
         available_width = (available_width - TAB_BAR_MARGIN).max(200.0); // Minimum 200px
 
-        // Update documents with VCS status
+        // Update documents with VCS status using cached method
         for doc_info in &mut documents {
             if let Some(ref path) = doc_info.path {
-                let status = cx.global::<VcsServiceHandle>().get_status(path, cx);
+                let status = cx.global::<VcsServiceHandle>().get_status_cached(path, cx);
                 doc_info.git_status = status;
             }
         }
@@ -2976,43 +2974,42 @@ impl Workspace {
             let mut position_text = "1:1".to_string();
 
             // Get info from focused view if available
-            if let Some(view_id) = self.view_manager.focused_view_id() {
-                if let Some((view, doc)) = editor
+            if let Some(view_id) = self.view_manager.focused_view_id()
+                && let Some((view, doc)) = editor
                     .tree
                     .try_get(view_id)
                     .and_then(|v| editor.document(v.doc).map(|d| (v, d)))
-                {
-                    mode_name = match editor.mode() {
-                        helix_view::document::Mode::Normal => "NOR",
-                        helix_view::document::Mode::Insert => "INS",
-                        helix_view::document::Mode::Select => "SEL",
-                    };
+            {
+                mode_name = match editor.mode() {
+                    helix_view::document::Mode::Normal => "NOR",
+                    helix_view::document::Mode::Insert => "INS",
+                    helix_view::document::Mode::Select => "SEL",
+                };
 
-                    file_name = doc
-                        .path()
-                        .map(|p| {
-                            let path_str = p.to_string_lossy().to_string();
-                            // Truncate long paths
-                            if path_str.len() > 50 {
-                                if let Some(file_name) = p.file_name() {
-                                    format!(".../{}", file_name.to_string_lossy())
-                                } else {
-                                    "...".to_string()
-                                }
+                file_name = doc
+                    .path()
+                    .map(|p| {
+                        let path_str = p.to_string_lossy().to_string();
+                        // Truncate long paths
+                        if path_str.len() > 50 {
+                            if let Some(file_name) = p.file_name() {
+                                format!(".../{}", file_name.to_string_lossy())
                             } else {
-                                path_str
+                                "...".to_string()
                             }
-                        })
-                        .unwrap_or_else(|| "[scratch]".to_string());
+                        } else {
+                            path_str
+                        }
+                    })
+                    .unwrap_or_else(|| "[scratch]".to_string());
 
-                    let position = helix_core::coords_at_pos(
-                        doc.text().slice(..),
-                        doc.selection(view.id)
-                            .primary()
-                            .cursor(doc.text().slice(..)),
-                    );
-                    position_text = format!("{}:{}", position.row + 1, position.col + 1);
-                }
+                let position = helix_core::coords_at_pos(
+                    doc.text().slice(..),
+                    doc.selection(view.id)
+                        .primary()
+                        .cursor(doc.text().slice(..)),
+                );
+                position_text = format!("{}:{}", position.row + 1, position.col + 1);
             }
 
             let has_lsp_state = core.lsp_state.is_some();
@@ -3265,25 +3262,24 @@ impl Workspace {
         // Wrap the entire key handling in a catch to prevent panics from propagating to FFI
         if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Check if the file tree has focus - if so, only handle global shortcuts, don't interfere with normal keys
-            if let Some(file_tree) = &self.file_tree {
-                if file_tree.focus_handle(cx).is_focused(window) {
-                    eprintln!("DEBUG: File tree has focus, only handling global shortcuts");
-                    // Only handle truly global shortcuts when file tree has focus
-                    self.handle_global_shortcuts_only(ev, cx);
-                    return; // Let the file tree handle its own key events
-                }
+            if let Some(file_tree) = &self.file_tree
+                && file_tree.focus_handle(cx).is_focused(window)
+            {
+                eprintln!("DEBUG: File tree has focus, only handling global shortcuts");
+                // Only handle truly global shortcuts when file tree has focus
+                self.handle_global_shortcuts_only(ev, cx);
+                return; // Let the file tree handle its own key events
             }
 
             // Check if a document view has focus - only handle global shortcuts
-            if let Some(view_id) = self.view_manager.focused_view_id() {
-                if let Some(doc_view) = self.view_manager.get_document_view(&view_id) {
-                    if doc_view.focus_handle(cx).is_focused(window) {
-                        eprintln!("DEBUG: Document view has focus, only handling global shortcuts");
-                        // Only handle truly global shortcuts when editor has focus
-                        self.handle_global_shortcuts_only(ev, cx);
-                        return; // Let the document view handle its own key events
-                    }
-                }
+            if let Some(view_id) = self.view_manager.focused_view_id()
+                && let Some(doc_view) = self.view_manager.get_document_view(&view_id)
+                && doc_view.focus_handle(cx).is_focused(window)
+            {
+                eprintln!("DEBUG: Document view has focus, only handling global shortcuts");
+                // Only handle truly global shortcuts when editor has focus
+                self.handle_global_shortcuts_only(ev, cx);
+                return; // Let the document view handle its own key events
             }
 
             // If no specific component has focus, handle through the full global input system
@@ -3939,13 +3935,13 @@ impl Workspace {
         nucleotide_logging::debug!("Focusing editor area");
 
         // Find the currently active document view and focus it
-        if let Some(view_id) = self.view_manager.focused_view_id() {
-            if let Some(doc_view) = self.view_manager.get_document_view(&view_id) {
-                let doc_focus = doc_view.focus_handle(cx);
-                window.focus(&doc_focus);
-                nucleotide_logging::debug!(view_id = ?view_id, "Focused active document view");
-                return;
-            }
+        if let Some(view_id) = self.view_manager.focused_view_id()
+            && let Some(doc_view) = self.view_manager.get_document_view(&view_id)
+        {
+            let doc_focus = doc_view.focus_handle(cx);
+            window.focus(&doc_focus);
+            nucleotide_logging::debug!(view_id = ?view_id, "Focused active document view");
+            return;
         }
 
         // If no specific document, focus the main workspace
@@ -3957,13 +3953,13 @@ impl Workspace {
     pub fn focus_file_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         nucleotide_logging::debug!("Focusing file tree");
 
-        if let Some(file_tree) = &self.file_tree {
-            if self.show_file_tree {
-                let file_tree_focus = file_tree.focus_handle(cx);
-                window.focus(&file_tree_focus);
-                nucleotide_logging::debug!("Focused file tree");
-                return;
-            }
+        if let Some(file_tree) = &self.file_tree
+            && self.show_file_tree
+        {
+            let file_tree_focus = file_tree.focus_handle(cx);
+            window.focus(&file_tree_focus);
+            nucleotide_logging::debug!("Focused file tree");
+            return;
         }
 
         nucleotide_logging::warn!(
@@ -4144,12 +4140,12 @@ impl Workspace {
 
     /// Update only the currently focused document view
     fn update_current_document_view(&mut self, cx: &mut Context<Self>) {
-        if let Some(focused_view_id) = self.view_manager.focused_view_id() {
-            if let Some(view_entity) = self.view_manager.get_document_view(&focused_view_id) {
-                view_entity.update(cx, |_view, cx| {
-                    cx.notify();
-                });
-            }
+        if let Some(focused_view_id) = self.view_manager.focused_view_id()
+            && let Some(view_entity) = self.view_manager.get_document_view(&focused_view_id)
+        {
+            view_entity.update(cx, |_view, cx| {
+                cx.notify();
+            });
         }
     }
 
@@ -4215,25 +4211,25 @@ impl Workspace {
 
                 if is_focused {
                     // Verify the view still exists in the tree before accessing
-                    if editor.tree.contains(view_id) {
-                        if let Some(doc) = editor.document(view.doc) {
-                            self.view_manager.set_focused_view_id(Some(view_id));
-                            let doc_path = doc.path();
-                            focused_file_name = doc_path.map(|p| p.display().to_string());
-                            focused_doc_path = doc_path.map(|p| p.to_path_buf());
-                        }
+                    if editor.tree.contains(view_id)
+                        && let Some(doc) = editor.document(view.doc)
+                    {
+                        self.view_manager.set_focused_view_id(Some(view_id));
+                        let doc_path = doc.path();
+                        focused_file_name = doc_path.map(|p| p.display().to_string());
+                        focused_doc_path = doc_path.map(|p| p.to_path_buf());
                     }
                 }
             }
         } // End of editor borrow scope
 
         // Sync file tree selection with the focused document (after releasing borrow)
-        if let Some(path) = focused_doc_path {
-            if let Some(file_tree) = &self.file_tree {
-                file_tree.update(cx, |tree, cx| {
-                    tree.sync_selection_with_file(Some(path.as_path()), cx);
-                });
-            }
+        if let Some(path) = focused_doc_path
+            && let Some(file_tree) = &self.file_tree
+        {
+            file_tree.update(cx, |tree, cx| {
+                tree.sync_selection_with_file(Some(path.as_path()), cx);
+            });
         }
 
         // Remove views that are no longer active
@@ -4364,15 +4360,15 @@ impl Render for Workspace {
         for (view, is_focused) in editor.tree.views() {
             if is_focused {
                 // Verify the view still exists in the tree before accessing
-                if editor.tree.contains(view.id) {
-                    if let Some(doc) = editor.document(view.doc) {
-                        focused_file_name = doc.path().map(|p| {
-                            p.file_name()
-                                .and_then(|name| name.to_str())
-                                .map(std::string::ToString::to_string)
-                                .unwrap_or_else(|| p.display().to_string())
-                        });
-                    }
+                if editor.tree.contains(view.id)
+                    && let Some(doc) = editor.document(view.doc)
+                {
+                    focused_file_name = doc.path().map(|p| {
+                        p.file_name()
+                            .and_then(|name| name.to_str())
+                            .map(std::string::ToString::to_string)
+                            .unwrap_or_else(|| p.display().to_string())
+                    });
                 }
                 break; // Only need the focused view
             }
@@ -4421,18 +4417,18 @@ impl Render for Workspace {
             ; // No gap needed for documents
 
         // Only render the focused view, not all views
-        if let Some(focused_view_id) = self.view_manager.focused_view_id() {
-            if let Some(doc_view) = self.view_manager.get_document_view(&focused_view_id) {
-                // Create document element container with semantic styling
-                // Note: Removed right border since resize handle now serves as the border
-                let doc_element = div()
-                    .id("document-container")
-                    .flex()
-                    .size_full()
-                    // Background color inherited
-                    .child(doc_view.clone());
-                docs_root = docs_root.child(doc_element);
-            }
+        if let Some(focused_view_id) = self.view_manager.focused_view_id()
+            && let Some(doc_view) = self.view_manager.get_document_view(&focused_view_id)
+        {
+            // Create document element container with semantic styling
+            // Note: Removed right border since resize handle now serves as the border
+            let doc_element = div()
+                .id("document-container")
+                .flex()
+                .size_full()
+                // Background color inherited
+                .child(doc_view.clone());
+            docs_root = docs_root.child(doc_element);
         }
 
         let focused_view = self

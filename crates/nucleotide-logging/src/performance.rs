@@ -65,18 +65,18 @@ impl Drop for PerfTimer {
         self.span.record("elapsed_ms", elapsed_ms);
 
         // Check if we should warn about slow operations
-        if let Some(threshold) = self.warn_threshold {
-            if elapsed > threshold {
-                // Note: Precision loss is acceptable for logging milliseconds
-                #[allow(clippy::cast_precision_loss)]
-                let threshold_ms = threshold.as_millis() as f64;
-                warn!(
-                    operation = %self.operation,
-                    elapsed_ms = elapsed_ms,
-                    threshold_ms = threshold_ms,
-                    "Slow operation detected"
-                );
-            }
+        if let Some(threshold) = self.warn_threshold
+            && elapsed > threshold
+        {
+            // Note: Precision loss is acceptable for logging milliseconds
+            #[allow(clippy::cast_precision_loss)]
+            let threshold_ms = threshold.as_millis() as f64;
+            warn!(
+                operation = %self.operation,
+                elapsed_ms = elapsed_ms,
+                threshold_ms = threshold_ms,
+                "Slow operation detected"
+            );
         }
     }
 }

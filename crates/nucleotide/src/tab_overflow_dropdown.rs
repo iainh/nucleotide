@@ -88,10 +88,10 @@ impl TabOverflowMenu {
     fn get_document_label(&self, doc_info: &DocumentInfo) -> String {
         if let Some(path) = &doc_info.path {
             // Try to get relative path if project directory is set
-            if let Some(ref project_dir) = self.project_directory {
-                if let Ok(relative) = path.strip_prefix(project_dir) {
-                    return relative.display().to_string();
-                }
+            if let Some(ref project_dir) = self.project_directory
+                && let Ok(relative) = path.strip_prefix(project_dir)
+            {
+                return relative.display().to_string();
             }
             // Otherwise use filename
             path.file_name()
@@ -125,7 +125,7 @@ impl RenderOnce for TabOverflowButton {
         // Use inactive tab border color for consistency with empty tab bar area
         let inactive_tab_bg = tokens.colors.bufferline_inactive;
         let border_color =
-            nucleotide_ui::styling::ColorTheory::subtle_border_color(inactive_tab_bg, &tokens);
+            nucleotide_ui::styling::ColorTheory::subtle_border_color(inactive_tab_bg, tokens);
         div()
             .absolute()
             .top(px(0.0))
@@ -152,7 +152,7 @@ impl RenderOnce for TabOverflowButton {
                     .text_color(tokens.colors.text_primary)
                     .border_1()
                     .border_color(nucleotide_ui::styling::ColorTheory::subtle_border_color(
-                        button_bg, &tokens,
+                        button_bg, tokens,
                     ))
                     .hover(|style| {
                         style

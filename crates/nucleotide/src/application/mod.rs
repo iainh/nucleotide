@@ -577,13 +577,12 @@ impl Application {
                                         if has_created_tokens {
                                             // We have Created tokens, but check if editor status indicates ongoing work
                                             // If editor status contains meaningful work info, use it; otherwise ignore stale status
-                                            if let Some((status_msg, _)) = &editor_status {
-                                                if !status_msg.is_empty() && !status_msg.contains("building proc-macros") {
+                                            if let Some((status_msg, _)) = &editor_status
+                                                && !status_msg.is_empty() && !status_msg.contains("building proc-macros") {
                                                     // Editor status looks like active work, not stale build messages
                                                     info!("Have Created tokens but editor status shows active work");
                                                     return Some(status_msg.to_string());
                                                 }
-                                            }
                                             info!("Have Created progress tokens - ignoring stale/irrelevant editor status");
                                             None
                                         } else {
@@ -619,7 +618,7 @@ impl Application {
                         };
 
                         // Choose appropriate token and title based on whether we have meaningful progress
-                        let (token, title) = if message.as_ref().map_or(false, |m| m == "Ready") {
+                        let (token, title) = if message.as_ref().is_some_and(|m| m == "Ready") {
                             ("idle".to_string(), "Connected".to_string())
                         } else {
                             ("activity".to_string(), "Processing".to_string())
@@ -633,7 +632,7 @@ impl Application {
                             percentage: None,
                         };
 
-                        let key = if message.as_ref().map_or(false, |m| m == "Ready") {
+                        let key = if message.as_ref().is_some_and(|m| m == "Ready") {
                             format!("{}-idle", server_id)
                         } else {
                             format!("{}-activity", server_id)
@@ -697,22 +696,22 @@ impl Application {
         self.sync_lsp_state(cx);
 
         // Then add project-specific information if available
-        if let Some(lsp_state) = &self.lsp_state {
-            if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
-                lsp_state.update(cx, |state, cx| {
-                    // Add project-specific server information
-                    // This would include information about proactively started servers
-                    // and their relationship to projects
+        if let Some(lsp_state) = &self.lsp_state
+            && let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref()
+        {
+            lsp_state.update(cx, |state, cx| {
+                // Add project-specific server information
+                // This would include information about proactively started servers
+                // and their relationship to projects
 
-                    // For now, we just log that project manager is available
-                    // In the future, we could query specific project information
-                    // and add project-specific progress indicators here
-                    info!("LSP state sync includes project information from ProjectLspManager");
+                // For now, we just log that project manager is available
+                // In the future, we could query specific project information
+                // and add project-specific progress indicators here
+                info!("LSP state sync includes project information from ProjectLspManager");
 
-                    // Notify GPUI that the model changed
-                    cx.notify();
-                });
-            }
+                // Notify GPUI that the model changed
+                cx.notify();
+            });
         }
     }
 
@@ -979,10 +978,35 @@ impl Application {
         }
 
         // Populate VCS status for all file items using the global VCS service
-        if let Some(vcs_service) = cx.try_global::<crate::vcs_service::VcsServiceHandle>() {
-            for item in &mut items {
-                if let Some(ref file_path) = item.file_path {
-                    item.vcs_status = vcs_service.get_status_cached(file_path, cx);
+        {
+            // Extract all file paths for bulk lookup
+            let file_paths: Vec<PathBuf> = items
+                .iter()
+                .filter_map(|item| item.file_path.clone())
+                .collect();
+
+            if !file_paths.is_empty() {
+                // Try to get the VCS service handle
+                if cx.has_global::<crate::vcs_service::VcsServiceHandle>() {
+                    let vcs_results = {
+                        let vcs_service = cx.global::<crate::vcs_service::VcsServiceHandle>();
+                        vcs_service.get_status_bulk(&file_paths, cx)
+                    };
+
+                    if !vcs_results.is_empty() {
+                        // Create a lookup map for O(1) access
+                        let vcs_map: std::collections::HashMap<
+                            PathBuf,
+                            Option<nucleotide_ui::VcsStatus>,
+                        > = vcs_results.into_iter().collect();
+
+                        // Update items with VCS status from bulk lookup
+                        for item in &mut items {
+                            if let Some(ref file_path) = item.file_path {
+                                item.vcs_status = vcs_map.get(file_path).and_then(|status| *status);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1280,13 +1304,13 @@ impl Application {
                     debug!("After key - cursor pos: {cursor_pos}, line: {line}");
 
                     // Check if we moved lines
-                    if let Some((before_pos, before_line)) = before_cursor {
-                        if before_line != line || before_pos != cursor_pos {
-                            debug!(
-                                "Cursor moved from pos {} (line {}) to pos {} (line {})",
-                                before_pos, before_line, cursor_pos, line
-                            );
-                        }
+                    if let Some((before_pos, before_line)) = before_cursor
+                        && (before_line != line || before_pos != cursor_pos)
+                    {
+                        debug!(
+                            "Cursor moved from pos {} (line {}) to pos {} (line {})",
+                            before_pos, before_line, cursor_pos, line
+                        );
                     }
                 }
 
@@ -1858,43 +1882,42 @@ impl Application {
         };
 
         // Check if ProjectLspManager is available and project-based startup is enabled
-        if self.config.is_project_lsp_startup_enabled() {
-            if let Some(bridge_ref) = self.helix_lsp_bridge.read().await.as_ref() {
-                // Try to ensure document is tracked by any existing project servers
-                if let Some(doc_path_ref) = doc_path.as_ref() {
-                    let workspace_root =
-                        find_workspace_root_from(doc_path_ref.parent().unwrap_or(doc_path_ref));
+        if self.config.is_project_lsp_startup_enabled()
+            && let Some(bridge_ref) = self.helix_lsp_bridge.read().await.as_ref()
+        {
+            // Try to ensure document is tracked by any existing project servers
+            if let Some(doc_path_ref) = doc_path.as_ref() {
+                let workspace_root =
+                    find_workspace_root_from(doc_path_ref.parent().unwrap_or(doc_path_ref));
 
-                    if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
-                        // Check if we have managed servers for this workspace
-                        let managed_servers =
-                            manager_ref.get_managed_servers(&workspace_root).await;
+                if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
+                    // Check if we have managed servers for this workspace
+                    let managed_servers = manager_ref.get_managed_servers(&workspace_root).await;
 
-                        for managed_server in managed_servers {
-                            // Ensure the document is tracked by the language server
-                            if let Err(e) = bridge_ref.ensure_document_tracked(
-                                &mut self.editor,
-                                managed_server.server_id,
-                                doc_id,
-                            ) {
-                                // Use error handler for document tracking failure
-                                if let Err(recovery_error) = self
-                                    .handle_project_lsp_error(Box::new(e), "document_tracking")
-                                    .await
-                                {
-                                    warn!(
-                                        error = %recovery_error,
-                                        "Failed to recover from document tracking error"
-                                    );
-                                }
-                            } else {
-                                info!(
-                                    server_id = ?managed_server.server_id,
-                                    server_name = %managed_server.server_name,
-                                    doc_path = %doc_path_ref.display(),
-                                    "Document tracked with project LSP server"
+                    for managed_server in managed_servers {
+                        // Ensure the document is tracked by the language server
+                        if let Err(e) = bridge_ref.ensure_document_tracked(
+                            &mut self.editor,
+                            managed_server.server_id,
+                            doc_id,
+                        ) {
+                            // Use error handler for document tracking failure
+                            if let Err(recovery_error) = self
+                                .handle_project_lsp_error(Box::new(e), "document_tracking")
+                                .await
+                            {
+                                warn!(
+                                    error = %recovery_error,
+                                    "Failed to recover from document tracking error"
                                 );
                             }
+                        } else {
+                            info!(
+                                server_id = ?managed_server.server_id,
+                                server_name = %managed_server.server_name,
+                                doc_path = %doc_path_ref.display(),
+                                "Document tracked with project LSP server"
+                            );
                         }
                     }
                 }
@@ -1922,21 +1945,21 @@ impl Application {
                 );
 
                 // If we have project-based servers, coordinate with them
-                if self.config.is_project_lsp_startup_enabled() {
-                    if let Some(doc_path_ref) = doc_path.as_ref() {
-                        let workspace_root =
-                            find_workspace_root_from(doc_path_ref.parent().unwrap_or(doc_path_ref));
+                if self.config.is_project_lsp_startup_enabled()
+                    && let Some(doc_path_ref) = doc_path.as_ref()
+                {
+                    let workspace_root =
+                        find_workspace_root_from(doc_path_ref.parent().unwrap_or(doc_path_ref));
 
-                        // Check if this startup should be coordinated with project servers
-                        if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
-                            let managed_servers =
-                                manager_ref.get_managed_servers(&workspace_root).await;
-                            if !managed_servers.is_empty() {
-                                info!(
-                                    managed_server_count = managed_servers.len(),
-                                    "Document LSP startup coordinated with project servers"
-                                );
-                            }
+                    // Check if this startup should be coordinated with project servers
+                    if let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref() {
+                        let managed_servers =
+                            manager_ref.get_managed_servers(&workspace_root).await;
+                        if !managed_servers.is_empty() {
+                            info!(
+                                managed_server_count = managed_servers.len(),
+                                "Document LSP startup coordinated with project servers"
+                            );
                         }
                     }
                 }
@@ -2283,7 +2306,7 @@ impl Application {
 
                         // Create an empty completion view to effectively hide completions
                         let empty_completion_view =
-                            cx.new(|cx| nucleotide_ui::completion_v2::CompletionView::new(cx));
+                            cx.new(nucleotide_ui::completion_v2::CompletionView::new);
 
                         cx.emit(crate::Update::Completion(empty_completion_view));
                     } // Note: Errors are handled by coordinator falling back to sample completions
@@ -2474,7 +2497,7 @@ impl Application {
                                 is_incomplete,
                                 error: None,
                             };
-                            if let Err(_) = response_tx.send(response) {
+                            if response_tx.send(response).is_err() {
                                 nucleotide_logging::error!("Failed to send LSP completion response - receiver dropped");
                             } else {
                                 nucleotide_logging::info!("Successfully sent real LSP completion response");
@@ -2618,7 +2641,7 @@ impl Application {
                     .handle_start_server_command(&workspace_root, &server_name, &language_id)
                     .await;
 
-                if let Err(_) = response.send(result) {
+                if response.send(result).is_err() {
                     warn!("Failed to send StartServer response - receiver dropped");
                 }
             }
@@ -2631,7 +2654,7 @@ impl Application {
                     .handle_detect_and_start_project_command(&workspace_root)
                     .await;
 
-                if let Err(_) = response.send(result) {
+                if response.send(result).is_err() {
                     warn!("Failed to send DetectAndStartProject response - receiver dropped");
                 }
             }
@@ -2642,7 +2665,7 @@ impl Application {
             } => {
                 let result = self.handle_stop_server_command(server_id).await;
 
-                if let Err(_) = response.send(result) {
+                if response.send(result).is_err() {
                     warn!("Failed to send StopServer response - receiver dropped");
                 }
             }
@@ -2655,7 +2678,7 @@ impl Application {
                     .handle_get_project_status_command(&workspace_root)
                     .await;
 
-                if let Err(_) = response.send(result) {
+                if response.send(result).is_err() {
                     warn!("Failed to send GetProjectStatus response - receiver dropped");
                 }
             }
@@ -2678,7 +2701,7 @@ impl Application {
                     )
                     .await;
 
-                if let Err(_) = response.send(result) {
+                if response.send(result).is_err() {
                     warn!(
                         "Failed to send RestartServersForWorkspaceChange response - receiver dropped"
                     );
@@ -2694,7 +2717,7 @@ impl Application {
                     .handle_ensure_document_tracked_command(server_id, doc_id)
                     .await;
 
-                if let Err(_) = response.send(result) {
+                if response.send(result).is_err() {
                     warn!("Failed to send EnsureDocumentTracked response - receiver dropped");
                 }
             }
@@ -2861,18 +2884,18 @@ impl Application {
         );
 
         // Clear cache for old workspace if different
-        if let Some(old_root) = old_workspace_root {
-            if old_root != new_workspace_root {
-                self.shell_env_cache
-                    .lock()
-                    .await
-                    .clear_directory_cache(old_root)
-                    .await;
-                debug!(
-                    old_workspace_root = %old_root.display(),
-                    "Cleared shell environment cache for old workspace"
-                );
-            }
+        if let Some(old_root) = old_workspace_root
+            && old_root != new_workspace_root
+        {
+            self.shell_env_cache
+                .lock()
+                .await
+                .clear_directory_cache(old_root)
+                .await;
+            debug!(
+                old_workspace_root = %old_root.display(),
+                "Cleared shell environment cache for old workspace"
+            );
         }
 
         // Capture environment for new workspace (this will cache it for LSP server startup)
@@ -3081,10 +3104,10 @@ pub fn init_editor(
 
     // Add bundle runtime as a backup for macOS
     #[cfg(target_os = "macos")]
-    if let Some(rt) = crate::utils::detect_bundle_runtime() {
-        if !theme_parent_dirs.contains(&rt) {
-            theme_parent_dirs.push(rt);
-        }
+    if let Some(rt) = crate::utils::detect_bundle_runtime()
+        && !theme_parent_dirs.contains(&rt)
+    {
+        theme_parent_dirs.push(rt);
     }
 
     let theme_loader = std::sync::Arc::new(helix_view::theme::Loader::new(&theme_parent_dirs));

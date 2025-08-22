@@ -192,7 +192,7 @@ impl PythonManifestProvider {
 
                 // Valid if it has project metadata or common Python tools
                 let has_python_content = manifest.project.is_some()
-                    || manifest.tool.map_or(false, |t| {
+                    || manifest.tool.is_some_and(|t| {
                         t.contains_key("poetry")
                             || t.contains_key("setuptools")
                             || t.contains_key("black")

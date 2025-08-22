@@ -7,19 +7,15 @@ use std::collections::HashMap;
 /// Root detection strategy for project markers
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RootStrategy {
     /// Stop at first matching marker
     First,
     /// Use marker closest to file
+    #[default]
     Closest,
     /// Use marker furthest from file
     Furthest,
-}
-
-impl Default for RootStrategy {
-    fn default() -> Self {
-        RootStrategy::Closest
-    }
 }
 
 /// Individual project marker configuration
@@ -80,11 +76,7 @@ impl ProjectMarker {
         let mut marker = self.clone();
 
         // Filter out empty markers
-        marker.markers = marker
-            .markers
-            .into_iter()
-            .filter(|m| !m.trim().is_empty())
-            .collect();
+        marker.markers.retain(|m| !m.trim().is_empty());
 
         // Ensure at least one marker exists
         if marker.markers.is_empty() {

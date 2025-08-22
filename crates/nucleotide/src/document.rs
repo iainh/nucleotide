@@ -86,7 +86,7 @@ fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, _f
         shaped_line.width.0 + 10.0, // Beyond end
     ];
 
-    for (_i, x_pos) in test_positions.iter().enumerate() {
+    for x_pos in test_positions.iter() {
         let px_x = gpui::px(*x_pos);
         let byte_index = shaped_line.index_for_x(px_x).unwrap_or(0);
 
@@ -902,10 +902,10 @@ impl DocumentElement {
 
         // Skip lines before the viewport
         for _ in 0..view_offset.vertical_offset {
-            if let Some(grapheme) = formatter.next() {
-                if grapheme.visual_pos.row > visual_line {
-                    visual_line = grapheme.visual_pos.row;
-                }
+            if let Some(grapheme) = formatter.next()
+                && grapheme.visual_pos.row > visual_line
+            {
+                visual_line = grapheme.visual_pos.row;
             }
         }
 
@@ -1535,7 +1535,7 @@ impl Element for DocumentElement {
                                 text_bounds.size.width.0 - gutter_width_px - right_padding;
                             let viewport_width = (text_area_width / cell_width.0).max(10.0) as u16;
 
-                            let text_format = document.text_format(viewport_width, Some(&theme));
+                            let text_format = document.text_format(viewport_width, Some(theme));
                             text_format.soft_wrap
                         } else {
                             false
@@ -1566,8 +1566,7 @@ impl Element for DocumentElement {
                                     (text_area_width / cell_width.0).max(10.0) as u16;
 
                                 // Get text format and view offset
-                                let text_format =
-                                    document.text_format(viewport_width, Some(&theme));
+                                let text_format = document.text_format(viewport_width, Some(theme));
                                 let view_offset = document.view_offset(view_id);
 
                                 // Get line height from scroll manager or use default
@@ -1582,7 +1581,7 @@ impl Element for DocumentElement {
                                     cell_width,
                                     line_height,
                                 )
-                                .unwrap_or_else(|| {
+                                .unwrap_or({
                                     // Fallback to non-wrapped transformation
                                     text_area_pos
                                 })
@@ -1703,11 +1702,7 @@ impl Element for DocumentElement {
                                 // byte_index is offset within the complete shaped line text (including indicators)
                                 // text_start_byte_offset tells us where the real text begins
                                 let adjusted_byte_index =
-                                    if byte_index >= line_layout.text_start_byte_offset {
-                                        byte_index - line_layout.text_start_byte_offset
-                                    } else {
-                                        0 // Click was in the wrap indicator area, position at start of text
-                                    };
+                                    byte_index.saturating_sub(line_layout.text_start_byte_offset);
 
                                 // Get the segment text (real text only, starting at segment_char_offset)
                                 let segment_text = line_text
@@ -2909,8 +2904,8 @@ impl Element for DocumentElement {
 
 
                         // If cursor is in viewport, render it
-                        if let Some(cursor_line) = cursor_visual_line {
-                            if cursor_line >= view_offset.vertical_offset &&
+                        if let Some(cursor_line) = cursor_visual_line
+                            && cursor_line >= view_offset.vertical_offset &&
                                cursor_line < view_offset.vertical_offset + viewport_height {
                                 // Calculate cursor position - FIXED: Use text_bounds coordinate system to match mouse clicks
                                 // Get text bounds (excluding gutter) to match mouse coordinate system
@@ -3006,7 +3001,6 @@ impl Element for DocumentElement {
 
                                 cursor.paint(point(cursor_x, cursor_y), window, cx);
                             }
-                        }
                     }
 
                     // Render tilde lines for empty viewport space (soft-wrap mode)
@@ -3023,7 +3017,7 @@ impl Element for DocumentElement {
                 }
 
                 // Original rendering loop (without soft wrap)
-                for (_loop_index, line_idx) in (first_row..last_row).enumerate() {
+                for line_idx in first_row..last_row {
                     // Handle phantom line (empty line at EOF when file ends with newline)
                     // For a file ending with \n, the last line is empty and is the phantom line
                     // Also treat any empty line at the end as phantom line
@@ -3121,8 +3115,8 @@ impl Element for DocumentElement {
 
                     let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
                     // Paint cursorline background if this is the cursor's line
-                    if let Some(cursorline_bg) = cursorline_style {
-                        if line_idx == cursor_line_num {
+                    if let Some(cursorline_bg) = cursorline_style
+                        && line_idx == cursor_line_num {
                             debug!("Painting cursorline for line {} (cursor at line {})", line_idx, cursor_line_num);
                             let cursorline_bounds = Bounds {
                                 origin: point(bounds.origin.x, bounds.origin.y + px(1.) + y_offset),
@@ -3130,7 +3124,6 @@ impl Element for DocumentElement {
                             };
                             window.paint_quad(fill(cursorline_bounds, cursorline_bg));
                         }
-                    }
 
                     // Always create a shaped line, even for empty lines (needed for cursor positioning)
                     let shaped_line = if !line_str.is_empty() {
@@ -3259,14 +3252,13 @@ impl Element for DocumentElement {
                 {
                     let core = self.core.read(cx);
                     let editor = &core.editor;
-                    if let Some(doc) = editor.document(self.doc_id) {
-                        if let Some(_view) = editor.tree.try_get(self.view_id) {
+                    if let Some(doc) = editor.document(self.doc_id)
+                        && let Some(_view) = editor.tree.try_get(self.view_id) {
                             let sel = doc.selection(self.view_id);
                             let cursor_char = sel.primary().cursor(text);
                             debug!("Cursor char idx: {}, line: {}, selection: {:?}",
                                 cursor_char, text.char_to_line(cursor_char), sel);
                         }
-                    }
                 }
 
                 // Check both is_focused flag and actual focus state

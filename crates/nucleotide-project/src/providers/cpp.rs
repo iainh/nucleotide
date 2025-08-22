@@ -85,24 +85,23 @@ impl ManifestProvider for CppManifestProvider {
             }
             // Check for CMake workspace (multiple CMakeLists.txt indicating workspace)
             let cmake_file = ancestor.join("CMakeLists.txt");
-            if query.delegate.exists(&cmake_file, Some(false)).await {
-                if self
+            if query.delegate.exists(&cmake_file, Some(false)).await
+                && self
                     .validate_manifest(&cmake_file, &*query.delegate)
                     .await?
-                {
-                    outermost_project = Some(ancestor.to_path_buf());
+            {
+                outermost_project = Some(ancestor.to_path_buf());
 
-                    // Check if this is a CMake workspace (contains subdirectories with CMakeLists.txt)
-                    if self
-                        .is_cmake_workspace(&cmake_file, ancestor, &*query.delegate)
-                        .await?
-                    {
-                        nucleotide_logging::info!(
-                            cmake_workspace = %ancestor.display(),
-                            "Found CMake workspace root"
-                        );
-                        return Ok(outermost_project);
-                    }
+                // Check if this is a CMake workspace (contains subdirectories with CMakeLists.txt)
+                if self
+                    .is_cmake_workspace(&cmake_file, ancestor, &*query.delegate)
+                    .await?
+                {
+                    nucleotide_logging::info!(
+                        cmake_workspace = %ancestor.display(),
+                        "Found CMake workspace root"
+                    );
+                    return Ok(outermost_project);
                 }
             }
 

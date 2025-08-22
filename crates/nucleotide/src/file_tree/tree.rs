@@ -176,13 +176,13 @@ impl FileTree {
         let mut files = Vec::new();
 
         for entry in entries {
-            if let Some(entry_parent) = entry.path.parent() {
-                if entry_parent == parent_path {
-                    if entry.is_directory() {
-                        dirs.push(entry.clone());
-                    } else {
-                        files.push(entry.clone());
-                    }
+            if let Some(entry_parent) = entry.path.parent()
+                && entry_parent == parent_path
+            {
+                if entry.is_directory() {
+                    dirs.push(entry.clone());
+                } else {
+                    files.push(entry.clone());
                 }
             }
         }
@@ -541,19 +541,19 @@ impl FileTree {
                 dir_entry.depth = current_depth;
 
                 // Recursively scan subdirectories if within depth limit
-                if current_depth < max_depth {
-                    if let Ok(children) = self.scan_directory(&path, current_depth + 1, max_depth) {
-                        // Update child count with actual number of children
-                        if let FileKind::Directory {
-                            ref mut child_count,
-                            ref mut is_loaded,
-                        } = dir_entry.kind
-                        {
-                            *child_count = children.len();
-                            *is_loaded = true;
-                        }
-                        entries.extend(children);
+                if current_depth < max_depth
+                    && let Ok(children) = self.scan_directory(&path, current_depth + 1, max_depth)
+                {
+                    // Update child count with actual number of children
+                    if let FileKind::Directory {
+                        ref mut child_count,
+                        ref mut is_loaded,
+                    } = dir_entry.kind
+                    {
+                        *child_count = children.len();
+                        *is_loaded = true;
                     }
+                    entries.extend(children);
                 }
 
                 dir_entry
@@ -588,11 +588,11 @@ impl FileTree {
     fn load_directory(&mut self, dir_path: &Path) -> Result<()> {
         if let Some(mut entry) = self.entry_by_path(dir_path) {
             // Check if already loaded
-            if let FileKind::Directory { is_loaded, .. } = &entry.kind {
-                if *is_loaded {
-                    // Directory already loaded, nothing to do
-                    return Ok(());
-                }
+            if let FileKind::Directory { is_loaded, .. } = &entry.kind
+                && *is_loaded
+            {
+                // Directory already loaded, nothing to do
+                return Ok(());
             }
 
             let children = self.scan_directory(dir_path, entry.depth + 1, entry.depth + 2)?;
@@ -684,10 +684,11 @@ impl FileTree {
         }
 
         // Check if parent directory is expanded
-        if let Some(parent) = entry.path.parent() {
-            if parent != self.root_path && !self.is_expanded(parent) {
-                return false;
-            }
+        if let Some(parent) = entry.path.parent()
+            && parent != self.root_path
+            && !self.is_expanded(parent)
+        {
+            return false;
         }
 
         true
@@ -705,10 +706,10 @@ impl FileTree {
         let mut builder = GitignoreBuilder::new(root_path);
 
         // Add .gitignore files
-        if let Ok(gitignore_path) = root_path.join(".gitignore").canonicalize() {
-            if gitignore_path.exists() {
-                let _ = builder.add(&gitignore_path);
-            }
+        if let Ok(gitignore_path) = root_path.join(".gitignore").canonicalize()
+            && gitignore_path.exists()
+        {
+            let _ = builder.add(&gitignore_path);
         }
 
         // Add global gitignore
@@ -744,22 +745,22 @@ impl FileTree {
     fn is_ignored_file(&self, path: &Path) -> bool {
         // Check if path is inside VCS directories
         for component in path.components() {
-            if let std::path::Component::Normal(name) = component {
-                if let Some(name_str) = name.to_str() {
-                    match name_str {
-                        ".git" | ".svn" | ".hg" | ".bzr" => return true,
-                        _ => {}
-                    }
+            if let std::path::Component::Normal(name) = component
+                && let Some(name_str) = name.to_str()
+            {
+                match name_str {
+                    ".git" | ".svn" | ".hg" | ".bzr" => return true,
+                    _ => {}
                 }
             }
         }
 
         // Check gitignore patterns
-        if let Some(ref gitignore) = self.gitignore {
-            if let Ok(relative_path) = path.strip_prefix(&self.root_path) {
-                let matched = gitignore.matched(relative_path, path.is_dir());
-                return matched.is_ignore();
-            }
+        if let Some(ref gitignore) = self.gitignore
+            && let Ok(relative_path) = path.strip_prefix(&self.root_path)
+        {
+            let matched = gitignore.matched(relative_path, path.is_dir());
+            return matched.is_ignore();
         }
 
         false

@@ -184,11 +184,12 @@ impl FileTreeView {
         for component in path.components() {
             current.push(component);
 
-            if let Some(entry) = self.tree.entry_by_path(&current) {
-                if entry.is_directory() && !self.tree.is_expanded(&current) {
-                    // Expand this directory using toggle_directory
-                    self.toggle_directory(&current, cx);
-                }
+            if let Some(entry) = self.tree.entry_by_path(&current)
+                && entry.is_directory()
+                && !self.tree.is_expanded(&current)
+            {
+                // Expand this directory using toggle_directory
+                self.toggle_directory(&current, cx);
             }
         }
 
@@ -285,13 +286,13 @@ impl FileTreeView {
 
     /// Open the selected file
     pub fn open_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = self.selected_path.clone() {
-            if let Some(entry) = self.tree.entry_by_path(&path) {
-                if entry.is_file() {
-                    cx.emit(FileTreeEvent::OpenFile { path });
-                } else if entry.is_directory() {
-                    self.toggle_directory(&path, cx);
-                }
+        if let Some(path) = self.selected_path.clone()
+            && let Some(entry) = self.tree.entry_by_path(&path)
+        {
+            if entry.is_file() {
+                cx.emit(FileTreeEvent::OpenFile { path });
+            } else if entry.is_directory() {
+                self.toggle_directory(&path, cx);
             }
         }
     }
@@ -376,16 +377,16 @@ impl FileTreeView {
 
     /// Handle left arrow key navigation
     pub fn navigate_left(&mut self, cx: &mut Context<Self>) {
-        if let Some(current_path) = self.selected_path.clone() {
-            if let Some(current_entry) = self.tree.entry_by_path(&current_path) {
-                if current_entry.is_directory() && current_entry.is_expanded() {
-                    // Collapse the current directory if it's expanded
-                    self.toggle_directory(&current_path, cx);
-                } else {
-                    // Navigate to parent directory
-                    if let Some(parent_entry) = self.tree.find_parent_entry(&current_path) {
-                        self.select_path(Some(parent_entry.path), cx);
-                    }
+        if let Some(current_path) = self.selected_path.clone()
+            && let Some(current_entry) = self.tree.entry_by_path(&current_path)
+        {
+            if current_entry.is_directory() && current_entry.is_expanded() {
+                // Collapse the current directory if it's expanded
+                self.toggle_directory(&current_path, cx);
+            } else {
+                // Navigate to parent directory
+                if let Some(parent_entry) = self.tree.find_parent_entry(&current_path) {
+                    self.select_path(Some(parent_entry.path), cx);
                 }
             }
         }
@@ -393,22 +394,21 @@ impl FileTreeView {
 
     /// Handle right arrow key navigation  
     pub fn navigate_right(&mut self, cx: &mut Context<Self>) {
-        if let Some(current_path) = self.selected_path.clone() {
-            if let Some(current_entry) = self.tree.entry_by_path(&current_path) {
-                if current_entry.is_directory() {
-                    if !current_entry.is_expanded() {
-                        // Expand the current directory if it's collapsed
-                        self.toggle_directory(&current_path, cx);
-                    } else {
-                        // Navigate to first child if already expanded
-                        if let Some(first_child) = self.tree.find_first_child_entry(&current_path) {
-                            self.select_path(Some(first_child.path), cx);
-                        }
-                    }
+        if let Some(current_path) = self.selected_path.clone()
+            && let Some(current_entry) = self.tree.entry_by_path(&current_path)
+            && current_entry.is_directory()
+        {
+            if !current_entry.is_expanded() {
+                // Expand the current directory if it's collapsed
+                self.toggle_directory(&current_path, cx);
+            } else {
+                // Navigate to first child if already expanded
+                if let Some(first_child) = self.tree.find_first_child_entry(&current_path) {
+                    self.select_path(Some(first_child.path), cx);
                 }
-                // For files, right arrow does nothing
             }
         }
+        // For files, right arrow does nothing
     }
 
     /// Refresh the tree
@@ -796,11 +796,11 @@ impl FileTreeView {
         debug!("Processing pending file system events");
 
         // Check if enough time has passed since the last event
-        if let Some(last_time) = self.last_fs_event_time {
-            if last_time.elapsed() < std::time::Duration::from_millis(300) {
-                debug!("Debounce time not elapsed yet, skipping processing");
-                return;
-            }
+        if let Some(last_time) = self.last_fs_event_time
+            && last_time.elapsed() < std::time::Duration::from_millis(300)
+        {
+            debug!("Debounce time not elapsed yet, skipping processing");
+            return;
         }
 
         // Collect events to process to avoid borrowing issues
@@ -985,21 +985,21 @@ impl FileTreeView {
             }
 
             // Add the new entry if parent is expanded
-            if let Some(parent) = to.parent() {
-                if self.tree.is_expanded(parent) {
-                    debug!(parent = ?parent, "Parent directory is expanded, adding renamed entry");
+            if let Some(parent) = to.parent()
+                && self.tree.is_expanded(parent)
+            {
+                debug!(parent = ?parent, "Parent directory is expanded, adding renamed entry");
 
-                    if let Ok(metadata) = std::fs::metadata(to) {
-                        let entry = self.create_tree_entry(to, &metadata, parent);
-                        self.tree.upsert_entry(entry);
-                        debug!(path = ?to, "Successfully added renamed entry to tree");
+                if let Ok(metadata) = std::fs::metadata(to) {
+                    let entry = self.create_tree_entry(to, &metadata, parent);
+                    self.tree.upsert_entry(entry);
+                    debug!(path = ?to, "Successfully added renamed entry to tree");
 
-                        // Trigger VCS refresh to get correct status for the renamed file
-                        debug!(from = ?from, to = ?to, "Triggering VCS refresh for renamed file");
-                        self.handle_vcs_refresh(false, cx);
-                    } else {
-                        debug!(path = ?to, "Failed to get metadata for renamed file");
-                    }
+                    // Trigger VCS refresh to get correct status for the renamed file
+                    debug!(from = ?from, to = ?to, "Triggering VCS refresh for renamed file");
+                    self.handle_vcs_refresh(false, cx);
+                } else {
+                    debug!(path = ?to, "Failed to get metadata for renamed file");
                 }
             }
 
@@ -1245,12 +1245,11 @@ impl Render for FileTreeView {
             .on_action(cx.listener(
                 |view, _: &crate::actions::file_tree::ToggleExpanded, _window, cx| {
                     // For left/right arrow keys, handle expand/collapse
-                    if let Some(selected_path) = view.selected_path.clone() {
-                        if let Some(entry) = view.tree.entry_by_path(&selected_path) {
-                            if entry.is_directory() {
-                                view.toggle_directory(&selected_path, cx);
-                            }
-                        }
+                    if let Some(selected_path) = view.selected_path.clone()
+                        && let Some(entry) = view.tree.entry_by_path(&selected_path)
+                        && entry.is_directory()
+                    {
+                        view.toggle_directory(&selected_path, cx);
                     }
                 },
             ))

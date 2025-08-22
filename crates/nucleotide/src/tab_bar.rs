@@ -106,10 +106,10 @@ impl TabBar {
     fn get_document_label(&self, doc_info: &DocumentInfo) -> String {
         if let Some(path) = &doc_info.path {
             // Try to get relative path if project directory is set
-            if let Some(ref project_dir) = self.project_directory {
-                if let Ok(relative) = path.strip_prefix(project_dir) {
-                    return relative.display().to_string();
-                }
+            if let Some(ref project_dir) = self.project_directory
+                && let Ok(relative) = path.strip_prefix(project_dir)
+            {
+                return relative.display().to_string();
             }
             // Otherwise use filename
             path.file_name()
@@ -295,12 +295,12 @@ impl RenderOnce for TabBar {
         // Get tab bar background using design tokens
         let tabbar_bg = tokens.colors.bufferline_background;
         let border_color =
-            nucleotide_ui::styling::ColorTheory::subtle_border_color(tabbar_bg, &tokens);
+            nucleotide_ui::styling::ColorTheory::subtle_border_color(tabbar_bg, tokens);
 
         // Calculate inactive tab border color for empty tab bar sections
         let inactive_tab_bg = tokens.colors.bufferline_inactive;
         let inactive_border_color =
-            nucleotide_ui::styling::ColorTheory::subtle_border_color(inactive_tab_bg, &tokens);
+            nucleotide_ui::styling::ColorTheory::subtle_border_color(inactive_tab_bg, tokens);
 
         // Create tabs for visible documents
         let mut tabs = Vec::new();
@@ -317,7 +317,7 @@ impl RenderOnce for TabBar {
                 label,
                 doc_info.path.clone(),
                 doc_info.is_modified,
-                doc_info.git_status.clone(),
+                doc_info.git_status,
                 is_active,
                 move |_event, window, cx| {
                     on_tab_click(doc_id, window, cx);

@@ -159,6 +159,12 @@ pub enum ProjectType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId(pub usize);
 
+impl Default for PanelConfiguration {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PanelConfiguration {
     pub fn new() -> Self {
         Self {

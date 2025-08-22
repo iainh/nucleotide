@@ -34,10 +34,10 @@ impl Render for LspStatus {
         }
 
         // Show progress indicator if busy
-        if state.is_busy() {
-            if let Some(progress_status) = state.status_string() {
-                status_parts.push(progress_status);
-            }
+        if state.is_busy()
+            && let Some(progress_status) = state.status_string()
+        {
+            status_parts.push(progress_status);
         }
 
         // Show diagnostic count summary

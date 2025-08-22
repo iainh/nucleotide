@@ -248,7 +248,7 @@ impl RenderOnce for Tab {
                     bg,
                     tokens.colors.text_primary,
                     bg, // No hover change for active tabs
-                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, &tokens),
+                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, tokens),
                 )
             }
             ComponentState::Disabled => {
@@ -257,7 +257,7 @@ impl RenderOnce for Tab {
                     bg,
                     tokens.colors.text_disabled,
                     bg, // No hover for disabled tabs
-                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, &tokens),
+                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, tokens),
                 )
             }
             _ => {
@@ -271,13 +271,13 @@ impl RenderOnce for Tab {
                     bg,
                     tokens.colors.text_primary,
                     tokens.colors.surface_hover, // Standard hover for inactive tabs
-                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, &tokens),
+                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, tokens),
                 )
             }
         };
 
         // Extract values we need before moving self
-        let git_status = self.git_status.clone();
+        let git_status = self.git_status;
         let height = match self.size {
             TabSize::Small => tokens.sizes.button_height_sm,
             TabSize::Medium => tokens.sizes.button_height_md,
@@ -351,7 +351,7 @@ impl RenderOnce for Tab {
                                 };
 
                                 // Add VCS status if available and render directly
-                                vcs_icon.vcs_status(git_status.clone())
+                                vcs_icon.vcs_status(git_status)
                             }),
                     )
                     .child(

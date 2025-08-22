@@ -129,6 +129,22 @@ impl LineLayoutCache {
         }
     }
 
+    pub fn find_line_at_position_with_scroll(
+        &self,
+        position: gpui::Point<Pixels>,
+        bounds_width: Pixels,
+        line_height: Pixels,
+        scroll_offset: gpui::Point<Pixels>,
+    ) -> Option<LineLayout> {
+        // Adjust position by scroll offset - subtract scroll offset because when scrolled down,
+        // the scroll offset is negative, but we need to add the absolute value to find the actual line
+        let adjusted_position =
+            gpui::point(position.x - scroll_offset.x, position.y - scroll_offset.y);
+
+        // Use the existing method with adjusted position
+        self.find_line_at_position(adjusted_position, bounds_width, line_height)
+    }
+
     pub fn find_line_by_index(&self, line_idx: usize) -> Option<LineLayout> {
         if let Ok(layouts) = self.layouts.lock() {
             layouts

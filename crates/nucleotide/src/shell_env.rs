@@ -465,6 +465,12 @@ pub struct ShellEnvironmentCache {
     project_env: Arc<ProjectEnvironment>,
 }
 
+impl Default for ShellEnvironmentCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ShellEnvironmentCache {
     pub fn new() -> Self {
         Self {

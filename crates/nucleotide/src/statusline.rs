@@ -77,7 +77,7 @@ impl Render for StatusLineView {
                 // Use ThemedContext for theme access
                 let theme = cx.theme();
                 let tokens = &theme.tokens;
-                let status_bg = self.get_status_color(&tokens);
+                let status_bg = self.get_status_color(tokens);
                 return div()
                     .h(tokens.sizes.button_height_sm)
                     .w_full()
@@ -90,7 +90,7 @@ impl Render for StatusLineView {
                 // Use ThemedContext for theme access
                 let theme = cx.theme();
                 let tokens = &theme.tokens;
-                let status_bg = self.get_status_color(&tokens);
+                let status_bg = self.get_status_color(tokens);
                 return div()
                     .h(tokens.sizes.button_height_sm)
                     .w_full()
@@ -108,7 +108,7 @@ impl Render for StatusLineView {
         let font_size = gpui::px(ui_font_config.size);
 
         // Get status bar background color based on focus state
-        let status_bg = self.get_status_color(&tokens);
+        let status_bg = self.get_status_color(tokens);
 
         // Build status components
         let position = helix_core::coords_at_pos(
@@ -154,7 +154,7 @@ impl Render for StatusLineView {
 
         // Build the status line layout using design tokens
         let border_color =
-            nucleotide_ui::styling::ColorTheory::subtle_border_color(status_bg, &tokens);
+            nucleotide_ui::styling::ColorTheory::subtle_border_color(status_bg, tokens);
         let mut status_bar = div()
             .h(tokens.sizes.button_height_sm)
             .w_full()

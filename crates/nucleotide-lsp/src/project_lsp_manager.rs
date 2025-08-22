@@ -500,10 +500,10 @@ impl ProjectDetector {
         workspace_root: &PathBuf,
     ) -> Result<ProjectType, Box<dyn std::error::Error + Send + Sync>> {
         // First try custom project markers if enabled
-        if self.project_markers_config.enable_project_markers {
-            if let Some(project_type) = self.detect_with_custom_markers(workspace_root).await? {
-                return Ok(project_type);
-            }
+        if self.project_markers_config.enable_project_markers
+            && let Some(project_type) = self.detect_with_custom_markers(workspace_root).await?
+        {
+            return Ok(project_type);
         }
 
         // Fall back to builtin detection if enabled or no custom markers found

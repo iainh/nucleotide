@@ -77,10 +77,10 @@ impl FileTreeWatcher {
         let mut builder = GitignoreBuilder::new(root_path);
 
         // Add .gitignore files
-        if let Ok(gitignore_path) = root_path.join(".gitignore").canonicalize() {
-            if gitignore_path.exists() {
-                let _ = builder.add(&gitignore_path);
-            }
+        if let Ok(gitignore_path) = root_path.join(".gitignore").canonicalize()
+            && gitignore_path.exists()
+        {
+            let _ = builder.add(&gitignore_path);
         }
 
         // Add global gitignore
@@ -116,12 +116,12 @@ impl FileTreeWatcher {
     fn should_ignore_path(&self, path: &Path) -> bool {
         // Check if path is inside VCS directories
         for component in path.components() {
-            if let std::path::Component::Normal(name) = component {
-                if let Some(name_str) = name.to_str() {
-                    match name_str {
-                        ".git" | ".svn" | ".hg" | ".bzr" => return true,
-                        _ => {}
-                    }
+            if let std::path::Component::Normal(name) = component
+                && let Some(name_str) = name.to_str()
+            {
+                match name_str {
+                    ".git" | ".svn" | ".hg" | ".bzr" => return true,
+                    _ => {}
                 }
             }
         }
@@ -138,11 +138,11 @@ impl FileTreeWatcher {
         }
 
         // Check gitignore patterns
-        if let Some(ref gitignore) = self.gitignore {
-            if let Ok(relative_path) = path.strip_prefix(&self.root_path) {
-                let matched = gitignore.matched(relative_path, path.is_dir());
-                return matched.is_ignore();
-            }
+        if let Some(ref gitignore) = self.gitignore
+            && let Ok(relative_path) = path.strip_prefix(&self.root_path)
+        {
+            let matched = gitignore.matched(relative_path, path.is_dir());
+            return matched.is_ignore();
         }
 
         false
@@ -218,12 +218,11 @@ impl DebouncedFileTreeWatcher {
     pub async fn next_event(&mut self) -> Option<FileTreeEvent> {
         loop {
             // Check if we have pending events and enough time has passed
-            if !self.pending_events.is_empty() {
-                if let Some(last_time) = self.last_event_time {
-                    if last_time.elapsed() >= self.debounce_duration {
-                        return self.flush_pending_events();
-                    }
-                }
+            if !self.pending_events.is_empty()
+                && let Some(last_time) = self.last_event_time
+                && last_time.elapsed() >= self.debounce_duration
+            {
+                return self.flush_pending_events();
             }
 
             // Wait for new events with a small timeout to check debounce
@@ -238,13 +237,11 @@ impl DebouncedFileTreeWatcher {
 
                 // Small timeout to periodically check if debounce time has elapsed
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                    if !self.pending_events.is_empty() {
-                        if let Some(last_time) = self.last_event_time {
-                            if last_time.elapsed() >= self.debounce_duration {
+                    if !self.pending_events.is_empty()
+                        && let Some(last_time) = self.last_event_time
+                            && last_time.elapsed() >= self.debounce_duration {
                                 return self.flush_pending_events();
                             }
-                        }
-                    }
                 }
             }
         }

@@ -72,18 +72,17 @@ impl ManifestProvider for CSharpManifestProvider {
 
             // Second priority: global.json (indicates .NET workspace)
             let global_json = ancestor.join("global.json");
-            if query.delegate.exists(&global_json, Some(false)).await {
-                if self
+            if query.delegate.exists(&global_json, Some(false)).await
+                && self
                     .validate_global_json(&global_json, &*query.delegate)
                     .await?
-                {
-                    nucleotide_logging::info!(
-                        global_json = %global_json.display(),
-                        project_root = %ancestor.display(),
-                        "Found .NET workspace via global.json"
-                    );
-                    return Ok(Some(ancestor.to_path_buf()));
-                }
+            {
+                nucleotide_logging::info!(
+                    global_json = %global_json.display(),
+                    project_root = %ancestor.display(),
+                    "Found .NET workspace via global.json"
+                );
+                return Ok(Some(ancestor.to_path_buf()));
             }
 
             // Third priority: Directory.Build.props (MSBuild directory-level configuration)

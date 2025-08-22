@@ -143,6 +143,12 @@ pub enum ProjectType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgressToken(pub String);
 
+impl Default for ServerCapabilities {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServerCapabilities {
     pub fn new() -> Self {
         Self {

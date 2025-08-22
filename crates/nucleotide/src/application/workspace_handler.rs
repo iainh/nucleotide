@@ -371,10 +371,10 @@ impl WorkspaceHandler {
                 // Update expanded directories if this was a directory rename
                 let mut expanded = self.expanded_directories.write().await;
                 for expanded_path in expanded.iter_mut() {
-                    if expanded_path.starts_with(old_path) {
-                        if let Ok(relative) = expanded_path.strip_prefix(old_path) {
-                            *expanded_path = new_path.join(relative);
-                        }
+                    if expanded_path.starts_with(old_path)
+                        && let Ok(relative) = expanded_path.strip_prefix(old_path)
+                    {
+                        *expanded_path = new_path.join(relative);
                     }
                 }
             }

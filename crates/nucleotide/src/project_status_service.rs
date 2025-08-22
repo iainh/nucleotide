@@ -37,10 +37,10 @@ impl ProjectStatusHandle {
         let now = std::time::Instant::now();
 
         // Debounce LSP updates to avoid excessive UI refreshes
-        if let Some(last_update) = service.last_lsp_update {
-            if now.duration_since(last_update) < service.debounce_duration {
-                return;
-            }
+        if let Some(last_update) = service.last_lsp_update
+            && now.duration_since(last_update) < service.debounce_duration
+        {
+            return;
         }
 
         debug!(
@@ -85,6 +85,12 @@ pub struct ProjectStatusService {
     last_detection_update: Option<Instant>,
     debounce_duration: Duration,
     background_task: Option<gpui::Task<()>>,
+}
+
+impl Default for ProjectStatusService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ProjectStatusService {
@@ -141,10 +147,10 @@ impl ProjectStatusService {
         let now = Instant::now();
 
         // Debounce LSP updates to avoid excessive UI refreshes
-        if let Some(last_update) = self.last_lsp_update {
-            if now.duration_since(last_update) < self.debounce_duration {
-                return;
-            }
+        if let Some(last_update) = self.last_lsp_update
+            && now.duration_since(last_update) < self.debounce_duration
+        {
+            return;
         }
 
         debug!(

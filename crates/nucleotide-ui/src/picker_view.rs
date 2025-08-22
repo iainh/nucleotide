@@ -1081,12 +1081,11 @@ impl PickerView {
                                                                                     // Render VcsIcon for file items
                                                                                     this.child({
                                                                                         // Create VcsIcon with embedded VCS status
-                                                                                        let vcs_icon = VcsIcon::from_path(file_path, false)
-                                                                                            .size(16.0)
-                                                                                            .vcs_status(item.vcs_status);
 
                                                                                         // Use direct rendering since we don't have proper Context<Self>
-                                                                                        vcs_icon
+                                                                                        VcsIcon::from_path(file_path, false)
+                                                                                            .size(16.0)
+                                                                                            .vcs_status(item.vcs_status)
                                                                                     })
                                                                                 }
                                                                             )

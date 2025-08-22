@@ -3,7 +3,7 @@
 
 use helix_lsp::LanguageServerId;
 use nucleotide_events::v2::handler::EventHandler;
-use nucleotide_events::v2::lsp::{ActiveServer, Event, ServerHealth};
+use nucleotide_events::v2::lsp::{ActiveServer, Event, ProjectType, ServerHealth};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -201,7 +201,7 @@ impl LspHandler {
             );
 
             let mut health = self.server_health.write().await;
-            health.insert(*server_id, status.clone());
+            health.insert(*server_id, *status);
         }
         Ok(())
     }

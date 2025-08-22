@@ -410,7 +410,7 @@ impl LspManager {
                 file_path: doc
                     .path()
                     .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| PathBuf::new()),
+                    .unwrap_or_else(PathBuf::new),
             },
             language_servers: initial_servers,
             duration,

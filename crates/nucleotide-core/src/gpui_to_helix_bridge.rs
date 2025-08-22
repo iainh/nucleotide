@@ -154,15 +154,15 @@ pub fn handle_gpui_event_in_helix(event: &GpuiToHelixEvent, editor: &mut helix_v
                 path = ?path,
                 "External file change detected"
             );
-            if let Some(doc) = editor.document(*doc_id) {
-                if !doc.is_modified() {
-                    // Only reload if document isn't modified locally
-                    info!(
-                        path = ?path,
-                        "Reloading externally modified file"
-                    );
-                    // Would trigger file reload here
-                }
+            if let Some(doc) = editor.document(*doc_id)
+                && !doc.is_modified()
+            {
+                // Only reload if document isn't modified locally
+                info!(
+                    path = ?path,
+                    "Reloading externally modified file"
+                );
+                // Would trigger file reload here
             }
         }
         GpuiToHelixEvent::MemoryPressure { level } => {

@@ -275,6 +275,12 @@ impl CompletionError {
     }
 }
 
+impl Default for CompletionMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CompletionMetrics {
     pub fn new() -> Self {
         Self {

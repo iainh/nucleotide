@@ -83,15 +83,15 @@ fn install_panic_handler() {
         );
 
         // Log backtrace if enabled
-        if let Ok(backtrace) = std::env::var("RUST_BACKTRACE") {
-            if backtrace == "1" || backtrace == "full" {
-                let bt = std::backtrace::Backtrace::capture();
-                nucleotide_logging::error!(
-                    backtrace = %format!("{:?}", bt),
-                    "Panic backtrace"
-                );
-                eprintln!("Backtrace:\n{bt:?}");
-            }
+        if let Ok(backtrace) = std::env::var("RUST_BACKTRACE")
+            && (backtrace == "1" || backtrace == "full")
+        {
+            let bt = std::backtrace::Backtrace::capture();
+            nucleotide_logging::error!(
+                backtrace = %format!("{:?}", bt),
+                "Panic backtrace"
+            );
+            eprintln!("Backtrace:\n{bt:?}");
         }
 
         // Log system information for debugging
@@ -123,13 +123,11 @@ fn _early_runtime_init() {
         Err(_) => true,
     };
 
-    if needs_override {
-        if let Some(rt) = nucleotide::utils::detect_bundle_runtime() {
-            // SAFETY: Setting HELIX_RUNTIME environment variable during startup
-            // before any threads are spawned is safe.
-            unsafe {
-                std::env::set_var("HELIX_RUNTIME", &rt);
-            }
+    if needs_override && let Some(rt) = nucleotide::utils::detect_bundle_runtime() {
+        // SAFETY: Setting HELIX_RUNTIME environment variable during startup
+        // before any threads are spawned is safe.
+        unsafe {
+            std::env::set_var("HELIX_RUNTIME", &rt);
         }
     }
 
@@ -161,19 +159,18 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
     }
 
     // Priority 3: For file arguments, find the workspace root of the first file's parent
-    if let Some((first_file, _)) = args.files.first() {
-        if let Some(parent) = first_file.parent() {
-            if parent.exists() {
-                let workspace_root = nucleotide::application::find_workspace_root_from(parent);
-                info!(
-                    file = ?first_file,
-                    parent = ?parent,
-                    workspace_root = ?workspace_root,
-                    "Found workspace root from file parent"
-                );
-                return Ok(Some(workspace_root));
-            }
-        }
+    if let Some((first_file, _)) = args.files.first()
+        && let Some(parent) = first_file.parent()
+        && parent.exists()
+    {
+        let workspace_root = nucleotide::application::find_workspace_root_from(parent);
+        info!(
+            file = ?first_file,
+            parent = ?parent,
+            workspace_root = ?workspace_root,
+            "Found workspace root from file parent"
+        );
+        return Ok(Some(workspace_root));
     }
 
     // Priority 4: Try to find workspace root from current directory
@@ -198,13 +195,13 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
 fn main() -> Result<()> {
     // Set HELIX_RUNTIME for macOS bundles before any Helix code runs (backup)
     #[cfg(target_os = "macos")]
-    if std::env::var("HELIX_RUNTIME").is_err() {
-        if let Some(rt) = nucleotide::utils::detect_bundle_runtime() {
-            // SAFETY: Setting HELIX_RUNTIME environment variable during startup
-            // before any threads are spawned is safe.
-            unsafe {
-                std::env::set_var("HELIX_RUNTIME", &rt);
-            }
+    if std::env::var("HELIX_RUNTIME").is_err()
+        && let Some(rt) = nucleotide::utils::detect_bundle_runtime()
+    {
+        // SAFETY: Setting HELIX_RUNTIME environment variable during startup
+        // before any threads are spawned is safe.
+        unsafe {
+            std::env::set_var("HELIX_RUNTIME", &rt);
         }
     }
 
@@ -557,10 +554,10 @@ fn gui_main(
                 }
             }
 
-            if !paths.is_empty() {
-                if let Err(e) = file_open_tx.send(paths) {
-                    error!(error = %e, "Failed to send file open request");
-                }
+            if !paths.is_empty()
+                && let Err(e) = file_open_tx.send(paths)
+            {
+                error!(error = %e, "Failed to send file open request");
             }
         }
     });
@@ -983,19 +980,18 @@ fn gui_main(
                         let path = std::path::PathBuf::from(path_str);
                         if path.exists() {
                             // For the first valid file, set its parent as the working directory
-                            if index == 0 && !should_change_dir {
-                                if let Some(parent) = path.parent() {
+                            if index == 0 && !should_change_dir
+                                && let Some(parent) = path.parent() {
                                     new_working_dir = Some(parent.to_path_buf());
                                     should_change_dir = true;
                                     info!(directory = ?parent, "Will change working directory");
                                 }
-                            }
                         }
                     }
 
                     // Change working directory if needed
-                    if should_change_dir {
-                        if let Some(dir) = new_working_dir.clone() {
+                    if should_change_dir
+                        && let Some(dir) = new_working_dir.clone() {
                             if let Err(e) = helix_stdx::env::set_current_working_dir(&dir) {
                                 error!(
                                     directory = ?dir,
@@ -1025,7 +1021,6 @@ fn gui_main(
                                 }
                             }
                         }
-                    }
 
                     // Now open all the files
                     for path_str in paths {

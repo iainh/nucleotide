@@ -516,10 +516,10 @@ impl FocusGroupManager {
         self.active_group = Some(new_group);
 
         // Activate the new group
-        if let Some(state) = self.groups.get(&new_group) {
-            if let Some(ref callback) = state.activate_callback {
-                callback();
-            }
+        if let Some(state) = self.groups.get(&new_group)
+            && let Some(ref callback) = state.activate_callback
+        {
+            callback();
         }
     }
 }

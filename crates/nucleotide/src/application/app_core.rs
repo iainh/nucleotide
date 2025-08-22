@@ -51,14 +51,14 @@ impl ApplicationCore {
         info!("Initializing ApplicationCore with V2 event handlers");
 
         // Initialize Phase 1 handlers
-        self.document_handler.initialize().map_err(|e| e)?;
-        self.view_handler.initialize().map_err(|e| e)?;
-        self.editor_handler.initialize().map_err(|e| e)?;
+        self.document_handler.initialize()?;
+        self.view_handler.initialize()?;
+        self.editor_handler.initialize()?;
 
         // Initialize Phase 2 handlers
-        self.lsp_handler.initialize().map_err(|e| e)?;
-        self.completion_handler.initialize().map_err(|e| e)?;
-        self.workspace_handler.initialize().map_err(|e| e)?;
+        self.lsp_handler.initialize()?;
+        self.completion_handler.initialize()?;
+        self.workspace_handler.initialize()?;
 
         self.initialized = true;
         info!("ApplicationCore initialized successfully");
@@ -105,10 +105,7 @@ impl ApplicationCore {
                     "Processing DocumentChanged through V2 handler"
                 );
 
-                self.document_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| e)?;
+                self.document_handler.handle(v2_event).await?;
             }
 
             event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
@@ -150,7 +147,7 @@ impl ApplicationCore {
                     "Processing SelectionChanged through V2 ViewHandler"
                 );
 
-                self.view_handler.handle(v2_event).await.map_err(|e| e)?;
+                self.view_handler.handle(v2_event).await?;
             }
 
             event_bridge::BridgedEvent::ModeChanged { old_mode, new_mode } => {
@@ -166,7 +163,7 @@ impl ApplicationCore {
                     "Processing ModeChanged through V2 EditorHandler"
                 );
 
-                self.editor_handler.handle(v2_event).await.map_err(|e| e)?;
+                self.editor_handler.handle(v2_event).await?;
             }
 
             event_bridge::BridgedEvent::DocumentOpened { doc_id } => {
@@ -191,10 +188,7 @@ impl ApplicationCore {
 
                 debug!(doc_id = ?doc_id, "Processing DocumentOpened through V2 DocumentHandler");
 
-                self.document_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| e)?;
+                self.document_handler.handle(v2_event).await?;
             }
 
             event_bridge::BridgedEvent::DocumentClosed { doc_id } => {
@@ -207,10 +201,7 @@ impl ApplicationCore {
 
                 debug!(doc_id = ?doc_id, "Processing DocumentClosed through V2 DocumentHandler");
 
-                self.document_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| e)?;
+                self.document_handler.handle(v2_event).await?;
             }
 
             event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
@@ -239,9 +230,9 @@ impl ApplicationCore {
 
                 let v2_event = DocumentEvent::DiagnosticsUpdated {
                     doc_id: *doc_id,
-                    diagnostic_count: diagnostic_count,
-                    error_count: error_count,
-                    warning_count: warning_count,
+                    diagnostic_count,
+                    error_count,
+                    warning_count,
                 };
 
                 debug!(
@@ -252,10 +243,7 @@ impl ApplicationCore {
                     "Processing DiagnosticsChanged through V2 DocumentHandler"
                 );
 
-                self.document_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| e)?;
+                self.document_handler.handle(v2_event).await?;
             }
 
             event_bridge::BridgedEvent::ViewFocused { view_id } => {
@@ -276,7 +264,7 @@ impl ApplicationCore {
                     "Processing ViewFocused through V2 ViewHandler"
                 );
 
-                self.view_handler.handle(v2_event).await.map_err(|e| e)?;
+                self.view_handler.handle(v2_event).await?;
             }
 
             // Phase 2 Events - LSP Integration
@@ -294,7 +282,7 @@ impl ApplicationCore {
                     "Processing LanguageServerInitialized through V2 LspHandler"
                 );
 
-                self.lsp_handler.handle(v2_event).await.map_err(|e| e)?;
+                self.lsp_handler.handle(v2_event).await?;
             }
 
             event_bridge::BridgedEvent::LanguageServerExited { server_id } => {
@@ -310,7 +298,7 @@ impl ApplicationCore {
                     "Processing LanguageServerExited through V2 LspHandler"
                 );
 
-                self.lsp_handler.handle(v2_event).await.map_err(|e| e)?;
+                self.lsp_handler.handle(v2_event).await?;
             }
 
             event_bridge::BridgedEvent::LspServerStartupRequested {
@@ -331,7 +319,7 @@ impl ApplicationCore {
                     "Processing LspServerStartupRequested through V2 LspHandler"
                 );
 
-                self.lsp_handler.handle(v2_event).await.map_err(|e| e)?;
+                self.lsp_handler.handle(v2_event).await?;
             }
 
             // Phase 2 Events - Completion Integration
@@ -371,10 +359,7 @@ impl ApplicationCore {
                     "Processing CompletionRequested through V2 CompletionHandler"
                 );
 
-                self.completion_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| e)?;
+                self.completion_handler.handle(v2_event).await?;
             }
 
             _ => {

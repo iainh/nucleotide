@@ -159,10 +159,8 @@ impl AncestorIterator {
 
     /// Check if path is a symlink and handle according to config
     fn handle_symlink(&self, path: &Path) -> Option<PathBuf> {
-        if !self.config.follow_symlinks {
-            if path.is_symlink() {
-                return None;
-            }
+        if !self.config.follow_symlinks && path.is_symlink() {
+            return None;
         }
 
         Some(path.to_path_buf())
@@ -275,7 +273,7 @@ pub async fn is_likely_project_root(path: &Path) -> bool {
 /// Validate that a path is suitable for project detection
 pub async fn validate_path_for_detection(path: &Path) -> Result<()> {
     // Check if path exists
-    if !tokio::fs::metadata(path).await.is_ok() {
+    if tokio::fs::metadata(path).await.is_err() {
         return Err(ProjectError::invalid_path(path.to_path_buf()));
     }
 

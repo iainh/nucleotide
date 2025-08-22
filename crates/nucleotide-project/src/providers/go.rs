@@ -274,7 +274,7 @@ impl GoManifestProvider {
         }
 
         // Extract dependencies
-        metadata.dependencies = go_mod.require.into_iter().map(|(name, _)| name).collect();
+        metadata.dependencies = go_mod.require.into_keys().collect();
 
         // Module path
         metadata
@@ -416,7 +416,7 @@ impl GoManifestProvider {
     }
 
     fn parse_require_line(&self, line: &str) -> Option<(String, String)> {
-        let parts: Vec<&str> = line.trim().split_whitespace().collect();
+        let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 {
             Some((parts[0].to_string(), parts[1].to_string()))
         } else {
