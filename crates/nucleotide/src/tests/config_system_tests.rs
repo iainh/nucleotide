@@ -119,7 +119,7 @@ mode = "light"
         let ui_font = config.ui.font.expect("UI font should be present");
         assert_eq!(ui_font.family, "Inter");
         assert_eq!(ui_font.weight, FontWeight::Normal); // Default
-        assert_eq!(ui_font.size, 13.0); // Default
+        assert_eq!(ui_font.size, 14.0); // Default
 
         // Test editor font defaults
         assert!(config.editor.font.is_none());

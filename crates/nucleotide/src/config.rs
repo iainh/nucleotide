@@ -75,7 +75,7 @@ impl ThemeConfig {
 }
 
 /// Window appearance configuration
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowConfig {
     /// Enable blur for dark themes
     #[serde(default)]
@@ -86,8 +86,17 @@ pub struct WindowConfig {
     pub appearance_follows_theme: bool,
 }
 
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            blur_dark_themes: false,
+            appearance_follows_theme: true,
+        }
+    }
+}
+
 /// LSP feature flags configuration
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspConfig {
     /// Enable project-based LSP startup (vs file-based)
     #[serde(default)]
@@ -104,6 +113,16 @@ pub struct LspConfig {
 
 fn default_lsp_startup_timeout() -> u64 {
     5000 // 5 seconds default timeout
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        Self {
+            project_lsp_startup: false,
+            startup_timeout_ms: default_lsp_startup_timeout(),
+            enable_fallback: true,
+        }
+    }
 }
 
 impl LspConfig {
@@ -675,18 +694,23 @@ language_server = "typescript-language-server"
     fn test_root_strategy_serialization() {
         assert_eq!(RootStrategy::default(), RootStrategy::Closest);
 
-        // Test deserialization from TOML
-        let first: RootStrategy =
-            toml::from_str("\"first\"").expect("Failed to deserialize RootStrategy::First");
-        assert_eq!(first, RootStrategy::First);
+        // Test deserialization from TOML within a structure
+        #[derive(Deserialize)]
+        struct TestStruct {
+            strategy: RootStrategy,
+        }
 
-        let closest: RootStrategy =
-            toml::from_str("\"closest\"").expect("Failed to deserialize RootStrategy::Closest");
-        assert_eq!(closest, RootStrategy::Closest);
+        let first: TestStruct = toml::from_str("strategy = \"first\"")
+            .expect("Failed to deserialize RootStrategy::First");
+        assert_eq!(first.strategy, RootStrategy::First);
 
-        let furthest: RootStrategy =
-            toml::from_str("\"furthest\"").expect("Failed to deserialize RootStrategy::Furthest");
-        assert_eq!(furthest, RootStrategy::Furthest);
+        let closest: TestStruct = toml::from_str("strategy = \"closest\"")
+            .expect("Failed to deserialize RootStrategy::Closest");
+        assert_eq!(closest.strategy, RootStrategy::Closest);
+
+        let furthest: TestStruct = toml::from_str("strategy = \"furthest\"")
+            .expect("Failed to deserialize RootStrategy::Furthest");
+        assert_eq!(furthest.strategy, RootStrategy::Furthest);
     }
 
     #[test]

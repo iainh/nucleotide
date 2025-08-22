@@ -309,7 +309,7 @@ async fn test_event_driven_command_pattern_failure() {
         Ok(_) => panic!("Expected failure, but got success"),
         Err(ProjectLspCommandError::ServerStartup(msg)) => {
             println!("✓ Received expected failure: {}", msg);
-            assert!(msg.contains("Mock server startup failure"));
+            assert!(msg.contains("Mock failure for testing"));
             println!("✅ Error handling working correctly!");
         }
         Err(other) => panic!("Expected ServerStartup error, got: {:?}", other),
