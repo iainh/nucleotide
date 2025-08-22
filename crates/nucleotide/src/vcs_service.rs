@@ -71,11 +71,28 @@ impl VcsService {
 
     /// Start monitoring a repository
     pub fn start_monitoring(&mut self, root_path: PathBuf, cx: &mut Context<Self>) {
-        // If we're already monitoring this directory, just refresh
+        // If we're already monitoring this directory, just refresh (with rate limiting)
         if self.root_path.as_ref() == Some(&root_path) {
-            debug!(root_path = %root_path.display(), "VCS: Already monitoring this directory, refreshing");
+            debug!(root_path = %root_path.display(), "VCS: Already monitoring this directory");
             if self.is_monitoring {
-                self.refresh_status(cx);
+                // Only refresh if it's been a while since last check
+                if let Some(last_check) = self.last_check {
+                    if last_check.elapsed().as_secs() >= 3 {
+                        debug!(
+                            "VCS: Refreshing due to monitoring request (last check was {} seconds ago)",
+                            last_check.elapsed().as_secs()
+                        );
+                        self.refresh_status(cx);
+                    } else {
+                        debug!(
+                            "VCS: Skipping refresh due to recent check ({}s ago)",
+                            last_check.elapsed().as_secs()
+                        );
+                    }
+                } else {
+                    // No previous check, do an initial refresh
+                    self.refresh_status(cx);
+                }
             }
             return;
         }
@@ -138,12 +155,25 @@ impl VcsService {
         &self.status_cache
     }
 
-    /// Force refresh of VCS status
+    /// Force refresh of VCS status with rate limiting
     pub fn force_refresh(&mut self, cx: &mut Context<Self>) {
-        if self.is_monitoring {
-            info!("VCS: Force refresh requested");
-            self.refresh_status(cx);
+        if !self.is_monitoring {
+            return;
         }
+
+        // Rate limit: don't refresh more than once every 2 seconds
+        if let Some(last_check) = self.last_check {
+            if last_check.elapsed().as_secs() < 2 {
+                debug!(
+                    "VCS: Force refresh requested but rate limited (last check was {} seconds ago)",
+                    last_check.elapsed().as_secs()
+                );
+                return;
+            }
+        }
+
+        info!("VCS: Force refresh requested");
+        self.refresh_status(cx);
     }
 
     /// Check if a repository is being monitored

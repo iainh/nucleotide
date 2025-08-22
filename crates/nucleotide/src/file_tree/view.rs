@@ -487,7 +487,10 @@ impl FileTreeView {
     }
 
     /// Start async VCS refresh
-    fn start_vcs_refresh(&self, cx: &mut Context<Self>) {
+    fn start_vcs_refresh(&mut self, cx: &mut Context<Self>) {
+        // Mark that we're attempting a refresh to prevent rapid retries
+        self.tree.mark_vcs_refresh_attempt();
+
         if let Some(ref handle) = self.tokio_handle {
             self.start_async_vcs_refresh_with_handle(handle.clone(), cx);
         } else {

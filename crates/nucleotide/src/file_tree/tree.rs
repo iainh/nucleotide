@@ -38,6 +38,8 @@ pub struct FileTree {
     vcs_registry: Arc<DiffProviderRegistry>,
     /// Map from path to git status
     git_status_cache: HashMap<PathBuf, VcsStatus>,
+    /// Last time VCS refresh was attempted (to prevent rapid refresh loops)
+    last_vcs_refresh_attempt: Option<std::time::Instant>,
 }
 
 impl FileTree {
@@ -56,6 +58,7 @@ impl FileTree {
             loading_dirs: HashSet::new(),
             vcs_registry,
             git_status_cache: HashMap::new(),
+            last_vcs_refresh_attempt: None,
         }
     }
 
@@ -729,8 +732,27 @@ impl FileTree {
     }
 
     /// Check if VCS status needs refresh
+    /// Uses rate limiting to prevent excessive refresh attempts
     pub fn needs_vcs_refresh(&self) -> bool {
-        self.git_status_cache.is_empty() && self.is_loaded
+        // Only refresh if loaded and we haven't attempted recently
+        if !self.is_loaded {
+            return false;
+        }
+
+        // Check if we have attempted a refresh recently (within last 5 seconds)
+        if let Some(last_attempt) = self.last_vcs_refresh_attempt {
+            if last_attempt.elapsed().as_secs() < 5 {
+                return false;
+            }
+        }
+
+        // Refresh if cache is empty or if it's been a while since last attempt
+        self.git_status_cache.is_empty()
+    }
+
+    /// Mark that a VCS refresh attempt is starting
+    pub fn mark_vcs_refresh_attempt(&mut self) {
+        self.last_vcs_refresh_attempt = Some(std::time::Instant::now());
     }
 
     /// Get VCS registry and root path for async refresh
