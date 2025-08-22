@@ -262,12 +262,12 @@ impl PickerView {
                     }
 
                     for item_char in item_lower.chars() {
-                        if let Some(q_char) = current_char {
-                            if item_char == q_char {
-                                current_char = query_chars.next();
-                                if current_char.is_none() {
-                                    return true; // All query chars found
-                                }
+                        if let Some(q_char) = current_char
+                            && item_char == q_char
+                        {
+                            current_char = query_chars.next();
+                            if current_char.is_none() {
+                                return true; // All query chars found
                             }
                         }
                     }
@@ -309,12 +309,11 @@ impl PickerView {
         // Clean up preview document before confirming selection
         self.cleanup_preview_document(cx);
 
-        if let Some(idx) = self.filtered_indices.get(self.selected_index) {
-            if let Some(item) = self.items.get(*idx as usize) {
-                if let Some(on_select) = &mut self.on_select {
-                    on_select(item, cx);
-                }
-            }
+        if let Some(idx) = self.filtered_indices.get(self.selected_index)
+            && let Some(item) = self.items.get(*idx as usize)
+            && let Some(on_select) = &mut self.on_select
+        {
+            on_select(item, cx);
         }
     }
 
@@ -760,17 +759,16 @@ impl PickerView {
                         cx.notify();
                     }
                     key if key.len() == 1 => {
-                        if let Some(ch) = key.chars().next() {
-                            if ch.is_alphanumeric()
+                        if let Some(ch) = key.chars().next()
+                            && (ch.is_alphanumeric()
                                 || ch.is_ascii_punctuation()
                                 || ch == ' '
                                 || ch == '/'
                                 || ch == '.'
                                 || ch == '-'
-                                || ch == '_'
-                            {
-                                this.insert_char(ch, cx);
-                            }
+                                || ch == '_')
+                        {
+                            this.insert_char(ch, cx);
                         }
                     }
                     _ => {

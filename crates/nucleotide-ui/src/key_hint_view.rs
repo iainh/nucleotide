@@ -46,19 +46,18 @@ impl KeyHintView {
             let style = theme.get(key);
 
             // For popup backgrounds, use bg color
-            if key.contains("popup") || key == "ui.window" {
-                if let Some(color) = style.bg {
-                    if let Some(hsla) = color_to_hsla(color) {
-                        return hsla;
-                    }
-                }
+            if (key.contains("popup") || key == "ui.window")
+                && let Some(color) = style.bg
+                && let Some(hsla) = color_to_hsla(color)
+            {
+                return hsla;
             }
 
             // For text and other elements, use fg color
-            if let Some(color) = style.fg {
-                if let Some(hsla) = color_to_hsla(color) {
-                    return hsla;
-                }
+            if let Some(color) = style.fg
+                && let Some(hsla) = color_to_hsla(color)
+            {
+                return hsla;
             }
         }
 

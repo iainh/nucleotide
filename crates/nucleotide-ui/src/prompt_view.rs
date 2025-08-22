@@ -282,19 +282,20 @@ impl PromptView {
     }
 
     fn accept_completion(&mut self, cx: &mut Context<Self>) {
-        if self.show_completions && !self.completions.is_empty() {
-            if let Some(completion) = self.completions.get(self.completion_selection) {
-                self.input = completion.text.clone();
-                self.cursor_position = self.input.chars().count();
-                self.show_completions = false;
-                self.original_input = None; // Clear original input since completion is accepted
+        if self.show_completions
+            && !self.completions.is_empty()
+            && let Some(completion) = self.completions.get(self.completion_selection)
+        {
+            self.input = completion.text.clone();
+            self.cursor_position = self.input.chars().count();
+            self.show_completions = false;
+            self.original_input = None; // Clear original input since completion is accepted
 
-                if let Some(on_change) = &mut self.on_change {
-                    on_change(&self.input, cx);
-                }
-
-                cx.notify();
+            if let Some(on_change) = &mut self.on_change {
+                on_change(&self.input, cx);
             }
+
+            cx.notify();
         }
     }
 
@@ -309,28 +310,29 @@ impl PromptView {
         );
 
         // Accept completion first if showing - but only if the user hasn't typed beyond the completion
-        if self.show_completions && !self.completions.is_empty() {
-            if let Some(completion) = self.completions.get(self.completion_selection) {
-                let input_str = self.input.to_string();
-                let completion_str = completion.text.to_string();
+        if self.show_completions
+            && !self.completions.is_empty()
+            && let Some(completion) = self.completions.get(self.completion_selection)
+        {
+            let input_str = self.input.to_string();
+            let completion_str = completion.text.to_string();
 
-                // Only replace input with completion if:
-                // 1. The current input is a prefix of the completion, OR
-                // 2. The completion is longer and starts with the current input
-                let should_accept_completion = input_str.len() <= completion_str.len()
-                    && completion_str.starts_with(&input_str);
+            // Only replace input with completion if:
+            // 1. The current input is a prefix of the completion, OR
+            // 2. The completion is longer and starts with the current input
+            let should_accept_completion =
+                input_str.len() <= completion_str.len() && completion_str.starts_with(&input_str);
 
-                if should_accept_completion {
-                    info!(completion_text = %completion.text, "Replacing input with completion");
-                    self.input = completion.text.clone();
-                    self.cursor_position = self.input.chars().count();
-                } else {
-                    info!(
-                        input_text = %input_str,
-                        completion_text = %completion.text,
-                        "Not accepting completion - user input is beyond completion"
-                    );
-                }
+            if should_accept_completion {
+                info!(completion_text = %completion.text, "Replacing input with completion");
+                self.input = completion.text.clone();
+                self.cursor_position = self.input.chars().count();
+            } else {
+                info!(
+                    input_text = %input_str,
+                    completion_text = %completion.text,
+                    "Not accepting completion - user input is beyond completion"
+                );
             }
         }
 
@@ -496,10 +498,10 @@ impl Render for PromptView {
                         this.insert_char(' ', cx);
                     }
                     key if key.len() == 1 => {
-                        if let Some(ch) = key.chars().next() {
-                            if ch.is_alphanumeric() || ch.is_ascii_punctuation() || ch == ' ' {
-                                this.insert_char(ch, cx);
-                            }
+                        if let Some(ch) = key.chars().next()
+                            && (ch.is_alphanumeric() || ch.is_ascii_punctuation() || ch == ' ')
+                        {
+                            this.insert_char(ch, cx);
                         }
                     }
                     _ => {}

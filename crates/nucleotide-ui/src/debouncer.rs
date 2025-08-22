@@ -88,13 +88,13 @@ where
         }
 
         // Check if we've exceeded max delay
-        if let Some(first) = self.first_input {
-            if now.duration_since(first) >= self.config.max_delay {
-                // Execute immediately and reset
-                self.reset();
-                handler(input);
-                return;
-            }
+        if let Some(first) = self.first_input
+            && now.duration_since(first) >= self.config.max_delay
+        {
+            // Execute immediately and reset
+            self.reset();
+            handler(input);
+            return;
         }
 
         // Schedule delayed execution

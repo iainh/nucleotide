@@ -376,10 +376,8 @@ impl InputValidation {
         let key = event.keystroke.key.as_str();
 
         // Don't handle system function keys
-        if key.starts_with('F') && key.len() <= 3 {
-            if let Ok(_) = key[1..].parse::<u8>() {
-                return false; // Function keys like F1, F2, etc.
-            }
+        if key.starts_with('F') && key.len() <= 3 && key[1..].parse::<u8>().is_ok() {
+            return false; // Function keys like F1, F2, etc.
         }
 
         // Handle most other keys

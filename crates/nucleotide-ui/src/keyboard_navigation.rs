@@ -60,10 +60,10 @@ impl KeyboardNavigationHandler {
         self.item_count = count;
 
         // Adjust focused index if it's out of bounds
-        if let Some(focused) = self.focused_index {
-            if focused >= count {
-                self.focused_index = if count > 0 { Some(count - 1) } else { None };
-            }
+        if let Some(focused) = self.focused_index
+            && focused >= count
+        {
+            self.focused_index = if count > 0 { Some(count - 1) } else { None };
         }
 
         // Remove selected indices that are out of bounds

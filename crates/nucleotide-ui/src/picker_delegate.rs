@@ -284,14 +284,14 @@ impl PickerDelegate for FilePickerDelegate {
     }
 
     fn confirm(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(item_idx) = self.filtered_indices.get(index) {
-            if let Some(item) = self.items.get(*item_idx) {
-                if let Some(on_select) = &self.on_select {
-                    on_select(item.path.clone(), cx);
-                }
-                // Emit event to close picker
-                cx.emit(DismissEvent);
+        if let Some(item_idx) = self.filtered_indices.get(index)
+            && let Some(item) = self.items.get(*item_idx)
+        {
+            if let Some(on_select) = &self.on_select {
+                on_select(item.path.clone(), cx);
             }
+            // Emit event to close picker
+            cx.emit(DismissEvent);
         }
     }
 
@@ -322,12 +322,12 @@ fn fuzzy_match(query: &str, target: &str) -> bool {
     }
 
     for target_char in target.chars() {
-        if let Some(q_char) = current_char {
-            if target_char == q_char {
-                current_char = query_chars.next();
-                if current_char.is_none() {
-                    return true;
-                }
+        if let Some(q_char) = current_char
+            && target_char == q_char
+        {
+            current_char = query_chars.next();
+            if current_char.is_none() {
+                return true;
             }
         }
     }

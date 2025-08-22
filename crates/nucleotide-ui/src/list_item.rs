@@ -430,7 +430,7 @@ impl RenderOnce for ListItem {
 
         // Compute style using the new style system
         let computed_style = compute_component_style(
-            &theme,
+            theme,
             current_state,
             StyleVariant::from(self.variant).as_str(),
             StyleSize::from(self.spacing).as_str(),
@@ -438,7 +438,7 @@ impl RenderOnce for ListItem {
 
         // Check if animations should be enabled
         let enable_animations = is_feature_enabled(cx, |features| features.enable_animations)
-            && should_enable_animations(&theme, current_state);
+            && should_enable_animations(theme, current_state);
 
         let mut base = div()
             .id(self.id)
@@ -460,13 +460,13 @@ impl RenderOnce for ListItem {
         // Apply interactive hover/active states if enabled and not disabled/loading
         if current_state.is_interactive() && enable_animations {
             let hover_style = compute_component_style(
-                &theme,
+                theme,
                 StyleState::Hover,
                 StyleVariant::from(self.variant).as_str(),
                 StyleSize::from(self.spacing).as_str(),
             );
             let active_style = compute_component_style(
-                &theme,
+                theme,
                 StyleState::Active,
                 StyleVariant::from(self.variant).as_str(),
                 StyleSize::from(self.spacing).as_str(),

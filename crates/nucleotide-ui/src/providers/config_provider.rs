@@ -153,7 +153,7 @@ pub struct ViewportConfiguration {
 }
 
 /// Accessibility configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AccessibilityConfiguration {
     /// Screen reader support
     pub screen_reader_support: bool,
@@ -473,19 +473,6 @@ impl Default for ViewportConfiguration {
     }
 }
 
-impl Default for AccessibilityConfiguration {
-    fn default() -> Self {
-        Self {
-            screen_reader_support: false,
-            high_contrast_mode: false,
-            reduced_motion: false,
-            focus_config: FocusConfiguration::default(),
-            keyboard_config: KeyboardConfiguration::default(),
-            text_config: TextConfiguration::default(),
-        }
-    }
-}
-
 impl Default for FocusConfiguration {
     fn default() -> Self {
         Self {
@@ -778,20 +765,20 @@ impl ConfigurationProvider {
     /// Get effective text size based on accessibility settings
     pub fn get_effective_text_size(&self, base_size: Pixels) -> Pixels {
         let scaled_size = px(base_size.0 * self.ui_config.font_scale);
-        let clamped_size = px(scaled_size
+
+        px(scaled_size
             .0
             .max(self.accessibility_config.text_config.min_text_size.0)
-            .min(self.accessibility_config.text_config.max_text_size.0));
-        clamped_size
+            .min(self.accessibility_config.text_config.max_text_size.0))
     }
 
     /// Load configuration from environment variables
     pub fn load_from_env(&mut self) {
         // Font scale
-        if let Ok(scale) = std::env::var("UI_FONT_SCALE") {
-            if let Ok(scale_value) = scale.parse::<f32>() {
-                self.ui_config.font_scale = scale_value;
-            }
+        if let Ok(scale) = std::env::var("UI_FONT_SCALE")
+            && let Ok(scale_value) = scale.parse::<f32>()
+        {
+            self.ui_config.font_scale = scale_value;
         }
 
         // Reduced motion

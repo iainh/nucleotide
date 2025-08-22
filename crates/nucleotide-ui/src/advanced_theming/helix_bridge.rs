@@ -344,12 +344,11 @@ impl HelixThemeBridge {
     /// Load and convert a Helix theme by name
     pub fn load_helix_theme(&mut self, theme_name: &str) -> Result<Theme, HelixBridgeError> {
         // Check cache first
-        if let Some(cached) = self.theme_cache.get(theme_name) {
-            if cached.cached_at.elapsed().unwrap_or_default() < std::time::Duration::from_secs(300)
-            {
-                nucleotide_logging::debug!(theme_name = theme_name, "Retrieved theme from cache");
-                return Ok(cached.nucleotide_theme.clone());
-            }
+        if let Some(cached) = self.theme_cache.get(theme_name)
+            && cached.cached_at.elapsed().unwrap_or_default() < std::time::Duration::from_secs(300)
+        {
+            nucleotide_logging::debug!(theme_name = theme_name, "Retrieved theme from cache");
+            return Ok(cached.nucleotide_theme.clone());
         }
 
         // Discover and find the theme
@@ -441,19 +440,19 @@ impl HelixThemeBridge {
 
         // Map UI colors using reverse mappings
         for (helix_key, nucleotide_key) in &self.color_mappings.ui_mappings {
-            if let Some(color_name) = self.get_color_name_from_nucleotide_key(nucleotide_key) {
-                if let Some(hex_color) = palette.get(color_name) {
-                    ui.insert(helix_key.clone(), hex_color.clone());
-                }
+            if let Some(color_name) = self.get_color_name_from_nucleotide_key(nucleotide_key)
+                && let Some(hex_color) = palette.get(color_name)
+            {
+                ui.insert(helix_key.clone(), hex_color.clone());
             }
         }
 
         // Map syntax colors
         for (helix_key, nucleotide_key) in &self.color_mappings.syntax_mappings {
-            if let Some(color_name) = self.get_color_name_from_nucleotide_key(nucleotide_key) {
-                if let Some(hex_color) = palette.get(color_name) {
-                    syntax.insert(helix_key.clone(), hex_color.clone());
-                }
+            if let Some(color_name) = self.get_color_name_from_nucleotide_key(nucleotide_key)
+                && let Some(hex_color) = palette.get(color_name)
+            {
+                syntax.insert(helix_key.clone(), hex_color.clone());
             }
         }
 
@@ -545,16 +544,15 @@ impl HelixThemeBridge {
             match entry {
                 Ok(entry) => {
                     let path = entry.path();
-                    if let Some(extension) = path.extension() {
-                        if self
+                    if let Some(extension) = path.extension()
+                        && self
                             .discovery_config
                             .theme_extensions
                             .contains(&extension.to_string_lossy().to_string())
-                        {
-                            match self.parse_theme_metadata(&path) {
-                                Ok(discovered) => themes.push(discovered),
-                                Err(error) => errors.push(error),
-                            }
+                    {
+                        match self.parse_theme_metadata(&path) {
+                            Ok(discovered) => themes.push(discovered),
+                            Err(error) => errors.push(error),
                         }
                     }
                 }
@@ -643,10 +641,10 @@ impl HelixThemeBridge {
 
         // Apply color mappings
         for (helix_key, nucleotide_key) in &self.color_mappings.ui_mappings {
-            if let Some(helix_color) = helix_data.ui.get(helix_key) {
-                if let Ok(hsla_color) = self.parse_helix_color(helix_color, &helix_data.palette) {
-                    self.apply_color_to_theme(&mut theme, nucleotide_key, hsla_color);
-                }
+            if let Some(helix_color) = helix_data.ui.get(helix_key)
+                && let Ok(hsla_color) = self.parse_helix_color(helix_color, &helix_data.palette)
+            {
+                self.apply_color_to_theme(&mut theme, nucleotide_key, hsla_color);
             }
         }
 

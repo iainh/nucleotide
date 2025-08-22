@@ -111,7 +111,7 @@ impl ThemeProvider {
         let current_theme = themes
             .get(default_theme_name)
             .cloned()
-            .unwrap_or_else(|| Theme::dark());
+            .unwrap_or_else(Theme::dark);
         let default_name: SharedString = default_theme_name.to_string().into();
 
         Self {
@@ -170,7 +170,7 @@ impl ThemeProvider {
 
         // If we removed the current theme, switch to the first available
         if removed && self.theme_inheritance.first().map(|s| s.as_ref()) == Some(name) {
-            let first_name = self.available_themes.keys().next().map(|s| s.clone());
+            let first_name = self.available_themes.keys().next().cloned();
             if let Some(first_name) = first_name {
                 let first_name_str = first_name.as_ref();
                 self.switch_theme(first_name_str);
@@ -221,10 +221,10 @@ impl ThemeProvider {
     pub fn clear_overrides(&mut self) {
         self.theme_overrides = ThemeOverrides::default();
         // Reapply the base theme
-        if let Some(current_name) = self.theme_inheritance.first() {
-            if let Some(base_theme) = self.available_themes.get(current_name) {
-                self.current_theme = base_theme.clone();
-            }
+        if let Some(current_name) = self.theme_inheritance.first()
+            && let Some(base_theme) = self.available_themes.get(current_name)
+        {
+            self.current_theme = base_theme.clone();
         }
     }
 

@@ -146,7 +146,7 @@ fn merge_styles_additive(mut base: ComputedStyle, overlay: ComputedStyle) -> Com
     base.padding_y = px(base.padding_y.0 + overlay.padding_y.0);
 
     // Multiply opacity
-    base.opacity = base.opacity * overlay.opacity;
+    base.opacity *= overlay.opacity;
 
     // Combine shadows (if both exist)
     match (base.shadow.clone(), overlay.shadow.clone()) {

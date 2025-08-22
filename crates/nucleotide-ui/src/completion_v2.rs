@@ -351,10 +351,10 @@ impl CompletionView {
         match (&self.initial_query, &self.initial_position) {
             (Some(initial_query), Some(initial_pos)) => {
                 // Always refilter if position changed
-                if let Some(new_pos) = new_position {
-                    if new_pos != initial_pos {
-                        return true;
-                    }
+                if let Some(new_pos) = new_position
+                    && new_pos != initial_pos
+                {
+                    return true;
                 }
 
                 // If query is not an extension, refilter
@@ -445,8 +445,7 @@ impl CompletionView {
             let results: Vec<StringMatch> = self
                 .match_candidates
                 .iter()
-                .enumerate()
-                .map(|(_idx, candidate)| StringMatch::new(candidate.id, 100, vec![]))
+                .map(|candidate| StringMatch::new(candidate.id, 100, vec![]))
                 .take(self.max_items)
                 .collect();
 
@@ -482,12 +481,10 @@ impl CompletionView {
         self.filter_task = Some(cx.spawn(async move |_this, _cx| {
             // Use real fuzzy matching
             let config = FuzzyConfig::default();
-            let results =
-                match_strings(candidates, query.clone(), config, max_items, cancel_flag).await;
 
             // For now, return the results
             // TODO: Implement proper entity update mechanism
-            results
+            match_strings(candidates, query.clone(), config, max_items, cancel_flag).await
         }));
 
         cx.notify();

@@ -366,9 +366,8 @@ impl<'a> StyleContext<'a> {
         let base_style = self.compute_base_style();
         let variant_style = self.apply_variant_styles(base_style);
         let state_style = self.apply_state_styles(variant_style);
-        let animated_style = self.apply_animations(state_style);
 
-        animated_style
+        self.apply_animations(state_style)
     }
 
     /// Create an appropriate hover color based on background

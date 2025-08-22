@@ -273,7 +273,7 @@ impl ConditionalRenderer {
 
     /// Render list of optional elements, filtering out None values
     pub fn render_list(elements: Vec<Option<AnyElement>>) -> Vec<AnyElement> {
-        elements.into_iter().filter_map(|e| e).collect()
+        elements.into_iter().flatten().collect()
     }
 }
 
@@ -427,7 +427,7 @@ impl RenderProfiler {
             let duration = start_time.elapsed();
             self.timings
                 .entry(name.to_string())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(duration);
             Some(duration)
         } else {

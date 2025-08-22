@@ -24,14 +24,14 @@ impl InfoBoxView {
 
     #[allow(dead_code)]
     fn handle_event(&mut self, ev: &AppEvent, cx: &mut Context<Self>) {
-        if let AppEvent::Ui(UiEvent::OverlayShown { overlay_type, .. }) = ev {
-            if matches!(
+        if let AppEvent::Ui(UiEvent::OverlayShown { overlay_type, .. }) = ev
+            && matches!(
                 *overlay_type,
                 nucleotide_events::v2::ui::OverlayType::Tooltip
-            ) {
-                // Handle info overlay shown
-                cx.notify();
-            }
+            )
+        {
+            // Handle info overlay shown
+            cx.notify();
         }
     }
 

@@ -402,15 +402,15 @@ impl AdvancedThemeManager {
 
     /// Get the current theme name
     pub fn get_current_theme_name(&self) -> Option<SharedString> {
-        if let Ok(current_theme) = self.current_theme.read() {
-            if let Ok(registry) = self.theme_registry.read() {
-                // Find theme name by comparing themes
-                for (name, theme) in &registry.themes {
-                    // Simple comparison - in a real implementation you might want
-                    // to store the current theme name separately
-                    if theme.is_dark() == current_theme.is_dark() {
-                        return Some(name.clone());
-                    }
+        if let Ok(current_theme) = self.current_theme.read()
+            && let Ok(registry) = self.theme_registry.read()
+        {
+            // Find theme name by comparing themes
+            for (name, theme) in &registry.themes {
+                // Simple comparison - in a real implementation you might want
+                // to store the current theme name separately
+                if theme.is_dark() == current_theme.is_dark() {
+                    return Some(name.clone());
                 }
             }
         }
@@ -465,7 +465,7 @@ impl AdvancedThemeManager {
                     || metadata
                         .description
                         .as_ref()
-                        .map_or(false, |d| d.to_lowercase().contains(&query_lower))
+                        .is_some_and(|d| d.to_lowercase().contains(&query_lower))
                     || metadata
                         .tags
                         .iter()

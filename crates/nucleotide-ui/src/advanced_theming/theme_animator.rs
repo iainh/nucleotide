@@ -221,10 +221,11 @@ impl ThemeAnimator {
 
         let actual_duration = if self.config.respect_reduced_motion {
             // Check system preferences for reduced motion
-            self.check_reduced_motion_preference()
-                .unwrap_or(false)
-                .then(|| Duration::ZERO)
-                .unwrap_or(duration)
+            if self.check_reduced_motion_preference().unwrap_or(false) {
+                Duration::ZERO
+            } else {
+                duration
+            }
         } else {
             duration
         };

@@ -24,7 +24,7 @@ impl LayoutHelpers {
         }
 
         let columns = preferred_columns.min(item_count);
-        let rows = (item_count + columns - 1) / columns; // Ceiling division
+        let rows = item_count.div_ceil(columns); // Ceiling division
         (columns, rows)
     }
 
@@ -339,8 +339,7 @@ impl TextHelpers {
     /// Generate a human-readable label from a snake_case or kebab-case string
     pub fn humanize_label(input: &str) -> String {
         input
-            .replace('_', " ")
-            .replace('-', " ")
+            .replace(['_', '-'], " ")
             .split(' ')
             .map(|word| {
                 let mut chars = word.chars();

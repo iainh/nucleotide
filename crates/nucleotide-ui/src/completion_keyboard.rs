@@ -86,11 +86,11 @@ impl TriggerDetector {
         }
 
         // Check for trigger characters
-        if let Some(last_char) = input.chars().nth(cursor_pos.saturating_sub(1)) {
-            if self.config.trigger_characters.contains(&last_char) {
-                self.record_trigger();
-                return true;
-            }
+        if let Some(last_char) = input.chars().nth(cursor_pos.saturating_sub(1))
+            && self.config.trigger_characters.contains(&last_char)
+        {
+            self.record_trigger();
+            return true;
         }
 
         // Check for minimum length

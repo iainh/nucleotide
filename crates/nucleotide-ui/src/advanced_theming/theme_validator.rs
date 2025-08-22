@@ -14,7 +14,7 @@ pub struct ThemeValidator {
 }
 
 /// Validation rules configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ValidationRules {
     /// Color validation rules
     pub color_rules: ColorValidationRules,
@@ -174,17 +174,6 @@ pub enum IssueCategory {
     Consistency,
     Performance,
     Usability,
-}
-
-impl Default for ValidationRules {
-    fn default() -> Self {
-        Self {
-            color_rules: ColorValidationRules::default(),
-            size_rules: SizeValidationRules::default(),
-            accessibility_rules: AccessibilityValidationRules::default(),
-            consistency_rules: ConsistencyValidationRules::default(),
-        }
-    }
 }
 
 impl Default for ColorValidationRules {
@@ -432,23 +421,23 @@ impl ThemeValidator {
 
         // Check maximum size limits
         for (size_name, max_limit) in &self.rules.size_rules.max_size_limits {
-            if let Some(actual_size) = self.get_size_by_name(theme, size_name) {
-                if actual_size.0 > max_limit.0 {
-                    issues.push(ValidationIssue {
-                        severity: IssueSeverity::Warning,
-                        category: IssueCategory::Size,
-                        description: format!(
-                            "Size {} ({:.1}px) exceeds recommended maximum ({:.1}px)",
-                            size_name, actual_size.0, max_limit.0
-                        ),
-                        affected_element: Some(size_name.clone()),
-                        suggested_fix: Some(format!(
-                            "Consider reducing {} to {:.1}px or less",
-                            size_name, max_limit.0
-                        )),
-                        wcag_guideline: None,
-                    });
-                }
+            if let Some(actual_size) = self.get_size_by_name(theme, size_name)
+                && actual_size.0 > max_limit.0
+            {
+                issues.push(ValidationIssue {
+                    severity: IssueSeverity::Warning,
+                    category: IssueCategory::Size,
+                    description: format!(
+                        "Size {} ({:.1}px) exceeds recommended maximum ({:.1}px)",
+                        size_name, actual_size.0, max_limit.0
+                    ),
+                    affected_element: Some(size_name.clone()),
+                    suggested_fix: Some(format!(
+                        "Consider reducing {} to {:.1}px or less",
+                        size_name, max_limit.0
+                    )),
+                    wcag_guideline: None,
+                });
             }
         }
 

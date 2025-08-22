@@ -402,6 +402,12 @@ pub struct MarkdownRenderer {
     cache: HashMap<String, String>,
 }
 
+impl Default for MarkdownRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarkdownRenderer {
     pub fn new() -> Self {
         Self {
@@ -487,6 +493,12 @@ pub struct DocumentationPanel {
     width: f32,
 }
 
+impl Default for DocumentationPanel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocumentationPanel {
     pub fn new() -> Self {
         Self {
@@ -555,7 +567,7 @@ impl Render for DocumentationPanel {
                     .px_3()
                     .py_2()
                     // TODO: Add scroll tracking when API is available
-                    .child(self.render_content(&tokens)),
+                    .child(self.render_content(tokens)),
             )
     }
 }

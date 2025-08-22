@@ -20,7 +20,7 @@ where
 {
     FEATURE_FLAGS
         .get()
-        .and_then(|flags| flags.read().ok().map(|guard| f(&*guard)))
+        .and_then(|flags| flags.read().ok().map(|guard| f(&guard)))
 }
 
 /// Update feature flags
@@ -28,11 +28,11 @@ pub fn update_feature_flags<F>(f: F) -> bool
 where
     F: FnOnce(&mut FeatureFlags),
 {
-    FEATURE_FLAGS.get().map_or(false, |flags| {
+    FEATURE_FLAGS.get().is_some_and(|flags| {
         flags
             .write()
             .map(|mut guard| {
-                f(&mut *guard);
+                f(&mut guard);
                 true
             })
             .unwrap_or(false)
@@ -40,7 +40,7 @@ where
 }
 
 /// Feature flag configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FeatureFlags {
     /// UI feature flags
     pub ui_features: UIFeatures,
@@ -50,17 +50,6 @@ pub struct FeatureFlags {
     pub experimental_features: ExperimentalFeatures,
     /// Custom runtime flags
     pub runtime_flags: HashMap<SharedString, bool>,
-}
-
-impl Default for FeatureFlags {
-    fn default() -> Self {
-        Self {
-            ui_features: UIFeatures::default(),
-            performance_features: PerformanceFeatures::default(),
-            experimental_features: ExperimentalFeatures::default(),
-            runtime_flags: HashMap::new(),
-        }
-    }
 }
 
 impl FeatureFlags {
@@ -374,10 +363,10 @@ impl FeatureConfig {
         }
 
         // Experimental features
-        if let Ok(val) = std::env::var("NUCLEOTIDE_ENABLE_EXPERIMENTAL") {
-            if val.parse().unwrap_or(false) {
-                flags.experimental_features = ExperimentalFeatures::all_enabled();
-            }
+        if let Ok(val) = std::env::var("NUCLEOTIDE_ENABLE_EXPERIMENTAL")
+            && val.parse().unwrap_or(false)
+        {
+            flags.experimental_features = ExperimentalFeatures::all_enabled();
         }
 
         flags

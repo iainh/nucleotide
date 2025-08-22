@@ -446,21 +446,17 @@ impl EventHandlingProvider {
     /// Emit a custom event
     pub fn emit_custom_event(&self, event: CustomEventDetails) -> bool {
         // Validate the event if filtering is enabled
-        if self.filter_config.enable_filtering {
-            if !self.validate_event(&event) {
-                return false;
-            }
+        if self.filter_config.enable_filtering && !self.validate_event(&event) {
+            return false;
         }
 
         // Check rate limiting
-        if self.filter_config.rate_limiting.enabled {
-            if !self.check_rate_limit(&event.event_type) {
-                nucleotide_logging::warn!(
-                    event_type = %event.event_type,
-                    "Event dropped due to rate limiting"
-                );
-                return false;
-            }
+        if self.filter_config.rate_limiting.enabled && !self.check_rate_limit(&event.event_type) {
+            nucleotide_logging::warn!(
+                event_type = %event.event_type,
+                "Event dropped due to rate limiting"
+            );
+            return false;
         }
 
         if let Ok(mut custom_events) = self.custom_events.write() {
@@ -489,10 +485,10 @@ impl EventHandlingProvider {
 
             // Trim queue if necessary
             let max_size = custom_events.scheduling_config.max_queue_size;
-            if let Some(queue) = custom_events.event_queues.get_mut(&priority) {
-                if queue.len() > max_size {
-                    queue.drain(0..queue.len() - max_size);
-                }
+            if let Some(queue) = custom_events.event_queues.get_mut(&priority)
+                && queue.len() > max_size
+            {
+                queue.drain(0..queue.len() - max_size);
             }
 
             true
@@ -543,15 +539,14 @@ impl EventHandlingProvider {
 
     /// Dispatch a custom event to listeners
     fn dispatch_custom_event(&self, event: &CustomEventDetails) -> bool {
-        if let Ok(listeners) = self.global_listeners.read() {
-            if let Some(event_listeners) = listeners.custom_listeners.get(event.event_type.as_ref())
-            {
-                for listener in event_listeners {
-                    match listener(event) {
-                        EventResult::HandledAndStop => return true,
-                        EventResult::PreventDefault => return true,
-                        _ => continue,
-                    }
+        if let Ok(listeners) = self.global_listeners.read()
+            && let Some(event_listeners) = listeners.custom_listeners.get(event.event_type.as_ref())
+        {
+            for listener in event_listeners {
+                match listener(event) {
+                    EventResult::HandledAndStop => return true,
+                    EventResult::PreventDefault => return true,
+                    _ => continue,
                 }
             }
         }
@@ -572,25 +567,23 @@ impl EventHandlingProvider {
 
         // Apply validation rules
         for rule in &self.filter_config.validation_rules {
-            if rule.event_type == event.event_type {
-                if !self.apply_validation_rule(rule, event) {
-                    match rule.error_action {
-                        ValidationErrorAction::Log => {
-                            nucleotide_logging::warn!(
-                                event_type = %event.event_type,
-                                rule = ?rule.validator,
-                                "Event validation failed"
-                            );
-                        }
-                        ValidationErrorAction::Drop => return false,
-                        ValidationErrorAction::Throw => {
-                            // In a real implementation, you might want to panic or return an error
-                            nucleotide_logging::error!(
-                                event_type = %event.event_type,
-                                "Event validation failed with throw action"
-                            );
-                            return false;
-                        }
+            if rule.event_type == event.event_type && !self.apply_validation_rule(rule, event) {
+                match rule.error_action {
+                    ValidationErrorAction::Log => {
+                        nucleotide_logging::warn!(
+                            event_type = %event.event_type,
+                            rule = ?rule.validator,
+                            "Event validation failed"
+                        );
+                    }
+                    ValidationErrorAction::Drop => return false,
+                    ValidationErrorAction::Throw => {
+                        // In a real implementation, you might want to panic or return an error
+                        nucleotide_logging::error!(
+                            event_type = %event.event_type,
+                            "Event validation failed with throw action"
+                        );
+                        return false;
                     }
                 }
             }
@@ -617,7 +610,7 @@ impl EventHandlingProvider {
                 if let CustomEventData::Object(ref data) = event.data {
                     type_map.iter().all(|(field, expected_type)| {
                         data.get(field)
-                            .map_or(true, |value| self.check_data_type(value, *expected_type))
+                            .is_none_or(|value| self.check_data_type(value, *expected_type))
                     })
                 } else {
                     true

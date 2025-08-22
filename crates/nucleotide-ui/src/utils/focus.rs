@@ -20,7 +20,7 @@ where
 {
     FOCUS_MANAGER
         .get()
-        .and_then(|manager| manager.lock().ok().map(|mut guard| f(&mut *guard)))
+        .and_then(|manager| manager.lock().ok().map(|mut guard| f(&mut guard)))
 }
 
 /// Focus direction for navigation
@@ -202,6 +202,12 @@ pub struct FocusManager {
     trap_focus: Option<SharedString>,
 }
 
+impl Default for FocusManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FocusManager {
     /// Create a new focus manager
     pub fn new() -> Self {
@@ -217,24 +223,24 @@ impl FocusManager {
     /// Set the currently focused element
     pub fn set_focus(&mut self, element_id: ElementId) {
         // Add to history if different from current
-        if self.current_focus != Some(element_id.clone()) {
-            if let Some(current) = &self.current_focus {
-                self.focus_history.push(current.clone());
+        if self.current_focus != Some(element_id.clone())
+            && let Some(current) = &self.current_focus
+        {
+            self.focus_history.push(current.clone());
 
-                // Keep history limited
-                if self.focus_history.len() > 10 {
-                    self.focus_history.remove(0);
-                }
+            // Keep history limited
+            if self.focus_history.len() > 10 {
+                self.focus_history.remove(0);
             }
         }
 
         self.current_focus = Some(element_id.clone());
 
         // Update focus group active element
-        if let Some(group_id) = self.element_to_group.get(&element_id) {
-            if let Some(group) = self.focus_groups.get_mut(group_id) {
-                group.set_active(&element_id);
-            }
+        if let Some(group_id) = self.element_to_group.get(&element_id)
+            && let Some(group) = self.focus_groups.get_mut(group_id)
+        {
+            group.set_active(&element_id);
         }
 
         nucleotide_logging::debug!(
@@ -306,10 +312,10 @@ impl FocusManager {
         };
 
         // Check focus trap
-        if let Some(trap_group) = &self.trap_focus {
-            if trap_group != group_id {
-                return false; // Can't navigate outside trapped group
-            }
+        if let Some(trap_group) = &self.trap_focus
+            && trap_group != group_id
+        {
+            return false; // Can't navigate outside trapped group
         }
 
         if let Some(next_element) = group.next_element(direction) {
@@ -346,10 +352,10 @@ impl FocusManager {
 
     /// Remove element from its group
     pub fn remove_element(&mut self, element_id: &ElementId) {
-        if let Some(group_id) = self.element_to_group.remove(element_id) {
-            if let Some(group) = self.focus_groups.get_mut(&group_id) {
-                group.remove_element(element_id);
-            }
+        if let Some(group_id) = self.element_to_group.remove(element_id)
+            && let Some(group) = self.focus_groups.get_mut(&group_id)
+        {
+            group.remove_element(element_id);
         }
 
         // Clear focus if this element was focused

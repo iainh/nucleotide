@@ -111,11 +111,11 @@ impl<T: Clone> ResponsiveValue<T> {
         let mut best_breakpoint = None;
 
         for (breakpoint, value) in &self.values {
-            if *breakpoint <= current_breakpoint {
-                if best_breakpoint.is_none() || *breakpoint > best_breakpoint.unwrap() {
-                    best_match = Some(value);
-                    best_breakpoint = Some(*breakpoint);
-                }
+            if *breakpoint <= current_breakpoint
+                && (best_breakpoint.is_none() || *breakpoint > best_breakpoint.unwrap())
+            {
+                best_match = Some(value);
+                best_breakpoint = Some(*breakpoint);
             }
         }
 

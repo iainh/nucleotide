@@ -32,7 +32,7 @@ where
 {
     PROVIDER_CONTEXT
         .get()
-        .and_then(|context| context.read().ok().map(|guard| f(&*guard)))
+        .and_then(|context| context.read().ok().map(|guard| f(&guard)))
 }
 
 /// Update provider context
@@ -40,11 +40,11 @@ pub fn update_provider_context<F>(f: F) -> bool
 where
     F: FnOnce(&mut ProviderContext),
 {
-    PROVIDER_CONTEXT.get().map_or(false, |context| {
+    PROVIDER_CONTEXT.get().is_some_and(|context| {
         context
             .write()
             .map(|mut guard| {
-                f(&mut *guard);
+                f(&mut guard);
                 true
             })
             .unwrap_or(false)
@@ -68,6 +68,12 @@ pub struct ProviderScopeId(usize);
 pub struct ProviderScope {
     providers: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     parent_scope: Option<ProviderScopeId>,
+}
+
+impl Default for ProviderContext {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ProviderContext {
@@ -139,10 +145,10 @@ impl ProviderContext {
         let type_id = TypeId::of::<T>();
 
         // First check current scope and walk up the hierarchy
-        if let Some(scope_id) = self.active_scope {
-            if let Some(provider) = self.find_provider_in_hierarchy(type_id, scope_id) {
-                return provider.downcast_ref::<T>();
-            }
+        if let Some(scope_id) = self.active_scope
+            && let Some(provider) = self.find_provider_in_hierarchy(type_id, scope_id)
+        {
+            return provider.downcast_ref::<T>();
         }
 
         // Fall back to global providers
@@ -172,10 +178,10 @@ impl ProviderContext {
     /// Remove a scope and clean up
     pub fn remove_scope(&mut self, scope_id: ProviderScopeId) {
         // Update active scope if it's being removed
-        if self.active_scope == Some(scope_id) {
-            if let Some(scope) = self.provider_hierarchy.get(scope_id.0) {
-                self.active_scope = scope.parent_scope;
-            }
+        if self.active_scope == Some(scope_id)
+            && let Some(scope) = self.provider_hierarchy.get(scope_id.0)
+        {
+            self.active_scope = scope.parent_scope;
         }
 
         // Note: We don't actually remove from the vec to maintain indices

@@ -431,31 +431,31 @@ impl GlobalInputDispatcher {
         );
 
         // 1. Check input contexts (highest priority)
-        if let Some(result) = self.check_input_contexts(&key_string, event) {
-            if result != EventResult::NotHandled {
-                return result;
-            }
+        if let Some(result) = self.check_input_contexts(&key_string, event)
+            && result != EventResult::NotHandled
+        {
+            return result;
         }
 
         // 2. Check context-specific shortcuts
-        if let Some(result) = self.check_context_shortcuts(&key_string, event) {
-            if result != EventResult::NotHandled {
-                return result;
-            }
+        if let Some(result) = self.check_context_shortcuts(&key_string, event)
+            && result != EventResult::NotHandled
+        {
+            return result;
         }
 
         // 3. Check global shortcuts
-        if let Some(result) = self.check_global_shortcuts(&key_string, event) {
-            if result != EventResult::NotHandled {
-                return result;
-            }
+        if let Some(result) = self.check_global_shortcuts(&key_string, event)
+            && result != EventResult::NotHandled
+        {
+            return result;
         }
 
         // 4. Handle focus group navigation
-        if let Some(result) = self.handle_focus_navigation(&key_string, event) {
-            if result != EventResult::NotHandled {
-                return result;
-            }
+        if let Some(result) = self.handle_focus_navigation(&key_string, event)
+            && result != EventResult::NotHandled
+        {
+            return result;
         }
 
         EventResult::NotHandled
@@ -505,16 +505,12 @@ impl GlobalInputDispatcher {
     fn check_context_shortcuts(&self, key: &str, event: &KeyDownEvent) -> Option<EventResult> {
         if let Ok(registry) = self.shortcuts.read() {
             // Get current context (top of stack)
-            if let Ok(contexts) = self.contexts.read() {
-                if let Some(current_context) = contexts.context_stack.last() {
-                    if let Some(context_shortcuts) =
-                        registry.context_shortcuts.get(&current_context.id)
-                    {
-                        if let Some(shortcut) = context_shortcuts.get(key) {
-                            return Some(self.execute_shortcut_action(&shortcut.action, event));
-                        }
-                    }
-                }
+            if let Ok(contexts) = self.contexts.read()
+                && let Some(current_context) = contexts.context_stack.last()
+                && let Some(context_shortcuts) = registry.context_shortcuts.get(&current_context.id)
+                && let Some(shortcut) = context_shortcuts.get(key)
+            {
+                return Some(self.execute_shortcut_action(&shortcut.action, event));
             }
         }
         None
@@ -522,10 +518,10 @@ impl GlobalInputDispatcher {
 
     /// Check global shortcuts
     fn check_global_shortcuts(&self, key: &str, event: &KeyDownEvent) -> Option<EventResult> {
-        if let Ok(registry) = self.shortcuts.read() {
-            if let Some(shortcut) = registry.global_shortcuts.get(key) {
-                return Some(self.execute_shortcut_action(&shortcut.action, event));
-            }
+        if let Ok(registry) = self.shortcuts.read()
+            && let Some(shortcut) = registry.global_shortcuts.get(key)
+        {
+            return Some(self.execute_shortcut_action(&shortcut.action, event));
         }
         None
     }
@@ -590,45 +586,41 @@ impl GlobalInputDispatcher {
 
     /// Focus next element in current group
     fn focus_next(&self) {
-        if let Ok(mut manager) = self.focus_groups.write() {
-            if let Some(active_group_id) = manager.active_group.clone() {
-                if let Some(group) = manager.groups.get_mut(&active_group_id) {
-                    if let Some(current_index) = group.active_element {
-                        let next_index = (current_index + 1) % group.elements.len();
-                        group.active_element = Some(next_index);
-                        nucleotide_logging::debug!(
-                            group = active_group_id,
-                            from_index = current_index,
-                            to_index = next_index,
-                            "Focus moved to next element"
-                        );
-                    }
-                }
-            }
+        if let Ok(mut manager) = self.focus_groups.write()
+            && let Some(active_group_id) = manager.active_group.clone()
+            && let Some(group) = manager.groups.get_mut(&active_group_id)
+            && let Some(current_index) = group.active_element
+        {
+            let next_index = (current_index + 1) % group.elements.len();
+            group.active_element = Some(next_index);
+            nucleotide_logging::debug!(
+                group = active_group_id,
+                from_index = current_index,
+                to_index = next_index,
+                "Focus moved to next element"
+            );
         }
     }
 
     /// Focus previous element in current group
     fn focus_previous(&self) {
-        if let Ok(mut manager) = self.focus_groups.write() {
-            if let Some(active_group_id) = manager.active_group.clone() {
-                if let Some(group) = manager.groups.get_mut(&active_group_id) {
-                    if let Some(current_index) = group.active_element {
-                        let prev_index = if current_index == 0 {
-                            group.elements.len() - 1
-                        } else {
-                            current_index - 1
-                        };
-                        group.active_element = Some(prev_index);
-                        nucleotide_logging::debug!(
-                            group = active_group_id,
-                            from_index = current_index,
-                            to_index = prev_index,
-                            "Focus moved to previous element"
-                        );
-                    }
-                }
-            }
+        if let Ok(mut manager) = self.focus_groups.write()
+            && let Some(active_group_id) = manager.active_group.clone()
+            && let Some(group) = manager.groups.get_mut(&active_group_id)
+            && let Some(current_index) = group.active_element
+        {
+            let prev_index = if current_index == 0 {
+                group.elements.len() - 1
+            } else {
+                current_index - 1
+            };
+            group.active_element = Some(prev_index);
+            nucleotide_logging::debug!(
+                group = active_group_id,
+                from_index = current_index,
+                to_index = prev_index,
+                "Focus moved to previous element"
+            );
         }
     }
 
@@ -695,44 +687,43 @@ impl GlobalInputDispatcher {
     fn navigate_focus(&self, direction: NavigationDirection) {
         nucleotide_logging::debug!(direction = ?direction, "Navigating focus");
 
-        if let Ok(mut manager) = self.focus_groups.write() {
-            if let Some(active_group_id) = manager.active_group.clone() {
-                if let Some(group) = manager.groups.get_mut(&active_group_id) {
-                    match direction {
-                        NavigationDirection::Up | NavigationDirection::Previous => {
-                            self.navigate_to_previous_element(group);
-                        }
-                        NavigationDirection::Down | NavigationDirection::Next => {
-                            self.navigate_to_next_element(group);
-                        }
-                        NavigationDirection::First => {
-                            if !group.elements.is_empty() {
-                                group.active_element = Some(0);
-                                nucleotide_logging::debug!(
-                                    group = active_group_id,
-                                    element_index = 0,
-                                    "Focused first element in group"
-                                );
-                            }
-                        }
-                        NavigationDirection::Last => {
-                            if !group.elements.is_empty() {
-                                let last_index = group.elements.len() - 1;
-                                group.active_element = Some(last_index);
-                                nucleotide_logging::debug!(
-                                    group = active_group_id,
-                                    element_index = last_index,
-                                    "Focused last element in group"
-                                );
-                            }
-                        }
-                        NavigationDirection::Left => {
-                            self.navigate_to_left_panel(&mut manager);
-                        }
-                        NavigationDirection::Right => {
-                            self.navigate_to_right_panel(&mut manager);
-                        }
+        if let Ok(mut manager) = self.focus_groups.write()
+            && let Some(active_group_id) = manager.active_group.clone()
+            && let Some(group) = manager.groups.get_mut(&active_group_id)
+        {
+            match direction {
+                NavigationDirection::Up | NavigationDirection::Previous => {
+                    self.navigate_to_previous_element(group);
+                }
+                NavigationDirection::Down | NavigationDirection::Next => {
+                    self.navigate_to_next_element(group);
+                }
+                NavigationDirection::First => {
+                    if !group.elements.is_empty() {
+                        group.active_element = Some(0);
+                        nucleotide_logging::debug!(
+                            group = active_group_id,
+                            element_index = 0,
+                            "Focused first element in group"
+                        );
                     }
+                }
+                NavigationDirection::Last => {
+                    if !group.elements.is_empty() {
+                        let last_index = group.elements.len() - 1;
+                        group.active_element = Some(last_index);
+                        nucleotide_logging::debug!(
+                            group = active_group_id,
+                            element_index = last_index,
+                            "Focused last element in group"
+                        );
+                    }
+                }
+                NavigationDirection::Left => {
+                    self.navigate_to_left_panel(&mut manager);
+                }
+                NavigationDirection::Right => {
+                    self.navigate_to_right_panel(&mut manager);
                 }
             }
         }
@@ -750,7 +741,7 @@ impl GlobalInputDispatcher {
             // Skip disabled elements
             let start_index = prev_index;
             loop {
-                if group.elements.get(prev_index).map_or(false, |e| e.enabled) {
+                if group.elements.get(prev_index).is_some_and(|e| e.enabled) {
                     group.active_element = Some(prev_index);
                     nucleotide_logging::debug!(
                         group = group.id,
@@ -783,7 +774,7 @@ impl GlobalInputDispatcher {
             // Skip disabled elements
             let start_index = next_index;
             loop {
-                if group.elements.get(next_index).map_or(false, |e| e.enabled) {
+                if group.elements.get(next_index).is_some_and(|e| e.enabled) {
                     group.active_element = Some(next_index);
                     nucleotide_logging::debug!(
                         group = group.id,
@@ -819,16 +810,17 @@ impl GlobalInputDispatcher {
             let mut best_group: Option<(String, FocusPriority)> = None;
 
             for (group_id, &priority) in &manager.priorities {
-                if *group_id != current_group_id && priority < current_priority {
-                    if let Some(group) = manager.groups.get(group_id) {
-                        if group.enabled && !group.elements.is_empty() {
-                            match &best_group {
-                                None => best_group = Some((group_id.clone(), priority)),
-                                Some((_, best_priority)) => {
-                                    if priority > *best_priority {
-                                        best_group = Some((group_id.clone(), priority));
-                                    }
-                                }
+                if *group_id != current_group_id
+                    && priority < current_priority
+                    && let Some(group) = manager.groups.get(group_id)
+                    && group.enabled
+                    && !group.elements.is_empty()
+                {
+                    match &best_group {
+                        None => best_group = Some((group_id.clone(), priority)),
+                        Some((_, best_priority)) => {
+                            if priority > *best_priority {
+                                best_group = Some((group_id.clone(), priority));
                             }
                         }
                     }
@@ -864,16 +856,17 @@ impl GlobalInputDispatcher {
             let mut best_group: Option<(String, FocusPriority)> = None;
 
             for (group_id, &priority) in &manager.priorities {
-                if *group_id != current_group_id && priority > current_priority {
-                    if let Some(group) = manager.groups.get(group_id) {
-                        if group.enabled && !group.elements.is_empty() {
-                            match &best_group {
-                                None => best_group = Some((group_id.clone(), priority)),
-                                Some((_, best_priority)) => {
-                                    if priority < *best_priority {
-                                        best_group = Some((group_id.clone(), priority));
-                                    }
-                                }
+                if *group_id != current_group_id
+                    && priority > current_priority
+                    && let Some(group) = manager.groups.get(group_id)
+                    && group.enabled
+                    && !group.elements.is_empty()
+                {
+                    match &best_group {
+                        None => best_group = Some((group_id.clone(), priority)),
+                        Some((_, best_priority)) => {
+                            if priority < *best_priority {
+                                best_group = Some((group_id.clone(), priority));
                             }
                         }
                     }
@@ -906,11 +899,11 @@ impl GlobalInputDispatcher {
             }
 
             // Fall back to Any handler if available
-            if target != DismissTarget::Any {
-                if let Some(handler) = handlers.get(&DismissTarget::Any) {
-                    handler();
-                    return;
-                }
+            if target != DismissTarget::Any
+                && let Some(handler) = handlers.get(&DismissTarget::Any)
+            {
+                handler();
+                return;
             }
         }
 
@@ -1031,37 +1024,37 @@ impl GlobalInputDispatcher {
 
     /// Push an input context onto the stack
     pub fn push_context(&self, context_id: &str) {
-        if let Ok(mut manager) = self.contexts.write() {
-            if let Some(definition) = manager.contexts.get(context_id) {
-                let context = InputContext {
-                    id: context_id.to_string(),
-                    name: definition.name.clone(),
-                    priority: definition.default_priority,
-                    blocks_default: false,
-                    custom_handlers: HashMap::new(),
-                };
-                manager.context_stack.push(context);
+        if let Ok(mut manager) = self.contexts.write()
+            && let Some(definition) = manager.contexts.get(context_id)
+        {
+            let context = InputContext {
+                id: context_id.to_string(),
+                name: definition.name.clone(),
+                priority: definition.default_priority,
+                blocks_default: false,
+                custom_handlers: HashMap::new(),
+            };
+            manager.context_stack.push(context);
 
-                nucleotide_logging::debug!(
-                    context_id = context_id,
-                    stack_depth = manager.context_stack.len(),
-                    "Pushed input context"
-                );
-            }
+            nucleotide_logging::debug!(
+                context_id = context_id,
+                stack_depth = manager.context_stack.len(),
+                "Pushed input context"
+            );
         }
     }
 
     /// Pop the top input context from the stack
     pub fn pop_context(&self) -> Option<String> {
-        if let Ok(mut manager) = self.contexts.write() {
-            if let Some(context) = manager.context_stack.pop() {
-                nucleotide_logging::debug!(
-                    context_id = context.id,
-                    stack_depth = manager.context_stack.len(),
-                    "Popped input context"
-                );
-                return Some(context.id);
-            }
+        if let Ok(mut manager) = self.contexts.write()
+            && let Some(context) = manager.context_stack.pop()
+        {
+            nucleotide_logging::debug!(
+                context_id = context.id,
+                stack_depth = manager.context_stack.len(),
+                "Popped input context"
+            );
+            return Some(context.id);
         }
         None
     }
@@ -1114,45 +1107,41 @@ impl GlobalInputDispatcher {
 
     /// Get the currently active focus group information for accessibility
     pub fn get_active_focus_group(&self) -> Option<FocusGroupInfo> {
-        if let Ok(manager) = self.focus_groups.read() {
-            if let Some(group_id) = &manager.active_group {
-                if let Some(group) = manager.groups.get(group_id) {
-                    return Some(FocusGroupInfo {
-                        id: group.id.clone(),
-                        name: group.name.clone(),
-                        priority: group.priority,
-                        active_element_index: group.active_element,
-                        total_elements: group.elements.len(),
-                        enabled: group.enabled,
-                    });
-                }
-            }
+        if let Ok(manager) = self.focus_groups.read()
+            && let Some(group_id) = &manager.active_group
+            && let Some(group) = manager.groups.get(group_id)
+        {
+            return Some(FocusGroupInfo {
+                id: group.id.clone(),
+                name: group.name.clone(),
+                priority: group.priority,
+                active_element_index: group.active_element,
+                total_elements: group.elements.len(),
+                enabled: group.enabled,
+            });
         }
         None
     }
 
     /// Get information about the currently focused element for accessibility
     pub fn get_focused_element_info(&self) -> Option<FocusedElementInfo> {
-        if let Ok(manager) = self.focus_groups.read() {
-            if let Some(group_id) = &manager.active_group {
-                if let Some(group) = manager.groups.get(group_id) {
-                    if let Some(element_index) = group.active_element {
-                        if let Some(element) = group.elements.get(element_index) {
-                            return Some(FocusedElementInfo {
-                                element_id: element.id.clone(),
-                                element_name: element.name.clone(),
-                                element_type: element.element_type,
-                                tab_index: element.tab_index,
-                                enabled: element.enabled,
-                                group_id: group.id.clone(),
-                                group_name: group.name.clone(),
-                                position_in_group: element_index + 1,
-                                total_in_group: group.elements.len(),
-                            });
-                        }
-                    }
-                }
-            }
+        if let Ok(manager) = self.focus_groups.read()
+            && let Some(group_id) = &manager.active_group
+            && let Some(group) = manager.groups.get(group_id)
+            && let Some(element_index) = group.active_element
+            && let Some(element) = group.elements.get(element_index)
+        {
+            return Some(FocusedElementInfo {
+                element_id: element.id.clone(),
+                element_name: element.name.clone(),
+                element_type: element.element_type,
+                tab_index: element.tab_index,
+                enabled: element.enabled,
+                group_id: group.id.clone(),
+                group_name: group.name.clone(),
+                position_in_group: element_index + 1,
+                total_in_group: group.elements.len(),
+            });
         }
         None
     }
@@ -1171,7 +1160,7 @@ impl GlobalInputDispatcher {
 
         if let Ok(manager) = self.focus_groups.read() {
             // Check for available focus groups
-            for (_group_id, group) in &manager.groups {
+            for group in manager.groups.values() {
                 if group.enabled && !group.elements.is_empty() {
                     options.available_groups.push(FocusGroupInfo {
                         id: group.id.clone(),
@@ -1184,36 +1173,36 @@ impl GlobalInputDispatcher {
                 }
             }
 
-            if let Some(group_id) = &manager.active_group {
-                if let Some(group) = manager.groups.get(group_id) {
-                    // Check within-group navigation
-                    if let Some(current_index) = group.active_element {
-                        options.can_navigate_up = group.elements.len() > 1;
-                        options.can_navigate_down = group.elements.len() > 1;
-                        options.can_navigate_first = current_index > 0;
-                        options.can_navigate_last =
-                            current_index < group.elements.len().saturating_sub(1);
-                    }
+            if let Some(group_id) = &manager.active_group
+                && let Some(group) = manager.groups.get(group_id)
+            {
+                // Check within-group navigation
+                if let Some(current_index) = group.active_element {
+                    options.can_navigate_up = group.elements.len() > 1;
+                    options.can_navigate_down = group.elements.len() > 1;
+                    options.can_navigate_first = current_index > 0;
+                    options.can_navigate_last =
+                        current_index < group.elements.len().saturating_sub(1);
+                }
 
-                    // Check cross-panel navigation
-                    let current_priority = manager
-                        .priorities
-                        .get(group_id)
-                        .copied()
-                        .unwrap_or(FocusPriority::Normal);
+                // Check cross-panel navigation
+                let current_priority = manager
+                    .priorities
+                    .get(group_id)
+                    .copied()
+                    .unwrap_or(FocusPriority::Normal);
 
-                    for (other_group_id, &priority) in &manager.priorities {
-                        if other_group_id != group_id {
-                            if let Some(other_group) = manager.groups.get(other_group_id) {
-                                if other_group.enabled && !other_group.elements.is_empty() {
-                                    if priority < current_priority {
-                                        options.can_navigate_left = true;
-                                    }
-                                    if priority > current_priority {
-                                        options.can_navigate_right = true;
-                                    }
-                                }
-                            }
+                for (other_group_id, &priority) in &manager.priorities {
+                    if other_group_id != group_id
+                        && let Some(other_group) = manager.groups.get(other_group_id)
+                        && other_group.enabled
+                        && !other_group.elements.is_empty()
+                    {
+                        if priority < current_priority {
+                            options.can_navigate_left = true;
+                        }
+                        if priority > current_priority {
+                            options.can_navigate_right = true;
                         }
                     }
                 }
@@ -1248,16 +1237,12 @@ impl GlobalInputDispatcher {
             }
 
             // Check context-specific shortcuts
-            if let Ok(contexts) = self.contexts.read() {
-                if let Some(current_context) = contexts.context_stack.last() {
-                    if let Some(context_shortcuts) =
-                        registry.context_shortcuts.get(&current_context.id)
-                    {
-                        if let Some(shortcut) = context_shortcuts.get(key_combination) {
-                            return shortcut.enabled;
-                        }
-                    }
-                }
+            if let Ok(contexts) = self.contexts.read()
+                && let Some(current_context) = contexts.context_stack.last()
+                && let Some(context_shortcuts) = registry.context_shortcuts.get(&current_context.id)
+                && let Some(shortcut) = context_shortcuts.get(key_combination)
+            {
+                return shortcut.enabled;
             }
         }
         false
@@ -1281,21 +1266,18 @@ impl GlobalInputDispatcher {
             }
 
             // Add context-specific shortcuts
-            if let Ok(contexts) = self.contexts.read() {
-                if let Some(current_context) = contexts.context_stack.last() {
-                    if let Some(context_shortcuts) =
-                        registry.context_shortcuts.get(&current_context.id)
-                    {
-                        for (key_combo, shortcut) in context_shortcuts {
-                            if shortcut.enabled {
-                                shortcuts.push(ShortcutInfo {
-                                    key_combination: key_combo.clone(),
-                                    description: shortcut.description.clone(),
-                                    context: Some(current_context.name.clone()),
-                                    priority: shortcut.priority,
-                                });
-                            }
-                        }
+            if let Ok(contexts) = self.contexts.read()
+                && let Some(current_context) = contexts.context_stack.last()
+                && let Some(context_shortcuts) = registry.context_shortcuts.get(&current_context.id)
+            {
+                for (key_combo, shortcut) in context_shortcuts {
+                    if shortcut.enabled {
+                        shortcuts.push(ShortcutInfo {
+                            key_combination: key_combo.clone(),
+                            description: shortcut.description.clone(),
+                            context: Some(current_context.name.clone()),
+                            priority: shortcut.priority,
+                        });
                     }
                 }
             }
@@ -1415,32 +1397,31 @@ impl GlobalInputDispatcher {
                 let mut styles = FocusIndicatorStyles::none();
                 styles.animation_duration = config.animation_duration;
 
-                if let Some(border_style) = border {
-                    if let FocusIndicatorStyle::Border { color, width } = border_style.as_ref() {
-                        styles.border_color = Some(color.unwrap_or(tokens.colors.primary));
-                        styles.border_width = Some(width.unwrap_or(gpui::px(1.0)));
-                    }
+                if let Some(border_style) = border
+                    && let FocusIndicatorStyle::Border { color, width } = border_style.as_ref()
+                {
+                    styles.border_color = Some(color.unwrap_or(tokens.colors.primary));
+                    styles.border_width = Some(width.unwrap_or(gpui::px(1.0)));
                 }
 
-                if let Some(bg_style) = background {
-                    if let FocusIndicatorStyle::Background { color, opacity } = bg_style.as_ref() {
-                        styles.background_color =
-                            Some(color.unwrap_or(tokens.colors.primary.alpha(0.1)));
-                        styles.background_opacity = Some(opacity.unwrap_or(0.1));
-                    }
+                if let Some(bg_style) = background
+                    && let FocusIndicatorStyle::Background { color, opacity } = bg_style.as_ref()
+                {
+                    styles.background_color =
+                        Some(color.unwrap_or(tokens.colors.primary.alpha(0.1)));
+                    styles.background_opacity = Some(opacity.unwrap_or(0.1));
                 }
 
-                if let Some(outline_style) = outline {
-                    if let FocusIndicatorStyle::Outline {
+                if let Some(outline_style) = outline
+                    && let FocusIndicatorStyle::Outline {
                         color,
                         width,
                         offset,
                     } = outline_style.as_ref()
-                    {
-                        styles.outline_color = Some(color.unwrap_or(tokens.colors.primary));
-                        styles.outline_width = Some(width.unwrap_or(gpui::px(2.0)));
-                        styles.outline_offset = Some(offset.unwrap_or(gpui::px(1.0)));
-                    }
+                {
+                    styles.outline_color = Some(color.unwrap_or(tokens.colors.primary));
+                    styles.outline_width = Some(width.unwrap_or(gpui::px(2.0)));
+                    styles.outline_offset = Some(offset.unwrap_or(gpui::px(1.0)));
                 }
 
                 styles

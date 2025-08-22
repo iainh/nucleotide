@@ -35,7 +35,7 @@ where
 {
     PERFORMANCE_MONITOR
         .get()
-        .and_then(|monitor| monitor.lock().ok().map(|mut guard| f(&mut *guard)))
+        .and_then(|monitor| monitor.lock().ok().map(|mut guard| f(&mut guard)))
 }
 
 /// Performance monitoring configuration
@@ -105,10 +105,7 @@ impl PerformanceMonitor {
         }
 
         let name = component_name.into();
-        let entry = self
-            .render_times
-            .entry(name.clone())
-            .or_insert_with(Vec::new);
+        let entry = self.render_times.entry(name.clone()).or_default();
 
         // Keep only recent entries
         if entry.len() >= self.config.max_history_entries {
@@ -141,10 +138,7 @@ impl PerformanceMonitor {
         }
 
         let name = event_name.into();
-        let entry = self
-            .event_times
-            .entry(name.clone())
-            .or_insert_with(Vec::new);
+        let entry = self.event_times.entry(name.clone()).or_default();
 
         if entry.len() >= self.config.max_history_entries {
             entry.remove(0);

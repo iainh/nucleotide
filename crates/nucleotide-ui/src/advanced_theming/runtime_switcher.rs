@@ -368,16 +368,15 @@ impl RuntimeThemeSwitcher {
             }
 
             // Persist if enabled
-            if self.config.persist_theme_choice {
-                if let Some(name) = &theme_name {
-                    if let Err(e) = self.persist_theme_choice(name, &new_theme) {
-                        nucleotide_logging::warn!(
-                            error = %e,
-                            "Failed to persist theme choice"
-                        );
-                        warnings.push(format!("Failed to persist theme: {}", e));
-                    }
-                }
+            if self.config.persist_theme_choice
+                && let Some(name) = &theme_name
+                && let Err(e) = self.persist_theme_choice(name, &new_theme)
+            {
+                nucleotide_logging::warn!(
+                    error = %e,
+                    "Failed to persist theme choice"
+                );
+                warnings.push(format!("Failed to persist theme: {}", e));
             }
 
             SwitchingResult {

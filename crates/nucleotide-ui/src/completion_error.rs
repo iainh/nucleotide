@@ -499,6 +499,12 @@ pub struct ErrorRecoveryExecutor {
     active_recoveries: Vec<Task<RecoveryResult>>,
 }
 
+impl Default for ErrorRecoveryExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ErrorRecoveryExecutor {
     pub fn new() -> Self {
         Self {
