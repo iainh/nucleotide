@@ -13,6 +13,7 @@ rust-version = "1.88"
 
 [dependencies]
 nucleotide-core = { path = "../nucleotide-core" }
+nucleotide-events = { path = "../nucleotide-events" }
 nucleotide-ui = { path = "../nucleotide-ui" }
 # TODO: Remove this circular dependency by using capability traits
 

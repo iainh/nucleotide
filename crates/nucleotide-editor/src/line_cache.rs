@@ -129,60 +129,6 @@ impl LineLayoutCache {
         }
     }
 
-    /// Find line at position with scroll offset adjustment (DEPRECATED - use find_line_at_position)
-    ///
-    /// # Deprecation Notice
-    /// This method is deprecated in favor of proper coordinate transformation.
-    /// New code should use the coordinate transformation chain: Window → TextArea → Content
-    /// and then use find_line_at_position() with properly transformed coordinates.
-    ///
-    /// # Arguments
-    /// * `position` - Mouse position in element-local coordinates
-    /// * `scroll_offset` - Current scroll offset (negative when scrolled down)
-    ///
-    /// # Note
-    /// The scroll_offset uses GPUI's negative convention (negative when scrolled down)
-    pub fn find_line_at_position_with_scroll(
-        &self,
-        position: gpui::Point<Pixels>,
-        bounds_width: Pixels,
-        line_height: Pixels,
-        scroll_offset: gpui::Point<Pixels>,
-    ) -> Option<LineLayout> {
-        if let Ok(layouts) = self.layouts.lock() {
-            layouts
-                .iter()
-                .find(|layout| {
-                    // Adjust the line origin by the scroll offset
-                    // GPUI applies scroll transformations, so we need to account for them
-                    let adjusted_origin = gpui::point(
-                        layout.origin.x + scroll_offset.x,
-                        layout.origin.y + scroll_offset.y,
-                    );
-                    let line_bounds = Bounds {
-                        origin: adjusted_origin,
-                        size: size(bounds_width, line_height),
-                    };
-                    line_bounds.contains(&position)
-                })
-                .map(|layout| {
-                    // Return a copy with the adjusted origin for consistency
-                    LineLayout {
-                        line_idx: layout.line_idx,
-                        shaped_line: layout.shaped_line.clone(),
-                        origin: gpui::point(
-                            layout.origin.x + scroll_offset.x,
-                            layout.origin.y + scroll_offset.y,
-                        ),
-                        segment_char_offset: layout.segment_char_offset,
-                        text_start_byte_offset: layout.text_start_byte_offset,
-                    }
-                })
-        } else {
-            None
-        }
-    }
-
     pub fn find_line_by_index(&self, line_idx: usize) -> Option<LineLayout> {
         if let Ok(layouts) = self.layouts.lock() {
             layouts

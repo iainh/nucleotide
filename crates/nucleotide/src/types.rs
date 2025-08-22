@@ -6,14 +6,30 @@ pub use nucleotide_core::{
     CompletionTrigger, EditorFontConfig, EditorStatus, FontSettings, Severity, UiFontConfig,
 };
 
-// Re-export event types (now from nucleotide-events via nucleotide-core)
+// Re-export V2 event types from nucleotide-core
 pub use nucleotide_core::{
-    AppEvent, CoreEvent, LspEvent, MessageSeverity, PanelType, PickerType, SplitDirection, UiEvent,
-    WorkspaceEvent,
+    AppEvent, DocumentEvent, EditorEvent, LspEvent, UiEvent, WorkspaceEvent,
 };
 
-// Re-export UI event enums
-pub use nucleotide_events::SystemAppearance;
+// Re-export UI enums from V2 events
+pub use nucleotide_events::v2::ui::SystemAppearance;
+
+// Local enums that haven't been migrated to V2 yet
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MessageSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PickerType {
+    File,
+    Buffer,
+    Directory,
+    Command,
+    Symbol,
+}
 
 // Hybrid Update enum for event system
 // Uses Event(AppEvent) for data-only events and direct variants for complex UI components with behavior

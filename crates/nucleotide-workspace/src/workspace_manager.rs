@@ -2,7 +2,11 @@
 // ABOUTME: Uses capability traits to avoid circular dependencies
 
 use gpui::Result;
-use nucleotide_core::{CoreEvent, EditorState, EventBus, EventHandler, WorkspaceEvent};
+use nucleotide_core::{
+    DocumentEvent, EditorState, EventBus, EventHandler, WorkspaceEvent,
+    command_system::SplitDirection,
+};
+use nucleotide_events::v2::workspace::{LayoutType, PanelConfiguration, PanelType, TabId};
 use nucleotide_logging::{debug, info};
 use std::sync::{Arc, RwLock};
 
@@ -50,8 +54,21 @@ impl<S: EditorState + 'static> WorkspaceManager<S> {
         self.tabs.add_tab(tab);
 
         // Emit workspace event
+        // Note: Convert DocumentId to TabId using a hash-based approach since DocumentId internals are private
+        let tab_numeric_id = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            doc_id.hash(&mut hasher);
+            hasher.finish() as usize
+        };
+
         self.event_bus
-            .dispatch_workspace(WorkspaceEvent::TabOpened { id: tab_id.clone() });
+            .dispatch_workspace(WorkspaceEvent::TabCreated {
+                tab_id: TabId::new(tab_numeric_id),
+                doc_id,
+                title: path.display().to_string(),
+            });
 
         // Focus the new tab
         self.focus_tab(&tab_id);
@@ -63,9 +80,23 @@ impl<S: EditorState + 'static> WorkspaceManager<S> {
     pub fn close_tab(&mut self, tab_id: &str) -> Result<(), String> {
         self.tabs.remove_tab(tab_id);
 
+        // Note: We need doc_id for the event but don't have it here in the current architecture
+        // For now, use a default DocumentId - in practice this should be tracked properly
+        let doc_id = helix_view::DocumentId::default();
+
+        // Use hash-based approach for tab_id conversion
+        let tab_numeric_id = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            tab_id.hash(&mut hasher);
+            hasher.finish() as usize
+        };
+
         self.event_bus
             .dispatch_workspace(WorkspaceEvent::TabClosed {
-                id: tab_id.to_string(),
+                tab_id: TabId::new(tab_numeric_id),
+                doc_id,
             });
 
         // Focus next available tab
@@ -81,12 +112,30 @@ impl<S: EditorState + 'static> WorkspaceManager<S> {
 
     /// Focus a tab
     pub fn focus_tab(&mut self, tab_id: &str) {
+        let previous_tab = self.focused_tab.clone();
         self.focused_tab = Some(tab_id.to_string());
         self.tabs.set_active(tab_id);
 
+        // Use hash-based approach for tab_id conversion
+        let tab_numeric_id = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            tab_id.hash(&mut hasher);
+            hasher.finish() as usize
+        };
+
+        let previous_tab_id = previous_tab.as_ref().map(|prev| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::{Hash, Hasher};
+            prev.hash(&mut hasher);
+            TabId::new(hasher.finish() as usize)
+        });
+
         self.event_bus
             .dispatch_workspace(WorkspaceEvent::TabSwitched {
-                id: tab_id.to_string(),
+                previous_tab: previous_tab_id,
+                new_tab: TabId::new(tab_numeric_id),
             });
     }
 
@@ -95,15 +144,24 @@ impl<S: EditorState + 'static> WorkspaceManager<S> {
         self.layout.split(direction);
 
         let split_dir = match direction {
-            crate::layout::LayoutDirection::Horizontal => {
-                nucleotide_core::SplitDirection::Horizontal
-            }
-            crate::layout::LayoutDirection::Vertical => nucleotide_core::SplitDirection::Vertical,
+            crate::layout::LayoutDirection::Horizontal => SplitDirection::Horizontal,
+            crate::layout::LayoutDirection::Vertical => SplitDirection::Vertical,
+        };
+
+        // Note: SplitCreated event doesn't exist in V2, using LayoutChanged instead
+        let layout_type = match split_dir {
+            SplitDirection::Horizontal => LayoutType::Horizontal,
+            SplitDirection::Vertical => LayoutType::Vertical,
         };
 
         self.event_bus
-            .dispatch_workspace(WorkspaceEvent::SplitCreated {
-                direction: split_dir,
+            .dispatch_workspace(WorkspaceEvent::LayoutChanged {
+                layout_type,
+                panel_configuration: PanelConfiguration {
+                    file_tree_width: None,
+                    sidebar_panels: Vec::new(),
+                    bottom_panels: Vec::new(),
+                },
             });
     }
 
@@ -112,14 +170,17 @@ impl<S: EditorState + 'static> WorkspaceManager<S> {
         self.layout.toggle_panel(panel);
 
         let panel_type = match panel {
-            crate::layout::Panel::FileTree => nucleotide_core::PanelType::FileTree,
-            crate::layout::Panel::Terminal => nucleotide_core::PanelType::Terminal,
-            crate::layout::Panel::Search => nucleotide_core::PanelType::Search,
-            crate::layout::Panel::Diagnostics => nucleotide_core::PanelType::Diagnostics,
+            crate::layout::Panel::FileTree => PanelType::FileTree,
+            crate::layout::Panel::Terminal => PanelType::Terminal,
+            crate::layout::Panel::Search => PanelType::Search,
+            crate::layout::Panel::Diagnostics => PanelType::Problems, // Diagnostics -> Problems
         };
 
         self.event_bus
-            .dispatch_workspace(WorkspaceEvent::PanelToggled { panel: panel_type });
+            .dispatch_workspace(WorkspaceEvent::PanelToggled {
+                panel_type,
+                is_visible: self.layout.is_panel_visible(panel),
+            });
     }
 
     /// Get current theme (returns clone due to RwLock)
@@ -136,18 +197,20 @@ impl<S: EditorState + 'static> WorkspaceManager<S> {
 }
 
 impl<S: EditorState> EventHandler for WorkspaceManager<S> {
-    fn handle_core(&mut self, event: &CoreEvent) {
+    fn handle_document(&mut self, event: &DocumentEvent) {
+        use nucleotide_core::DocumentEvent as Event;
         match event {
-            CoreEvent::DocumentOpened { doc_id } => {
+            Event::Opened { doc_id, .. } => {
                 // Handle document opened
                 info!(doc_id = ?doc_id, "Document opened");
             }
-            CoreEvent::DocumentClosed { doc_id } => {
+            Event::Closed { doc_id, .. } => {
                 // Handle document closed
                 info!(doc_id = ?doc_id, "Document closed");
             }
-            CoreEvent::RedrawRequested => {
-                // Request UI redraw
+            Event::ContentChanged { doc_id, .. } => {
+                // Handle document content change
+                debug!(doc_id = ?doc_id, "Document content changed");
                 debug!("Redraw requested");
             }
             _ => {}

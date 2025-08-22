@@ -25,13 +25,16 @@ pub use editor_capabilities::{
 };
 
 // Re-export event types from nucleotide-events
-pub use nucleotide_events::{
-    AppEvent, CoreEvent, EventBus, EventHandler, LspEvent, MessageSeverity, PanelType, PickerType,
-    SplitDirection, UiEvent, WorkspaceEvent,
+pub use nucleotide_events::{EventBus, EventHandler, LspEvent};
+
+// Re-export V2 domain events
+pub use nucleotide_events::v2::{
+    document::Event as DocumentEvent, editor::Event as EditorEvent, lsp::Event as LspV2Event,
+    ui::Event as UiEvent, workspace::Event as WorkspaceEvent,
 };
 
-// Event aggregator exports
-pub use event_aggregator::{EventAggregator, EventAggregatorHandle};
+// Event aggregator exports (includes V2 AppEvent)
+pub use event_aggregator::{AppEvent, EventAggregator, EventAggregatorHandle};
 
 // Event bridge exports
 pub use event_bridge::{

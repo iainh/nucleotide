@@ -2,9 +2,23 @@
 // ABOUTME: Implements the event bus pattern to break circular dependencies
 
 use nucleotide_events::{
-    AppEvent, CoreEvent, EventBus, EventHandler, LspEvent, UiEvent, WorkspaceEvent,
+    EventBus, EventHandler,
+    v2::{
+        document::Event as DocumentEvent, editor::Event as EditorEvent, lsp::Event as LspEvent,
+        ui::Event as UiEvent, workspace::Event as WorkspaceEvent,
+    },
 };
 use std::sync::{Arc, Mutex};
+
+/// V2 App-level event wrapper for the event aggregator
+#[derive(Debug, Clone)]
+pub enum AppEvent {
+    Document(DocumentEvent),
+    Editor(EditorEvent),
+    Ui(UiEvent),
+    Workspace(WorkspaceEvent),
+    Lsp(LspEvent),
+}
 
 /// Event aggregator that collects and dispatches events
 pub struct EventAggregator {
@@ -42,7 +56,8 @@ impl EventAggregator {
         for event in events {
             for handler in handlers.iter_mut() {
                 match &event {
-                    AppEvent::Core(e) => handler.handle_core(e),
+                    AppEvent::Document(e) => handler.handle_document(e),
+                    AppEvent::Editor(e) => handler.handle_editor(e),
                     AppEvent::Ui(e) => handler.handle_ui(e),
                     AppEvent::Workspace(e) => handler.handle_workspace(e),
                     AppEvent::Lsp(e) => handler.handle_lsp(e),
@@ -64,8 +79,12 @@ impl EventAggregator {
 }
 
 impl EventBus for EventAggregator {
-    fn dispatch_core(&self, event: CoreEvent) {
-        self.queue_event(AppEvent::Core(event));
+    fn dispatch_document(&self, event: DocumentEvent) {
+        self.queue_event(AppEvent::Document(event));
+    }
+
+    fn dispatch_editor(&self, event: EditorEvent) {
+        self.queue_event(AppEvent::Editor(event));
     }
 
     fn dispatch_ui(&self, event: UiEvent) {
@@ -121,8 +140,12 @@ impl EventAggregatorHandle {
 }
 
 impl EventBus for EventAggregatorHandle {
-    fn dispatch_core(&self, event: CoreEvent) {
-        self.inner.dispatch_core(event);
+    fn dispatch_document(&self, event: DocumentEvent) {
+        self.inner.dispatch_document(event);
+    }
+
+    fn dispatch_editor(&self, event: EditorEvent) {
+        self.inner.dispatch_editor(event);
     }
 
     fn dispatch_ui(&self, event: UiEvent) {
@@ -143,12 +166,12 @@ mod tests {
     use super::*;
 
     struct TestHandler {
-        core_events: Arc<Mutex<Vec<CoreEvent>>>,
+        document_events: Arc<Mutex<Vec<DocumentEvent>>>,
     }
 
     impl EventHandler for TestHandler {
-        fn handle_core(&mut self, event: &CoreEvent) {
-            let mut events = self.core_events.lock().unwrap();
+        fn handle_document(&mut self, event: &DocumentEvent) {
+            let mut events = self.document_events.lock().unwrap();
             events.push(event.clone());
         }
     }
@@ -159,10 +182,14 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
 
         aggregator.register_handler(TestHandler {
-            core_events: events.clone(),
+            document_events: events.clone(),
         });
 
-        aggregator.dispatch_core(CoreEvent::RedrawRequested);
+        aggregator.dispatch_document(DocumentEvent::ContentChanged {
+            doc_id: helix_view::DocumentId::default(),
+            revision: 1,
+            change_summary: nucleotide_events::v2::document::ChangeType::Insert,
+        });
         assert_eq!(aggregator.queued_count(), 1);
 
         aggregator.process_events();

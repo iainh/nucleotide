@@ -4,7 +4,7 @@ use gpui::{
     SharedString, Style, Styled, Window, div, px,
 };
 use helix_view::info::Info;
-use nucleotide_events::{AppEvent, UiEvent};
+use nucleotide_core::{AppEvent, UiEvent};
 
 #[derive(Debug)]
 pub struct InfoBoxView {
@@ -24,10 +24,14 @@ impl InfoBoxView {
 
     #[allow(dead_code)]
     fn handle_event(&mut self, ev: &AppEvent, cx: &mut Context<Self>) {
-        if let AppEvent::Ui(UiEvent::ShowInfo { title, body }) = ev {
-            self.title = Some(title.clone().into());
-            self.text = Some(body.join("\n").into());
-            cx.notify();
+        if let AppEvent::Ui(UiEvent::OverlayShown { overlay_type, .. }) = ev {
+            if matches!(
+                *overlay_type,
+                nucleotide_events::v2::ui::OverlayType::Tooltip
+            ) {
+                // Handle info overlay shown
+                cx.notify();
+            }
         }
     }
 

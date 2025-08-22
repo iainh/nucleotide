@@ -3,7 +3,7 @@
 
 use gpui::{Context, IntoElement, ParentElement, Pixels, Render, Styled, Window, div, px, rgb};
 use helix_view::{DocumentId, ViewId};
-use nucleotide_core::{CoreEvent, EditorState, EventHandler};
+use nucleotide_core::{DocumentEvent, EditorState, EventHandler};
 use nucleotide_logging::debug;
 use std::sync::{Arc, RwLock};
 
@@ -107,26 +107,27 @@ impl<S: EditorState + 'static> EditorView<S> {
 }
 
 impl<S: EditorState> EventHandler for EditorView<S> {
-    fn handle_core(&mut self, event: &CoreEvent) {
+    fn handle_document(&mut self, event: &DocumentEvent) {
+        use nucleotide_core::DocumentEvent as Event;
         match event {
-            CoreEvent::DocumentChanged { doc_id } => {
+            Event::ContentChanged { doc_id, .. } => {
                 if Some(*doc_id) == self.current_doc {
                     // Document changed, may need to adjust scroll
                     debug!(doc_id = ?doc_id, "Document changed");
                 }
             }
-            CoreEvent::SelectionChanged { doc_id, view_id } => {
-                if Some(*doc_id) == self.current_doc && Some(*view_id) == self.current_view {
-                    // Selection changed, ensure cursor is visible
-                    debug!(view_id = ?view_id, "Selection changed in view");
+            Event::Opened { doc_id, .. } => {
+                debug!(doc_id = ?doc_id, "Document opened");
+            }
+            Event::Closed { doc_id, .. } => {
+                if Some(*doc_id) == self.current_doc {
+                    self.current_doc = None;
+                    debug!(doc_id = ?doc_id, "Current document closed");
                 }
             }
-            CoreEvent::ViewFocused { view_id } => {
-                if Some(*view_id) == self.current_view {
-                    debug!(view_id = ?view_id, "View focused");
-                }
+            _ => {
+                // Handle other document events as needed
             }
-            _ => {}
         }
     }
 }

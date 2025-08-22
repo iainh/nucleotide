@@ -800,16 +800,5 @@ impl TitleBarTokens {
 // Re-export commonly used types
 pub use utils::*;
 
-/// Backward compatibility - maps to old spacing values
-#[deprecated(note = "Use DesignTokens::sizes instead")]
-pub mod spacing {
-    use super::*;
-
-    pub const XS: Pixels = px(2.0);
-    pub const SM: Pixels = px(4.0);
-    pub const MD: Pixels = px(8.0);
-    pub const LG: Pixels = px(12.0);
-}
-
 #[cfg(test)]
 mod tests;

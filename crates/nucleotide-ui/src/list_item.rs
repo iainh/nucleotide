@@ -1,12 +1,12 @@
 // ABOUTME: List item component following Zed's pattern
 // ABOUTME: Reusable component for consistent list rendering
 
-use crate::spacing;
 use crate::{
     ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
     Styled as UIStyled, compute_component_style, is_feature_enabled, should_enable_animations,
 };
 use gpui::prelude::FluentBuilder;
+use gpui::px;
 use gpui::{
     AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     SharedString, StatefulInteractiveElement, Styled, TextOverflow, Window, div,
@@ -501,12 +501,12 @@ impl RenderOnce for ListItem {
 
         // Add loading indicator if loading
         if self.loading {
-            base = base.child(div().child("⟳").mr(spacing::SM));
+            base = base.child(div().child("⟳").mr(px(4.0)));
         }
 
         // Build content with slots
         if let Some(start_slot) = self.start_slot {
-            base = base.child(div().mr(spacing::SM).flex_shrink_0().child(start_slot));
+            base = base.child(div().mr(px(4.0)).flex_shrink_0().child(start_slot));
         }
 
         // Main content area
@@ -519,7 +519,7 @@ impl RenderOnce for ListItem {
         );
 
         if let Some(end_slot) = self.end_slot {
-            base = base.child(div().ml(spacing::SM).flex_shrink_0().child(end_slot));
+            base = base.child(div().ml(px(4.0)).flex_shrink_0().child(end_slot));
         }
 
         base

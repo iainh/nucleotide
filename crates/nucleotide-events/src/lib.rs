@@ -1,14 +1,9 @@
 // ABOUTME: Cross-crate event definitions for decoupled communication
 // ABOUTME: V2 architecture with domain-driven bounded contexts
 
-// Legacy modules (will be removed during migration)
-pub mod app_event;
-pub mod completion_events;
-pub mod core_events;
+// Core event system modules
 pub mod event_bus;
 pub mod lsp_events;
-pub mod ui_events;
-pub mod workspace_events;
 
 // V2 Bounded Context Event Modules
 pub mod bridge;
@@ -36,15 +31,10 @@ pub mod v2 {
     pub use crate::workspace;
 }
 
-// Legacy re-exports (for backward compatibility during migration)
-pub use app_event::AppEvent;
-pub use completion_events::*;
-pub use core_events::*;
+// Essential re-exports for event system functionality
 pub use event_bus::{EventBus, EventHandler};
 pub use lsp_events::{
     ActiveServerInfo, LspEvent, ProjectDetectionResult, ProjectHealthStatus, ProjectLspCommand,
     ProjectLspCommandError, ProjectLspEvent, ProjectStatus, ProjectType, ServerHealthStatus,
     ServerStartResult, ServerStartupResult,
 };
-pub use ui_events::*;
-pub use workspace_events::*;

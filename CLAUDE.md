@@ -16,10 +16,12 @@ This is **Nucleotide**, a native GUI implementation of the Helix modal text edit
 
 - **`src/document.rs`**: Renders the text editor view using GPUI, translating Helix's terminal-based rendering to GPU-accelerated graphics. Manages scroll state and text layout.
 
-- **Event Bridge System**:
-  - `src/event_bridge.rs`: Sends Helix events to GPUI components
-  - `src/gpui_to_helix_bridge.rs`: Converts GPUI inputs to Helix commands
-  - These bridges enable bi-directional communication between the terminal-based Helix core and the GUI layer
+- **Event System**: 
+  - `nucleotide-events` crate: Centralized event definitions with domain-driven bounded contexts (V2 architecture)
+  - `nucleotide-core/event_bridge.rs`: Bridges Helix events to GPUI using hook-based registration and channels
+  - `nucleotide-core/event_aggregator.rs`: Event bus implementation for cross-component communication
+  - `nucleotide-core/gpui_to_helix_bridge.rs`: Converts GPUI inputs to Helix commands
+  - Uses publish-subscribe pattern with structured event types (CoreEvent, UiEvent, WorkspaceEvent, LspEvent)
 
 ### Dependency Architecture
 
@@ -169,13 +171,57 @@ When updating existing code:
 
 ## Critical Implementation Details
 
-### Modal Editing Flow
+### Component Communication
 
-1. GPUI captures keyboard/mouse events in `workspace.rs`
-2. Events are converted to Helix `KeyEvent`s via `gpui_to_helix_bridge`
-3. Helix processes the command and updates its internal state
-4. Changes are communicated back via `event_bridge` 
-5. UI components update reactively through GPUI's entity system
+**ALWAYS use the event system for component communication.** Direct component coupling should be avoided in favor of the structured event system.
+
+#### Event System Usage
+
+```rust
+// ✅ Correct - Use the event bus for component communication
+use nucleotide_events::{EventBus, CoreEvent, UiEvent};
+
+// Register a handler
+event_aggregator.register_handler(MyEventHandler::new());
+
+// Dispatch events through the bus
+event_bus.dispatch_core(CoreEvent::RedrawRequested);
+event_bus.dispatch_ui(UiEvent::ThemeChanged);
+
+// Process events in batches
+event_aggregator.process_events();
+
+// ❌ Incorrect - Direct component coupling
+component_a.call_method_on_component_b(); // Don't do this
+```
+
+#### Event Type Guidelines
+
+- **CoreEvent**: Editor state changes, document operations, fundamental app events
+- **UiEvent**: Theme changes, layout updates, visual state changes  
+- **WorkspaceEvent**: File operations, project-level changes, workspace state
+- **LspEvent**: Language server operations, completions, diagnostics
+
+### Event-Driven Communication
+
+The event system uses a structured, domain-driven approach for component communication:
+
+**Event Flow:**
+1. **Helix → GPUI**: Helix events are captured via registered hooks in `event_bridge.rs` and sent through channels to GPUI components
+2. **GPUI → Helix**: User interactions are converted to Helix commands via `gpui_to_helix_bridge.rs`
+3. **Cross-Component**: Components communicate via the `EventAggregator` using typed events (CoreEvent, UiEvent, WorkspaceEvent, LspEvent)
+
+**Event Architecture:**
+- **V2 Bounded Context Events**: Domain-specific event types in `nucleotide-events` crate
+- **Event Bus Pattern**: `EventAggregator` implements publish-subscribe for decoupled communication
+- **Hook Registration**: Helix events are captured via `helix_event::register_hook!` macros
+- **Channel-Based**: Uses `tokio::sync::mpsc` for async event delivery
+
+**Best Practices:**
+- Use structured events with domain-specific types rather than generic messages
+- Register event handlers via `EventAggregator::register_handler()`
+- Emit events through the event bus rather than direct component coupling
+- Events are processed in batches via `EventAggregator::process_events()`
 
 ### Scroll Synchronization
 
@@ -218,5 +264,6 @@ Tests are embedded in source files using `#[cfg(test)]` modules. Key test areas:
 
 - **Never modify helix-* dependencies** - All editor logic comes from upstream Helix
 - **Preserve Helix compatibility** - Configuration and keybindings must work identically
-- **Event-driven architecture** - Use GPUI's reactive entity system, not polling
+- **Event-driven architecture** - Use the structured event system via `EventAggregator`, not direct component coupling or polling
+- **Domain-driven events** - Use typed events from `nucleotide-events` crate for clear component boundaries
 - **Focus management** - Critical for modal editing; handled primarily in `workspace.rs`

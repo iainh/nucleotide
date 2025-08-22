@@ -1,12 +1,12 @@
 // ABOUTME: Button component following Zed's design patterns
 // ABOUTME: Provides consistent button styling and behavior
 
-use crate::spacing;
 use crate::{
     ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
     Styled as UIStyled, compute_component_style, is_feature_enabled, should_enable_animations,
 };
 use gpui::prelude::FluentBuilder;
+use gpui::px;
 use gpui::{
     App, ElementId, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseUpEvent,
     ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, svg,
@@ -375,7 +375,7 @@ impl RenderOnce for Button {
             .flex_row()
             .items_center()
             .justify_center()
-            .gap(spacing::SM)
+            .gap(px(4.0))
             .py(computed_style.padding_y)
             .px(computed_style.padding_x)
             .rounded(computed_style.border_radius)

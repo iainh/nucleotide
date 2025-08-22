@@ -1,12 +1,18 @@
 // ABOUTME: Event bus and handler traits for decoupled communication
 // ABOUTME: Provides publish-subscribe pattern for cross-crate events
 
-use crate::{CoreEvent, LspEvent, UiEvent, WorkspaceEvent};
+use crate::v2::{
+    document::Event as DocumentEvent, editor::Event as EditorEvent, lsp::Event as LspEvent,
+    ui::Event as UiEvent, workspace::Event as WorkspaceEvent,
+};
 
-/// Event bus trait for dispatching events
+/// Event bus trait for dispatching events using V2 domain events
 pub trait EventBus {
-    /// Dispatch a core event
-    fn dispatch_core(&self, event: CoreEvent);
+    /// Dispatch a document event
+    fn dispatch_document(&self, event: DocumentEvent);
+
+    /// Dispatch an editor event
+    fn dispatch_editor(&self, event: EditorEvent);
 
     /// Dispatch a UI event
     fn dispatch_ui(&self, event: UiEvent);
@@ -18,10 +24,13 @@ pub trait EventBus {
     fn dispatch_lsp(&self, event: LspEvent);
 }
 
-/// Event handler trait for receiving events
+/// Event handler trait for receiving V2 domain events
 pub trait EventHandler {
-    /// Handle a core event
-    fn handle_core(&mut self, _event: &CoreEvent) {}
+    /// Handle a document event
+    fn handle_document(&mut self, _event: &DocumentEvent) {}
+
+    /// Handle an editor event
+    fn handle_editor(&mut self, _event: &EditorEvent) {}
 
     /// Handle a UI event
     fn handle_ui(&mut self, _event: &UiEvent) {}

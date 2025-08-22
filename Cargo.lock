@@ -4711,6 +4711,7 @@ dependencies = [
  "helix-view",
  "notify",
  "nucleotide-core",
+ "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-ui",
  "sum_tree",
