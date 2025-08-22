@@ -168,6 +168,16 @@ impl ViewHandler {
         // Update scroll offset in metadata
         if let Some(metadata) = self.view_metadata.get_mut(&view_id) {
             metadata.scroll_offset = (scroll_position.line, scroll_position.column);
+        } else {
+            // Create new metadata entry for scrolled view
+            let metadata = ViewMetadata {
+                associated_doc_id: helix_view::DocumentId::default(), // Default doc_id for scroll-only events
+                last_selection: Selection::point(0),
+                is_focused: false,
+                scroll_offset: (scroll_position.line, scroll_position.column),
+                last_focus_time: None,
+            };
+            self.view_metadata.insert(view_id, metadata);
         }
 
         info!(
@@ -338,7 +348,8 @@ mod tests {
         handler.initialize().unwrap();
 
         let view1 = ViewId::default();
-        let view2 = ViewId::default(); // This creates a different ViewId
+        // Create a unique ViewId by using unsafe transmute (for testing only)
+        let view2 = unsafe { std::mem::transmute::<usize, ViewId>(1usize) };
         let doc_id = DocumentId::default();
 
         // Focus first view

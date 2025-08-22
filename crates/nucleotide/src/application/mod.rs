@@ -1453,12 +1453,9 @@ impl Application {
                         }
                     }
 
-                    debug!(event_count = events.len(), "Processing batched events");
+                    debug!(event_count = events.len(), "Processing batched events via V2 system");
 
-                    // Track if we need to request a redraw
-                    let mut needs_redraw = false;
-
-                    // Convert all bridged events to Update events and emit them
+                    // Process all events through V2 domain handlers
                     for bridged_event in events {
                         // V2 Event System: Process events through domain handlers
                         if let Err(e) = self.process_v2_event(&bridged_event).await {
@@ -1469,51 +1466,14 @@ impl Application {
                             );
                         }
 
-                        let update = match bridged_event {
-                            event_bridge::BridgedEvent::DocumentChanged { doc_id } => {
-                                crate::Update::Event(AppEvent::Core(CoreEvent::DocumentChanged { doc_id }))
-                            }
-                            event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
-                                crate::Update::Event(AppEvent::Core(CoreEvent::SelectionChanged { doc_id, view_id }))
-                            }
-                            event_bridge::BridgedEvent::ModeChanged { old_mode, new_mode } => {
-                                crate::Update::Event(AppEvent::Core(CoreEvent::ModeChanged { old_mode, new_mode }))
-                            }
-                            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
-                                crate::Update::Event(AppEvent::Core(CoreEvent::DiagnosticsChanged { doc_id }))
-                            }
-                            event_bridge::BridgedEvent::DocumentOpened { doc_id } => {
-                                crate::Update::Event(AppEvent::Core(CoreEvent::DocumentOpened { doc_id }))
-                            }
-                            event_bridge::BridgedEvent::DocumentClosed { doc_id } => {
-                                crate::Update::Event(AppEvent::Core(CoreEvent::DocumentClosed { doc_id }))
-                            }
-                            event_bridge::BridgedEvent::ViewFocused { view_id } => {
-                                crate::Update::Event(AppEvent::Core(CoreEvent::ViewFocused { view_id }))
-                            }
-                            event_bridge::BridgedEvent::LanguageServerInitialized { server_id } => {
-                                crate::Update::Event(AppEvent::Lsp(LspEvent::ServerInitialized { server_id }))
-                            }
-                            event_bridge::BridgedEvent::LanguageServerExited { server_id } => {
-                                crate::Update::Event(AppEvent::Lsp(LspEvent::ServerExited { server_id }))
-                            }
-                            event_bridge::BridgedEvent::CompletionRequested { doc_id, view_id, trigger } => {
-                                crate::Update::Event(AppEvent::Core(CoreEvent::CompletionRequested { doc_id, view_id, trigger }))
-                            }
-                            event_bridge::BridgedEvent::LspServerStartupRequested { workspace_root, server_name, language_id } => {
-                                // Handle LSP server startup directly here instead of routing through more events
-                                self.handle_lsp_server_startup_request(workspace_root, server_name, language_id).await;
-                                continue; // Don't emit a GPUI event for this, it's handled internally
-                            }
-                        };
-                        cx.emit(update);
-                        needs_redraw = true;
+                        // Handle LSP server startup requests directly
+                        if let event_bridge::BridgedEvent::LspServerStartupRequested { workspace_root, server_name, language_id } = bridged_event {
+                            self.handle_lsp_server_startup_request(workspace_root, server_name, language_id).await;
+                        }
                     }
 
                     // Request a single redraw for all batched events
-                    if needs_redraw {
-                        helix_event::request_redraw();
-                    }
+                    helix_event::request_redraw();
                 }
                 Some(gpui_event) = async {
                     if let Some(ref mut rx) = self.gpui_to_helix_rx {

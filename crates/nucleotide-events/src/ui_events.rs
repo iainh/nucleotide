@@ -1,12 +1,14 @@
-// ABOUTME: UI-specific events for UI components and styling
-// ABOUTME: Events for theme changes, UI interactions, and widget state
+// ABOUTME: Legacy UI events - DEPRECATED in favor of V2 event system
+// ABOUTME: This file contains stubs for backward compatibility during Phase 3.1 migration
 
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// UI-specific events (for nucleotide-ui crate)
+/// Legacy UI-specific events - DEPRECATED
+/// Use nucleotide_events::v2::ui::Event instead
 #[derive(Clone)]
+#[deprecated(note = "Use V2 event system: nucleotide_events::v2::ui::Event")]
 pub enum UiEvent {
     /// Theme changed
     ThemeChanged { theme_name: String },

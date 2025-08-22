@@ -1,11 +1,13 @@
-// ABOUTME: Core editor events that don't depend on UI components
-// ABOUTME: Foundation events for editor state changes
+// ABOUTME: Legacy core events - DEPRECATED in favor of V2 event system
+// ABOUTME: This file contains stubs for backward compatibility during Phase 3.1 migration
 
 use helix_view::{DocumentId, ViewId};
 use nucleotide_types::CompletionTrigger;
 
-/// Core editor events that don't depend on UI components
+/// Legacy core editor events - DEPRECATED
+/// Use nucleotide_events::v2::document::Event and other V2 events instead
 #[derive(Debug, Clone)]
+#[deprecated(note = "Use V2 event system: nucleotide_events::v2::document::Event, etc.")]
 pub enum CoreEvent {
     /// Document was modified
     DocumentChanged { doc_id: DocumentId },

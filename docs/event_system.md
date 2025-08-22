@@ -655,7 +655,24 @@ The system maintains focus awareness to route events correctly:
   - Manages panel visibility, tab lifecycle, and directory expansion
   - Tracks current project type and workspace configuration
 
-### Phase 3 (Future)
+### Phase 3 (Completed ✅)
+**Phase 3.1: Legacy Infrastructure Cleanup**
+✅ **Removed obsolete infrastructure**: Eliminated unused BridgedEvent processing loops  
+✅ **Simplified Application event loop**: Streamlined to use only V2 event processing  
+✅ **Clean architecture preservation**: Maintained domain boundaries throughout cleanup  
+
+**Phase 3.2: EventBus Hardening (DEFERRED)**
+🔄 **Architecture evaluation**: Determined centralized EventBus would violate clean domain-driven design  
+🔄 **YAGNI principle applied**: Current distributed handler architecture sufficient for requirements  
+🔄 **Decision rationale**: Preserving bounded contexts over premature optimization  
+
+**Phase 3.3: Comprehensive Documentation (COMPLETED)**
+✅ **Event system documentation**: Complete architectural guide with industry best practices  
+✅ **Migration guide**: Detailed transition from channel-based to event-driven architecture  
+✅ **Implementation patterns**: EventHandler<T> pattern with Domain-Driven Design principles  
+✅ **Testing strategies**: Full test coverage for all domain handlers and event flows  
+
+### Phase 4 (Future)
 - **Performance Events**: MemoryPressure, RenderingLag, InputDelay
 - **Accessibility Events**: ScreenReaderToggled, HighContrastChanged
 - **System Events**: WindowStateChanged, FocusChanged, ThemeChanged
@@ -727,6 +744,204 @@ Phase 2 events include rich contextual information:
 - File operation sources  
 - Tab metadata and lifecycle
 
+## Architectural Patterns & Best Practices
+
+### Domain-Driven Design (DDD) Implementation
+
+The V2 event system follows **Domain-Driven Design** principles as outlined by Eric Evans in "Domain-Driven Design: Tackling Complexity in the Heart of Software" (2004). Our implementation demonstrates:
+
+**Bounded Contexts**: Each domain (Document, View, Editor, LSP, Completion, Workspace) maintains clear boundaries with explicit interfaces:
+
+```rust
+// Clear domain separation with explicit event types
+pub mod document { pub enum Event { ContentChanged, Opened, Closed } }
+pub mod view { pub enum Event { SelectionChanged, Focused, Scrolled } }
+pub mod editor { pub enum Event { ModeChanged, CommandExecuted } }
+```
+
+**Ubiquitous Language**: Domain events use vocabulary from the problem domain rather than technical implementation details, aligning with the DDD principle of shared understanding between domain experts and developers.
+
+### Event Sourcing Pattern
+
+Our system implements **Event Sourcing** as described by Martin Fowler in "Event Sourcing" (2005) and further developed by Greg Young:
+
+**Immutable Facts**: All events represent immutable facts about what has happened:
+```rust
+#[derive(Debug, Clone)] // Immutable by design
+pub enum Event {
+    ContentChanged { doc_id: DocumentId, revision: u64 }, // Fact: content changed
+    SelectionChanged { view_id: ViewId, selection: Selection }, // Fact: selection moved
+}
+```
+
+**Event Store**: Events flow through the system as the single source of truth, with handlers maintaining derived state for performance.
+
+### Command Query Responsibility Segregation (CQRS)
+
+Following the **CQRS pattern** (Greg Young, 2010), we separate command handling (Helix editor state mutations) from query handling (UI state updates):
+
+**Command Side**: Helix editor processes commands and generates events
+**Query Side**: Domain handlers maintain read-optimized state for UI components
+
+```rust
+// Query-optimized handler state
+pub struct ViewHandler {
+    view_metadata: HashMap<ViewId, ViewMetadata>, // Optimized for UI queries
+    focused_view: Option<ViewId>, // Cached for immediate access
+}
+```
+
+### Single Responsibility Principle (SRP)
+
+Each `EventHandler<T>` implementation follows **Robert C. Martin's Single Responsibility Principle** from "Clean Code" (2008):
+
+```rust
+// DocumentHandler: Single responsibility for document domain events
+impl EventHandler<DocumentEvent> for DocumentHandler {
+    // Only handles document-related concerns
+}
+
+// ViewHandler: Single responsibility for view domain events  
+impl EventHandler<ViewEvent> for ViewHandler {
+    // Only handles view-related concerns
+}
+```
+
+### Hexagonal Architecture (Ports and Adapters)
+
+Our design follows **Hexagonal Architecture** (Alistair Cockburn, 2005), isolating business logic from external concerns:
+
+**Core Domain**: ApplicationCore contains business logic isolated from UI and infrastructure
+**Adapters**: EventBridge and GpuiToHelixBridge act as adapters between Helix and GPUI
+**Ports**: EventHandler<T> trait defines ports for domain event processing
+
+### Observer Pattern with Modern Async
+
+The system modernizes the classic **Observer Pattern** (Gang of Four, 1994) using Rust's async/await:
+
+```rust
+#[async_trait]
+pub trait EventHandler<E: Debug + Send + Sync + 'static> {
+    async fn handle(&mut self, event: E) -> Result<(), Self::Error>;
+}
+```
+
+**Benefits over traditional Observer**:
+- Non-blocking async processing
+- Type-safe event handling with compile-time verification
+- Error handling with Result types
+
+### Implementation Guidelines
+
+**1. Adding New Domain Events**
+
+Follow the established pattern for consistency:
+
+```rust
+// 1. Define domain-specific events with rich context
+#[derive(Debug, Clone)]
+pub enum MyDomainEvent {
+    SomethingHappened {
+        entity_id: EntityId,
+        context: EventContext,
+        metadata: EventMetadata,
+    },
+}
+
+// 2. Implement focused handler with single responsibility
+pub struct MyDomainHandler {
+    // State optimized for this domain's queries
+}
+
+#[async_trait]
+impl EventHandler<MyDomainEvent> for MyDomainHandler {
+    type Error = HandlerError;
+    
+    async fn handle(&mut self, event: MyDomainEvent) -> Result<(), Self::Error> {
+        // Domain-specific processing logic
+    }
+}
+
+// 3. Register with ApplicationCore
+impl ApplicationCore {
+    pub fn new() -> Self {
+        Self {
+            my_domain_handler: MyDomainHandler::new(),
+            // ... other handlers
+        }
+    }
+}
+```
+
+**2. Event Design Principles**
+
+- **Immutable**: Events must be immutable facts about what happened
+- **Rich Context**: Include all relevant context to avoid additional queries
+- **Domain Language**: Use vocabulary from the problem domain
+- **Versioned**: Consider event schema evolution for future changes
+
+**3. Handler Design Principles**
+
+- **Stateful Caching**: Maintain optimized state for UI queries
+- **Error Handling**: Use structured error types with context
+- **Async Processing**: Leverage async/await for non-blocking operations
+- **Instrumentation**: Include structured logging for observability
+
+### Testing Strategies
+
+**Unit Testing**: Each handler has comprehensive unit tests verifying event processing:
+
+```rust
+#[tokio::test]
+async fn test_document_content_changed() {
+    let mut handler = DocumentHandler::new();
+    handler.initialize().unwrap();
+    
+    let event = DocumentEvent::ContentChanged { 
+        doc_id: DocumentId::default(),
+        revision: 1,
+        change_summary: ChangeType::Insert,
+    };
+    
+    handler.handle(event).await.unwrap();
+    // Verify handler state updates
+}
+```
+
+**Integration Testing**: Full event flow testing from Helix through to UI updates
+**Property Testing**: Verify invariants hold across different event sequences
+
+### Performance Considerations
+
+**Async Efficiency**: Event handlers use async/await to avoid blocking the main thread
+**Caching Strategy**: Handlers maintain local caches to minimize expensive editor queries
+**Batch Processing**: Optional batch handling for high-frequency events
+
+```rust
+// Optional batch processing for performance
+async fn handle_batch(&mut self, events: Vec<E>) -> Result<(), Self::Error> {
+    // Process multiple events efficiently
+}
+```
+
+### Migration from Channel-Based to Event-Driven
+
+**Legacy System**: Point-to-point channels created tight coupling
+**V2 System**: Domain events provide loose coupling with clear boundaries
+
+**Migration Benefits**:
+- **Testability**: Domain handlers are easily unit tested in isolation
+- **Maintainability**: Clear separation of concerns reduces complexity
+- **Performance**: Cached state reduces redundant editor queries
+- **Observability**: Structured logging provides comprehensive visibility
+
+**Migration Process**:
+1. Identify domain boundaries within existing channel-based communication
+2. Define domain-specific events with rich context
+3. Implement focused EventHandler<T> for each domain
+4. Replace channel communication with event emission
+5. Maintain comprehensive test coverage throughout migration
+
 ## Future Enhancements
 
 1. **Event Filtering**: Add event filtering to reduce unnecessary updates
@@ -735,6 +950,8 @@ Phase 2 events include rich contextual information:
 4. **Metrics**: Add event system performance monitoring
 5. **Testing**: Develop event simulation framework for testing
 6. **Hot Reloading**: Support runtime handler updates and configuration changes
+7. **Event Replay**: Implement event replay for debugging and testing
+8. **Schema Evolution**: Add versioning support for event schema changes
 
 ## Conclusion
 
