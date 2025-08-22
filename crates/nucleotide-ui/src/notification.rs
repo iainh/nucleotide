@@ -1,12 +1,21 @@
 use std::collections::HashMap;
 
+use crate::Theme;
 use gpui::{
-    App, Context, DefiniteLength, FontWeight, Hsla, IntoElement, ParentElement, Render, RenderOnce,
+    App, Context, DefiniteLength, FontWeight, IntoElement, ParentElement, Render, RenderOnce,
     Result, Styled, Window, div, prelude::FluentBuilder, px,
 };
 use helix_lsp::LanguageServerId;
 use helix_view::document::DocumentSavedEvent;
 use nucleotide_types::EditorStatus;
+
+#[derive(Debug, Clone, Copy)]
+enum NotificationSeverity {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
 
 #[derive(Default, Debug)]
 struct LspStatus {
@@ -26,47 +35,48 @@ impl LspStatus {
 struct Notification {
     title: String,
     message: Option<String>,
-    bg: Hsla,
-    text: Hsla,
+    severity: NotificationSeverity,
 }
 
 impl Notification {
-    fn from_save_event(event: &Result<DocumentSavedEvent, String>, bg: Hsla, text: Hsla) -> Self {
-        let (title, message) = match event {
+    fn from_save_event(event: &Result<DocumentSavedEvent, String>) -> Self {
+        let (title, message, severity) = match event {
             Ok(saved) => (
                 "Saved".to_string(),
                 format!("saved to {}", saved.path.display()),
+                NotificationSeverity::Success,
             ),
-            Err(err) => ("Error".to_string(), format!("error saving: {err}")),
+            Err(err) => (
+                "Error".to_string(),
+                format!("error saving: {err}"),
+                NotificationSeverity::Error,
+            ),
         };
 
         Notification {
             title,
             message: Some(message),
-            bg,
-            text,
+            severity,
         }
     }
 
-    fn from_editor_status(status: &EditorStatus, bg: Hsla, text: Hsla) -> Self {
+    fn from_editor_status(status: &EditorStatus) -> Self {
         use nucleotide_types::Severity;
-        let title = match status.severity {
-            Severity::Info => "info",
-            Severity::Hint => "hint",
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-        }
-        .to_string();
+        let (title, severity) = match status.severity {
+            Severity::Info => ("info", NotificationSeverity::Info),
+            Severity::Hint => ("hint", NotificationSeverity::Info),
+            Severity::Error => ("error", NotificationSeverity::Error),
+            Severity::Warning => ("warning", NotificationSeverity::Warning),
+        };
 
         Notification {
-            title,
+            title: title.to_string(),
             message: Some(status.status.clone()),
-            bg,
-            text,
+            severity,
         }
     }
 
-    fn from_lsp(status: &LspStatus, bg: Hsla, text: Hsla) -> Self {
+    fn from_lsp(status: &LspStatus) -> Self {
         let title = format!(
             "{}: {} {}",
             status.token,
@@ -79,8 +89,7 @@ impl Notification {
         Notification {
             title,
             message: status.message.clone(),
-            bg,
-            text,
+            severity: NotificationSeverity::Info, // LSP notifications are typically informational
         }
     }
 }
@@ -89,18 +98,14 @@ pub struct NotificationView {
     lsp_status: HashMap<LanguageServerId, LspStatus>,
     editor_status: Option<EditorStatus>,
     saved: Option<Result<DocumentSavedEvent, String>>,
-    popup_bg_color: Hsla,
-    popup_text_color: Hsla,
 }
 
 impl NotificationView {
-    pub fn new(popup_bg_color: Hsla, popup_text_color: Hsla) -> Self {
+    pub fn new() -> Self {
         Self {
             saved: None,
             editor_status: None,
             lsp_status: HashMap::new(),
-            popup_bg_color,
-            popup_text_color,
         }
     }
 }
@@ -112,25 +117,13 @@ impl Render for NotificationView {
             if status.is_empty() {
                 continue;
             }
-            notifications.push(Notification::from_lsp(
-                status,
-                self.popup_bg_color,
-                self.popup_text_color,
-            ));
+            notifications.push(Notification::from_lsp(status));
         }
         if let Some(status) = &self.editor_status {
-            notifications.push(Notification::from_editor_status(
-                status,
-                self.popup_bg_color,
-                self.popup_text_color,
-            ));
+            notifications.push(Notification::from_editor_status(status));
         }
         if let Some(saved) = self.saved.take() {
-            notifications.push(Notification::from_save_event(
-                &saved,
-                self.popup_bg_color,
-                self.popup_text_color,
-            ));
+            notifications.push(Notification::from_save_event(&saved));
         }
         div()
             .absolute()
@@ -147,7 +140,34 @@ impl Render for NotificationView {
 
 impl RenderOnce for Notification {
     fn render(mut self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
+        let notification_tokens = theme.tokens.notification_tokens();
         let message = self.message.take();
+
+        // Select colors based on notification severity using hybrid tokens
+        let (bg_color, text_color, border_color) = match self.severity {
+            NotificationSeverity::Info => (
+                notification_tokens.info_background,
+                notification_tokens.info_text,
+                notification_tokens.info_border,
+            ),
+            NotificationSeverity::Success => (
+                notification_tokens.success_background,
+                notification_tokens.success_text,
+                notification_tokens.success_border,
+            ),
+            NotificationSeverity::Warning => (
+                notification_tokens.warning_background,
+                notification_tokens.warning_text,
+                notification_tokens.warning_border,
+            ),
+            NotificationSeverity::Error => (
+                notification_tokens.error_background,
+                notification_tokens.error_text,
+                notification_tokens.error_border,
+            ),
+        };
+
         div()
             .flex()
             .flex_col()
@@ -155,8 +175,10 @@ impl RenderOnce for Notification {
             .p_2()
             .gap_4()
             .min_h(px(100.))
-            .bg(self.bg)
-            .text_color(self.text)
+            .bg(bg_color)
+            .text_color(text_color)
+            .border_1()
+            .border_color(border_color)
             .shadow_sm()
             .rounded_sm()
             .font(

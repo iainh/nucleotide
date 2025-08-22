@@ -1,7 +1,8 @@
+use crate::Theme;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Context, DismissEvent, EventEmitter, FontWeight, IntoElement, ParentElement, Render,
-    SharedString, Style, Styled, Window, div, px,
+    SharedString, Styled, Window, div, px,
 };
 use helix_view::info::Info;
 use nucleotide_core::{AppEvent, UiEvent};
@@ -10,15 +11,13 @@ use nucleotide_core::{AppEvent, UiEvent};
 pub struct InfoBoxView {
     title: Option<SharedString>,
     text: Option<SharedString>,
-    style: Style,
 }
 
 impl InfoBoxView {
-    pub fn new(style: Style) -> Self {
+    pub fn new() -> Self {
         InfoBoxView {
             title: None,
             text: None,
-            style,
         }
     }
 
@@ -56,6 +55,9 @@ impl EventEmitter<DismissEvent> for InfoBoxView {}
 
 impl Render for InfoBoxView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<Theme>();
+        let tooltip_tokens = theme.tokens.tooltip_tokens();
+
         div()
             .absolute()
             .bottom_7()
@@ -67,8 +69,10 @@ impl Render for InfoBoxView {
                     .rounded_sm()
                     .shadow_sm()
                     .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size - 1.0))
-                    .when_some(self.style.text.color, gpui::Styled::text_color)
-                    .bg(gpui::rgb(0x2a2a3e))
+                    .bg(tooltip_tokens.background)
+                    .text_color(tooltip_tokens.text)
+                    .border_1()
+                    .border_color(tooltip_tokens.border)
                     .p_2()
                     .flex()
                     .flex_row()
@@ -88,7 +92,11 @@ impl Render for InfoBoxView {
                                         .child(title.clone()),
                                 )
                                 .when_some(self.text.as_ref(), |this, text| {
-                                    this.child(text.clone())
+                                    this.child(
+                                        div()
+                                            .text_color(tooltip_tokens.text_secondary)
+                                            .child(text.clone()),
+                                    )
                                 }),
                         )
                     }),
