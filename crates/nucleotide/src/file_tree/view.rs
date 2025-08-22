@@ -5,7 +5,6 @@ use crate::file_tree::watcher::FileTreeWatcher;
 use crate::file_tree::{
     FileTree, FileTreeConfig, FileTreeEntry, FileTreeEvent, icons::chevron_icon,
 };
-use crate::vcs_service::VcsServiceHandle;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
@@ -19,6 +18,7 @@ use nucleotide_ui::{
     VcsStatus, compute_component_state,
     scrollbar::{Scrollbar, ScrollbarState},
 };
+use nucleotide_vcs::VcsServiceHandle;
 use std::path::{Path, PathBuf};
 
 /// File tree view component

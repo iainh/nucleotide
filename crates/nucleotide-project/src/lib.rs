@@ -5,12 +5,21 @@ use std::path::Path;
 
 pub mod error;
 pub mod manifest;
+pub mod project_indicator;
+pub mod project_status_service;
 pub mod providers;
 pub mod registry;
 pub mod utils;
 
 pub use error::{ProjectError, Result};
 pub use manifest::{ManifestDelegate, ManifestName, ManifestProvider, ManifestQuery};
+pub use project_indicator::{
+    ProjectInfo, ProjectLspStatus, ProjectLspStatusIndicator, ProjectType, ProjectTypeBadge,
+};
+pub use project_status_service::{
+    initialize_project_status_service, project_status_service, ProjectStatusHandle,
+    ProjectStatusService,
+};
 pub use registry::ManifestProviders;
 
 /// Main entry point for project detection

@@ -1,7 +1,7 @@
 // ABOUTME: Integration test to verify LSP servers receive proper environment variables from ProjectEnvironment
 // ABOUTME: Tests the full flow from ProjectEnvironment → HelixLspBridge → LSP server startup with environment injection
 
-use crate::shell_env::ProjectEnvironment;
+use nucleotide_env::ProjectEnvironment;
 use nucleotide_events::ProjectLspEvent;
 use nucleotide_lsp::{EnvironmentProvider, HelixLspBridge};
 use std::collections::HashMap;

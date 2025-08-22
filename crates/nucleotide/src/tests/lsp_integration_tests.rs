@@ -6,11 +6,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::{Config as NucleotideConfig, GuiConfig, LspConfig};
-use crate::lsp_manager::{LspManager, LspStartupMode, LspStartupResult};
 use nucleotide_events::{ProjectType, ServerHealthStatus};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspConfig, ProjectLspManager};
+use nucleotide_lsp::{LspManager, LspStartupMode, LspStartupResult};
 
-/// Test helper to create a test configuration
+/// Test helper to create a test configuration for LSP manager
+fn create_lsp_test_config(
+    project_lsp_startup: bool,
+    enable_fallback: bool,
+    timeout_ms: u64,
+) -> Arc<nucleotide_lsp::LspManagerConfig> {
+    Arc::new(nucleotide_lsp::LspManagerConfig {
+        project_lsp_startup,
+        startup_timeout_ms: timeout_ms,
+        enable_fallback,
+    })
+}
+
+/// Test helper to create a full nucleotide config (if needed for other tests)
 fn create_test_config(
     project_lsp_startup: bool,
     enable_fallback: bool,
@@ -131,7 +144,7 @@ async fn test_project_detection_rust() {
 #[tokio::test]
 async fn test_lsp_manager_startup_modes() {
     // Test with project LSP startup enabled
-    let config = create_test_config(true, true, 5000);
+    let config = create_lsp_test_config(true, true, 5000);
     let lsp_manager = LspManager::new(config.clone());
 
     let project_dir = create_test_project_dir();
@@ -154,7 +167,7 @@ async fn test_lsp_manager_startup_modes() {
     }
 
     // Test with project LSP startup disabled
-    let config_disabled = create_test_config(false, true, 5000);
+    let config_disabled = create_lsp_test_config(false, true, 5000);
     let lsp_manager_disabled = LspManager::new(config_disabled);
 
     let mode_disabled =
@@ -175,7 +188,7 @@ async fn test_lsp_manager_startup_modes() {
 
 #[tokio::test]
 async fn test_fallback_mechanism() {
-    let config = create_test_config(true, true, 5000);
+    let config = create_lsp_test_config(true, true, 5000);
     let lsp_manager = LspManager::new(config);
 
     // Test fallback when no project is detected
@@ -323,10 +336,10 @@ async fn test_project_lsp_error_types() {
 #[tokio::test]
 async fn test_config_hot_reload() {
     // Test LspManager configuration updates
-    let initial_config = create_test_config(false, true, 5000);
+    let initial_config = create_lsp_test_config(false, true, 5000);
     let mut lsp_manager = LspManager::new(initial_config);
 
-    let new_config = create_test_config(true, false, 3000);
+    let new_config = create_lsp_test_config(true, false, 3000);
     let result = lsp_manager.update_config(new_config);
 
     assert!(result.is_ok());
@@ -348,7 +361,7 @@ async fn test_config_hot_reload() {
 
 #[tokio::test]
 async fn test_startup_statistics() {
-    let config = create_test_config(true, true, 5000);
+    let config = create_lsp_test_config(true, true, 5000);
     let lsp_manager = LspManager::new(config);
 
     // Initially, no startup attempts
@@ -394,7 +407,7 @@ async fn test_integration_workflow() {
     assert!(!project.language_servers.is_empty());
 
     // Test LspManager coordination
-    let config = create_test_config(true, true, 5000);
+    let config = create_lsp_test_config(true, true, 5000);
     let lsp_manager = LspManager::new(config);
 
     let file_path = project_dir.join("src").join("main.rs");

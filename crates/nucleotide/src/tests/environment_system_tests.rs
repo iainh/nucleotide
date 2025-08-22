@@ -1,7 +1,7 @@
 // ABOUTME: TDD test suite for comprehensive environment system following Zed's architecture
 // ABOUTME: Tests CLI environment detection, directory shell capture, priority system, and LSP integration
 
-use crate::shell_env::{ProjectEnvironment, ShellEnvironmentError};
+use nucleotide_env::{ProjectEnvironment, ShellEnvironmentError};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tempfile;
@@ -181,7 +181,7 @@ mod directory_shell_tests {
 #[cfg(test)]
 mod shell_specific_tests {
     use super::*;
-    use crate::shell_env::shell_command_builder;
+    use nucleotide_env::shell_command_builder;
 
     #[tokio::test]
     async fn test_bash_shell_command() {
@@ -238,7 +238,7 @@ mod shell_specific_tests {
     #[tokio::test]
     async fn test_shell_detection() {
         // Test: Should correctly detect shell type from path
-        use crate::shell_env::detect_shell_type;
+        use nucleotide_env::detect_shell_type;
 
         assert_eq!(detect_shell_type("/bin/bash"), "bash");
         assert_eq!(detect_shell_type("/usr/local/bin/fish"), "fish");
@@ -475,7 +475,7 @@ mod direnv_integration_tests {
     #[tokio::test]
     async fn test_cd_command_includes_directory() {
         // Test: Shell command should include 'cd <directory>' before environment capture
-        use crate::shell_env::shell_command_builder;
+        use nucleotide_env::shell_command_builder;
 
         let cmd = shell_command_builder::build_environment_capture_command(
             "/bin/bash",

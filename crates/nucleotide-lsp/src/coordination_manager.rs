@@ -8,7 +8,73 @@ use std::time::{Duration, Instant};
 use helix_view::DocumentId;
 use nucleotide_logging::{debug, error, info, instrument, warn};
 
-use crate::config::Config;
+// Helper function to find workspace root from a specific directory
+#[instrument]
+fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
+    // Walk up the directory tree looking for VCS directories
+    for ancestor in start_dir.ancestors() {
+        if ancestor.join(".git").exists()
+            || ancestor.join(".svn").exists()
+            || ancestor.join(".hg").exists()
+            || ancestor.join(".jj").exists()
+            || ancestor.join(".helix").exists()
+        {
+            return ancestor.to_path_buf();
+        }
+    }
+
+    // If no VCS directory found, use the start directory
+    start_dir.to_path_buf()
+}
+
+// Internal config structure for LSP management
+#[derive(Debug, Clone)]
+pub struct LspManagerConfig {
+    /// Enable project-based LSP startup (vs file-based)
+    pub project_lsp_startup: bool,
+    /// Timeout for LSP startup in milliseconds
+    pub startup_timeout_ms: u64,
+    /// Enable graceful fallback to file-based startup on project detection failures
+    pub enable_fallback: bool,
+}
+
+impl Default for LspManagerConfig {
+    fn default() -> Self {
+        Self {
+            project_lsp_startup: false,
+            startup_timeout_ms: 5000,
+            enable_fallback: true,
+        }
+    }
+}
+
+impl LspManagerConfig {
+    /// Validate the LSP configuration
+    pub fn validate(&self) -> Result<(), String> {
+        // Validate timeout is reasonable
+        if self.startup_timeout_ms == 0 {
+            return Err("LSP startup timeout must be greater than 0".to_string());
+        }
+
+        if self.startup_timeout_ms > 60000 {
+            return Err("LSP startup timeout should not exceed 60 seconds".to_string());
+        }
+
+        // Log warnings for potentially problematic configurations
+        if self.startup_timeout_ms < 1000 {
+            warn!(
+                timeout_ms = self.startup_timeout_ms,
+                "LSP startup timeout is very low - may cause frequent failures"
+            );
+        }
+
+        if self.project_lsp_startup && !self.enable_fallback {
+            warn!("Project LSP startup enabled without fallback - may cause startup failures");
+        }
+
+        Ok(())
+    }
+}
 
 /// Errors that can occur during LSP operations
 #[derive(Debug, Clone, thiserror::Error)]
@@ -68,7 +134,7 @@ pub enum LspStartupResult {
 
 /// Manages LSP startup with feature flag support and fallback mechanisms
 pub struct LspManager {
-    config: Arc<Config>,
+    config: Arc<LspManagerConfig>,
     startup_attempts: Vec<LspStartupAttempt>,
 }
 
@@ -81,7 +147,7 @@ struct LspStartupAttempt {
 
 impl LspManager {
     /// Create a new LSP manager with the given configuration
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(config: Arc<LspManagerConfig>) -> Self {
         Self {
             config,
             startup_attempts: Vec::new(),
@@ -90,9 +156,9 @@ impl LspManager {
 
     /// Update the configuration at runtime (for hot-reloading)
     #[instrument(skip(self, new_config))]
-    pub fn update_config(&mut self, new_config: Arc<Config>) -> Result<(), LspError> {
+    pub fn update_config(&mut self, new_config: Arc<LspManagerConfig>) -> Result<(), LspError> {
         // Validate the new configuration before applying it
-        if let Err(validation_error) = new_config.gui.lsp.validate() {
+        if let Err(validation_error) = new_config.validate() {
             error!(
                 validation_error = %validation_error,
                 "Invalid LSP configuration provided for update"
@@ -102,14 +168,14 @@ impl LspManager {
             });
         }
 
-        let old_project_lsp = self.config.is_project_lsp_startup_enabled();
-        let new_project_lsp = new_config.is_project_lsp_startup_enabled();
+        let old_project_lsp = self.config.project_lsp_startup;
+        let new_project_lsp = new_config.project_lsp_startup;
 
-        let old_fallback = self.config.is_lsp_fallback_enabled();
-        let new_fallback = new_config.is_lsp_fallback_enabled();
+        let old_fallback = self.config.enable_fallback;
+        let new_fallback = new_config.enable_fallback;
 
-        let old_timeout = self.config.lsp_startup_timeout_ms();
-        let new_timeout = new_config.lsp_startup_timeout_ms();
+        let old_timeout = self.config.startup_timeout_ms;
+        let new_timeout = new_config.startup_timeout_ms;
 
         if old_project_lsp != new_project_lsp
             || old_fallback != new_fallback
@@ -137,7 +203,7 @@ impl LspManager {
         doc_path: Option<&Path>,
         project_dir: Option<&Path>,
     ) -> LspStartupMode {
-        if !self.config.is_project_lsp_startup_enabled() {
+        if !self.config.project_lsp_startup {
             info!("Project LSP startup disabled - using file-based mode");
             return LspStartupMode::File {
                 file_path: doc_path.unwrap_or_else(|| Path::new("")).to_path_buf(),
@@ -151,11 +217,11 @@ impl LspManager {
             );
             return LspStartupMode::Project {
                 project_root: project_root.to_path_buf(),
-                timeout: Duration::from_millis(self.config.lsp_startup_timeout_ms()),
+                timeout: Duration::from_millis(self.config.startup_timeout_ms),
             };
         }
 
-        if self.config.is_lsp_fallback_enabled() {
+        if self.config.enable_fallback {
             warn!("No project detected but fallback enabled - using file-based mode");
             LspStartupMode::File {
                 file_path: doc_path.unwrap_or_else(|| Path::new("")).to_path_buf(),
@@ -261,11 +327,11 @@ impl LspManager {
                 warn!(
                     project_root = %project_root.display(),
                     error = %error,
-                    fallback_enabled = self.config.is_lsp_fallback_enabled(),
+                    fallback_enabled = self.config.enable_fallback,
                     "Project-based LSP startup failed"
                 );
 
-                if self.config.is_lsp_fallback_enabled() {
+                if self.config.enable_fallback {
                     info!("Attempting fallback to file-based LSP startup");
                     let fallback_mode = LspStartupMode::File {
                         file_path: project_root.to_path_buf(),
@@ -432,7 +498,7 @@ impl LspManager {
         };
 
         if let Some(dir) = start_dir {
-            let project_root = crate::application::find_workspace_root_from(dir);
+            let project_root = find_workspace_root_from(dir);
             if project_root != dir {
                 debug!(
                     start_dir = %dir.display(),
@@ -508,24 +574,15 @@ pub struct LspStartupStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config as NucleotideConfig, GuiConfig, LspConfig};
-    use helix_term::config::Config as HelixConfig;
-
     fn create_test_config(
         project_lsp_startup: bool,
         enable_fallback: bool,
         timeout_ms: u64,
-    ) -> Arc<Config> {
-        let mut gui_config = GuiConfig::default();
-        gui_config.lsp = LspConfig {
+    ) -> Arc<LspManagerConfig> {
+        Arc::new(LspManagerConfig {
             project_lsp_startup,
             startup_timeout_ms: timeout_ms,
             enable_fallback,
-        };
-
-        Arc::new(NucleotideConfig {
-            helix: HelixConfig::default(),
-            gui: gui_config,
         })
     }
 
@@ -534,9 +591,9 @@ mod tests {
         let config = create_test_config(false, true, 5000);
         let manager = LspManager::new(config.clone());
 
-        assert_eq!(manager.config.is_project_lsp_startup_enabled(), false);
-        assert_eq!(manager.config.is_lsp_fallback_enabled(), true);
-        assert_eq!(manager.config.lsp_startup_timeout_ms(), 5000);
+        assert_eq!(manager.config.project_lsp_startup, false);
+        assert_eq!(manager.config.enable_fallback, true);
+        assert_eq!(manager.config.startup_timeout_ms, 5000);
         assert_eq!(manager.startup_attempts.len(), 0);
     }
 
@@ -548,9 +605,9 @@ mod tests {
         let new_config = create_test_config(true, false, 3000);
         manager.update_config(new_config);
 
-        assert_eq!(manager.config.is_project_lsp_startup_enabled(), true);
-        assert_eq!(manager.config.is_lsp_fallback_enabled(), false);
-        assert_eq!(manager.config.lsp_startup_timeout_ms(), 3000);
+        assert_eq!(manager.config.project_lsp_startup, true);
+        assert_eq!(manager.config.enable_fallback, false);
+        assert_eq!(manager.config.startup_timeout_ms, 3000);
     }
 
     #[test]

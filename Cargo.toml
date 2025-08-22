@@ -9,6 +9,8 @@ members = [
     "crates/nucleotide-workspace",
     "crates/nucleotide-lsp",
     "crates/nucleotide-project",
+    "crates/nucleotide-env",
+    "crates/nucleotide-vcs",
     "crates/nucleotide",
 ]
 resolver = "2"
@@ -79,6 +81,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"]
 tracing-appender = "0.2"
 dirs = "5.0"
 thiserror = "1.0"
+async-trait = "0.1"
 rand = "0.8"
 slotmap = "1.0"
 
@@ -96,6 +99,8 @@ nucleotide-ui = { path = "crates/nucleotide-ui" }
 nucleotide-workspace = { path = "crates/nucleotide-workspace" }
 nucleotide-lsp = { path = "crates/nucleotide-lsp" }
 nucleotide-project = { path = "crates/nucleotide-project" }
+nucleotide-env = { path = "crates/nucleotide-env" }
+nucleotide-vcs = { path = "crates/nucleotide-vcs" }
 
 [profile.dev]
 opt-level = 1

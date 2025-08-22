@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::{RwLock, Semaphore};
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
 /// Error types for shell environment operations
 #[derive(Debug, thiserror::Error)]

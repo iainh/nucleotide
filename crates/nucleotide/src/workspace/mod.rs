@@ -40,8 +40,8 @@ use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
 use crate::utils;
-use crate::vcs_service::VcsServiceHandle;
 use crate::{Core, Input, InputEvent};
+use nucleotide_vcs::VcsServiceHandle;
 pub struct Workspace {
     core: Entity<Core>,
     input: Entity<Input>,
@@ -156,8 +156,7 @@ impl Workspace {
         let key_hints = cx.new(|_cx| KeyHintView::new());
 
         // Initialize project status service
-        let _project_status_handle =
-            crate::project_status_service::initialize_project_status_service(cx);
+        let _project_status_handle = nucleotide_project::initialize_project_status_service(cx);
 
         // Initialize file tree only if project directory is explicitly set
         let root_path = core.read(cx).project_directory.clone();
@@ -494,7 +493,7 @@ impl Workspace {
         });
 
         // Update project status service
-        //         // let project_status = crate::project_status_service::project_status_service(cx);
+        //         // let project_status = nucleotide_project::project_status_service(cx);
         // // project_status.set_project_root(Some(dir.clone()), cx);
 
         // Start VCS monitoring for the new directory
@@ -719,7 +718,7 @@ impl Workspace {
 
         // Force refresh project detection in the project status service
         info!(project_root = %project_root.display(), "Updating project status service with project root");
-        let project_status = crate::project_status_service::project_status_service(cx);
+        let project_status = nucleotide_project::project_status_service(cx);
         project_status.set_project_root(Some(project_root.clone()), cx);
         info!("Project status service updated, refreshing project detection");
         project_status.refresh_project_detection(cx);
@@ -805,7 +804,7 @@ impl Workspace {
     fn update_project_status_from_lsp_state(&mut self, cx: &mut Context<Self>) {
         if let Some(lsp_state_entity) = self.core.read(cx).lsp_state.clone() {
             // Get project status service first
-            let project_status = crate::project_status_service::project_status_service(cx);
+            let project_status = nucleotide_project::project_status_service(cx);
 
             // Clone the LSP state and update project status outside the closure
             let lsp_state_clone = lsp_state_entity.read(cx).clone();
@@ -1590,7 +1589,7 @@ impl Workspace {
             .update(cx, |core, _| core.start_lsp_with_feature_flags(doc_id));
 
         match lsp_result {
-            crate::lsp_manager::LspStartupResult::Success {
+            nucleotide_lsp::LspStartupResult::Success {
                 mode,
                 language_servers,
                 duration,
@@ -1603,7 +1602,7 @@ impl Workspace {
                     "LSP startup successful for newly opened document"
                 );
             }
-            crate::lsp_manager::LspStartupResult::Failed {
+            nucleotide_lsp::LspStartupResult::Failed {
                 mode,
                 error,
                 fallback_mode,
@@ -1616,7 +1615,7 @@ impl Workspace {
                     "LSP startup failed for newly opened document"
                 );
             }
-            crate::lsp_manager::LspStartupResult::Skipped { reason } => {
+            nucleotide_lsp::LspStartupResult::Skipped { reason } => {
                 info!(
                     doc_id = ?doc_id,
                     reason = %reason,
@@ -2279,7 +2278,7 @@ impl Workspace {
                     let lsp_result = core.start_lsp_with_feature_flags(doc_id);
 
                     match lsp_result {
-                        crate::lsp_manager::LspStartupResult::Success {
+                        nucleotide_lsp::LspStartupResult::Success {
                             mode,
                             language_servers,
                             duration,
@@ -2291,7 +2290,7 @@ impl Workspace {
                                 "LSP startup successful with feature flag system"
                             );
                         }
-                        crate::lsp_manager::LspStartupResult::Failed {
+                        nucleotide_lsp::LspStartupResult::Failed {
                             mode,
                             error,
                             fallback_mode,
@@ -2306,7 +2305,7 @@ impl Workspace {
                             // Fallback to existing mechanism as additional safety net
                             helix_event::request_redraw();
                         }
-                        crate::lsp_manager::LspStartupResult::Skipped { reason } => {
+                        nucleotide_lsp::LspStartupResult::Skipped { reason } => {
                             info!(
                                 reason = %reason,
                                 "LSP startup skipped"
@@ -3140,7 +3139,7 @@ impl Workspace {
                             )
                     }), // .child({
                         //     // Project status indicator section - temporarily disabled
-                        //     // let project_status_handle = crate::project_status_service::project_status_service(cx);
+                        //     // let project_status_handle = nucleotide_project::project_status_service(cx);
                         //     // let project_info = project_status_handle.project_info(cx);
                         //
                         //     div()
@@ -3994,7 +3993,7 @@ impl Workspace {
         // Trigger LSP completion through helix's completion system
         // The completion coordinator will receive the event and handle the UI
         let editor = &self.core.read(cx).editor;
-        crate::lsp_completion_trigger::trigger_completion(editor, true);
+        nucleotide_lsp::lsp_completion_trigger::trigger_completion(editor, true);
 
         nucleotide_logging::info!(
             "LSP completion trigger sent to helix handlers - coordinator will handle response and UI display"
@@ -5065,7 +5064,7 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
         .collect();
 
     // Populate VCS status for all file items using the global VCS service
-    if let Some(vcs_service) = cx.try_global::<crate::vcs_service::VcsServiceHandle>() {
+    if let Some(vcs_service) = cx.try_global::<nucleotide_vcs::VcsServiceHandle>() {
         for item in &mut items {
             if let Some(ref file_path) = item.file_path {
                 item.vcs_status = vcs_service.get_status_cached(file_path, cx);

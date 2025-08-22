@@ -1,7 +1,7 @@
 // ABOUTME: Tests for LSP channel communication race condition fixes
 // ABOUTME: Verifies timeout handling and proper response channel lifecycle management
 
-use crate::shell_env::ProjectEnvironment;
+use nucleotide_env::ProjectEnvironment;
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError, ServerStartResult};
 use nucleotide_lsp::{EnvironmentProvider, HelixLspBridge};
 use std::collections::HashMap;

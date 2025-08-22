@@ -1,0 +1,18 @@
+[package]
+name = "nucleotide-vcs"
+version = "0.1.0"
+edition = "2021"
+description = "Version control system integration for Nucleotide editor"
+license = "MPL-2.0"
+repository = "https://github.com/mralexgray/nucleotide"
+
+[dependencies]
+nucleotide-logging.workspace = true
+nucleotide-ui.workspace = true
+gpui.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+tokio = { workspace = true, features = ["time", "process"] }
+
+[dev-dependencies]
+tempfile = "3.0"

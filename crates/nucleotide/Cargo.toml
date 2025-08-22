@@ -33,6 +33,9 @@ nucleotide-core.workspace = true
 nucleotide-lsp.workspace = true
 nucleotide-editor.workspace = true
 nucleotide-workspace.workspace = true
+nucleotide-project.workspace = true
+nucleotide-env.workspace = true
+nucleotide-vcs.workspace = true
 
 # External dependencies
 gpui.workspace = true

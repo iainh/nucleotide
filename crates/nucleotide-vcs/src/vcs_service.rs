@@ -430,14 +430,14 @@ impl VcsService {
         }
 
         // Rate limit: don't refresh more than once every 2 seconds
-        if let Some(last_check) = self.last_check
-            && last_check.elapsed().as_secs() < 2
-        {
-            debug!(
-                "VCS: Force refresh requested but rate limited (last check was {} seconds ago)",
-                last_check.elapsed().as_secs()
-            );
-            return;
+        if let Some(last_check) = self.last_check {
+            if last_check.elapsed().as_secs() < 2 {
+                debug!(
+                    "VCS: Force refresh requested but rate limited (last check was {} seconds ago)",
+                    last_check.elapsed().as_secs()
+                );
+                return;
+            }
         }
 
         info!("VCS: Force refresh requested");

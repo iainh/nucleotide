@@ -2955,12 +2955,6 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa09f677375595915cb0039f88218ed46987d6ff572bbc506469a67f44a897af"
-
-[[package]]
-name = "gpui"
-version = "0.1.0"
 source = "git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7#faa45c53d7754cfdd91d2f7edd3c786abc703ec7"
 dependencies = [
  "anyhow",
@@ -3068,7 +3062,7 @@ name = "gpui_tokio"
 version = "0.1.0"
 source = "git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7#faa45c53d7754cfdd91d2f7edd3c786abc703ec7"
 dependencies = [
- "gpui 0.1.0 (git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7)",
+ "gpui",
  "tokio",
  "util",
  "workspace-hack",
@@ -4502,7 +4496,7 @@ dependencies = [
  "dirs 5.0.1",
  "fern 0.6.2",
  "futures-util",
- "gpui 0.1.0 (git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7)",
+ "gpui",
  "gpui_tokio",
  "grep-regex",
  "grep-searcher",
@@ -4519,11 +4513,14 @@ dependencies = [
  "nucleo",
  "nucleotide-core",
  "nucleotide-editor",
+ "nucleotide-env",
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-lsp",
+ "nucleotide-project",
  "nucleotide-types",
  "nucleotide-ui",
+ "nucleotide-vcs",
  "nucleotide-workspace",
  "objc",
  "once_cell",
@@ -4555,7 +4552,7 @@ dependencies = [
  "arc-swap",
  "crossterm 0.29.0",
  "futures",
- "gpui 0.1.0 (git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7)",
+ "gpui",
  "helix-core",
  "helix-event",
  "helix-loader",
@@ -4581,13 +4578,26 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arc-swap",
- "gpui 0.1.0 (git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7)",
+ "gpui",
  "helix-core",
  "helix-term",
  "helix-tui",
  "helix-view",
  "nucleotide-core",
  "nucleotide-logging",
+]
+
+[[package]]
+name = "nucleotide-env"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nucleotide-logging",
+ "parking_lot",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4627,7 +4637,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "futures",
- "gpui 0.1.0 (git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7)",
+ "gpui",
  "helix-core",
  "helix-loader",
  "helix-lsp",
@@ -4654,8 +4664,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "gpui 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "gpui",
  "nucleotide-logging",
+ "nucleotide-lsp",
+ "nucleotide-ui",
+ "parking_lot",
  "regex",
  "serde",
  "serde_json",
@@ -4670,7 +4683,7 @@ dependencies = [
 name = "nucleotide-types"
 version = "0.1.0"
 dependencies = [
- "gpui 0.1.0 (git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7)",
+ "gpui",
  "helix-core",
  "serde",
  "serde_json",
@@ -4682,7 +4695,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
- "gpui 0.1.0 (git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7)",
+ "gpui",
  "helix-core",
  "helix-loader",
  "helix-lsp",
@@ -4701,11 +4714,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleotide-vcs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "nucleotide-logging",
+ "nucleotide-ui",
+ "parking_lot",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "nucleotide-workspace"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "gpui 0.1.0 (git+https://github.com/zed-industries/zed?rev=faa45c53d7754cfdd91d2f7edd3c786abc703ec7)",
+ "gpui",
  "helix-core",
  "helix-term",
  "helix-vcs",

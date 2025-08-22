@@ -631,8 +631,8 @@ fn gui_main(
         setup_provider_lifecycle(cx);
 
         // Initialize VCS service
-        let vcs_config = nucleotide::vcs_service::VcsConfig::default();
-        let vcs_service = nucleotide::vcs_service::VcsServiceHandle::new(vcs_config, cx);
+        let vcs_config = nucleotide_vcs::VcsConfig::default();
+        let vcs_service = nucleotide_vcs::VcsServiceHandle::new(vcs_config, cx);
         cx.set_global(vcs_service);
 
         // Set up fonts from configuration
@@ -739,7 +739,7 @@ fn gui_main(
                                 state.status_message = state.get_lsp_indicator();
 
                                 // Update project status service with current LSP state
-                                if let Some(project_status) = cx.try_global::<nucleotide::project_status_service::ProjectStatusHandle>() {
+                                if let Some(project_status) = cx.try_global::<nucleotide_project::ProjectStatusHandle>() {
                                     let project_status = project_status.clone();
                                     project_status.update_lsp_state(state, cx);
                                 }

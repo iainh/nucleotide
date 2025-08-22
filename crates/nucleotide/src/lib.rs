@@ -14,14 +14,7 @@ pub mod file_tree;
 pub mod input_coordinator;
 #[cfg(test)]
 pub mod integration_test_phase2;
-pub mod lsp_completion_trigger;
-pub mod lsp_manager;
 pub mod overlay;
-pub mod project_indicator;
-pub mod project_status_service;
-pub mod shell_env;
-#[cfg(test)]
-pub mod shell_env_focused_test;
 pub mod statusline;
 pub mod tab;
 pub mod tab_bar;
@@ -32,11 +25,21 @@ pub mod test_utils;
 pub mod tests;
 pub mod types;
 pub mod utils;
-pub mod vcs_service;
 pub mod workspace;
 
-// Re-export preview_tracker from nucleotide-core
+// Re-export from nucleotide-core
 pub use nucleotide_core::preview_tracker;
+
+// Re-export from new specialized crates
+pub use nucleotide_env::{
+    CachedEnvironment, EnvironmentOrigin, ProjectEnvironment, ShellEnvError, ShellEnvironmentCache,
+    ShellEnvironmentError,
+};
+pub use nucleotide_lsp::{LspError, LspManager, LspManagerConfig, LspStartupMode};
+pub use nucleotide_project::{
+    ProjectInfo, ProjectLspStatus, ProjectStatusHandle, ProjectStatusService, ProjectType,
+};
+pub use nucleotide_vcs::{VcsConfig, VcsEvent, VcsService, VcsServiceHandle};
 
 // Re-export modules that were moved to other crates
 pub use nucleotide_ui::{

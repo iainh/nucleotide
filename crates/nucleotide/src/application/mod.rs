@@ -33,7 +33,7 @@ use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
 
 // Import our shell environment system
-use crate::shell_env::ProjectEnvironment;
+use nucleotide_env::ProjectEnvironment;
 
 /// Implementation of EnvironmentProvider trait for our ProjectEnvironment
 /// This bridges our environment system with the LSP system
@@ -143,7 +143,7 @@ pub struct Application {
         Option<tokio::sync::mpsc::Sender<crate::completion_coordinator::LspCompletionRequest>>,
     pub config: crate::config::Config,
     pub helix_config_arc: Arc<ArcSwap<helix_term::config::Config>>,
-    pub lsp_manager: crate::lsp_manager::LspManager,
+    pub lsp_manager: nucleotide_lsp::LspManager,
     pub project_lsp_manager: Arc<tokio::sync::RwLock<Option<ProjectLspManager>>>,
     pub helix_lsp_bridge: Arc<tokio::sync::RwLock<Option<HelixLspBridge>>>,
     pub project_lsp_command_tx:
@@ -155,7 +155,7 @@ pub struct Application {
     >,
     pub project_lsp_processor_started: Arc<std::sync::atomic::AtomicBool>,
     pub project_lsp_system_initialized: Arc<std::sync::atomic::AtomicBool>,
-    pub shell_env_cache: Arc<tokio::sync::Mutex<crate::shell_env::ShellEnvironmentCache>>,
+    pub shell_env_cache: Arc<tokio::sync::Mutex<nucleotide_env::ShellEnvironmentCache>>,
     pub project_environment: Arc<ProjectEnvironment>,
     // V2 Event System Core
     pub core: crate::application::ApplicationCore,
@@ -758,12 +758,12 @@ impl Application {
     pub fn start_lsp_with_feature_flags(
         &mut self,
         doc_id: DocumentId,
-    ) -> crate::lsp_manager::LspStartupResult {
+    ) -> nucleotide_lsp::LspStartupResult {
         info!(
             doc_id = ?doc_id,
-            project_lsp_enabled = self.config.is_project_lsp_startup_enabled(),
-            fallback_enabled = self.config.is_lsp_fallback_enabled(),
-            timeout_ms = self.config.lsp_startup_timeout_ms(),
+            project_lsp_enabled = self.config.gui.lsp.project_lsp_startup,
+            fallback_enabled = self.config.gui.lsp.enable_fallback,
+            timeout_ms = self.config.gui.lsp.startup_timeout_ms,
             "Starting LSP with feature flag support"
         );
 
@@ -774,13 +774,17 @@ impl Application {
     /// Update LSP manager configuration (for hot-reloading)
     #[instrument(skip(self))]
     pub fn update_lsp_manager_config(&mut self) {
-        let config_arc = Arc::new(self.config.clone());
-        match self.lsp_manager.update_config(config_arc) {
+        let lsp_config = Arc::new(nucleotide_lsp::LspManagerConfig {
+            project_lsp_startup: self.config.gui.lsp.project_lsp_startup,
+            startup_timeout_ms: self.config.gui.lsp.startup_timeout_ms,
+            enable_fallback: self.config.gui.lsp.enable_fallback,
+        });
+        match self.lsp_manager.update_config(lsp_config) {
             Ok(()) => {
                 info!(
-                    project_lsp_enabled = self.config.is_project_lsp_startup_enabled(),
-                    fallback_enabled = self.config.is_lsp_fallback_enabled(),
-                    timeout_ms = self.config.lsp_startup_timeout_ms(),
+                    project_lsp_enabled = self.config.gui.lsp.project_lsp_startup,
+                    fallback_enabled = self.config.gui.lsp.enable_fallback,
+                    timeout_ms = self.config.gui.lsp.startup_timeout_ms,
                     "LSP manager configuration updated successfully"
                 );
             }
@@ -987,9 +991,9 @@ impl Application {
 
             if !file_paths.is_empty() {
                 // Try to get the VCS service handle
-                if cx.has_global::<crate::vcs_service::VcsServiceHandle>() {
+                if cx.has_global::<nucleotide_vcs::VcsServiceHandle>() {
                     let vcs_results = {
-                        let vcs_service = cx.global::<crate::vcs_service::VcsServiceHandle>();
+                        let vcs_service = cx.global::<nucleotide_vcs::VcsServiceHandle>();
                         vcs_service.get_status_bulk(&file_paths, cx)
                     };
 
@@ -1115,7 +1119,7 @@ impl Application {
         }
 
         // Populate VCS status for all buffer items using the global VCS service
-        if let Some(vcs_service) = cx.try_global::<crate::vcs_service::VcsServiceHandle>() {
+        if let Some(vcs_service) = cx.try_global::<nucleotide_vcs::VcsServiceHandle>() {
             for item in &mut items {
                 if let Some(ref file_path) = item.file_path {
                     item.vcs_status = vcs_service.get_status_cached(file_path, cx);
@@ -1627,10 +1631,11 @@ impl Application {
                             cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::RedrawRequested)));
                         }
                         EditorEvent::LanguageServerMessage((id, call)) => {
+                            // TODO: Fix LSP manager integration after refactoring
                             // We need cx here but it's not available in the async context
                             // For now, handle without UI updates
-                            let mut lsp_manager = nucleotide_lsp::LspManager::new(&mut self.editor, &mut self.lsp_progress);
-                            lsp_manager.handle_language_server_message(call, id).await;
+                            // let mut lsp_manager = nucleotide_lsp::LspManager::new(&mut self.editor, &mut self.lsp_progress);
+                            // lsp_manager.handle_language_server_message(call, id).await;
                         }
                         EditorEvent::DebuggerEvent(_) => {
                             /* TODO */
@@ -1882,7 +1887,7 @@ impl Application {
         };
 
         // Check if ProjectLspManager is available and project-based startup is enabled
-        if self.config.is_project_lsp_startup_enabled()
+        if self.config.gui.lsp.project_lsp_startup
             && let Some(bridge_ref) = self.helix_lsp_bridge.read().await.as_ref()
         {
             // Try to ensure document is tracked by any existing project servers
@@ -1931,7 +1936,7 @@ impl Application {
             .start_lsp_for_document(doc_id, &mut self.editor);
 
         match startup_result {
-            crate::lsp_manager::LspStartupResult::Success {
+            nucleotide_lsp::LspStartupResult::Success {
                 mode,
                 language_servers,
                 duration,
@@ -1945,7 +1950,7 @@ impl Application {
                 );
 
                 // If we have project-based servers, coordinate with them
-                if self.config.is_project_lsp_startup_enabled()
+                if self.config.gui.lsp.project_lsp_startup
                     && let Some(doc_path_ref) = doc_path.as_ref()
                 {
                     let workspace_root =
@@ -1964,7 +1969,7 @@ impl Application {
                     }
                 }
             }
-            crate::lsp_manager::LspStartupResult::Failed {
+            nucleotide_lsp::LspStartupResult::Failed {
                 mode,
                 error,
                 fallback_mode,
@@ -1978,13 +1983,13 @@ impl Application {
                 );
 
                 // If project-based startup failed, ensure fallback is working
-                if matches!(mode, crate::lsp_manager::LspStartupMode::Project { .. }) {
+                if matches!(mode, nucleotide_lsp::LspStartupMode::Project { .. }) {
                     warn!(
                         "Project-based LSP startup failed - fallback should handle file-based startup"
                     );
                 }
             }
-            crate::lsp_manager::LspStartupResult::Skipped { reason } => {
+            nucleotide_lsp::LspStartupResult::Skipped { reason } => {
                 debug!(
                     doc_id = ?doc_id,
                     reason = %reason,
@@ -2004,7 +2009,12 @@ impl Application {
         info!("Updating ProjectLspManager configuration");
 
         // Update the existing LspManager first
-        if let Err(e) = self.lsp_manager.update_config(new_config.clone()) {
+        let lsp_config = Arc::new(nucleotide_lsp::LspManagerConfig {
+            project_lsp_startup: new_config.gui.lsp.project_lsp_startup,
+            startup_timeout_ms: new_config.gui.lsp.startup_timeout_ms,
+            enable_fallback: new_config.gui.lsp.enable_fallback,
+        });
+        if let Err(e) = self.lsp_manager.update_config(lsp_config) {
             error!(error = %e, "Failed to update LspManager configuration");
             return Err(Box::new(e));
         }
@@ -3336,7 +3346,11 @@ pub fn init_editor(
     // since it needs access to the Core. This will be done in the workspace.
 
     // Create LSP manager with initial configuration
-    let lsp_manager = crate::lsp_manager::LspManager::new(Arc::new(gui_config.clone()));
+    let lsp_manager = nucleotide_lsp::LspManager::new(Arc::new(nucleotide_lsp::LspManagerConfig {
+        project_lsp_startup: gui_config.gui.lsp.project_lsp_startup,
+        startup_timeout_ms: gui_config.gui.lsp.startup_timeout_ms,
+        enable_fallback: gui_config.gui.lsp.enable_fallback,
+    }));
 
     nucleotide_logging::info!(
         "Application created with completion_rx stored and LSP manager initialized - ready for coordinator initialization"
@@ -3367,7 +3381,7 @@ pub fn init_editor(
         project_lsp_processor_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         project_lsp_system_initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         shell_env_cache: Arc::new(tokio::sync::Mutex::new(
-            crate::shell_env::ShellEnvironmentCache::new(),
+            nucleotide_env::ShellEnvironmentCache::new(),
         )),
         project_environment: Arc::new(ProjectEnvironment::new(None)), // TODO: Detect CLI environment
         // V2 Event System Core

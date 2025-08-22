@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod focused_shell_env_tests {
     use crate::shell_env::{
-        ProjectEnvironment, detect_shell_type, parse_shell_environment, shell_command_builder,
+        detect_shell_type, parse_shell_environment, shell_command_builder, ProjectEnvironment,
     };
     use std::collections::HashMap;
     use std::path::Path;
