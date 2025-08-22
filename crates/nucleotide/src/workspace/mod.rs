@@ -1450,6 +1450,11 @@ impl Workspace {
             let theme_name = match appearance {
                 crate::types::SystemAppearance::Light => config.gui.theme.get_light_theme(),
                 crate::types::SystemAppearance::Dark => config.gui.theme.get_dark_theme(),
+                crate::types::SystemAppearance::Auto => {
+                    // For Auto mode, we would need to detect system preference
+                    // For now, fall back to the configured default theme
+                    config.gui.theme.get_light_theme()
+                }
             };
 
             nucleotide_logging::info!(
@@ -2510,11 +2515,20 @@ impl Workspace {
                     }
                     crate::types::AppEvent::Workspace(workspace_event) => {
                         match workspace_event {
-                            crate::types::WorkspaceEvent::OpenFile { path } => {
-                                self.handle_open_file(path, cx);
-                            }
-                            crate::types::WorkspaceEvent::OpenDirectory { path } => {
-                                self.handle_open_directory(path, cx);
+                            crate::types::WorkspaceEvent::FileSelected { path, source } => {
+                                use nucleotide_events::v2::workspace::SelectionSource;
+                                match source {
+                                    SelectionSource::Click | SelectionSource::Command => {
+                                        if path.is_file() {
+                                            self.handle_open_file(path, cx);
+                                        } else if path.is_dir() {
+                                            self.handle_open_directory(path, cx);
+                                        }
+                                    }
+                                    _ => {
+                                        // Other selection sources
+                                    }
+                                }
                             }
                             _ => {
                                 // Other workspace events not yet handled
@@ -2523,20 +2537,22 @@ impl Workspace {
                     }
                     crate::types::AppEvent::Ui(ui_event) => {
                         match ui_event {
-                            crate::types::UiEvent::ShowPicker { picker_type, .. } => {
-                                match picker_type {
-                                    crate::types::PickerType::File => {
+                            crate::types::UiEvent::OverlayShown { overlay_type, .. } => {
+                                use nucleotide_events::v2::ui::OverlayType;
+                                match overlay_type {
+                                    OverlayType::FilePicker => {
                                         let handle = self.handle.clone();
                                         let core = self.core.clone();
                                         open(core, handle, cx);
                                     }
-                                    crate::types::PickerType::Buffer => {
+                                    OverlayType::CommandPalette => {
+                                        // For now, treat command palette as buffer picker
                                         let handle = self.handle.clone();
                                         let core = self.core.clone();
                                         show_buffer_picker(core, handle, cx);
                                     }
                                     _ => {
-                                        // Other picker types not yet implemented
+                                        // Other overlay types not yet implemented
                                     }
                                 }
                             }
@@ -2550,16 +2566,24 @@ impl Workspace {
                     }
                     crate::types::AppEvent::Lsp(lsp_event) => {
                         match lsp_event {
-                            crate::types::LspEvent::ServerInitialized { server_id } => {
+                            crate::types::LspEvent::ServerInitialized { server_id, .. } => {
                                 self.handle_language_server_initialized(*server_id, cx);
                             }
-                            crate::types::LspEvent::ServerExited { server_id } => {
+                            crate::types::LspEvent::ServerExited { server_id, .. } => {
                                 self.handle_language_server_exited(*server_id, cx);
                             }
                             _ => {
                                 // Other LSP events not yet handled
                             }
                         }
+                    }
+                    crate::types::AppEvent::Document(_doc_event) => {
+                        // Document events are handled through legacy Update system
+                        // Future enhancement: Implement direct V2 document event handlers
+                    }
+                    crate::types::AppEvent::Editor(_editor_event) => {
+                        // Editor events are handled through legacy Update system
+                        // Future enhancement: Implement direct V2 editor event handlers
                     }
                 }
             }

@@ -1013,8 +1013,9 @@ fn gui_main(
                                         // Emit OpenDirectory event to update file tree
                                         cx.emit(Update::Event(
                                             nucleotide::types::AppEvent::Workspace(
-                                                nucleotide::types::WorkspaceEvent::OpenDirectory {
+                                                nucleotide::types::WorkspaceEvent::FileSelected {
                                                     path: dir.clone(),
+                                                    source: nucleotide_events::v2::workspace::SelectionSource::Command,
                                                 },
                                             ),
                                         ));
@@ -1034,8 +1035,9 @@ fn gui_main(
                             if let Err(e) = cx.update(|cx| {
                                 workspace_clone.update(cx, |_workspace, cx| {
                                     cx.emit(Update::Event(nucleotide::types::AppEvent::Workspace(
-                                        nucleotide::types::WorkspaceEvent::OpenFile {
+                                        nucleotide::types::WorkspaceEvent::FileSelected {
                                             path: path.clone(),
+                                            source: nucleotide_events::v2::workspace::SelectionSource::Command,
                                         },
                                     )));
                                 })

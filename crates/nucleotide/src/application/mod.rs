@@ -116,7 +116,7 @@ use anyhow::Error;
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, timed, warn};
 
-use crate::types::{AppEvent, CoreEvent, LspEvent, MessageSeverity, PickerType, UiEvent, Update};
+use crate::types::{AppEvent, CoreEvent, UiEvent, Update};
 // ApplicationCore already imported above via pub use
 use gpui::EventEmitter;
 use tokio_stream::StreamExt;
@@ -134,15 +134,13 @@ pub struct Application {
     pub completion_rx:
         Option<tokio::sync::mpsc::Receiver<helix_view::handlers::completion::CompletionEvent>>,
     pub completion_results_rx:
-        Option<tokio::sync::mpsc::Receiver<nucleotide_events::completion_events::CompletionResult>>,
+        Option<tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>>,
     pub completion_results_tx:
-        Option<tokio::sync::mpsc::Sender<nucleotide_events::completion_events::CompletionResult>>,
-    pub lsp_completion_requests_rx: Option<
-        tokio::sync::mpsc::Receiver<nucleotide_events::completion_events::LspCompletionRequest>,
-    >,
-    pub lsp_completion_requests_tx: Option<
-        tokio::sync::mpsc::Sender<nucleotide_events::completion_events::LspCompletionRequest>,
-    >,
+        Option<tokio::sync::mpsc::Sender<crate::completion_coordinator::CompletionResult>>,
+    pub lsp_completion_requests_rx:
+        Option<tokio::sync::mpsc::Receiver<crate::completion_coordinator::LspCompletionRequest>>,
+    pub lsp_completion_requests_tx:
+        Option<tokio::sync::mpsc::Sender<crate::completion_coordinator::LspCompletionRequest>>,
     pub config: crate::config::Config,
     pub helix_config_arc: Arc<ArcSwap<helix_term::config::Config>>,
     pub lsp_manager: crate::lsp_manager::LspManager,
@@ -817,9 +815,9 @@ impl Application {
         {
             info!("Detected file picker in compositor, emitting ShowFilePicker event");
             self.compositor.remove(helix_term::ui::picker::ID);
-            cx.emit(Update::Event(AppEvent::Ui(UiEvent::ShowPicker {
-                picker_type: PickerType::File,
-                picker_object: None,
+            cx.emit(Update::Event(AppEvent::Ui(UiEvent::OverlayShown {
+                overlay_type: nucleotide_events::v2::ui::OverlayType::FilePicker,
+                overlay_id: "file_picker".to_string(),
             })));
             return true;
         }
@@ -832,9 +830,9 @@ impl Application {
                 info!(
                     "Multiple documents open, assuming buffer picker, emitting ShowBufferPicker event"
                 );
-                cx.emit(Update::Event(AppEvent::Ui(UiEvent::ShowPicker {
-                    picker_type: PickerType::Buffer,
-                    picker_object: None,
+                cx.emit(Update::Event(AppEvent::Ui(UiEvent::OverlayShown {
+                    overlay_type: nucleotide_events::v2::ui::OverlayType::CommandPalette,
+                    overlay_id: "buffer_picker".to_string(),
                 })));
                 return true;
             }
@@ -1418,12 +1416,7 @@ impl Application {
                     let status = crate::types::EditorStatus { status: msg.message.to_string(), severity };
                     cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::StatusChanged {
                         message: status.status,
-                        severity: match status.severity {
-                            crate::types::Severity::Hint => MessageSeverity::Info,
-                            crate::types::Severity::Info => MessageSeverity::Info,
-                            crate::types::Severity::Warning => MessageSeverity::Warning,
-                            crate::types::Severity::Error => MessageSeverity::Error,
-                        }
+                        severity: status.severity
                     })));
                     // TODO: show multiple status messages at once to avoid clobbering
                     let helix_severity = match msg.severity {
@@ -1757,8 +1750,7 @@ impl Application {
     /// Take the completion results receiver, leaving None in its place
     pub fn take_completion_results_receiver(
         &mut self,
-    ) -> Option<tokio::sync::mpsc::Receiver<nucleotide_events::completion_events::CompletionResult>>
-    {
+    ) -> Option<tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>> {
         let receiver = self.completion_results_rx.take();
         nucleotide_logging::info!(
             "take_completion_results_receiver called - receiver present: {}",
@@ -1770,8 +1762,7 @@ impl Application {
     /// Take the completion results sender, leaving None in its place
     pub fn take_completion_results_sender(
         &mut self,
-    ) -> Option<tokio::sync::mpsc::Sender<nucleotide_events::completion_events::CompletionResult>>
-    {
+    ) -> Option<tokio::sync::mpsc::Sender<crate::completion_coordinator::CompletionResult>> {
         let sender = self.completion_results_tx.take();
         nucleotide_logging::info!(
             "take_completion_results_sender called - sender present: {}",
@@ -1783,9 +1774,8 @@ impl Application {
     /// Take the LSP completion requests receiver, leaving None in its place
     pub fn take_lsp_completion_requests_receiver(
         &mut self,
-    ) -> Option<
-        tokio::sync::mpsc::Receiver<nucleotide_events::completion_events::LspCompletionRequest>,
-    > {
+    ) -> Option<tokio::sync::mpsc::Receiver<crate::completion_coordinator::LspCompletionRequest>>
+    {
         let receiver = self.lsp_completion_requests_rx.take();
         nucleotide_logging::info!(
             "take_lsp_completion_requests_receiver called - receiver present: {}",
@@ -1797,7 +1787,7 @@ impl Application {
     /// Take the LSP completion requests sender, leaving None in its place
     pub fn take_lsp_completion_requests_sender(
         &mut self,
-    ) -> Option<tokio::sync::mpsc::Sender<nucleotide_events::completion_events::LspCompletionRequest>>
+    ) -> Option<tokio::sync::mpsc::Sender<crate::completion_coordinator::LspCompletionRequest>>
     {
         let sender = self.lsp_completion_requests_tx.take();
         nucleotide_logging::info!(
@@ -2200,7 +2190,7 @@ impl Application {
                 );
 
                 match completion_result {
-                    nucleotide_events::completion_events::CompletionResult::ShowCompletions {
+                    crate::completion_coordinator::CompletionResult::ShowCompletions {
                         items,
                         cursor: _,
                         doc_id: _,
@@ -2215,7 +2205,7 @@ impl Application {
                         let completion_view = cx.new(|cx| {
                             let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
 
-                            // Convert CompletionEventItem to the format expected by CompletionView
+                            // Convert V2 CompletionItem to the format expected by CompletionView
                             let completion_items: Vec<
                                 nucleotide_ui::completion_v2::CompletionItem,
                             > = items
@@ -2223,27 +2213,27 @@ impl Application {
                                 .map(|item| {
                                     use nucleotide_ui::completion_v2::CompletionItemKind;
 
-                                    // Convert string kind to CompletionItemKind enum
-                                    let kind = match item.kind.as_str() {
-                                        "Function" => Some(CompletionItemKind::Function),
-                                        "Constructor" => Some(CompletionItemKind::Constructor),
-                                        "Method" => Some(CompletionItemKind::Method),
-                                        "Variable" => Some(CompletionItemKind::Variable),
-                                        "Field" => Some(CompletionItemKind::Field),
-                                        "Class" => Some(CompletionItemKind::Class),
-                                        "Interface" => Some(CompletionItemKind::Interface),
-                                        "Module" => Some(CompletionItemKind::Module),
-                                        "Property" => Some(CompletionItemKind::Property),
-                                        "Enum" => Some(CompletionItemKind::Enum),
-                                        "Keyword" => Some(CompletionItemKind::Keyword),
-                                        "File" => Some(CompletionItemKind::File),
+                                    // Convert V2 CompletionItemKind to UI CompletionItemKind
+                                    let kind = match item.kind {
+                                        nucleotide_events::completion::CompletionItemKind::Function => Some(CompletionItemKind::Function),
+                                        nucleotide_events::completion::CompletionItemKind::Constructor => Some(CompletionItemKind::Constructor),
+                                        nucleotide_events::completion::CompletionItemKind::Method => Some(CompletionItemKind::Method),
+                                        nucleotide_events::completion::CompletionItemKind::Variable => Some(CompletionItemKind::Variable),
+                                        nucleotide_events::completion::CompletionItemKind::Field => Some(CompletionItemKind::Field),
+                                        nucleotide_events::completion::CompletionItemKind::Class => Some(CompletionItemKind::Class),
+                                        nucleotide_events::completion::CompletionItemKind::Interface => Some(CompletionItemKind::Interface),
+                                        nucleotide_events::completion::CompletionItemKind::Module => Some(CompletionItemKind::Module),
+                                        nucleotide_events::completion::CompletionItemKind::Property => Some(CompletionItemKind::Property),
+                                        nucleotide_events::completion::CompletionItemKind::Enum => Some(CompletionItemKind::Enum),
+                                        nucleotide_events::completion::CompletionItemKind::Keyword => Some(CompletionItemKind::Keyword),
+                                        nucleotide_events::completion::CompletionItemKind::File => Some(CompletionItemKind::File),
                                         _ => Some(CompletionItemKind::Text), // Default fallback
                                     };
 
                                     nucleotide_ui::completion_v2::CompletionItem {
-                                        text: item.text.into(),
+                                        text: item.label.into(),
                                         kind,
-                                        description: item.description.map(|s| s.into()),
+                                        description: item.detail.map(|s| s.into()),
                                         display_text: None, // Use default display text
                                         documentation: item.documentation.map(|s| s.into()),
                                     }
@@ -2262,7 +2252,7 @@ impl Application {
                         // Emit the completion view via the event system
                         cx.emit(crate::Update::Completion(completion_view));
                     }
-                    nucleotide_events::completion_events::CompletionResult::HideCompletions => {
+                    crate::completion_coordinator::CompletionResult::HideCompletions => {
                         nucleotide_logging::info!(
                             "Completion coordinator requested to hide completions"
                         );
@@ -2272,25 +2262,8 @@ impl Application {
                             cx.new(|cx| nucleotide_ui::completion_v2::CompletionView::new(cx));
 
                         cx.emit(crate::Update::Completion(empty_completion_view));
-                    }
-                    nucleotide_events::completion_events::CompletionResult::Error {
-                        message,
-                        doc_id,
-                        view_id,
-                    } => {
-                        nucleotide_logging::error!(
-                            error_message = %message,
-                            doc_id = ?doc_id,
-                            view_id = ?view_id,
-                            "Completion coordinator reported error"
-                        );
-
-                        // For now, just hide completions on error
-                        let empty_completion_view =
-                            cx.new(|cx| nucleotide_ui::completion_v2::CompletionView::new(cx));
-
-                        cx.emit(crate::Update::Completion(empty_completion_view));
-                    }
+                    } // Note: Errors are handled by coordinator falling back to sample completions
+                      // or hiding completions as appropriate
                 }
             }
         }
@@ -2327,10 +2300,11 @@ impl Application {
     #[instrument(skip(self, request, cx))]
     fn handle_lsp_completion_request(
         &mut self,
-        request: nucleotide_events::completion_events::LspCompletionRequest,
+        request: crate::completion_coordinator::LspCompletionRequest,
         cx: &mut gpui::Context<Self>,
     ) {
-        use nucleotide_events::completion_events::{CompletionEventItem, LspCompletionResponse};
+        use crate::completion_coordinator::LspCompletionResponse;
+        use nucleotide_events::completion::CompletionItem;
 
         nucleotide_logging::info!(
             cursor = request.cursor,
@@ -2427,19 +2401,44 @@ impl Application {
                                 helix_lsp::lsp::CompletionResponse::Array(items) => (items, false),
                                 helix_lsp::lsp::CompletionResponse::List(list) => (list.items, list.is_incomplete),
                             };
-                            let completion_items: Vec<CompletionEventItem> = items.into_iter().map(|lsp_item| {
-                                CompletionEventItem {
-                                    text: lsp_item.label.clone(),
-                                    kind: lsp_item.kind
-                                        .map(|k| format!("{:?}", k))
-                                        .unwrap_or_else(|| "Unknown".to_string()),
-                                    description: lsp_item.detail,
-                                    documentation: lsp_item.documentation
-                                        .map(|doc| match doc {
-                                            helix_lsp::lsp::Documentation::String(s) => s,
-                                            helix_lsp::lsp::Documentation::MarkupContent(markup) => markup.value,
-                                        }),
+                            let completion_items: Vec<CompletionItem> = items.into_iter().map(|lsp_item| {
+                                use nucleotide_events::completion::CompletionItemKind;
+                                let kind = match lsp_item.kind {
+                                    Some(helix_lsp::lsp::CompletionItemKind::TEXT) => CompletionItemKind::Text,
+                                    Some(helix_lsp::lsp::CompletionItemKind::METHOD) => CompletionItemKind::Method,
+                                    Some(helix_lsp::lsp::CompletionItemKind::FUNCTION) => CompletionItemKind::Function,
+                                    Some(helix_lsp::lsp::CompletionItemKind::CONSTRUCTOR) => CompletionItemKind::Constructor,
+                                    Some(helix_lsp::lsp::CompletionItemKind::FIELD) => CompletionItemKind::Field,
+                                    Some(helix_lsp::lsp::CompletionItemKind::VARIABLE) => CompletionItemKind::Variable,
+                                    Some(helix_lsp::lsp::CompletionItemKind::CLASS) => CompletionItemKind::Class,
+                                    Some(helix_lsp::lsp::CompletionItemKind::INTERFACE) => CompletionItemKind::Interface,
+                                    Some(helix_lsp::lsp::CompletionItemKind::MODULE) => CompletionItemKind::Module,
+                                    Some(helix_lsp::lsp::CompletionItemKind::PROPERTY) => CompletionItemKind::Property,
+                                    Some(helix_lsp::lsp::CompletionItemKind::UNIT) => CompletionItemKind::Unit,
+                                    Some(helix_lsp::lsp::CompletionItemKind::VALUE) => CompletionItemKind::Value,
+                                    Some(helix_lsp::lsp::CompletionItemKind::ENUM) => CompletionItemKind::Enum,
+                                    Some(helix_lsp::lsp::CompletionItemKind::KEYWORD) => CompletionItemKind::Keyword,
+                                    Some(helix_lsp::lsp::CompletionItemKind::SNIPPET) => CompletionItemKind::Snippet,
+                                    Some(helix_lsp::lsp::CompletionItemKind::COLOR) => CompletionItemKind::Color,
+                                    Some(helix_lsp::lsp::CompletionItemKind::FILE) => CompletionItemKind::File,
+                                    Some(helix_lsp::lsp::CompletionItemKind::REFERENCE) => CompletionItemKind::Reference,
+                                    Some(helix_lsp::lsp::CompletionItemKind::FOLDER) => CompletionItemKind::Folder,
+                                    _ => CompletionItemKind::Text,
+                                };
+                                let insert_text = lsp_item.insert_text.unwrap_or_else(|| lsp_item.label.clone());
+                                let mut item = CompletionItem::new(lsp_item.label.clone(), kind)
+                                    .with_insert_text(insert_text);
+                                if let Some(detail) = lsp_item.detail {
+                                    item = item.with_detail(detail);
                                 }
+                                if let Some(documentation) = lsp_item.documentation {
+                                    let doc_text = match documentation {
+                                        helix_lsp::lsp::Documentation::String(s) => s,
+                                        helix_lsp::lsp::Documentation::MarkupContent(markup) => markup.value,
+                                    };
+                                    item = item.with_documentation(doc_text);
+                                }
+                                item
                             }).collect();
                             nucleotide_logging::info!(
                                 item_count = completion_items.len(),

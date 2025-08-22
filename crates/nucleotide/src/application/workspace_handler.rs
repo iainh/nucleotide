@@ -4,8 +4,7 @@
 use helix_view::DocumentId;
 use nucleotide_events::v2::handler::EventHandler;
 use nucleotide_events::v2::workspace::{
-    Event, FileOpenSource, LayoutType, PanelConfiguration, PanelType, ProjectType, SelectionSource,
-    TabId,
+    Event, LayoutType, PanelConfiguration, PanelType, ProjectType, TabId,
 };
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use std::collections::HashMap;

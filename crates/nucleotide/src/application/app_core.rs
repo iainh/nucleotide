@@ -1,7 +1,6 @@
 // ABOUTME: Core application logic extracted from Application struct
 // ABOUTME: Handles V2 event processing and central coordination logic
 
-use helix_view::DocumentId;
 use nucleotide_events::v2::handler::EventHandler;
 use nucleotide_logging::{debug, error, info, instrument, warn};
 

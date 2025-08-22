@@ -1,13 +1,40 @@
 // ABOUTME: Coordinates LSP completion requests with nucleotide UI
 // ABOUTME: Receives completion events from helix and manages the completion flow
 
-use gpui::{AppContext, BackgroundExecutor, Entity};
+use gpui::{BackgroundExecutor, Entity};
 use helix_view::handlers::completion::CompletionEvent;
-use nucleotide_events::completion_events::{CompletionEventItem, CompletionResult};
+use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::Application;
+
+/// LSP completion request message
+pub struct LspCompletionRequest {
+    pub cursor: usize,
+    pub doc_id: helix_view::DocumentId,
+    pub view_id: helix_view::ViewId,
+    pub response_tx: tokio::sync::oneshot::Sender<LspCompletionResponse>,
+}
+
+/// LSP completion response message
+pub struct LspCompletionResponse {
+    pub items: Vec<CompletionItem>,
+    pub is_incomplete: bool,
+    pub error: Option<String>,
+}
+
+/// Completion result sent to UI
+#[derive(Debug)]
+pub enum CompletionResult {
+    ShowCompletions {
+        items: Vec<CompletionItem>,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+    },
+    HideCompletions,
+}
 
 /// Coordinates completion events from helix with nucleotide UI
 pub struct CompletionCoordinator {
@@ -16,7 +43,7 @@ pub struct CompletionCoordinator {
     /// Sender for completion results to workspace
     completion_results_tx: Sender<CompletionResult>,
     /// Sender for LSP completion requests to application
-    lsp_completion_requests_tx: Sender<nucleotide_events::completion_events::LspCompletionRequest>,
+    lsp_completion_requests_tx: Sender<LspCompletionRequest>,
     /// Reference to core application
     core: Entity<Application>,
     /// Background executor for running tasks
@@ -27,9 +54,7 @@ impl CompletionCoordinator {
     pub fn new(
         completion_rx: Receiver<CompletionEvent>,
         completion_results_tx: Sender<CompletionResult>,
-        lsp_completion_requests_tx: Sender<
-            nucleotide_events::completion_events::LspCompletionRequest,
-        >,
+        lsp_completion_requests_tx: Sender<LspCompletionRequest>,
         core: Entity<Application>,
         background_executor: BackgroundExecutor,
     ) -> Self {
@@ -172,7 +197,7 @@ impl CompletionCoordinator {
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
 
         // Create the LSP completion request
-        let request = nucleotide_events::completion_events::LspCompletionRequest {
+        let request = LspCompletionRequest {
             cursor,
             doc_id,
             view_id,
@@ -226,7 +251,7 @@ impl CompletionCoordinator {
     /// Send completion results to the UI
     async fn send_completion_results(
         &self,
-        items: Vec<CompletionEventItem>,
+        items: Vec<CompletionItem>,
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
@@ -278,56 +303,32 @@ impl CompletionCoordinator {
 
         // Create sample completion items
         let items = vec![
-            CompletionEventItem {
-                text: "print!".to_string(),
-                kind: "Function".to_string(),
-                description: Some("Print to stdout".to_string()),
-                documentation: Some("Prints to the standard output.".to_string()),
-            },
-            CompletionEventItem {
-                text: "println!".to_string(),
-                kind: "Function".to_string(),
-                description: Some("Print to stdout with newline".to_string()),
-                documentation: Some("Prints to the standard output, with a newline.".to_string()),
-            },
-            CompletionEventItem {
-                text: "eprintln!".to_string(),
-                kind: "Function".to_string(),
-                description: Some("Print to stderr with newline".to_string()),
-                documentation: Some("Prints to the standard error, with a newline.".to_string()),
-            },
-            CompletionEventItem {
-                text: "format!".to_string(),
-                kind: "Function".to_string(),
-                description: Some("Create formatted string".to_string()),
-                documentation: Some(
+            CompletionItem::new("print!".to_string(), CompletionItemKind::Function)
+                .with_detail("Print to stdout".to_string())
+                .with_documentation("Prints to the standard output.".to_string()),
+            CompletionItem::new("println!".to_string(), CompletionItemKind::Function)
+                .with_detail("Print to stdout with newline".to_string())
+                .with_documentation("Prints to the standard output, with a newline.".to_string()),
+            CompletionItem::new("eprintln!".to_string(), CompletionItemKind::Function)
+                .with_detail("Print to stderr with newline".to_string())
+                .with_documentation("Prints to the standard error, with a newline.".to_string()),
+            CompletionItem::new("format!".to_string(), CompletionItemKind::Function)
+                .with_detail("Create formatted string".to_string())
+                .with_documentation(
                     "Creates a String using interpolation of runtime expressions.".to_string(),
                 ),
-            },
-            CompletionEventItem {
-                text: "vec!".to_string(),
-                kind: "Function".to_string(),
-                description: Some("Create a vector".to_string()),
-                documentation: Some("Creates a Vec containing the given elements.".to_string()),
-            },
-            CompletionEventItem {
-                text: "Some".to_string(),
-                kind: "Constructor".to_string(),
-                description: Some("Option variant containing a value".to_string()),
-                documentation: Some("Some value T".to_string()),
-            },
-            CompletionEventItem {
-                text: "None".to_string(),
-                kind: "Constructor".to_string(),
-                description: Some("Option variant for no value".to_string()),
-                documentation: Some("No value".to_string()),
-            },
-            CompletionEventItem {
-                text: "Ok".to_string(),
-                kind: "Constructor".to_string(),
-                description: Some("Result variant for success".to_string()),
-                documentation: Some("Contains the success value".to_string()),
-            },
+            CompletionItem::new("vec!".to_string(), CompletionItemKind::Function)
+                .with_detail("Create a vector".to_string())
+                .with_documentation("Creates a Vec containing the given elements.".to_string()),
+            CompletionItem::new("Some".to_string(), CompletionItemKind::Constructor)
+                .with_detail("Option variant containing a value".to_string())
+                .with_documentation("Some value T".to_string()),
+            CompletionItem::new("None".to_string(), CompletionItemKind::Constructor)
+                .with_detail("Option variant for no value".to_string())
+                .with_documentation("No value".to_string()),
+            CompletionItem::new("Ok".to_string(), CompletionItemKind::Constructor)
+                .with_detail("Result variant for success".to_string())
+                .with_documentation("Contains the success value".to_string()),
         ];
 
         info!(

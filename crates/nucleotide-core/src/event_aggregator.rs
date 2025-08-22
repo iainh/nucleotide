@@ -18,6 +18,7 @@ pub enum AppEvent {
     Ui(UiEvent),
     Workspace(WorkspaceEvent),
     Lsp(LspEvent),
+    Core(crate::core_event::CoreEvent),
 }
 
 /// Event aggregator that collects and dispatches events
@@ -61,6 +62,10 @@ impl EventAggregator {
                     AppEvent::Ui(e) => handler.handle_ui(e),
                     AppEvent::Workspace(e) => handler.handle_workspace(e),
                     AppEvent::Lsp(e) => handler.handle_lsp(e),
+                    AppEvent::Core(_) => {
+                        // Core events are handled through the legacy Update system
+                        // Future enhancement: Migrate core events to proper V2 domain events
+                    }
                 }
             }
         }

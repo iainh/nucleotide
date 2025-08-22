@@ -3,6 +3,7 @@
 
 pub mod capabilities;
 pub mod command_system;
+pub mod core_event;
 pub mod document_manager;
 pub mod editor_capabilities;
 pub mod event_aggregator;
@@ -35,6 +36,9 @@ pub use nucleotide_events::v2::{
 
 // Event aggregator exports (includes V2 AppEvent)
 pub use event_aggregator::{AppEvent, EventAggregator, EventAggregatorHandle};
+
+// Core event exports
+pub use core_event::CoreEvent;
 
 // Event bridge exports
 pub use event_bridge::{

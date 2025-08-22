@@ -3,8 +3,8 @@
 
 use helix_view::{DocumentId, ViewId};
 use nucleotide_events::v2::completion::{
-    CancellationReason, CompletionError, CompletionItem, CompletionMetrics, CompletionProvider,
-    CompletionRequestId, CompletionTrigger, Event, MenuPosition, Position, SelectionMethod,
+    CompletionItem, CompletionMetrics, CompletionProvider, CompletionRequestId, CompletionTrigger,
+    Event, Position,
 };
 use nucleotide_events::v2::handler::EventHandler;
 use nucleotide_logging::{debug, error, info, instrument, warn};
