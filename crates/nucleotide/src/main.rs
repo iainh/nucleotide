@@ -915,17 +915,13 @@ fn gui_main(
                 view
             });
 
-            // Create notifications view with theme colors
-            let notifications = cx.new(|cx| {
-                let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                notification::NotificationView::new(
-                    ui_theme.tokens.colors.background,
-                    ui_theme.tokens.colors.text_primary,
-                )
+            // Create notifications view with hybrid color system
+            let notifications = cx.new(|_cx| {
+                notification::NotificationView::new()
             });
 
-            // Create info box view with default style
-            let info = cx.new(|_cx| info_box::InfoBoxView::new(gpui::Style::default()));
+            // Create info box view with hybrid color system
+            let info = cx.new(|_cx| info_box::InfoBoxView::new());
 
             // Create InputCoordinator for centralized input handling
             let input_coordinator = Arc::new(InputCoordinator::new());

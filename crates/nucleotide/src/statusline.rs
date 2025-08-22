@@ -51,10 +51,10 @@ impl StatusLineView {
     fn get_status_color(&self, tokens: &nucleotide_ui::DesignTokens) -> gpui::Hsla {
         // Use StatusBarTokens from hybrid color system for chrome backgrounds
         let status_bar_tokens = tokens.status_bar_tokens();
-        
+
         // Debug logging to understand what's happening
         let titlebar_tokens = tokens.titlebar_tokens();
-        
+
         // CRITICAL CHECK: Assert that status bar and titlebar use same colors
         if status_bar_tokens.background_active != titlebar_tokens.background {
             nucleotide_logging::error!(
@@ -67,13 +67,13 @@ impl StatusLineView {
                 "CRITICAL ERROR: Status bar and titlebar colors don't match!"
             );
         }
-        
+
         let selected_color = if self.focused {
             status_bar_tokens.background_active
         } else {
             status_bar_tokens.background_inactive
         };
-        
+
         nucleotide_logging::debug!(
             focused = self.focused,
             active_bg = ?status_bar_tokens.background_active,
@@ -86,7 +86,7 @@ impl StatusLineView {
             view_id = ?self.view_id,
             "GET_STATUS_COLOR: Color selection details"
         );
-        
+
         selected_color
     }
 }
@@ -143,7 +143,7 @@ impl Render for StatusLineView {
 
         // Get status bar background color based on focus state
         let status_bg = self.get_status_color(tokens);
-        
+
         // Debug log the actual color being applied in render
         nucleotide_logging::debug!(
             actual_status_bg = ?status_bg,

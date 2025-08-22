@@ -455,9 +455,7 @@ impl ThemeManager {
             .unwrap_or(false);
 
         if test_fallback {
-            nucleotide_logging::warn!(
-                "TESTING MODE: Forcing fallback surface color computation"
-            );
+            nucleotide_logging::warn!("TESTING MODE: Forcing fallback surface color computation");
             let fallback_color = match system_appearance {
                 SystemAppearance::Light => hsla(0.0, 0.0, 0.98, 1.0), // Light background
                 SystemAppearance::Dark => hsla(0.0, 0.0, 0.05, 1.0),  // Dark background
@@ -691,8 +689,9 @@ impl ThemeManager {
         }
 
         // Use enhanced surface color extraction with priority fallback system
-        let (background, surface_color_source) = Self::extract_surface_color(helix_theme, system_appearance);
-        
+        let (background, surface_color_source) =
+            Self::extract_surface_color(helix_theme, system_appearance);
+
         nucleotide_logging::info!(
             background_color = ?background,
             source = ?surface_color_source,

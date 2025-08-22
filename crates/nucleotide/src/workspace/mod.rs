@@ -2939,11 +2939,11 @@ impl Workspace {
         // Use hybrid color system with StatusBarTokens
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
         let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
-        
+
         // Use the hybrid chrome background colors for consistent visual hierarchy
         let bg_color = status_bar_tokens.background_active; // Always use active for unified bar
         let fg_color = status_bar_tokens.text_primary;
-        
+
         // Extract design token values before any mutable borrows
         let space_3 = ui_theme.tokens.sizes.space_3;
         let text_sm = ui_theme.tokens.sizes.text_sm;
@@ -3086,10 +3086,7 @@ impl Workspace {
                             "SEL" => status_bar_tokens.mode_select,
                             _ => status_bar_tokens.mode_normal, // Default for "NOR" and others
                         };
-                        div()
-                            .child(mode_name)
-                            .min_w(px(50.))
-                            .text_color(mode_color)
+                        div().child(mode_name).min_w(px(50.)).text_color(mode_color)
                     })
                     .child(
                         // Divider
