@@ -164,7 +164,7 @@ pub struct VariantColors {
 }
 
 impl VariantColors {
-    /// Get variant colors for a specific variant and theme
+    /// Get variant colors for a specific variant and theme (legacy system)
     pub fn for_variant(variant: StyleVariant, theme: &Theme) -> Self {
         let tokens = &theme.tokens;
 
@@ -228,6 +228,71 @@ impl VariantColors {
         }
     }
 
+    /// Get variant colors using hybrid color system (new system)
+    pub fn for_variant_hybrid(variant: StyleVariant, theme: &Theme) -> Self {
+        // Use our hybrid ButtonTokens for consistent styling across all components
+        let button_tokens = theme.tokens.button_tokens();
+
+        match variant {
+            StyleVariant::Primary => Self {
+                background: button_tokens.primary_background,
+                foreground: button_tokens.primary_text,
+                border: button_tokens.primary_border,
+                hover_background: button_tokens.primary_background_hover,
+                active_background: button_tokens.primary_background_active,
+            },
+            StyleVariant::Secondary => Self {
+                background: button_tokens.secondary_background,
+                foreground: button_tokens.secondary_text,
+                border: button_tokens.secondary_border,
+                hover_background: button_tokens.secondary_background_hover,
+                active_background: button_tokens.secondary_background_active,
+            },
+            StyleVariant::Ghost => Self {
+                background: button_tokens.ghost_background,
+                foreground: button_tokens.ghost_text,
+                border: button_tokens.ghost_background, // Ghost has no border
+                hover_background: button_tokens.ghost_background_hover,
+                active_background: button_tokens.ghost_background_active,
+            },
+            StyleVariant::Danger => Self {
+                background: button_tokens.danger_background,
+                foreground: button_tokens.danger_text,
+                border: button_tokens.danger_background,
+                hover_background: button_tokens.danger_background, // Semantic colors use same hover
+                active_background: button_tokens.danger_background,
+            },
+            StyleVariant::Success => Self {
+                background: button_tokens.success_background,
+                foreground: button_tokens.success_text,
+                border: button_tokens.success_background,
+                hover_background: button_tokens.success_background, // Semantic colors use same hover
+                active_background: button_tokens.success_background,
+            },
+            StyleVariant::Warning => Self {
+                background: button_tokens.warning_background,
+                foreground: button_tokens.warning_text,
+                border: button_tokens.warning_background,
+                hover_background: button_tokens.warning_background, // Semantic colors use same hover
+                active_background: button_tokens.warning_background,
+            },
+            StyleVariant::Info => Self {
+                background: button_tokens.primary_background, // Info maps to primary
+                foreground: button_tokens.primary_text,
+                border: button_tokens.primary_border,
+                hover_background: button_tokens.primary_background_hover,
+                active_background: button_tokens.primary_background_active,
+            },
+            StyleVariant::Accent => Self {
+                background: button_tokens.primary_background, // Accent maps to primary
+                foreground: button_tokens.primary_text,
+                border: button_tokens.primary_border,
+                hover_background: button_tokens.primary_background_hover,
+                active_background: button_tokens.primary_background_active,
+            },
+        }
+    }
+
     /// Get outline variant (border-only) colors
     pub fn outline_variant(variant: StyleVariant, theme: &Theme) -> Self {
         let base_colors = Self::for_variant(variant, theme);
@@ -287,13 +352,39 @@ impl VariantColors {
 pub struct VariantStyler;
 
 impl VariantStyler {
-    /// Compute variant-specific styles
+    /// Compute variant-specific styles (legacy system)
     pub fn compute_variant_style(
         variant: StyleVariant,
         size: StyleSize,
         theme: &Theme,
     ) -> VariantStyle {
         let colors = VariantColors::for_variant(variant, theme);
+        let tokens = &theme.tokens;
+        let (padding_x, padding_y) = size.padding(tokens);
+
+        VariantStyle {
+            variant,
+            size,
+            colors,
+            padding_x,
+            padding_y,
+            font_size: size.font_size(px(14.0)),
+            border_radius: size.border_radius(tokens),
+            border_width: if variant == StyleVariant::Secondary {
+                px(1.0)
+            } else {
+                px(0.0)
+            },
+        }
+    }
+
+    /// Compute variant-specific styles using hybrid color system (new system)
+    pub fn compute_variant_style_hybrid(
+        variant: StyleVariant,
+        size: StyleSize,
+        theme: &Theme,
+    ) -> VariantStyle {
+        let colors = VariantColors::for_variant_hybrid(variant, theme);
         let tokens = &theme.tokens;
         let (padding_x, padding_y) = size.padding(tokens);
 
