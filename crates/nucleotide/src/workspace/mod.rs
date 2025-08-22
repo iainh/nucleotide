@@ -149,7 +149,7 @@ impl Workspace {
 
         // Subscribe to core (Application) events to receive Update events
         cx.subscribe(&core, |workspace, _core, event: &crate::Update, cx| {
-            info!("Workspace: Received Update event from core: {:?}", event);
+            debug!("Workspace: Received Update event from core: {:?}", event);
             workspace.handle_event(event, cx);
         })
         .detach();
@@ -193,7 +193,7 @@ impl Workspace {
         if let Some(ref file_tree) = file_tree {
             info!("Workspace: Subscribing to file tree events");
             cx.subscribe(file_tree, |workspace, _file_tree, event, cx| {
-                info!("Workspace: Received file tree event: {:?}", event);
+                debug!("Workspace: Received file tree event: {:?}", event);
                 workspace.handle_file_tree_event(event, cx);
             })
             .detach();
@@ -2600,7 +2600,7 @@ impl Workspace {
 
         // Check bufferline configuration
         let bufferline_config = &editor.config().bufferline;
-        info!(
+        debug!(
             "render_tab_bar: bufferline config = {:?}, doc count = {}",
             bufferline_config,
             editor.documents.len()
@@ -2612,7 +2612,7 @@ impl Workspace {
             BufferLine::Multiple => editor.documents.len() > 1,
         };
 
-        info!(
+        debug!(
             should_show_tabs = should_show_tabs,
             match_result = ?bufferline_config,
             "Tab bar visibility decision"
@@ -2620,14 +2620,14 @@ impl Workspace {
 
         // If tabs shouldn't be shown, return an empty div with a unique ID
         if !should_show_tabs {
-            info!("Tab bar hidden, returning empty div");
+            debug!("Tab bar hidden, returning empty div");
             return div()
                 .id("tab-bar-hidden")
                 .h(px(0.0)) // Explicitly set height to 0 to ensure no space is taken
                 .into_any_element();
         }
 
-        info!("Tab bar visible, rendering tabs");
+        debug!("Tab bar visible, rendering tabs");
 
         // Calculate available width for tabs dynamically
         let window_size = window.viewport_size();
@@ -2643,7 +2643,7 @@ impl Workspace {
         const TAB_BAR_MARGIN: f32 = 20.0;
         available_width = (available_width - TAB_BAR_MARGIN).max(200.0); // Minimum 200px
 
-        info!(
+        debug!(
             window_width = window_size.width.0,
             file_tree_width = self.file_tree_width,
             show_file_tree = self.show_file_tree,
