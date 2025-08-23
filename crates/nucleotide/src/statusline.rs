@@ -214,12 +214,12 @@ impl Render for StatusLineView {
             .text_size(font_size)
             .text_color(status_bar_tokens.text_primary)
             .child(
-                // Mode indicator - use accent color for mode as it's functional content
+                // Mode indicator - use standard text color
                 div()
                     .child(mode_name)
                     .min_w(px(24.))
                     .px(tokens.sizes.space_2)
-                    .text_color(status_bar_tokens.text_accent), // Use accent for mode visibility
+                    .text_color(status_bar_tokens.text_primary), // Use standard text color
             )
             .child(
                 // Divider
