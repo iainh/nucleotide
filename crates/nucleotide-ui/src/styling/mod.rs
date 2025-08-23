@@ -336,7 +336,7 @@ impl<'a> StyleContext<'a> {
             StyleState::Selected => {
                 // Use primary selection color for active selection
                 style.background = self.tokens.colors.selection_primary;
-                style.foreground = self.tokens.colors.text_primary;
+                style.foreground = self.tokens.colors.text_on_primary;
                 style.border_color = self.tokens.colors.selection_primary;
             }
             StyleState::Default => {

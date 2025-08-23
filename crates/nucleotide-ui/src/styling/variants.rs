@@ -206,7 +206,7 @@ impl VariantColors {
             },
             StyleVariant::Warning => Self {
                 background: tokens.colors.warning,
-                foreground: tokens.colors.text_primary,
+                foreground: tokens.colors.text_on_primary,
                 border: tokens.colors.warning,
                 hover_background: tokens.colors.primary_hover,
                 active_background: tokens.colors.primary_active,
