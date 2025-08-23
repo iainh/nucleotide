@@ -480,7 +480,17 @@ impl Button {
             } else {
                 1.0
             },
-            shadow: None,     // Simplified - no shadows for now
+            shadow: if matches!(self.variant, ButtonVariant::Ghost) {
+                None // Ghost buttons should have no shadow for subtlety
+            } else {
+                Some(crate::styling::BoxShadow {
+                    offset_x: px(tokens.shadow_offset_x),
+                    offset_y: px(tokens.shadow_offset_y),
+                    blur_radius: px(tokens.shadow_blur_radius),
+                    spread_radius: px(0.0), // No spread for subtle shadows
+                    color: tokens.shadow_color,
+                })
+            },
             transition: None, // Simplified - no transitions for now
         }
     }

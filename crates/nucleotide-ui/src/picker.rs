@@ -98,7 +98,12 @@ impl RenderOnce for PickerElement {
                         .border_1()
                         .border_color(picker_tokens.border)
                         .rounded_md()
-                        .shadow_lg()
+                        .shadow(vec![gpui::BoxShadow {
+                            color: picker_tokens.shadow,
+                            offset: gpui::point(px(picker_tokens.shadow_offset_x), px(picker_tokens.shadow_offset_y)),
+                            blur_radius: px(picker_tokens.shadow_blur_radius),
+                            spread_radius: px(0.0), // No spread for clean shadows
+                        }])
                         .font(font)
                         .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size))
                         .child(

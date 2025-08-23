@@ -1431,6 +1431,12 @@ pub struct ButtonTokens {
     // Focus states (use Helix focus colors)
     pub focus_ring: Hsla,
     pub focus_ring_danger: Hsla,
+
+    // Shadow properties (light source from above-left)
+    pub shadow_color: Hsla,
+    pub shadow_offset_x: f32, // Negative for left offset
+    pub shadow_offset_y: f32, // Positive for below offset
+    pub shadow_blur_radius: f32,
 }
 
 impl ButtonTokens {
@@ -1484,6 +1490,12 @@ impl ButtonTokens {
         let focus_ring = editor.focus_ring;
         let focus_ring_danger = editor.focus_ring_error;
 
+        // Shadow properties for above-left light source
+        let shadow_color = ColorTheory::with_alpha(hsla(0.0, 0.0, 0.0, 1.0), 0.08); // Very subtle shadow
+        let shadow_offset_x = -1.0; // Smaller left offset
+        let shadow_offset_y = 1.0; // Smaller below offset
+        let shadow_blur_radius = 2.0; // Tighter shadow to avoid bleed
+
         Self {
             primary_background: primary_bg,
             primary_background_hover: primary_bg_hover,
@@ -1521,6 +1533,11 @@ impl ButtonTokens {
 
             focus_ring,
             focus_ring_danger,
+
+            shadow_color,
+            shadow_offset_x,
+            shadow_offset_y,
+            shadow_blur_radius,
         }
     }
 }
@@ -1556,6 +1573,11 @@ pub struct PickerTokens {
     pub border: Hsla,
     pub separator: Hsla,
     pub shadow: Hsla,
+
+    // Shadow properties (light source from above-left)
+    pub shadow_offset_x: f32, // Negative for left offset
+    pub shadow_offset_y: f32, // Positive for below offset
+    pub shadow_blur_radius: f32,
 }
 
 impl PickerTokens {
@@ -1592,6 +1614,11 @@ impl PickerTokens {
         let separator = chrome.separator_color;
         let shadow = ColorTheory::with_alpha(chrome.surface, 0.3);
 
+        // Shadow properties for above-left light source
+        let shadow_offset_x = -2.0; // Left offset (negative for left)
+        let shadow_offset_y = 2.0; // Below offset (positive for below)
+        let shadow_blur_radius = 4.0; // Moderate shadow for picker surfaces
+
         Self {
             container_background: container_bg,
             overlay_background: overlay_bg,
@@ -1612,6 +1639,10 @@ impl PickerTokens {
             border,
             separator,
             shadow,
+
+            shadow_offset_x,
+            shadow_offset_y,
+            shadow_blur_radius,
         }
     }
 }
