@@ -1,6 +1,7 @@
 // ABOUTME: Design token system providing semantic color and spacing values
 // ABOUTME: Replaces hardcoded values with systematic, theme-aware design tokens
 
+use crate::styling::ColorTheory;
 use gpui::{Hsla, Pixels, hsla, px};
 use nucleotide_logging::debug;
 
@@ -720,9 +721,14 @@ impl EditorTokens {
             hsla(0.0, 0.0, 0.9, 1.0)
         };
         let text_secondary = utils::with_alpha(text_primary, 0.7);
-        let text_on_primary = if text_primary.l > 0.5 {
+
+        // Compute text_on_primary based on selection background for proper contrast
+        let selection_luminance = ColorTheory::relative_luminance(helix_colors.selection);
+        let text_on_primary = if selection_luminance > 0.5 {
+            // Light selection background - use dark text
             hsla(0.0, 0.0, 0.1, 1.0)
         } else {
+            // Dark selection background - use light text
             hsla(0.0, 0.0, 0.9, 1.0)
         };
 
@@ -777,9 +783,11 @@ impl EditorTokens {
             BaseColors::light()
         };
 
+        let selection_color = base_colors.primary_200;
+
         Self {
-            selection_primary: base_colors.primary_200,
-            selection_secondary: utils::with_alpha(base_colors.primary_200, 0.3),
+            selection_primary: selection_color,
+            selection_secondary: utils::with_alpha(selection_color, 0.3),
             cursor_normal: base_colors.primary_500,
             cursor_insert: base_colors.success_500,
             cursor_select: base_colors.warning_500,
@@ -795,10 +803,16 @@ impl EditorTokens {
             } else {
                 base_colors.neutral_300
             },
-            text_on_primary: if is_dark {
-                base_colors.neutral_100
-            } else {
-                base_colors.neutral_900
+            // Compute text_on_primary based on selection background for proper contrast
+            text_on_primary: {
+                let selection_luminance = ColorTheory::relative_luminance(selection_color);
+                if selection_luminance > 0.5 {
+                    // Light selection background - use dark text
+                    base_colors.neutral_900
+                } else {
+                    // Dark selection background - use light text
+                    base_colors.neutral_100
+                }
             },
 
             error: base_colors.error_500,
