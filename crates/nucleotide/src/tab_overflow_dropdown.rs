@@ -3,11 +3,14 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, CursorStyle, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce,
-    SharedString, Styled, Window, div, px,
+    App, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce, SharedString,
+    Styled, Window, div, px,
 };
 use helix_view::DocumentId;
-use nucleotide_ui::ThemedContext as UIThemedContext;
+use nucleotide_ui::{
+    Button, ButtonSize, ButtonVariant, ListItem, ListItemSpacing, ListItemVariant,
+    ThemedContext as UIThemedContext, button::ButtonSlot,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -111,21 +114,16 @@ impl RenderOnce for TabOverflowButton {
         let theme = cx.theme();
         let tokens = &theme.tokens;
 
-        // Use design tokens for consistent colors
         // Use provided background or fall back to tab bar background for consistency
         let container_bg = self
             .container_bg
             .unwrap_or(tokens.colors.bufferline_background);
-        let button_bg = if self.is_open {
-            tokens.colors.surface_selected
-        } else {
-            tokens.colors.surface_hover
-        };
 
         // Use inactive tab border color for consistency with empty tab bar area
         let inactive_tab_bg = tokens.colors.bufferline_inactive;
         let border_color =
             nucleotide_ui::styling::ColorTheory::subtle_border_color(inactive_tab_bg, tokens);
+
         div()
             .absolute()
             .top(px(0.0))
@@ -138,44 +136,26 @@ impl RenderOnce for TabOverflowButton {
             .border_b_1()
             .border_color(border_color)
             .child(
-                // Dropdown trigger button using design tokens
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(tokens.sizes.space_1)
-                    .px(tokens.sizes.space_3)
-                    .py(tokens.sizes.space_2)
-                    .h(tokens.sizes.button_height_sm)
-                    .cursor(CursorStyle::PointingHand)
-                    .rounded(tokens.sizes.radius_md)
-                    .bg(button_bg)
-                    .text_color(tokens.colors.text_primary)
-                    .border_1()
-                    .border_color(nucleotide_ui::styling::ColorTheory::subtle_border_color(
-                        button_bg, tokens,
-                    ))
-                    .hover(|style| {
-                        style
-                            .bg(tokens.colors.surface_selected)
-                            .border_color(tokens.colors.border_focus)
+                // Modern Button component with automatic theme adaptation
+                Button::new("tab-overflow-button", format!("+{}", self.overflow_count))
+                    .variant(if self.is_open {
+                        ButtonVariant::Primary // Selected state gets proper contrast automatically
+                    } else {
+                        ButtonVariant::Ghost // Default state
                     })
-                    .on_mouse_up(MouseButton::Left, {
+                    .size(ButtonSize::Small)
+                    .on_click({
                         let on_dropdown_toggle = self.on_dropdown_toggle.clone();
                         move |_event, window, cx| {
                             on_dropdown_toggle(window, cx);
                             cx.stop_propagation();
                         }
                     })
-                    .child(
-                        div()
-                            .text_size(tokens.sizes.text_sm)
-                            .child(format!("+{}", self.overflow_count)),
-                    )
-                    .child(
-                        div()
-                            .text_size(tokens.sizes.text_xs)
-                            .child(if self.is_open { "▲" } else { "▼" }),
-                    ),
+                    .add_slot(ButtonSlot::Text(if self.is_open {
+                        "▲".into()
+                    } else {
+                        "▼".into()
+                    })),
             )
     }
 }
@@ -188,7 +168,6 @@ impl RenderOnce for TabOverflowMenu {
 
         // Use popup colors derived from Helix theme for consistency
         let dropdown_bg = tokens.colors.popup_background;
-        let text_color = tokens.colors.text_primary;
 
         // Positioned absolutely to appear right below the overflow button
         div()
@@ -215,30 +194,10 @@ impl RenderOnce for TabOverflowMenu {
                         let doc_id = doc_info.id;
                         let on_tab_click = self.on_tab_click.clone();
 
+                        // Modern ListItem component with wrapper for click handling (like file tree)
                         {
-                            // Use design tokens for active/inactive states
-                            let item_bg = if is_active {
-                                tokens.colors.surface_selected
-                            } else {
-                                gpui::transparent_black()
-                            };
-
+                            let item_id = SharedString::from(format!("overflow-tab-{}", doc_id));
                             div()
-                                .id(SharedString::from(format!("overflow-tab-{}", doc_id)))
-                                .flex()
-                                .flex_none()
-                                .items_center()
-                                .gap(tokens.sizes.space_3)
-                                .px(tokens.sizes.space_4)
-                                .py(tokens.sizes.space_2)
-                                .mx(tokens.sizes.space_1)
-                                .w_full()
-                                .min_h(tokens.sizes.button_height_sm)
-                                .cursor(CursorStyle::PointingHand)
-                                .bg(item_bg)
-                                .text_color(text_color)
-                                .rounded(tokens.sizes.radius_md)
-                                .hover(|style| style.bg(tokens.colors.surface_hover))
                                 .on_mouse_down(MouseButton::Left, {
                                     move |_event, _window, cx| {
                                         // Stop propagation immediately to prevent workspace click-away handler
@@ -256,49 +215,55 @@ impl RenderOnce for TabOverflowMenu {
                                     }
                                 })
                                 .child(
-                                    // File icon using design tokens
-                                    div()
-                                        .w(px(18.0))
-                                        .h(px(18.0))
-                                        .flex()
-                                        .flex_none()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(if let Some(ref path) = doc_info.path {
-                                            nucleotide_ui::FileIcon::from_path(path, false)
-                                                .size(16.0)
-                                                .text_color(text_color)
+                                    ListItem::new(item_id)
+                                        .variant(if is_active {
+                                            ListItemVariant::Primary // Automatically handles text_on_primary
                                         } else {
-                                            nucleotide_ui::FileIcon::scratch()
-                                                .size(16.0)
-                                                .text_color(text_color)
-                                        }),
-                                )
-                                .child(
-                                    // File name using design tokens
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.0))
-                                        .text_color(text_color)
-                                        .text_size(tokens.sizes.text_sm)
-                                        .line_height(px(18.0))
-                                        .when(doc_info.is_modified, |name_div| name_div.italic())
-                                        .when(is_active, |name_div| {
-                                            name_div.font_weight(gpui::FontWeight::MEDIUM)
+                                            ListItemVariant::Ghost // Automatically handles text_primary
                                         })
-                                        .child(label),
+                                        .spacing(ListItemSpacing::Compact)
+                                        .selected(is_active)
+                                        .start_slot(
+                                            // File icon with automatic color adaptation
+                                            if let Some(ref path) = doc_info.path {
+                                                nucleotide_ui::FileIcon::from_path(path, false)
+                                                    .size(16.0)
+                                                    .into_any_element()
+                                            } else {
+                                                nucleotide_ui::FileIcon::scratch()
+                                                    .size(16.0)
+                                                    .into_any_element()
+                                            },
+                                        )
+                                        .end_slot(
+                                            // Modified indicator dot
+                                            if doc_info.is_modified {
+                                                div()
+                                                    .w(px(6.0))
+                                                    .h(px(6.0))
+                                                    .rounded(px(3.0))
+                                                    .bg(tokens.colors.primary)
+                                                    .into_any_element()
+                                            } else {
+                                                div().into_any_element()
+                                            },
+                                        )
+                                        .child(
+                                            // File name with automatic styling based on variant
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.0))
+                                                .text_size(tokens.sizes.text_sm)
+                                                .line_height(px(18.0))
+                                                .when(doc_info.is_modified, |name_div| {
+                                                    name_div.italic()
+                                                })
+                                                .when(is_active, |name_div| {
+                                                    name_div.font_weight(gpui::FontWeight::MEDIUM)
+                                                })
+                                                .child(label),
+                                        ),
                                 )
-                                .when(doc_info.is_modified, |modified_div| {
-                                    modified_div.child(
-                                        div()
-                                            .flex_none()
-                                            .w(px(6.0))
-                                            .h(px(6.0))
-                                            .rounded(px(3.0))
-                                            .bg(tokens.colors.primary)
-                                            .ml(tokens.sizes.space_1),
-                                    )
-                                })
                         }
                     })
                     .collect::<Vec<_>>(),
