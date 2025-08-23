@@ -6,7 +6,8 @@ pub mod view_manager;
 pub use view_manager::ViewManager;
 
 // Main workspace implementation
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::FontFeatures;
@@ -41,6 +42,7 @@ use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
 use crate::utils;
 use crate::{Core, Input, InputEvent};
+use nucleotide_ui::VcsStatus;
 use nucleotide_vcs::VcsServiceHandle;
 pub struct Workspace {
     core: Entity<Core>,
@@ -5033,12 +5035,28 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
         .collect();
 
     // Populate VCS status for all file items using the global VCS service
-    if let Some(vcs_service) = cx.try_global::<nucleotide_vcs::VcsServiceHandle>() {
+    if cx.has_global::<nucleotide_vcs::VcsServiceHandle>() {
+        info!("VCS service available, populating file picker VCS status");
+
+        // Apply VCS status to items using cached status
+        let mut vcs_status_count = 0;
         for item in &mut items {
             if let Some(ref file_path) = item.file_path {
+                let vcs_service = cx.global::<nucleotide_vcs::VcsServiceHandle>();
                 item.vcs_status = vcs_service.get_status_cached(file_path, cx);
+                if item.vcs_status.is_some() {
+                    vcs_status_count += 1;
+                }
             }
         }
+
+        info!(
+            file_count = items.len(),
+            vcs_status_count = vcs_status_count,
+            "Populated file picker VCS status"
+        );
+    } else {
+        info!("VCS service not available");
     }
 
     // Create a simple native picker without callback - the overlay will handle file opening via events

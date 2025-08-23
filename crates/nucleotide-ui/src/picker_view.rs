@@ -1080,11 +1080,12 @@ impl PickerView {
                                                                                 |this, file_path| {
                                                                                     // Render VcsIcon for file items
                                                                                     this.child({
-                                                                                        // Create VcsIcon with embedded VCS status
+                                                                                        // Create VcsIcon with embedded VCS status and proper text color
 
                                                                                         // Use direct rendering since we don't have proper Context<Self>
                                                                                         VcsIcon::from_path(file_path, false)
                                                                                             .size(16.0)
+                                                                                            .text_color(picker.style.modal_style.text)
                                                                                             .vcs_status(item.vcs_status)
                                                                                     })
                                                                                 }
