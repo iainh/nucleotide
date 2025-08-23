@@ -82,6 +82,7 @@ pub mod editor {
             Quit,
             OpenFile,
             OpenDirectory,
+            OpenSettings,
             Save,
             SaveAs,
             CloseFile,

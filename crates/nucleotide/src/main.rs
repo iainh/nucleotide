@@ -320,8 +320,8 @@ use nucleotide::actions::{
         CompletionSelectNext, CompletionSelectPrev, TriggerCompletion,
     },
     editor::{
-        CloseFile, Copy, DecreaseFontSize, IncreaseFontSize, OpenDirectory, OpenFile, Paste, Quit,
-        Redo, Save, SaveAs, Undo,
+        CloseFile, Copy, DecreaseFontSize, IncreaseFontSize, OpenDirectory, OpenFile, OpenSettings,
+        Paste, Quit, Redo, Save, SaveAs, Undo,
     },
     help::{About, OpenTutorial},
     picker::{ConfirmSelection, DismissPicker, SelectFirst, SelectLast, TogglePreview},
@@ -336,6 +336,7 @@ fn app_menus() -> Vec<Menu> {
             name: "Nucleotide".into(),
             items: vec![
                 MenuItem::action("About", About),
+                MenuItem::action("Settings...", OpenSettings),
                 MenuItem::separator(),
                 MenuItem::action("Hide Nucleotide", Hide),
                 MenuItem::action("Hide Others", HideOthers),

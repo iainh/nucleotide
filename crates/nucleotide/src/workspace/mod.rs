@@ -2225,6 +2225,64 @@ impl Workspace {
         self.open_file_internal(path, true, cx);
     }
 
+    /// Open the nucleotide.toml settings file
+    pub fn open_settings_file(&mut self, cx: &mut Context<Self>) {
+        // Get the Helix config directory path
+        let config_dir = helix_loader::config_dir();
+        let settings_path = config_dir.join("nucleotide.toml");
+
+        info!("Opening settings file: {}", settings_path.display());
+
+        // Create the config directory if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all(&config_dir) {
+            nucleotide_logging::error!("Failed to create config directory: {}", e);
+            return;
+        }
+
+        // Create an empty nucleotide.toml if it doesn't exist
+        if !settings_path.exists() {
+            let default_config = r#"# Nucleotide Configuration
+# This file contains GUI-specific settings for Nucleotide
+
+[ui]
+# Font configuration for the UI
+# font = { family = "SF Pro", size = 14.0, weight = "Medium" }
+
+# Enable or disable animations
+# animations = true
+
+[theme]
+# Theme mode: "auto", "light", or "dark"
+# mode = "auto"
+
+# Override default themes (optional)
+# light_theme = "onelight"
+# dark_theme = "onedark"
+
+[lsp]
+# Language server configuration
+# Enable/disable completion suggestions
+# completion_enabled = true
+
+# Maximum number of completion items
+# max_completion_items = 100
+
+# Completion delay in milliseconds
+# completion_delay = 100
+"#;
+
+            if let Err(e) = std::fs::write(&settings_path, default_config) {
+                nucleotide_logging::error!("Failed to create default nucleotide.toml: {}", e);
+                return;
+            }
+
+            info!("Created default nucleotide.toml configuration file");
+        }
+
+        // Open the settings file
+        self.open_file_internal(&settings_path, true, cx);
+    }
+
     fn open_file_internal(
         &mut self,
         path: &std::path::Path,
@@ -4572,6 +4630,13 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |_, _: &crate::actions::editor::OpenDirectory, _window, cx| {
                 open_directory(core.clone(), handle.clone(), cx)
+            },
+        ));
+
+        // Settings action - open nucleotide.toml configuration file
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::OpenSettings, _window, cx| {
+                workspace.open_settings_file(cx)
             },
         ));
 
