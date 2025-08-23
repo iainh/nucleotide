@@ -240,38 +240,41 @@ impl RenderOnce for Tab {
         let component_state = self.component_state();
         let _style_variant: StyleVariant = self.variant.into();
 
-        // Use design tokens for consistent theming
+        // Use TabBarTokens for consistent hybrid color theming
+        let tab_tokens = tokens.tab_bar_tokens();
         let (bg_color, text_color, hover_bg, border_color) = match component_state {
-            ComponentState::Active => {
-                let bg = tokens.colors.bufferline_active;
-                (
-                    bg,
-                    tokens.colors.text_primary,
-                    bg, // No hover change for active tabs
-                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, tokens),
-                )
-            }
-            ComponentState::Disabled => {
-                let bg = tokens.colors.surface_disabled;
-                (
-                    bg,
-                    tokens.colors.text_disabled,
-                    bg, // No hover for disabled tabs
-                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, tokens),
-                )
-            }
+            ComponentState::Active => (
+                tab_tokens.tab_active_background,
+                tab_tokens.tab_text_active,
+                tab_tokens.tab_active_background, // No hover change for active tabs
+                tab_tokens.tab_border,
+            ),
+            ComponentState::Disabled => (
+                nucleotide_ui::styling::ColorTheory::with_alpha(
+                    tab_tokens.tab_inactive_background,
+                    0.5,
+                ),
+                nucleotide_ui::styling::ColorTheory::with_alpha(tab_tokens.tab_text_inactive, 0.5),
+                tab_tokens.tab_inactive_background, // No hover for disabled tabs
+                tab_tokens.tab_border,
+            ),
             _ => {
-                // Inactive tabs: use buffer line tokens with appropriate hover state
+                // Inactive tabs: use tab bar tokens with appropriate hover state
                 let bg = if self.is_modified {
-                    tokens.colors.surface_selected // Modified tabs get selected appearance
+                    // Modified tabs get a subtle warning tint
+                    nucleotide_ui::styling::ColorTheory::mix(
+                        tab_tokens.tab_inactive_background,
+                        tokens.colors.warning,
+                        0.1,
+                    )
                 } else {
-                    tokens.colors.bufferline_inactive
+                    tab_tokens.tab_inactive_background
                 };
                 (
                     bg,
-                    tokens.colors.text_primary,
-                    tokens.colors.surface_hover, // Standard hover for inactive tabs
-                    nucleotide_ui::styling::ColorTheory::subtle_border_color(bg, tokens),
+                    tab_tokens.tab_text_inactive,
+                    tab_tokens.tab_hover_background,
+                    tab_tokens.tab_border,
                 )
             }
         };
