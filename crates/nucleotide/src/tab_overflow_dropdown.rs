@@ -3,14 +3,11 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce, SharedString,
-    Styled, Window, div, px,
+    App, CursorStyle, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce,
+    SharedString, Styled, Window, div, px,
 };
 use helix_view::DocumentId;
-use nucleotide_ui::{
-    Button, ButtonSize, ButtonVariant, ListItem, ListItemSpacing, ListItemVariant,
-    ThemedContext as UIThemedContext, button::ButtonSlot,
-};
+use nucleotide_ui::{ListItem, ListItemSpacing, ListItemVariant, ThemedContext as UIThemedContext};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -114,15 +111,14 @@ impl RenderOnce for TabOverflowButton {
         let theme = cx.theme();
         let tokens = &theme.tokens;
 
-        // Use provided background or fall back to tab bar background for consistency
-        let container_bg = self
-            .container_bg
-            .unwrap_or(tokens.colors.bufferline_background);
+        // Use TabBarTokens for consistent tab bar theming
+        let tab_tokens = tokens.tab_bar_tokens();
 
-        // Use inactive tab border color for consistency with empty tab bar area
-        let inactive_tab_bg = tokens.colors.bufferline_inactive;
-        let border_color =
-            nucleotide_ui::styling::ColorTheory::subtle_border_color(inactive_tab_bg, tokens);
+        // Use provided background or fall back to tab bar background for consistency
+        let container_bg = self.container_bg.unwrap_or(tab_tokens.container_background);
+
+        // Use tab border color for consistency with actual tabs
+        let border_color = tab_tokens.tab_border;
 
         div()
             .absolute()
@@ -136,26 +132,48 @@ impl RenderOnce for TabOverflowButton {
             .border_b_1()
             .border_color(border_color)
             .child(
-                // Modern Button component with automatic theme adaptation
-                Button::new("tab-overflow-button", format!("+{}", self.overflow_count))
-                    .variant(if self.is_open {
-                        ButtonVariant::Primary // Selected state gets proper contrast automatically
+                // Custom button styled to match tab bar aesthetic (no borders)
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(tokens.sizes.space_1)
+                    .px(tokens.sizes.space_3)
+                    .py(tokens.sizes.space_2)
+                    .h(tokens.sizes.button_height_sm)
+                    .cursor(CursorStyle::PointingHand)
+                    .rounded(tokens.sizes.radius_md)
+                    .bg(if self.is_open {
+                        tab_tokens.tab_active_background // Use active tab color when open
                     } else {
-                        ButtonVariant::Ghost // Default state
+                        tab_tokens.tab_inactive_background // Use inactive tab color when closed
                     })
-                    .size(ButtonSize::Small)
-                    .on_click({
+                    .text_color(if self.is_open {
+                        tab_tokens.tab_text_active // Active tab text color
+                    } else {
+                        tab_tokens.tab_text_inactive // Inactive tab text color
+                    })
+                    .hover(|style| {
+                        style
+                            .bg(tab_tokens.tab_hover_background)
+                            .text_color(tab_tokens.tab_text_inactive)
+                    })
+                    .on_mouse_up(MouseButton::Left, {
                         let on_dropdown_toggle = self.on_dropdown_toggle.clone();
                         move |_event, window, cx| {
                             on_dropdown_toggle(window, cx);
                             cx.stop_propagation();
                         }
                     })
-                    .add_slot(ButtonSlot::Text(if self.is_open {
-                        "▲".into()
-                    } else {
-                        "▼".into()
-                    })),
+                    .child(
+                        div()
+                            .text_size(tokens.sizes.text_sm)
+                            .child(format!("+{}", self.overflow_count)),
+                    )
+                    .child(
+                        div()
+                            .text_size(tokens.sizes.text_xs)
+                            .child(if self.is_open { "▲" } else { "▼" }),
+                    ),
             )
     }
 }
