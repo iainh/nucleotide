@@ -62,6 +62,7 @@ pub struct Workspace {
     titlebar: Option<gpui::AnyView>,
     appearance_observer_set: bool,
     needs_appearance_update: bool,
+    needs_window_appearance_update: bool,
     pending_appearance: Option<gpui::WindowAppearance>,
     tab_overflow_dropdown_open: bool,
     document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
@@ -286,6 +287,7 @@ impl Workspace {
             titlebar: None,
             appearance_observer_set: false,
             needs_appearance_update: false,
+            needs_window_appearance_update: false,
             pending_appearance: None,
             tab_overflow_dropdown_open: false,
             document_order: Vec::new(),
@@ -1002,17 +1004,45 @@ impl Workspace {
 
     fn update_window_appearance(&self, window: &mut Window, cx: &Context<Self>) {
         let config = self.core.read(cx).config.clone();
+
+        // Only update appearance if configured to follow theme
+        if !config.gui.window.appearance_follows_theme {
+            debug!("Window appearance does not follow theme - skipping update");
+            return;
+        }
+
         let theme_manager = cx.global::<crate::ThemeManager>();
         let is_dark = theme_manager.is_dark_theme();
 
         // Set window background appearance based on theme
-        let appearance = if is_dark && config.gui.window.blur_dark_themes {
+        let appearance = if is_dark {
+            // Dark themes should use Blurred to get the proper macOS dark window border
             WindowBackgroundAppearance::Blurred
         } else {
+            // Light themes always use opaque
             WindowBackgroundAppearance::Opaque
         };
 
+        let theme_name = self.core.read(cx).editor.theme.name();
+        info!(
+            is_dark = is_dark,
+            appearance = ?appearance,
+            theme_name = %theme_name,
+            "Updating window background appearance based on theme"
+        );
+
         window.set_background_appearance(appearance);
+    }
+
+    /// Schedule window appearance update to be applied in the next render cycle
+    fn schedule_window_appearance_update(&mut self, cx: &mut Context<Self>) {
+        let theme_name = self.core.read(cx).editor.theme.name();
+        info!(
+            theme_name = %theme_name,
+            "Scheduling window appearance update for next render cycle due to theme change"
+        );
+        self.needs_window_appearance_update = true;
+        cx.notify(); // Trigger re-render
     }
 
     fn update_titlebar_appearance(
@@ -1883,6 +1913,11 @@ impl Workspace {
     }
 
     fn handle_command_submitted(&mut self, command: &str, cx: &mut Context<Self>) {
+        info!(
+            "handle_command_submitted called with command: '{}'",
+            command
+        );
+
         // Clear the overlay first to hide the prompt
         self.overlay.update(cx, |overlay, cx| {
             overlay.clear(cx);
@@ -1919,6 +1954,8 @@ impl Workspace {
 
     fn execute_typed_command(&mut self, command: nucleotide_core::Command, cx: &mut Context<Self>) {
         use nucleotide_core::{Command, command_system::SplitDirection};
+
+        info!("execute_typed_command called with: {:?}", command);
 
         match command {
             Command::Quit { force } => {
@@ -1983,6 +2020,7 @@ impl Workspace {
 
         // Store the current theme before executing the command
         let theme_before = core.read(cx).editor.theme.name().to_string();
+        let theme_before_for_closure = theme_before.clone();
 
         // Log current bufferline config before execution
         let bufferline_before = core.read(cx).editor.config().bufferline.clone();
@@ -2094,34 +2132,13 @@ impl Workspace {
             // Always trigger a redraw after command execution to reflect any config changes
             cx.emit(crate::Update::Redraw);
 
-            // If the theme has changed, update the ThemeManager and UI theme
-            if theme_before != theme_name_after {
-                // Update the global ThemeManager
-                cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
-                    theme_manager.set_theme(current_theme.clone());
-                });
-
-                // Update the global UI theme
-                let new_ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
-
-                cx.update_global(|_ui_theme: &mut nucleotide_ui::Theme, _cx| {
-                    *_ui_theme = new_ui_theme.clone();
-                });
-
-                // Update theme provider with the new theme
-                nucleotide_ui::providers::update_provider_context(|context| {
-                    // Create a new theme provider with the updated theme
-                    let theme_provider = nucleotide_ui::providers::ThemeProvider::new(new_ui_theme);
-                    context.register_global_provider(theme_provider);
-                });
-
-                // Clear the shaped lines cache to force re-rendering with new theme colors
-                if let Some(line_cache) = cx.try_global::<nucleotide_editor::LineLayoutCache>() {
-                    line_cache.clear_shaped_lines();
-                }
-
-                // Force a full redraw to update all components
-                cx.notify();
+            // If the theme has changed, handle it properly using existing theme switching logic
+            if theme_before_for_closure != theme_name_after {
+                info!(
+                    old_theme = %theme_before_for_closure,
+                    new_theme = %theme_name_after,
+                    "Theme changed via command execution"
+                );
 
                 // Send theme change event to Helix
                 gpui_to_helix_bridge::send_gpui_event_to_helix(
@@ -2130,36 +2147,49 @@ impl Workspace {
                     },
                 );
             }
-
-            // Check if we should quit after command execution
-            if core.editor.should_close() {
-                cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
-                    crate::types::CoreEvent::ShouldQuit,
-                )));
-            }
-
-            // Log bufferline config after execution
-            let bufferline_after = core.editor.config().bufferline.clone();
-            info!(bufferline_config = ?bufferline_after, "Bufferline config after command execution");
-
-            // Manual trigger: if bufferline config changed, force a workspace refresh
-            // This is a workaround since ConfigEvent might not always be triggered properly
-            let changed = if bufferline_before != bufferline_after {
-                info!(old_config = ?bufferline_before, new_config = ?bufferline_after, "Bufferline config changed - forcing workspace refresh");
-                true
-            } else {
-                false
-            };
-
-            cx.notify();
-
-            if changed {
-                // Force workspace to refresh by emitting a fake ConfigEvent
-                cx.emit(crate::Update::EditorEvent(helix_view::editor::EditorEvent::ConfigEvent(
-                    helix_view::editor::ConfigEvent::Refresh
-                )));
-            }
         });
+
+        // Check if theme changed after command execution and handle accordingly
+        let theme_name_after = core.read(cx).editor.theme.name().to_string();
+        if theme_before != theme_name_after {
+            // Use existing theme switching logic (maintains consistency)
+            self.switch_theme_by_name_no_window(&theme_name_after, cx);
+
+            // Schedule window appearance update for next render cycle
+            self.schedule_window_appearance_update(cx);
+        }
+
+        // Check if we should quit after command execution
+        let should_quit = core.read(cx).editor.should_close();
+        if should_quit {
+            cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
+                crate::types::CoreEvent::ShouldQuit,
+            )));
+        }
+
+        // Log bufferline config after execution
+        let bufferline_after = core.read(cx).editor.config().bufferline.clone();
+        info!(bufferline_config = ?bufferline_after, "Bufferline config after command execution");
+
+        // Manual trigger: if bufferline config changed, force a workspace refresh
+        // This is a workaround since ConfigEvent might not always be triggered properly
+        let changed = if bufferline_before != bufferline_after {
+            info!(old_config = ?bufferline_before, new_config = ?bufferline_after, "Bufferline config changed - forcing workspace refresh");
+            true
+        } else {
+            false
+        };
+
+        cx.notify();
+
+        if changed {
+            // Force workspace to refresh by emitting a fake ConfigEvent
+            cx.emit(crate::Update::EditorEvent(
+                helix_view::editor::EditorEvent::ConfigEvent(
+                    helix_view::editor::ConfigEvent::Refresh,
+                ),
+            ));
+        }
 
         // Log bufferline config in workspace context after command execution
         let bufferline_after_workspace = &core.read(cx).editor.config().bufferline;
@@ -3184,13 +3214,11 @@ impl Workspace {
                     .flex_row()
                     .items_center()
                     .child({
-                        // Mode indicator with appropriate color from hybrid system
-                        let mode_color = match mode_name {
-                            "INS" => status_bar_tokens.mode_insert,
-                            "SEL" => status_bar_tokens.mode_select,
-                            _ => status_bar_tokens.mode_normal, // Default for "NOR" and others
-                        };
-                        div().child(mode_name).min_w(px(50.)).text_color(mode_color)
+                        // Mode indicator using standard text color
+                        div()
+                            .child(mode_name)
+                            .min_w(px(50.))
+                            .text_color(status_bar_tokens.text_primary)
                     })
                     .child(
                         // Divider
@@ -3316,150 +3344,6 @@ impl Workspace {
                 self.show_file_tree = !self.show_file_tree;
                 cx.notify();
             }
-        }
-    }
-
-    /// Simplified key handler that delegates to the InputCoordinator
-    fn handle_key_old(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
-        eprintln!(
-            "DEBUG: Workspace handle_key received: '{}'",
-            ev.keystroke.key
-        );
-
-        // Add detailed focus debugging
-        let workspace_focused = self.focus_handle.is_focused(window);
-        let file_tree_focused = self
-            .file_tree
-            .as_ref()
-            .map(|ft| ft.focus_handle(cx).is_focused(window))
-            .unwrap_or(false);
-        let doc_view_focused = self
-            .view_manager
-            .focused_view_id()
-            .and_then(|view_id| self.view_manager.get_document_view(&view_id))
-            .map(|doc_view| doc_view.focus_handle(cx).is_focused(window))
-            .unwrap_or(false);
-
-        eprintln!(
-            "DEBUG: Focus state - workspace: {}, file_tree: {}, doc_view: {}, focused_view_id: {:?}",
-            workspace_focused,
-            file_tree_focused,
-            doc_view_focused,
-            self.view_manager.focused_view_id()
-        );
-
-        // Wrap the entire key handling in a catch to prevent panics from propagating to FFI
-        if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // Check if the file tree has focus - if so, only handle global shortcuts, don't interfere with normal keys
-            if let Some(file_tree) = &self.file_tree
-                && file_tree.focus_handle(cx).is_focused(window)
-            {
-                eprintln!("DEBUG: File tree has focus, only handling global shortcuts");
-                // Only handle truly global shortcuts when file tree has focus
-                self.handle_global_shortcuts_only(ev, cx);
-                return; // Let the file tree handle its own key events
-            }
-
-            // Check if a document view has focus - only handle global shortcuts
-            if let Some(view_id) = self.view_manager.focused_view_id()
-                && let Some(doc_view) = self.view_manager.get_document_view(&view_id)
-                && doc_view.focus_handle(cx).is_focused(window)
-            {
-                eprintln!("DEBUG: Document view has focus, only handling global shortcuts");
-                // Only handle truly global shortcuts when editor has focus
-                self.handle_global_shortcuts_only(ev, cx);
-                return; // Let the document view handle its own key events
-            }
-
-            // If no specific component has focus, handle through the full global input system
-            // DISABLED: Old global input system handling
-            /*
-            use nucleotide_ui::providers::EventResult;
-            let global_result = // OLD: self.global_input.handle_key_event(ev);
-
-            match global_result {
-                EventResult::HandledAndStop | EventResult::PreventDefault => {
-                    // Event was fully handled by global input system, don't continue processing
-                    eprintln!(
-                        "DEBUG: Event fully handled by global input system: {:?}",
-                        global_result
-                    );
-                    return;
-                }
-                EventResult::Handled => {
-                    // Event was handled but should continue processing
-                    eprintln!("DEBUG: Event partially handled by global input system, continuing");
-
-                    // Handle any shortcuts that the global input system detected
-                    self.handle_global_input_shortcuts(ev, cx);
-
-                    // For some shortcuts like completion dismiss, we want both global handling AND normal processing
-                }
-                EventResult::NotHandled => {
-                    // Event not handled by global input system, continue with normal processing
-                }
-            }
-            */
-
-            // Check if we should dismiss UI elements on escape
-            if ev.keystroke.key == "escape" {
-                // First check if we should dismiss key hints (highest priority)
-                let has_hints = self.key_hints.read(cx).has_info();
-                if has_hints {
-                    // Clear key hints
-                    self.key_hints.update(cx, |key_hints, cx| {
-                        key_hints.set_info(None);
-                        cx.notify();
-                    });
-                    // Also clear the editor's autoinfo
-                    self.core.update(cx, |core, _| {
-                        core.editor.autoinfo = None;
-                    });
-                    cx.notify();
-                    return; // Don't pass escape to editor when dismissing key hints
-                }
-
-                // Then check if we should dismiss the info box
-                if !self.info_hidden {
-                    self.info_hidden = true;
-                    cx.notify();
-                    return; // Don't pass escape to editor when dismissing info box
-                }
-
-                // Then check if we should dismiss the completion popup
-                let has_completion = self.overlay.read(cx).has_completion();
-                if has_completion {
-                    self.overlay.update(cx, |overlay, cx| {
-                        overlay.dismiss_completion(cx);
-                    });
-                    cx.notify();
-                    return; // Don't pass escape to editor when dismissing completion
-                }
-            }
-
-            // Check if overlay has a native component (picker, prompt, completion) - if so, don't consume key events
-            // Let GPUI actions bubble up to the native components instead
-            let overlay_view = &self.overlay.read(cx);
-            if !overlay_view.is_empty() {
-                println!(
-                    "DEBUG: Workspace skipping key '{}' because overlay is not empty",
-                    ev.keystroke.key
-                );
-                // Skip helix key processing when overlay is not empty
-                // The native components (picker, prompt, completion) will handle their own key events via GPUI actions
-                return;
-            }
-
-            let key = utils::translate_key(&ev.keystroke);
-
-            self.input.update(cx, |_, cx| {
-                cx.emit(InputEvent::Key(key));
-            });
-
-            // Update key hints after processing the key
-            self.update_key_hints(cx);
-        })) {
-            error!(error = ?e, "Panic in key handler");
         }
     }
 
@@ -3662,32 +3546,6 @@ impl Workspace {
                 }
                 */
                 debug!("Completion disappeared - context management disabled");
-            }
-            _ => {
-                // No context change needed
-            }
-        }
-    }
-
-    /// Manage file tree input context based on focus state
-    fn manage_file_tree_context(&mut self, has_file_tree_focus: bool) {
-        let file_tree_context_active = false; // TODO: Replace with InputCoordinator call
-
-        match (has_file_tree_focus, file_tree_context_active) {
-            (true, false) => {
-                // File tree gained focus, push file tree context
-                // DISABLED: // OLD: self.global_input.push_context("file_tree");
-                nucleotide_logging::debug!("Pushed file_tree context");
-            }
-            (false, true) => {
-                // File tree lost focus, pop file tree context
-                // DISABLED: File tree context management
-                /*
-                if let Some(popped) = // OLD: self.global_input.pop_context() {
-                    nucleotide_logging::debug!(context = popped, "Popped file_tree context");
-                }
-                */
-                debug!("File tree lost focus - context management disabled");
             }
             _ => {
                 // No context change needed
@@ -4416,6 +4274,13 @@ impl Render for Workspace {
                 cx.notify();
             })
             .detach();
+        }
+
+        // Handle window appearance update if needed (for theme changes)
+        if self.needs_window_appearance_update {
+            debug!("Processing scheduled window appearance update");
+            self.needs_window_appearance_update = false;
+            self.update_window_appearance(window, cx);
         }
 
         // Handle appearance update if needed

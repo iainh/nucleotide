@@ -4,6 +4,7 @@
 use gpui::Keystroke;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
+use nucleotide_logging::{debug, warn};
 
 /// Detect the runtime directory when running from a macOS bundle
 #[cfg(target_os = "macos")]
@@ -20,9 +21,36 @@ pub fn detect_bundle_runtime() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Map of Shift + number key combinations to their symbols
+const SHIFT_NUMBER_MAP: &[(char, char)] = &[
+    ('1', '!'),
+    ('2', '@'),
+    ('3', '#'),
+    ('4', '$'),
+    ('5', '%'),
+    ('6', '^'),
+    ('7', '&'),
+    ('8', '*'),
+    ('9', '('),
+    ('0', ')'),
+    ('-', '_'),
+    ('=', '+'),
+    ('[', '{'),
+    (']', '}'),
+    ('\\', '|'),
+    (';', ':'),
+    ('\'', '"'),
+    (',', '<'),
+    ('.', '>'),
+    ('/', '?'),
+    ('`', '~'),
+];
+
 /// Translate a GPUI keystroke to a Helix key event
 pub fn translate_key(ks: &Keystroke) -> KeyEvent {
     let mut modifiers = KeyModifiers::NONE;
+
+    // Handle all GPUI modifiers
     if ks.modifiers.alt {
         modifiers |= KeyModifiers::ALT;
     }
@@ -32,23 +60,39 @@ pub fn translate_key(ks: &Keystroke) -> KeyEvent {
     if ks.modifiers.shift {
         modifiers |= KeyModifiers::SHIFT;
     }
+    if ks.modifiers.platform {
+        // Platform modifier: Cmd on macOS, Super on Linux/Windows
+        modifiers |= KeyModifiers::SUPER;
+    }
+    if ks.modifiers.function {
+        // Function modifier key (if supported by Helix)
+        debug!(key = %ks.key, "Function modifier detected but not mapped to Helix equivalent");
+    }
 
     let key = &ks.key;
     let code = match key.as_str() {
+        // Basic editing keys
         "backspace" => KeyCode::Backspace,
         "enter" => KeyCode::Enter,
-        "left" => KeyCode::Left,
-        "right" => KeyCode::Right,
-        "up" => KeyCode::Up,
-        "down" => KeyCode::Down,
         "tab" => KeyCode::Tab,
         "escape" => KeyCode::Esc,
         "space" => KeyCode::Char(' '),
         "delete" => KeyCode::Delete,
+
+        // Navigation keys
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
         "home" => KeyCode::Home,
         "end" => KeyCode::End,
         "pageup" => KeyCode::PageUp,
         "pagedown" => KeyCode::PageDown,
+
+        // Additional navigation/editing keys
+        "insert" => KeyCode::Insert,
+
+        // Function keys F1-F12
         "f1" => KeyCode::F(1),
         "f2" => KeyCode::F(2),
         "f3" => KeyCode::F(3),
@@ -61,22 +105,64 @@ pub fn translate_key(ks: &Keystroke) -> KeyEvent {
         "f10" => KeyCode::F(10),
         "f11" => KeyCode::F(11),
         "f12" => KeyCode::F(12),
-        _any => {
-            let chars: Vec<char> = key.chars().collect();
-            if chars.len() == 1 {
-                // Safe access using first() instead of direct indexing
-                match chars.first() {
-                    Some(&ch) => KeyCode::Char(ch),
-                    None => KeyCode::Null,
-                }
-            } else {
-                // Fallback for unhandled keys, might need further refinement
-                KeyCode::Null
-            }
-        }
+
+        // Extended function keys (if supported by terminal)
+        "f13" => KeyCode::F(13),
+        "f14" => KeyCode::F(14),
+        "f15" => KeyCode::F(15),
+        "f16" => KeyCode::F(16),
+        "f17" => KeyCode::F(17),
+        "f18" => KeyCode::F(18),
+        "f19" => KeyCode::F(19),
+        "f20" => KeyCode::F(20),
+        "f21" => KeyCode::F(21),
+        "f22" => KeyCode::F(22),
+        "f23" => KeyCode::F(23),
+        "f24" => KeyCode::F(24),
+
+        // Handle single character keys
+        _ => translate_character_key(key, ks.modifiers.shift),
     };
 
     KeyEvent { code, modifiers }
+}
+
+/// Translate a single character key, handling shift modifiers appropriately
+fn translate_character_key(key: &str, shift_pressed: bool) -> KeyCode {
+    // Optimize: use iterator instead of collecting into Vec
+    let mut chars = key.chars();
+    let first_char = chars.next();
+
+    // Ensure it's exactly one character
+    if chars.next().is_some() {
+        // Multi-character string - log for debugging and return Null
+        warn!(key = %key, "Unmapped multi-character key");
+        return KeyCode::Null;
+    }
+
+    match first_char {
+        Some(ch) => {
+            if shift_pressed {
+                // Handle shift combinations
+                if ch.is_ascii_alphabetic() && ch.is_lowercase() {
+                    // Shift + letter = uppercase letter
+                    KeyCode::Char(ch.to_ascii_uppercase())
+                } else {
+                    // Check for shift + symbol combinations
+                    match SHIFT_NUMBER_MAP.iter().find(|&&(base, _)| base == ch) {
+                        Some(&(_, shifted)) => KeyCode::Char(shifted),
+                        None => KeyCode::Char(ch), // Keep original character
+                    }
+                }
+            } else {
+                KeyCode::Char(ch)
+            }
+        }
+        None => {
+            warn!(key = %key, "Empty key string");
+            KeyCode::Null
+        }
+    }
 }
 
 /// Handle events by looking them up in `self.keymaps`. Returns None
@@ -131,4 +217,202 @@ pub fn handle_key_result(
         KeymapResult::NotFound | KeymapResult::Cancelled(_) => return Some(key_result),
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::Modifiers;
+
+    /// Create a test keystroke with given key and modifiers
+    fn create_keystroke(key: &str, modifiers: Modifiers) -> Keystroke {
+        gpui::Keystroke {
+            key: key.into(),
+            modifiers,
+            key_char: None,
+        }
+    }
+
+    #[test]
+    fn test_basic_character_translation() {
+        let keystroke = create_keystroke("a", Modifiers::default());
+        let key_event = translate_key(&keystroke);
+
+        assert_eq!(key_event.code, KeyCode::Char('a'));
+        assert_eq!(key_event.modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn test_uppercase_with_shift() {
+        let keystroke = create_keystroke(
+            "a",
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        let key_event = translate_key(&keystroke);
+
+        assert_eq!(key_event.code, KeyCode::Char('A'));
+        assert!(key_event.modifiers.contains(KeyModifiers::SHIFT));
+    }
+
+    #[test]
+    fn test_shift_number_symbols() {
+        let test_cases = [
+            ("1", '!'),
+            ("2", '@'),
+            ("3", '#'),
+            ("4", '$'),
+            ("5", '%'),
+            ("9", '('),
+            ("0", ')'),
+        ];
+
+        for (input, expected) in test_cases {
+            let keystroke = create_keystroke(
+                input,
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            );
+            let key_event = translate_key(&keystroke);
+
+            assert_eq!(
+                key_event.code,
+                KeyCode::Char(expected),
+                "Failed for input '{}', expected '{}', got {:?}",
+                input,
+                expected,
+                key_event.code
+            );
+        }
+    }
+
+    #[test]
+    fn test_platform_modifier() {
+        let keystroke = create_keystroke(
+            "s",
+            Modifiers {
+                platform: true,
+                ..Default::default()
+            },
+        );
+        let key_event = translate_key(&keystroke);
+
+        assert_eq!(key_event.code, KeyCode::Char('s'));
+        assert!(key_event.modifiers.contains(KeyModifiers::SUPER));
+    }
+
+    #[test]
+    fn test_multiple_modifiers() {
+        let keystroke = create_keystroke(
+            "a",
+            Modifiers {
+                control: true,
+                alt: true,
+                shift: true,
+                ..Default::default()
+            },
+        );
+        let key_event = translate_key(&keystroke);
+
+        assert_eq!(key_event.code, KeyCode::Char('A')); // Should be uppercase due to shift
+        assert!(key_event.modifiers.contains(KeyModifiers::CONTROL));
+        assert!(key_event.modifiers.contains(KeyModifiers::ALT));
+        assert!(key_event.modifiers.contains(KeyModifiers::SHIFT));
+    }
+
+    #[test]
+    fn test_special_keys() {
+        let test_cases = [
+            ("escape", KeyCode::Esc),
+            ("enter", KeyCode::Enter),
+            ("tab", KeyCode::Tab),
+            ("backspace", KeyCode::Backspace),
+            ("delete", KeyCode::Delete),
+            ("left", KeyCode::Left),
+            ("right", KeyCode::Right),
+            ("up", KeyCode::Up),
+            ("down", KeyCode::Down),
+            ("home", KeyCode::Home),
+            ("end", KeyCode::End),
+            ("pageup", KeyCode::PageUp),
+            ("pagedown", KeyCode::PageDown),
+            ("insert", KeyCode::Insert),
+        ];
+
+        for (input, expected) in test_cases {
+            let keystroke = create_keystroke(input, Modifiers::default());
+            let key_event = translate_key(&keystroke);
+
+            assert_eq!(
+                key_event.code, expected,
+                "Failed for input '{}', expected {:?}, got {:?}",
+                input, expected, key_event.code
+            );
+        }
+    }
+
+    #[test]
+    fn test_function_keys() {
+        for i in 1..=24 {
+            let key_str = format!("f{}", i);
+            let keystroke = create_keystroke(&key_str, Modifiers::default());
+            let key_event = translate_key(&keystroke);
+
+            assert_eq!(
+                key_event.code,
+                KeyCode::F(i as u8),
+                "Failed for function key F{}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_space_key() {
+        let keystroke = create_keystroke("space", Modifiers::default());
+        let key_event = translate_key(&keystroke);
+
+        assert_eq!(key_event.code, KeyCode::Char(' '));
+    }
+
+    #[test]
+    fn test_shift_symbol_mappings() {
+        let test_cases = [
+            ("-", '_'),
+            ("=", '+'),
+            ("[", '{'),
+            ("]", '}'),
+            ("\\", '|'),
+            (";", ':'),
+            ("'", '"'),
+            (",", '<'),
+            (".", '>'),
+            ("/", '?'),
+            ("`", '~'),
+        ];
+
+        for (base, shifted) in test_cases {
+            let keystroke = create_keystroke(
+                base,
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            );
+            let key_event = translate_key(&keystroke);
+
+            assert_eq!(
+                key_event.code,
+                KeyCode::Char(shifted),
+                "Failed shift mapping: {} -> {}, got {:?}",
+                base,
+                shifted,
+                key_event.code
+            );
+        }
+    }
 }
