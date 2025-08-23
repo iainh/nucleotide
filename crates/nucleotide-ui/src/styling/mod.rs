@@ -231,10 +231,11 @@ impl<'a> StyleContext<'a> {
         style.foreground = contextual_colors.foreground;
         style.border_color = contextual_colors.border;
 
-        // Set border width and shadow for non-ghost variants
-        if self.variant != "ghost" {
-            style.border_width = px(1.0);
+        // Consistent border width for all variants to prevent layout shifts
+        style.border_width = px(1.0);
 
+        // Set border visibility and shadow for non-ghost variants
+        if self.variant != "ghost" {
             // Add subtle shadow for depth and visual hierarchy
             style.shadow = Some(BoxShadow {
                 offset_x: px(0.0),
@@ -249,6 +250,9 @@ impl<'a> StyleContext<'a> {
                     gpui::hsla(0.0, 0.0, 0.0, 0.1)
                 },
             });
+        } else {
+            // Ghost variants get transparent borders to maintain consistent box model
+            style.border_color = gpui::hsla(0.0, 0.0, 0.0, 0.0); // Transparent border
         }
 
         style
