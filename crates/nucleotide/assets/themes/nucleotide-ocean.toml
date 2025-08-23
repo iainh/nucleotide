@@ -71,8 +71,8 @@ tabstop = { modifiers = ["italic"], bg = "mist" }
 
 "ui.virtual.indent-guide" = { fg = "smoke" }
 
-"ui.selection" = { bg = "#00709066" }
-"ui.selection.primary" = { bg = "#00709066" }
+"ui.selection" = { fg = "white", bg = "#00709066" }
+"ui.selection.primary" = { fg = "white", bg = "#00709066" }
 # TODO: namespace ui.cursor as ui.selection.cursor?
 "ui.cursor.select" = { bg = "cerulean-light" }
 "ui.cursor.insert" = { bg = "midnight" }
