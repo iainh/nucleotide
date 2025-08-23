@@ -2283,6 +2283,52 @@ impl Workspace {
         self.open_file_internal(&settings_path, true, cx);
     }
 
+    /// Reload the nucleotide.toml configuration without restarting
+    pub fn reload_configuration(&mut self, cx: &mut Context<Self>) {
+        info!("Reloading Nucleotide configuration...");
+
+        // Get the Helix config directory path
+        let config_dir = helix_loader::config_dir();
+        let settings_path = config_dir.join("nucleotide.toml");
+
+        if !settings_path.exists() {
+            nucleotide_logging::warn!("Configuration file not found: {}", settings_path.display());
+            // Could create a notification here in the future
+            return;
+        }
+
+        // Attempt to reload configuration
+        match crate::config::Config::load_from_dir(&config_dir) {
+            Ok(new_config) => {
+                info!(
+                    "Successfully reloaded configuration from: {}",
+                    settings_path.display()
+                );
+
+                // Update font configuration if needed
+                if let Some(ui_font) = &new_config.gui.ui.font {
+                    let mut ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
+                    ui_font_config.family = ui_font.family.clone();
+                    ui_font_config.size = ui_font.size;
+                    info!(
+                        "UI font configuration updated: {} {}pt",
+                        ui_font.family, ui_font.size
+                    );
+                }
+
+                // Trigger a full redraw to apply changes
+                cx.notify();
+
+                info!("Configuration reloaded successfully");
+                info!("Note: Theme changes require restarting Nucleotide to take effect");
+            }
+            Err(e) => {
+                nucleotide_logging::error!("Failed to reload configuration: {}", e);
+                // Could show an error notification here in the future
+            }
+        }
+    }
+
     fn open_file_internal(
         &mut self,
         path: &std::path::Path,
@@ -4637,6 +4683,13 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::editor::OpenSettings, _window, cx| {
                 workspace.open_settings_file(cx)
+            },
+        ));
+
+        // Reload configuration action - reload nucleotide.toml without restart
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::editor::ReloadConfiguration, _window, cx| {
+                workspace.reload_configuration(cx)
             },
         ));
 

@@ -83,6 +83,7 @@ pub mod editor {
             OpenFile,
             OpenDirectory,
             OpenSettings,
+            ReloadConfiguration,
             Save,
             SaveAs,
             CloseFile,

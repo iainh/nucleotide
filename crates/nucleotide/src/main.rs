@@ -321,7 +321,7 @@ use nucleotide::actions::{
     },
     editor::{
         CloseFile, Copy, DecreaseFontSize, IncreaseFontSize, OpenDirectory, OpenFile, OpenSettings,
-        Paste, Quit, Redo, Save, SaveAs, Undo,
+        Paste, Quit, Redo, ReloadConfiguration, Save, SaveAs, Undo,
     },
     help::{About, OpenTutorial},
     picker::{ConfirmSelection, DismissPicker, SelectFirst, SelectLast, TogglePreview},
@@ -337,6 +337,7 @@ fn app_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("About", About),
                 MenuItem::action("Settings...", OpenSettings),
+                MenuItem::action("Reload Configuration", ReloadConfiguration),
                 MenuItem::separator(),
                 MenuItem::action("Hide Nucleotide", Hide),
                 MenuItem::action("Hide Others", HideOthers),
