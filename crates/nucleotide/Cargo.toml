@@ -73,16 +73,16 @@ nucleo.workspace = true
 ignore.workspace = true
 dirs.workspace = true
 # markdown doc rendering
-pulldown-cmark = { version = "0.10", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false }
 # file type detection
-content_inspector = "0.2.4"
+content_inspector = "0.2"
 # file system watching
 notify.workspace = true
 # embed assets
 rust-embed = "8.5"
 
 # opening URLs
-open = "5.1.2"
+open = "5.1"
 url.workspace = true
 
 # config

@@ -53,20 +53,11 @@
           sqlite
         ];
 
-        # Platform-specific build inputs
+        # Platform-specific build inputs  
         darwinBuildInputs = with pkgs; lib.optionals stdenv.isDarwin [
           libiconv
-          darwin.apple_sdk.frameworks.Foundation
-          darwin.apple_sdk.frameworks.AppKit
-          darwin.apple_sdk.frameworks.CoreGraphics
-          darwin.apple_sdk.frameworks.CoreServices
-          darwin.apple_sdk.frameworks.CoreText
-          darwin.apple_sdk.frameworks.IOKit
-          darwin.apple_sdk.frameworks.Metal
-          darwin.apple_sdk.frameworks.Security
-          darwin.apple_sdk.frameworks.SystemConfiguration
-          darwin.apple_sdk.frameworks.AVFoundation
-          darwin.apple_sdk.frameworks.VideoToolbox
+          # Modern Apple SDK - the hooks will ensure proper framework linking
+          apple-sdk_12
         ];
 
         linuxBuildInputs = with pkgs; lib.optionals stdenv.isLinux [

@@ -19,7 +19,7 @@ nucleotide-types = { path = "../nucleotide-types" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.0", features = ["sync"] }
-thiserror = "1.0"
+thiserror = "2.0"
 tracing = "0.1"
 helix-view = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
 helix-lsp = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }

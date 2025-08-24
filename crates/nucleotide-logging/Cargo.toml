@@ -21,7 +21,7 @@ tracing-appender = "0.2"
 serde = { workspace = true, features = ["derive"] }
 
 # Utilities
-dirs = "5.0"
+dirs = "6.0"
 parking_lot = "0.12"
 anyhow.workspace = true
 
