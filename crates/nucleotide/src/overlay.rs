@@ -43,6 +43,14 @@ impl OverlayView {
         self.completion_view.is_some()
     }
 
+    pub fn has_picker(&self) -> bool {
+        self.native_picker_view.is_some()
+    }
+
+    pub fn has_prompt(&self) -> bool {
+        self.native_prompt_view.is_some() || self.prompt.is_some()
+    }
+
     pub fn dismiss_completion(&mut self, cx: &mut Context<Self>) {
         if self.completion_view.is_some() {
             self.completion_view = None;

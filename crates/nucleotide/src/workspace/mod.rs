@@ -386,8 +386,15 @@ impl Workspace {
 
     /// Update the input context based on current focus state
     fn update_input_context(&mut self, window: &Window, cx: &mut Context<Self>) {
-        // Determine the current context based on focus state
-        let new_context = if let Some(file_tree) = &self.file_tree {
+        // Check for active overlays first - they take priority
+        let overlay_view = self.overlay.read(cx);
+        let new_context = if overlay_view.has_picker() {
+            InputContext::Picker
+        } else if overlay_view.has_prompt() {
+            InputContext::Prompt
+        } else if overlay_view.has_completion() {
+            InputContext::Completion
+        } else if let Some(file_tree) = &self.file_tree {
             if file_tree.focus_handle(cx).is_focused(window) {
                 InputContext::FileTree
             } else if self.view_manager.focused_view_id().is_some() {
