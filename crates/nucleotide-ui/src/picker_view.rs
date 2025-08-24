@@ -1045,10 +1045,10 @@ impl PickerView {
                                                                 // Content wrapper with padding
                                                                 div()
                                                                     .flex()
-                                                                    .flex_col()
+                                                                    .items_center() // Vertically center content
                                                                     .px_3()
-                                                                    .justify_center()
                                                                     .w_full()
+                                                                    .h_full() // Take full height of the item
                                                                     .when(is_selected, |this| {
                                                                         this.text_color(
                                                                             picker
@@ -1069,12 +1069,15 @@ impl PickerView {
                                                                         // Direct column access for buffer picker
                                                                         div()
                                                                         .flex()
+                                                                        .items_center() // Vertically center columns
                                                                         .gap_2()
                                                                         .font_family("monospace")
                                                                         .child(
                                                                             // ID column
                                                                             div()
                                                                                 .w(px(50.0))
+                                                                                .flex()
+                                                                                .items_center()
                                                                                 .overflow_hidden()
                                                                                 .text_ellipsis()
                                                                                 .child(id.clone())
@@ -1083,13 +1086,17 @@ impl PickerView {
                                                                             // Flags column
                                                                             div()
                                                                                 .w(px(30.0))
-                                                                                .text_center()
+                                                                                .flex()
+                                                                                .items_center()
+                                                                                .justify_center()
                                                                                 .child(flags.clone())
                                                                         )
                                                                         .child(
                                                                             // Path column
                                                                             div()
                                                                                 .flex_1()
+                                                                                .flex()
+                                                                                .items_center()
                                                                                 .overflow_hidden()
                                                                                 .text_ellipsis()
                                                                                 .child(path.clone())
@@ -1118,6 +1125,8 @@ impl PickerView {
                                                                             .child(
                                                                                 div()
                                                                                     .flex_1()
+                                                                                    .flex()
+                                                                                    .items_center()
                                                                                     .overflow_hidden()
                                                                                     .text_ellipsis()
                                                                                     .font_family("monospace")
