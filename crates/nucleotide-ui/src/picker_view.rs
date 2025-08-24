@@ -1,8 +1,8 @@
 // ABOUTME: GPUI-native picker component for fuzzy searching and selection
 // ABOUTME: Uses proper GPUI uniform_list for scrollable content like Zed
 
+use crate::VcsIcon;
 use crate::common::{FocusableModal, ModalStyle, SearchInput};
-use crate::{VcsIcon, VcsStatus};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
@@ -14,6 +14,7 @@ use helix_view::DocumentId;
 use nucleo::Nucleo;
 use nucleotide_core::preview_tracker::PreviewTracker;
 use nucleotide_logging::warn;
+use nucleotide_types::VcsStatus;
 use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Debug)]

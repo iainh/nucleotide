@@ -42,7 +42,7 @@ use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
 use crate::utils;
 use crate::{Core, Input, InputEvent};
-use nucleotide_ui::VcsStatus;
+use nucleotide_types::VcsStatus;
 use nucleotide_vcs::VcsServiceHandle;
 pub struct Workspace {
     core: Entity<Core>,
@@ -2722,6 +2722,11 @@ impl Workspace {
                     crate::types::AppEvent::Editor(_editor_event) => {
                         // Editor events are handled through legacy Update system
                         // Future enhancement: Implement direct V2 editor event handlers
+                    }
+                    crate::types::AppEvent::Vcs(vcs_event) => {
+                        // VCS events for diff gutter indicators and repository status
+                        debug!(vcs_event = ?vcs_event, "VCS event received");
+                        // TODO: Update gutter indicators based on VCS events
                     }
                 }
             }

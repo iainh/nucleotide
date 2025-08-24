@@ -1003,7 +1003,7 @@ impl Application {
                         // Create a lookup map for O(1) access
                         let vcs_map: std::collections::HashMap<
                             PathBuf,
-                            Option<nucleotide_ui::VcsStatus>,
+                            Option<nucleotide_types::VcsStatus>,
                         > = vcs_results.into_iter().collect();
 
                         // Update items with VCS status from bulk lookup

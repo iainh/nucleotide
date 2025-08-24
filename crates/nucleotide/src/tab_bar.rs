@@ -4,8 +4,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{App, IntoElement, ParentElement, RenderOnce, Styled, Window, div, px};
 use helix_view::DocumentId;
+use nucleotide_types::VcsStatus;
 use nucleotide_ui::ThemedContext;
-use nucleotide_ui::VcsStatus;
 use std::path::PathBuf;
 use std::sync::Arc;
 

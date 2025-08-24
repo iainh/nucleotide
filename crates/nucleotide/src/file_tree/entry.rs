@@ -19,7 +19,7 @@ pub struct FileTreeEntry {
     /// Last modified time
     pub mtime: Option<SystemTime>,
     /// VCS status if available
-    pub git_status: Option<nucleotide_ui::VcsStatus>,
+    pub git_status: Option<nucleotide_types::VcsStatus>,
     /// Whether this entry should be visible
     pub is_visible: bool,
     /// Whether this directory is expanded (only for directories)
@@ -56,7 +56,7 @@ pub enum FileKind {
     },
 }
 
-// GitStatus moved to nucleotide_ui::VcsStatus for centralized VCS handling
+// GitStatus moved to nucleotide_types::VcsStatus for centralized VCS handling
 
 impl FileTreeEntry {
     /// Create a new file entry
@@ -190,7 +190,7 @@ impl FileTreeEntry {
 
     /// Set VCS status
     #[allow(dead_code)]
-    pub fn set_git_status(&mut self, status: nucleotide_ui::VcsStatus) {
+    pub fn set_git_status(&mut self, status: nucleotide_types::VcsStatus) {
         self.git_status = Some(status);
     }
 

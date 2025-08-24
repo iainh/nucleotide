@@ -7,10 +7,11 @@ use gpui::{
     ParentElement, RenderOnce, SharedString, Styled, Window, div, px,
 };
 use helix_view::DocumentId;
+use nucleotide_types::VcsStatus;
 use nucleotide_ui::ThemedContext;
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, Component, ComponentFactory, ComponentState, Interactive,
-    StyleVariant, Styled as UIStyled, Tooltipped, VcsIcon, VcsStatus, compute_component_state,
+    StyleVariant, Styled as UIStyled, Tooltipped, VcsIcon, compute_component_state,
 };
 
 /// Type alias for mouse event handlers in tabs

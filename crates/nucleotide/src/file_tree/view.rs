@@ -12,9 +12,10 @@ use gpui::{
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nucleotide_logging::{debug, error, warn};
+use nucleotide_types::VcsStatus;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::{
-    ListItem, ListItemSpacing, ListItemVariant, Theme, VcsIcon, VcsIconRenderer, VcsStatus,
+    ListItem, ListItemSpacing, ListItemVariant, Theme, VcsIcon, VcsIconRenderer,
     scrollbar::{Scrollbar, ScrollbarState},
 };
 use nucleotide_vcs::VcsServiceHandle;

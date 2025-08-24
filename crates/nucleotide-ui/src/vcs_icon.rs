@@ -4,7 +4,8 @@
 use gpui::{Context, Hsla, IntoElement, ParentElement, Styled, div, px};
 use std::path::Path;
 
-use crate::{FileIcon, Theme, VcsStatus};
+use crate::{FileIcon, Theme};
+use nucleotide_types::VcsStatus;
 
 /// Combined file icon and VCS status indicator component
 ///
@@ -94,7 +95,7 @@ impl VcsIcon {
     /// Check if VCS status should be shown
     fn should_show_vcs_status(&self) -> bool {
         match &self.vcs_status {
-            Some(VcsStatus::UpToDate) | None => false,
+            Some(VcsStatus::Clean) | None => false,
             Some(_) => true,
         }
     }
@@ -108,7 +109,8 @@ impl VcsIcon {
             Some(VcsStatus::Untracked) => Some(theme.text_muted),
             Some(VcsStatus::Renamed) => Some(theme.tokens.colors.primary),
             Some(VcsStatus::Conflicted) => Some(theme.error),
-            Some(VcsStatus::UpToDate) | None => None,
+            Some(VcsStatus::Unknown) => Some(theme.text_muted),
+            Some(VcsStatus::Clean) | None => None,
         }
     }
 
@@ -196,7 +198,7 @@ impl IntoElement for VcsIcon {
 
         // Add VCS overlay with fallback colors if status exists
         let should_show = match &vcs_status {
-            Some(VcsStatus::UpToDate) | None => false,
+            Some(VcsStatus::Clean) | None => false,
             Some(_) => true,
         };
 

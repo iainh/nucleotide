@@ -2,26 +2,8 @@
 // ABOUTME: Provides colored dots and overlays showing file modification status
 
 use gpui::{IntoElement, Styled, div, px};
+use nucleotide_types::VcsStatus;
 use std::path::Path;
-
-/// Git status types for VCS indicators
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum VcsStatus {
-    /// File is untracked
-    Untracked,
-    /// File has been modified
-    Modified,
-    /// File has been added (staged for commit)
-    Added,
-    /// File has been deleted
-    Deleted,
-    /// File has been renamed
-    Renamed,
-    /// File has conflicts
-    Conflicted,
-    /// File is up to date with repository
-    UpToDate,
-}
 
 /// VCS status indicator component
 #[derive(Clone)]
@@ -47,8 +29,8 @@ impl VcsIndicator {
     /// Create a VCS indicator from a file path by checking git status
     pub fn from_path<P: AsRef<Path>>(_path: P) -> Self {
         // TODO: Integrate with actual VCS system
-        // For now, return UpToDate as default
-        Self::new(VcsStatus::UpToDate)
+        // For now, return Clean as default
+        Self::new(VcsStatus::Clean)
     }
 
     /// Set the size of the indicator dot
@@ -65,7 +47,7 @@ impl VcsIndicator {
 
     /// Check if this status should be visible
     fn should_show(&self) -> bool {
-        !matches!(self.status, VcsStatus::UpToDate)
+        !matches!(self.status, VcsStatus::Clean)
     }
 }
 
@@ -86,7 +68,8 @@ impl IntoElement for VcsIndicator {
             VcsStatus::Untracked => gpui::hsla(0.0, 0.0, 0.7, 1.0), // Muted
             VcsStatus::Renamed => gpui::hsla(0.61, 0.6, 0.5, 1.0),  // Accent/blue
             VcsStatus::Conflicted => gpui::hsla(0.0, 0.8, 0.5, 1.0), // Red/error
-            VcsStatus::UpToDate => return div(),                    // Shouldn't reach here
+            VcsStatus::Clean => return div(),                       // Shouldn't reach here
+            VcsStatus::Unknown => gpui::hsla(0.0, 0.0, 0.5, 1.0),   // Gray/unknown
         };
 
         let mut indicator = div()
