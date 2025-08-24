@@ -6,5 +6,5 @@ pub mod vcs_service;
 // Re-export main types for easy access
 pub use vcs_service::{CacheStats, VcsConfig, VcsEvent, VcsService, VcsServiceHandle};
 
-// Re-export VcsStatus from nucleotide-ui for convenience
-pub use nucleotide_ui::VcsStatus;
+// Re-export VCS types from nucleotide-types
+pub use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};

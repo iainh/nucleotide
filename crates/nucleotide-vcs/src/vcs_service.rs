@@ -2,8 +2,13 @@
 // ABOUTME: Provides events and queries for file modification status in version control
 
 use gpui::{App, AppContext, Context, Entity, EventEmitter};
+use helix_core::Rope;
+use helix_vcs::{DiffHandle, DiffProviderRegistry, Hunk};
+use nucleotide_events::{
+    v2::vcs::DiffHunk as DomainDiffHunk, v2::vcs::Event as DomainVcsEvent, EventBus,
+};
 use nucleotide_logging::{debug, error, info, warn};
-use nucleotide_ui::VcsStatus;
+use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,10 +22,92 @@ pub enum VcsEvent {
         /// Map of file paths to their VCS status
         changes: HashMap<PathBuf, VcsStatus>,
     },
+    /// VCS diff hunks have been updated for a file
+    DiffHunksUpdated {
+        /// Path to the file that changed
+        file_path: PathBuf,
+        /// Diff hunks for the file
+        hunks: Vec<DiffHunkInfo>,
+    },
     /// VCS service has started monitoring a repository
     RepositoryStarted { root_path: PathBuf },
     /// VCS service encountered an error
     Error { message: String },
+}
+
+/// Convert VCS service event to domain event for the event bus
+fn vcs_event_to_domain_event(event: &VcsEvent) -> Option<DomainVcsEvent> {
+    match event {
+        VcsEvent::DiffHunksUpdated { file_path, hunks } => {
+            // Convert DiffHunkInfo to DomainDiffHunk
+            let domain_hunks: Vec<DomainDiffHunk> = hunks
+                .iter()
+                .map(|hunk| {
+                    let change_type = match hunk.change_type {
+                        DiffChangeType::Addition => {
+                            nucleotide_events::v2::vcs::HunkChangeType::Addition
+                        }
+                        DiffChangeType::Deletion => {
+                            nucleotide_events::v2::vcs::HunkChangeType::Deletion
+                        }
+                        DiffChangeType::Modification => {
+                            nucleotide_events::v2::vcs::HunkChangeType::Modification
+                        }
+                    };
+
+                    DomainDiffHunk {
+                        after_start: hunk.after_start,
+                        after_end: hunk.after_end,
+                        before_start: hunk.before_start,
+                        before_end: hunk.before_end,
+                        change_type,
+                    }
+                })
+                .collect();
+
+            Some(DomainVcsEvent::DiffStatusChanged {
+                doc_id: helix_view::DocumentId::default(), // TODO: Get actual doc_id when available
+                path: file_path.clone(),
+                hunks: domain_hunks,
+                diff_base_revision: None, // TODO: Add base revision tracking
+            })
+        }
+        VcsEvent::RepositoryStarted { root_path } => {
+            Some(DomainVcsEvent::RepositoryHeadChanged {
+                repository_path: root_path.clone(),
+                previous_head: None,
+                current_head: "HEAD".to_string(), // TODO: Get actual head
+            })
+        }
+        VcsEvent::StatusUpdated { .. } => {
+            // Status updates don't have a direct mapping to domain events yet
+            // TODO: Add file status events to domain events
+            None
+        }
+        VcsEvent::Error { .. } => {
+            // Error events could be mapped to a domain error event if needed
+            None
+        }
+    }
+}
+
+/// Convert Helix Hunk to DiffHunkInfo
+fn hunk_to_diff_info(hunk: &Hunk) -> DiffHunkInfo {
+    let change_type = if hunk.is_pure_insertion() {
+        DiffChangeType::Addition
+    } else if hunk.is_pure_removal() {
+        DiffChangeType::Deletion
+    } else {
+        DiffChangeType::Modification
+    };
+
+    DiffHunkInfo {
+        after_start: hunk.after.start,
+        after_end: hunk.after.end,
+        before_start: hunk.before.start,
+        before_end: hunk.before.end,
+        change_type,
+    }
 }
 
 /// Configuration for the VCS service
@@ -84,6 +171,14 @@ pub struct VcsService {
     status_cache: HashMap<PathBuf, VcsStatus>,
     /// Timestamp of last cache update for each path
     cache_timestamps: HashMap<PathBuf, Instant>,
+    /// Diff provider registry for getting diff base files
+    diff_provider: DiffProviderRegistry,
+    /// Active diff handles for files
+    diff_handles: HashMap<PathBuf, DiffHandle>,
+    /// Cached diff hunks for files
+    diff_hunks_cache: HashMap<PathBuf, Vec<DiffHunkInfo>>,
+    /// Event bus for forwarding VCS events
+    event_bus: Option<Box<dyn EventBus + Send + Sync>>,
     /// Configuration
     config: VcsConfig,
     /// Last time VCS status was checked
@@ -109,6 +204,10 @@ impl VcsService {
             root_path: None,
             status_cache: HashMap::new(),
             cache_timestamps: HashMap::new(),
+            diff_provider: DiffProviderRegistry::default(),
+            diff_handles: HashMap::new(),
+            diff_hunks_cache: HashMap::new(),
+            event_bus: None,
             config,
             last_check: None,
             cache_ttl: Duration::from_secs(5), // 5 second cache TTL
@@ -118,6 +217,11 @@ impl VcsService {
             cache_cleanup_interval: Duration::from_secs(30), // Clean every 30 seconds
             max_cache_size: 5000,                            // Maximum 5000 cached entries
         }
+    }
+
+    /// Set the event bus for forwarding VCS events
+    pub fn set_event_bus(&mut self, event_bus: Box<dyn EventBus + Send + Sync>) {
+        self.event_bus = Some(event_bus);
     }
 
     /// Start monitoring a repository
@@ -166,7 +270,7 @@ impl VcsService {
             self.schedule_next_check(cx);
 
             // Broadcast that we started monitoring
-            cx.emit(VcsEvent::RepositoryStarted { root_path });
+            self.emit_vcs_event(VcsEvent::RepositoryStarted { root_path }, cx);
         }
     }
 
@@ -176,6 +280,8 @@ impl VcsService {
         self.is_monitoring = false;
         self.root_path = None;
         self.status_cache.clear();
+        self.diff_handles.clear();
+        self.diff_hunks_cache.clear();
         self.last_check = None;
     }
 
@@ -204,6 +310,93 @@ impl VcsService {
     /// Get all files with VCS status
     pub fn get_all_status(&self) -> &HashMap<PathBuf, VcsStatus> {
         &self.status_cache
+    }
+
+    /// Get diff hunks for a specific file
+    pub fn get_diff_hunks(&self, path: &Path) -> Option<&Vec<DiffHunkInfo>> {
+        let abs_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Some(ref root) = self.root_path {
+            root.join(path)
+        } else {
+            return None;
+        };
+
+        self.diff_hunks_cache.get(&abs_path)
+    }
+
+    /// Create or update a diff handle for a file
+    pub fn update_file_diff(
+        &mut self,
+        file_path: &Path,
+        file_content: Rope,
+        cx: &mut Context<Self>,
+    ) {
+        let abs_path = if file_path.is_absolute() {
+            file_path.to_path_buf()
+        } else if let Some(ref root) = self.root_path {
+            root.join(file_path)
+        } else {
+            debug!("Cannot update file diff without root path");
+            return;
+        };
+
+        // Get the diff base from VCS
+        if let Some(diff_base_bytes) = self.diff_provider.get_diff_base(&abs_path) {
+            // Convert bytes to Rope
+            let diff_base_string = String::from_utf8_lossy(&diff_base_bytes);
+            let diff_base = Rope::from_str(&diff_base_string);
+
+            // Create or update diff handle
+            let diff_handle = DiffHandle::new(diff_base, file_content);
+
+            // Load the diff and cache hunks
+            let hunks: Vec<DiffHunkInfo> = {
+                let diff = diff_handle.load();
+                (0..diff.len())
+                    .map(|i| diff.nth_hunk(i))
+                    .map(|hunk| hunk_to_diff_info(&hunk))
+                    .collect()
+            };
+
+            // Cache the hunks and emit event
+            self.diff_hunks_cache
+                .insert(abs_path.clone(), hunks.clone());
+            self.diff_handles.insert(abs_path.clone(), diff_handle);
+
+            debug!(
+                file_path = %abs_path.display(),
+                hunk_count = hunks.len(),
+                "Updated diff hunks for file"
+            );
+
+            // Emit diff hunks updated event
+            self.emit_vcs_event(
+                VcsEvent::DiffHunksUpdated {
+                    file_path: abs_path,
+                    hunks,
+                },
+                cx,
+            );
+        } else {
+            debug!(
+                file_path = %abs_path.display(),
+                "No diff base found for file, removing diff data"
+            );
+
+            // Remove diff data if no base is available
+            self.diff_handles.remove(&abs_path);
+            if self.diff_hunks_cache.remove(&abs_path).is_some() {
+                // Emit empty diff if we had hunks before
+                self.emit_vcs_event(
+                    VcsEvent::DiffHunksUpdated {
+                        file_path: abs_path,
+                        hunks: vec![],
+                    },
+                    cx,
+                );
+            }
+        }
     }
 
     /// Get VCS status with automatic cache refresh if stale
@@ -477,9 +670,12 @@ impl VcsService {
             }
             Err(e) => {
                 error!(error = %e, "VCS: Failed to get git status");
-                cx.emit(VcsEvent::Error {
-                    message: format!("Git status failed: {}", e),
-                });
+                self.emit_vcs_event(
+                    VcsEvent::Error {
+                        message: format!("Git status failed: {}", e),
+                    },
+                    cx,
+                );
             }
         }
 
@@ -510,7 +706,7 @@ impl VcsService {
         // Find removed files
         for path in self.status_cache.keys() {
             if !new_status.contains_key(path) {
-                changes.insert(path.clone(), VcsStatus::UpToDate);
+                changes.insert(path.clone(), VcsStatus::Clean);
             }
         }
 
@@ -538,7 +734,7 @@ impl VcsService {
         // Emit changes if any
         if !changes.is_empty() {
             debug!(change_count = changes.len(), "VCS: Status changes detected");
-            cx.emit(VcsEvent::StatusUpdated { changes });
+            self.emit_vcs_event(VcsEvent::StatusUpdated { changes }, cx);
         }
     }
 
@@ -607,6 +803,21 @@ fn run_git_status(
 }
 
 impl EventEmitter<VcsEvent> for VcsService {}
+
+impl VcsService {
+    /// Emit a VCS event and forward it to the event bus if available
+    fn emit_vcs_event(&self, event: VcsEvent, cx: &mut Context<Self>) {
+        // Forward to event bus if available
+        if let Some(ref event_bus) = self.event_bus {
+            if let Some(domain_event) = vcs_event_to_domain_event(&event) {
+                event_bus.dispatch_vcs(domain_event);
+            }
+        }
+
+        // Also emit the local event for subscribers
+        cx.emit(event);
+    }
+}
 
 /// Global VCS service instance
 pub struct VcsServiceHandle {
@@ -710,6 +921,25 @@ impl VcsServiceHandle {
         self.service.update(cx, |service, cx| {
             service.populate_picker_cache(picker_paths, cx)
         })
+    }
+
+    /// Get diff hunks for a file
+    pub fn get_diff_hunks(&self, path: &Path, cx: &App) -> Option<Vec<DiffHunkInfo>> {
+        self.service.read(cx).get_diff_hunks(path).cloned()
+    }
+
+    /// Update file diff hunks
+    pub fn update_file_diff(&self, file_path: &Path, file_content: helix_core::Rope, cx: &mut App) {
+        self.service.update(cx, |service, cx| {
+            service.update_file_diff(file_path, file_content, cx);
+        });
+    }
+
+    /// Set the event bus for forwarding VCS events to the application event system
+    pub fn set_event_bus(&self, event_bus: Box<dyn EventBus + Send + Sync>, cx: &mut App) {
+        self.service.update(cx, |service, _cx| {
+            service.set_event_bus(event_bus);
+        });
     }
 
     /// Subscribe to VCS events
