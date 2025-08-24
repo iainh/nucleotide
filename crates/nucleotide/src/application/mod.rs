@@ -113,7 +113,7 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 // Removed unused Tag-related structs and enums
 
 use anyhow::Error;
-use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
+use nucleotide_core::{EventAggregatorHandle, EventBus, event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, timed, warn};
 
 use crate::types::{AppEvent, CoreEvent, UiEvent, Update};
@@ -159,6 +159,8 @@ pub struct Application {
     pub project_environment: Arc<ProjectEnvironment>,
     // V2 Event System Core
     pub core: crate::application::ApplicationCore,
+    // Event aggregator for dispatching integration events
+    pub event_aggregator: Option<EventAggregatorHandle>,
 }
 
 #[derive(Debug, Clone)]
@@ -198,7 +200,10 @@ impl Application {
 
         // Process V2 events for all supported event types
         match bridged_event {
-            event_bridge::BridgedEvent::DocumentChanged { doc_id } => {
+            event_bridge::BridgedEvent::DocumentChanged {
+                doc_id,
+                change_summary,
+            } => {
                 // Extract actual document revision
                 let revision = if let Some(document) = self.editor.document_mut(*doc_id) {
                     document.get_current_revision() as u64
@@ -207,11 +212,11 @@ impl Application {
                     0
                 };
 
-                // Create a V2 document event with actual revision
+                // Create a V2 document event with actual change type
                 let v2_event = DocumentEvent::ContentChanged {
                     doc_id: *doc_id,
                     revision,
-                    change_summary: ChangeType::Insert, // TODO: Determine actual change type based on operation
+                    change_summary: *change_summary,
                 };
 
                 debug!(
@@ -224,6 +229,9 @@ impl Application {
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+                // Emit UI update events for document changes
+                self.emit_document_ui_events(*doc_id, revision).await;
             }
 
             event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
@@ -315,14 +323,19 @@ impl Application {
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+                // Emit UI update events for document opened
+                self.emit_document_opened_ui_events(*doc_id).await;
             }
 
-            event_bridge::BridgedEvent::DocumentClosed { doc_id } => {
-                // Note: By the time we get this event, the document might already be removed
-                // So we use placeholder data
+            event_bridge::BridgedEvent::DocumentClosed {
+                doc_id,
+                was_modified,
+            } => {
+                // Use the actual modification state from the Helix event
                 let v2_event = DocumentEvent::Closed {
                     doc_id: *doc_id,
-                    was_modified: false, // TODO: Track modification status before close
+                    was_modified: *was_modified,
                 };
 
                 debug!(doc_id = ?doc_id, "Processing DocumentClosed through V2 handler");
@@ -331,6 +344,9 @@ impl Application {
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+                // Emit UI update events for document closed
+                self.emit_document_closed_ui_events(*doc_id).await;
             }
 
             event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
@@ -374,6 +390,10 @@ impl Application {
                     .handle(v2_event)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+                // Emit UI update events for diagnostics changes
+                self.emit_diagnostics_ui_events(*doc_id, error_count, warning_count)
+                    .await;
             }
 
             event_bridge::BridgedEvent::ViewFocused { view_id } => {
@@ -408,6 +428,350 @@ impl Application {
         }
 
         Ok(())
+    }
+
+    /// Emit UI events when a document changes
+    async fn emit_document_ui_events(&mut self, doc_id: helix_view::DocumentId, revision: u64) {
+        use nucleotide_events::integration::{
+            Event as IntegrationEvent, UiEditorSyncData, UiEditorSyncType,
+        };
+
+        debug!(doc_id = ?doc_id, revision = revision, "Emitting document UI update events");
+
+        // Emit document view refresh event
+        let view_refresh_event = IntegrationEvent::ui_editor_sync(
+            UiEditorSyncType::DocumentViewRefresh,
+            UiEditorSyncData::DocumentViewData { doc_id, revision },
+        );
+
+        // Get document modification status for save indicator
+        let is_modified = if let Some(document) = self.editor.document(doc_id) {
+            document.is_modified()
+        } else {
+            false
+        };
+
+        let save_indicator_event = IntegrationEvent::ui_editor_sync(
+            UiEditorSyncType::SaveIndicatorUpdate,
+            UiEditorSyncData::SaveIndicatorData {
+                doc_id,
+                is_modified,
+            },
+        );
+
+        // Dispatch integration events through the event aggregator
+        if let Some(event_aggregator) = &self.event_aggregator {
+            event_aggregator.dispatch_integration(view_refresh_event);
+            event_aggregator.dispatch_integration(save_indicator_event);
+            debug!(doc_id = ?doc_id, "Dispatched document UI integration events");
+        } else {
+            debug!(integration_event = ?view_refresh_event, "Would emit document view refresh (no event aggregator)");
+            debug!(integration_event = ?save_indicator_event, "Would emit save indicator update (no event aggregator)");
+        }
+    }
+
+    /// Emit UI events when a document is opened
+    async fn emit_document_opened_ui_events(&mut self, doc_id: helix_view::DocumentId) {
+        use nucleotide_events::integration::{
+            Event as IntegrationEvent, FileTreeAction, TabBarAction, UiEditorSyncData,
+            UiEditorSyncType,
+        };
+
+        debug!(doc_id = ?doc_id, "Emitting document opened UI events");
+
+        // Emit file tree update to highlight the opened document
+        let file_tree_event = IntegrationEvent::ui_editor_sync(
+            UiEditorSyncType::FileTreeUpdate,
+            UiEditorSyncData::FileTreeData {
+                doc_id,
+                action: FileTreeAction::HighlightDocument,
+            },
+        );
+
+        // Emit tab bar update to add the new tab
+        let tab_bar_event = IntegrationEvent::ui_editor_sync(
+            UiEditorSyncType::TabBarUpdate,
+            UiEditorSyncData::TabBarData {
+                doc_id,
+                action: TabBarAction::AddTab,
+            },
+        );
+
+        // Dispatch integration events through the event aggregator
+        if let Some(event_aggregator) = &self.event_aggregator {
+            event_aggregator.dispatch_integration(file_tree_event);
+            event_aggregator.dispatch_integration(tab_bar_event);
+            debug!(doc_id = ?doc_id, "Dispatched document opened UI integration events");
+        } else {
+            debug!(integration_event = ?file_tree_event, "Would emit file tree update (no event aggregator)");
+            debug!(integration_event = ?tab_bar_event, "Would emit tab bar add (no event aggregator)");
+        }
+    }
+
+    /// Emit UI events when a document is closed
+    async fn emit_document_closed_ui_events(&mut self, doc_id: helix_view::DocumentId) {
+        use nucleotide_events::integration::{
+            Event as IntegrationEvent, TabBarAction, UiEditorSyncData, UiEditorSyncType,
+        };
+
+        debug!(doc_id = ?doc_id, "Emitting document closed UI events");
+
+        // Emit tab bar update to remove the tab
+        let tab_bar_event = IntegrationEvent::ui_editor_sync(
+            UiEditorSyncType::TabBarUpdate,
+            UiEditorSyncData::TabBarData {
+                doc_id,
+                action: TabBarAction::RemoveTab,
+            },
+        );
+
+        // Dispatch integration events through the event aggregator
+        if let Some(event_aggregator) = &self.event_aggregator {
+            event_aggregator.dispatch_integration(tab_bar_event);
+            debug!(doc_id = ?doc_id, "Dispatched document closed UI integration events");
+        } else {
+            debug!(integration_event = ?tab_bar_event, "Would emit tab bar remove (no event aggregator)");
+        }
+    }
+
+    /// Emit UI events when document diagnostics change
+    async fn emit_diagnostics_ui_events(
+        &mut self,
+        doc_id: helix_view::DocumentId,
+        error_count: usize,
+        warning_count: usize,
+    ) {
+        use nucleotide_events::integration::{
+            Event as IntegrationEvent, UiEditorSyncData, UiEditorSyncType,
+        };
+
+        debug!(doc_id = ?doc_id, error_count = error_count, warning_count = warning_count, "Emitting diagnostics UI events");
+
+        // Emit diagnostic indicator update
+        let diagnostic_event = IntegrationEvent::ui_editor_sync(
+            UiEditorSyncType::DiagnosticIndicatorUpdate,
+            UiEditorSyncData::DiagnosticData {
+                doc_id,
+                error_count,
+                warning_count,
+            },
+        );
+
+        // Dispatch integration events through the event aggregator
+        if let Some(event_aggregator) = &self.event_aggregator {
+            event_aggregator.dispatch_integration(diagnostic_event);
+            debug!(doc_id = ?doc_id, error_count = error_count, warning_count = warning_count, "Dispatched diagnostic UI integration events");
+        } else {
+            debug!(integration_event = ?diagnostic_event, "Would emit diagnostic indicator update (no event aggregator)");
+        }
+    }
+
+    /// Handle language server message, adapted from Helix's implementation
+    #[instrument(skip(self, call))]
+    pub async fn handle_language_server_message(
+        &mut self,
+        call: helix_lsp::Call,
+        server_id: helix_lsp::LanguageServerId,
+    ) {
+        use helix_lsp::{Call, MethodCall, Notification};
+
+        macro_rules! language_server {
+            () => {
+                match self.editor.language_server_by_id(server_id) {
+                    Some(language_server) => language_server,
+                    None => {
+                        warn!(server_id = ?server_id, "Can't find language server");
+                        return;
+                    }
+                }
+            };
+        }
+
+        match call {
+            Call::Notification(helix_lsp::jsonrpc::Notification { method, params, .. }) => {
+                let notification = match Notification::parse(&method, params) {
+                    Ok(notification) => notification,
+                    Err(helix_lsp::Error::Unhandled) => {
+                        debug!(method = %method, "Ignoring unhandled LSP notification");
+                        return;
+                    }
+                    Err(err) => {
+                        error!(
+                            server_id = ?server_id,
+                            method = %method,
+                            error = %err,
+                            "Failed to parse LSP notification"
+                        );
+                        return;
+                    }
+                };
+
+                debug!(
+                    server_id = ?server_id,
+                    method = %method,
+                    "Processing LSP notification"
+                );
+
+                // Handle the notification directly like Helix does
+                // Note: We only implement the most important notifications for now
+                // Additional notifications can be added as needed
+                match notification {
+                    Notification::Initialized => {
+                        let language_server = language_server!();
+                        // Trigger workspace configuration if available
+                        if let Some(config) = language_server.config() {
+                            language_server.did_change_configuration(config.clone());
+                        }
+                        debug!(server_id = ?server_id, "LSP server initialized");
+                    }
+                    Notification::PublishDiagnostics(params) => {
+                        let uri = match helix_core::Uri::try_from(params.uri) {
+                            Ok(uri) => uri,
+                            Err(err) => {
+                                error!(error = %err, "Invalid URI in diagnostics");
+                                return;
+                            }
+                        };
+                        let language_server = language_server!();
+                        if !language_server.is_initialized() {
+                            error!(
+                                server_id = ?server_id,
+                                server_name = language_server.name(),
+                                "Discarding diagnostics from uninitialized server"
+                            );
+                            return;
+                        }
+
+                        // Handle diagnostics through the editor like Helix does
+                        let provider = helix_core::diagnostic::DiagnosticProvider::Lsp {
+                            server_id,
+                            identifier: None,
+                        };
+
+                        self.editor.handle_lsp_diagnostics(
+                            &provider,
+                            uri,
+                            params.version,
+                            params.diagnostics,
+                        );
+                    }
+                    _ => {
+                        debug!(
+                            server_id = ?server_id,
+                            notification_type = ?notification,
+                            "Unhandled LSP notification (this may be expected)"
+                        );
+                    }
+                }
+            }
+            Call::MethodCall(helix_lsp::jsonrpc::MethodCall {
+                method, params, id, ..
+            }) => {
+                debug!(
+                    server_id = ?server_id,
+                    method = %method,
+                    id = ?id,
+                    "Handling LSP method call"
+                );
+
+                // Parse and handle method calls like Helix does
+                let reply = match MethodCall::parse(&method, params) {
+                    Err(helix_lsp::Error::Unhandled) => {
+                        error!(
+                            server_id = ?server_id,
+                            method = %method,
+                            id = ?id,
+                            "Unhandled LSP method call"
+                        );
+                        Err(helix_lsp::jsonrpc::Error {
+                            code: helix_lsp::jsonrpc::ErrorCode::MethodNotFound,
+                            message: format!("Method not found: {}", method),
+                            data: None,
+                        })
+                    }
+                    Err(err) => {
+                        error!(
+                            server_id = ?server_id,
+                            method = %method,
+                            id = ?id,
+                            error = %err,
+                            "Malformed LSP method call"
+                        );
+                        Err(helix_lsp::jsonrpc::Error {
+                            code: helix_lsp::jsonrpc::ErrorCode::ParseError,
+                            message: format!("Malformed method call: {}", method),
+                            data: None,
+                        })
+                    }
+                    Ok(MethodCall::WorkDoneProgressCreate(params)) => {
+                        // Handle work done progress creation
+                        let token = params.token.clone();
+                        self.lsp_progress.create(server_id, params.token);
+                        debug!(server_id = ?server_id, token = ?token, "Created work done progress");
+                        Ok(serde_json::Value::Null)
+                    }
+                    Ok(MethodCall::ApplyWorkspaceEdit(params)) => {
+                        // Handle workspace edit requests
+                        let (is_initialized, offset_encoding) = {
+                            let language_server = language_server!();
+                            (
+                                language_server.is_initialized(),
+                                language_server.offset_encoding(),
+                            )
+                        };
+
+                        if is_initialized {
+                            let res = self
+                                .editor
+                                .apply_workspace_edit(offset_encoding, &params.edit);
+                            Ok(serde_json::json!({
+                                "applied": res.is_ok(),
+                                "failureReason": if res.is_err() {
+                                    Some("Failed to apply workspace edit".to_string())
+                                } else {
+                                    None
+                                }
+                            }))
+                        } else {
+                            Err(helix_lsp::jsonrpc::Error {
+                                code: helix_lsp::jsonrpc::ErrorCode::InvalidRequest,
+                                message: "Server not initialized".to_string(),
+                                data: None,
+                            })
+                        }
+                    }
+                    Ok(method_call) => {
+                        warn!(
+                            server_id = ?server_id,
+                            method_call = ?method_call,
+                            "Unimplemented LSP method call (returning null)"
+                        );
+                        Ok(serde_json::Value::Null)
+                    }
+                };
+
+                // Send the reply
+                if let Some(language_server) = self.editor.language_server_by_id(server_id) {
+                    if let Err(err) = language_server.reply(id, reply) {
+                        error!(
+                            server_id = ?server_id,
+                            error = %err,
+                            "Failed to send LSP method call reply"
+                        );
+                    }
+                } else {
+                    warn!(server_id = ?server_id, "Language server not found for reply");
+                }
+            }
+            Call::Invalid { id } => {
+                error!(
+                    server_id = ?server_id,
+                    id = ?id,
+                    "Received invalid LSP call"
+                );
+                // No response needed for invalid calls
+            }
+        }
     }
 
     /// Sync LSP state from the editor and progress map
@@ -1350,13 +1714,50 @@ impl Application {
             }
             InputEvent::SetViewportAnchor { view_id, anchor } => {
                 // Set the viewport anchor for scrollbar integration
-                // For now, we'll use a simplified approach - just emit a redraw
-                // TODO: Implement proper viewport anchor setting through document API
                 debug!(
                     view_id = ?view_id,
                     anchor = anchor,
-                    "SetViewportAnchor"
+                    "SetViewportAnchor - setting viewport position"
                 );
+
+                // Get the view and then the document
+                if let Some(view) = self.editor.tree.try_get(view_id) {
+                    let doc_id = view.doc;
+                    if let Some(doc) = self.editor.documents.get_mut(&doc_id) {
+                        // Get current view position to preserve horizontal offset
+                        let current_offset = doc.view_offset(view_id);
+
+                        // Create new view position with updated anchor
+                        let new_offset = helix_view::view::ViewPosition {
+                            anchor,
+                            horizontal_offset: current_offset.horizontal_offset,
+                            vertical_offset: 0, // Reset vertical offset when setting new anchor
+                        };
+
+                        // Set the new viewport position
+                        doc.set_view_offset(view_id, new_offset);
+
+                        debug!(
+                            view_id = ?view_id,
+                            old_anchor = current_offset.anchor,
+                            new_anchor = anchor,
+                            "ViewportAnchor updated successfully"
+                        );
+                    } else {
+                        warn!(
+                            view_id = ?view_id,
+                            doc_id = ?doc_id,
+                            "SetViewportAnchor: Document not found for doc_id"
+                        );
+                    }
+                } else {
+                    warn!(
+                        view_id = ?view_id,
+                        "SetViewportAnchor: View not found for view_id"
+                    );
+                }
+
+                // Emit redraw to reflect the viewport change
                 cx.emit(crate::Update::Event(AppEvent::Core(
                     CoreEvent::RedrawRequested,
                 )));
@@ -1630,11 +2031,11 @@ impl Application {
                             cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::RedrawRequested)));
                         }
                         EditorEvent::LanguageServerMessage((id, call)) => {
-                            // TODO: Fix LSP manager integration after refactoring
-                            // We need cx here but it's not available in the async context
-                            // For now, handle without UI updates
-                            // let mut lsp_manager = nucleotide_lsp::LspManager::new(&mut self.editor, &mut self.lsp_progress);
-                            // lsp_manager.handle_language_server_message(call, id).await;
+                            // Handle LSP messages directly using the editor, similar to Helix's approach
+                            self.handle_language_server_message(call, id).await;
+                            // Request redraw after handling LSP message
+                            cx.emit(crate::Update::Redraw);
+                            cx.emit(crate::Update::Event(AppEvent::Core(CoreEvent::RedrawRequested)));
                         }
                         EditorEvent::DebuggerEvent(_) => {
                             /* TODO */
@@ -3210,7 +3611,8 @@ pub fn init_editor(
         signature_hints: signature_tx,
         auto_save: auto_save_tx,
         document_colors: doc_colors_tx,
-        // TODO: Add word_index handler when available in new API
+        // NOTE: word_index handler not available in current Helix API version (25.07.1)
+        // This may be added in future versions for document symbol indexing/search
     };
 
     // CRITICAL FIX: Register handler hooks to enable LSP features
@@ -3390,6 +3792,8 @@ pub fn init_editor(
                 .expect("Failed to initialize ApplicationCore");
             core
         },
+        // Event aggregator for UI integration events - initialized as None, can be set later
+        event_aggregator: None,
     })
 }
 
