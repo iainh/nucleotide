@@ -1029,31 +1029,39 @@ impl PickerView {
                                                         let is_selected =
                                                             visible_idx == picker.selected_index;
 
+                                                        // Full-width wrapper for selection background
                                                         div()
                                                             .id(("picker-item", visible_idx))
-                                                            .flex()
-                                                            .flex_col()
-                                                            .px_3()
+                                                            .w_full() // Extend to full width
                                                             .min_h_8() // Ensure minimum height for items
-                                                            .justify_center()
                                                             .cursor_pointer()
                                                             .when(is_selected, |this| {
                                                                 this.bg(picker
                                                                     .style
                                                                     .modal_style
                                                                     .selected_background)
-                                                                    .text_color(
-                                                                        picker
-                                                                            .style
-                                                                            .modal_style
-                                                                            .selected_text,
-                                                                    )
                                                             })
-                                                            .when(!is_selected, |this| {
-                                                                this.text_color(
-                                                                    picker.style.modal_style.text,
-                                                                )
-                                                            })
+                                                            .child(
+                                                                // Content wrapper with padding
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_col()
+                                                                    .px_3()
+                                                                    .justify_center()
+                                                                    .w_full()
+                                                                    .when(is_selected, |this| {
+                                                                        this.text_color(
+                                                                            picker
+                                                                                .style
+                                                                                .modal_style
+                                                                                .selected_text,
+                                                                        )
+                                                                    })
+                                                                    .when(!is_selected, |this| {
+                                                                        this.text_color(
+                                                                            picker.style.modal_style.text,
+                                                                        )
+                                                                    })
                                                             .child(
                                                                 // Use structured columns if available, fallback to simple label
                                                                 match &item.columns {
@@ -1138,6 +1146,7 @@ impl PickerView {
                                                                     )
                                                                 },
                                                             )
+                                                            ) // Close content wrapper div
                                                     })
                                                     .collect()
                                             },
