@@ -3,7 +3,7 @@
 
 use crate::v2::{
     document::Event as DocumentEvent, editor::Event as EditorEvent, lsp::Event as LspEvent,
-    ui::Event as UiEvent, workspace::Event as WorkspaceEvent,
+    ui::Event as UiEvent, vcs::Event as VcsEvent, workspace::Event as WorkspaceEvent,
 };
 
 /// Event bus trait for dispatching events using V2 domain events
@@ -22,6 +22,9 @@ pub trait EventBus {
 
     /// Dispatch an LSP event
     fn dispatch_lsp(&self, event: LspEvent);
+
+    /// Dispatch a VCS event
+    fn dispatch_vcs(&self, event: VcsEvent);
 }
 
 /// Event handler trait for receiving V2 domain events
@@ -40,4 +43,7 @@ pub trait EventHandler {
 
     /// Handle an LSP event
     fn handle_lsp(&mut self, _event: &LspEvent) {}
+
+    /// Handle a VCS event
+    fn handle_vcs(&mut self, _event: &VcsEvent) {}
 }

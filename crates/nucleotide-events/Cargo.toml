@@ -24,3 +24,4 @@ tracing = "0.1"
 helix-view = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
 helix-lsp = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
 helix-core = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
+helix-vcs = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }

@@ -14,6 +14,7 @@ pub mod handler;
 pub mod integration;
 pub mod lsp;
 pub mod ui;
+pub mod vcs;
 pub mod view;
 pub mod workspace;
 
@@ -27,6 +28,7 @@ pub mod v2 {
     pub use crate::integration;
     pub use crate::lsp;
     pub use crate::ui;
+    pub use crate::vcs;
     pub use crate::view;
     pub use crate::workspace;
 }
