@@ -26,7 +26,9 @@ pub use editor_capabilities::{
 };
 
 // Re-export event types from nucleotide-events
-pub use nucleotide_events::{EventBus, EventHandler, LspEvent};
+pub use nucleotide_events::{
+    EventBus, EventHandler, LspEvent, integration::Event as IntegrationEvent,
+};
 
 // Re-export V2 domain events
 pub use nucleotide_events::v2::{
@@ -60,6 +62,4 @@ pub use document_manager::{DocumentManager, DocumentManagerMut};
 pub use command_system::{Command, ParsedCommand};
 
 // Re-export types from nucleotide-types for backward compatibility
-pub use nucleotide_types::{
-    CoreEntity, EditorFontConfig, EditorStatus, FontSettings, Severity, UiFontConfig,
-};
+pub use nucleotide_types::{EditorFontConfig, EditorStatus, FontSettings, Severity, UiFontConfig};

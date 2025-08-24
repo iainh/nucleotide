@@ -2734,7 +2734,7 @@ impl Workspace {
                         // TODO: Handle integration events for UI updates
                         // These events coordinate between document changes and UI elements like:
                         // - File tree highlighting
-                        // - Tab bar updates  
+                        // - Tab bar updates
                         // - Save indicator changes
                         // - Diagnostic indicator updates
                     }

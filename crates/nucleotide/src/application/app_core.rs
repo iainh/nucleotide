@@ -83,7 +83,10 @@ impl ApplicationCore {
 
         // Process V2 events for all supported event types
         match bridged_event {
-            event_bridge::BridgedEvent::DocumentChanged { doc_id, change_summary } => {
+            event_bridge::BridgedEvent::DocumentChanged {
+                doc_id,
+                change_summary,
+            } => {
                 // Extract actual document revision
                 let revision = if let Some(document) = editor.document_mut(*doc_id) {
                     document.get_current_revision() as u64
@@ -191,7 +194,10 @@ impl ApplicationCore {
                 self.document_handler.handle(v2_event).await?;
             }
 
-            event_bridge::BridgedEvent::DocumentClosed { doc_id, was_modified } => {
+            event_bridge::BridgedEvent::DocumentClosed {
+                doc_id,
+                was_modified,
+            } => {
                 // Use the actual modification state from the Helix event
                 let v2_event = DocumentEvent::Closed {
                     doc_id: *doc_id,
@@ -269,16 +275,18 @@ impl ApplicationCore {
             // Phase 2 Events - LSP Integration
             event_bridge::BridgedEvent::LanguageServerInitialized { server_id } => {
                 // Extract actual server information from the language server registry
-                let (server_name, workspace_root) = if let Some(client) = editor.language_servers.get_by_id(*server_id) {
-                    let name = client.name().to_string();
-                    // Since root_path is private, we'll use the current working directory as approximation
-                    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                    (name, root)
-                } else {
-                    warn!(server_id = ?server_id, "Language server not found in registry");
-                    ("unknown".to_string(), std::path::PathBuf::from("unknown"))
-                };
-                
+                let (server_name, workspace_root) =
+                    if let Some(client) = editor.language_servers.get_by_id(*server_id) {
+                        let name = client.name().to_string();
+                        // Since root_path is private, we'll use the current working directory as approximation
+                        let root = std::env::current_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                        (name, root)
+                    } else {
+                        warn!(server_id = ?server_id, "Language server not found in registry");
+                        ("unknown".to_string(), std::path::PathBuf::from("unknown"))
+                    };
+
                 // Create LSP server initialized event with actual data
                 let v2_event = nucleotide_events::v2::lsp::Event::ServerInitialized {
                     server_id: *server_id,
@@ -297,15 +305,17 @@ impl ApplicationCore {
 
             event_bridge::BridgedEvent::LanguageServerExited { server_id } => {
                 // Try to extract server information before the client is removed from registry
-                let (server_name, workspace_root) = if let Some(client) = editor.language_servers.get_by_id(*server_id) {
-                    let name = client.name().to_string();
-                    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                    (name, root)
-                } else {
-                    // Server may have already been removed, use defaults
-                    ("unknown".to_string(), std::path::PathBuf::from("unknown"))
-                };
-                
+                let (server_name, workspace_root) =
+                    if let Some(client) = editor.language_servers.get_by_id(*server_id) {
+                        let name = client.name().to_string();
+                        let root = std::env::current_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                        (name, root)
+                    } else {
+                        // Server may have already been removed, use defaults
+                        ("unknown".to_string(), std::path::PathBuf::from("unknown"))
+                    };
+
                 let v2_event = nucleotide_events::v2::lsp::Event::ServerExited {
                     server_id: *server_id,
                     server_name,

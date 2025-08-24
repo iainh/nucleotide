@@ -66,7 +66,7 @@ impl VcsStatus {
         match self {
             Self::Untracked => "Untracked",
             Self::Clean => "Clean",
-            Self::Modified => "Modified", 
+            Self::Modified => "Modified",
             Self::Added => "Added",
             Self::Deleted => "Deleted",
             Self::Renamed => "Renamed",
@@ -167,7 +167,7 @@ impl DiffChangeType {
     pub fn symbol(&self) -> &'static str {
         match self {
             Self::Addition | Self::Modification => "▍", // Vertical bar for additions and modifications
-            Self::Deletion => "▔", // Horizontal bar for deletions
+            Self::Deletion => "▔",                      // Horizontal bar for deletions
         }
     }
 
@@ -175,7 +175,7 @@ impl DiffChangeType {
     pub fn description(&self) -> &'static str {
         match self {
             Self::Addition => "Addition",
-            Self::Deletion => "Deletion", 
+            Self::Deletion => "Deletion",
             Self::Modification => "Modification",
         }
     }
@@ -205,10 +205,10 @@ mod tests {
         assert!(VcsStatus::Modified.is_modified());
         assert!(VcsStatus::Added.is_modified());
         assert!(!VcsStatus::Clean.is_modified());
-        
+
         assert!(VcsStatus::Clean.is_tracked());
         assert!(!VcsStatus::Untracked.is_tracked());
-        
+
         assert!(VcsStatus::Conflicted.needs_attention());
         assert!(!VcsStatus::Clean.needs_attention());
     }
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn test_diff_hunk_info_creation() {
         let hunk = DiffHunkInfo::new(5, 8, 5, 5, DiffChangeType::Addition);
-        
+
         assert_eq!(hunk.after_start, 5);
         assert_eq!(hunk.after_end, 8);
         assert_eq!(hunk.change_type, DiffChangeType::Addition);

@@ -90,15 +90,42 @@ pub enum UiEditorSyncType {
 /// Data for UI-editor synchronization
 #[derive(Debug, Clone)]
 pub enum UiEditorSyncData {
-    ThemeData { theme_name: String, is_dark: bool },
-    FontData { family: String, size: f32 },
-    ModeData { mode: helix_view::document::Mode },
-    StatusData { message: String, severity: String },
-    DocumentViewData { doc_id: DocumentId, revision: u64 },
-    SaveIndicatorData { doc_id: DocumentId, is_modified: bool },
-    DiagnosticData { doc_id: DocumentId, error_count: usize, warning_count: usize },
-    FileTreeData { doc_id: DocumentId, action: FileTreeAction },
-    TabBarData { doc_id: DocumentId, action: TabBarAction },
+    ThemeData {
+        theme_name: String,
+        is_dark: bool,
+    },
+    FontData {
+        family: String,
+        size: f32,
+    },
+    ModeData {
+        mode: helix_view::document::Mode,
+    },
+    StatusData {
+        message: String,
+        severity: String,
+    },
+    DocumentViewData {
+        doc_id: DocumentId,
+        revision: u64,
+    },
+    SaveIndicatorData {
+        doc_id: DocumentId,
+        is_modified: bool,
+    },
+    DiagnosticData {
+        doc_id: DocumentId,
+        error_count: usize,
+        warning_count: usize,
+    },
+    FileTreeData {
+        doc_id: DocumentId,
+        action: FileTreeAction,
+    },
+    TabBarData {
+        doc_id: DocumentId,
+        action: TabBarAction,
+    },
 }
 
 /// Actions for file tree updates

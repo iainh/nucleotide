@@ -15,8 +15,3 @@ pub use editor_types::{EditorStatus, Severity};
 pub use font_config::{EditorFontConfig, Font, FontSettings, FontStyle, UiFontConfig};
 pub use project_config::{ProjectMarker, ProjectMarkersConfig, RootStrategy};
 pub use vcs::{DiffChangeType, DiffHunkInfo, VcsStatus};
-
-// Placeholder type for Core during migration
-// TODO: Replace with capability traits
-#[cfg(feature = "gpui-bridge")]
-pub type CoreEntity = gpui::Entity<()>;

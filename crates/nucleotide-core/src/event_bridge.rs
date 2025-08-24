@@ -111,29 +111,29 @@ pub fn send_bridged_event(event: BridgedEvent) {
 /// Analyze a ChangeSet to determine the type of change that occurred
 fn analyze_change_type(changes: &ChangeSet) -> ChangeType {
     let operations = changes.changes();
-    
+
     if operations.is_empty() {
         return ChangeType::Bulk; // No operations, but a change occurred
     }
-    
+
     let mut has_insert = false;
     let mut has_delete = false;
     let mut operation_count = 0;
-    
+
     for operation in operations {
         operation_count += 1;
         match operation {
             Operation::Insert(_) => has_insert = true,
             Operation::Delete(_) => has_delete = true,
-            Operation::Retain(_) => {}, // Just positioning, doesn't count as change
+            Operation::Retain(_) => {} // Just positioning, doesn't count as change
         }
     }
-    
+
     match (has_insert, has_delete, operation_count > 2) {
         (true, true, _) => ChangeType::Replace, // Both insert and delete = replace
         (true, false, false) => ChangeType::Insert, // Only insert
-        (false, true, false) => ChangeType::Delete, // Only delete  
-        _ => ChangeType::Bulk, // Complex multi-operation change
+        (false, true, false) => ChangeType::Delete, // Only delete
+        _ => ChangeType::Bulk,                  // Complex multi-operation change
     }
 }
 
@@ -158,7 +158,10 @@ pub fn register_event_hooks() {
             change_type = ?change_summary,
             "Document changed event"
         );
-        send_bridged_event(BridgedEvent::DocumentChanged { doc_id, change_summary });
+        send_bridged_event(BridgedEvent::DocumentChanged {
+            doc_id,
+            change_summary,
+        });
         Ok(())
     });
 
@@ -219,7 +222,10 @@ pub fn register_event_hooks() {
             was_modified = was_modified,
             "Document closed event"
         );
-        send_bridged_event(BridgedEvent::DocumentClosed { doc_id, was_modified });
+        send_bridged_event(BridgedEvent::DocumentClosed {
+            doc_id,
+            was_modified,
+        });
         Ok(())
     });
 
@@ -306,4 +312,3 @@ pub fn create_lsp_command_channel() -> (mpsc::UnboundedSender<ProjectLspCommand>
 {
     mpsc::unbounded_channel()
 }
-

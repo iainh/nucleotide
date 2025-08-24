@@ -99,9 +99,10 @@ pub mod test_support {
                 counter_clone.fetch_add(1, Ordering::SeqCst);
 
                 let update = match event {
-                    BridgedEvent::DocumentChanged { doc_id } => {
-                        TestUpdate::DocumentChanged { doc_id }
-                    }
+                    BridgedEvent::DocumentChanged {
+                        doc_id,
+                        change_summary,
+                    } => TestUpdate::DocumentChanged { doc_id },
                     BridgedEvent::SelectionChanged { doc_id, view_id } => {
                         TestUpdate::SelectionChanged { doc_id, view_id }
                     }
@@ -114,9 +115,10 @@ pub mod test_support {
                     BridgedEvent::DocumentOpened { doc_id } => {
                         TestUpdate::DocumentOpened { doc_id }
                     }
-                    BridgedEvent::DocumentClosed { doc_id } => {
-                        TestUpdate::DocumentClosed { doc_id }
-                    }
+                    BridgedEvent::DocumentClosed {
+                        doc_id,
+                        was_modified,
+                    } => TestUpdate::DocumentClosed { doc_id },
                     BridgedEvent::ViewFocused { view_id } => TestUpdate::ViewFocused { view_id },
                     BridgedEvent::LanguageServerInitialized { server_id } => {
                         TestUpdate::LanguageServerInitialized {
@@ -176,7 +178,10 @@ pub mod test_support {
         let doc_id = DocumentId::default();
 
         (0..count)
-            .map(|_| BridgedEvent::DocumentChanged { doc_id })
+            .map(|_| BridgedEvent::DocumentChanged {
+                doc_id,
+                change_summary: nucleotide_events::v2::document::ChangeType::Insert,
+            })
             .collect()
     }
 
