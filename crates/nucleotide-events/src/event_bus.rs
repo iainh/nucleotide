@@ -1,9 +1,12 @@
 // ABOUTME: Event bus and handler traits for decoupled communication
 // ABOUTME: Provides publish-subscribe pattern for cross-crate events
 
-use crate::v2::{
-    document::Event as DocumentEvent, editor::Event as EditorEvent, lsp::Event as LspEvent,
-    ui::Event as UiEvent, vcs::Event as VcsEvent, workspace::Event as WorkspaceEvent,
+use crate::{
+    integration::Event as IntegrationEvent,
+    v2::{
+        document::Event as DocumentEvent, editor::Event as EditorEvent, lsp::Event as LspEvent,
+        ui::Event as UiEvent, vcs::Event as VcsEvent, workspace::Event as WorkspaceEvent,
+    },
 };
 
 /// Event bus trait for dispatching events using V2 domain events
@@ -25,6 +28,9 @@ pub trait EventBus {
 
     /// Dispatch a VCS event
     fn dispatch_vcs(&self, event: VcsEvent);
+
+    /// Dispatch an integration event
+    fn dispatch_integration(&self, event: IntegrationEvent);
 }
 
 /// Event handler trait for receiving V2 domain events
@@ -46,4 +52,7 @@ pub trait EventHandler {
 
     /// Handle a VCS event
     fn handle_vcs(&mut self, _event: &VcsEvent) {}
+
+    /// Handle an integration event
+    fn handle_integration(&mut self, _event: &IntegrationEvent) {}
 }

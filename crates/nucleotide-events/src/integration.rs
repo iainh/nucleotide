@@ -80,6 +80,11 @@ pub enum UiEditorSyncType {
     FontChange,
     ModeSync,
     StatusSync,
+    DocumentViewRefresh,
+    SaveIndicatorUpdate,
+    DiagnosticIndicatorUpdate,
+    FileTreeUpdate,
+    TabBarUpdate,
 }
 
 /// Data for UI-editor synchronization
@@ -89,6 +94,30 @@ pub enum UiEditorSyncData {
     FontData { family: String, size: f32 },
     ModeData { mode: helix_view::document::Mode },
     StatusData { message: String, severity: String },
+    DocumentViewData { doc_id: DocumentId, revision: u64 },
+    SaveIndicatorData { doc_id: DocumentId, is_modified: bool },
+    DiagnosticData { doc_id: DocumentId, error_count: usize, warning_count: usize },
+    FileTreeData { doc_id: DocumentId, action: FileTreeAction },
+    TabBarData { doc_id: DocumentId, action: TabBarAction },
+}
+
+/// Actions for file tree updates
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileTreeAction {
+    Refresh,
+    HighlightDocument,
+    ShowDocument,
+}
+
+/// Actions for tab bar updates
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabBarAction {
+    AddTab,
+    RemoveTab,
+    UpdateTab,
+    HighlightTab,
+    ShowSaveIndicator,
+    HideSaveIndicator,
 }
 
 /// Types of workspace-LSP coordination
@@ -388,6 +417,27 @@ mod tests {
                 message: "Ready".to_string(),
                 severity: "info".to_string(),
             },
+            UiEditorSyncData::DocumentViewData {
+                doc_id: DocumentId::default(),
+                revision: 1,
+            },
+            UiEditorSyncData::SaveIndicatorData {
+                doc_id: DocumentId::default(),
+                is_modified: true,
+            },
+            UiEditorSyncData::DiagnosticData {
+                doc_id: DocumentId::default(),
+                error_count: 2,
+                warning_count: 5,
+            },
+            UiEditorSyncData::FileTreeData {
+                doc_id: DocumentId::default(),
+                action: FileTreeAction::HighlightDocument,
+            },
+            UiEditorSyncData::TabBarData {
+                doc_id: DocumentId::default(),
+                action: TabBarAction::UpdateTab,
+            },
         ];
 
         let sync_types = [
@@ -395,6 +445,11 @@ mod tests {
             UiEditorSyncType::FontChange,
             UiEditorSyncType::ModeSync,
             UiEditorSyncType::StatusSync,
+            UiEditorSyncType::DocumentViewRefresh,
+            UiEditorSyncType::SaveIndicatorUpdate,
+            UiEditorSyncType::DiagnosticIndicatorUpdate,
+            UiEditorSyncType::FileTreeUpdate,
+            UiEditorSyncType::TabBarUpdate,
         ];
 
         for (sync_type, data) in sync_types.into_iter().zip(sync_data_variants.into_iter()) {

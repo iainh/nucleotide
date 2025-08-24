@@ -1,10 +1,12 @@
 // ABOUTME: Event bridge between Helix's event system and GPUI's Update events
 // ABOUTME: Provides a channel-based system to forward Helix events to GPUI UI updates
 
+use helix_core::{ChangeSet, Operation};
 use helix_view::DocumentId;
 use helix_view::ViewId;
 use helix_view::document::Mode;
 use nucleotide_events::ProjectLspCommand;
+use nucleotide_events::v2::document::ChangeType;
 use nucleotide_logging::{debug, info, instrument, warn};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
@@ -14,6 +16,7 @@ use tokio::sync::mpsc;
 pub enum BridgedEvent {
     DocumentChanged {
         doc_id: DocumentId,
+        change_summary: ChangeType,
     },
     SelectionChanged {
         doc_id: DocumentId,
@@ -31,6 +34,7 @@ pub enum BridgedEvent {
     },
     DocumentClosed {
         doc_id: DocumentId,
+        was_modified: bool,
     },
     ViewFocused {
         view_id: ViewId,
@@ -104,6 +108,35 @@ pub fn send_bridged_event(event: BridgedEvent) {
     }
 }
 
+/// Analyze a ChangeSet to determine the type of change that occurred
+fn analyze_change_type(changes: &ChangeSet) -> ChangeType {
+    let operations = changes.changes();
+    
+    if operations.is_empty() {
+        return ChangeType::Bulk; // No operations, but a change occurred
+    }
+    
+    let mut has_insert = false;
+    let mut has_delete = false;
+    let mut operation_count = 0;
+    
+    for operation in operations {
+        operation_count += 1;
+        match operation {
+            Operation::Insert(_) => has_insert = true,
+            Operation::Delete(_) => has_delete = true,
+            Operation::Retain(_) => {}, // Just positioning, doesn't count as change
+        }
+    }
+    
+    match (has_insert, has_delete, operation_count > 2) {
+        (true, true, _) => ChangeType::Replace, // Both insert and delete = replace
+        (true, false, false) => ChangeType::Insert, // Only insert
+        (false, true, false) => ChangeType::Delete, // Only delete  
+        _ => ChangeType::Bulk, // Complex multi-operation change
+    }
+}
+
 /// Register Helix event hooks that bridge to GPUI events
 #[instrument]
 pub fn register_event_hooks() {
@@ -119,11 +152,13 @@ pub fn register_event_hooks() {
     // Document change events
     register_hook!(move |event: &mut DocumentDidChange<'_>| {
         let doc_id = event.doc.id();
+        let change_summary = analyze_change_type(event.changes);
         debug!(
             doc_id = ?doc_id,
+            change_type = ?change_summary,
             "Document changed event"
         );
-        send_bridged_event(BridgedEvent::DocumentChanged { doc_id });
+        send_bridged_event(BridgedEvent::DocumentChanged { doc_id, change_summary });
         Ok(())
     });
 
@@ -178,11 +213,13 @@ pub fn register_event_hooks() {
     // Document close events
     register_hook!(move |event: &mut DocumentDidClose<'_>| {
         let doc_id = event.doc.id();
+        let was_modified = event.doc.is_modified();
         info!(
             doc_id = ?doc_id,
+            was_modified = was_modified,
             "Document closed event"
         );
-        send_bridged_event(BridgedEvent::DocumentClosed { doc_id });
+        send_bridged_event(BridgedEvent::DocumentClosed { doc_id, was_modified });
         Ok(())
     });
 
@@ -269,3 +306,4 @@ pub fn create_lsp_command_channel() -> (mpsc::UnboundedSender<ProjectLspCommand>
 {
     mpsc::unbounded_channel()
 }
+

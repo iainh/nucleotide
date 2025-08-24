@@ -82,8 +82,7 @@ impl DocumentHandler {
             self.document_metadata.insert(doc_id, metadata);
         }
 
-        // TODO: Emit UI update event to refresh document view
-        // This will be handled by UI event handlers once they're implemented
+        // UI events are now emitted by the main Application after V2 event processing
 
         info!(
             doc_id = ?doc_id,
@@ -119,8 +118,7 @@ impl DocumentHandler {
         };
         self.document_metadata.insert(doc_id, metadata);
 
-        // TODO: Emit integration event for LSP server association
-        // TODO: Emit UI event to update file tree and tab bar
+        // Integration and UI events are now emitted by the main Application after V2 event processing
 
         info!(
             doc_id = ?doc_id,
@@ -159,8 +157,7 @@ impl DocumentHandler {
             );
         }
 
-        // TODO: Emit integration event for LSP server cleanup
-        // TODO: Emit UI event to update file tree and close tabs
+        // Integration and UI events are now emitted by the main Application after V2 event processing
 
         info!(
             doc_id = ?doc_id,
@@ -193,7 +190,7 @@ impl DocumentHandler {
             metadata.path = Some(path.clone());
         }
 
-        // TODO: Emit UI event to update save indicators
+        // UI events are now emitted by the main Application after V2 event processing
 
         info!(
             doc_id = ?doc_id,
@@ -256,7 +253,7 @@ impl EventHandler<DocumentEvent> for DocumentHandler {
                     error = %error,
                     "Document save failed"
                 );
-                // TODO: Emit UI event to show save failure
+                // UI events for save failure would be handled by error recovery system
                 Ok(())
             }
             DocumentEvent::LanguageDetected {
@@ -291,7 +288,7 @@ impl EventHandler<DocumentEvent> for DocumentHandler {
                     warning_count = warning_count,
                     "Diagnostics updated for document"
                 );
-                // TODO: Emit UI event to update diagnostic indicators
+                // UI events are now emitted by the main Application after V2 event processing
                 Ok(())
             }
         }

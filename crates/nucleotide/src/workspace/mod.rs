@@ -2728,6 +2728,16 @@ impl Workspace {
                         debug!(vcs_event = ?vcs_event, "VCS event received");
                         // TODO: Update gutter indicators based on VCS events
                     }
+                    crate::types::AppEvent::Integration(integration_event) => {
+                        // Integration events for UI synchronization
+                        debug!(integration_event = ?integration_event, "Integration event received");
+                        // TODO: Handle integration events for UI updates
+                        // These events coordinate between document changes and UI elements like:
+                        // - File tree highlighting
+                        // - Tab bar updates  
+                        // - Save indicator changes
+                        // - Diagnostic indicator updates
+                    }
                 }
             }
         }
