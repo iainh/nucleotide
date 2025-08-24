@@ -1033,7 +1033,9 @@ impl PickerView {
                                                         div()
                                                             .id(("picker-item", visible_idx))
                                                             .w_full() // Extend to full width
-                                                            .min_h_8() // Ensure minimum height for items
+                                                            .h_8() // Fixed height for items
+                                                            .flex() // Make it a flex container
+                                                            .items_center() // Center content vertically
                                                             .cursor_pointer()
                                                             .when(is_selected, |this| {
                                                                 this.bg(picker
@@ -1045,10 +1047,9 @@ impl PickerView {
                                                                 // Content wrapper with padding
                                                                 div()
                                                                     .flex()
-                                                                    .items_center() // Vertically center content
+                                                                    .items_center()
                                                                     .px_3()
                                                                     .w_full()
-                                                                    .h_full() // Take full height of the item
                                                                     .when(is_selected, |this| {
                                                                         this.text_color(
                                                                             picker
@@ -1069,7 +1070,7 @@ impl PickerView {
                                                                         // Direct column access for buffer picker
                                                                         div()
                                                                         .flex()
-                                                                        .items_center() // Vertically center columns
+                                                                        .items_center()
                                                                         .gap_2()
                                                                         .font_family("monospace")
                                                                         .child(
