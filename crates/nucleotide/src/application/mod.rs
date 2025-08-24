@@ -961,6 +961,7 @@ impl Application {
                     data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
                     file_path: Some(path.clone()),
                     vcs_status: None, // Will be populated below using bulk VCS lookup
+                    columns: None,    // File picker uses simple label display
                 });
 
                 // Limit to reasonable number of files
@@ -978,6 +979,7 @@ impl Application {
                 data: Arc::new(std::path::PathBuf::new()) as Arc<dyn std::any::Any + Send + Sync>,
                 file_path: None, // No file path for placeholder items
                 vcs_status: None,
+                columns: None, // Placeholder items use simple label display
             });
         }
 
@@ -1074,7 +1076,7 @@ impl Application {
             // Format like terminal: "ID  FLAGS  PATH"
             let id_str = format!("{:?}", meta.doc_id);
 
-            // Build flags column
+            // Build flags column - ensure consistent 2-character width
             let mut flags = String::new();
             if meta.is_modified {
                 flags.push('+');
@@ -1082,8 +1084,9 @@ impl Application {
             if meta.is_current {
                 flags.push('*');
             }
-            // Pad flags to consistent width
-            let flags_str = format!("{flags:<2}");
+
+            // Ensure flags are always exactly 2 characters for consistent column alignment
+            let flags_str = format!("{flags:2}");
 
             // Get path or [scratch] label
             let path_str = if let Some(path) = &meta.path {
@@ -1100,17 +1103,13 @@ impl Application {
                 "[scratch]".to_string()
             };
 
-            // Combine into terminal-like format with proper spacing
-            let label = format!("{id_str:<4} {flags_str} {path_str}");
-
-            // Store the document ID in the picker item data
-            items.push(PickerItem {
-                label: label.into(),
-                sublabel: None, // No sublabel for terminal-style display
-                data: Arc::new(meta.doc_id),
-                file_path: meta.path.clone(), // Include file path for VCS status if available
-                vcs_status: None,             // Will be populated below using bulk VCS lookup
-            });
+            // Use structured columns instead of text formatting
+            items.push(PickerItem::with_buffer_columns(
+                id_str,
+                flags_str,
+                path_str,
+                Arc::new(meta.doc_id),
+            ));
         }
 
         if items.is_empty() {

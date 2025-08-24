@@ -5022,6 +5022,7 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
             data: Arc::new(path.clone()) as Arc<dyn std::any::Any + Send + Sync>,
             file_path: Some(path.clone()),
             vcs_status: None, // Will be populated using global VCS service
+            columns: None,    // File picker uses simple label display
         });
 
         // Limit to 1000 files to prevent hanging on large projects
@@ -5173,7 +5174,7 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
                 .collect::<String>()
         };
 
-        // Build flags column
+        // Build flags column - ensure consistent 2-character width
         let mut flags = String::new();
         if meta.is_modified {
             flags.push('+');
@@ -5181,8 +5182,9 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
         if meta.is_current {
             flags.push('*');
         }
-        // Pad flags to consistent width
-        let flags_str = format!("{flags:<2}");
+
+        // Ensure flags are always exactly 2 characters for consistent column alignment
+        let flags_str = format!("{flags:2}");
 
         // Get path or [scratch] label
         let path_str = if let Some(path) = &meta.path {
@@ -5199,23 +5201,18 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
             "[scratch]".to_string()
         };
 
-        // Combine into terminal-like format with proper spacing
-        // Pad ID to 4 characters for consistent alignment
-        let label = format!("{id_str:<4} {flags_str} {path_str}");
-
         // Create data that includes both doc_id and path for preview functionality
         // We'll store a tuple of (DocumentId, Option<PathBuf>) for all items
         let picker_data =
             Arc::new((meta.doc_id, meta.path.clone())) as Arc<dyn std::any::Any + Send + Sync>;
 
-        // Store the document ID and path in the picker item data
-        items.push(PickerItem {
-            label: label.into(),
-            sublabel: None, // No sublabel for terminal-style display
-            data: picker_data,
-            file_path: meta.path.clone(), // Include file path for VCS status if available
-            vcs_status: None,             // Will be populated using global VCS service
-        });
+        // Use structured columns instead of text formatting
+        items.push(PickerItem::with_buffer_columns(
+            id_str,
+            flags_str,
+            path_str,
+            picker_data,
+        ));
     }
 
     info!("Buffer picker has {} items", items.len());

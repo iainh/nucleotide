@@ -17,6 +17,15 @@ use nucleotide_logging::warn;
 use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Debug)]
+pub enum ColumnData {
+    BufferColumns {
+        id: String,
+        flags: String,
+        path: String,
+    },
+}
+
+#[derive(Clone, Debug)]
 pub struct PickerItem {
     pub label: SharedString,
     pub sublabel: Option<SharedString>,
@@ -25,6 +34,8 @@ pub struct PickerItem {
     pub file_path: Option<std::path::PathBuf>,
     /// Optional VCS status for this item
     pub vcs_status: Option<VcsStatus>,
+    /// Optional structured column data for table-like display
+    pub columns: Option<ColumnData>,
 }
 
 impl PickerItem {
@@ -40,6 +51,7 @@ impl PickerItem {
             data,
             file_path: Some(file_path),
             vcs_status: None,
+            columns: None,
         }
     }
 
@@ -56,6 +68,7 @@ impl PickerItem {
             data,
             file_path: Some(file_path),
             vcs_status,
+            columns: None,
         }
     }
 
@@ -72,6 +85,29 @@ impl PickerItem {
             data,
             file_path: Some(file_path),
             vcs_status: None,
+            columns: None,
+        }
+    }
+
+    /// Create a new PickerItem with buffer columns for table display
+    pub fn with_buffer_columns(
+        id: impl Into<String>,
+        flags: impl Into<String>,
+        path: impl Into<String>,
+        data: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Self {
+        let path_str = path.into();
+        Self {
+            label: path_str.clone().into(), // Use path as fallback label
+            sublabel: None,
+            data,
+            file_path: None, // Buffer items don't need file path for icons
+            vcs_status: None,
+            columns: Some(ColumnData::BufferColumns {
+                id: id.into(),
+                flags: flags.into(),
+                path: path_str,
+            }),
         }
     }
 }
@@ -1019,28 +1055,10 @@ impl PickerView {
                                                                 )
                                                             })
                                                             .child(
-                                                                // Parse the label to extract columns: "ID FLAGS PATH"
-                                                                {
-                                                                    let parts: Vec<&str> = item
-                                                                        .label
-                                                                        .split_whitespace()
-                                                                        .collect();
-                                                                    if parts.len() >= 3
-                                                                        && parts[0]
-                                                                            .chars()
-                                                                            .next()
-                                                                            .is_some_and(|c| {
-                                                                                c.is_numeric()
-                                                                            })
-                                                                    {
-                                                                        // Format as columns for buffer picker
-                                                                        let id =
-                                                                            parts[0].to_string();
-                                                                        let flags =
-                                                                            parts[1].to_string();
-                                                                        let path =
-                                                                            parts[2..].join(" ");
-
+                                                                // Use structured columns if available, fallback to simple label
+                                                                match &item.columns {
+                                                                    Some(ColumnData::BufferColumns { id, flags, path }) => {
+                                                                        // Direct column access for buffer picker
                                                                         div()
                                                                         .flex()
                                                                         .gap_2()
@@ -1051,14 +1069,14 @@ impl PickerView {
                                                                                 .w(px(50.0))
                                                                                 .overflow_hidden()
                                                                                 .text_ellipsis()
-                                                                                .child(id)
+                                                                                .child(id.clone())
                                                                         )
                                                                         .child(
                                                                             // Flags column
                                                                             div()
                                                                                 .w(px(30.0))
                                                                                 .text_center()
-                                                                                .child(flags)
+                                                                                .child(flags.clone())
                                                                         )
                                                                         .child(
                                                                             // Path column
@@ -1066,9 +1084,10 @@ impl PickerView {
                                                                                 .flex_1()
                                                                                 .overflow_hidden()
                                                                                 .text_ellipsis()
-                                                                                .child(path)
+                                                                                .child(path.clone())
                                                                         )
-                                                                    } else {
+                                                                    }
+                                                                    None => {
                                                                         // File picker or other non-buffer items
                                                                         div()
                                                                             .flex()
@@ -1081,8 +1100,6 @@ impl PickerView {
                                                                                     // Render VcsIcon for file items
                                                                                     this.child({
                                                                                         // Create VcsIcon with embedded VCS status and proper text color
-
-                                                                                        // Use direct rendering since we don't have proper Context<Self>
                                                                                         VcsIcon::from_path(file_path, false)
                                                                                             .size(16.0)
                                                                                             .text_color(picker.style.modal_style.text)
