@@ -5,7 +5,7 @@ use nucleotide_events::{
     EventBus, EventHandler,
     v2::{
         document::Event as DocumentEvent, editor::Event as EditorEvent, lsp::Event as LspEvent,
-        ui::Event as UiEvent, workspace::Event as WorkspaceEvent,
+        ui::Event as UiEvent, vcs::Event as VcsEvent, workspace::Event as WorkspaceEvent,
     },
 };
 use std::sync::{Arc, Mutex};
@@ -18,6 +18,7 @@ pub enum AppEvent {
     Ui(UiEvent),
     Workspace(WorkspaceEvent),
     Lsp(LspEvent),
+    Vcs(VcsEvent),
     Core(crate::core_event::CoreEvent),
 }
 
@@ -62,6 +63,7 @@ impl EventAggregator {
                     AppEvent::Ui(e) => handler.handle_ui(e),
                     AppEvent::Workspace(e) => handler.handle_workspace(e),
                     AppEvent::Lsp(e) => handler.handle_lsp(e),
+                    AppEvent::Vcs(e) => handler.handle_vcs(e),
                     AppEvent::Core(_) => {
                         // Core events are handled through the legacy Update system
                         // Future enhancement: Migrate core events to proper V2 domain events
@@ -102,6 +104,10 @@ impl EventBus for EventAggregator {
 
     fn dispatch_lsp(&self, event: LspEvent) {
         self.queue_event(AppEvent::Lsp(event));
+    }
+
+    fn dispatch_vcs(&self, event: VcsEvent) {
+        self.queue_event(AppEvent::Vcs(event));
     }
 }
 
@@ -163,6 +169,10 @@ impl EventBus for EventAggregatorHandle {
 
     fn dispatch_lsp(&self, event: LspEvent) {
         self.inner.dispatch_lsp(event);
+    }
+
+    fn dispatch_vcs(&self, event: VcsEvent) {
+        self.inner.dispatch_vcs(event);
     }
 }
 
