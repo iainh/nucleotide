@@ -42,6 +42,7 @@ pub mod titlebar;
 pub mod tokens;
 pub mod traits;
 pub mod utils;
+pub mod vcs_gutter;
 pub mod vcs_icon;
 pub mod vcs_indicator;
 
@@ -139,8 +140,10 @@ pub use utils::{
     ShortcutRegistry as UtilsShortcutRegistry, is_feature_enabled as is_utils_feature_enabled,
     is_named_feature_enabled,
 };
+pub use vcs_gutter::{VcsGutter, VcsLineIndicator, get_vcs_indicator_for_line};
 pub use vcs_icon::{VcsIcon, VcsIconRenderer};
-pub use vcs_indicator::{VcsIndicator, VcsStatus};
+pub use vcs_indicator::VcsIndicator;
+// VcsStatus is now re-exported from nucleotide-types
 
 // Export initialization and configuration types
 // (Functions are defined in this module, types can be re-exported)

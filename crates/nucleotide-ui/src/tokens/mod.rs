@@ -177,6 +177,11 @@ pub struct SemanticColors {
     pub line_number: Hsla,
     pub line_number_active: Hsla,
 
+    // VCS gutter indicators
+    pub vcs_added: Hsla,
+    pub vcs_modified: Hsla,
+    pub vcs_deleted: Hsla,
+
     // Enhanced status and buffer system
     pub statusline_active: Hsla,
     pub statusline_inactive: Hsla,
@@ -264,6 +269,11 @@ impl SemanticColors {
             line_number: base.neutral_500,
             line_number_active: base.neutral_700,
 
+            // VCS gutter indicators
+            vcs_added: base.success_500,
+            vcs_modified: hsla(210.0 / 360.0, 0.7, 0.5, 1.0), // Blue for modifications
+            vcs_deleted: base.error_500,
+
             // Enhanced status and buffer system
             statusline_active: base.neutral_100,     // surface
             statusline_inactive: base.neutral_200,   // more distinct from active
@@ -350,6 +360,11 @@ impl SemanticColors {
             gutter_selected: base.neutral_100,
             line_number: base.neutral_500,
             line_number_active: base.neutral_700,
+
+            // VCS gutter indicators
+            vcs_added: base.success_500,
+            vcs_modified: hsla(210.0 / 360.0, 0.7, 0.6, 1.0), // Brighter blue for dark theme
+            vcs_deleted: base.error_500,
 
             // Enhanced status and buffer system
             statusline_active: base.neutral_100,     // surface
@@ -642,6 +657,11 @@ pub struct EditorTokens {
     pub line_number: Hsla,
     pub line_number_active: Hsla,
 
+    // VCS gutter indicators
+    pub vcs_added: Hsla,
+    pub vcs_modified: Hsla,
+    pub vcs_deleted: Hsla,
+
     // Focus indicators for editor elements
     pub focus_ring: Hsla,
     pub focus_ring_error: Hsla,
@@ -768,6 +788,16 @@ impl EditorTokens {
             line_number: helix_colors.line_number,
             line_number_active: helix_colors.line_number_active,
 
+            // VCS gutter indicators - use semantic colors
+            vcs_added: helix_colors.success,
+            vcs_modified: hsla(
+                210.0 / 360.0,
+                0.7,
+                if editor_bg.l > 0.5 { 0.5 } else { 0.6 },
+                1.0,
+            ), // Blue
+            vcs_deleted: helix_colors.error,
+
             // Focus indicators for editor elements
             focus_ring: helix_colors.selection,
             focus_ring_error: helix_colors.error,
@@ -860,6 +890,11 @@ impl EditorTokens {
             } else {
                 base_colors.neutral_700
             },
+
+            // VCS gutter indicators
+            vcs_added: base_colors.success_500,
+            vcs_modified: hsla(210.0 / 360.0, 0.7, if is_dark { 0.6 } else { 0.5 }, 1.0), // Blue
+            vcs_deleted: base_colors.error_500,
 
             focus_ring: base_colors.primary_500,
             focus_ring_error: base_colors.error_500,
