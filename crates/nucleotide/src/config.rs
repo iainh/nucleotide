@@ -3,7 +3,7 @@
 
 use helix_loader::config_dir;
 use helix_term::config::Config as HelixConfig;
-use nucleotide_types::{FontConfig, FontWeight, ProjectMarker, ProjectMarkersConfig, RootStrategy};
+use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

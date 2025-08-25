@@ -194,7 +194,6 @@ impl Application {
         &mut self,
         bridged_event: &event_bridge::BridgedEvent,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        use nucleotide_events::v2::document::ChangeType;
         use nucleotide_events::v2::document::Event as DocumentEvent;
         use nucleotide_events::v2::handler::EventHandler;
 

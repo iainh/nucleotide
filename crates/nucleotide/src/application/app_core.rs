@@ -78,7 +78,6 @@ impl ApplicationCore {
             return Err("ApplicationCore not initialized".into());
         }
 
-        use nucleotide_events::v2::document::ChangeType;
         use nucleotide_events::v2::document::Event as DocumentEvent;
 
         // Process V2 events for all supported event types
@@ -390,11 +389,6 @@ impl ApplicationCore {
                 );
 
                 self.completion_handler.handle(v2_event).await?;
-            }
-
-            _ => {
-                debug!(event = ?bridged_event, "V2 processing not yet implemented for this event type");
-                // Other workspace events will be integrated as needed
             }
         }
 

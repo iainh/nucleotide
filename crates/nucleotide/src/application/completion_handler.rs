@@ -3,8 +3,8 @@
 
 use helix_view::{DocumentId, ViewId};
 use nucleotide_events::v2::completion::{
-    CancellationReason, CompletionItem, CompletionMetrics, CompletionProvider, CompletionRequestId,
-    CompletionTrigger, Event, Position,
+    CompletionItem, CompletionMetrics, CompletionProvider, CompletionRequestId, CompletionTrigger,
+    Event, Position,
 };
 use nucleotide_events::v2::handler::EventHandler;
 use nucleotide_logging::{debug, error, info, instrument, warn};
@@ -27,7 +27,7 @@ pub struct CompletionHandler {
 
 /// Active completion session information
 #[derive(Debug, Clone)]
-struct CompletionSession {
+pub struct CompletionSession {
     doc_id: DocumentId,
     view_id: ViewId,
     trigger: CompletionTrigger,

@@ -27,7 +27,7 @@ pub struct EditorHandler {
 
 /// Command execution record
 #[derive(Debug, Clone)]
-struct CommandExecution {
+pub struct CommandExecution {
     pub command_name: String,
     pub execution_time_ms: u64,
     pub success: bool,
@@ -36,7 +36,7 @@ struct CommandExecution {
 
 /// Statistics for mode usage
 #[derive(Debug, Clone)]
-struct ModeStats {
+pub struct ModeStats {
     pub total_entries: u64,
     pub total_time_spent_ms: u64,
     pub last_entered: Option<std::time::Instant>,

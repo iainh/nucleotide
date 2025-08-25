@@ -25,7 +25,7 @@ pub struct ViewHandler {
 
 /// Cached metadata about views
 #[derive(Debug, Clone)]
-struct ViewMetadata {
+pub struct ViewMetadata {
     pub associated_doc_id: DocumentId,
     pub last_selection: Selection,
     pub is_focused: bool,

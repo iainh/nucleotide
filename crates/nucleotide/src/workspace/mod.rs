@@ -6,17 +6,16 @@ pub mod view_manager;
 pub use view_manager::ViewManager;
 
 // Main workspace implementation
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::FontFeatures;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, BorrowAppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement, Render, StatefulInteractiveElement, Styled,
-    TextStyle, Window, WindowAppearance, WindowBackgroundAppearance, black, div, hsla, px, white,
+    TextStyle, Window, WindowAppearance, WindowBackgroundAppearance, black, div, px, white,
 };
 use helix_core::Selection;
 use helix_view::ViewId;
@@ -42,7 +41,6 @@ use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
 use crate::utils;
 use crate::{Core, Input, InputEvent};
-use nucleotide_types::VcsStatus;
 use nucleotide_vcs::VcsServiceHandle;
 pub struct Workspace {
     core: Entity<Core>,
@@ -2346,7 +2344,7 @@ impl Workspace {
 
                 // Update font configuration if needed
                 if let Some(ui_font) = &new_config.gui.ui.font {
-                    let mut ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
+                    let ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
                     ui_font_config.family = ui_font.family.clone();
                     ui_font_config.size = ui_font.size;
                     info!(

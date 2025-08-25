@@ -33,7 +33,7 @@ pub struct WorkspaceHandler {
 
 /// Information about an active tab
 #[derive(Debug, Clone)]
-struct TabInfo {
+pub struct TabInfo {
     doc_id: DocumentId,
     title: String,
     path: Option<PathBuf>,
@@ -42,7 +42,7 @@ struct TabInfo {
 
 /// Current workspace layout state
 #[derive(Debug, Clone)]
-struct WorkspaceLayout {
+pub struct WorkspaceLayout {
     layout_type: LayoutType,
     panel_config: PanelConfiguration,
     file_tree_visible: bool,

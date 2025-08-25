@@ -21,7 +21,7 @@ pub struct DocumentHandler {
 
 /// Cached metadata about documents
 #[derive(Debug, Clone)]
-struct DocumentMetadata {
+pub struct DocumentMetadata {
     pub path: Option<std::path::PathBuf>,
     pub language_id: Option<String>,
     pub revision: u64,
