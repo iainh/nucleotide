@@ -70,7 +70,8 @@ pub struct Workspace {
     project_lsp_manager: Option<Arc<nucleotide_lsp::ProjectLspManager>>, // Project-level LSP management
     current_project_root: Option<std::path::PathBuf>, // Track current project root for change detection
     pending_lsp_startup: Option<std::path::PathBuf>,  // Track pending server startup requests
-                                                      // REMOVED: completion_results_rx - now using event-based approach via Application
+    completion_results_rx:
+        Option<tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>>, // Receiver for completion results from coordinator
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -108,6 +109,9 @@ impl Workspace {
         notifications: Entity<NotificationView>,
         info: Entity<InfoBoxView>,
         input_coordinator: Arc<InputCoordinator>,
+        completion_results_rx: Option<
+            tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>,
+        >,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
@@ -295,7 +299,7 @@ impl Workspace {
             project_lsp_manager,
             current_project_root: root_path_for_manager.clone(),
             pending_lsp_startup: None,
-            // REMOVED: completion_results_rx - now using event-based approach via Application
+            completion_results_rx, // Passed from the application
         };
 
         // Set initial focus restore state
@@ -2538,10 +2542,21 @@ impl Workspace {
             crate::Update::EditorEvent(ev) => self.handle_editor_event(ev, cx),
             crate::Update::EditorStatus(_) => {}
             crate::Update::Redraw => self.handle_redraw(cx),
+            crate::Update::CompletionEvent(completion_event) => {
+                self.handle_completion_event(completion_event, cx);
+            }
             crate::Update::Prompt(_)
             | crate::Update::Picker(_)
-            | crate::Update::DirectoryPicker(_)
-            | crate::Update::Completion(_) => {
+            | crate::Update::DirectoryPicker(_) => {
+                self.handle_overlay_update(cx);
+            }
+            crate::Update::Completion(completion_view) => {
+                nucleotide_logging::info!(
+                    "Workspace received completion view - forwarding to overlay"
+                );
+                self.overlay.update(cx, |overlay, cx| {
+                    overlay.handle_event(ev, cx);
+                });
                 self.handle_overlay_update(cx);
             }
             crate::Update::OpenFile(path) => self.handle_open_file(path, cx),
@@ -3870,6 +3885,154 @@ impl Workspace {
         // but NOT shortcuts that should be handled by focused components
     }
 
+    /// Handle completion events directly using the event system
+    fn handle_completion_event(
+        &mut self,
+        event: &helix_view::handlers::completion::CompletionEvent,
+        cx: &mut Context<Self>,
+    ) {
+        use helix_view::handlers::completion::CompletionEvent;
+
+        info!("Workspace handling completion event");
+
+        match event {
+            CompletionEvent::ManualTrigger { cursor, doc, view } => {
+                info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing manual completion trigger");
+                self.process_completion_trigger(*cursor, *doc, *view, cx);
+            }
+            CompletionEvent::AutoTrigger { cursor, doc, view } => {
+                info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing auto completion trigger");
+                self.process_completion_trigger(*cursor, *doc, *view, cx);
+            }
+            CompletionEvent::TriggerChar { cursor, doc, view } => {
+                info!(cursor = *cursor, doc_id = ?doc, view_id = ?view, "Processing trigger character completion");
+                self.process_completion_trigger(*cursor, *doc, *view, cx);
+            }
+            CompletionEvent::DeleteText { cursor: _ } => {
+                info!("Processing delete text - hiding completions");
+                self.hide_completions(cx);
+            }
+            CompletionEvent::Cancel => {
+                info!("Processing completion cancel - hiding completions");
+                self.hide_completions(cx);
+            }
+        }
+    }
+
+    /// Process completion trigger and request LSP completions
+    fn process_completion_trigger(
+        &mut self,
+        cursor: usize,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        cx: &mut Context<Self>,
+    ) {
+        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, "Requesting LSP completions from application");
+
+        // For now, call the synchronous method directly in this context
+        // TODO: Make this properly async when we implement real LSP requests
+        match self.core.update(cx, |core, cx| {
+            core.request_lsp_completions_sync(cursor, doc_id, view_id, cx)
+        }) {
+            Ok(items) => {
+                if items.is_empty() {
+                    info!("No LSP completions available");
+                } else {
+                    info!(
+                        item_count = items.len(),
+                        "Received LSP completion items from application"
+                    );
+                    self.show_completion_items(items, cursor, doc_id, view_id, cx);
+                }
+            }
+            Err(e) => {
+                info!(error = %e, "No LSP completions available - language server not ready or no completions at this position");
+            }
+        }
+    }
+
+    /// Convert completion items and show completion popup
+    fn show_completion_items(
+        &mut self,
+        items: Vec<nucleotide_events::completion::CompletionItem>,
+        _cursor: usize,
+        _doc_id: helix_view::DocumentId,
+        _view_id: helix_view::ViewId,
+        cx: &mut Context<Self>,
+    ) {
+        // Convert between completion item types
+        let ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
+            .into_iter()
+            .map(|item| {
+                use nucleotide_events::completion::CompletionItemKind;
+                use nucleotide_ui::completion_v2::{
+                    CompletionItem as UiCompletionItem, CompletionItemKind as UiCompletionItemKind,
+                };
+
+                let ui_kind = match item.kind {
+                    CompletionItemKind::Text => UiCompletionItemKind::Text,
+                    CompletionItemKind::Method => UiCompletionItemKind::Method,
+                    CompletionItemKind::Function => UiCompletionItemKind::Function,
+                    CompletionItemKind::Constructor => UiCompletionItemKind::Constructor,
+                    CompletionItemKind::Field => UiCompletionItemKind::Field,
+                    CompletionItemKind::Variable => UiCompletionItemKind::Variable,
+                    CompletionItemKind::Class => UiCompletionItemKind::Class,
+                    CompletionItemKind::Interface => UiCompletionItemKind::Interface,
+                    CompletionItemKind::Module => UiCompletionItemKind::Module,
+                    CompletionItemKind::Property => UiCompletionItemKind::Property,
+                    CompletionItemKind::Unit => UiCompletionItemKind::Unit,
+                    CompletionItemKind::Value => UiCompletionItemKind::Value,
+                    CompletionItemKind::Enum => UiCompletionItemKind::Enum,
+                    CompletionItemKind::Keyword => UiCompletionItemKind::Keyword,
+                    CompletionItemKind::Snippet => UiCompletionItemKind::Snippet,
+                    CompletionItemKind::Color => UiCompletionItemKind::Color,
+                    CompletionItemKind::File => UiCompletionItemKind::File,
+                    CompletionItemKind::Reference => UiCompletionItemKind::Reference,
+                    CompletionItemKind::Folder => UiCompletionItemKind::Folder,
+                    CompletionItemKind::EnumMember => UiCompletionItemKind::EnumMember,
+                    CompletionItemKind::Constant => UiCompletionItemKind::Constant,
+                    CompletionItemKind::Struct => UiCompletionItemKind::Struct,
+                    CompletionItemKind::Event => UiCompletionItemKind::Event,
+                    CompletionItemKind::Operator => UiCompletionItemKind::Operator,
+                    CompletionItemKind::TypeParameter => UiCompletionItemKind::TypeParameter,
+                };
+
+                UiCompletionItem {
+                    text: item.label.clone().into(),
+                    description: item.detail.map(|d| d.into()),
+                    display_text: Some(item.label.into()),
+                    kind: Some(ui_kind),
+                    documentation: item.documentation.map(|d| d.into()),
+                }
+            })
+            .collect();
+
+        info!(
+            ui_item_count = ui_items.len(),
+            "Converted to UI completion items, creating completion view"
+        );
+
+        // Create completion view and emit update
+        let completion_view = cx.new(|cx| {
+            let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
+            view.set_items(ui_items, cx);
+            view
+        });
+
+        info!("Created completion view, emitting Update::Completion event");
+        cx.emit(crate::Update::Completion(completion_view));
+        cx.notify();
+    }
+
+    /// Hide completions
+    fn hide_completions(&mut self, cx: &mut Context<Self>) {
+        info!("Hiding completions via overlay dismiss");
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.dismiss_completion(cx);
+        });
+        cx.notify();
+    }
+
     /// Handle keyboard shortcuts detected by the global input system (full processing)
     fn handle_global_input_shortcuts(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let modifiers = &event.keystroke.modifiers;
@@ -3958,19 +4121,36 @@ impl Workspace {
 
     /// Trigger completion in the active editor
     pub fn trigger_completion(&mut self, cx: &mut Context<Self>) {
-        nucleotide_logging::debug!("Triggering LSP completion in active editor");
+        nucleotide_logging::debug!("Triggering completion directly via event system");
 
-        // Trigger LSP completion through helix's completion system with proper Tokio runtime context
-        // The completion coordinator will receive the event and handle the UI
         let editor = &self.core.read(cx).editor;
 
-        // Enter Tokio runtime context before calling nucleotide_lsp to fix "no reactor running" panic
-        let _guard = self.handle.enter();
-        nucleotide_lsp::lsp_completion_trigger::trigger_completion(editor, true);
+        // Get current document and view information
+        let view_id = editor.tree.focus;
+        let view = editor.tree.get(view_id);
+        let doc = editor.documents.get(&view.doc).unwrap();
+        let cursor = doc
+            .selection(view.id)
+            .primary()
+            .cursor(doc.text().slice(..));
 
-        nucleotide_logging::info!(
-            "LSP completion trigger sent to helix handlers - coordinator will handle response and UI display"
+        info!(
+            cursor = cursor,
+            doc_id = ?doc.id(),
+            view_id = ?view.id,
+            "Completion requested - emitting completion event directly"
         );
+
+        // Create and emit completion event directly to workspace
+        let completion_event = helix_view::handlers::completion::CompletionEvent::ManualTrigger {
+            cursor,
+            doc: doc.id(),
+            view: view.id,
+        };
+
+        info!("Emitting CompletionEvent::ManualTrigger directly to workspace");
+        cx.emit(crate::Update::CompletionEvent(completion_event));
+        cx.notify();
     }
 
     // REMOVED: Old completion coordinator initialization method replaced by event-based approach
@@ -4272,6 +4452,9 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Process completion results from coordinator (non-blocking) - moved back to render to ensure frequent processing
+        self.process_completion_results(cx);
+
         // Set up window appearance observer on first render
         if !self.appearance_observer_set {
             self.appearance_observer_set = true;
@@ -4453,6 +4636,7 @@ impl Render for Workspace {
                     .when_some(Some(docs_root), gpui::ParentElement::child)
                     .child(self.notifications.clone())
                     .when(!self.overlay.read(cx).is_empty(), |this| {
+                        println!("COMP: Workspace rendering overlay because it's not empty");
                         let view = &self.overlay;
                         this.child(view.clone())
                     })
@@ -5300,27 +5484,50 @@ impl Workspace {
     fn initialize_completion_coordinator(&mut self, cx: &mut Context<Self>) {
         nucleotide_logging::info!("Initializing completion coordinator with LSP support");
 
+        // First, let's verify that the Application still has the channels we expect
+        let has_channels = self.core.read(cx).completion_rx.is_some();
+        nucleotide_logging::info!(
+            "Application has completion_rx before extraction: {}",
+            has_channels
+        );
+
         // Extract the completion channels from the Application
-        let (completion_rx, completion_results_tx, lsp_completion_requests_tx) =
-            self.core.update(cx, |core, _cx| {
-                nucleotide_logging::info!("Extracting completion channels from Application");
-                let completion_rx = core.take_completion_receiver();
-                let completion_results_tx = core.take_completion_results_sender();
-                let lsp_completion_requests_tx = core.take_lsp_completion_requests_sender();
-                (
-                    completion_rx,
-                    completion_results_tx,
-                    lsp_completion_requests_tx,
-                )
-            });
+        let (
+            completion_rx,
+            completion_results_tx,
+            completion_results_rx,
+            lsp_completion_requests_tx,
+        ) = self.core.update(cx, |core, _cx| {
+            nucleotide_logging::info!("Extracting completion channels from Application");
+            let completion_rx = core.take_completion_receiver();
+            let completion_results_tx = core.take_completion_results_sender();
+            let completion_results_rx = core.take_completion_results_receiver();
+            let lsp_completion_requests_tx = core.take_lsp_completion_requests_sender();
+            (
+                completion_rx,
+                completion_results_tx,
+                completion_results_rx,
+                lsp_completion_requests_tx,
+            )
+        });
+
+        nucleotide_logging::info!(
+            "Channel extraction results - completion_rx: {}, completion_results_tx: {}, completion_results_rx: {}, lsp_completion_requests_tx: {}",
+            completion_rx.is_some(),
+            completion_results_tx.is_some(),
+            completion_results_rx.is_some(),
+            lsp_completion_requests_tx.is_some()
+        );
 
         if let (
             Some(completion_rx),
             Some(completion_results_tx),
+            Some(completion_results_rx),
             Some(lsp_completion_requests_tx),
         ) = (
             completion_rx,
             completion_results_tx,
+            completion_results_rx,
             lsp_completion_requests_tx,
         ) {
             nucleotide_logging::info!(
@@ -5341,6 +5548,10 @@ impl Workspace {
             // Spawn the coordinator task
             coordinator.spawn();
 
+            // Store the completion results receiver and start processing
+            self.completion_results_rx = Some(completion_results_rx);
+            self.start_completion_results_processing(cx);
+
             nucleotide_logging::info!(
                 "Completion coordinator task spawned successfully with LSP integration"
             );
@@ -5348,6 +5559,139 @@ impl Workspace {
             nucleotide_logging::error!(
                 "Missing completion channels for coordinator - this should not happen!"
             );
+        }
+    }
+
+    /// Start processing completion results from the coordinator
+    /// Instead of using a background task, just store the receiver for processing in the main loop
+    fn start_completion_results_processing(&mut self, cx: &mut Context<Self>) {
+        if let Some(_completion_results_rx) = self.completion_results_rx.take() {
+            nucleotide_logging::info!(
+                "Completion results receiver stored - will be processed in render loop"
+            );
+            // Put the receiver back - we'll use it in the main processing loop
+            self.completion_results_rx = Some(_completion_results_rx);
+        } else {
+            nucleotide_logging::warn!("No completion results receiver to process");
+        }
+    }
+
+    /// Process completion results from the coordinator (called from main event loop)
+    pub fn process_completion_results(&mut self, cx: &mut Context<Self>) {
+        if let Some(ref mut completion_results_rx) = self.completion_results_rx {
+            // Collect all available completion results first to avoid borrowing issues
+            let mut completion_results = Vec::new();
+            while let Ok(completion_result) = completion_results_rx.try_recv() {
+                completion_results.push(completion_result);
+            }
+
+            // Process all collected results
+            for completion_result in completion_results {
+                nucleotide_logging::info!(
+                    "Workspace processing completion result: {:?}",
+                    completion_result
+                );
+
+                // Handle the completion result on the main thread
+                self.handle_completion_result(completion_result, cx);
+
+                // Force a redraw after processing each completion result
+                cx.notify();
+            }
+        }
+    }
+
+    /// Handle a completion result from the coordinator
+    fn handle_completion_result(
+        &mut self,
+        result: crate::completion_coordinator::CompletionResult,
+        cx: &mut Context<Self>,
+    ) {
+        nucleotide_logging::info!("Workspace handling completion result: {:?}", result);
+        match result {
+            crate::completion_coordinator::CompletionResult::ShowCompletions {
+                items,
+                cursor,
+                doc_id,
+                view_id,
+            } => {
+                nucleotide_logging::info!(
+                    item_count = items.len(),
+                    cursor = cursor,
+                    doc_id = ?doc_id,
+                    view_id = ?view_id,
+                    "Workspace processing ShowCompletions result - creating CompletionView"
+                );
+
+                // Convert nucleotide_events::CompletionItem to nucleotide_ui::CompletionItem
+                let ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
+                    .into_iter()
+                    .map(|item| {
+                        nucleotide_ui::completion_v2::CompletionItem {
+                            text: item.label.into(),
+                            description: item.detail.map(|d| d.into()),
+                            display_text: None, // Use the label as display text
+                            kind: Some(match item.kind {
+                                nucleotide_events::completion::CompletionItemKind::Text => nucleotide_ui::completion_v2::CompletionItemKind::Text,
+                                nucleotide_events::completion::CompletionItemKind::Method => nucleotide_ui::completion_v2::CompletionItemKind::Method,
+                                nucleotide_events::completion::CompletionItemKind::Function => nucleotide_ui::completion_v2::CompletionItemKind::Function,
+                                nucleotide_events::completion::CompletionItemKind::Constructor => nucleotide_ui::completion_v2::CompletionItemKind::Constructor,
+                                nucleotide_events::completion::CompletionItemKind::Field => nucleotide_ui::completion_v2::CompletionItemKind::Field,
+                                nucleotide_events::completion::CompletionItemKind::Variable => nucleotide_ui::completion_v2::CompletionItemKind::Variable,
+                                nucleotide_events::completion::CompletionItemKind::Class => nucleotide_ui::completion_v2::CompletionItemKind::Class,
+                                nucleotide_events::completion::CompletionItemKind::Interface => nucleotide_ui::completion_v2::CompletionItemKind::Interface,
+                                nucleotide_events::completion::CompletionItemKind::Module => nucleotide_ui::completion_v2::CompletionItemKind::Module,
+                                nucleotide_events::completion::CompletionItemKind::Property => nucleotide_ui::completion_v2::CompletionItemKind::Property,
+                                nucleotide_events::completion::CompletionItemKind::Unit => nucleotide_ui::completion_v2::CompletionItemKind::Unit,
+                                nucleotide_events::completion::CompletionItemKind::Value => nucleotide_ui::completion_v2::CompletionItemKind::Value,
+                                nucleotide_events::completion::CompletionItemKind::Enum => nucleotide_ui::completion_v2::CompletionItemKind::Enum,
+                                nucleotide_events::completion::CompletionItemKind::Keyword => nucleotide_ui::completion_v2::CompletionItemKind::Keyword,
+                                nucleotide_events::completion::CompletionItemKind::Snippet => nucleotide_ui::completion_v2::CompletionItemKind::Snippet,
+                                nucleotide_events::completion::CompletionItemKind::Color => nucleotide_ui::completion_v2::CompletionItemKind::Color,
+                                nucleotide_events::completion::CompletionItemKind::File => nucleotide_ui::completion_v2::CompletionItemKind::File,
+                                nucleotide_events::completion::CompletionItemKind::Reference => nucleotide_ui::completion_v2::CompletionItemKind::Reference,
+                                nucleotide_events::completion::CompletionItemKind::Folder => nucleotide_ui::completion_v2::CompletionItemKind::Folder,
+                                nucleotide_events::completion::CompletionItemKind::EnumMember => nucleotide_ui::completion_v2::CompletionItemKind::EnumMember,
+                                nucleotide_events::completion::CompletionItemKind::Constant => nucleotide_ui::completion_v2::CompletionItemKind::Constant,
+                                nucleotide_events::completion::CompletionItemKind::Struct => nucleotide_ui::completion_v2::CompletionItemKind::Struct,
+                                nucleotide_events::completion::CompletionItemKind::Event => nucleotide_ui::completion_v2::CompletionItemKind::Event,
+                                nucleotide_events::completion::CompletionItemKind::Operator => nucleotide_ui::completion_v2::CompletionItemKind::Operator,
+                                nucleotide_events::completion::CompletionItemKind::TypeParameter => nucleotide_ui::completion_v2::CompletionItemKind::TypeParameter,
+                            }),
+                            documentation: item.documentation.map(|d| d.into()),
+                        }
+                    })
+                    .collect();
+
+                // Create a new CompletionView with the converted items
+                let completion_view = cx.new(|cx| {
+                    let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
+                    view.set_items(ui_items, cx);
+                    view
+                });
+
+                // Emit Update::Completion event to notify overlay
+                cx.emit(crate::Update::Completion(completion_view));
+
+                // Update the overlay and force a notification
+                self.overlay.update(cx, |_overlay, cx| {
+                    // The overlay should have received the Update::Completion event
+                    // Force a notification to ensure redraw happens
+                    cx.notify();
+                });
+
+                cx.notify();
+            }
+            crate::completion_coordinator::CompletionResult::HideCompletions => {
+                nucleotide_logging::info!("Workspace processing HideCompletions result");
+
+                // Update the overlay to dismiss completion
+                self.overlay.update(cx, |overlay, cx| {
+                    overlay.dismiss_completion(cx);
+                });
+
+                cx.notify();
+            }
         }
     }
 }

@@ -592,26 +592,6 @@ fn gui_main(
                 .detach();
 
                 let input = cx.new(|_| nucleotide::application::Input);
-                let crank = cx.new(|mc| {
-                    mc.spawn(async move |crank, cx| {
-                        loop {
-                            // Wait for timer
-                            cx.background_executor()
-                                .timer(Duration::from_millis(200)) // 5fps instead of 20fps
-                                .await;
-
-                            // Timer completed, emit update event
-                            if let Err(e) = crank.update(cx, |_crank, cx| {
-                                cx.emit(());
-                            }) {
-                                warn!(error = ?e, "Failed to emit crank event");
-                                // Continue the loop even if update fails
-                            }
-                        }
-                    })
-                    .detach();
-                    nucleotide::application::Crank
-                });
 
                 let input_1 = input.clone();
                 let handle_1 = handle.clone();
@@ -668,14 +648,16 @@ fn gui_main(
                         },
                     )
                     .detach();
-                    mc.subscribe(&crank, move |this: &mut Application, _, _ev, cx| {
-                        this.handle_crank_event((), cx, handle_2.clone());
-                    })
-                    .detach();
 
                     // Set the LSP state
                     app.lsp_state = Some(lsp_state.clone());
                     app
+                });
+
+                // Start event-driven LSP processing instead of using crank
+                // Note: completion results processing stays with Workspace as originally designed
+                app.update(cx, |app, cx| {
+                    app.start_event_driven_lsp_completion_processing(cx);
                 });
 
                 cx.activate(true);
@@ -829,6 +811,10 @@ fn gui_main(
                 // Create workspace
 
                 let workspace = cx.new(|cx| {
+                    // Get the completion results receiver from the application
+                    let completion_results_rx = app.update(cx, |app, _cx| {
+                        app.take_completion_results_receiver()
+                    });
                     let mut workspace = workspace::Workspace::with_views(
                         app,
                         input_1.clone(),
@@ -837,6 +823,7 @@ fn gui_main(
                         notifications,
                         info,
                         input_coordinator,
+                        completion_results_rx,
                         cx,
                     );
 

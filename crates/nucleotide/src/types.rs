@@ -47,6 +47,7 @@ pub enum Update {
     Picker(crate::picker::Picker),
     DirectoryPicker(crate::picker::Picker),
     Completion(gpui::Entity<nucleotide_ui::completion_v2::CompletionView>),
+    CompletionEvent(helix_view::handlers::completion::CompletionEvent),
     Info(helix_view::info::Info),
 
     // Legacy events still being migrated
@@ -144,6 +145,7 @@ impl std::fmt::Debug for Update {
                 )
             }
             Update::FileTreeEvent(_) => write!(f, "FileTreeEvent(...)"),
+            Update::CompletionEvent(_) => write!(f, "CompletionEvent(...)"),
             Update::ShowFilePicker => write!(f, "ShowFilePicker"),
             Update::ShowBufferPicker => write!(f, "ShowBufferPicker"),
         }
