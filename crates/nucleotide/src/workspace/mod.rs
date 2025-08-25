@@ -3962,9 +3962,12 @@ impl Workspace {
     pub fn trigger_completion(&mut self, cx: &mut Context<Self>) {
         nucleotide_logging::debug!("Triggering LSP completion in active editor");
 
-        // Trigger LSP completion through helix's completion system
+        // Trigger LSP completion through helix's completion system with proper Tokio runtime context
         // The completion coordinator will receive the event and handle the UI
         let editor = &self.core.read(cx).editor;
+
+        // Enter Tokio runtime context before calling nucleotide_lsp to fix "no reactor running" panic
+        let _guard = self.handle.enter();
         nucleotide_lsp::lsp_completion_trigger::trigger_completion(editor, true);
 
         nucleotide_logging::info!(
