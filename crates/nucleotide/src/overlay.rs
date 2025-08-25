@@ -1,6 +1,6 @@
 use gpui::{
     App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Render, Styled, Window, div,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled, Window, div, px,
 };
 
 use nucleotide_ui::ThemedContext as UIThemedContext;
@@ -509,6 +509,119 @@ impl OverlayView {
         }
     }
 
+    /// Calculate cursor position for completion popup placement
+    /// TODO: This should get actual cursor position from document view
+    /// Calculate cursor-based completion position using exact cursor coordinates when available
+    fn calculate_completion_position(&self, cx: &Context<Self>) -> (gpui::Pixels, gpui::Pixels) {
+        let layout_info = self.get_workspace_layout_info(cx);
+        
+        // Use exact cursor coordinates if available from DocumentView rendering
+        if let (Some(cursor_pos), Some(cursor_size)) = (layout_info.cursor_position, layout_info.cursor_size) {
+            println!("DEBUG: Using exact cursor coordinates - pos={:?}, size={:?}", cursor_pos, cursor_size);
+            // cursor_pos is already the top-left of cursor, we want bottom-left for completion
+            return (cursor_pos.x, cursor_pos.y + cursor_size.height);
+        }
+        
+        // Fallback to calculated position if no exact coordinates available
+        println!("DEBUG: Using calculated cursor position (fallback)");
+        if let Some(core) = self.core.upgrade() {
+            let core_read = core.read(cx);
+            let editor = &core_read.editor;
+            
+            // Get focused view and document
+            let focused_view_id = editor.tree.focus;
+            let view = editor.tree.get(focused_view_id);
+            let doc_id = view.doc;
+            
+            match editor.documents.get(&doc_id) {
+                Some(document) => {
+                    let text = document.text();
+                    
+                    // Get primary cursor position
+                    let primary_selection = document.selection(focused_view_id).primary();
+                    let cursor_char_idx = primary_selection.cursor(text.slice(..));
+                    
+                    // Convert character position to screen coordinates
+                    if let Some(cursor_pos) = view.screen_coords_at_pos(document, text.slice(..), cursor_char_idx) {
+                        let view_offset = document.view_offset(focused_view_id);
+                        
+                        // Check if cursor is visible in viewport
+                        let viewport_height = view.inner_height();
+                        if cursor_pos.row >= view_offset.vertical_offset &&
+                           cursor_pos.row < view_offset.vertical_offset + viewport_height {
+                            
+                            // Calculate relative position within viewport (0-based line in visible area)
+                            let relative_row = cursor_pos.row.saturating_sub(view_offset.vertical_offset);
+                            
+                            // Account for UI layout: file tree + gutter + character position
+                            let cursor_x = layout_info.file_tree_width + layout_info.gutter_width + 
+                                          px(cursor_pos.col as f32 * layout_info.char_width.0);
+                            
+                            // Account for UI layout: title bar + tab bar + line position within document area
+                            let document_area_y = layout_info.title_bar_height + layout_info.tab_bar_height;
+                            let cursor_y = document_area_y + px(relative_row as f32 * layout_info.line_height.0);
+                            
+                            return (cursor_x, cursor_y + layout_info.line_height); // Position below cursor
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+        
+        // Final fallback positioning
+        (
+            layout_info.file_tree_width + layout_info.gutter_width + px(10.0),
+            layout_info.title_bar_height + layout_info.tab_bar_height + px(20.0)
+        )
+    }
+    
+    /// Get workspace layout information for completion positioning
+    /// Attempts to access real workspace dimensions, falls back to reasonable defaults
+    fn get_workspace_layout_info(&self, cx: &Context<Self>) -> WorkspaceLayoutInfo {
+        // Try to access workspace layout through global state
+        if let Some(layout) = cx.try_global::<WorkspaceLayoutInfo>() {
+            return *layout;
+        }
+        
+        // TODO: Alternative approaches to access workspace:
+        // 1. Pass layout info when creating completion view
+        // 2. Store layout in app-global state
+        // 3. Make workspace accessible through entity hierarchy
+        
+        // For now, use reasonable defaults that match typical Nucleotide layout
+        // These values should be close to the actual defaults but won't reflect user resizing
+        WorkspaceLayoutInfo {
+            file_tree_width: px(250.0),    // Default file tree width (user can resize)
+            gutter_width: px(60.0),        // Line number gutter width  
+            tab_bar_height: px(40.0),      // Tab bar height
+            title_bar_height: px(30.0),    // Much smaller - just window controls
+            line_height: px(20.0),         // Default line height
+            char_width: px(12.0),          // Default character width
+            cursor_position: None,         // No exact cursor position available
+            cursor_size: None,             // No exact cursor size available
+        }
+    }
+}
+
+/// Layout information for positioning UI elements relative to workspace
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WorkspaceLayoutInfo {
+    pub file_tree_width: gpui::Pixels,
+    pub gutter_width: gpui::Pixels,
+    pub tab_bar_height: gpui::Pixels,  
+    pub title_bar_height: gpui::Pixels,
+    // Font metrics from the actual DocumentView
+    pub line_height: gpui::Pixels,
+    pub char_width: gpui::Pixels,
+    // Exact cursor coordinates from DocumentView rendering
+    pub cursor_position: Option<gpui::Point<Pixels>>,
+    pub cursor_size: Option<gpui::Size<Pixels>>,
+}
+
+impl gpui::Global for WorkspaceLayoutInfo {}
+
+impl OverlayView {
     /// Create PickerView using ThemedContext with design token fallbacks
     fn create_picker_view_with_context(cx: &mut gpui::Context<PickerView>) -> PickerView {
         use nucleotide_ui::theme_utils::color_to_hsla;
@@ -619,14 +732,25 @@ impl Render for OverlayView {
         }
 
         if let Some(completion_view) = &self.completion_view {
-            // Render completion view positioned near cursor without full overlay
+            use gpui::{anchored, point, Corner};
+            
+            // Calculate proper completion position based on cursor location
+            let (cursor_x, cursor_y) = self.calculate_completion_position(cx);
+            
             return div()
                 .key_context("Overlay")
                 .absolute()
                 .size_full()
                 .top_0()
                 .left_0()
-                .child(completion_view.clone())
+                .child(
+                    anchored()
+                        .position(point(cursor_x, cursor_y))
+                        .anchor(Corner::TopLeft) // Anchor top-left of completion to cursor position
+                        .offset(point(px(0.0), px(2.0))) // Small offset below cursor
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(completion_view.clone())
+                )
                 .into_any_element();
         }
 

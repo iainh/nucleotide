@@ -997,25 +997,27 @@ impl Render for CompletionView {
         // Focus the completion view when it's first shown
         window.focus(&self.focus_handle);
 
+        // TODO: Get actual cursor position from document/workspace
+        // For now, use relative positioning that will be updated by parent container
         container
             .absolute()
-            .top(px(50.0)) // Position below cursor area
-            .left(px(100.0)) // Position to the right of typical cursor position
+            // Remove hardcoded positioning - parent will handle this
             .child(
                 div()
                     .id("completion-list")
                     .flex()
                     .flex_col()
-                    .min_w_64()
+                    .min_w(px(250.0))
                     .max_w(px(400.0))
                     .bg(tokens.colors.popup_background)
                     .border_1()
                     .border_color(tokens.colors.popup_border)
-                    .rounded_md()
+                    .rounded(tokens.sizes.radius_md)
                     .shadow_lg()
                     .max_h(px(300.0))
                     .overflow_y_scroll()
-                    .py_1()
+                    .py(tokens.sizes.space_1)
+                    .px(tokens.sizes.space_1)
                     .children(completion_items),
             )
     }

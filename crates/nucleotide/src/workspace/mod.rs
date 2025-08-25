@@ -4461,6 +4461,75 @@ impl Workspace {
         }
         focused_file_name
     }
+    
+    /// Update global workspace layout information for UI positioning
+    fn update_workspace_layout_info(&self, cx: &mut Context<Self>) {
+        use crate::overlay::WorkspaceLayoutInfo;
+        
+        // Calculate current tab bar height based on configuration
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+        let bufferline_config = &editor.config().bufferline;
+        
+        let tab_bar_height = match bufferline_config {
+            helix_view::editor::BufferLine::Never => px(0.0),
+            helix_view::editor::BufferLine::Always => px(40.0), // Standard tab height
+            helix_view::editor::BufferLine::Multiple => {
+                if editor.documents.len() > 1 {
+                    px(40.0) // Standard tab height when multiple docs
+                } else {
+                    px(0.0) // No tab bar for single document
+                }
+            }
+        };
+        
+        // Get actual file tree width (user may have resized it)
+        let file_tree_width = if self.show_file_tree {
+            px(self.file_tree_width)
+        } else {
+            px(0.0) // No file tree width if hidden
+        };
+        
+        // Get font metrics from the focused DocumentView if available
+        let (line_height, char_width) = self.get_font_metrics_from_focused_view(cx);
+        
+        let layout_info = WorkspaceLayoutInfo {
+            file_tree_width,
+            gutter_width: px(60.0),        // Line number gutter width (approximately)
+            tab_bar_height,
+            title_bar_height: px(30.0),    // Much smaller - just window controls
+            line_height,
+            char_width,
+            cursor_position: None,         // Will be filled by DocumentView during cursor rendering
+            cursor_size: None,             // Will be filled by DocumentView during cursor rendering
+        };
+        
+        // Set as global state so overlay can access it
+        cx.set_global(layout_info);
+    }
+    
+    /// Get font metrics (line height, char width) from the focused DocumentView
+    fn get_font_metrics_from_focused_view(&self, cx: &mut Context<Self>) -> (gpui::Pixels, gpui::Pixels) {
+        // Try to get the focused DocumentView
+        if let Some(focused_view_id) = self.view_manager.focused_view_id() {
+            if let Some(doc_view) = self.view_manager.get_document_view(&focused_view_id) {
+                // Access the DocumentView to get real font metrics
+                return doc_view.read_with(cx, |doc_view, _cx| {
+                    // Get the actual line height from DocumentView
+                    let line_height = doc_view.get_line_height();
+                    
+                    // Calculate character width from font style
+                    // This is approximate but much more accurate than hardcoded 8.0
+                    let char_width = px(line_height.0 * 0.6); // Typical monospace ratio
+                    
+                    (line_height, char_width)
+                });
+            }
+        }
+        
+        // Fallback to reasonable defaults if no focused view
+        (px(20.0), px(12.0))
+    }
 }
 
 impl Focusable for Workspace {
@@ -4473,6 +4542,9 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Process completion results from the coordinator
         self.process_completion_results(cx);
+        
+        // Update global workspace layout information for completion positioning
+        self.update_workspace_layout_info(cx);
 
         // Set up window appearance observer on first render
         if !self.appearance_observer_set {

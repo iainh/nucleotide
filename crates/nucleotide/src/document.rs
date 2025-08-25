@@ -210,6 +210,10 @@ pub struct DocumentView {
     scroll_manager: ScrollManager,
     scrollbar_state: ScrollbarState,
     line_height: Pixels,
+    /// Last cursor position in window coordinates (for completion positioning)
+    last_cursor_position: Option<gpui::Point<Pixels>>,
+    /// Last cursor dimensions (for completion positioning)  
+    last_cursor_size: Option<gpui::Size<Pixels>>,
 }
 
 impl DocumentView {
@@ -237,6 +241,8 @@ impl DocumentView {
             scroll_manager,
             scrollbar_state,
             line_height,
+            last_cursor_position: None,
+            last_cursor_size: None,
         }
     }
 
@@ -318,6 +324,31 @@ impl DocumentView {
             }
         }
         diags
+    }
+
+    /// Get the current cursor position in window coordinates
+    /// Returns None if cursor is not visible or cannot be calculated
+    /// TODO: Implement this method once we figure out the correct Helix API usage
+    #[allow(dead_code)]
+
+    /// Get the actual line height used by this DocumentView
+    pub fn get_line_height(&self) -> Pixels {
+        self.line_height
+    }
+
+    /// Get the last cursor position and size in window coordinates
+    /// Returns (position, size) where position is bottom-left corner for completion positioning
+    pub fn get_cursor_coordinates(&self) -> Option<(gpui::Point<Pixels>, gpui::Size<Pixels>)> {
+        if let (Some(pos), Some(size)) = (self.last_cursor_position, self.last_cursor_size) {
+            // Return bottom-left corner of cursor for completion positioning
+            let bottom_left = gpui::Point {
+                x: pos.x,
+                y: pos.y + size.height,
+            };
+            Some((bottom_left, size))
+        } else {
+            None
+        }
     }
 }
 
@@ -2930,7 +2961,9 @@ impl Element for DocumentElement {
 
                                 let relative_line = cursor_line - view_offset.vertical_offset;
                                 let cursor_y = text_bounds.origin.y + (after_layout.line_height * relative_line as f32);
-                                let cursor_x = text_bounds.origin.x + (after_layout.cell_width * cursor_visual_col as f32);
+                                // Account for horizontal scrolling when calculating cursor X position
+                                let visual_col_in_viewport = cursor_visual_col as f32 - view_offset.horizontal_offset as f32;
+                                let cursor_x = text_bounds.origin.x + (after_layout.cell_width * visual_col_in_viewport);
 
                                 // Check if cursor has reversed modifier
                                 let has_reversed = cursor_style.add_modifier.contains(helix_view::graphics::Modifier::REVERSED) &&
@@ -2999,7 +3032,20 @@ impl Element for DocumentElement {
                                     text: cursor_text_shaped,
                                 };
 
-                                cursor.paint(point(cursor_x, cursor_y), window, cx);
+                                // Store cursor position for overlay positioning
+                                let cursor_point = point(cursor_x, cursor_y);
+
+                                // Update the global WorkspaceLayoutInfo with exact cursor coordinates
+                                {
+                                    let mut layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+                                    layout_info.cursor_position = Some(cursor_point);
+                                    layout_info.cursor_size = Some(gpui::Size {
+                                        width: cursor_width,
+                                        height: after_layout.line_height,
+                                    });
+                                }
+
+                                cursor.paint(cursor_point, window, cx);
                             }
                     }
 
@@ -3553,7 +3599,20 @@ impl Element for DocumentElement {
                                         text: cursor_text_shaped,
                                     };
 
-                                    cursor.paint(point(cursor_x, cursor_y), window, cx);
+                                    // Store cursor position for overlay positioning
+                                    let cursor_point = point(cursor_x, cursor_y);
+
+                                    // Update the global WorkspaceLayoutInfo with exact cursor coordinates
+                                    {
+                                        let mut layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+                                        layout_info.cursor_position = Some(cursor_point);
+                                        layout_info.cursor_size = Some(gpui::Size {
+                                            width: cursor_width,
+                                            height: after_layout.line_height,
+                                        });
+                                    }
+
+                                    cursor.paint(cursor_point, window, cx);
                                 } else {
                                     debug!("❌ CURSOR FAIL: Normal line layout missing for line {}", cursor_line);
                                 }
