@@ -1,0 +1,35 @@
+[package]
+name = "nucleotide-test-lsp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Testing LSP server for Nucleotide completion testing across all languages"
+categories = ["text-editors", "development-tools::testing"]
+rust-version = "1.88"
+
+[[bin]]
+name = "nucleotide-test-lsp"
+path = "src/main.rs"
+
+[dependencies]
+# Common dependencies for LSP server
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+toml.workspace = true
+futures.workspace = true
+
+# For LSP protocol implementation
+lsp-types.workspace = true
+lsp-server.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"
