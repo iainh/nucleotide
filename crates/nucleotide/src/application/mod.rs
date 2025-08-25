@@ -3669,11 +3669,18 @@ pub fn init_editor(
             }
 
             let action = if first {
-                Action::VerticalSplit
+                // Use split layout from command line args, default to vertical split
+                match args.split {
+                    Some(helix_view::tree::Layout::Horizontal) => Action::HorizontalSplit,
+                    Some(helix_view::tree::Layout::Vertical) | None => Action::VerticalSplit,
+                }
             } else {
-                // For now, just load additional files in the same view
-                // TODO: Support --vsplit and --hsplit arguments
-                Action::Load
+                // For subsequent files, use the same split layout if specified
+                match args.split {
+                    Some(helix_view::tree::Layout::Horizontal) => Action::HorizontalSplit,
+                    Some(helix_view::tree::Layout::Vertical) => Action::VerticalSplit,
+                    None => Action::Load, // Default to loading in same view when no split specified
+                }
             };
 
             info!(
