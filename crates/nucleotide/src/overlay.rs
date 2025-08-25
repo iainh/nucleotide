@@ -33,10 +33,16 @@ impl OverlayView {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.prompt.is_none()
+        let empty = self.prompt.is_none()
             && self.native_picker_view.is_none()
             && self.native_prompt_view.is_none()
-            && self.completion_view.is_none()
+            && self.completion_view.is_none();
+
+        if !empty && self.completion_view.is_some() {
+            println!("COMP: Overlay is NOT empty - has completion view");
+        }
+
+        empty
     }
 
     pub fn has_completion(&self) -> bool {
@@ -81,7 +87,7 @@ impl OverlayView {
         .detach()
     }
 
-    fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
+    pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         match ev {
             crate::Update::Prompt(prompt) => {
                 match prompt {
@@ -213,6 +219,13 @@ impl OverlayView {
             }
             crate::Update::Completion(completion_view) => {
                 println!("COMP: OverlayView received completion view");
+
+                // Clean up any existing completion view before setting the new one
+                if self.completion_view.is_some() {
+                    println!("COMP: Clearing existing completion view before setting new one");
+                    self.completion_view = None;
+                }
+
                 // Subscribe to dismiss events from the completion view
                 cx.subscribe(
                     completion_view,

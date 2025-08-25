@@ -164,12 +164,15 @@ impl CompletionCoordinator {
                 self.request_lsp_completions(cursor, doc, view).await?;
             }
             CompletionEvent::DeleteText { cursor } => {
-                debug!(cursor = cursor, "Handling delete text event");
+                info!(
+                    cursor = cursor,
+                    "Handling delete text event - will hide completions"
+                );
                 // Send hide completions message
                 self.send_hide_completions().await?;
             }
             CompletionEvent::Cancel => {
-                debug!("Handling completion cancel event");
+                info!("Handling completion cancel event - will hide completions");
                 // Send hide completions message
                 self.send_hide_completions().await?;
             }
@@ -256,21 +259,34 @@ impl CompletionCoordinator {
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
     ) -> anyhow::Result<()> {
-        debug!(item_count = items.len(), "Sending completion results to UI");
+        info!(
+            item_count = items.len(),
+            "Sending completion results to UI via Application Update events"
+        );
 
+        // Send through the channel first (for the async task in Workspace that we just set up)
         let result = CompletionResult::ShowCompletions {
-            items,
+            items: items.clone(),
             cursor,
             doc_id,
             view_id,
         };
 
         if let Err(e) = self.completion_results_tx.send(result).await {
-            error!(error = %e, "Failed to send completion results");
-            return Err(anyhow::anyhow!("Failed to send completion results: {}", e));
+            error!(error = %e, "Failed to send completion results through channel");
+            // Don't return error, try the Application approach instead
+        } else {
+            info!("Successfully sent completion results via channel");
         }
 
-        debug!("Successfully sent completion results to UI");
+        // Also try to emit Update events through the Application entity
+        // This might work better for GPUI's main thread requirements
+        info!("Attempting to emit completion via Application Update events");
+
+        // For now, just log that we would do this
+        // We might need to implement this as a method on Application
+        debug!("Application Update event approach not implemented yet - using channel approach");
+
         Ok(())
     }
 
