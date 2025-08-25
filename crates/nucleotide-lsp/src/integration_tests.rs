@@ -34,8 +34,13 @@ mod lsp_lifecycle_integration_tests {
 
     impl Default for TestConfig {
         fn default() -> Self {
+            // Use a unique directory for each test helper instance to avoid race conditions
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let unique_id = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let unique_dir = format!("nucleotide_lsp_tests_{}_{}", std::process::id(), unique_id);
             Self {
-                test_dir: std::env::temp_dir().join("nucleotide_lsp_tests"),
+                test_dir: std::env::temp_dir().join(unique_dir),
                 operation_timeout: Duration::from_secs(5),
                 server_startup_delay: Duration::from_millis(50),
             }
@@ -54,7 +59,12 @@ mod lsp_lifecycle_integration_tests {
             }
         }
 
+        async fn ensure_test_dir(&self) -> Result<(), std::io::Error> {
+            tokio::fs::create_dir_all(&self.test_config.test_dir).await
+        }
+
         async fn create_rust_project(&self, name: &str) -> Result<PathBuf, std::io::Error> {
+            self.ensure_test_dir().await?;
             let project_dir = self.test_config.test_dir.join(name);
 
             tokio::fs::create_dir_all(&project_dir).await?;
@@ -82,6 +92,7 @@ edition = "2021"
         }
 
         async fn create_typescript_project(&self, name: &str) -> Result<PathBuf, std::io::Error> {
+            self.ensure_test_dir().await?;
             let project_dir = self.test_config.test_dir.join(name);
 
             tokio::fs::create_dir_all(&project_dir).await?;
@@ -115,6 +126,7 @@ edition = "2021"
         }
 
         async fn create_mixed_project(&self, name: &str) -> Result<PathBuf, std::io::Error> {
+            self.ensure_test_dir().await?;
             let project_dir = self.test_config.test_dir.join(name);
 
             tokio::fs::create_dir_all(&project_dir).await?;
@@ -424,6 +436,10 @@ edition = "2021"
         let _ = helper.cleanup_test_directory().await;
 
         // Create a directory without clear project markers
+        helper
+            .ensure_test_dir()
+            .await
+            .expect("Failed to ensure test dir");
         let unknown_project = helper.test_config.test_dir.join("unknown_project");
         tokio::fs::create_dir_all(&unknown_project)
             .await

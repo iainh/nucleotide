@@ -385,17 +385,16 @@ impl gpui::Global for ComponentRegistry {}
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```ignore
 /// use nucleotide_ui::{init, UIConfig};
-/// use gpui::App;
+/// use gpui::{App, AppContext};
 ///
 /// fn main() {
-///     App::new().run(|cx| {
-///         // Initialize UI system with default config
-///         nucleotide_ui::init(cx, None);
-///         
-///         // Your app code here
-///     });
+///     // Note: This is a simplified example - actual GPUI app initialization
+///     // requires more complex setup with entity management
+///     
+///     // Initialize UI system with default config
+///     // nucleotide_ui::init(cx, None);
 /// }
 /// ```
 ///

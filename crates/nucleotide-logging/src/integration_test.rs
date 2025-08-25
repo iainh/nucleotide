@@ -5,10 +5,13 @@
 mod tests {
     use crate::config::{FileConfig, LogLevel, LoggingConfig, OutputConfig};
     use crate::{debug, error, info, init_logging_with_config, warn};
-    use std::sync::Once;
+    use std::sync::{Mutex, Once};
     use tempfile::tempdir;
 
     static INIT: Once = Once::new();
+
+    /// Mutex to ensure environment variable tests don't run concurrently
+    static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_logging_integration() {
@@ -66,6 +69,19 @@ mod tests {
 
     #[test]
     fn test_environment_config_integration() {
+        // Acquire mutex to prevent concurrent environment variable modification
+        let _guard = ENV_TEST_MUTEX.lock().unwrap();
+
+        // Save existing environment state
+        let original_nucleotide_log = std::env::var("NUCLEOTIDE_LOG").ok();
+        let original_rust_log = std::env::var("RUST_LOG").ok();
+
+        // Clean up any existing environment variables that could interfere
+        unsafe {
+            std::env::remove_var("NUCLEOTIDE_LOG");
+            std::env::remove_var("RUST_LOG");
+        }
+
         // Test that environment variables are properly handled
         unsafe {
             std::env::set_var("NUCLEOTIDE_LOG", "trace");
@@ -74,14 +90,35 @@ mod tests {
         let config = LoggingConfig::from_env().expect("Should parse env config");
         assert_eq!(config.level.0, tracing::Level::TRACE);
 
-        // Clean up
+        // Restore original environment state
         unsafe {
             std::env::remove_var("NUCLEOTIDE_LOG");
+            std::env::remove_var("RUST_LOG");
+
+            if let Some(val) = original_nucleotide_log {
+                std::env::set_var("NUCLEOTIDE_LOG", val);
+            }
+            if let Some(val) = original_rust_log {
+                std::env::set_var("RUST_LOG", val);
+            }
         }
     }
 
     #[test]
     fn test_module_level_filtering() {
+        // Acquire mutex to prevent concurrent environment variable modification
+        let _guard = ENV_TEST_MUTEX.lock().unwrap();
+
+        // Save existing environment state
+        let original_nucleotide_log = std::env::var("NUCLEOTIDE_LOG").ok();
+        let original_rust_log = std::env::var("RUST_LOG").ok();
+
+        // Clean up any existing environment variables that could interfere
+        unsafe {
+            std::env::remove_var("NUCLEOTIDE_LOG");
+            std::env::remove_var("RUST_LOG");
+        }
+
         // Test RUST_LOG style module filtering
         unsafe {
             std::env::set_var(
@@ -101,9 +138,17 @@ mod tests {
             tracing::Level::TRACE
         );
 
-        // Clean up
+        // Restore original environment state
         unsafe {
+            std::env::remove_var("NUCLEOTIDE_LOG");
             std::env::remove_var("RUST_LOG");
+
+            if let Some(val) = original_nucleotide_log {
+                std::env::set_var("NUCLEOTIDE_LOG", val);
+            }
+            if let Some(val) = original_rust_log {
+                std::env::set_var("RUST_LOG", val);
+            }
         }
     }
 }
