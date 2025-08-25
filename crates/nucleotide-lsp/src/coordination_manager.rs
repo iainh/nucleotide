@@ -141,7 +141,7 @@ pub struct LspManager {
 #[derive(Debug, Clone)]
 struct LspStartupAttempt {
     mode: LspStartupMode,
-    started_at: Instant,
+    _started_at: Instant,
     result: Option<LspStartupResult>,
 }
 
@@ -264,7 +264,7 @@ impl LspManager {
         // Record the startup attempt
         let attempt = LspStartupAttempt {
             mode: startup_mode.clone(),
-            started_at: start_time,
+            _started_at: start_time,
             result: None,
         };
         self.startup_attempts.push(attempt);

@@ -431,7 +431,7 @@ impl MarkdownRenderer {
         let mut html = String::new();
         let lines: Vec<&str> = markdown.lines().collect();
         let mut in_code_block = false;
-        let mut code_lang = String::new();
+        let mut code_lang;
 
         for line in lines {
             if line.starts_with("```") {

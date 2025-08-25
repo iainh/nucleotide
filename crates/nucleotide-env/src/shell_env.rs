@@ -355,7 +355,7 @@ pub mod shell_command_builder {
     }
 
     /// Build a generic shell command (for testing)
-    pub fn build_shell_command(shell: &str, directory: &Path) -> Command {
+    pub fn build_shell_command(shell: &str, _directory: &Path) -> Command {
         let mut command = Command::new(shell);
         let shell_name = detect_shell_type(shell);
 
