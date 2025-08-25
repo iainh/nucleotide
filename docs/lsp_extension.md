@@ -578,6 +578,7 @@ The pattern established for rust-analyzer can be extended to other language serv
 - **typescript-language-server** - TypeScript/JavaScript extensions  
 - **pylsp** - Python language server extensions
 - **clangd** - C/C++ language server extensions
+- **taplo** - TOML language server extensions (see Taplo Extensions section below)
 
 ### Custom Extensions
 Framework allows adding Nucleotide-specific LSP extensions:
@@ -585,6 +586,280 @@ Framework allows adding Nucleotide-specific LSP extensions:
 - Project-wide refactoring tools
 - Custom diagnostic analyzers
 - Integration with external tools (clippy, cargo-audit, etc.)
+
+## Taplo Extensions (TOML Language Server)
+
+### Overview
+
+Taplo is a TOML language server that implements several custom LSP extensions beyond the standard specification. These extensions provide enhanced TOML editing capabilities that Helix cannot currently utilize, presenting an opportunity for Nucleotide to offer superior TOML editing experience.
+
+### Standard LSP Support
+
+Taplo fully implements the standard LSP methods that Helix supports:
+
+**Requests:**
+- `initialize`, `folding_range`, `document_symbol`
+- `formatting`, `completion`, `hover`
+- `document_link`, `semantic_tokens_full`
+- `prepare_rename`, `rename`
+
+**Notifications:**
+- `initialized`, `did_open_text_document`, `did_change_text_document`
+- `did_save_text_document`, `did_close_text_document`
+- `did_change_configuration`, `did_change_workspace_folders`
+
+### Custom Extensions (Not Supported by Helix)
+
+Taplo implements **7 custom LSP extensions** that Helix cannot use:
+
+#### Custom Request Methods
+
+| Method | Purpose | Parameters | Response | Priority |
+|--------|---------|------------|----------|----------|
+| `taplo/convertToJson` | Convert TOML to JSON | Input text string | JSON text or error | **High** |
+| `taplo/convertToToml` | Convert JSON to TOML | Input text string | TOML text or error | **High** |
+| `taplo/listSchemas` | List available schemas | Document URI | Vector of schema info | Medium |
+| `taplo/associatedSchema` | Get document's schema | Document URI | Optional schema info | Medium |
+
+#### Custom Notification Methods
+
+| Method | Purpose | Parameters | Priority |
+|--------|---------|------------|----------|
+| `taplo/messageWithOutput` | Enhanced messaging | Message kind + string | Medium |
+| `taplo/associateSchema` | Associate schema with document | Schema rules (glob/regex/URL) | **High** |
+| `taplo/didChangeSchemaAssociation` | Schema association changes | Document URI + schema info | Medium |
+
+### Implementation Strategy
+
+Following the same extension pattern as rust-analyzer:
+
+```rust
+// nucleotide-lsp/src/taplo/mod.rs
+pub mod protocol {
+    use lsp_types::request::Request;
+    use serde::{Deserialize, Serialize};
+
+    pub enum ConvertToJson {}
+    impl Request for ConvertToJson {
+        type Params = ConvertToJsonParams;
+        type Result = ConvertToJsonResult;
+        const METHOD: &'static str = "taplo/convertToJson";
+    }
+
+    pub enum ConvertToToml {}
+    impl Request for ConvertToToml {
+        type Params = ConvertToTomlParams;
+        type Result = ConvertToTomlResult;
+        const METHOD: &'static str = "taplo/convertToToml";
+    }
+
+    pub enum ListSchemas {}
+    impl Request for ListSchemas {
+        type Params = ListSchemasParams;
+        type Result = Vec<SchemaInfo>;
+        const METHOD: &'static str = "taplo/listSchemas";
+    }
+
+    pub enum AssociatedSchema {}
+    impl Request for AssociatedSchema {
+        type Params = AssociatedSchemaParams;
+        type Result = Option<SchemaInfo>;
+        const METHOD: &'static str = "taplo/associatedSchema";
+    }
+}
+
+#[async_trait::async_trait]
+pub trait TaploExt {
+    /// Convert TOML text to JSON
+    async fn convert_to_json(&self, text: String) -> Result<String>;
+    
+    /// Convert JSON text to TOML
+    async fn convert_to_toml(&self, text: String) -> Result<String>;
+    
+    /// List available schemas for document
+    async fn list_schemas(&self, uri: Url) -> Result<Vec<SchemaInfo>>;
+    
+    /// Get schema associated with document
+    async fn associated_schema(&self, uri: Url) -> Result<Option<SchemaInfo>>;
+    
+    /// Associate schema with document
+    async fn associate_schema(&self, association: SchemaAssociation) -> Result<()>;
+    
+    /// Check if client is Taplo
+    fn is_taplo(&self) -> bool;
+}
+
+#[async_trait::async_trait]
+impl TaploExt for helix_lsp::Client {
+    async fn convert_to_json(&self, text: String) -> Result<String> {
+        if !self.is_taplo() {
+            return Err(anyhow::anyhow!("Not a Taplo client"));
+        }
+
+        let params = ConvertToJsonParams { text };
+        let result = self.request::<ConvertToJson>(params).await?;
+        Ok(result.text)
+    }
+
+    // ... other implementations
+
+    fn is_taplo(&self) -> bool {
+        self.name().contains("taplo") || self.name().contains("toml")
+    }
+}
+```
+
+### UI Components
+
+#### TOML/JSON Converter
+```rust
+pub struct FormatConverter {
+    input: String,
+    output: String,
+    conversion_type: ConversionType,
+}
+
+impl FormatConverter {
+    pub fn new() -> Self {
+        Self {
+            input: String::new(),
+            output: String::new(),
+            conversion_type: ConversionType::TomlToJson,
+        }
+    }
+
+    pub async fn convert(&mut self, lsp_bridge: &HelixLspBridge) -> Result<()> {
+        match self.conversion_type {
+            ConversionType::TomlToJson => {
+                self.output = lsp_bridge.convert_toml_to_json(&self.input).await?;
+            }
+            ConversionType::JsonToToml => {
+                self.output = lsp_bridge.convert_json_to_toml(&self.input).await?;
+            }
+        }
+        Ok(())
+    }
+}
+```
+
+#### Schema Association Panel
+```rust
+pub struct SchemaAssociationPanel {
+    available_schemas: Vec<SchemaInfo>,
+    current_associations: Vec<SchemaAssociation>,
+    selected_document: Option<Url>,
+}
+
+impl SchemaAssociationPanel {
+    pub async fn load_schemas(&mut self, lsp_bridge: &HelixLspBridge, uri: Url) -> Result<()> {
+        self.available_schemas = lsp_bridge.list_schemas(uri).await?;
+        self.current_associations = lsp_bridge.get_schema_associations().await?;
+        Ok(())
+    }
+
+    pub async fn associate_schema(
+        &mut self, 
+        schema_info: SchemaInfo,
+        pattern: String,
+        lsp_bridge: &HelixLspBridge
+    ) -> Result<()> {
+        let association = SchemaAssociation {
+            schema: schema_info,
+            rule: AssociationRule::Glob(pattern),
+            priority: None,
+            meta: None,
+        };
+        
+        lsp_bridge.associate_schema(association).await?;
+        Ok(())
+    }
+}
+```
+
+### Command Integration
+
+```rust
+// Add to nucleotide/src/actions.rs
+
+/// Convert TOML document to JSON
+pub fn convert_toml_to_json(cx: &mut WindowContext) {
+    let event = TaploEvent::ConvertToJsonRequested {
+        document_id: get_current_document_id(cx),
+    };
+    cx.emit(event);
+}
+
+/// Convert JSON document to TOML  
+pub fn convert_json_to_toml(cx: &mut WindowContext) {
+    let event = TaploEvent::ConvertToTomlRequested {
+        document_id: get_current_document_id(cx),
+    };
+    cx.emit(event);
+}
+
+/// Show schema association dialog
+pub fn show_schema_associations(cx: &mut WindowContext) {
+    let event = TaploEvent::ShowSchemaAssociations {
+        document_id: get_current_document_id(cx),
+    };
+    cx.emit(event);
+}
+```
+
+### Event Types
+
+```rust
+// Add to nucleotide-events/src/lsp.rs
+#[derive(Debug, Clone)]
+pub enum TaploEvent {
+    ConvertToJsonRequested {
+        document_id: DocumentId,
+    },
+    ConvertToJsonResult {
+        result: Result<String, String>,
+    },
+    ConvertToTomlRequested {
+        document_id: DocumentId,
+    },
+    ConvertToTomlResult {
+        result: Result<String, String>,
+    },
+    ShowSchemaAssociations {
+        document_id: DocumentId,
+    },
+    SchemasListed {
+        schemas: Vec<SchemaInfo>,
+    },
+    SchemaAssociated {
+        association: SchemaAssociation,
+    },
+}
+```
+
+### Benefits for Nucleotide Users
+
+1. **Format Conversion** - Quick TOML ↔ JSON conversion for configuration files
+2. **Schema Validation** - Enhanced TOML editing with schema-aware completion and validation
+3. **Configuration Management** - Better support for complex TOML configuration files
+4. **Developer Productivity** - Reduced context switching between tools
+
+### Implementation Priority
+
+**Phase 1 (High Priority):**
+- Format conversion commands (TOML ↔ JSON)
+- Basic schema association
+
+**Phase 2 (Medium Priority):**
+- Schema listing and browsing
+- Enhanced schema validation UI
+- Schema association management panel
+
+**Phase 3 (Low Priority):**
+- Advanced schema rule patterns
+- Schema validation error highlighting
+- Integration with external schema repositories
+
+This extension would make Nucleotide particularly valuable for projects with complex TOML configurations like Rust projects (Cargo.toml), Python projects (pyproject.toml), and configuration-heavy applications.
 
 ## Conclusion
 

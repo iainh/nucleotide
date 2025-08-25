@@ -274,14 +274,6 @@ fn main() -> Result<()> {
         }
     }
 
-    let app = nucleotide::application::init_editor(
-        args,
-        config.helix.clone(),
-        config.clone(),
-        lang_loader,
-    )
-    .context("unable to create new application")?;
-
     let rt = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(e) => {
@@ -291,6 +283,17 @@ fn main() -> Result<()> {
     };
     let handle = rt.handle();
     let _guard = handle.enter();
+
+    // Initialize the editor AFTER the Tokio runtime is created and entered
+    // This is critical because Helix LSP components need an active Tokio runtime
+    let app = nucleotide::application::init_editor(
+        args,
+        config.helix.clone(),
+        config.clone(),
+        lang_loader,
+    )
+    .context("unable to create new application")?;
+
     info!("Starting GUI main loop");
     gui_main(app, config, handle.clone(), workspace_root);
     info!("Application shutting down");

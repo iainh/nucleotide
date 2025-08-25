@@ -135,14 +135,6 @@ impl RollingWindow {
             Duration::from_nanos(total_nanos / self.values.len() as u64)
         }
     }
-
-    fn max_value(&self) -> Duration {
-        self.values.iter().max().copied().unwrap_or(Duration::ZERO)
-    }
-
-    fn min_value(&self) -> Duration {
-        self.values.iter().min().copied().unwrap_or(Duration::ZERO)
-    }
 }
 
 /// Performance monitor for completion system
