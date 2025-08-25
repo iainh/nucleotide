@@ -139,6 +139,12 @@ pub enum CompletionItemKind {
     File,
     Reference,
     Folder,
+    EnumMember,
+    Constant,
+    Struct,
+    Event,
+    Operator,
+    TypeParameter,
 }
 
 /// Source of completion results
