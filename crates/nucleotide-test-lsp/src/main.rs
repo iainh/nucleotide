@@ -4,6 +4,7 @@
 use anyhow::{Result, anyhow};
 use lsp_server::{Connection, Message, Request, RequestId, Response};
 use lsp_types::*;
+use std::io::Write;
 use tracing::{debug, error, info, warn};
 
 mod completion_engine;
@@ -76,6 +77,9 @@ fn run_server(connection: Connection) -> Result<()> {
 
     info!("LSP initialization completed");
 
+    // Force stdout flush to ensure initialization response is sent
+    let _ = std::io::stdout().flush();
+
     // Load configuration and initialize components
     let config = TestLspConfig::load_default()?;
     let completion_engine = CompletionEngine::new(config.clone());
@@ -84,30 +88,41 @@ fn run_server(connection: Connection) -> Result<()> {
     debug!("Server components initialized");
 
     // Main message loop
+    info!("Entering main message loop");
+    let mut message_count = 0;
     for msg in &connection.receiver {
+        message_count += 1;
+        info!("Message #{}: received in main loop", message_count);
         match msg {
             Message::Request(req) => {
+                info!("Processing request: method={}", req.method);
                 if connection.handle_shutdown(&req)? {
                     info!("Received shutdown request");
                     return Ok(());
                 }
 
                 match handle_request(&connection, req, &completion_engine, &protocol_handler) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        debug!("Request handled successfully");
+                    }
                     Err(e) => {
                         error!("Error handling request: {}", e);
+                        // Send error response if we can extract the request ID
                     }
                 }
             }
             Message::Response(resp) => {
-                debug!("Received response: {:?}", resp.id);
+                info!("Received response: id={:?}", resp.id);
             }
-            Message::Notification(not) => match handle_notification(not, &protocol_handler) {
-                Ok(()) => {}
-                Err(e) => {
-                    warn!("Error handling notification: {}", e);
+            Message::Notification(not) => {
+                info!("Received notification: method={}", not.method);
+                match handle_notification(not, &protocol_handler) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        warn!("Error handling notification: {}", e);
+                    }
                 }
-            },
+            }
         }
     }
 
@@ -121,8 +136,10 @@ fn handle_request(
     completion_engine: &CompletionEngine,
     _protocol_handler: &ProtocolHandler,
 ) -> Result<()> {
+    info!("Received request: method={}, id={:?}", req.method, req.id);
     match req.method.as_str() {
         "textDocument/completion" => {
+            info!("Handling textDocument/completion request");
             handle_completion_request(connection, req, completion_engine)?;
         }
         method => {
@@ -146,20 +163,51 @@ fn handle_request(
 fn handle_completion_request(
     connection: &Connection,
     req: Request,
-    completion_engine: &CompletionEngine,
+    _completion_engine: &CompletionEngine,
 ) -> Result<()> {
-    let (id, params) = extract_completion_params(req)?;
+    info!("Received completion request: {:?}", req.method);
+
+    let (id, params) = match extract_completion_params(req) {
+        Ok(result) => {
+            info!("Successfully extracted completion parameters");
+            result
+        }
+        Err(e) => {
+            error!("Failed to extract completion parameters: {}", e);
+            return Err(e);
+        }
+    };
     let completion_params: CompletionParams = params;
 
-    debug!(
+    info!(
         "Completion request for URI: {:?} at position {}:{}",
         completion_params.text_document_position.text_document.uri,
         completion_params.text_document_position.position.line,
         completion_params.text_document_position.position.character
     );
 
-    // Generate completion response
-    let completions = completion_engine.generate_completions(&completion_params)?;
+    // Generate completion response - temporarily use simple completions for debugging
+    info!("Generating simple test completions instead of using completion engine");
+    let completions = vec![
+        CompletionItem {
+            label: "test_completion_1".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Test completion from LSP server".to_string()),
+            documentation: Some(Documentation::String("A test completion item".to_string())),
+            insert_text: Some("test_completion_1()".to_string()),
+            ..Default::default()
+        },
+        CompletionItem {
+            label: "test_completion_2".to_string(),
+            kind: Some(CompletionItemKind::VARIABLE),
+            detail: Some("Another test completion".to_string()),
+            documentation: Some(Documentation::String("Another test item".to_string())),
+            insert_text: Some("test_completion_2".to_string()),
+            ..Default::default()
+        },
+    ];
+
+    info!("Generated {} simple completions", completions.len());
 
     let result = CompletionResponse::Array(completions);
     let response = Response {
@@ -168,7 +216,13 @@ fn handle_completion_request(
         error: None,
     };
 
+    info!("Sending completion response with ID: {:?}", response.id);
     connection.sender.send(Message::Response(response))?;
+
+    // Force stdout flush to ensure response is sent immediately
+    let _ = std::io::stdout().flush();
+
+    info!("Response sent successfully");
     Ok(())
 }
 

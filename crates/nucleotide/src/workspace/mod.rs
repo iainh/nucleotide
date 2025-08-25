@@ -71,7 +71,7 @@ pub struct Workspace {
     current_project_root: Option<std::path::PathBuf>, // Track current project root for change detection
     pending_lsp_startup: Option<std::path::PathBuf>,  // Track pending server startup requests
     completion_results_rx:
-        Option<tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>>, // Receiver for completion results from coordinator
+        Option<tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>>, // LSP completion results channel
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -299,7 +299,7 @@ impl Workspace {
             project_lsp_manager,
             current_project_root: root_path_for_manager.clone(),
             pending_lsp_startup: None,
-            completion_results_rx, // Passed from the application
+            completion_results_rx,
         };
 
         // Set initial focus restore state
@@ -311,12 +311,7 @@ impl Workspace {
         // Setup completion-specific shortcuts
         workspace.setup_completion_shortcuts();
 
-        // Initialize completion coordinator
-        nucleotide_logging::info!(
-            "About to initialize completion coordinator in workspace creation"
-        );
-        workspace.initialize_completion_coordinator(cx);
-        nucleotide_logging::info!("Completion coordinator initialization call completed");
+        // Note: Completion handling is now done directly via event-driven approach
 
         // Register action handlers for global input system
         workspace.register_action_handlers(cx);
@@ -341,6 +336,30 @@ impl Workspace {
         }
 
         workspace
+    }
+
+    /// Process completion results from the completion coordinator
+    fn process_completion_results(&mut self, cx: &mut Context<Self>) {
+        if let Some(ref mut completion_results_rx) = self.completion_results_rx {
+            while let Ok(completion_result) = completion_results_rx.try_recv() {
+                match completion_result {
+                    crate::completion_coordinator::CompletionResult::ShowCompletions {
+                        items,
+                        ..
+                    } => {
+                        nucleotide_logging::info!(
+                            count = items.len(),
+                            "Received completion results from coordinator"
+                        );
+                        // TODO: Display completions in UI
+                        // For now, just log that we received them
+                    }
+                    crate::completion_coordinator::CompletionResult::HideCompletions => {
+                        nucleotide_logging::debug!("Hiding completions");
+                    }
+                }
+            }
+        }
     }
 
     /// Register workspace-specific actions with the input coordinator
@@ -4452,7 +4471,7 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Process completion results from coordinator (non-blocking) - moved back to render to ensure frequent processing
+        // Process completion results from the coordinator
         self.process_completion_results(cx);
 
         // Set up window appearance observer on first render
@@ -5479,222 +5498,7 @@ fn quit(core: Entity<Core>, rt: tokio::runtime::Handle, cx: &mut App) {
     });
 }
 
-impl Workspace {
-    /// Initialize the completion coordinator with the Application
-    fn initialize_completion_coordinator(&mut self, cx: &mut Context<Self>) {
-        nucleotide_logging::info!("Initializing completion coordinator with LSP support");
-
-        // First, let's verify that the Application still has the channels we expect
-        let has_channels = self.core.read(cx).completion_rx.is_some();
-        nucleotide_logging::info!(
-            "Application has completion_rx before extraction: {}",
-            has_channels
-        );
-
-        // Extract the completion channels from the Application
-        let (
-            completion_rx,
-            completion_results_tx,
-            completion_results_rx,
-            lsp_completion_requests_tx,
-        ) = self.core.update(cx, |core, _cx| {
-            nucleotide_logging::info!("Extracting completion channels from Application");
-            let completion_rx = core.take_completion_receiver();
-            let completion_results_tx = core.take_completion_results_sender();
-            let completion_results_rx = core.take_completion_results_receiver();
-            let lsp_completion_requests_tx = core.take_lsp_completion_requests_sender();
-            (
-                completion_rx,
-                completion_results_tx,
-                completion_results_rx,
-                lsp_completion_requests_tx,
-            )
-        });
-
-        nucleotide_logging::info!(
-            "Channel extraction results - completion_rx: {}, completion_results_tx: {}, completion_results_rx: {}, lsp_completion_requests_tx: {}",
-            completion_rx.is_some(),
-            completion_results_tx.is_some(),
-            completion_results_rx.is_some(),
-            lsp_completion_requests_tx.is_some()
-        );
-
-        if let (
-            Some(completion_rx),
-            Some(completion_results_tx),
-            Some(completion_results_rx),
-            Some(lsp_completion_requests_tx),
-        ) = (
-            completion_rx,
-            completion_results_tx,
-            completion_results_rx,
-            lsp_completion_requests_tx,
-        ) {
-            nucleotide_logging::info!(
-                "Successfully extracted all completion channels - creating coordinator"
-            );
-
-            // Create and spawn the completion coordinator
-            let coordinator = crate::completion_coordinator::CompletionCoordinator::new(
-                completion_rx,
-                completion_results_tx,
-                lsp_completion_requests_tx,
-                self.core.clone(),
-                cx.background_executor().clone(),
-            );
-
-            nucleotide_logging::info!("Spawning completion coordinator task with LSP support");
-
-            // Spawn the coordinator task
-            coordinator.spawn();
-
-            // Store the completion results receiver and start processing
-            self.completion_results_rx = Some(completion_results_rx);
-            self.start_completion_results_processing(cx);
-
-            nucleotide_logging::info!(
-                "Completion coordinator task spawned successfully with LSP integration"
-            );
-        } else {
-            nucleotide_logging::error!(
-                "Missing completion channels for coordinator - this should not happen!"
-            );
-        }
-    }
-
-    /// Start processing completion results from the coordinator
-    /// Instead of using a background task, just store the receiver for processing in the main loop
-    fn start_completion_results_processing(&mut self, cx: &mut Context<Self>) {
-        if let Some(_completion_results_rx) = self.completion_results_rx.take() {
-            nucleotide_logging::info!(
-                "Completion results receiver stored - will be processed in render loop"
-            );
-            // Put the receiver back - we'll use it in the main processing loop
-            self.completion_results_rx = Some(_completion_results_rx);
-        } else {
-            nucleotide_logging::warn!("No completion results receiver to process");
-        }
-    }
-
-    /// Process completion results from the coordinator (called from main event loop)
-    pub fn process_completion_results(&mut self, cx: &mut Context<Self>) {
-        if let Some(ref mut completion_results_rx) = self.completion_results_rx {
-            // Collect all available completion results first to avoid borrowing issues
-            let mut completion_results = Vec::new();
-            while let Ok(completion_result) = completion_results_rx.try_recv() {
-                completion_results.push(completion_result);
-            }
-
-            // Process all collected results
-            for completion_result in completion_results {
-                nucleotide_logging::info!(
-                    "Workspace processing completion result: {:?}",
-                    completion_result
-                );
-
-                // Handle the completion result on the main thread
-                self.handle_completion_result(completion_result, cx);
-
-                // Force a redraw after processing each completion result
-                cx.notify();
-            }
-        }
-    }
-
-    /// Handle a completion result from the coordinator
-    fn handle_completion_result(
-        &mut self,
-        result: crate::completion_coordinator::CompletionResult,
-        cx: &mut Context<Self>,
-    ) {
-        nucleotide_logging::info!("Workspace handling completion result: {:?}", result);
-        match result {
-            crate::completion_coordinator::CompletionResult::ShowCompletions {
-                items,
-                cursor,
-                doc_id,
-                view_id,
-            } => {
-                nucleotide_logging::info!(
-                    item_count = items.len(),
-                    cursor = cursor,
-                    doc_id = ?doc_id,
-                    view_id = ?view_id,
-                    "Workspace processing ShowCompletions result - creating CompletionView"
-                );
-
-                // Convert nucleotide_events::CompletionItem to nucleotide_ui::CompletionItem
-                let ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
-                    .into_iter()
-                    .map(|item| {
-                        nucleotide_ui::completion_v2::CompletionItem {
-                            text: item.label.into(),
-                            description: item.detail.map(|d| d.into()),
-                            display_text: None, // Use the label as display text
-                            kind: Some(match item.kind {
-                                nucleotide_events::completion::CompletionItemKind::Text => nucleotide_ui::completion_v2::CompletionItemKind::Text,
-                                nucleotide_events::completion::CompletionItemKind::Method => nucleotide_ui::completion_v2::CompletionItemKind::Method,
-                                nucleotide_events::completion::CompletionItemKind::Function => nucleotide_ui::completion_v2::CompletionItemKind::Function,
-                                nucleotide_events::completion::CompletionItemKind::Constructor => nucleotide_ui::completion_v2::CompletionItemKind::Constructor,
-                                nucleotide_events::completion::CompletionItemKind::Field => nucleotide_ui::completion_v2::CompletionItemKind::Field,
-                                nucleotide_events::completion::CompletionItemKind::Variable => nucleotide_ui::completion_v2::CompletionItemKind::Variable,
-                                nucleotide_events::completion::CompletionItemKind::Class => nucleotide_ui::completion_v2::CompletionItemKind::Class,
-                                nucleotide_events::completion::CompletionItemKind::Interface => nucleotide_ui::completion_v2::CompletionItemKind::Interface,
-                                nucleotide_events::completion::CompletionItemKind::Module => nucleotide_ui::completion_v2::CompletionItemKind::Module,
-                                nucleotide_events::completion::CompletionItemKind::Property => nucleotide_ui::completion_v2::CompletionItemKind::Property,
-                                nucleotide_events::completion::CompletionItemKind::Unit => nucleotide_ui::completion_v2::CompletionItemKind::Unit,
-                                nucleotide_events::completion::CompletionItemKind::Value => nucleotide_ui::completion_v2::CompletionItemKind::Value,
-                                nucleotide_events::completion::CompletionItemKind::Enum => nucleotide_ui::completion_v2::CompletionItemKind::Enum,
-                                nucleotide_events::completion::CompletionItemKind::Keyword => nucleotide_ui::completion_v2::CompletionItemKind::Keyword,
-                                nucleotide_events::completion::CompletionItemKind::Snippet => nucleotide_ui::completion_v2::CompletionItemKind::Snippet,
-                                nucleotide_events::completion::CompletionItemKind::Color => nucleotide_ui::completion_v2::CompletionItemKind::Color,
-                                nucleotide_events::completion::CompletionItemKind::File => nucleotide_ui::completion_v2::CompletionItemKind::File,
-                                nucleotide_events::completion::CompletionItemKind::Reference => nucleotide_ui::completion_v2::CompletionItemKind::Reference,
-                                nucleotide_events::completion::CompletionItemKind::Folder => nucleotide_ui::completion_v2::CompletionItemKind::Folder,
-                                nucleotide_events::completion::CompletionItemKind::EnumMember => nucleotide_ui::completion_v2::CompletionItemKind::EnumMember,
-                                nucleotide_events::completion::CompletionItemKind::Constant => nucleotide_ui::completion_v2::CompletionItemKind::Constant,
-                                nucleotide_events::completion::CompletionItemKind::Struct => nucleotide_ui::completion_v2::CompletionItemKind::Struct,
-                                nucleotide_events::completion::CompletionItemKind::Event => nucleotide_ui::completion_v2::CompletionItemKind::Event,
-                                nucleotide_events::completion::CompletionItemKind::Operator => nucleotide_ui::completion_v2::CompletionItemKind::Operator,
-                                nucleotide_events::completion::CompletionItemKind::TypeParameter => nucleotide_ui::completion_v2::CompletionItemKind::TypeParameter,
-                            }),
-                            documentation: item.documentation.map(|d| d.into()),
-                        }
-                    })
-                    .collect();
-
-                // Create a new CompletionView with the converted items
-                let completion_view = cx.new(|cx| {
-                    let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
-                    view.set_items(ui_items, cx);
-                    view
-                });
-
-                // Emit Update::Completion event to notify overlay
-                cx.emit(crate::Update::Completion(completion_view));
-
-                // Update the overlay and force a notification
-                self.overlay.update(cx, |_overlay, cx| {
-                    // The overlay should have received the Update::Completion event
-                    // Force a notification to ensure redraw happens
-                    cx.notify();
-                });
-
-                cx.notify();
-            }
-            crate::completion_coordinator::CompletionResult::HideCompletions => {
-                nucleotide_logging::info!("Workspace processing HideCompletions result");
-
-                // Update the overlay to dismiss completion
-                self.overlay.update(cx, |overlay, cx| {
-                    overlay.dismiss_completion(cx);
-                });
-
-                cx.notify();
-            }
-        }
-    }
-}
+impl Workspace {}
 
 #[cfg(test)]
 mod tests {
