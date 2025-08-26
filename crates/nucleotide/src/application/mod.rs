@@ -3506,13 +3506,45 @@ impl Application {
             &format!("{:?}", view_id),
         );
 
-        // Send directly to Helix's completion handler - this is the correct integration point
-        self.editor.handlers.completions.event(event);
+        // GPUI Integration: Use direct completion call instead of async event system
+        // This bypasses Helix's async event loop which doesn't work properly with GPUI
+        let trigger_kind = match &event {
+            helix_view::handlers::completion::CompletionEvent::AutoTrigger { .. } => {
+                helix_term::handlers::completion::TriggerKind::Auto
+            }
+            helix_view::handlers::completion::CompletionEvent::ManualTrigger { .. } => {
+                helix_term::handlers::completion::TriggerKind::Manual
+            }
+            helix_view::handlers::completion::CompletionEvent::TriggerChar { .. } => {
+                helix_term::handlers::completion::TriggerKind::TriggerChar
+            }
+            _ => {
+                nucleotide_logging::warn!(
+                    "Unsupported completion event type, defaulting to Manual"
+                );
+                helix_term::handlers::completion::TriggerKind::Manual
+            }
+        };
 
-        // Hook 20: Event sent to Helix (we don't know the result yet)
+        nucleotide_logging::info!(
+            "🎯 DIRECT_COMPLETION_CALL: Using direct completion bypass for GPUI compatibility"
+        );
+
+        // Call the direct completion function that bypasses async event system
+        if let Err(e) = helix_term::handlers::completion::request_completions_direct(
+            &mut self.editor,
+            &mut self.compositor,
+            doc_id,
+            view_id,
+            trigger_kind,
+        ) {
+            nucleotide_logging::error!("Direct completion request failed: {}", e);
+        }
+
+        // Hook 20: Event sent to Helix directly
         crate::completion_interception::hook_20_final_status(
-            "event_sent_to_helix",
-            "Completion event dispatched to Helix handler",
+            "direct_completion_called",
+            "Direct completion function called bypassing async event system",
         );
     }
 
