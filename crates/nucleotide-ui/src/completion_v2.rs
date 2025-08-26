@@ -629,11 +629,12 @@ impl CompletionView {
 
             if let Some(score_val) = score {
                 filtered_matches.push(StringMatch::new(candidate.id, score_val, vec![]));
-                if filtered_matches.len() >= max_items {
-                    break;
-                }
             }
         }
+
+        // Sort by score descending (highest scores first) and limit to max_items
+        filtered_matches.sort_by(|a, b| b.score.cmp(&a.score));
+        filtered_matches.truncate(max_items);
 
         nucleotide_logging::info!(
             total_candidates = candidates.len(),
@@ -641,7 +642,7 @@ impl CompletionView {
             filtered_matches = filtered_matches.len(),
             max_items = max_items,
             query = %query,
-            "Filtering completed with detailed results"
+            "Filtering completed with detailed results, sorted by score descending"
         );
 
         // Cache the results
