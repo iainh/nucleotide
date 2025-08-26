@@ -1653,7 +1653,7 @@ impl Application {
                     && matches!(key.code, helix_view::keyboard::KeyCode::Char('x'))
                 {
                     let doc = comp_ctx.editor.document(doc_id);
-                    let language_server_count = comp_ctx.editor.language_servers.len();
+                    let language_server_count = comp_ctx.editor.language_servers.incoming.len();
                     let file_path = doc
                         .and_then(|d| d.path())
                         .map(|p| p.display().to_string())
