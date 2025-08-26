@@ -30,17 +30,17 @@ gpui = { git = "https://github.com/zed-industries/zed", tag = "v0.200.5" }
 gpui_tokio = { git = "https://github.com/zed-industries/zed", tag = "v0.200.5" }
 sum_tree = { git = "https://github.com/zed-industries/zed", tag = "v0.200.5" }
 
-# Helix dependencies  
-helix-core = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-helix-event = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-helix-loader = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-helix-lsp = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-helix-term = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-helix-tui = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-helix-view = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-helix-vcs = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-helix-parsec = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-helix-stdx = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
+# Helix dependencies - using forked version for consistency
+helix-core = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
+helix-event = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
+helix-loader = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
+helix-lsp = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
+helix-term = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
+helix-tui = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
+helix-view = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
+helix-vcs = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
+helix-parsec = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
+helix-stdx = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
 
 # Common dependencies
 tokio = { version = "1.32", features = ["full"] }

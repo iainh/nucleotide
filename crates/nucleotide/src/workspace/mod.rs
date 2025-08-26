@@ -70,10 +70,6 @@ pub struct Workspace {
     project_lsp_manager: Option<Arc<nucleotide_lsp::ProjectLspManager>>, // Project-level LSP management
     current_project_root: Option<std::path::PathBuf>, // Track current project root for change detection
     pending_lsp_startup: Option<std::path::PathBuf>,  // Track pending server startup requests
-    completion_results_rx:
-        Option<tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>>, // LSP completion results channel
-    completion_events_tx:
-        Option<tokio::sync::mpsc::Sender<helix_view::handlers::completion::CompletionEvent>>, // Send completion events to coordinator
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -111,12 +107,6 @@ impl Workspace {
         notifications: Entity<NotificationView>,
         info: Entity<InfoBoxView>,
         input_coordinator: Arc<InputCoordinator>,
-        completion_results_rx: Option<
-            tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>,
-        >,
-        completion_events_tx: Option<
-            tokio::sync::mpsc::Sender<helix_view::handlers::completion::CompletionEvent>,
-        >,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
@@ -294,8 +284,6 @@ impl Workspace {
             project_lsp_manager,
             current_project_root: root_path_for_manager.clone(),
             pending_lsp_startup: None,
-            completion_results_rx,
-            completion_events_tx,
         };
 
         // Set initial focus restore state
@@ -334,50 +322,11 @@ impl Workspace {
         workspace
     }
 
-    /// Process completion results from the completion coordinator
-    fn process_completion_results(&mut self, cx: &mut Context<Self>) {
-        // Collect all completion results first to avoid borrowing conflicts
-        let mut completion_results = Vec::new();
-        if let Some(ref mut completion_results_rx) = self.completion_results_rx {
-            while let Ok(completion_result) = completion_results_rx.try_recv() {
-                completion_results.push(completion_result);
-            }
-        }
-
-        // Now process the results
-        for completion_result in completion_results {
-            match completion_result {
-                crate::completion_coordinator::CompletionResult::ShowCompletions {
-                    items,
-                    cursor,
-                    doc_id,
-                    view_id,
-                    prefix,
-                } => {
-                    nucleotide_logging::info!(
-                        count = items.len(),
-                        prefix = %prefix,
-                        cursor = cursor,
-                        doc_id = ?doc_id,
-                        view_id = ?view_id,
-                        "Received completion results from coordinator with prefix"
-                    );
-
-                    // Display completions in UI with prefix filtering
-                    if !items.is_empty() {
-                        self.show_completion_items_with_prefix(
-                            items, prefix, cursor, doc_id, view_id, cx,
-                        );
-                    } else {
-                        nucleotide_logging::info!("No completion items to display");
-                    }
-                }
-                crate::completion_coordinator::CompletionResult::HideCompletions => {
-                    nucleotide_logging::debug!("Hiding completions");
-                    self.hide_completions(cx);
-                }
-            }
-        }
+    /// Process completion results directly from Helix's completion system
+    fn process_completion_results(&mut self, _cx: &mut Context<Self>) {
+        // Completion results are now processed directly through Helix's completion system
+        // via hooks that we register to capture when Helix has completion results ready
+        // This method is kept as a placeholder for when we implement the hook-based system
     }
 
     /// Register workspace-specific actions with the input coordinator
@@ -1811,9 +1760,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // Completion was requested - trigger completion UI
-        info!(
-            "Completion requested for doc {:?}, view {:?}, trigger: {:?}",
-            doc_id, view_id, trigger
+        nucleotide_logging::info!(
+            "🎯 TRIGGER COMPLETION: doc {:?}, view {:?}, trigger: {:?}",
+            doc_id,
+            view_id,
+            trigger
         );
 
         // Trigger completion through the completion coordinator
@@ -3980,30 +3931,15 @@ impl Workspace {
         view_id: helix_view::ViewId,
         cx: &mut Context<Self>,
     ) {
-        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, "Sending completion event to coordinator");
+        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, "Sending completion event directly to Application");
 
-        // Send completion event to the CompletionCoordinator
-        if let Some(completion_events_tx) = &self.completion_events_tx {
-            let event = helix_view::handlers::completion::CompletionEvent::ManualTrigger {
-                cursor,
-                doc: doc_id,
-                view: view_id,
-            };
+        // Send completion event directly to the Application which will forward to Helix
+        self.core.update(cx, |app, _cx| {
+            app.trigger_completion_manual(doc_id, view_id);
+        });
 
-            match completion_events_tx.try_send(event) {
-                Ok(()) => {
-                    info!("Successfully sent manual completion trigger event to coordinator");
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to send completion event to coordinator");
-                }
-            }
-        } else {
-            error!("Completion events channel not available - cannot trigger completion");
-        }
-
-        // The result will come back via the completion_results_rx channel
-        // which is processed in process_completion_results()
+        // Completion results will now be processed directly through Helix's completion system
+        // via hooks that we'll register to capture when Helix has completion results ready
     }
 
     /// Convert completion items and show completion popup
@@ -4143,6 +4079,7 @@ impl Workspace {
         );
 
         // Create completion view with prefix filtering
+        let ui_items_count = ui_items.len();
         let completion_view = cx.new(|cx| {
             let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
             // Use the new method that applies initial filtering
@@ -4154,9 +4091,9 @@ impl Workspace {
             view.set_items_with_filter(ui_items, initial_filter, cx);
             view
         });
-
         nucleotide_logging::info!(
-            "Created filtered completion view, emitting Update::Completion event"
+            "✨ CREATING COMPLETION VIEW: {} items, emitting Update::Completion event",
+            ui_items_count
         );
         cx.emit(crate::Update::Completion(completion_view));
         cx.notify();

@@ -6,6 +6,7 @@ pub mod application;
 pub mod cli;
 // application_v2 merged into application module
 pub mod completion_coordinator;
+pub mod completion_interception;
 pub mod completions;
 pub mod config;
 pub mod document;

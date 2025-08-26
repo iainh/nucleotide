@@ -11,9 +11,9 @@ nucleotide-logging.workspace = true
 nucleotide-ui.workspace = true
 nucleotide-types.workspace = true
 nucleotide-events.workspace = true
-helix-vcs = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-helix-core = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
-helix-view = { git = "https://github.com/helix-editor/helix", tag = "25.07.1" }
+helix-vcs.workspace = true
+helix-core.workspace = true
+helix-view.workspace = true
 gpui.workspace = true
 anyhow.workspace = true
 parking_lot.workspace = true

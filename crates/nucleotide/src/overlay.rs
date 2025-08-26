@@ -219,7 +219,9 @@ impl OverlayView {
                 cx.notify();
             }
             crate::Update::Completion(completion_view) => {
-                nucleotide_logging::info!("Setting up completion overlay");
+                nucleotide_logging::info!(
+                    "🎨 OVERLAY RECEIVED COMPLETION VIEW: Setting up completion overlay"
+                );
 
                 // Set up completion view with event subscription
                 self.completion_view = Some(completion_view.clone());
