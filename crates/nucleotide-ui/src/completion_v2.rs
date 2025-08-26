@@ -1167,14 +1167,28 @@ impl EventEmitter<CompleteViaHelixEvent> for CompletionView {}
 
 impl Render for CompletionView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        println!(
+            "🎨 COMPLETION_VIEW RENDER: Starting render, visible={}, items_count={}, filtered_count={}",
+            self.is_visible(),
+            self.all_items.len(),
+            self.filtered_entries.len()
+        );
+
         if !self.is_visible() {
+            println!("🎨 COMPLETION_VIEW RENDER: Not visible, returning empty div");
             return div().id("completion-hidden");
         }
 
         // Access theme - if not available, return empty
         let theme = match cx.try_global::<crate::Theme>() {
-            Some(theme) => theme,
-            None => return div().id("completion-no-theme"),
+            Some(theme) => {
+                println!("🎨 COMPLETION_VIEW RENDER: Theme found, proceeding with render");
+                theme
+            }
+            None => {
+                println!("🎨 COMPLETION_VIEW RENDER: No theme found, returning empty div");
+                return div().id("completion-no-theme");
+            }
         };
         let tokens = &theme.tokens;
 
@@ -1245,6 +1259,7 @@ impl Render for CompletionView {
 
         // TODO: Get actual cursor position from document/workspace
         // For now, use relative positioning that will be updated by parent container
+        println!("🎨 COMPLETION_VIEW RENDER: Completed render");
         container
             .absolute()
             // Remove hardcoded positioning - parent will handle this

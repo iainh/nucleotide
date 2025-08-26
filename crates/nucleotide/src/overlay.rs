@@ -573,10 +573,18 @@ impl OverlayView {
         }
 
         // Final fallback positioning
-        (
-            layout_info.file_tree_width + layout_info.gutter_width + px(10.0),
-            layout_info.title_bar_height + layout_info.tab_bar_height + px(20.0),
-        )
+        let fallback_x = layout_info.file_tree_width + layout_info.gutter_width + px(10.0);
+        let fallback_y = layout_info.title_bar_height + layout_info.tab_bar_height + px(20.0);
+        println!(
+            "DEBUG: Final fallback position: x={:?}, y={:?} (file_tree_width={:?}, gutter_width={:?}, title_bar_height={:?}, tab_bar_height={:?})",
+            fallback_x,
+            fallback_y,
+            layout_info.file_tree_width,
+            layout_info.gutter_width,
+            layout_info.title_bar_height,
+            layout_info.tab_bar_height
+        );
+        (fallback_x, fallback_y)
     }
 
     /// Get workspace layout information for completion positioning
@@ -739,6 +747,10 @@ impl Render for OverlayView {
 
             // Calculate proper completion position based on cursor location
             let (cursor_x, cursor_y) = self.calculate_completion_position(cx);
+            println!(
+                "DEBUG: Rendering completion popup at calculated position: x={:?}, y={:?}",
+                cursor_x, cursor_y
+            );
 
             return div()
                 .key_context("Overlay")
@@ -746,6 +758,10 @@ impl Render for OverlayView {
                 .size_full()
                 .top_0()
                 .left_0()
+                .occlude() // Ensure overlay is on top of other elements
+                .on_mouse_down(MouseButton::Left, |_, _, _| {
+                    // Prevent click-through to elements below
+                })
                 .child(
                     anchored()
                         .position(point(cursor_x, cursor_y))

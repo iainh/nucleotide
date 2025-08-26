@@ -845,6 +845,7 @@ fn gui_main(
 
                 // Register GPUI completion hook to forward LSP results via channel
                 {
+                    nucleotide_logging::info!("🔧 Registering GPUI completion hook for LSP integration");
                     let completion_tx = completion_tx.clone();
                     helix_term::handlers::completion::set_gpui_completion_hook(move |results| {
                         nucleotide_logging::info!("🔗 GPUI completion hook triggered with {} items", results.items.len());
@@ -914,8 +915,8 @@ fn gui_main(
                                         })
                                         .collect();
 
-                                    // Extract prefix from trigger position
-                                    let prefix = format!("lsp_{}", results.trigger_pos);
+                                    // Use the extracted text prefix from Helix
+                                    let prefix = results.text_prefix.clone();
 
                                     nucleotide_logging::info!("🎨 Displaying {} completion items in GPUI", event_items.len());
                                     workspace.show_completion_items_with_prefix(

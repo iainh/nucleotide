@@ -4092,10 +4092,15 @@ impl Workspace {
             view
         });
         nucleotide_logging::info!(
-            "✨ CREATING COMPLETION VIEW: {} items, emitting Update::Completion event",
+            "✨ CREATING COMPLETION VIEW: {} items, emitting Update::Completion event via core",
             ui_items_count
         );
-        cx.emit(crate::Update::Completion(completion_view));
+
+        // Emit through core so overlay (which subscribes to core) receives the event
+        let completion_view_clone = completion_view.clone();
+        self.core.update(cx, |_core, cx| {
+            cx.emit(crate::Update::Completion(completion_view_clone));
+        });
         cx.notify();
     }
 
