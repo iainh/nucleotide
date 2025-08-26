@@ -840,6 +840,41 @@ fn gui_main(
                     workspace
                 });
 
+                // Register GPUI completion hook to forward LSP results to workspace UI
+                {
+                    let workspace_weak = workspace.downgrade();
+                    helix_term::handlers::completion::set_gpui_completion_hook(move |results| {
+                        nucleotide_logging::info!("🔗 GPUI completion hook triggered with {} items", results.items.len());
+                        if let Some(workspace_entity) = workspace_weak.upgrade() {
+                            // Use tokio::spawn to bridge from Helix's async context to GPUI
+                            // The hook is called from Helix's async system, but we need GPUI context
+                            tokio::spawn({
+                                let workspace_entity = workspace_entity.clone();
+                                let results = results.clone();
+                                async move {
+                                    // We can't directly access GPUI context from here, so we'll need to 
+                                    // find another way to get the completion items to the UI
+                                    nucleotide_logging::info!("🎨 Processing {} completion items for display", results.items.len());
+                                    // For now, demonstrate that the data is available and properly converted
+                                    for (i, item) in results.items.iter().take(5).enumerate() {
+                                        match item {
+                                            helix_term::handlers::completion::CompletionItem::Lsp(lsp_item) => {
+                                                nucleotide_logging::info!("  LSP Item {}: {} (kind: {:?})", 
+                                                    i, lsp_item.item.label, lsp_item.item.kind);
+                                            }
+                                            helix_term::handlers::completion::CompletionItem::Other(other) => {
+                                                nucleotide_logging::info!("  Other Item {}: {}", i, other.label);
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        } else {
+                            nucleotide_logging::warn!("🔗 Workspace entity no longer available for completion display");
+                        }
+                    });
+                }
+
                 // Initialize ProjectLspManager for project detection and proactive LSP startup
                 // This must be done after workspace creation to ensure proper initialization
                 // NOTE: We cannot do this asynchronously here due to GPUI context limitations,

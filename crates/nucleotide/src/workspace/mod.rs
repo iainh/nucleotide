@@ -4016,7 +4016,7 @@ impl Workspace {
     }
 
     /// Convert completion items and show completion popup with prefix filtering
-    fn show_completion_items_with_prefix(
+    pub fn show_completion_items_with_prefix(
         &mut self,
         items: Vec<nucleotide_events::completion::CompletionItem>,
         prefix: String,
