@@ -840,39 +840,99 @@ fn gui_main(
                     workspace
                 });
 
-                // Register GPUI completion hook to forward LSP results to workspace UI
+                // Create channel for forwarding completion results from hook to GPUI context
+                let (completion_tx, mut completion_rx) = tokio::sync::mpsc::unbounded_channel::<helix_term::handlers::completion::GpuiCompletionResults>();
+
+                // Register GPUI completion hook to forward LSP results via channel
                 {
-                    let workspace_weak = workspace.downgrade();
+                    let completion_tx = completion_tx.clone();
                     helix_term::handlers::completion::set_gpui_completion_hook(move |results| {
                         nucleotide_logging::info!("🔗 GPUI completion hook triggered with {} items", results.items.len());
-                        if let Some(workspace_entity) = workspace_weak.upgrade() {
-                            // Use tokio::spawn to bridge from Helix's async context to GPUI
-                            // The hook is called from Helix's async system, but we need GPUI context
-                            tokio::spawn({
-                                let workspace_entity = workspace_entity.clone();
-                                let results = results.clone();
-                                async move {
-                                    // We can't directly access GPUI context from here, so we'll need to 
-                                    // find another way to get the completion items to the UI
-                                    nucleotide_logging::info!("🎨 Processing {} completion items for display", results.items.len());
-                                    // For now, demonstrate that the data is available and properly converted
-                                    for (i, item) in results.items.iter().take(5).enumerate() {
-                                        match item {
-                                            helix_term::handlers::completion::CompletionItem::Lsp(lsp_item) => {
-                                                nucleotide_logging::info!("  LSP Item {}: {} (kind: {:?})", 
-                                                    i, lsp_item.item.label, lsp_item.item.kind);
-                                            }
-                                            helix_term::handlers::completion::CompletionItem::Other(other) => {
-                                                nucleotide_logging::info!("  Other Item {}: {}", i, other.label);
-                                            }
-                                        }
-                                    }
-                                }
-                            });
+
+                        // Send completion results through channel to get back to GPUI context
+                        if let Err(e) = completion_tx.send(results.clone()) {
+                            nucleotide_logging::warn!("Failed to send completion results through channel: {}", e);
                         } else {
-                            nucleotide_logging::warn!("🔗 Workspace entity no longer available for completion display");
+                            nucleotide_logging::info!("✅ Completion results sent through channel successfully");
                         }
                     });
+                }
+
+                // Spawn task to process completion results and emit GPUI updates
+                {
+                    let workspace_weak = workspace.downgrade();
+                    cx.spawn(async move |mut cx| {
+                        while let Some(results) = completion_rx.recv().await {
+                            nucleotide_logging::info!("📨 Received completion results from channel: {} items", results.items.len());
+
+                            if let Some(workspace_entity) = workspace_weak.upgrade() {
+                                // Now we have GPUI context and can update the workspace
+                                workspace_entity.update(cx, |workspace, cx| {
+                                    // Convert helix completion items to nucleotide event items
+                                    let event_items: Vec<nucleotide_events::completion::CompletionItem> = results.items
+                                        .iter()
+                                        .map(|item| {
+                                            match item {
+                                                helix_term::handlers::completion::CompletionItem::Lsp(lsp_item) => {
+                                                    nucleotide_events::completion::CompletionItem {
+                                                        label: lsp_item.item.label.clone(),
+                                                        kind: match lsp_item.item.kind {
+                                                            Some(helix_lsp::lsp::CompletionItemKind::FUNCTION) =>
+                                                                nucleotide_events::completion::CompletionItemKind::Function,
+                                                            Some(helix_lsp::lsp::CompletionItemKind::METHOD) =>
+                                                                nucleotide_events::completion::CompletionItemKind::Method,
+                                                            Some(helix_lsp::lsp::CompletionItemKind::VARIABLE) =>
+                                                                nucleotide_events::completion::CompletionItemKind::Variable,
+                                                            Some(helix_lsp::lsp::CompletionItemKind::CLASS) =>
+                                                                nucleotide_events::completion::CompletionItemKind::Class,
+                                                            Some(helix_lsp::lsp::CompletionItemKind::MODULE) =>
+                                                                nucleotide_events::completion::CompletionItemKind::Module,
+                                                            _ => nucleotide_events::completion::CompletionItemKind::Text,
+                                                        },
+                                                        detail: lsp_item.item.detail.clone(),
+                                                        documentation: match &lsp_item.item.documentation {
+                                                            Some(helix_lsp::lsp::Documentation::String(s)) => Some(s.clone()),
+                                                            Some(helix_lsp::lsp::Documentation::MarkupContent(markup)) =>
+                                                                Some(markup.value.clone()),
+                                                            None => None,
+                                                        },
+                                                        insert_text: lsp_item.item.insert_text.clone().unwrap_or_else(|| lsp_item.item.label.clone()),
+                                                        score: 1.0, // Default score for LSP items
+                                                    }
+                                                }
+                                                helix_term::handlers::completion::CompletionItem::Other(other_item) => {
+                                                    nucleotide_events::completion::CompletionItem {
+                                                        label: other_item.label.to_string(),
+                                                        kind: nucleotide_events::completion::CompletionItemKind::Text,
+                                                        detail: other_item.documentation.clone(),
+                                                        documentation: other_item.documentation.clone(),
+                                                        insert_text: other_item.label.to_string(),
+                                                        score: 1.0,
+                                                    }
+                                                }
+                                            }
+                                        })
+                                        .collect();
+
+                                    // Extract prefix from trigger position
+                                    let prefix = format!("lsp_{}", results.trigger_pos);
+
+                                    nucleotide_logging::info!("🎨 Displaying {} completion items in GPUI", event_items.len());
+                                    workspace.show_completion_items_with_prefix(
+                                        event_items,
+                                        prefix,
+                                        results.trigger_pos,
+                                        results.doc_id,
+                                        results.view_id,
+                                        cx
+                                    );
+                                }).ok();
+                            } else {
+                                nucleotide_logging::warn!("🔗 Workspace entity no longer available for completion display");
+                                break;
+                            }
+                        }
+                    }).detach();
                 }
 
                 // Initialize ProjectLspManager for project detection and proactive LSP startup
