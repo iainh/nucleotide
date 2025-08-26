@@ -19,7 +19,7 @@ use crate::completion_error::{
 use crate::completion_perf::{PerformanceMonitor, PerformanceTimer};
 use crate::completion_renderer::{CompletionItemElement, CompletionListState};
 use crate::debouncer::{CompletionDebouncer, create_completion_debouncer};
-use crate::fuzzy::{FuzzyConfig, match_strings};
+// use crate::fuzzy::{FuzzyConfig, match_strings}; // Unused in synchronous filtering
 
 /// Event emitted when a completion item is accepted by the user
 #[derive(Debug, Clone)]
@@ -254,12 +254,45 @@ impl CompletionView {
 
     /// Set all completion items and prepare candidates for filtering
     pub fn set_items(&mut self, items: Vec<CompletionItem>, cx: &mut Context<Self>) {
-        println!("COMP: Setting {} items in CompletionView", items.len());
+        self.set_items_with_filter(items, None, cx);
+    }
+
+    /// Set all completion items with an optional initial filter
+    pub fn set_items_with_filter(
+        &mut self,
+        items: Vec<CompletionItem>,
+        initial_filter: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        // Log the incoming completion data
+        nucleotide_logging::info!(
+            item_count = items.len(),
+            has_filter = initial_filter.is_some(),
+            filter = %initial_filter.as_deref().unwrap_or(""),
+            "Setting completion items with filter"
+        );
+
+        // Log first few completion items for debugging
+        if !items.is_empty() {
+            let sample_items: Vec<String> = items
+                .iter()
+                .take(5)
+                .map(|item| item.text.to_string())
+                .collect();
+            nucleotide_logging::debug!(
+                sample_count = sample_items.len(),
+                sample_items = ?sample_items,
+                total_items = items.len(),
+                "Sample of completion items before filtering"
+            );
+        }
+
         // Calculate hash for cache invalidation
         let new_hash = self.calculate_items_hash(&items);
 
         // If items haven't changed, no need to update
         if new_hash == self.items_hash && !self.all_items.is_empty() {
+            nucleotide_logging::debug!("Items unchanged, skipping update");
             return;
         }
 
@@ -279,7 +312,7 @@ impl CompletionView {
             .collect();
 
         // Reset state
-        println!("COMP: Resetting completion state and making visible");
+        nucleotide_logging::debug!("Resetting completion state and making visible");
         self.filtered_entries.clear();
         self.selected_index = 0;
         self.initial_query = None;
@@ -290,27 +323,36 @@ impl CompletionView {
         self.cancel_current_filter();
         self.debouncer.reset();
 
-        // Initialize filtered_entries with all items when no filter is applied
+        // Apply initial filter if provided, otherwise show all items
         if !self.all_items.is_empty() {
-            println!(
-                "COMP: Populating filtered_entries with {} items",
-                self.all_items.len()
-            );
-            self.filtered_entries = self
-                .match_candidates
-                .iter()
-                .map(|candidate| StringMatch {
-                    candidate_id: candidate.id,
-                    score: 100,
-                    positions: Vec::new(),
-                })
-                .collect();
-            self.visible = true;
-            println!(
-                "COMP: Set visible=true with {} filtered_entries",
-                self.filtered_entries.len()
-            );
+            if let Some(filter) = initial_filter {
+                nucleotide_logging::info!(
+                    filter = %filter,
+                    "Applying initial filter to completion items"
+                );
+                // Apply the initial filter immediately
+                self.filter_immediate(filter, None, cx);
+            } else {
+                nucleotide_logging::debug!("No filter provided, showing all items");
+                self.filtered_entries = self
+                    .match_candidates
+                    .iter()
+                    .map(|candidate| StringMatch {
+                        candidate_id: candidate.id,
+                        score: 100,
+                        positions: Vec::new(),
+                    })
+                    .collect();
+                self.visible = true;
+
+                nucleotide_logging::info!(
+                    total_items = self.all_items.len(),
+                    filtered_items = self.filtered_entries.len(),
+                    "Completion items set without filtering"
+                );
+            }
         } else {
+            nucleotide_logging::warn!("No completion items provided, hiding completion menu");
             self.visible = false;
         }
 
@@ -391,10 +433,22 @@ impl CompletionView {
         position: Option<Position>,
         cx: &mut Context<Self>,
     ) {
+        nucleotide_logging::info!(
+            query = %query,
+            position = ?position,
+            total_items = self.all_items.len(),
+            current_filtered = self.filtered_entries.len(),
+            "Starting immediate filtering"
+        );
+
         let timer = PerformanceTimer::start("filter_immediate");
 
         // Check for very large item counts that might cause performance issues
         if self.all_items.len() > 10000 {
+            nucleotide_logging::warn!(
+                item_count = self.all_items.len(),
+                "Too many completion items, triggering resource error"
+            );
             self.handle_error(
                 CompletionError::ResourceError {
                     resource_type: "completion_items".to_string(),
@@ -413,8 +467,16 @@ impl CompletionView {
             self.performance_monitor
                 .record_filter(duration, true, false);
 
+            nucleotide_logging::info!(
+                query = %query,
+                cached_results = cached_results.len(),
+                duration_ms = duration.as_millis(),
+                "Using cached filter results"
+            );
+
             self.filtered_entries = cached_results;
             self.selected_index = 0;
+            self.visible = !self.filtered_entries.is_empty();
             self.current_query = Some(query);
             self.update_list_state();
             self.update_documentation_for_selection(cx);
@@ -424,6 +486,10 @@ impl CompletionView {
 
         // Check if we can optimize using query extension
         if !self.should_refilter(&query, position.as_ref()) {
+            nucleotide_logging::debug!(
+                query = %query,
+                "Optimizing by filtering existing results"
+            );
             // Can optimize by filtering existing results
             self.filter_existing_results(&query, cx);
             return;
@@ -442,6 +508,12 @@ impl CompletionView {
 
         // If query is empty, show all items
         if query.is_empty() {
+            nucleotide_logging::info!(
+                total_items = self.match_candidates.len(),
+                max_items = self.max_items,
+                "Empty query, showing all items"
+            );
+
             let results: Vec<StringMatch> = self
                 .match_candidates
                 .iter()
@@ -452,40 +524,152 @@ impl CompletionView {
             // Cache the results
             self.cache.insert(cache_key, results.clone());
 
+            nucleotide_logging::info!(
+                filtered_count = results.len(),
+                "Filtered results for empty query"
+            );
+
             self.filtered_entries = results;
             self.selected_index = 0;
+            self.visible = !self.filtered_entries.is_empty();
             self.update_list_state();
             self.update_documentation_for_selection(cx);
             cx.notify();
             return;
         }
 
+        nucleotide_logging::debug!(
+            query = %query,
+            candidates = self.match_candidates.len(),
+            "Performing full filtering with query"
+        );
+
         // Check if we can use optimization base from cache
         if let Some(base_results) = self.try_optimization_from_cache(&query) {
+            nucleotide_logging::debug!(
+                query = %query,
+                base_results = base_results.len(),
+                "Using optimization base from cache"
+            );
             // Filter the base results for the new query
             let optimized_results = self.filter_cached_results(base_results, &query);
             self.cache.insert(cache_key, optimized_results.clone());
             self.filtered_entries = optimized_results;
             self.selected_index = 0;
+            self.visible = !self.filtered_entries.is_empty();
             self.update_list_state();
             self.update_documentation_for_selection(cx);
             cx.notify();
             return;
         }
 
-        // Start background filtering
-        let candidates = self.match_candidates.clone();
-        let cancel_flag = self.cancel_flag.clone();
+        // Perform synchronous filtering for immediate results
+        let candidates = &self.match_candidates;
         let max_items = self.max_items;
 
-        self.filter_task = Some(cx.spawn(async move |_this, _cx| {
-            // Use real fuzzy matching
-            let config = FuzzyConfig::default();
+        nucleotide_logging::info!(
+            query = %query,
+            candidates = candidates.len(),
+            "Performing synchronous filtering with fuzzy matching"
+        );
 
-            // For now, return the results
-            // TODO: Implement proper entity update mechanism
-            match_strings(candidates, query.clone(), config, max_items, cancel_flag).await
-        }));
+        // Use simple prefix matching for now (can be enhanced with fuzzy matching later)
+        let query_lower = query.to_lowercase();
+        let mut matched_count = 0;
+        let mut filtered_matches: Vec<StringMatch> = Vec::new();
+
+        nucleotide_logging::debug!(
+            query = %query,
+            query_lower = %query_lower,
+            candidate_count = candidates.len(),
+            "Starting filtering loop"
+        );
+
+        for (idx, candidate) in candidates.iter().enumerate() {
+            let candidate_text = candidate.text.to_lowercase();
+
+            if idx < 5 {
+                nucleotide_logging::debug!(
+                    idx = idx,
+                    candidate_text = %candidate_text,
+                    candidate_id = candidate.id,
+                    query_lower = %query_lower,
+                    "Checking candidate"
+                );
+            }
+
+            // Check if candidate text starts with or contains the query
+            let score = if candidate_text.starts_with(&query_lower) {
+                matched_count += 1;
+                if idx < 5 {
+                    nucleotide_logging::debug!(
+                        candidate_text = %candidate_text,
+                        "MATCHED: prefix match"
+                    );
+                }
+                Some(100) // High score for prefix match
+            } else if candidate_text.contains(&query_lower) {
+                matched_count += 1;
+                if idx < 5 {
+                    nucleotide_logging::debug!(
+                        candidate_text = %candidate_text,
+                        "MATCHED: substring match"
+                    );
+                }
+                Some(50) // Lower score for substring match
+            } else {
+                if idx < 5 {
+                    nucleotide_logging::debug!(
+                        candidate_text = %candidate_text,
+                        "NO MATCH"
+                    );
+                }
+                None
+            };
+
+            if let Some(score_val) = score {
+                filtered_matches.push(StringMatch::new(candidate.id, score_val, vec![]));
+                if filtered_matches.len() >= max_items {
+                    break;
+                }
+            }
+        }
+
+        nucleotide_logging::info!(
+            total_candidates = candidates.len(),
+            matched_count = matched_count,
+            filtered_matches = filtered_matches.len(),
+            max_items = max_items,
+            query = %query,
+            "Filtering completed with detailed results"
+        );
+
+        // Cache the results
+        self.cache.insert(cache_key, filtered_matches.clone());
+
+        // Apply the filtered results immediately
+        self.filtered_entries = filtered_matches;
+        self.selected_index = 0;
+
+        // Set visible to true if we have matches
+        self.visible = !self.filtered_entries.is_empty();
+
+        // Check and log visibility state
+        let is_visible = self.is_visible();
+        nucleotide_logging::info!(
+            filtered_entries = self.filtered_entries.len(),
+            visible_flag = self.visible,
+            is_visible_result = is_visible,
+            query = %query,
+            "Completion view visibility status after filtering"
+        );
+
+        self.update_list_state();
+        self.update_documentation_for_selection(cx);
+
+        let (_, duration) = timer.stop();
+        self.performance_monitor
+            .record_filter(duration, false, false);
 
         cx.notify();
     }
@@ -565,8 +749,43 @@ impl CompletionView {
 
     /// Update the view with completed filter results
     pub fn update_filtered_items(&mut self, matches: Vec<StringMatch>, cx: &mut Context<Self>) {
+        let total_before = self.all_items.len();
+        let filtered_count = matches.len();
+
+        nucleotide_logging::info!(
+            total_items = total_before,
+            filtered_items = filtered_count,
+            filter_ratio = if total_before > 0 { (filtered_count as f32 / total_before as f32) * 100.0 } else { 0.0 },
+            current_query = %self.current_query.as_deref().unwrap_or(""),
+            "Filter results updated"
+        );
+
+        // Log sample of filtered results
+        if !matches.is_empty() {
+            let sample_items: Vec<String> = matches
+                .iter()
+                .take(5)
+                .filter_map(|string_match| {
+                    self.all_items
+                        .iter()
+                        .find(|item| {
+                            let candidate = StringMatchCandidate::from(*item);
+                            candidate.id == string_match.candidate_id
+                        })
+                        .map(|item| format!("{}({})", item.text.to_string(), string_match.score))
+                })
+                .collect();
+
+            nucleotide_logging::debug!(
+                sample_results = ?sample_items,
+                sample_count = sample_items.len(),
+                "Sample of filtered completion items with scores"
+            );
+        }
+
         self.filtered_entries = matches;
         self.selected_index = 0;
+        self.visible = !self.filtered_entries.is_empty();
         self.filter_task = None;
         self.update_list_state();
         self.update_documentation_for_selection(cx);
@@ -1208,6 +1427,262 @@ mod tests {
         for kind in kinds {
             let item = CompletionItem::new("test").with_kind(kind.clone());
             assert_eq!(item.kind, Some(kind));
+        }
+    }
+
+    mod filter_tests {
+        use super::*;
+        use gpui::TestContext;
+
+        #[test]
+        fn test_set_items_with_filter_basic() {
+            // Test that set_items_with_filter correctly applies an initial filter
+            let mut context = TestContext::new().unwrap();
+
+            let completion_items = vec![
+                CompletionItem::new("println!").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("print!").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("format!").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("vec!").with_kind(CompletionItemKind::Function),
+            ];
+
+            let completion_view =
+                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
+                    let mut view = CompletionView::new();
+                    // Test filtering with "pri" prefix - should match print! and println!
+                    view.set_items_with_filter(
+                        completion_items.clone(),
+                        Some("pri".to_string()),
+                        cx,
+                    );
+                    view
+                });
+
+            context.run_until_parked();
+
+            completion_view.update(&mut context, |view, _cx| {
+                // Should only show items matching "pri"
+                let filtered_count = view.filtered_entries.len();
+                assert!(
+                    filtered_count <= 2,
+                    "Expected 2 or fewer items matching 'pri', got {}",
+                    filtered_count
+                );
+                assert!(
+                    filtered_count > 0,
+                    "Expected at least 1 item matching 'pri', got {}",
+                    filtered_count
+                );
+            });
+        }
+
+        #[test]
+        fn test_set_items_with_filter_empty_prefix() {
+            // Test that empty prefix shows all items
+            let mut context = TestContext::new().unwrap();
+
+            let completion_items = vec![
+                CompletionItem::new("alpha").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("beta").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("gamma").with_kind(CompletionItemKind::Function),
+            ];
+
+            let completion_view =
+                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
+                    let mut view = CompletionView::new();
+                    // Test with empty filter - should show all items
+                    view.set_items_with_filter(completion_items.clone(), Some("".to_string()), cx);
+                    view
+                });
+
+            context.run_until_parked();
+
+            completion_view.update(&mut context, |view, _cx| {
+                let filtered_count = view.filtered_entries.len();
+                assert_eq!(
+                    filtered_count, 3,
+                    "Expected all 3 items with empty filter, got {}",
+                    filtered_count
+                );
+            });
+        }
+
+        #[test]
+        fn test_set_items_with_filter_no_matches() {
+            // Test that non-matching prefix results in no items
+            let mut context = TestContext::new().unwrap();
+
+            let completion_items = vec![
+                CompletionItem::new("alpha").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("beta").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("gamma").with_kind(CompletionItemKind::Function),
+            ];
+
+            let completion_view =
+                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
+                    let mut view = CompletionView::new();
+                    // Test with non-matching filter
+                    view.set_items_with_filter(
+                        completion_items.clone(),
+                        Some("xyz".to_string()),
+                        cx,
+                    );
+                    view
+                });
+
+            context.run_until_parked();
+
+            completion_view.update(&mut context, |view, _cx| {
+                let filtered_count = view.filtered_entries.len();
+                assert_eq!(
+                    filtered_count, 0,
+                    "Expected no items matching 'xyz', got {}",
+                    filtered_count
+                );
+            });
+        }
+
+        #[test]
+        fn test_set_items_with_filter_none() {
+            // Test that None filter shows all items (no initial filtering)
+            let mut context = TestContext::new().unwrap();
+
+            let completion_items = vec![
+                CompletionItem::new("test1").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("test2").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("other").with_kind(CompletionItemKind::Function),
+            ];
+
+            let completion_view =
+                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
+                    let mut view = CompletionView::new();
+                    // Test with None filter - should show all items
+                    view.set_items_with_filter(completion_items.clone(), None, cx);
+                    view
+                });
+
+            context.run_until_parked();
+
+            completion_view.update(&mut context, |view, _cx| {
+                let filtered_count = view.filtered_entries.len();
+                assert_eq!(
+                    filtered_count, 3,
+                    "Expected all 3 items with None filter, got {}",
+                    filtered_count
+                );
+            });
+        }
+
+        #[test]
+        fn test_set_items_with_filter_fuzzy_matching() {
+            // Test fuzzy matching behavior
+            let mut context = TestContext::new().unwrap();
+
+            let completion_items = vec![
+                CompletionItem::new("print_debug").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("println_macro").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("format_string").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("prefix_test").with_kind(CompletionItemKind::Function),
+            ];
+
+            let completion_view =
+                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
+                    let mut view = CompletionView::new();
+                    // Test fuzzy matching with "pr" - should match print_debug, println_macro, prefix_test
+                    view.set_items_with_filter(
+                        completion_items.clone(),
+                        Some("pr".to_string()),
+                        cx,
+                    );
+                    view
+                });
+
+            context.run_until_parked();
+
+            completion_view.update(&mut context, |view, _cx| {
+                let filtered_count = view.filtered_entries.len();
+                // Should match multiple items that contain "pr" characters
+                assert!(
+                    filtered_count >= 2,
+                    "Expected at least 2 items matching fuzzy 'pr', got {}",
+                    filtered_count
+                );
+                // Should not match all items
+                assert!(
+                    filtered_count < 4,
+                    "Expected fewer than 4 items matching 'pr', got {}",
+                    filtered_count
+                );
+            });
+        }
+
+        #[test]
+        fn test_completion_view_visibility() {
+            // Test that CompletionView is visible when it has items and invisible when empty
+            let mut context = TestContext::new().unwrap();
+
+            let completion_items =
+                vec![CompletionItem::new("test").with_kind(CompletionItemKind::Function)];
+
+            let completion_view =
+                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
+                    let mut view = CompletionView::new();
+                    // Initially should not be visible
+                    assert!(!view.visible, "CompletionView should start invisible");
+
+                    // After setting items, should be visible
+                    view.set_items_with_filter(completion_items.clone(), None, cx);
+                    view
+                });
+
+            context.run_until_parked();
+
+            completion_view.update(&mut context, |view, _cx| {
+                assert!(
+                    view.visible,
+                    "CompletionView should be visible after setting items"
+                );
+                assert!(
+                    !view.filtered_entries.is_empty(),
+                    "Should have filtered entries"
+                );
+            });
+        }
+
+        #[test]
+        fn test_completion_view_selection() {
+            // Test selection behavior
+            let mut context = TestContext::new().unwrap();
+
+            let completion_items = vec![
+                CompletionItem::new("first").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("second").with_kind(CompletionItemKind::Function),
+                CompletionItem::new("third").with_kind(CompletionItemKind::Function),
+            ];
+
+            let completion_view =
+                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
+                    let mut view = CompletionView::new();
+                    view.set_items_with_filter(completion_items.clone(), None, cx);
+                    view
+                });
+
+            context.run_until_parked();
+
+            completion_view.update(&mut context, |view, _cx| {
+                // Should start with first item selected
+                assert_eq!(
+                    view.selected_index, 0,
+                    "Should start with first item selected"
+                );
+
+                // Test that we can move selection
+                view.select_next();
+                assert_eq!(view.selected_index, 1, "Should move to second item");
+
+                view.select_previous();
+                assert_eq!(view.selected_index, 0, "Should move back to first item");
+            });
         }
     }
 }

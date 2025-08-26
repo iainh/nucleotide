@@ -654,11 +654,43 @@ fn gui_main(
                     app
                 });
 
-                // Start event-driven LSP processing instead of using crank
-                // Note: completion results processing stays with Workspace as originally designed
+                // Initialize the application with its entity handle for LSP completion
                 app.update(cx, |app, cx| {
-                    app.start_event_driven_lsp_completion_processing(cx);
+                    app.post_init(cx);
                 });
+
+                // Start the completion coordinator
+                let coordinator_channels = app.update(cx, |app, _cx| {
+                    // Get the completion events channel from helix 
+                    let completion_rx = app.take_completion_receiver()
+                        .expect("Completion receiver should be available");
+
+                    // Get the completion results channel to send back to workspace
+                    let completion_results_tx = app.take_completion_results_sender()
+                        .expect("Completion results sender should be available");
+
+                    // Get the LSP completion requests channel to receive from workspace
+                    let lsp_completion_requests_tx = app.take_lsp_completion_requests_sender()
+                        .expect("LSP completion requests sender should be available");
+
+                    (completion_rx, completion_results_tx, lsp_completion_requests_tx)
+                });
+
+                let app_entity = app.clone();
+                let background_executor = cx.background_executor().clone();
+
+                nucleotide_logging::info!("Creating and starting CompletionCoordinator");
+                let coordinator = nucleotide::completion_coordinator::CompletionCoordinator::new(
+                    coordinator_channels.0, // completion_rx - receive from helix
+                    coordinator_channels.1, // completion_results_tx - send to workspace  
+                    coordinator_channels.2, // lsp_completion_requests_tx - receive from workspace
+                    app_entity,            // core Application entity
+                    background_executor,   // background executor
+                );
+
+                // Start the coordinator
+                coordinator.spawn();
+
 
                 cx.activate(true);
                 cx.set_menus(app_menus());
@@ -815,6 +847,10 @@ fn gui_main(
                     let completion_results_rx = app.update(cx, |app, _cx| {
                         app.take_completion_results_receiver()
                     });
+                    // Get the completion events sender from the application
+                    let completion_events_tx = app.update(cx, |app, _cx| {
+                        app.take_completion_sender()
+                    });
                     let mut workspace = workspace::Workspace::with_views(
                         app,
                         input_1.clone(),
@@ -824,6 +860,7 @@ fn gui_main(
                         info,
                         input_coordinator,
                         completion_results_rx,
+                        completion_events_tx,
                         cx,
                     );
 
