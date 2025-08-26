@@ -1635,7 +1635,34 @@ impl Application {
         };
         match event {
             InputEvent::Key(key) => {
-                debug!("Handling key event: {key:?}");
+                nucleotide_logging::info!(key = ?key, "DEBUG: Handling key event in Application");
+
+                // Extra debug for ctrl-x
+                if key
+                    .modifiers
+                    .contains(helix_view::keyboard::KeyModifiers::CONTROL)
+                    && matches!(key.code, helix_view::keyboard::KeyCode::Char('x'))
+                {
+                    let doc = comp_ctx.editor.document(doc_id);
+                    let language_server_count = comp_ctx.editor.language_servers.inner().len();
+                    let file_path = doc
+                        .and_then(|d| d.path())
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "no file".to_string());
+                    let language = doc
+                        .and_then(|d| d.language_config())
+                        .map(|l| l.language_id.clone())
+                        .unwrap_or_else(|| "no language".to_string());
+
+                    nucleotide_logging::info!(
+                        editor_mode = ?comp_ctx.editor.mode(),
+                        language_servers = language_server_count,
+                        file_path = %file_path,
+                        language = %language,
+                        "DEBUG: CTRL-X received - editor state for completion"
+                    );
+                }
+
                 // Log cursor position before key handling
                 let view_id = comp_ctx.editor.tree.focus;
                 let doc_id = comp_ctx
@@ -3250,120 +3277,17 @@ impl Application {
                 prefix,
             } => {
                 nucleotide_logging::info!(
-                    "Creating CompletionView entity for {} items",
-                    items.len()
+                    "DISABLED: Custom completion UI - would show {} items with prefix '{}'. Using Helix's native completion instead.",
+                    items.len(),
+                    prefix
                 );
-
-                // Create completion view entity
-                let completion_view = cx.new(|cx| {
-                    let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
-
-                    // Convert V2 CompletionItem to the format expected by CompletionView
-                    let completion_items: Vec<
-                        nucleotide_ui::completion_v2::CompletionItem,
-                    > = items
-                        .into_iter()
-                        .map(|item| nucleotide_ui::completion_v2::CompletionItem {
-                            text: item.label.into(),
-                            description: item.detail.map(|d| d.into()),
-                            display_text: None, // Use the main text for display
-                            kind: Some(match item.kind {
-                                nucleotide_events::completion::CompletionItemKind::Text => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Text
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Method => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Method
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Function => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Function
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Constructor => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Constructor
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Field => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Field
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Variable => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Variable
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Class => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Class
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Interface => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Interface
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Module => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Module
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Property => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Property
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Unit => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Unit
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Value => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Value
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Enum => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Enum
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Keyword => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Keyword
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Snippet => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Snippet
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Color => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Color
-                                }
-                                nucleotide_events::completion::CompletionItemKind::File => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::File
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Reference => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Reference
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Folder => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Folder
-                                }
-                                nucleotide_events::completion::CompletionItemKind::EnumMember => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::EnumMember
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Constant => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Constant
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Struct => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Struct
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Event => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Event
-                                }
-                                nucleotide_events::completion::CompletionItemKind::Operator => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::Operator
-                                }
-                                nucleotide_events::completion::CompletionItemKind::TypeParameter => {
-                                    nucleotide_ui::completion_v2::CompletionItemKind::TypeParameter
-                                }
-                            }),
-                            documentation: item.documentation.map(|d| d.into()),
-                        })
-                        .collect();
-
-                    // Use the extracted prefix for initial filtering
-                    let initial_filter = if prefix.is_empty() { None } else { Some(prefix.clone()) };
-                    view.set_items_with_filter(completion_items, initial_filter, cx);
-                    view
-                });
-
-                // Emit completion update
-                cx.emit(crate::Update::Completion(completion_view));
-                nucleotide_logging::info!("Emitted completion update with CompletionView entity");
+                // DISABLED: Custom completion UI creation - let Helix handle completion natively
             }
             crate::completion_coordinator::CompletionResult::HideCompletions => {
-                nucleotide_logging::info!("Hiding completions");
-                // For now, just emit an empty completion view
-                let empty_completion_view =
-                    cx.new(|cx| nucleotide_ui::completion_v2::CompletionView::new(cx));
-                cx.emit(crate::Update::Completion(empty_completion_view));
+                nucleotide_logging::info!(
+                    "DISABLED: Custom completion UI hiding - let Helix handle completion natively"
+                );
+                // DISABLED: Custom completion UI hiding - let Helix handle completion natively
             }
         }
     }

@@ -14,8 +14,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, BorrowAppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Render, StatefulInteractiveElement, Styled,
-    TextStyle, Window, WindowAppearance, WindowBackgroundAppearance, black, div, px, white,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
+    Styled, TextStyle, Window, WindowAppearance, WindowBackgroundAppearance, black, div, px, white,
 };
 use helix_core::Selection;
 use helix_view::ViewId;
@@ -72,6 +72,8 @@ pub struct Workspace {
     pending_lsp_startup: Option<std::path::PathBuf>,  // Track pending server startup requests
     completion_results_rx:
         Option<tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>>, // LSP completion results channel
+    completion_events_tx:
+        Option<tokio::sync::mpsc::Sender<helix_view::handlers::completion::CompletionEvent>>, // Send completion events to coordinator
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -112,6 +114,9 @@ impl Workspace {
         completion_results_rx: Option<
             tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>,
         >,
+        completion_events_tx: Option<
+            tokio::sync::mpsc::Sender<helix_view::handlers::completion::CompletionEvent>,
+        >,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
@@ -132,21 +137,11 @@ impl Workspace {
         )
         .detach();
 
-        // Subscribe to completion accepted events to insert text
-        cx.subscribe(
-            &overlay,
-            |workspace,
-             _overlay,
-             event: &nucleotide_ui::completion_v2::CompletionAcceptedEvent,
-             cx| {
-                println!(
-                    "COMP: Workspace received completion accepted event: {}",
-                    event.text
-                );
-                workspace.handle_completion_accepted(&event.text, cx);
-            },
-        )
-        .detach();
+        // DISABLED: Custom completion acceptance event handling
+        // Let Helix handle completion natively instead
+        // cx.subscribe(&overlay, |workspace, _overlay, event: &CompletionAcceptedEvent, cx| {
+        //     workspace.handle_completion_accepted(&event.text, cx);
+        // }).detach();
 
         // Subscribe to core (Application) events to receive Update events
         cx.subscribe(&core, |workspace, _core, event: &crate::Update, cx| {
@@ -300,6 +295,7 @@ impl Workspace {
             current_project_root: root_path_for_manager.clone(),
             pending_lsp_startup: None,
             completion_results_rx,
+            completion_events_tx,
         };
 
         // Set initial focus restore state
@@ -340,23 +336,45 @@ impl Workspace {
 
     /// Process completion results from the completion coordinator
     fn process_completion_results(&mut self, cx: &mut Context<Self>) {
+        // Collect all completion results first to avoid borrowing conflicts
+        let mut completion_results = Vec::new();
         if let Some(ref mut completion_results_rx) = self.completion_results_rx {
             while let Ok(completion_result) = completion_results_rx.try_recv() {
-                match completion_result {
-                    crate::completion_coordinator::CompletionResult::ShowCompletions {
-                        items,
-                        ..
-                    } => {
-                        nucleotide_logging::info!(
-                            count = items.len(),
-                            "Received completion results from coordinator"
+                completion_results.push(completion_result);
+            }
+        }
+
+        // Now process the results
+        for completion_result in completion_results {
+            match completion_result {
+                crate::completion_coordinator::CompletionResult::ShowCompletions {
+                    items,
+                    cursor,
+                    doc_id,
+                    view_id,
+                    prefix,
+                } => {
+                    nucleotide_logging::info!(
+                        count = items.len(),
+                        prefix = %prefix,
+                        cursor = cursor,
+                        doc_id = ?doc_id,
+                        view_id = ?view_id,
+                        "Received completion results from coordinator with prefix"
+                    );
+
+                    // Display completions in UI with prefix filtering
+                    if !items.is_empty() {
+                        self.show_completion_items_with_prefix(
+                            items, prefix, cursor, doc_id, view_id, cx,
                         );
-                        // TODO: Display completions in UI
-                        // For now, just log that we received them
+                    } else {
+                        nucleotide_logging::info!("No completion items to display");
                     }
-                    crate::completion_coordinator::CompletionResult::HideCompletions => {
-                        nucleotide_logging::debug!("Hiding completions");
-                    }
+                }
+                crate::completion_coordinator::CompletionResult::HideCompletions => {
+                    nucleotide_logging::debug!("Hiding completions");
+                    self.hide_completions(cx);
                 }
             }
         }
@@ -481,12 +499,26 @@ impl Workspace {
                 debug!("Key event handled by InputCoordinator");
             }
             InputResult::SendToHelix(helix_key) => {
-                debug!(key = ?helix_key, "Sending key to Helix editor");
+                nucleotide_logging::info!(
+                    key = ?helix_key,
+                    "DEBUG: Sending key to Helix editor - completion test"
+                );
 
                 // Send the key to Helix
                 self.input.update(cx, |_, cx| {
                     cx.emit(crate::InputEvent::Key(helix_key));
                 });
+
+                // Extra debug for ctrl-x specifically
+                if helix_key
+                    .modifiers
+                    .contains(helix_view::keyboard::KeyModifiers::CONTROL)
+                    && matches!(helix_key.code, helix_view::keyboard::KeyCode::Char('x'))
+                {
+                    nucleotide_logging::info!(
+                        "DEBUG: CTRL-X sent to Helix - should trigger completion in insert mode"
+                    );
+                }
             }
             InputResult::WorkspaceAction(action) => {
                 debug!(action = %action, "Executing workspace action");
@@ -1784,25 +1816,18 @@ impl Workspace {
             doc_id, view_id, trigger
         );
 
-        // Only show completion for manual triggers for now to avoid blocking
+        // DISABLED: Custom completion triggering - let Helix handle CTRL+Space natively
         match trigger {
             crate::types::CompletionTrigger::Manual => {
-                // Always show for manual triggers
-                println!("COMP: Manual completion trigger detected - calling trigger_completion");
-                self.trigger_completion(cx);
-                println!("COMP: trigger_completion called for manual trigger");
+                nucleotide_logging::info!(
+                    "DISABLED: Manual completion trigger - let Helix handle CTRL+Space natively"
+                );
             }
             crate::types::CompletionTrigger::Character(_c) => {
-                // Disable automatic completion on character input to prevent blocking
-                // TODO: Re-enable with proper debouncing and async handling
-                // if c.is_alphabetic() || *c == '_' || *c == '.' {
-                //     self.trigger_completion(cx);
-                // }
+                // DISABLED: Custom completion on character input - let Helix handle natively
             }
             crate::types::CompletionTrigger::Automatic => {
-                // Disable automatic completion for now
-                // TODO: Re-enable with proper debouncing
-                // self.trigger_completion(cx);
+                // DISABLED: Custom automatic completion - let Helix handle natively
             }
         }
 
@@ -2569,14 +2594,11 @@ impl Workspace {
             | crate::Update::DirectoryPicker(_) => {
                 self.handle_overlay_update(cx);
             }
-            crate::Update::Completion(completion_view) => {
+            crate::Update::Completion(_completion_view) => {
                 nucleotide_logging::info!(
-                    "Workspace received completion view - forwarding to overlay"
+                    "DISABLED: Custom completion view handling - using Helix's native completion instead"
                 );
-                self.overlay.update(cx, |overlay, cx| {
-                    overlay.handle_event(ev, cx);
-                });
-                self.handle_overlay_update(cx);
+                // DISABLED: Custom completion view forwarding - let Helix handle completion natively
             }
             crate::Update::OpenFile(path) => self.handle_open_file(path, cx),
             crate::Update::OpenDirectory(path) => self.handle_open_directory(path, cx),
@@ -3526,17 +3548,16 @@ impl Workspace {
         };
         // DISABLED: // OLD: self.global_input.register_shortcut(escape_shortcut);
 
-        // Register Ctrl+Space to trigger completion
-        let trigger_completion_shortcut = ShortcutDefinition {
-            key_combination: "ctrl-space".to_string(),
-            action: ShortcutAction::Action("trigger_completion".to_string()),
-            description: "Trigger completion".to_string(),
-            context: Some("editor".to_string()),
-            priority: EventPriority::High,
-            enabled: true,
-        };
-        // OLD: self.global_input
-            .register_shortcut(trigger_completion_shortcut);
+        // DISABLED: CTRL+Space shortcut registration - let Helix handle it natively
+        // let trigger_completion_shortcut = ShortcutDefinition {
+        //     key_combination: "ctrl-space".to_string(),
+        //     action: ShortcutAction::Action("trigger_completion".to_string()),
+        //     description: "Trigger completion".to_string(),
+        //     context: Some("editor".to_string()),
+        //     priority: EventPriority::High,
+        //     enabled: true,
+        // };
+        // self.global_input.register_shortcut(trigger_completion_shortcut);
 
         // Register Tab for completion navigation
         let tab_shortcut = ShortcutDefinition {
@@ -3946,28 +3967,30 @@ impl Workspace {
         view_id: helix_view::ViewId,
         cx: &mut Context<Self>,
     ) {
-        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, "Requesting LSP completions from application");
+        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, "Sending completion event to coordinator");
 
-        // For now, call the synchronous method directly in this context
-        // TODO: Make this properly async when we implement real LSP requests
-        match self.core.update(cx, |core, cx| {
-            core.request_lsp_completions_sync(cursor, doc_id, view_id, cx)
-        }) {
-            Ok(items) => {
-                if items.is_empty() {
-                    info!("No LSP completions available");
-                } else {
-                    info!(
-                        item_count = items.len(),
-                        "Received LSP completion items from application"
-                    );
-                    self.show_completion_items(items, cursor, doc_id, view_id, cx);
+        // Send completion event to the CompletionCoordinator
+        if let Some(completion_events_tx) = &self.completion_events_tx {
+            let event = helix_view::handlers::completion::CompletionEvent::ManualTrigger {
+                cursor,
+                doc: doc_id,
+                view: view_id,
+            };
+
+            match completion_events_tx.try_send(event) {
+                Ok(()) => {
+                    info!("Successfully sent manual completion trigger event to coordinator");
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to send completion event to coordinator");
                 }
             }
-            Err(e) => {
-                info!(error = %e, "No LSP completions available - language server not ready or no completions at this position");
-            }
+        } else {
+            error!("Completion events channel not available - cannot trigger completion");
         }
+
+        // The result will come back via the completion_results_rx channel
+        // which is processed in process_completion_results()
     }
 
     /// Convert completion items and show completion popup
@@ -4039,6 +4062,89 @@ impl Workspace {
         });
 
         info!("Created completion view, emitting Update::Completion event");
+        cx.emit(crate::Update::Completion(completion_view));
+        cx.notify();
+    }
+
+    /// Convert completion items and show completion popup with prefix filtering
+    fn show_completion_items_with_prefix(
+        &mut self,
+        items: Vec<nucleotide_events::completion::CompletionItem>,
+        prefix: String,
+        _cursor: usize,
+        _doc_id: helix_view::DocumentId,
+        _view_id: helix_view::ViewId,
+        cx: &mut Context<Self>,
+    ) {
+        // Convert between completion item types (same as existing method)
+        let ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
+            .into_iter()
+            .map(|item| {
+                use nucleotide_events::completion::CompletionItemKind;
+                use nucleotide_ui::completion_v2::{
+                    CompletionItem as UiCompletionItem, CompletionItemKind as UiCompletionItemKind,
+                };
+
+                let ui_kind = match item.kind {
+                    CompletionItemKind::Text => UiCompletionItemKind::Text,
+                    CompletionItemKind::Method => UiCompletionItemKind::Method,
+                    CompletionItemKind::Function => UiCompletionItemKind::Function,
+                    CompletionItemKind::Constructor => UiCompletionItemKind::Constructor,
+                    CompletionItemKind::Field => UiCompletionItemKind::Field,
+                    CompletionItemKind::Variable => UiCompletionItemKind::Variable,
+                    CompletionItemKind::Class => UiCompletionItemKind::Class,
+                    CompletionItemKind::Interface => UiCompletionItemKind::Interface,
+                    CompletionItemKind::Module => UiCompletionItemKind::Module,
+                    CompletionItemKind::Property => UiCompletionItemKind::Property,
+                    CompletionItemKind::Unit => UiCompletionItemKind::Unit,
+                    CompletionItemKind::Value => UiCompletionItemKind::Value,
+                    CompletionItemKind::Enum => UiCompletionItemKind::Enum,
+                    CompletionItemKind::Keyword => UiCompletionItemKind::Keyword,
+                    CompletionItemKind::Snippet => UiCompletionItemKind::Snippet,
+                    CompletionItemKind::Color => UiCompletionItemKind::Color,
+                    CompletionItemKind::File => UiCompletionItemKind::File,
+                    CompletionItemKind::Reference => UiCompletionItemKind::Reference,
+                    CompletionItemKind::Folder => UiCompletionItemKind::Folder,
+                    CompletionItemKind::EnumMember => UiCompletionItemKind::EnumMember,
+                    CompletionItemKind::Constant => UiCompletionItemKind::Constant,
+                    CompletionItemKind::Struct => UiCompletionItemKind::Struct,
+                    CompletionItemKind::Event => UiCompletionItemKind::Event,
+                    CompletionItemKind::Operator => UiCompletionItemKind::Operator,
+                    CompletionItemKind::TypeParameter => UiCompletionItemKind::TypeParameter,
+                };
+
+                UiCompletionItem {
+                    text: item.label.into(),
+                    description: item.detail.map(|d| d.into()),
+                    display_text: Some(SharedString::from(item.insert_text)),
+                    kind: Some(ui_kind),
+                    documentation: item.documentation.map(|d| d.into()),
+                }
+            })
+            .collect();
+
+        nucleotide_logging::info!(
+            ui_item_count = ui_items.len(),
+            prefix = %prefix,
+            "Converted to UI completion items with prefix, creating filtered completion view"
+        );
+
+        // Create completion view with prefix filtering
+        let completion_view = cx.new(|cx| {
+            let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
+            // Use the new method that applies initial filtering
+            let initial_filter = if prefix.is_empty() {
+                None
+            } else {
+                Some(prefix)
+            };
+            view.set_items_with_filter(ui_items, initial_filter, cx);
+            view
+        });
+
+        nucleotide_logging::info!(
+            "Created filtered completion view, emitting Update::Completion event"
+        );
         cx.emit(crate::Update::Completion(completion_view));
         cx.notify();
     }
@@ -4140,36 +4246,101 @@ impl Workspace {
 
     /// Trigger completion in the active editor
     pub fn trigger_completion(&mut self, cx: &mut Context<Self>) {
-        nucleotide_logging::debug!("Triggering completion directly via event system");
+        nucleotide_logging::info!("Triggering completion directly using real LSP completions");
 
-        let editor = &self.core.read(cx).editor;
-
-        // Get current document and view information
-        let view_id = editor.tree.focus;
-        let view = editor.tree.get(view_id);
-        let doc = editor.documents.get(&view.doc).unwrap();
-        let cursor = doc
-            .selection(view.id)
-            .primary()
-            .cursor(doc.text().slice(..));
-
-        info!(
-            cursor = cursor,
-            doc_id = ?doc.id(),
-            view_id = ?view.id,
-            "Completion requested - emitting completion event directly"
-        );
-
-        // Create and emit completion event directly to workspace
-        let completion_event = helix_view::handlers::completion::CompletionEvent::ManualTrigger {
-            cursor,
-            doc: doc.id(),
-            view: view.id,
+        // Get current document and view information (in a separate scope to release the borrow)
+        let (cursor, doc_id, view_id) = {
+            let editor = &self.core.read(cx).editor;
+            let view_id = editor.tree.focus;
+            let view = editor.tree.get(view_id);
+            let doc = editor.documents.get(&view.doc).unwrap();
+            let cursor = doc
+                .selection(view.id)
+                .primary()
+                .cursor(doc.text().slice(..));
+            (cursor, doc.id(), view.id)
         };
 
-        info!("Emitting CompletionEvent::ManualTrigger directly to workspace");
-        cx.emit(crate::Update::CompletionEvent(completion_event));
-        cx.notify();
+        nucleotide_logging::info!(
+            cursor = cursor,
+            doc_id = ?doc_id,
+            view_id = ?view_id,
+            "Calling real LSP completion directly from workspace"
+        );
+
+        // Instead of going through the coordinator, call the LSP completion directly
+        let core_handle = self.core.clone();
+        core_handle.update(cx, |core, cx| {
+            match core.request_lsp_completions_sync_with_prefix(cursor, doc_id, view_id, cx) {
+                Ok((completion_items, prefix)) => {
+                    nucleotide_logging::info!(
+                        item_count = completion_items.len(),
+                        prefix = %prefix,
+                        "Successfully retrieved real LSP completions directly"
+                    );
+
+                    if !completion_items.is_empty() {
+                        nucleotide_logging::info!(
+                            "Creating and emitting CompletionView with {} items",
+                            completion_items.len()
+                        );
+
+                        // Convert completion items to UI items
+                        let ui_items: Vec<_> = completion_items
+                            .into_iter()
+                            .map(|item| {
+                                // Convert to UI completion item kind
+                                let ui_kind = match item.kind {
+                                    nucleotide_events::completion::CompletionItemKind::Text => Some(nucleotide_ui::completion_v2::CompletionItemKind::Text),
+                                    nucleotide_events::completion::CompletionItemKind::Method => Some(nucleotide_ui::completion_v2::CompletionItemKind::Method),
+                                    nucleotide_events::completion::CompletionItemKind::Function => Some(nucleotide_ui::completion_v2::CompletionItemKind::Function),
+                                    nucleotide_events::completion::CompletionItemKind::Constructor => Some(nucleotide_ui::completion_v2::CompletionItemKind::Constructor),
+                                    nucleotide_events::completion::CompletionItemKind::Field => Some(nucleotide_ui::completion_v2::CompletionItemKind::Field),
+                                    nucleotide_events::completion::CompletionItemKind::Variable => Some(nucleotide_ui::completion_v2::CompletionItemKind::Variable),
+                                    nucleotide_events::completion::CompletionItemKind::Class => Some(nucleotide_ui::completion_v2::CompletionItemKind::Class),
+                                    nucleotide_events::completion::CompletionItemKind::Interface => Some(nucleotide_ui::completion_v2::CompletionItemKind::Interface),
+                                    nucleotide_events::completion::CompletionItemKind::Module => Some(nucleotide_ui::completion_v2::CompletionItemKind::Module),
+                                    nucleotide_events::completion::CompletionItemKind::Property => Some(nucleotide_ui::completion_v2::CompletionItemKind::Property),
+                                    nucleotide_events::completion::CompletionItemKind::Unit => Some(nucleotide_ui::completion_v2::CompletionItemKind::Unit),
+                                    nucleotide_events::completion::CompletionItemKind::Value => Some(nucleotide_ui::completion_v2::CompletionItemKind::Value),
+                                    nucleotide_events::completion::CompletionItemKind::Enum => Some(nucleotide_ui::completion_v2::CompletionItemKind::Enum),
+                                    nucleotide_events::completion::CompletionItemKind::Keyword => Some(nucleotide_ui::completion_v2::CompletionItemKind::Keyword),
+                                    nucleotide_events::completion::CompletionItemKind::Snippet => Some(nucleotide_ui::completion_v2::CompletionItemKind::Snippet),
+                                    _ => Some(nucleotide_ui::completion_v2::CompletionItemKind::Text),
+                                };
+
+                                nucleotide_ui::completion_v2::CompletionItem {
+                                    text: item.label.into(),
+                                    description: item.detail.map(|d| d.into()),
+                                    display_text: Some(item.insert_text.into()),
+                                    kind: ui_kind,
+                                    documentation: item.documentation.map(|d| d.into()),
+                                }
+                            })
+                            .collect();
+
+                        // Create completion view and emit update
+                        let completion_view = cx.new(|cx| {
+                            let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
+                            view.set_items_with_filter(ui_items, Some(prefix.clone()), cx);
+                            view
+                        });
+
+                        nucleotide_logging::info!("Created completion view, emitting Update::Completion event");
+                        cx.emit(crate::Update::Completion(completion_view));
+                        cx.notify();
+                    } else {
+                        nucleotide_logging::warn!("No completion items returned from LSP");
+                    }
+                }
+                Err(e) => {
+                    nucleotide_logging::error!(
+                        error = %e,
+                        "Failed to get LSP completions directly"
+                    );
+                }
+            }
+        });
     }
 
     // REMOVED: Old completion coordinator initialization method replaced by event-based approach
@@ -4181,22 +4352,11 @@ impl Workspace {
 
     /// Handle completion acceptance - insert the selected text into the editor
     fn handle_completion_accepted(&mut self, text: &str, cx: &mut Context<Self>) {
-        nucleotide_logging::info!(completion_text = %text, "Handling completion acceptance");
+        nucleotide_logging::info!(completion_text = %text, "DISABLED: Custom completion handling - should use Helix's native completion system");
 
-        // Convert the completion text to individual key events and send them to Helix
-        // This simulates typing the completion text
-        for ch in text.chars() {
-            let key_event = helix_view::input::KeyEvent {
-                code: helix_view::keyboard::KeyCode::Char(ch),
-                modifiers: helix_view::keyboard::KeyModifiers::NONE,
-            };
-
-            self.input.update(cx, |_, cx| {
-                cx.emit(crate::InputEvent::Key(key_event));
-            });
-        }
-
-        nucleotide_logging::info!("Completion text sent to Helix editor");
+        // DISABLED: Custom completion insertion causes double insertion and bypasses
+        // Helix's proper Transaction-based text replacement system. The correct solution
+        // is to use Helix's native completion UI which handles text replacement correctly.
     }
 
     /// Accept the current completion selection
@@ -4461,16 +4621,16 @@ impl Workspace {
         }
         focused_file_name
     }
-    
+
     /// Update global workspace layout information for UI positioning
     fn update_workspace_layout_info(&self, cx: &mut Context<Self>) {
         use crate::overlay::WorkspaceLayoutInfo;
-        
+
         // Calculate current tab bar height based on configuration
         let core = self.core.read(cx);
         let editor = &core.editor;
         let bufferline_config = &editor.config().bufferline;
-        
+
         let tab_bar_height = match bufferline_config {
             helix_view::editor::BufferLine::Never => px(0.0),
             helix_view::editor::BufferLine::Always => px(40.0), // Standard tab height
@@ -4482,34 +4642,37 @@ impl Workspace {
                 }
             }
         };
-        
+
         // Get actual file tree width (user may have resized it)
         let file_tree_width = if self.show_file_tree {
             px(self.file_tree_width)
         } else {
             px(0.0) // No file tree width if hidden
         };
-        
+
         // Get font metrics from the focused DocumentView if available
         let (line_height, char_width) = self.get_font_metrics_from_focused_view(cx);
-        
+
         let layout_info = WorkspaceLayoutInfo {
             file_tree_width,
-            gutter_width: px(60.0),        // Line number gutter width (approximately)
+            gutter_width: px(60.0), // Line number gutter width (approximately)
             tab_bar_height,
-            title_bar_height: px(30.0),    // Much smaller - just window controls
+            title_bar_height: px(30.0), // Much smaller - just window controls
             line_height,
             char_width,
-            cursor_position: None,         // Will be filled by DocumentView during cursor rendering
-            cursor_size: None,             // Will be filled by DocumentView during cursor rendering
+            cursor_position: None, // Will be filled by DocumentView during cursor rendering
+            cursor_size: None,     // Will be filled by DocumentView during cursor rendering
         };
-        
+
         // Set as global state so overlay can access it
         cx.set_global(layout_info);
     }
-    
+
     /// Get font metrics (line height, char width) from the focused DocumentView
-    fn get_font_metrics_from_focused_view(&self, cx: &mut Context<Self>) -> (gpui::Pixels, gpui::Pixels) {
+    fn get_font_metrics_from_focused_view(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> (gpui::Pixels, gpui::Pixels) {
         // Try to get the focused DocumentView
         if let Some(focused_view_id) = self.view_manager.focused_view_id() {
             if let Some(doc_view) = self.view_manager.get_document_view(&focused_view_id) {
@@ -4517,16 +4680,16 @@ impl Workspace {
                 return doc_view.read_with(cx, |doc_view, _cx| {
                     // Get the actual line height from DocumentView
                     let line_height = doc_view.get_line_height();
-                    
+
                     // Calculate character width from font style
                     // This is approximate but much more accurate than hardcoded 8.0
                     let char_width = px(line_height.0 * 0.6); // Typical monospace ratio
-                    
+
                     (line_height, char_width)
                 });
             }
         }
-        
+
         // Fallback to reasonable defaults if no focused view
         (px(20.0), px(12.0))
     }
@@ -4542,7 +4705,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Process completion results from the coordinator
         self.process_completion_results(cx);
-        
+
         // Update global workspace layout information for completion positioning
         self.update_workspace_layout_info(cx);
 

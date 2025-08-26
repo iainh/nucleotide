@@ -480,6 +480,7 @@ fn load_project_markers_config(dir: &Path) -> anyhow::Result<ProjectMarkersConfi
 #[allow(dead_code)]
 mod tests {
     use super::*;
+    use nucleotide_types::{ProjectMarker, RootStrategy};
 
     #[test]
     fn test_font_weight_serialization() {

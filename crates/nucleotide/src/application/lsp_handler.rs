@@ -367,6 +367,7 @@ impl Default for LspHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nucleotide_events::lsp::ProjectType;
     use nucleotide_events::v2::lsp::ServerCapabilities;
     use std::path::PathBuf;
 

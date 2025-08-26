@@ -1189,6 +1189,8 @@ impl Render for CompletionView {
                     "escape" => {
                         // Emit dismiss event to close the completion popup
                         cx.emit(DismissEvent);
+                        // Stop propagation so Escape doesn't affect the editor
+                        cx.stop_propagation();
                     }
                     "tab" => {
                         if ev.keystroke.modifiers.shift {
@@ -1198,6 +1200,8 @@ impl Render for CompletionView {
                             // Tab: Move to next item
                             view.select_next(cx);
                         }
+                        // Stop propagation so Tab doesn't insert text in the editor
+                        cx.stop_propagation();
                     }
                     "enter" => {
                         // Accept the currently selected completion item
@@ -1208,6 +1212,8 @@ impl Render for CompletionView {
                             });
                             // Also dismiss the completion popup
                             cx.emit(DismissEvent);
+                            // Stop propagation to prevent Enter from reaching Helix
+                            cx.stop_propagation();
                         }
                     }
                     _ => {}

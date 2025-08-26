@@ -17,12 +17,8 @@ pub struct LspCompletionRequest {
     pub response_tx: tokio::sync::oneshot::Sender<LspCompletionResponse>,
 }
 
-/// LSP completion response message
-pub struct LspCompletionResponse {
-    pub items: Vec<CompletionItem>,
-    pub is_incomplete: bool,
-    pub error: Option<String>,
-}
+/// LSP completion response message - use event-based type
+pub type LspCompletionResponse = nucleotide_events::completion::LspCompletionResponse;
 
 /// Completion result sent to UI
 #[derive(Debug)]
@@ -32,6 +28,7 @@ pub enum CompletionResult {
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
+        prefix: String,
     },
     HideCompletions,
 }
@@ -222,20 +219,43 @@ impl CompletionCoordinator {
         match response_rx.await {
             Ok(response) => {
                 if let Some(error) = response.error {
-                    warn!(error = %error, "LSP completion request failed");
+                    nucleotide_logging::warn!(
+                        error = %error,
+                        item_count = response.items.len(),
+                        prefix = %response.prefix,
+                        "LSP completion request failed, but still sending items"
+                    );
                     // Send the LSP items as-is
                     let items = response.items;
-                    self.send_completion_results(items, cursor, doc_id, view_id)
+                    self.send_completion_results(items, cursor, doc_id, view_id, response.prefix)
                         .await?;
                 } else {
-                    info!(
+                    nucleotide_logging::info!(
                         item_count = response.items.len(),
                         is_incomplete = response.is_incomplete,
-                        "Received LSP completion response from main thread"
+                        prefix = %response.prefix,
+                        prefix_len = response.prefix.len(),
+                        "Received successful LSP completion response from main thread"
                     );
+
+                    // Log details about the prefix extraction
+                    if response.prefix.is_empty() {
+                        nucleotide_logging::warn!(
+                            cursor = cursor,
+                            item_count = response.items.len(),
+                            "Prefix extraction returned empty string - filtering may not work"
+                        );
+                    } else {
+                        nucleotide_logging::debug!(
+                            prefix = %response.prefix,
+                            cursor = cursor,
+                            "Prefix extracted successfully for completion filtering"
+                        );
+                    }
+
                     // Send LSP results as-is - let rust-analyzer handle standard library items
                     let items = response.items;
-                    self.send_completion_results(items, cursor, doc_id, view_id)
+                    self.send_completion_results(items, cursor, doc_id, view_id, response.prefix)
                         .await?;
                 }
             }
@@ -258,11 +278,42 @@ impl CompletionCoordinator {
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
+        prefix: String,
     ) -> anyhow::Result<()> {
-        info!(
+        // Comprehensive logging of completion data flow
+        nucleotide_logging::info!(
             item_count = items.len(),
-            "Sending completion results to UI via Application Update events"
+            cursor = cursor,
+            doc_id = ?doc_id,
+            view_id = ?view_id,
+            prefix = %prefix,
+            prefix_len = prefix.len(),
+            "Sending completion results to UI"
         );
+
+        // Log sample of completion items for debugging
+        if !items.is_empty() {
+            let sample_items: Vec<String> = items
+                .iter()
+                .take(8)
+                .map(|item| format!("{}:{:?}", item.label, item.kind))
+                .collect();
+
+            nucleotide_logging::debug!(
+                prefix = %prefix,
+                sample_items = ?sample_items,
+                sample_count = sample_items.len(),
+                total_items = items.len(),
+                "Sample completion items before sending to UI"
+            );
+        } else {
+            nucleotide_logging::warn!(
+                prefix = %prefix,
+                cursor = cursor,
+                doc_id = ?doc_id,
+                "No completion items to send to UI"
+            );
+        }
 
         // Send through the channel first (for the async task in Workspace that we just set up)
         let result = CompletionResult::ShowCompletions {
@@ -270,6 +321,7 @@ impl CompletionCoordinator {
             cursor,
             doc_id,
             view_id,
+            prefix: prefix.clone(),
         };
 
         if let Err(e) = self.completion_results_tx.send(result).await {
@@ -358,6 +410,7 @@ impl CompletionCoordinator {
             cursor,
             doc_id,
             view_id,
+            prefix: "".to_string(), // Sample completions don't have a prefix
         };
 
         if let Err(e) = self.completion_results_tx.send(result).await {
@@ -367,5 +420,216 @@ impl CompletionCoordinator {
 
         info!("Successfully sent completion results to workspace via channel");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn test_lsp_completion_response_with_prefix() {
+        // Test that LspCompletionResponse correctly stores prefix
+        let items = vec![CompletionItem {
+            label: "println!".to_string(),
+            kind: CompletionItemKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: "println!".to_string(),
+            score: 100.0,
+        }];
+
+        let response = LspCompletionResponse {
+            items: items.clone(),
+            is_incomplete: false,
+            error: None,
+            prefix: "prin".to_string(),
+        };
+
+        assert_eq!(response.prefix, "prin");
+        assert_eq!(response.items.len(), 1);
+        assert_eq!(response.items[0].label, "println!");
+        assert!(!response.is_incomplete);
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_lsp_completion_response_with_error() {
+        // Test LspCompletionResponse error handling
+        let response = LspCompletionResponse {
+            items: vec![],
+            is_incomplete: false,
+            error: Some("LSP server unavailable".to_string()),
+            prefix: "test".to_string(),
+        };
+
+        assert!(response.error.is_some());
+        assert_eq!(response.error.unwrap(), "LSP server unavailable");
+        assert_eq!(response.prefix, "test");
+        assert!(response.items.is_empty());
+    }
+
+    #[test]
+    fn test_completion_result_show_completions() {
+        // Test CompletionResult::ShowCompletions structure
+        let items = vec![CompletionItem {
+            label: "test_function".to_string(),
+            kind: CompletionItemKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: "test_function".to_string(),
+            score: 100.0,
+        }];
+
+        let result = CompletionResult::ShowCompletions {
+            items: items.clone(),
+            cursor: 42,
+            doc_id: helix_view::DocumentId::default(),
+            view_id: helix_view::ViewId::default(),
+            prefix: "test".to_string(),
+        };
+
+        match result {
+            CompletionResult::ShowCompletions {
+                items: result_items,
+                cursor,
+                prefix,
+                ..
+            } => {
+                assert_eq!(result_items.len(), 1);
+                assert_eq!(result_items[0].label, "test_function");
+                assert_eq!(cursor, 42);
+                assert_eq!(prefix, "test");
+            }
+            _ => panic!("Expected ShowCompletions variant"),
+        }
+    }
+
+    // NOTE: CompletionCoordinator tests require complex setup with Application entity,
+    // BackgroundExecutor, and multiple channels. The coordinator is tested through
+    // integration tests when running the full application.
+
+    mod edge_cases {
+        use super::*;
+
+        #[test]
+        fn test_empty_prefix_completion() {
+            // Test completion with empty prefix
+            let response = LspCompletionResponse {
+                items: vec![CompletionItem {
+                    label: "function".to_string(),
+                    kind: CompletionItemKind::Function,
+                    detail: None,
+                    documentation: None,
+                    insert_text: "function".to_string(),
+                    score: 100.0,
+                }],
+                is_incomplete: false,
+                error: None,
+                prefix: "".to_string(), // Empty prefix
+            };
+
+            assert_eq!(response.prefix, "");
+            assert_eq!(response.items.len(), 1);
+        }
+
+        #[test]
+        fn test_special_characters_in_prefix() {
+            // Test prefix with special characters (should be handled gracefully)
+            let response = LspCompletionResponse {
+                items: vec![],
+                is_incomplete: false,
+                error: None,
+                prefix: "std::".to_string(), // Contains special chars
+            };
+
+            assert_eq!(response.prefix, "std::");
+        }
+
+        #[test]
+        fn test_unicode_prefix() {
+            // Test prefix with Unicode characters
+            let response = LspCompletionResponse {
+                items: vec![],
+                is_incomplete: false,
+                error: None,
+                prefix: "测试".to_string(), // Unicode characters
+            };
+
+            assert_eq!(response.prefix, "测试");
+        }
+
+        #[test]
+        fn test_very_long_prefix() {
+            // Test with extremely long prefix
+            let long_prefix = "a".repeat(1000);
+            let response = LspCompletionResponse {
+                items: vec![],
+                is_incomplete: false,
+                error: None,
+                prefix: long_prefix.clone(),
+            };
+
+            assert_eq!(response.prefix, long_prefix);
+            assert_eq!(response.prefix.len(), 1000);
+        }
+
+        #[test]
+        fn test_completion_with_many_items() {
+            // Test completion response with many items
+            let mut items = vec![];
+            for i in 0..1000 {
+                items.push(CompletionItem {
+                    label: format!("function_{}", i),
+                    kind: CompletionItemKind::Function,
+                    detail: None,
+                    documentation: None,
+                    insert_text: format!("function_{}", i),
+                    score: 100.0,
+                });
+            }
+
+            let response = LspCompletionResponse {
+                items: items.clone(),
+                is_incomplete: true, // Many items, might be incomplete
+                error: None,
+                prefix: "func".to_string(),
+            };
+
+            assert_eq!(response.items.len(), 1000);
+            assert!(response.is_incomplete);
+            assert_eq!(response.prefix, "func");
+        }
+
+        #[test]
+        fn test_completion_result_with_special_doc_ids() {
+            // Test CompletionResult with various document/view IDs
+            let items = vec![CompletionItem {
+                label: "test".to_string(),
+                kind: CompletionItemKind::Function,
+                detail: None,
+                documentation: None,
+                insert_text: "test".to_string(),
+                score: 100.0,
+            }];
+
+            let result = CompletionResult::ShowCompletions {
+                items,
+                cursor: 0, // Start of document
+                doc_id: helix_view::DocumentId::default(),
+                view_id: helix_view::ViewId::default(),
+                prefix: "".to_string(), // Empty prefix at start
+            };
+
+            match result {
+                CompletionResult::ShowCompletions { cursor, prefix, .. } => {
+                    assert_eq!(cursor, 0);
+                    assert_eq!(prefix, "");
+                }
+                _ => panic!("Expected ShowCompletions variant"),
+            }
+        }
     }
 }

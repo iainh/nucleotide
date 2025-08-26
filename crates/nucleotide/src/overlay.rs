@@ -1,6 +1,7 @@
 use gpui::{
     App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled, Window, div, px,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled, Window,
+    div, px,
 };
 
 use nucleotide_ui::ThemedContext as UIThemedContext;
@@ -217,50 +218,12 @@ impl OverlayView {
 
                 cx.notify();
             }
-            crate::Update::Completion(completion_view) => {
-                println!("COMP: OverlayView received completion view");
-
-                // Clean up any existing completion view before setting the new one
-                if self.completion_view.is_some() {
-                    println!("COMP: Clearing existing completion view before setting new one");
-                    self.completion_view = None;
-                }
-
-                // Subscribe to dismiss events from the completion view
-                cx.subscribe(
-                    completion_view,
-                    |this, _completion_view, _event: &DismissEvent, cx| {
-                        println!("COMP: CompletionView dismissed");
-                        this.completion_view = None;
-                        // Emit dismiss event to notify workspace
-                        cx.emit(DismissEvent);
-                        cx.notify();
-                    },
-                )
-                .detach();
-
-                // Subscribe to completion accepted events from the completion view
-                cx.subscribe(
-                    completion_view,
-                    |_this,
-                     _completion_view,
-                     event: &nucleotide_ui::completion_v2::CompletionAcceptedEvent,
-                     cx| {
-                        println!(
-                            "COMP: OverlayView received completion accepted event: {}",
-                            event.text
-                        );
-                        // Forward the completion accepted event to the workspace
-                        cx.emit(nucleotide_ui::completion_v2::CompletionAcceptedEvent {
-                            text: event.text.clone(),
-                        });
-                    },
-                )
-                .detach();
-
-                self.completion_view = Some(completion_view.clone());
-                println!("COMP: OverlayView set completion_view and notifying");
-                cx.notify();
+            crate::Update::Completion(_completion_view) => {
+                nucleotide_logging::info!(
+                    "DISABLED: Custom completion overlay handling - using Helix's native completion instead"
+                );
+                // DISABLED: Custom completion overlay handling - let Helix handle completion natively
+                // No completion view management, event subscriptions, or forwarding needed
             }
             crate::Update::Picker(picker) => {
                 // Clean up any existing picker before creating a new one
@@ -514,53 +477,64 @@ impl OverlayView {
     /// Calculate cursor-based completion position using exact cursor coordinates when available
     fn calculate_completion_position(&self, cx: &Context<Self>) -> (gpui::Pixels, gpui::Pixels) {
         let layout_info = self.get_workspace_layout_info(cx);
-        
+
         // Use exact cursor coordinates if available from DocumentView rendering
-        if let (Some(cursor_pos), Some(cursor_size)) = (layout_info.cursor_position, layout_info.cursor_size) {
-            println!("DEBUG: Using exact cursor coordinates - pos={:?}, size={:?}", cursor_pos, cursor_size);
+        if let (Some(cursor_pos), Some(cursor_size)) =
+            (layout_info.cursor_position, layout_info.cursor_size)
+        {
+            println!(
+                "DEBUG: Using exact cursor coordinates - pos={:?}, size={:?}",
+                cursor_pos, cursor_size
+            );
             // cursor_pos is already the top-left of cursor, we want bottom-left for completion
             return (cursor_pos.x, cursor_pos.y + cursor_size.height);
         }
-        
+
         // Fallback to calculated position if no exact coordinates available
         println!("DEBUG: Using calculated cursor position (fallback)");
         if let Some(core) = self.core.upgrade() {
             let core_read = core.read(cx);
             let editor = &core_read.editor;
-            
+
             // Get focused view and document
             let focused_view_id = editor.tree.focus;
             let view = editor.tree.get(focused_view_id);
             let doc_id = view.doc;
-            
+
             match editor.documents.get(&doc_id) {
                 Some(document) => {
                     let text = document.text();
-                    
+
                     // Get primary cursor position
                     let primary_selection = document.selection(focused_view_id).primary();
                     let cursor_char_idx = primary_selection.cursor(text.slice(..));
-                    
+
                     // Convert character position to screen coordinates
-                    if let Some(cursor_pos) = view.screen_coords_at_pos(document, text.slice(..), cursor_char_idx) {
+                    if let Some(cursor_pos) =
+                        view.screen_coords_at_pos(document, text.slice(..), cursor_char_idx)
+                    {
                         let view_offset = document.view_offset(focused_view_id);
-                        
+
                         // Check if cursor is visible in viewport
                         let viewport_height = view.inner_height();
-                        if cursor_pos.row >= view_offset.vertical_offset &&
-                           cursor_pos.row < view_offset.vertical_offset + viewport_height {
-                            
+                        if cursor_pos.row >= view_offset.vertical_offset
+                            && cursor_pos.row < view_offset.vertical_offset + viewport_height
+                        {
                             // Calculate relative position within viewport (0-based line in visible area)
-                            let relative_row = cursor_pos.row.saturating_sub(view_offset.vertical_offset);
-                            
+                            let relative_row =
+                                cursor_pos.row.saturating_sub(view_offset.vertical_offset);
+
                             // Account for UI layout: file tree + gutter + character position
-                            let cursor_x = layout_info.file_tree_width + layout_info.gutter_width + 
-                                          px(cursor_pos.col as f32 * layout_info.char_width.0);
-                            
+                            let cursor_x = layout_info.file_tree_width
+                                + layout_info.gutter_width
+                                + px(cursor_pos.col as f32 * layout_info.char_width.0);
+
                             // Account for UI layout: title bar + tab bar + line position within document area
-                            let document_area_y = layout_info.title_bar_height + layout_info.tab_bar_height;
-                            let cursor_y = document_area_y + px(relative_row as f32 * layout_info.line_height.0);
-                            
+                            let document_area_y =
+                                layout_info.title_bar_height + layout_info.tab_bar_height;
+                            let cursor_y = document_area_y
+                                + px(relative_row as f32 * layout_info.line_height.0);
+
                             return (cursor_x, cursor_y + layout_info.line_height); // Position below cursor
                         }
                     }
@@ -568,14 +542,14 @@ impl OverlayView {
                 None => {}
             }
         }
-        
+
         // Final fallback positioning
         (
             layout_info.file_tree_width + layout_info.gutter_width + px(10.0),
-            layout_info.title_bar_height + layout_info.tab_bar_height + px(20.0)
+            layout_info.title_bar_height + layout_info.tab_bar_height + px(20.0),
         )
     }
-    
+
     /// Get workspace layout information for completion positioning
     /// Attempts to access real workspace dimensions, falls back to reasonable defaults
     fn get_workspace_layout_info(&self, cx: &Context<Self>) -> WorkspaceLayoutInfo {
@@ -583,23 +557,23 @@ impl OverlayView {
         if let Some(layout) = cx.try_global::<WorkspaceLayoutInfo>() {
             return *layout;
         }
-        
+
         // TODO: Alternative approaches to access workspace:
         // 1. Pass layout info when creating completion view
         // 2. Store layout in app-global state
         // 3. Make workspace accessible through entity hierarchy
-        
+
         // For now, use reasonable defaults that match typical Nucleotide layout
         // These values should be close to the actual defaults but won't reflect user resizing
         WorkspaceLayoutInfo {
-            file_tree_width: px(250.0),    // Default file tree width (user can resize)
-            gutter_width: px(60.0),        // Line number gutter width  
-            tab_bar_height: px(40.0),      // Tab bar height
-            title_bar_height: px(30.0),    // Much smaller - just window controls
-            line_height: px(20.0),         // Default line height
-            char_width: px(12.0),          // Default character width
-            cursor_position: None,         // No exact cursor position available
-            cursor_size: None,             // No exact cursor size available
+            file_tree_width: px(250.0), // Default file tree width (user can resize)
+            gutter_width: px(60.0),     // Line number gutter width
+            tab_bar_height: px(40.0),   // Tab bar height
+            title_bar_height: px(30.0), // Much smaller - just window controls
+            line_height: px(20.0),      // Default line height
+            char_width: px(12.0),       // Default character width
+            cursor_position: None,      // No exact cursor position available
+            cursor_size: None,          // No exact cursor size available
         }
     }
 }
@@ -609,7 +583,7 @@ impl OverlayView {
 pub struct WorkspaceLayoutInfo {
     pub file_tree_width: gpui::Pixels,
     pub gutter_width: gpui::Pixels,
-    pub tab_bar_height: gpui::Pixels,  
+    pub tab_bar_height: gpui::Pixels,
     pub title_bar_height: gpui::Pixels,
     // Font metrics from the actual DocumentView
     pub line_height: gpui::Pixels,
@@ -732,11 +706,11 @@ impl Render for OverlayView {
         }
 
         if let Some(completion_view) = &self.completion_view {
-            use gpui::{anchored, point, Corner};
-            
+            use gpui::{Corner, anchored, point};
+
             // Calculate proper completion position based on cursor location
             let (cursor_x, cursor_y) = self.calculate_completion_position(cx);
-            
+
             return div()
                 .key_context("Overlay")
                 .absolute()
@@ -749,7 +723,7 @@ impl Render for OverlayView {
                         .anchor(Corner::TopLeft) // Anchor top-left of completion to cursor position
                         .offset(point(px(0.0), px(2.0))) // Small offset below cursor
                         .snap_to_window_with_margin(px(8.0))
-                        .child(completion_view.clone())
+                        .child(completion_view.clone()),
                 )
                 .into_any_element();
         }

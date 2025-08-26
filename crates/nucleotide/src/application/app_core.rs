@@ -40,6 +40,24 @@ impl ApplicationCore {
         }
     }
 
+    /// Create a new application core with application handle for LSP integration
+    pub fn with_app_handle(app_handle: gpui::WeakEntity<crate::Application>) -> Self {
+        Self {
+            document_handler: DocumentHandler::new(),
+            view_handler: ViewHandler::new(),
+            editor_handler: EditorHandler::new(),
+            lsp_handler: LspHandler::new(),
+            completion_handler: CompletionHandler::with_app_handle(app_handle),
+            workspace_handler: WorkspaceHandler::new(),
+            initialized: false,
+        }
+    }
+
+    /// Set the application handle for LSP completion
+    pub fn set_app_handle(&mut self, app_handle: gpui::WeakEntity<crate::Application>) {
+        self.completion_handler.set_app_handle(app_handle);
+    }
+
     /// Initialize all event handlers
     #[instrument(skip(self))]
     pub fn initialize(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
