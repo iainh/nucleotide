@@ -1637,14 +1637,23 @@ impl Application {
             InputEvent::Key(key) => {
                 nucleotide_logging::info!(key = ?key, "DEBUG: Handling key event in Application");
 
-                // Extra debug for ctrl-x
+                // Log cursor position before key handling
+                let view_id = comp_ctx.editor.tree.focus;
+                let doc_id = comp_ctx
+                    .editor
+                    .tree
+                    .try_get(view_id)
+                    .map(|view| view.doc)
+                    .unwrap_or_default();
+
+                // Extra debug for ctrl-x - after doc_id is available
                 if key
                     .modifiers
                     .contains(helix_view::keyboard::KeyModifiers::CONTROL)
                     && matches!(key.code, helix_view::keyboard::KeyCode::Char('x'))
                 {
                     let doc = comp_ctx.editor.document(doc_id);
-                    let language_server_count = comp_ctx.editor.language_servers.inner().len();
+                    let language_server_count = comp_ctx.editor.language_servers.len();
                     let file_path = doc
                         .and_then(|d| d.path())
                         .map(|p| p.display().to_string())
@@ -1662,15 +1671,6 @@ impl Application {
                         "DEBUG: CTRL-X received - editor state for completion"
                     );
                 }
-
-                // Log cursor position before key handling
-                let view_id = comp_ctx.editor.tree.focus;
-                let doc_id = comp_ctx
-                    .editor
-                    .tree
-                    .try_get(view_id)
-                    .map(|view| view.doc)
-                    .unwrap_or_default();
 
                 // Store before position
                 let before_cursor = if let Some(doc) = comp_ctx.editor.document(doc_id) {
