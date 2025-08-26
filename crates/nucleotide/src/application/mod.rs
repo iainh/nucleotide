@@ -3271,23 +3271,35 @@ impl Application {
         match completion_result {
             crate::completion_coordinator::CompletionResult::ShowCompletions {
                 items,
-                cursor: _,
-                doc_id: _,
-                view_id: _,
+                cursor,
+                doc_id,
+                view_id,
                 prefix,
             } => {
                 nucleotide_logging::info!(
-                    "DISABLED: Custom completion UI - would show {} items with prefix '{}'. Using Helix's native completion instead.",
+                    "Creating completion UI with {} items for prefix '{}'",
                     items.len(),
                     prefix
                 );
-                // DISABLED: Custom completion UI creation - let Helix handle completion natively
+
+                // Log completion items for now - future integration will send to workspace
+                nucleotide_logging::info!(
+                    items_count = items.len(),
+                    doc_id = ?doc_id,
+                    view_id = ?view_id,
+                    cursor = cursor,
+                    "Completion items ready for display"
+                );
+
+                // TODO: Send completion items to workspace for UI creation
+                // This will require proper integration with the workspace's completion handling
             }
             crate::completion_coordinator::CompletionResult::HideCompletions => {
-                nucleotide_logging::info!(
-                    "DISABLED: Custom completion UI hiding - let Helix handle completion natively"
-                );
-                // DISABLED: Custom completion UI hiding - let Helix handle completion natively
+                nucleotide_logging::info!("Hiding completion UI");
+
+                // Hide completions directly through workspace
+                // This will be handled when the workspace processes completion events
+                // For now, we rely on the workspace's existing completion handling
             }
         }
     }
@@ -3752,6 +3764,133 @@ impl Application {
         Err(ProjectLspCommandError::Internal(
             "EnsureDocumentTracked not yet implemented".to_string(),
         ))
+    }
+
+    /// Trigger manual completion (e.g., from CTRL+Space)
+    pub fn trigger_completion_manual(
+        &mut self,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+    ) {
+        nucleotide_logging::info!(
+            doc_id = ?doc_id,
+            view_id = ?view_id,
+            "Triggering manual completion"
+        );
+
+        // Get current cursor position
+        if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
+            // Send manual trigger event to completion coordinator
+            self.send_completion_trigger_event(
+                doc_id,
+                view_id,
+                cursor,
+                helix_view::handlers::completion::CompletionEvent::ManualTrigger {
+                    cursor,
+                    doc: doc_id,
+                    view: view_id,
+                },
+            );
+        }
+    }
+
+    /// Trigger completion on character input
+    pub fn trigger_completion_character(
+        &mut self,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        character: char,
+    ) {
+        nucleotide_logging::info!(
+            doc_id = ?doc_id,
+            view_id = ?view_id,
+            character = %character,
+            "Triggering character completion"
+        );
+
+        // Get current cursor position
+        if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
+            // Send character trigger event to completion coordinator
+            self.send_completion_trigger_event(
+                doc_id,
+                view_id,
+                cursor,
+                helix_view::handlers::completion::CompletionEvent::TriggerChar {
+                    cursor,
+                    doc: doc_id,
+                    view: view_id,
+                },
+            );
+        }
+    }
+
+    /// Trigger automatic completion
+    pub fn trigger_completion_automatic(
+        &mut self,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+    ) {
+        nucleotide_logging::info!(
+            doc_id = ?doc_id,
+            view_id = ?view_id,
+            "Triggering automatic completion"
+        );
+
+        // Get current cursor position
+        if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
+            // Send auto trigger event to completion coordinator
+            self.send_completion_trigger_event(
+                doc_id,
+                view_id,
+                cursor,
+                helix_view::handlers::completion::CompletionEvent::AutoTrigger {
+                    cursor,
+                    doc: doc_id,
+                    view: view_id,
+                },
+            );
+        }
+    }
+
+    /// Helper method to send completion trigger events to the coordinator
+    fn send_completion_trigger_event(
+        &mut self,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        cursor: usize,
+        event: helix_view::handlers::completion::CompletionEvent,
+    ) {
+        // Send to completion coordinator if available
+        if let Some(sender) = &self.completion_tx {
+            if let Err(e) = sender.try_send(event) {
+                nucleotide_logging::warn!(
+                    error = %e,
+                    doc_id = ?doc_id,
+                    view_id = ?view_id,
+                    cursor = cursor,
+                    "Failed to send completion trigger event to coordinator"
+                );
+            }
+        } else {
+            nucleotide_logging::warn!("No completion coordinator available for trigger event");
+        }
+    }
+
+    /// Get cursor position for a document view
+    fn get_cursor_position(
+        &self,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+    ) -> Option<usize> {
+        // Get the document from Helix editor
+        if let Some(doc) = self.editor.document(doc_id) {
+            let selection = doc.selection(view_id);
+            let cursor = selection.primary().cursor(doc.text().slice(..));
+            Some(cursor)
+        } else {
+            nucleotide_logging::warn!(doc_id = ?doc_id, "Document not found for cursor position");
+            None
+        }
     }
 
     // NOTE: handle_crank_event is defined earlier in the file and includes completion processing

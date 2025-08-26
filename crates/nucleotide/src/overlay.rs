@@ -218,12 +218,39 @@ impl OverlayView {
 
                 cx.notify();
             }
-            crate::Update::Completion(_completion_view) => {
-                nucleotide_logging::info!(
-                    "DISABLED: Custom completion overlay handling - using Helix's native completion instead"
-                );
-                // DISABLED: Custom completion overlay handling - let Helix handle completion natively
-                // No completion view management, event subscriptions, or forwarding needed
+            crate::Update::Completion(completion_view) => {
+                nucleotide_logging::info!("Setting up completion overlay");
+
+                // Set up completion view with event subscription
+                self.completion_view = Some(completion_view.clone());
+
+                // Subscribe to dismiss events from completion view
+                cx.subscribe(
+                    &completion_view,
+                    |this, _completion_view, _event: &DismissEvent, cx| {
+                        this.completion_view = None;
+                        cx.emit(DismissEvent);
+                        cx.notify();
+                    },
+                )
+                .detach();
+
+                // Subscribe to the new completion acceptance event
+                cx.subscribe(
+                    &completion_view,
+                    |this, _completion_view, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
+                        nucleotide_logging::info!(
+                            item_index = event.item_index,
+                            "Completion accepted via Helix transaction system"
+                        );
+                        // The completion view will handle the actual acceptance through Helix
+                        // This event is just for notification/coordination
+                        cx.emit(DismissEvent);
+                    },
+                )
+                .detach();
+
+                cx.notify();
             }
             crate::Update::Picker(picker) => {
                 // Clean up any existing picker before creating a new one
@@ -646,7 +673,7 @@ impl Focusable for OverlayView {
     }
 }
 impl EventEmitter<DismissEvent> for OverlayView {}
-impl EventEmitter<nucleotide_ui::completion_v2::CompletionAcceptedEvent> for OverlayView {}
+impl EventEmitter<nucleotide_ui::completion_v2::CompleteViaHelixEvent> for OverlayView {}
 
 impl Render for OverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

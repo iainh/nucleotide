@@ -1816,18 +1816,31 @@ impl Workspace {
             doc_id, view_id, trigger
         );
 
-        // DISABLED: Custom completion triggering - let Helix handle CTRL+Space natively
+        // Trigger completion through the completion coordinator
         match trigger {
             crate::types::CompletionTrigger::Manual => {
-                nucleotide_logging::info!(
-                    "DISABLED: Manual completion trigger - let Helix handle CTRL+Space natively"
-                );
+                nucleotide_logging::info!("Manual completion triggered (CTRL+Space)");
+
+                // Send manual trigger event to completion coordinator
+                self.core.update(cx, |app, _cx| {
+                    app.trigger_completion_manual(doc_id, view_id);
+                });
             }
-            crate::types::CompletionTrigger::Character(_c) => {
-                // DISABLED: Custom completion on character input - let Helix handle natively
+            crate::types::CompletionTrigger::Character(c) => {
+                nucleotide_logging::info!(character = %c, "Character-triggered completion");
+
+                // Send character trigger event to completion coordinator
+                self.core.update(cx, |app, _cx| {
+                    app.trigger_completion_character(doc_id, view_id, *c);
+                });
             }
             crate::types::CompletionTrigger::Automatic => {
-                // DISABLED: Custom automatic completion - let Helix handle natively
+                nucleotide_logging::info!("Automatic completion triggered");
+
+                // Send automatic trigger event to completion coordinator
+                self.core.update(cx, |app, _cx| {
+                    app.trigger_completion_automatic(doc_id, view_id);
+                });
             }
         }
 
@@ -2595,10 +2608,10 @@ impl Workspace {
                 self.handle_overlay_update(cx);
             }
             crate::Update::Completion(_completion_view) => {
-                nucleotide_logging::info!(
-                    "DISABLED: Custom completion view handling - using Helix's native completion instead"
-                );
-                // DISABLED: Custom completion view forwarding - let Helix handle completion natively
+                nucleotide_logging::info!("Forwarding completion to overlay");
+
+                // Overlay will handle completion view setup in its own Update handler
+                self.handle_overlay_update(cx);
             }
             crate::Update::OpenFile(path) => self.handle_open_file(path, cx),
             crate::Update::OpenDirectory(path) => self.handle_open_directory(path, cx),

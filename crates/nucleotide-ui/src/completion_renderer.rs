@@ -388,9 +388,35 @@ impl CompletionListState {
     }
 
     pub fn scroll_to_item(&mut self, index: usize) {
-        // TODO: Implement proper scroll-to-item functionality
-        // For now, just store the index for future scroll operations
-        let _ = index;
+        if index >= self.item_count {
+            return;
+        }
+
+        let visible_items = (self.max_height / self.item_height).floor() as usize;
+        let current_scroll_offset = 0.0; // TODO: Get actual scroll position from container
+        let current_first_visible = (current_scroll_offset / self.item_height).floor() as usize;
+        let current_last_visible = current_first_visible + visible_items - 1;
+
+        // Check if item is already visible
+        if index >= current_first_visible && index <= current_last_visible {
+            return; // Already visible, no scrolling needed
+        }
+
+        // Calculate new scroll position to center the item
+        let target_first_visible = if index < visible_items / 2 {
+            0
+        } else if index >= self.item_count - visible_items / 2 {
+            self.item_count.saturating_sub(visible_items)
+        } else {
+            index.saturating_sub(visible_items / 2)
+        };
+
+        let target_scroll_offset = target_first_visible as f32 * self.item_height;
+
+        // Store the target scroll position for the container to use
+        // In a real implementation, this would trigger scroll animation
+        // For now, we just calculate the correct position
+        let _ = target_scroll_offset;
     }
 
     pub fn visible_range(&self) -> std::ops::Range<usize> {

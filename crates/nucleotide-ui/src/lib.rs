@@ -87,7 +87,7 @@ pub use completion_renderer::{
     render_completion_list,
 };
 pub use completion_v2::{
-    CompletionAcceptedEvent, CompletionItem, CompletionItemKind, CompletionView, Position,
+    CompleteViaHelixEvent, CompletionItem, CompletionItemKind, CompletionView, Position,
     StringMatch, StringMatchCandidate,
 };
 pub use file_icon::FileIcon;

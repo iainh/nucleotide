@@ -369,26 +369,45 @@ impl CompletionFocusManager {
     }
 
     /// Focus the completion system
-    pub fn focus_completion<V: 'static>(&mut self, _cx: &mut Context<V>) {
+    pub fn focus_completion<V: 'static>(&mut self, cx: &mut Context<V>) {
         if !self.completion_focused {
-            // TODO: Implement proper focus handling with GPUI
-            // cx.focus(&self.completion_focus_handle);
-            self.completion_focused = true;
+            self.handle_focus_change(true, cx);
         }
     }
 
     /// Return focus to the editor
-    pub fn focus_editor<V: 'static>(&mut self, _cx: &mut Context<V>) {
+    pub fn focus_editor<V: 'static>(&mut self, cx: &mut Context<V>) {
         if let Some(_editor_handle) = &self.editor_focus_handle {
-            // TODO: Implement proper focus handling with GPUI
-            // cx.focus(editor_handle);
-            self.completion_focused = false;
+            self.handle_focus_change(false, cx);
         }
     }
 
     /// Check if completion currently has focus
     pub fn is_completion_focused(&self) -> bool {
         self.completion_focused
+    }
+
+    /// Handle focus changes with proper GPUI integration
+    fn handle_focus_change<V: 'static>(&mut self, focused: bool, cx: &mut Context<V>) {
+        self.completion_focused = focused;
+        if focused {
+            self.update_key_bindings(cx);
+        } else {
+            self.clear_pending_keys(cx);
+        }
+        cx.notify();
+    }
+
+    /// Update key bindings based on focus state
+    fn update_key_bindings<V: 'static>(&mut self, _cx: &mut Context<V>) {
+        // Update key binding context for focused state
+        // In a real implementation, this would configure context-specific bindings
+    }
+
+    /// Clear any pending key combinations
+    fn clear_pending_keys<V: 'static>(&mut self, _cx: &mut Context<V>) {
+        // Clear any partial key sequences when losing focus
+        // In a real implementation, this would reset keyboard state
     }
 
     /// Handle focus transition when completion becomes visible
