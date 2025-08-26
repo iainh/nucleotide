@@ -65,6 +65,19 @@ impl OverlayView {
         }
     }
 
+    pub fn handle_completion_arrow_key(&self, key: &str, cx: &mut Context<Self>) -> bool {
+        if let Some(completion_view) = &self.completion_view {
+            completion_view.update(cx, |view, cx| match key {
+                "up" => view.select_prev(cx),
+                "down" => view.select_next(cx),
+                _ => {}
+            });
+            true // Key was handled
+        } else {
+            false // No completion view to handle the key
+        }
+    }
+
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         // Clean up picker before clearing
         if let Some(picker) = &self.native_picker_view {

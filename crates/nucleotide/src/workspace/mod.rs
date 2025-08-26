@@ -432,6 +432,29 @@ impl Workspace {
             "Workspace received key event"
         );
 
+        // Check if completion is visible and handle arrow keys
+        if self.overlay.read(cx).has_completion() {
+            match ev.keystroke.key.as_str() {
+                "up" | "down" => {
+                    nucleotide_logging::info!(
+                        key = %ev.keystroke.key,
+                        "Forwarding arrow key to completion view"
+                    );
+                    // Forward the key event to the completion view via overlay method
+                    let handled = self.overlay.update(cx, |overlay, cx| {
+                        overlay.handle_completion_arrow_key(ev.keystroke.key.as_str(), cx)
+                    });
+                    if handled {
+                        // Don't let this key go to Helix - we handled it
+                        return;
+                    }
+                }
+                _ => {
+                    // For other keys when completion is visible, continue normal processing
+                }
+            }
+        }
+
         // Update input context based on current focus state
         self.update_input_context(window, cx);
 

@@ -828,22 +828,48 @@ impl CompletionView {
 
     /// Move selection up/down
     pub fn select_next(&mut self, cx: &mut Context<Self>) {
+        nucleotide_logging::info!(
+            current_index = self.selected_index,
+            filtered_count = self.filtered_entries.len(),
+            "select_next called"
+        );
         if !self.filtered_entries.is_empty() {
+            let old_index = self.selected_index;
             self.selected_index = (self.selected_index + 1) % self.filtered_entries.len();
+            nucleotide_logging::info!(
+                old_index = old_index,
+                new_index = self.selected_index,
+                "select_next: changed selection"
+            );
             self.update_documentation_for_selection(cx);
             cx.notify();
+        } else {
+            nucleotide_logging::warn!("select_next: no filtered entries available");
         }
     }
 
     pub fn select_prev(&mut self, cx: &mut Context<Self>) {
+        nucleotide_logging::info!(
+            current_index = self.selected_index,
+            filtered_count = self.filtered_entries.len(),
+            "select_prev called"
+        );
         if !self.filtered_entries.is_empty() {
+            let old_index = self.selected_index;
             self.selected_index = if self.selected_index == 0 {
                 self.filtered_entries.len() - 1
             } else {
                 self.selected_index - 1
             };
+            nucleotide_logging::info!(
+                old_index = old_index,
+                new_index = self.selected_index,
+                "select_prev: changed selection"
+            );
             self.update_documentation_for_selection(cx);
             cx.notify();
+        } else {
+            nucleotide_logging::warn!("select_prev: no filtered entries available");
         }
     }
 
@@ -1235,6 +1261,20 @@ impl Render for CompletionView {
                             view.select_next(cx);
                         }
                         // Stop propagation so Tab doesn't insert text in the editor
+                        cx.stop_propagation();
+                    }
+                    "up" => {
+                        nucleotide_logging::info!("Up arrow key pressed in completion popup");
+                        // Up arrow: Move to previous completion item
+                        view.select_prev(cx);
+                        // Stop propagation so arrow keys don't move cursor in editor
+                        cx.stop_propagation();
+                    }
+                    "down" => {
+                        nucleotide_logging::info!("Down arrow key pressed in completion popup");
+                        // Down arrow: Move to next completion item
+                        view.select_next(cx);
+                        // Stop propagation so arrow keys don't move cursor in editor
                         cx.stop_propagation();
                     }
                     "enter" => {
