@@ -897,13 +897,28 @@ fn gui_main(
                                                                 Some(markup.value.clone()),
                                                             None => None,
                                                         },
-                                                        insert_text: lsp_item.item.insert_text.clone().unwrap_or_else(|| lsp_item.item.label.clone()),
+                                                        insert_text: {
+                                                            // Priority order: text_edit.new_text -> insert_text -> label
+                                                            if let Some(ref text_edit) = lsp_item.item.text_edit {
+                                                                match text_edit {
+                                                                    helix_lsp::lsp::CompletionTextEdit::Edit(edit) => edit.new_text.clone(),
+                                                                    helix_lsp::lsp::CompletionTextEdit::InsertAndReplace(edit) => edit.new_text.clone(),
+                                                                }
+                                                            } else {
+                                                                lsp_item.item.insert_text.clone().unwrap_or_else(|| lsp_item.item.label.clone())
+                                                            }
+                                                        },
                                                         score: 1.0, // Default score for LSP items
                                                         signature_info: None,
                                                         type_info: None,
-                                                        insert_text_format: match lsp_item.item.insert_text_format {
-                                                            Some(helix_lsp::lsp::InsertTextFormat::SNIPPET) => nucleotide_events::completion::InsertTextFormat::Snippet,
-                                                            _ => nucleotide_events::completion::InsertTextFormat::PlainText,
+                                                        insert_text_format: {
+                                                            // Check both insert_text_format and completion kind like Helix does
+                                                            if matches!(lsp_item.item.insert_text_format, Some(helix_lsp::lsp::InsertTextFormat::SNIPPET)) ||
+                                                               matches!(lsp_item.item.kind, Some(helix_lsp::lsp::CompletionItemKind::SNIPPET)) {
+                                                                nucleotide_events::completion::InsertTextFormat::Snippet
+                                                            } else {
+                                                                nucleotide_events::completion::InsertTextFormat::PlainText
+                                                            }
                                                         },
                                                     }
                                                 }
