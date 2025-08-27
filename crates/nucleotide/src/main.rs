@@ -659,37 +659,8 @@ fn gui_main(
                     app.post_init(cx);
                 });
 
-                // Start the completion coordinator
-                let coordinator_channels = app.update(cx, |app, _cx| {
-                    // Get the completion events channel from helix 
-                    let completion_rx = app.take_completion_receiver()
-                        .expect("Completion receiver should be available");
-
-                    // Get the completion results channel to send back to workspace
-                    let completion_results_tx = app.take_completion_results_sender()
-                        .expect("Completion results sender should be available");
-
-                    // Get the LSP completion requests channel to receive from workspace
-                    let lsp_completion_requests_tx = app.take_lsp_completion_requests_sender()
-                        .expect("LSP completion requests sender should be available");
-
-                    (completion_rx, completion_results_tx, lsp_completion_requests_tx)
-                });
-
-                let app_entity = app.clone();
-                let background_executor = cx.background_executor().clone();
-
-                nucleotide_logging::info!("Creating and starting CompletionCoordinator");
-                let coordinator = nucleotide::completion_coordinator::CompletionCoordinator::new(
-                    coordinator_channels.0, // completion_rx - receive from helix
-                    coordinator_channels.1, // completion_results_tx - send to workspace  
-                    coordinator_channels.2, // lsp_completion_requests_tx - receive from workspace
-                    app_entity,            // core Application entity
-                    background_executor,   // background executor
-                );
-
-                // Start the coordinator
-                coordinator.spawn();
+                // Completion is now handled directly through Helix's completion system
+                nucleotide_logging::info!("Using direct Helix completion integration - no coordinator needed");
 
 
                 cx.activate(true);
@@ -843,14 +814,7 @@ fn gui_main(
                 // Create workspace
 
                 let workspace = cx.new(|cx| {
-                    // Get the completion results receiver from the application
-                    let completion_results_rx = app.update(cx, |app, _cx| {
-                        app.take_completion_results_receiver()
-                    });
-                    // Get the completion events sender from the application
-                    let completion_events_tx = app.update(cx, |app, _cx| {
-                        app.take_completion_sender()
-                    });
+                    // With direct Helix integration, we no longer need completion coordinator channels
                     let mut workspace = workspace::Workspace::with_views(
                         app,
                         input_1.clone(),
@@ -859,8 +823,6 @@ fn gui_main(
                         notifications,
                         info,
                         input_coordinator,
-                        completion_results_rx,
-                        completion_events_tx,
                         cx,
                     );
 
@@ -877,6 +839,131 @@ fn gui_main(
 
                     workspace
                 });
+
+                // Create channel for forwarding completion results from hook to GPUI context
+                let (completion_tx, mut completion_rx) = tokio::sync::mpsc::unbounded_channel::<helix_term::handlers::completion::GpuiCompletionResults>();
+
+                // Register GPUI completion hook to forward LSP results via channel
+                {
+                    nucleotide_logging::info!("🔧 Registering GPUI completion hook for LSP integration");
+                    let completion_tx = completion_tx.clone();
+                    helix_term::handlers::completion::set_gpui_completion_hook(move |results| {
+                        nucleotide_logging::info!("🔗 GPUI completion hook triggered with {} items", results.items.len());
+
+                        // Send completion results through channel to get back to GPUI context
+                        if let Err(e) = completion_tx.send(results.clone()) {
+                            nucleotide_logging::warn!("Failed to send completion results through channel: {}", e);
+                        } else {
+                            nucleotide_logging::info!("✅ Completion results sent through channel successfully");
+                        }
+                    });
+                }
+
+                // Spawn task to process completion results and emit GPUI updates
+                {
+                    let workspace_weak = workspace.downgrade();
+                    cx.spawn(async move |mut cx| {
+                        while let Some(results) = completion_rx.recv().await {
+                            nucleotide_logging::info!("📨 Received completion results from channel: {} items", results.items.len());
+
+                            if let Some(workspace_entity) = workspace_weak.upgrade() {
+                                // Now we have GPUI context and can update the workspace
+                                workspace_entity.update(cx, |workspace, cx| {
+                                    // Convert helix completion items to nucleotide event items
+                                    let event_items: Vec<nucleotide_events::completion::CompletionItem> = results.items
+                                        .iter()
+                                        .map(|item| {
+                                            match item {
+                                                helix_term::handlers::completion::CompletionItem::Lsp(lsp_item) => {
+                                                    nucleotide_events::completion::CompletionItem {
+                                                        label: lsp_item.item.label.clone(),
+                                                        kind: match lsp_item.item.kind {
+                                                            Some(helix_lsp::lsp::CompletionItemKind::FUNCTION) =>
+                                                                nucleotide_events::completion::CompletionItemKind::Function,
+                                                            Some(helix_lsp::lsp::CompletionItemKind::METHOD) =>
+                                                                nucleotide_events::completion::CompletionItemKind::Method,
+                                                            Some(helix_lsp::lsp::CompletionItemKind::VARIABLE) =>
+                                                                nucleotide_events::completion::CompletionItemKind::Variable,
+                                                            Some(helix_lsp::lsp::CompletionItemKind::CLASS) =>
+                                                                nucleotide_events::completion::CompletionItemKind::Class,
+                                                            Some(helix_lsp::lsp::CompletionItemKind::MODULE) =>
+                                                                nucleotide_events::completion::CompletionItemKind::Module,
+                                                            _ => nucleotide_events::completion::CompletionItemKind::Text,
+                                                        },
+                                                        detail: lsp_item.item.detail.clone(),
+                                                        documentation: match &lsp_item.item.documentation {
+                                                            Some(helix_lsp::lsp::Documentation::String(s)) => Some(s.clone()),
+                                                            Some(helix_lsp::lsp::Documentation::MarkupContent(markup)) =>
+                                                                Some(markup.value.clone()),
+                                                            None => None,
+                                                        },
+                                                        insert_text: {
+                                                            // Priority order: text_edit.new_text -> insert_text -> label
+                                                            let final_text = if let Some(ref text_edit) = lsp_item.item.text_edit {
+                                                                let text = match text_edit {
+                                                                    helix_lsp::lsp::CompletionTextEdit::Edit(edit) => edit.new_text.clone(),
+                                                                    helix_lsp::lsp::CompletionTextEdit::InsertAndReplace(edit) => edit.new_text.clone(),
+                                                                };
+                                                                text
+                                                            } else {
+                                                                let text = lsp_item.item.insert_text.clone().unwrap_or_else(|| lsp_item.item.label.clone());
+                                                                text
+                                                            };
+                                                            final_text
+                                                        },
+                                                        score: 1.0, // Default score for LSP items
+                                                        signature_info: None,
+                                                        type_info: None,
+                                                        insert_text_format: {
+                                                            // Check both insert_text_format and completion kind like Helix does
+                                                            let is_snippet = matches!(lsp_item.item.insert_text_format, Some(helix_lsp::lsp::InsertTextFormat::SNIPPET)) ||
+                                                                             matches!(lsp_item.item.kind, Some(helix_lsp::lsp::CompletionItemKind::SNIPPET));
+
+                                                            if is_snippet {
+                                                                nucleotide_events::completion::InsertTextFormat::Snippet
+                                                            } else {
+                                                                nucleotide_events::completion::InsertTextFormat::PlainText
+                                                            }
+                                                        },
+                                                    }
+                                                }
+                                                helix_term::handlers::completion::CompletionItem::Other(other_item) => {
+                                                    nucleotide_events::completion::CompletionItem {
+                                                        label: other_item.label.to_string(),
+                                                        kind: nucleotide_events::completion::CompletionItemKind::Text,
+                                                        detail: other_item.documentation.clone(),
+                                                        documentation: other_item.documentation.clone(),
+                                                        insert_text: other_item.label.to_string(),
+                                                        score: 1.0,
+                                                        signature_info: None,
+                                                        type_info: None,
+                                                        insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
+                                                    }
+                                                }
+                                            }
+                                        })
+                                        .collect();
+
+                                    // Use the extracted text prefix from Helix
+                                    let prefix = results.text_prefix.clone();
+
+                                    nucleotide_logging::info!("🎨 Displaying {} completion items in GPUI", event_items.len());
+                                    workspace.show_completion_items_with_prefix(
+                                        event_items,
+                                        prefix,
+                                        results.trigger_pos,
+                                        results.doc_id,
+                                        results.view_id,
+                                        cx
+                                    );
+                                }).ok();
+                            } else {
+                                nucleotide_logging::warn!("🔗 Workspace entity no longer available for completion display");
+                                break;
+                            }
+                        }
+                    }).detach();
+                }
 
                 // Initialize ProjectLspManager for project detection and proactive LSP startup
                 // This must be done after workspace creation to ensure proper initialization

@@ -10,6 +10,7 @@ pub mod common;
 pub mod completion_cache;
 pub mod completion_docs;
 pub mod completion_error;
+pub mod completion_icons;
 pub mod completion_keyboard;
 pub mod completion_perf;
 pub mod completion_popup;
@@ -74,6 +75,10 @@ pub use completion_error::{
     ErrorHandlingResult, ErrorRecoveryExecutor, ErrorSeverity, ErrorStats, RecoveryAction,
     RecoveryResult,
 };
+pub use completion_icons::{
+    CompletionIconConfig, create_completion_icon, create_themed_completion_icon,
+    get_completion_icon_color, get_completion_icon_svg,
+};
 pub use completion_keyboard::{
     CompletionAction, CompletionFocusManager, CompletionKeyboardHandler, KeyboardConfig,
     KeyboardNavigationResult, TriggerDetector,
@@ -87,7 +92,7 @@ pub use completion_renderer::{
     render_completion_list,
 };
 pub use completion_v2::{
-    CompletionAcceptedEvent, CompletionItem, CompletionItemKind, CompletionView, Position,
+    CompleteViaHelixEvent, CompletionItem, CompletionItemKind, CompletionView, Position,
     StringMatch, StringMatchCandidate,
 };
 pub use file_icon::FileIcon;
@@ -126,8 +131,8 @@ pub use styling::{
     compute_style_for_states, merge_styles, should_enable_animations,
 };
 pub use tokens::{
-    ChromeTokens, ColorContext, DesignTokens, EditorTokens, FileTreeTokens, SemanticColors,
-    SizeTokens, StatusBarTokens, TabBarTokens, TitleBarTokens,
+    ChromeTokens, ColorContext, CompletionIconTokens, DesignTokens, EditorTokens, FileTreeTokens,
+    SemanticColors, SizeTokens, StatusBarTokens, TabBarTokens, TitleBarTokens,
 };
 pub use traits::{
     Component, ComponentBuilder, ComponentFactory, ComponentState, ComponentStyles, Composable,

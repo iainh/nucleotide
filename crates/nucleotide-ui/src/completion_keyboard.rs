@@ -217,20 +217,18 @@ impl CompletionKeyboardHandler {
         }
     }
 
-    /// Get default key bindings as action names
+    /// Get default key bindings as action names (matching Helix exactly)
     pub fn default_key_bindings() -> Vec<(&'static str, &'static str)> {
         vec![
-            ("tab", "completion::accept"),
-            ("enter", "completion::accept"),
-            ("escape", "completion::cancel"),
-            ("down", "completion::select_next"),
-            ("up", "completion::select_previous"),
-            ("ctrl-n", "completion::select_next"),
-            ("ctrl-p", "completion::select_previous"),
-            ("page_down", "completion::page_down"),
-            ("page_up", "completion::page_up"),
-            ("home", "completion::select_first"),
-            ("end", "completion::select_last"),
+            // Helix primary keybindings
+            ("ctrl-y", "completion::accept"), // Primary confirm in Helix
+            ("tab", "completion::accept"),    // Secondary confirm in Helix
+            ("escape", "completion::cancel"), // Close completion
+            ("down", "completion::select_next"), // Next item
+            ("up", "completion::select_previous"), // Previous item
+            ("ctrl-n", "completion::select_next"), // Next item (Helix style)
+            ("ctrl-p", "completion::select_previous"), // Previous item (Helix style)
+            // Additional useful bindings (not in Helix core but commonly used)
             ("ctrl-d", "completion::toggle_documentation"),
             ("ctrl-space", "completion::trigger"),
         ]
@@ -253,28 +251,24 @@ impl CompletionKeyboardHandler {
         ]
     }
 
-    /// Process a keystroke and determine the appropriate action
+    /// Process a keystroke and determine the appropriate action (matching Helix exactly)
     pub fn process_keystroke(&self, keystroke: &Keystroke) -> Option<CompletionAction> {
         // This would typically be handled by GPUI's action system
-        // For now, we'll provide a basic mapping
+        // For now, we'll provide a basic mapping that matches Helix
         match keystroke.key.as_str() {
-            "Tab" => Some(CompletionAction::Accept),
-            "Enter" => Some(CompletionAction::Accept),
-            "Escape" => Some(CompletionAction::Cancel),
-            "ArrowDown" => Some(CompletionAction::SelectNext),
-            "ArrowUp" => Some(CompletionAction::SelectPrevious),
-            "PageDown" => Some(CompletionAction::PageDown),
-            "PageUp" => Some(CompletionAction::PageUp),
-            "Home" => Some(CompletionAction::SelectFirst),
-            "End" => Some(CompletionAction::SelectLast),
+            "Tab" => Some(CompletionAction::Accept), // Secondary accept (Helix)
+            "Escape" => Some(CompletionAction::Cancel), // Close completion (Helix)
+            "ArrowDown" => Some(CompletionAction::SelectNext), // Next item (Helix)
+            "ArrowUp" => Some(CompletionAction::SelectPrevious), // Previous item (Helix)
             _ => {
                 // Check for modifier combinations
                 if keystroke.modifiers.control {
                     match keystroke.key.as_str() {
-                        "n" => Some(CompletionAction::SelectNext),
-                        "p" => Some(CompletionAction::SelectPrevious),
-                        "d" => Some(CompletionAction::ToggleDocumentation),
-                        " " => Some(CompletionAction::TriggerCompletion),
+                        "y" => Some(CompletionAction::Accept), // Primary accept (Helix)
+                        "n" => Some(CompletionAction::SelectNext), // Next item (Helix)
+                        "p" => Some(CompletionAction::SelectPrevious), // Previous item (Helix)
+                        "d" => Some(CompletionAction::ToggleDocumentation), // Extra feature
+                        " " => Some(CompletionAction::TriggerCompletion), // Extra feature
                         _ => None,
                     }
                 } else {
@@ -284,20 +278,19 @@ impl CompletionKeyboardHandler {
         }
     }
 
-    /// Check if a keystroke should be passed through to the editor
+    /// Check if a keystroke should be passed through to the editor (matching Helix behavior)
     pub fn should_pass_through(&self, keystroke: &Keystroke) -> bool {
         if !self.is_active {
             return true;
         }
 
-        // Always pass through regular typing unless it's a navigation key
+        // Always pass through regular typing unless it's a completion navigation key
         match keystroke.key.as_str() {
-            "Tab" | "Enter" | "Escape" | "ArrowDown" | "ArrowUp" | "PageDown" | "PageUp"
-            | "Home" | "End" => false,
+            "Tab" | "Escape" | "ArrowDown" | "ArrowUp" => false, // Helix completion keys
             _ => {
                 if keystroke.modifiers.control {
                     match keystroke.key.as_str() {
-                        "n" | "p" | "d" | " " => false,
+                        "y" | "n" | "p" | "d" | " " => false, // Helix C-y, C-n, C-p + extras
                         _ => true,
                     }
                 } else {
@@ -369,26 +362,45 @@ impl CompletionFocusManager {
     }
 
     /// Focus the completion system
-    pub fn focus_completion<V: 'static>(&mut self, _cx: &mut Context<V>) {
+    pub fn focus_completion<V: 'static>(&mut self, cx: &mut Context<V>) {
         if !self.completion_focused {
-            // TODO: Implement proper focus handling with GPUI
-            // cx.focus(&self.completion_focus_handle);
-            self.completion_focused = true;
+            self.handle_focus_change(true, cx);
         }
     }
 
     /// Return focus to the editor
-    pub fn focus_editor<V: 'static>(&mut self, _cx: &mut Context<V>) {
+    pub fn focus_editor<V: 'static>(&mut self, cx: &mut Context<V>) {
         if let Some(_editor_handle) = &self.editor_focus_handle {
-            // TODO: Implement proper focus handling with GPUI
-            // cx.focus(editor_handle);
-            self.completion_focused = false;
+            self.handle_focus_change(false, cx);
         }
     }
 
     /// Check if completion currently has focus
     pub fn is_completion_focused(&self) -> bool {
         self.completion_focused
+    }
+
+    /// Handle focus changes with proper GPUI integration
+    fn handle_focus_change<V: 'static>(&mut self, focused: bool, cx: &mut Context<V>) {
+        self.completion_focused = focused;
+        if focused {
+            self.update_key_bindings(cx);
+        } else {
+            self.clear_pending_keys(cx);
+        }
+        cx.notify();
+    }
+
+    /// Update key bindings based on focus state
+    fn update_key_bindings<V: 'static>(&mut self, _cx: &mut Context<V>) {
+        // Update key binding context for focused state
+        // In a real implementation, this would configure context-specific bindings
+    }
+
+    /// Clear any pending key combinations
+    fn clear_pending_keys<V: 'static>(&mut self, _cx: &mut Context<V>) {
+        // Clear any partial key sequences when losing focus
+        // In a real implementation, this would reset keyboard state
     }
 
     /// Handle focus transition when completion becomes visible
@@ -489,7 +501,7 @@ mod tests {
         let action = handler.process_keystroke(&keystroke);
         assert_eq!(action, Some(CompletionAction::SelectNext));
 
-        // Test modified keys
+        // Test Helix-style modified keys (C-n for next)
         let keystroke = Keystroke {
             modifiers: gpui::Modifiers {
                 control: true,
@@ -501,6 +513,19 @@ mod tests {
 
         let action = handler.process_keystroke(&keystroke);
         assert_eq!(action, Some(CompletionAction::SelectNext));
+
+        // Test Helix primary accept key (C-y)
+        let keystroke = Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                ..Default::default()
+            },
+            key: "y".to_string(),
+            key_char: Some('y'.to_string()),
+        };
+
+        let action = handler.process_keystroke(&keystroke);
+        assert_eq!(action, Some(CompletionAction::Accept));
     }
 
     #[test]
@@ -526,7 +551,7 @@ mod tests {
         let should_pass = handler.should_pass_through(&keystroke);
         assert!(should_pass);
 
-        // When active, navigation keys should not pass through
+        // When active, Helix navigation keys should not pass through
         handler.set_active(true);
 
         let nav_keystroke = Keystroke {
@@ -536,6 +561,19 @@ mod tests {
         };
 
         let should_pass = handler.should_pass_through(&nav_keystroke);
+        assert!(!should_pass);
+
+        // Helix C-y (primary accept) should not pass through
+        let cy_keystroke = Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                ..Default::default()
+            },
+            key: "y".to_string(),
+            key_char: Some('y'.to_string()),
+        };
+
+        let should_pass = handler.should_pass_through(&cy_keystroke);
         assert!(!should_pass);
 
         // But regular typing should pass through

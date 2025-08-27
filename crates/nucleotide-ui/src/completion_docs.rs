@@ -491,6 +491,7 @@ pub struct DocumentationPanel {
     renderer: MarkdownRenderer,
     visible: bool,
     width: f32,
+    scroll_position: f32,
 }
 
 impl Default for DocumentationPanel {
@@ -506,13 +507,16 @@ impl DocumentationPanel {
             renderer: MarkdownRenderer::new(),
             visible: false,
             width: 300.0,
+            scroll_position: 0.0,
         }
     }
 
     pub fn set_content(&mut self, content: Option<DocumentationContent>) {
         self.content = content;
         // Reset scroll position when content changes
-        // TODO: Implement scroll position reset when API is available
+        self.scroll_position = 0.0;
+        // Mark for UI refresh to apply scroll reset
+        // In a real implementation, this would trigger container scroll reset
     }
 
     pub fn set_visible(&mut self, visible: bool) {

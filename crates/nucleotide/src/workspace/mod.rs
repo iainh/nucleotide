@@ -1,8 +1,10 @@
 // ABOUTME: Workspace module decomposition for cleaner architecture
 // ABOUTME: Separates view management from workspace coordination logic
 
+pub mod prefix_extraction;
 pub mod view_manager;
 
+use prefix_extraction::PrefixExtractor;
 pub use view_manager::ViewManager;
 
 // Main workspace implementation
@@ -34,6 +36,7 @@ use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;
+use crate::editor_provider::EditorProviderExt;
 use crate::file_tree::{FileTreeConfig, FileTreeEvent, FileTreeView};
 use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
@@ -70,10 +73,7 @@ pub struct Workspace {
     project_lsp_manager: Option<Arc<nucleotide_lsp::ProjectLspManager>>, // Project-level LSP management
     current_project_root: Option<std::path::PathBuf>, // Track current project root for change detection
     pending_lsp_startup: Option<std::path::PathBuf>,  // Track pending server startup requests
-    completion_results_rx:
-        Option<tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>>, // LSP completion results channel
-    completion_events_tx:
-        Option<tokio::sync::mpsc::Sender<helix_view::handlers::completion::CompletionEvent>>, // Send completion events to coordinator
+    prefix_extractor: PrefixExtractor,                // Language-aware completion prefix extraction
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -111,12 +111,6 @@ impl Workspace {
         notifications: Entity<NotificationView>,
         info: Entity<InfoBoxView>,
         input_coordinator: Arc<InputCoordinator>,
-        completion_results_rx: Option<
-            tokio::sync::mpsc::Receiver<crate::completion_coordinator::CompletionResult>,
-        >,
-        completion_events_tx: Option<
-            tokio::sync::mpsc::Sender<helix_view::handlers::completion::CompletionEvent>,
-        >,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
@@ -137,11 +131,14 @@ impl Workspace {
         )
         .detach();
 
-        // DISABLED: Custom completion acceptance event handling
-        // Let Helix handle completion natively instead
-        // cx.subscribe(&overlay, |workspace, _overlay, event: &CompletionAcceptedEvent, cx| {
-        //     workspace.handle_completion_accepted(&event.text, cx);
-        // }).detach();
+        // Subscribe to completion acceptance events from the overlay
+        cx.subscribe(
+            &overlay,
+            |workspace, _overlay, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
+                workspace.handle_completion_via_helix(event.item_index, cx);
+            },
+        )
+        .detach();
 
         // Subscribe to core (Application) events to receive Update events
         cx.subscribe(&core, |workspace, _core, event: &crate::Update, cx| {
@@ -294,8 +291,7 @@ impl Workspace {
             project_lsp_manager,
             current_project_root: root_path_for_manager.clone(),
             pending_lsp_startup: None,
-            completion_results_rx,
-            completion_events_tx,
+            prefix_extractor: PrefixExtractor::new(),
         };
 
         // Set initial focus restore state
@@ -334,50 +330,11 @@ impl Workspace {
         workspace
     }
 
-    /// Process completion results from the completion coordinator
-    fn process_completion_results(&mut self, cx: &mut Context<Self>) {
-        // Collect all completion results first to avoid borrowing conflicts
-        let mut completion_results = Vec::new();
-        if let Some(ref mut completion_results_rx) = self.completion_results_rx {
-            while let Ok(completion_result) = completion_results_rx.try_recv() {
-                completion_results.push(completion_result);
-            }
-        }
-
-        // Now process the results
-        for completion_result in completion_results {
-            match completion_result {
-                crate::completion_coordinator::CompletionResult::ShowCompletions {
-                    items,
-                    cursor,
-                    doc_id,
-                    view_id,
-                    prefix,
-                } => {
-                    nucleotide_logging::info!(
-                        count = items.len(),
-                        prefix = %prefix,
-                        cursor = cursor,
-                        doc_id = ?doc_id,
-                        view_id = ?view_id,
-                        "Received completion results from coordinator with prefix"
-                    );
-
-                    // Display completions in UI with prefix filtering
-                    if !items.is_empty() {
-                        self.show_completion_items_with_prefix(
-                            items, prefix, cursor, doc_id, view_id, cx,
-                        );
-                    } else {
-                        nucleotide_logging::info!("No completion items to display");
-                    }
-                }
-                crate::completion_coordinator::CompletionResult::HideCompletions => {
-                    nucleotide_logging::debug!("Hiding completions");
-                    self.hide_completions(cx);
-                }
-            }
-        }
+    /// Process completion results directly from Helix's completion system
+    fn process_completion_results(&mut self, _cx: &mut Context<Self>) {
+        // Completion results are now processed directly through Helix's completion system
+        // via hooks that we register to capture when Helix has completion results ready
+        // This method is kept as a placeholder for when we implement the hook-based system
     }
 
     /// Register workspace-specific actions with the input coordinator
@@ -482,6 +439,130 @@ impl Workspace {
             modifiers = ?ev.keystroke.modifiers,
             "Workspace received key event"
         );
+
+        // Check if completion is visible and handle navigation/control keys
+        if self.overlay.read(cx).has_completion() {
+            match ev.keystroke.key.as_str() {
+                "up" | "down" => {
+                    nucleotide_logging::info!(
+                        key = %ev.keystroke.key,
+                        "Forwarding arrow key to completion view"
+                    );
+                    // Forward the key event to the completion view via overlay method
+                    let handled = self.overlay.update(cx, |overlay, cx| {
+                        overlay.handle_completion_arrow_key(ev.keystroke.key.as_str(), cx)
+                    });
+                    if handled {
+                        // Don't let this key go to Helix - we handled it
+                        return;
+                    }
+                }
+                "tab" => {
+                    nucleotide_logging::info!(
+                        "Forwarding tab key to accept completion (secondary)"
+                    );
+                    // Forward tab to completion view to accept selected item
+                    let handled = self
+                        .overlay
+                        .update(cx, |overlay, cx| overlay.handle_completion_tab_key(cx));
+                    if handled {
+                        // Don't let tab go to Helix - we handled it
+                        return;
+                    }
+                }
+                key if ev.keystroke.modifiers.control => {
+                    // Handle Helix-style control key combinations
+                    match key {
+                        "y" => {
+                            nucleotide_logging::info!(
+                                "Forwarding C-y to accept completion (primary - Helix style)"
+                            );
+                            // Forward C-y to completion view to accept selected item (Helix primary)
+                            let handled = self
+                                .overlay
+                                .update(cx, |overlay, cx| overlay.handle_completion_tab_key(cx));
+                            if handled {
+                                // Don't let C-y go to Helix - we handled it
+                                return;
+                            }
+                        }
+                        "n" => {
+                            nucleotide_logging::info!(
+                                "Forwarding C-n to select next completion (Helix style)"
+                            );
+                            // Forward C-n to completion view for next selection
+                            let handled = self.overlay.update(cx, |overlay, cx| {
+                                overlay.handle_completion_arrow_key("down", cx)
+                            });
+                            if handled {
+                                // Don't let C-n go to Helix - we handled it
+                                return;
+                            }
+                        }
+                        "p" => {
+                            nucleotide_logging::info!(
+                                "Forwarding C-p to select previous completion (Helix style)"
+                            );
+                            // Forward C-p to completion view for previous selection
+                            let handled = self.overlay.update(cx, |overlay, cx| {
+                                overlay.handle_completion_arrow_key("up", cx)
+                            });
+                            if handled {
+                                // Don't let C-p go to Helix - we handled it
+                                return;
+                            }
+                        }
+                        _ => {
+                            // Other control keys - let them pass through to Helix
+                        }
+                    }
+                }
+                "escape" => {
+                    nucleotide_logging::info!("Forwarding escape key to close completion view");
+                    // Close the completion view without accepting any item
+                    self.overlay.update(cx, |overlay, cx| {
+                        overlay.dismiss_completion(cx);
+                    });
+                    // Don't let escape go to Helix - we handled it
+                    return;
+                }
+                "backspace" => {
+                    nucleotide_logging::debug!(
+                        "Backspace while completion active - will predict shorter prefix"
+                    );
+                    // For backspace, predict by removing the last character from current prefix
+                    self.update_completion_filter_with_predicted_backspace(cx);
+                }
+                key if key.len() == 1 => {
+                    let typed_char = key.chars().next().unwrap();
+                    if typed_char.is_alphanumeric() || typed_char == '_' {
+                        nucleotide_logging::debug!(
+                            key = %key,
+                            "Character typed while completion active - will update filter with predicted prefix"
+                        );
+                        // Regular alphanumeric character - update filter with prediction
+                        self.update_completion_filter_with_predicted_char(typed_char, cx);
+                    } else if typed_char == '.' {
+                        nucleotide_logging::debug!(
+                            key = %key,
+                            "Dot typed while completion active - will trigger new completion request"
+                        );
+                        // Dot should trigger a new completion request for methods/properties
+                        // Let the dot go to Helix first, then trigger new completion
+                        self.schedule_completion_filter_update(cx);
+                    } else {
+                        // Other punctuation might close completion
+                        nucleotide_logging::debug!(
+                            key = %key,
+                            "Non-alphanumeric character typed - letting Helix handle normally"
+                        );
+                    }
+                }
+                _ => {
+                    // For other keys when completion is visible, continue normal processing
+                }
+            }
+        }
 
         // Update input context based on current focus state
         self.update_input_context(window, cx);
@@ -1811,23 +1892,38 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // Completion was requested - trigger completion UI
-        info!(
-            "Completion requested for doc {:?}, view {:?}, trigger: {:?}",
-            doc_id, view_id, trigger
+        nucleotide_logging::info!(
+            "🎯 TRIGGER COMPLETION: doc {:?}, view {:?}, trigger: {:?}",
+            doc_id,
+            view_id,
+            trigger
         );
 
-        // DISABLED: Custom completion triggering - let Helix handle CTRL+Space natively
+        // Trigger completion through the completion coordinator
         match trigger {
             crate::types::CompletionTrigger::Manual => {
-                nucleotide_logging::info!(
-                    "DISABLED: Manual completion trigger - let Helix handle CTRL+Space natively"
-                );
+                nucleotide_logging::info!("Manual completion triggered (CTRL+Space)");
+
+                // Send manual trigger event to completion coordinator
+                self.core.update(cx, |app, _cx| {
+                    app.trigger_completion_manual(doc_id, view_id);
+                });
             }
-            crate::types::CompletionTrigger::Character(_c) => {
-                // DISABLED: Custom completion on character input - let Helix handle natively
+            crate::types::CompletionTrigger::Character(c) => {
+                nucleotide_logging::info!(character = %c, "Character-triggered completion");
+
+                // Send character trigger event to completion coordinator
+                self.core.update(cx, |app, _cx| {
+                    app.trigger_completion_character(doc_id, view_id, *c);
+                });
             }
             crate::types::CompletionTrigger::Automatic => {
-                // DISABLED: Custom automatic completion - let Helix handle natively
+                nucleotide_logging::info!("Automatic completion triggered");
+
+                // Send automatic trigger event to completion coordinator
+                self.core.update(cx, |app, _cx| {
+                    app.trigger_completion_automatic(doc_id, view_id);
+                });
             }
         }
 
@@ -2595,10 +2691,10 @@ impl Workspace {
                 self.handle_overlay_update(cx);
             }
             crate::Update::Completion(_completion_view) => {
-                nucleotide_logging::info!(
-                    "DISABLED: Custom completion view handling - using Helix's native completion instead"
-                );
-                // DISABLED: Custom completion view forwarding - let Helix handle completion natively
+                nucleotide_logging::info!("Forwarding completion to overlay");
+
+                // Overlay will handle completion view setup in its own Update handler
+                self.handle_overlay_update(cx);
             }
             crate::Update::OpenFile(path) => self.handle_open_file(path, cx),
             crate::Update::OpenDirectory(path) => self.handle_open_directory(path, cx),
@@ -3795,7 +3891,7 @@ impl Workspace {
             },
         ];
 
-        // Completion specific shortcuts (beyond the basic ones already registered)
+        // Completion specific shortcuts - Helix compatible keybindings
         let completion_shortcuts = vec![
             ShortcutDefinition {
                 key_combination: "up".to_string(),
@@ -3814,27 +3910,35 @@ impl Workspace {
                 enabled: true,
             },
             ShortcutDefinition {
-                key_combination: "enter".to_string(),
+                key_combination: "ctrl-y".to_string(),
                 action: ShortcutAction::Action("accept_completion".to_string()),
-                description: "Accept selected completion".to_string(),
+                description: "Accept selected completion (primary - Helix)".to_string(),
                 context: Some("completion".to_string()),
                 priority: EventPriority::Critical,
                 enabled: true,
             },
             ShortcutDefinition {
-                key_combination: "page-up".to_string(),
-                action: ShortcutAction::Navigate(GlobalNavigationDirection::First),
-                description: "Move to first completion item".to_string(),
+                key_combination: "tab".to_string(),
+                action: ShortcutAction::Action("accept_completion".to_string()),
+                description: "Accept selected completion (secondary)".to_string(),
                 context: Some("completion".to_string()),
                 priority: EventPriority::High,
                 enabled: true,
             },
             ShortcutDefinition {
-                key_combination: "page-down".to_string(),
-                action: ShortcutAction::Navigate(GlobalNavigationDirection::Last),
-                description: "Move to last completion item".to_string(),
+                key_combination: "ctrl-n".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::Down),
+                description: "Next completion item (Helix style)".to_string(),
                 context: Some("completion".to_string()),
-                priority: EventPriority::High,
+                priority: EventPriority::Critical,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "ctrl-p".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::Up),
+                description: "Previous completion item (Helix style)".to_string(),
+                context: Some("completion".to_string()),
+                priority: EventPriority::Critical,
                 enabled: true,
             },
         ];
@@ -3959,6 +4063,211 @@ impl Workspace {
         }
     }
 
+    /// Update completion filter if completion is active and prefix has changed
+    /// This should be called when text changes while completion is active
+    pub fn update_completion_filter(&mut self, new_prefix: String, cx: &mut Context<Self>) -> bool {
+        info!(
+            prefix = %new_prefix,
+            "Updating completion filter with new prefix"
+        );
+
+        // Check if we have an active completion view and update its filter
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.update_completion_filter(new_prefix, cx)
+        })
+    }
+
+    /// Update completion filter by detecting current prefix at cursor
+    /// This method attempts to auto-detect the current completion prefix
+    pub fn update_completion_filter_auto(&mut self, cx: &mut Context<Self>) -> bool {
+        // Get current text under cursor to determine new prefix
+        if let Some(current_prefix) = self.get_current_completion_prefix(cx) {
+            self.update_completion_filter(current_prefix, cx)
+        } else {
+            false
+        }
+    }
+
+    /// Schedule a completion filter update to happen after current key processing
+    /// This ensures the document text is updated before we extract the new prefix
+    fn schedule_completion_filter_update(&mut self, cx: &mut Context<Self>) {
+        // Use defer to schedule the filter update after the current key processing
+        let workspace_handle = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            if let Some(workspace) = workspace_handle.upgrade() {
+                workspace.update(cx, |workspace, cx| {
+                    nucleotide_logging::debug!("Executing deferred completion filter update");
+                    workspace.update_completion_filter_auto(cx);
+                });
+            }
+        });
+    }
+
+    /// Get the current word prefix under the cursor for completion filtering
+    fn get_current_completion_prefix(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        let core = self.core.clone();
+        core.update(cx, |core, _cx| {
+            let editor = &mut core.editor;
+            let (view, doc) = helix_view::current!(editor);
+            let text = doc.text();
+            let selection = doc.selection(view.id);
+            let cursor_pos = selection.primary().cursor(text.slice(..));
+
+            // Find the start of the current word by looking backwards from cursor
+            let line = text.char_to_line(cursor_pos);
+            let line_start = text.line_to_char(line);
+            let line_end = text.line_to_char(line + 1).min(text.len_chars());
+
+            // Get the full line text to ensure we capture the most recent character
+            let full_line = text.slice(line_start..line_end).to_string();
+
+            // Find our position within the line
+            let cursor_in_line = cursor_pos - line_start;
+
+            nucleotide_logging::debug!(
+                cursor_pos = cursor_pos,
+                line_start = line_start,
+                cursor_in_line = cursor_in_line,
+                full_line = %full_line,
+                "Cursor position analysis"
+            );
+
+            // Try getting text up to cursor position
+            let line_text_to_cursor = &full_line[..cursor_in_line.min(full_line.len())];
+
+            nucleotide_logging::debug!(
+                line_text_to_cursor = %line_text_to_cursor,
+                full_line_len = full_line.len(),
+                cursor_in_line = cursor_in_line,
+                "Text extraction analysis"
+            );
+
+            // Configure prefix extractor based on current document's file extension
+            if let Some(path) = doc.path() {
+                if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
+                    let language = self.map_extension_to_language(extension);
+                    self.prefix_extractor.configure_for_language(&language);
+                }
+            }
+
+            // Use the enhanced prefix extractor for language-aware completion
+            let (prefix, is_trigger_completion) = self
+                .prefix_extractor
+                .extract_prefix(line_text_to_cursor, cursor_in_line);
+
+            nucleotide_logging::debug!(
+                is_trigger_completion = is_trigger_completion,
+                extracted_prefix = %prefix,
+                "Enhanced prefix extraction result"
+            );
+
+            nucleotide_logging::debug!(
+                prefix = %prefix,
+                cursor_pos = cursor_pos,
+                line = line,
+                line_text_to_cursor = %line_text_to_cursor,
+                ends_with_dot = line_text_to_cursor.ends_with('.'),
+                is_trigger_completion = is_trigger_completion,
+                "Enhanced completion prefix extraction completed"
+            );
+
+            // Even empty prefix is valid for trigger completions (e.g., method completion after a dot)
+            Some(prefix)
+        })
+    }
+
+    /// Map file extensions to language identifiers
+    fn map_extension_to_language(&self, extension: &str) -> String {
+        match extension.to_lowercase().as_str() {
+            "rs" => "rust".to_string(),
+            "js" | "mjs" => "javascript".to_string(),
+            "ts" | "mts" => "typescript".to_string(),
+            "tsx" => "typescript".to_string(),
+            "jsx" => "javascript".to_string(),
+            "css" => "css".to_string(),
+            "scss" => "scss".to_string(),
+            "less" => "less".to_string(),
+            "php" => "php".to_string(),
+            "c" => "c".to_string(),
+            "cpp" | "cc" | "cxx" | "c++" => "cpp".to_string(),
+            "h" | "hpp" | "hxx" => "cpp".to_string(),
+            "py" => "python".to_string(),
+            "go" => "go".to_string(),
+            "java" => "java".to_string(),
+            _ => "generic".to_string(),
+        }
+    }
+
+    /// Update completion filter by predicting what the prefix will be after the character is typed
+    fn update_completion_filter_with_predicted_char(
+        &mut self,
+        typed_char: char,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // Get the current prefix and append the character that was just typed
+        if let Some(current_prefix) = self.get_current_completion_prefix(cx) {
+            let predicted_prefix = format!("{}{}", current_prefix, typed_char);
+
+            nucleotide_logging::debug!(
+                current_prefix = %current_prefix,
+                typed_char = %typed_char,
+                predicted_prefix = %predicted_prefix,
+                "Predicting completion prefix after character input"
+            );
+
+            self.update_completion_filter(predicted_prefix, cx)
+        } else {
+            // If we can't get current prefix, use just the typed character
+            let predicted_prefix = typed_char.to_string();
+            nucleotide_logging::debug!(
+                typed_char = %typed_char,
+                predicted_prefix = %predicted_prefix,
+                "Using typed character as completion prefix (no current prefix available)"
+            );
+
+            self.update_completion_filter(predicted_prefix, cx)
+        }
+    }
+
+    /// Update completion filter by predicting what the prefix will be after backspace
+    fn update_completion_filter_with_predicted_backspace(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // Get the current prefix and remove the last character to predict the result of backspace
+        if let Some(current_prefix) = self.get_current_completion_prefix(cx) {
+            if current_prefix.is_empty() {
+                // If prefix is already empty, backspace won't change anything
+                nucleotide_logging::debug!("Backspace on empty prefix - no filter update needed");
+                false
+            } else {
+                // Remove the last character to predict what prefix will be after backspace
+                let mut chars: Vec<char> = current_prefix.chars().collect();
+                chars.pop(); // Remove last character
+                let predicted_prefix: String = chars.iter().collect();
+
+                nucleotide_logging::debug!(
+                    current_prefix = %current_prefix,
+                    predicted_prefix = %predicted_prefix,
+                    "Predicting completion prefix after backspace"
+                );
+
+                if predicted_prefix.is_empty() {
+                    // If predicted prefix becomes empty, show all items by clearing filter
+                    self.update_completion_filter("".to_string(), cx)
+                } else {
+                    self.update_completion_filter(predicted_prefix, cx)
+                }
+            }
+        } else {
+            // If we can't get current prefix, just clear the filter to show all items
+            nucleotide_logging::debug!(
+                "No current prefix available - clearing filter for backspace"
+            );
+            self.update_completion_filter("".to_string(), cx)
+        }
+    }
+
     /// Process completion trigger and request LSP completions
     fn process_completion_trigger(
         &mut self,
@@ -3967,30 +4276,15 @@ impl Workspace {
         view_id: helix_view::ViewId,
         cx: &mut Context<Self>,
     ) {
-        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, "Sending completion event to coordinator");
+        info!(cursor = cursor, doc_id = ?doc_id, view_id = ?view_id, "Sending completion event directly to Application");
 
-        // Send completion event to the CompletionCoordinator
-        if let Some(completion_events_tx) = &self.completion_events_tx {
-            let event = helix_view::handlers::completion::CompletionEvent::ManualTrigger {
-                cursor,
-                doc: doc_id,
-                view: view_id,
-            };
+        // Send completion event directly to the Application which will forward to Helix
+        self.core.update(cx, |app, _cx| {
+            app.trigger_completion_manual(doc_id, view_id);
+        });
 
-            match completion_events_tx.try_send(event) {
-                Ok(()) => {
-                    info!("Successfully sent manual completion trigger event to coordinator");
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to send completion event to coordinator");
-                }
-            }
-        } else {
-            error!("Completion events channel not available - cannot trigger completion");
-        }
-
-        // The result will come back via the completion_results_rx channel
-        // which is processed in process_completion_results()
+        // Completion results will now be processed directly through Helix's completion system
+        // via hooks that we'll register to capture when Helix has completion results ready
     }
 
     /// Convert completion items and show completion popup
@@ -4040,11 +4334,22 @@ impl Workspace {
                 };
 
                 UiCompletionItem {
-                    text: item.label.clone().into(),
-                    description: item.detail.map(|d| d.into()),
+                    text: item.insert_text.into(),
+                    description: item.detail.as_ref().map(|d| d.clone().into()),
                     display_text: Some(item.label.into()),
                     kind: Some(ui_kind),
                     documentation: item.documentation.map(|d| d.into()),
+                    detail: item.detail.map(|d| d.into()),
+                    signature_info: item.signature_info.map(|s| s.into()),
+                    type_info: item.type_info.map(|t| t.into()),
+                    insert_text_format: match item.insert_text_format {
+                        nucleotide_events::completion::InsertTextFormat::PlainText => {
+                            nucleotide_ui::completion_v2::InsertTextFormat::PlainText
+                        }
+                        nucleotide_events::completion::InsertTextFormat::Snippet => {
+                            nucleotide_ui::completion_v2::InsertTextFormat::Snippet
+                        }
+                    },
                 }
             })
             .collect();
@@ -4067,7 +4372,7 @@ impl Workspace {
     }
 
     /// Convert completion items and show completion popup with prefix filtering
-    fn show_completion_items_with_prefix(
+    pub fn show_completion_items_with_prefix(
         &mut self,
         items: Vec<nucleotide_events::completion::CompletionItem>,
         prefix: String,
@@ -4114,11 +4419,22 @@ impl Workspace {
                 };
 
                 UiCompletionItem {
-                    text: item.label.into(),
-                    description: item.detail.map(|d| d.into()),
-                    display_text: Some(SharedString::from(item.insert_text)),
+                    text: item.insert_text.into(),
+                    description: item.detail.as_ref().map(|d| d.clone().into()),
+                    display_text: Some(item.label.into()),
                     kind: Some(ui_kind),
                     documentation: item.documentation.map(|d| d.into()),
+                    detail: item.detail.map(|d| d.into()),
+                    signature_info: item.signature_info.map(|s| s.into()),
+                    type_info: item.type_info.map(|t| t.into()),
+                    insert_text_format: match item.insert_text_format {
+                        nucleotide_events::completion::InsertTextFormat::PlainText => {
+                            nucleotide_ui::completion_v2::InsertTextFormat::PlainText
+                        }
+                        nucleotide_events::completion::InsertTextFormat::Snippet => {
+                            nucleotide_ui::completion_v2::InsertTextFormat::Snippet
+                        }
+                    },
                 }
             })
             .collect();
@@ -4130,6 +4446,7 @@ impl Workspace {
         );
 
         // Create completion view with prefix filtering
+        let ui_items_count = ui_items.len();
         let completion_view = cx.new(|cx| {
             let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
             // Use the new method that applies initial filtering
@@ -4141,11 +4458,16 @@ impl Workspace {
             view.set_items_with_filter(ui_items, initial_filter, cx);
             view
         });
-
         nucleotide_logging::info!(
-            "Created filtered completion view, emitting Update::Completion event"
+            "✨ CREATING COMPLETION VIEW: {} items, emitting Update::Completion event via core",
+            ui_items_count
         );
-        cx.emit(crate::Update::Completion(completion_view));
+
+        // Emit through core so overlay (which subscribes to core) receives the event
+        let completion_view_clone = completion_view.clone();
+        self.core.update(cx, |_core, cx| {
+            cx.emit(crate::Update::Completion(completion_view_clone));
+        });
         cx.notify();
     }
 
@@ -4310,11 +4632,18 @@ impl Workspace {
                                 };
 
                                 nucleotide_ui::completion_v2::CompletionItem {
-                                    text: item.label.into(),
-                                    description: item.detail.map(|d| d.into()),
-                                    display_text: Some(item.insert_text.into()),
+                                    text: item.insert_text.into(),
+                                    description: item.detail.as_ref().map(|d| d.clone().into()),
+                                    display_text: Some(item.label.into()),
                                     kind: ui_kind,
                                     documentation: item.documentation.map(|d| d.into()),
+                                    detail: item.detail.map(|d| d.into()),
+                                    signature_info: item.signature_info.map(|s| s.into()),
+                                    type_info: item.type_info.map(|t| t.into()),
+                                    insert_text_format: match item.insert_text_format {
+                                        nucleotide_events::completion::InsertTextFormat::PlainText => nucleotide_ui::completion_v2::InsertTextFormat::PlainText,
+                                        nucleotide_events::completion::InsertTextFormat::Snippet => nucleotide_ui::completion_v2::InsertTextFormat::Snippet,
+                                    },
                                 }
                             })
                             .collect();
@@ -4350,7 +4679,281 @@ impl Workspace {
     // The Application now handles completion results and emits Update::Completion events
     // which the workspace receives via the existing event subscription
 
-    /// Handle completion acceptance - insert the selected text into the editor
+    /// Handle completion acceptance via Helix's transaction system
+    fn handle_completion_via_helix(&mut self, item_index: usize, cx: &mut Context<Self>) {
+        nucleotide_logging::info!(
+            item_index = item_index,
+            "Accepting completion via Helix transaction system"
+        );
+
+        // Get the completion item from the current completion state
+        let completion_item = self.overlay.update(cx, |overlay, cx| {
+            overlay.get_completion_item(item_index, cx)
+        });
+
+        let Some(completion_item) = completion_item else {
+            nucleotide_logging::warn!(
+                item_index = item_index,
+                "No completion item at index for acceptance"
+            );
+            return;
+        };
+
+        nucleotide_logging::info!(
+            item_index = item_index,
+            completion_text = %completion_item.text,
+            insert_text_format = ?completion_item.insert_text_format,
+            "Retrieved completion item for transaction"
+        );
+
+        // Check if this is a snippet completion
+        match completion_item.insert_text_format {
+            nucleotide_ui::completion_v2::InsertTextFormat::Snippet => {
+                self.handle_snippet_completion(completion_item, cx);
+            }
+            nucleotide_ui::completion_v2::InsertTextFormat::PlainText => {
+                self.handle_plain_text_completion(completion_item, cx);
+            }
+        }
+    }
+
+    fn handle_snippet_completion(
+        &mut self,
+        completion_item: nucleotide_ui::CompletionItem,
+        cx: &mut Context<Self>,
+    ) {
+        nucleotide_logging::info!(
+            completion_text = %completion_item.text,
+            "Processing snippet completion with cursor positioning"
+        );
+
+        // Parse the snippet
+        let snippet_template = match nucleotide_core::SnippetTemplate::parse(&completion_item.text)
+        {
+            Ok(template) => template,
+            Err(err) => {
+                nucleotide_logging::warn!(
+                    completion_text = %completion_item.text,
+                    error = %err,
+                    "Failed to parse snippet, falling back to plain text"
+                );
+                // Fall back to plain text handling
+                self.handle_plain_text_completion(completion_item, cx);
+                return;
+            }
+        };
+
+        // Render snippet to plain text and calculate cursor position
+        let plain_text = snippet_template.render_plain_text();
+
+        nucleotide_logging::info!(
+            original_snippet = %completion_item.text,
+            rendered_text = %plain_text,
+            has_final_tabstop = snippet_template.final_cursor_pos.is_some(),
+            "Snippet parsed successfully"
+        );
+
+        // Use Helix's transaction system to insert the plain text
+        let rt_handle = self.handle.clone();
+        self.core.update(cx, move |core, cx| {
+            let _guard = rt_handle.enter();
+            let editor = &mut core.editor;
+
+            nucleotide_logging::info!(
+                rendered_text = %plain_text,
+                "Creating Helix transaction for snippet completion"
+            );
+
+            // Apply the completion using Helix's transaction system
+            let (view, doc) = helix_view::current!(editor);
+            use helix_core::Selection;
+            use helix_core::Transaction;
+
+            let text = doc.text();
+            let selection = doc.selection(view.id);
+            let primary_cursor = selection.primary().cursor(text.slice(..));
+
+            nucleotide_logging::info!(
+                cursor_pos = primary_cursor,
+                doc_len = text.len_chars(),
+                selection_ranges = selection.len(),
+                "Transaction context before snippet insertion"
+            );
+
+            // Create transaction to replace the partial word with completion text
+            let mut replacement_start_pos = primary_cursor;
+            let transaction = Transaction::change_by_selection(text, &selection, |range| {
+                // Find the start of the word being completed (go backward from cursor)
+                let cursor_pos = range.cursor(text.slice(..));
+                let mut start_pos = cursor_pos;
+                let text_slice = text.slice(..);
+                let mut chars_iter = text_slice.chars_at(cursor_pos);
+                chars_iter.reverse();
+
+                nucleotide_logging::info!(
+                    range_cursor = cursor_pos,
+                    "Processing range in snippet transaction"
+                );
+
+                for ch in chars_iter {
+                    if helix_core::chars::char_is_word(ch) {
+                        if start_pos > 0 {
+                            start_pos -= ch.len_utf8();
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                // Store the start position for cursor calculation
+                replacement_start_pos = start_pos;
+
+                nucleotide_logging::info!(
+                    start_pos = start_pos,
+                    end_pos = cursor_pos,
+                    replacement_text = %plain_text,
+                    "Snippet transaction replacement calculated"
+                );
+
+                // Return the replacement text for this range
+                (start_pos, cursor_pos, Some(plain_text.clone().into()))
+            });
+
+            // Apply the transaction
+            nucleotide_logging::info!("Applying snippet transaction to document");
+            doc.apply(&transaction, view.id);
+
+            // Calculate and set the final cursor position for snippet
+            if let Some(cursor_pos) =
+                snippet_template.calculate_final_cursor_position(replacement_start_pos)
+            {
+                nucleotide_logging::info!(
+                    calculated_cursor_pos = cursor_pos,
+                    replacement_start = replacement_start_pos,
+                    "Setting final cursor position for snippet"
+                );
+
+                // Create a new selection with the cursor at the calculated position
+                let new_selection = Selection::point(cursor_pos);
+                doc.set_selection(view.id, new_selection);
+
+                nucleotide_logging::info!(
+                    final_cursor_pos = cursor_pos,
+                    "Snippet cursor positioned successfully"
+                );
+            } else {
+                nucleotide_logging::info!(
+                    "No $0 tabstop found, cursor remains at end of insertion"
+                );
+            }
+
+            nucleotide_logging::info!("Applied snippet completion transaction successfully");
+
+            cx.notify();
+        });
+
+        // Dismiss the completion view after successful text insertion
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.dismiss_completion(cx);
+        });
+
+        nucleotide_logging::info!("Snippet completion processing complete - view dismissed");
+    }
+
+    fn handle_plain_text_completion(
+        &mut self,
+        completion_item: nucleotide_ui::CompletionItem,
+        cx: &mut Context<Self>,
+    ) {
+        nucleotide_logging::info!(
+            completion_text = %completion_item.text,
+            "Processing plain text completion"
+        );
+
+        // Use Helix's transaction system to insert the completion text
+        let rt_handle = self.handle.clone();
+        self.core.update(cx, move |core, cx| {
+            let _guard = rt_handle.enter();
+            let editor = &mut core.editor;
+
+            nucleotide_logging::info!(
+                completion_text = %completion_item.text,
+                "Creating Helix transaction for plain text completion"
+            );
+
+            // Apply the completion using Helix's transaction system
+            let (view, doc) = helix_view::current!(editor);
+            use helix_core::Selection;
+            use helix_core::Transaction;
+
+            let text = doc.text();
+            let selection = doc.selection(view.id);
+            let primary_cursor = selection.primary().cursor(text.slice(..));
+
+            nucleotide_logging::info!(
+                cursor_pos = primary_cursor,
+                doc_len = text.len_chars(),
+                selection_ranges = selection.len(),
+                "Transaction context before plain text creation"
+            );
+
+            // Create transaction to replace the partial word with completion text
+            let transaction = Transaction::change_by_selection(text, &selection, |range| {
+                // Find the start of the word being completed (go backward from cursor)
+                let cursor_pos = range.cursor(text.slice(..));
+                let mut start_pos = cursor_pos;
+                let text_slice = text.slice(..);
+                let mut chars_iter = text_slice.chars_at(cursor_pos);
+                chars_iter.reverse();
+
+                nucleotide_logging::info!(
+                    range_cursor = cursor_pos,
+                    "Processing range in plain text transaction"
+                );
+
+                for ch in chars_iter {
+                    if helix_core::chars::char_is_word(ch) {
+                        if start_pos > 0 {
+                            start_pos -= ch.len_utf8();
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                nucleotide_logging::info!(
+                    start_pos = start_pos,
+                    end_pos = cursor_pos,
+                    replacement_text = %completion_item.text,
+                    "Plain text transaction replacement calculated"
+                );
+
+                // Return the replacement text for this range
+                (
+                    start_pos,
+                    cursor_pos,
+                    Some(completion_item.text.to_string().into()),
+                )
+            });
+
+            // Apply the transaction
+            nucleotide_logging::info!("Applying plain text transaction to document");
+            doc.apply(&transaction, view.id);
+
+            nucleotide_logging::info!("Applied plain text completion transaction successfully");
+
+            cx.notify();
+        });
+
+        // Dismiss the completion view after successful text insertion
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.dismiss_completion(cx);
+        });
+
+        nucleotide_logging::info!("Plain text completion processing complete - view dismissed");
+    }
+
+    /// Handle completion acceptance - insert the selected text into the editor (DEPRECATED)
     fn handle_completion_accepted(&mut self, text: &str, cx: &mut Context<Self>) {
         nucleotide_logging::info!(completion_text = %text, "DISABLED: Custom completion handling - should use Helix's native completion system");
 

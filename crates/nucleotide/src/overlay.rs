@@ -65,6 +65,72 @@ impl OverlayView {
         }
     }
 
+    /// Update the completion filter with a new prefix
+    pub fn update_completion_filter(&self, new_prefix: String, cx: &mut Context<Self>) -> bool {
+        if let Some(completion_view) = &self.completion_view {
+            completion_view.update(cx, |view, cx| {
+                nucleotide_logging::debug!(
+                    prefix = %new_prefix,
+                    "Updating completion view filter with new prefix"
+                );
+                view.update_filter(new_prefix, cx);
+            });
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn handle_completion_arrow_key(&self, key: &str, cx: &mut Context<Self>) -> bool {
+        if let Some(completion_view) = &self.completion_view {
+            completion_view.update(cx, |view, cx| match key {
+                "up" => view.select_prev(cx),
+                "down" => view.select_next(cx),
+                _ => {}
+            });
+            true // Key was handled
+        } else {
+            false // No completion view to handle the key
+        }
+    }
+
+    pub fn handle_completion_tab_key(&self, cx: &mut Context<Self>) -> bool {
+        if let Some(completion_view) = &self.completion_view {
+            completion_view.update(cx, |view, cx| {
+                // Accept the currently selected completion item
+                if let Some(selected_index) = view.selected_index() {
+                    nucleotide_logging::info!(
+                        selected_index = selected_index,
+                        "Tab key forwarded - accepting selected completion via Helix"
+                    );
+                    // Signal to Helix that it should accept the completion
+                    // The overlay subscription will catch this and forward to workspace
+                    cx.emit(nucleotide_ui::CompleteViaHelixEvent {
+                        item_index: selected_index,
+                    });
+                    // Note: DismissEvent will be emitted by the overlay subscription
+                } else {
+                    nucleotide_logging::warn!("Tab key forwarded but no completion item selected");
+                }
+            });
+            true // Key was handled
+        } else {
+            false // No completion view to handle the key
+        }
+    }
+
+    pub fn get_completion_item(
+        &self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<nucleotide_ui::CompletionItem> {
+        if let Some(completion_view) = &self.completion_view {
+            completion_view.read(cx).get_item_at_index(index).cloned()
+        } else {
+            None
+        }
+    }
+
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         // Clean up picker before clearing
         if let Some(picker) = &self.native_picker_view {
@@ -218,12 +284,47 @@ impl OverlayView {
 
                 cx.notify();
             }
-            crate::Update::Completion(_completion_view) => {
+            crate::Update::Completion(completion_view) => {
                 nucleotide_logging::info!(
-                    "DISABLED: Custom completion overlay handling - using Helix's native completion instead"
+                    "🎨 OVERLAY RECEIVED COMPLETION VIEW: Setting up completion overlay"
                 );
-                // DISABLED: Custom completion overlay handling - let Helix handle completion natively
-                // No completion view management, event subscriptions, or forwarding needed
+
+                // Set up completion view with event subscription
+                self.completion_view = Some(completion_view.clone());
+
+                // Subscribe to dismiss events from completion view
+                cx.subscribe(
+                    &completion_view,
+                    |this, _completion_view, _event: &DismissEvent, cx| {
+                        this.completion_view = None;
+                        cx.emit(DismissEvent);
+                        cx.notify();
+                    },
+                )
+                .detach();
+
+                // Subscribe to the new completion acceptance event
+                cx.subscribe(
+                    &completion_view,
+                    |this, _completion_view, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
+                        nucleotide_logging::info!(
+                            item_index = event.item_index,
+                            "Completion accepted via Helix transaction system - forwarding to workspace"
+                        );
+                        // Forward the completion acceptance event to the workspace FIRST
+                        // (while completion_view is still available for item retrieval)
+                        cx.emit(nucleotide_ui::CompleteViaHelixEvent {
+                            item_index: event.item_index,
+                        });
+
+                        // IMPORTANT: Don't dismiss yet - let workspace handle completion first
+                        // The workspace will call dismiss_completion() after successful text insertion
+                        nucleotide_logging::info!("Completion acceptance forwarded - workspace will dismiss after processing");
+                    },
+                )
+                .detach();
+
+                cx.notify();
             }
             crate::Update::Picker(picker) => {
                 // Clean up any existing picker before creating a new one
@@ -544,10 +645,18 @@ impl OverlayView {
         }
 
         // Final fallback positioning
-        (
-            layout_info.file_tree_width + layout_info.gutter_width + px(10.0),
-            layout_info.title_bar_height + layout_info.tab_bar_height + px(20.0),
-        )
+        let fallback_x = layout_info.file_tree_width + layout_info.gutter_width + px(10.0);
+        let fallback_y = layout_info.title_bar_height + layout_info.tab_bar_height + px(20.0);
+        println!(
+            "DEBUG: Final fallback position: x={:?}, y={:?} (file_tree_width={:?}, gutter_width={:?}, title_bar_height={:?}, tab_bar_height={:?})",
+            fallback_x,
+            fallback_y,
+            layout_info.file_tree_width,
+            layout_info.gutter_width,
+            layout_info.title_bar_height,
+            layout_info.tab_bar_height
+        );
+        (fallback_x, fallback_y)
     }
 
     /// Get workspace layout information for completion positioning
@@ -646,7 +755,7 @@ impl Focusable for OverlayView {
     }
 }
 impl EventEmitter<DismissEvent> for OverlayView {}
-impl EventEmitter<nucleotide_ui::completion_v2::CompletionAcceptedEvent> for OverlayView {}
+impl EventEmitter<nucleotide_ui::completion_v2::CompleteViaHelixEvent> for OverlayView {}
 
 impl Render for OverlayView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -710,6 +819,10 @@ impl Render for OverlayView {
 
             // Calculate proper completion position based on cursor location
             let (cursor_x, cursor_y) = self.calculate_completion_position(cx);
+            println!(
+                "DEBUG: Rendering completion popup at calculated position: x={:?}, y={:?}",
+                cursor_x, cursor_y
+            );
 
             return div()
                 .key_context("Overlay")
@@ -717,6 +830,10 @@ impl Render for OverlayView {
                 .size_full()
                 .top_0()
                 .left_0()
+                .occlude() // Ensure overlay is on top of other elements
+                .on_mouse_down(MouseButton::Left, |_, _, _| {
+                    // Prevent click-through to elements below
+                })
                 .child(
                     anchored()
                         .position(point(cursor_x, cursor_y))

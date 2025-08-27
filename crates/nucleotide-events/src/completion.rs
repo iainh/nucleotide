@@ -124,6 +124,18 @@ pub struct CompletionItem {
     pub documentation: Option<String>,
     pub insert_text: String,
     pub score: f32,
+    pub signature_info: Option<String>,
+    pub type_info: Option<String>,
+    pub insert_text_format: InsertTextFormat,
+}
+
+/// LSP Insert Text Format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertTextFormat {
+    /// Plain text insertion
+    PlainText,
+    /// Snippet with tabstops and placeholders ($0, $1, ${1:placeholder})
+    Snippet,
 }
 
 /// Types of completion items
@@ -245,6 +257,9 @@ impl CompletionItem {
             detail: None,
             documentation: None,
             score: 0.0,
+            signature_info: None,
+            type_info: None,
+            insert_text_format: InsertTextFormat::PlainText,
         }
     }
 
@@ -258,6 +273,16 @@ impl CompletionItem {
         self
     }
 
+    pub fn with_signature_info(mut self, signature_info: String) -> Self {
+        self.signature_info = Some(signature_info);
+        self
+    }
+
+    pub fn with_type_info(mut self, type_info: String) -> Self {
+        self.type_info = Some(type_info);
+        self
+    }
+
     pub fn with_insert_text(mut self, insert_text: String) -> Self {
         self.insert_text = insert_text;
         self
@@ -265,6 +290,11 @@ impl CompletionItem {
 
     pub fn with_score(mut self, score: f32) -> Self {
         self.score = score;
+        self
+    }
+
+    pub fn with_insert_text_format(mut self, format: InsertTextFormat) -> Self {
+        self.insert_text_format = format;
         self
     }
 }

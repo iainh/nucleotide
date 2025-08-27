@@ -22,4 +22,4 @@ helix-bridge = ["dep:helix-core"]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 gpui = { workspace = true, optional = true }
-helix-core = { git = "https://github.com/helix-editor/helix", tag = "25.07.1", optional = true }
+helix-core = { workspace = true, optional = true }
