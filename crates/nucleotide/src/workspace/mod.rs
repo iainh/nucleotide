@@ -665,6 +665,31 @@ impl Workspace {
                     cx.notify();
                 });
                 info!("Cleared LSP state for project root change");
+
+                // Immediately sync any existing servers to populate the new project context
+                // This ensures LSP indicators appear quickly for the new project
+                let editor = &self.core.read(cx).editor;
+                let active_servers: Vec<(helix_lsp::LanguageServerId, String)> = editor
+                    .language_servers
+                    .iter_clients()
+                    .map(|client| (client.id(), client.name().to_string()))
+                    .collect();
+
+                if !active_servers.is_empty() {
+                    lsp_state_entity.update(cx, |state, cx| {
+                        for (id, name) in active_servers {
+                            info!(
+                                server_id = ?id,
+                                server_name = %name,
+                                "Registering existing LSP server for new project"
+                            );
+                            state.register_server(id, name, Some(dir.display().to_string()));
+                            state.update_server_status(id, nucleotide_lsp::ServerStatus::Running);
+                        }
+                        cx.notify();
+                    });
+                    info!("Registered existing LSP servers for new project");
+                }
             }
 
             // Shutdown existing ProjectLspManager if present (workspace root changed)
