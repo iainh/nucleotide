@@ -4,16 +4,16 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, UniformListScrollHandle, div, px,
+    StatefulInteractiveElement, Styled, Svg, UniformListScrollHandle, div, px,
 };
 
+use crate::completion_icons::{create_themed_completion_icon, get_completion_icon_color};
 use crate::completion_v2::{CompletionItem, CompletionItemKind, StringMatch};
 
-/// Icon information for completion items
-#[derive(Debug, Clone)]
+/// Icon information for completion items using SVG
 pub struct CompletionIcon {
-    /// Unicode character or emoji for the icon
-    pub character: String,
+    /// SVG icon for rendering
+    pub svg: Svg,
     /// Color of the icon
     pub color: Hsla,
     /// Optional tooltip text
@@ -21,9 +21,9 @@ pub struct CompletionIcon {
 }
 
 impl CompletionIcon {
-    pub fn new(character: impl Into<String>, color: Hsla) -> Self {
+    pub fn new(svg: Svg, color: Hsla) -> Self {
         Self {
-            character: character.into(),
+            svg,
             color,
             tooltip: None,
         }
@@ -35,108 +35,40 @@ impl CompletionIcon {
     }
 }
 
-/// Get icon for completion item kind using VS Code-style simple shapes and letters
+/// Get icon for completion item kind using Lucide SVG icons
 pub fn get_completion_icon(kind: &CompletionItemKind, theme: &crate::Theme) -> CompletionIcon {
-    let tokens = &theme.tokens;
+    let svg = create_themed_completion_icon(kind, theme, Some(16.0));
+    let color = get_completion_icon_color(kind, theme);
 
-    match kind {
-        CompletionItemKind::Text => CompletionIcon::new("T", tokens.colors.text_secondary),
-        CompletionItemKind::Method => {
-            // Using 'M' for method - simple and clean
-            CompletionIcon::new("M", tokens.colors.info).with_tooltip("Method")
-        }
-        CompletionItemKind::Function => {
-            // Using 'f' for function
-            CompletionIcon::new("f", tokens.colors.info).with_tooltip("Function")
-        }
-        CompletionItemKind::Constructor => {
-            // Using 'C' for constructor
-            CompletionIcon::new("C", tokens.colors.warning).with_tooltip("Constructor")
-        }
-        CompletionItemKind::Field => {
-            // Using 'F' for field
-            CompletionIcon::new("F", tokens.colors.success).with_tooltip("Field")
-        }
-        CompletionItemKind::Variable => {
-            // Using 'v' for variable
-            CompletionIcon::new("v", tokens.colors.primary).with_tooltip("Variable")
-        }
-        CompletionItemKind::Class => {
-            // Using 'C' for class
-            CompletionIcon::new("C", tokens.colors.warning).with_tooltip("Class")
-        }
-        CompletionItemKind::Interface => {
-            // Using 'I' for interface
-            CompletionIcon::new("I", tokens.colors.info).with_tooltip("Interface")
-        }
-        CompletionItemKind::Module => {
-            // Using 'M' for module
-            CompletionIcon::new("M", tokens.colors.text_primary).with_tooltip("Module")
-        }
-        CompletionItemKind::Property => {
-            // Using 'P' for property
-            CompletionIcon::new("P", tokens.colors.success).with_tooltip("Property")
-        }
-        CompletionItemKind::Unit => {
-            CompletionIcon::new("U", tokens.colors.text_secondary).with_tooltip("Unit")
-        }
-        CompletionItemKind::Value => {
-            // Using 'V' for value
-            CompletionIcon::new("V", tokens.colors.primary).with_tooltip("Value")
-        }
-        CompletionItemKind::Enum => {
-            // Using 'E' for enum
-            CompletionIcon::new("E", tokens.colors.warning).with_tooltip("Enum")
-        }
-        CompletionItemKind::Keyword => {
-            // Using 'K' for keyword
-            CompletionIcon::new("K", tokens.colors.error).with_tooltip("Keyword")
-        }
-        CompletionItemKind::Snippet => {
-            // Using 'S' for snippet
-            CompletionIcon::new("S", tokens.colors.info).with_tooltip("Snippet")
-        }
-        CompletionItemKind::Color => {
-            // Using square for color
-            CompletionIcon::new("■", tokens.colors.primary).with_tooltip("Color")
-        }
-        CompletionItemKind::File => {
-            // Using 'F' for file
-            CompletionIcon::new("F", tokens.colors.text_secondary).with_tooltip("File")
-        }
-        CompletionItemKind::Reference => {
-            // Using 'R' for reference
-            CompletionIcon::new("R", tokens.colors.text_primary).with_tooltip("Reference")
-        }
-        CompletionItemKind::Folder => {
-            // Using folder icon
-            CompletionIcon::new("📁", tokens.colors.text_secondary).with_tooltip("Folder")
-        }
-        CompletionItemKind::EnumMember => {
-            // Using 'e' for enum member
-            CompletionIcon::new("e", tokens.colors.primary).with_tooltip("Enum Member")
-        }
-        CompletionItemKind::Constant => {
-            // Using 'c' for constant
-            CompletionIcon::new("c", tokens.colors.primary).with_tooltip("Constant")
-        }
-        CompletionItemKind::Struct => {
-            // Using 'S' for struct
-            CompletionIcon::new("S", tokens.colors.warning).with_tooltip("Struct")
-        }
-        CompletionItemKind::Event => {
-            // Using 'E' for event
-            CompletionIcon::new("E", tokens.colors.primary).with_tooltip("Event")
-        }
-        CompletionItemKind::Operator => {
-            // Using 'O' for operator
-            CompletionIcon::new("O", tokens.colors.error).with_tooltip("Operator")
-        }
-        CompletionItemKind::TypeParameter => {
-            // Using 'T' for type parameter
-            CompletionIcon::new("T", tokens.colors.warning).with_tooltip("Type Parameter")
-        }
-    }
+    let tooltip = match kind {
+        CompletionItemKind::Function => "Function",
+        CompletionItemKind::Method => "Method",
+        CompletionItemKind::Variable => "Variable",
+        CompletionItemKind::Field => "Field",
+        CompletionItemKind::Class => "Class",
+        CompletionItemKind::Constructor => "Constructor",
+        CompletionItemKind::Interface => "Interface",
+        CompletionItemKind::Module => "Module",
+        CompletionItemKind::Property => "Property",
+        CompletionItemKind::Enum => "Enum",
+        CompletionItemKind::EnumMember => "Enum Member",
+        CompletionItemKind::Constant => "Constant",
+        CompletionItemKind::Struct => "Struct",
+        CompletionItemKind::Keyword => "Keyword",
+        CompletionItemKind::Snippet => "Snippet",
+        CompletionItemKind::TypeParameter => "Type Parameter",
+        CompletionItemKind::File => "File",
+        CompletionItemKind::Folder => "Folder",
+        CompletionItemKind::Reference => "Reference",
+        CompletionItemKind::Event => "Event",
+        CompletionItemKind::Operator => "Operator",
+        CompletionItemKind::Text => "Text",
+        CompletionItemKind::Unit => "Unit",
+        CompletionItemKind::Value => "Value",
+        CompletionItemKind::Color => "Color",
+    };
+
+    CompletionIcon::new(svg, color).with_tooltip(tooltip)
 }
 
 /// Rendered completion item with rich formatting
@@ -269,9 +201,11 @@ impl IntoElement for CompletionItemElement {
                 div.hover(|style| style.bg(tokens.colors.selection_secondary))
             });
 
-        // Icon section - compact VS Code style
+        // Icon section - using Lucide SVG icons with design tokens
         let with_icon = if self.show_icon && self.item.kind.is_some() {
             let icon = get_completion_icon(self.item.kind.as_ref().unwrap(), &default_theme);
+            let icon_tokens = tokens.chrome.completion_icon_tokens(&tokens.editor);
+
             base_container.child(
                 div()
                     .flex()
@@ -280,13 +214,25 @@ impl IntoElement for CompletionItemElement {
                     .w_4()
                     .h_4()
                     .rounded_sm()
-                    .bg(icon.color)
-                    .text_color(gpui::white())
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(icon.character),
+                    .bg(if self.is_selected {
+                        icon_tokens.icon_background_selected
+                    } else {
+                        icon_tokens.icon_background
+                    })
+                    .border_1()
+                    .border_color(icon_tokens.icon_border)
+                    .when(self.is_selected, |div| {
+                        div.bg(icon_tokens.icon_background_selected)
+                    })
+                    .when(!self.is_selected, |div| {
+                        div.hover(|style| style.bg(icon_tokens.icon_background_hover))
+                    })
+                    .child(icon.svg),
             )
         } else if self.show_icon {
+            // Fallback icon when no kind is specified
+            let icon_tokens = tokens.chrome.completion_icon_tokens(&tokens.editor);
+
             base_container.child(
                 div()
                     .w_4()
@@ -295,10 +241,22 @@ impl IntoElement for CompletionItemElement {
                     .items_center()
                     .justify_center()
                     .rounded_sm()
-                    .bg(tokens.colors.text_tertiary)
-                    .text_color(gpui::white())
-                    .text_xs()
-                    .child("?"),
+                    .bg(if self.is_selected {
+                        icon_tokens.icon_background_selected
+                    } else {
+                        icon_tokens.icon_background
+                    })
+                    .border_1()
+                    .border_color(icon_tokens.icon_border)
+                    .when(!self.is_selected, |div| {
+                        div.hover(|style| style.bg(icon_tokens.icon_background_hover))
+                    })
+                    .child(
+                        gpui::svg()
+                            .path("icons/file-text.svg")
+                            .size(gpui::px(12.0))
+                            .text_color(icon_tokens.generic_color),
+                    ),
             )
         } else {
             base_container
@@ -575,9 +533,11 @@ mod tests {
         let theme = Theme::default();
 
         let icon = get_completion_icon(&CompletionItemKind::Function, &theme);
-        assert_eq!(icon.character, "f");
+        // Test that we get an SVG icon (the specific implementation may vary)
         assert!(icon.tooltip.is_some());
         assert_eq!(icon.tooltip.unwrap(), "Function");
+        // SVG icon should have the correct color for functions
+        assert_eq!(icon.color, theme.tokens.colors.info);
     }
 
     #[test]
@@ -617,7 +577,8 @@ mod tests {
 
         for kind in kinds {
             let icon = get_completion_icon(&kind, &theme);
-            assert!(!icon.character.is_empty());
+            // Test that we get a valid SVG icon and tooltip for each kind
+            assert!(icon.tooltip.is_some(), "Missing tooltip for {:?}", kind);
         }
     }
 
