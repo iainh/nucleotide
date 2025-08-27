@@ -901,6 +901,10 @@ fn gui_main(
                                                         score: 1.0, // Default score for LSP items
                                                         signature_info: None,
                                                         type_info: None,
+                                                        insert_text_format: match lsp_item.item.insert_text_format {
+                                                            Some(helix_lsp::lsp::InsertTextFormat::SNIPPET) => nucleotide_events::completion::InsertTextFormat::Snippet,
+                                                            _ => nucleotide_events::completion::InsertTextFormat::PlainText,
+                                                        },
                                                     }
                                                 }
                                                 helix_term::handlers::completion::CompletionItem::Other(other_item) => {
@@ -913,6 +917,7 @@ fn gui_main(
                                                         score: 1.0,
                                                         signature_info: None,
                                                         type_info: None,
+                                                        insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
                                                     }
                                                 }
                                             }

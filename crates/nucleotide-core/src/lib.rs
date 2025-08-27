@@ -10,6 +10,7 @@ pub mod event_aggregator;
 pub mod event_bridge;
 pub mod gpui_to_helix_bridge;
 pub mod preview_tracker;
+pub mod snippets;
 pub mod utils;
 
 // Capability traits exports
@@ -60,6 +61,9 @@ pub use document_manager::{DocumentManager, DocumentManagerMut};
 
 // Command system exports
 pub use command_system::{Command, ParsedCommand};
+
+// Snippet parsing exports
+pub use snippets::{SnippetParseError, SnippetTemplate, Tabstop, TextPart};
 
 // Re-export types from nucleotide-types for backward compatibility
 pub use nucleotide_types::{EditorFontConfig, EditorStatus, FontSettings, Severity, UiFontConfig};

@@ -108,6 +108,17 @@ pub struct CompletionItem {
     pub signature_info: Option<SharedString>,
     /// Return type or module information
     pub type_info: Option<SharedString>,
+    /// Insert text format (plain text or snippet)
+    pub insert_text_format: InsertTextFormat,
+}
+
+/// LSP Insert Text Format
+#[derive(Debug, Clone, PartialEq)]
+pub enum InsertTextFormat {
+    /// Plain text insertion
+    PlainText,
+    /// Snippet with tabstops and placeholders ($0, $1, ${1:placeholder})
+    Snippet,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,6 +161,7 @@ impl CompletionItem {
             detail: None,
             signature_info: None,
             type_info: None,
+            insert_text_format: InsertTextFormat::PlainText,
         }
     }
 
@@ -185,6 +197,11 @@ impl CompletionItem {
 
     pub fn with_type_info(mut self, type_info: impl Into<SharedString>) -> Self {
         self.type_info = Some(type_info.into());
+        self
+    }
+
+    pub fn with_insert_text_format(mut self, format: InsertTextFormat) -> Self {
+        self.insert_text_format = format;
         self
     }
 }

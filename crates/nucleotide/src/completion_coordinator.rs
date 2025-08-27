@@ -525,6 +525,9 @@ mod tests {
                     documentation: None,
                     insert_text: "function".to_string(),
                     score: 100.0,
+                    signature_info: None,
+                    type_info: None,
+                    insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
                 }],
                 is_incomplete: false,
                 error: None,
@@ -588,6 +591,9 @@ mod tests {
                     documentation: None,
                     insert_text: format!("function_{}", i),
                     score: 100.0,
+                    signature_info: None,
+                    type_info: None,
+                    insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
                 });
             }
 
@@ -613,6 +619,9 @@ mod tests {
                 documentation: None,
                 insert_text: "test".to_string(),
                 score: 100.0,
+                signature_info: None,
+                type_info: None,
+                insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
             }];
 
             let result = CompletionResult::ShowCompletions {

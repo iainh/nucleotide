@@ -4342,6 +4342,14 @@ impl Workspace {
                     detail: item.detail.map(|d| d.into()),
                     signature_info: item.signature_info.map(|s| s.into()),
                     type_info: item.type_info.map(|t| t.into()),
+                    insert_text_format: match item.insert_text_format {
+                        nucleotide_events::completion::InsertTextFormat::PlainText => {
+                            nucleotide_ui::completion_v2::InsertTextFormat::PlainText
+                        }
+                        nucleotide_events::completion::InsertTextFormat::Snippet => {
+                            nucleotide_ui::completion_v2::InsertTextFormat::Snippet
+                        }
+                    },
                 }
             })
             .collect();
@@ -4419,6 +4427,14 @@ impl Workspace {
                     detail: item.detail.map(|d| d.into()),
                     signature_info: item.signature_info.map(|s| s.into()),
                     type_info: item.type_info.map(|t| t.into()),
+                    insert_text_format: match item.insert_text_format {
+                        nucleotide_events::completion::InsertTextFormat::PlainText => {
+                            nucleotide_ui::completion_v2::InsertTextFormat::PlainText
+                        }
+                        nucleotide_events::completion::InsertTextFormat::Snippet => {
+                            nucleotide_ui::completion_v2::InsertTextFormat::Snippet
+                        }
+                    },
                 }
             })
             .collect();
@@ -4624,6 +4640,10 @@ impl Workspace {
                                     detail: item.detail.map(|d| d.into()),
                                     signature_info: item.signature_info.map(|s| s.into()),
                                     type_info: item.type_info.map(|t| t.into()),
+                                    insert_text_format: match item.insert_text_format {
+                                        nucleotide_events::completion::InsertTextFormat::PlainText => nucleotide_ui::completion_v2::InsertTextFormat::PlainText,
+                                        nucleotide_events::completion::InsertTextFormat::Snippet => nucleotide_ui::completion_v2::InsertTextFormat::Snippet,
+                                    },
                                 }
                             })
                             .collect();
