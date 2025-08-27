@@ -1657,7 +1657,8 @@ impl Render for CompletionView {
                                             );
 
                                             // Simple logic: ensure selected item is always visible
-                                            let start = if selected < max_visible.saturating_sub(1) {
+                                            let start = if selected < max_visible.saturating_sub(1)
+                                            {
                                                 // Selected is near beginning, show from start
                                                 0
                                             } else if selected >= total_items.saturating_sub(1) {
@@ -1715,10 +1716,10 @@ impl Render for CompletionView {
                                                 total_items = total_items,
                                                 start_index = start_index,
                                                 end_index = end_index,
-                                                is_last_item =
-                                                    self.selected_index == total_items.saturating_sub(1),
-                                                is_second_last =
-                                                    self.selected_index == total_items.saturating_sub(2),
+                                                is_last_item = self.selected_index
+                                                    == total_items.saturating_sub(1),
+                                                is_second_last = self.selected_index
+                                                    == total_items.saturating_sub(2),
                                                 "Debugging last few items"
                                             );
                                         }

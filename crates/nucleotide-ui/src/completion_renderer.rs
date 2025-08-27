@@ -207,7 +207,8 @@ impl IntoElement for CompletionItemElement {
             // Use icon_tokens directly instead of reconstructing theme to avoid theme switching issues
             let kind = self.item.kind.as_ref().unwrap();
             let svg = crate::completion_icons::get_completion_icon_svg(kind);
-            let icon_color = crate::completion_icons::get_completion_icon_color(kind, &default_theme);
+            let icon_color =
+                crate::completion_icons::get_completion_icon_color(kind, &default_theme);
 
             base_container.child(
                 div()
