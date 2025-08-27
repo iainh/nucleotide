@@ -181,6 +181,11 @@ impl Application {
         let app_handle = cx.entity().downgrade();
         self.core.set_app_handle(app_handle);
 
+        // Initialize LSP state entity for statusline indicator
+        if self.lsp_state.is_none() {
+            self.lsp_state = Some(cx.new(|_cx| nucleotide_lsp::LspState::new()));
+        }
+
         // Initialize shotgun hook system for comprehensive completion pipeline tracing
         crate::completion_interception::initialize_shotgun_hooks();
 
@@ -3955,7 +3960,7 @@ pub fn init_editor(
         view,
         jobs,
         lsp_progress: LspProgressMap::new(),
-        lsp_state: None,
+        lsp_state: None, // Will be initialized when Application is wrapped in a GPUI entity
         project_directory,
         event_bridge_rx: Some(bridge_rx),
         gpui_to_helix_rx: Some(gpui_to_helix_rx),

@@ -638,8 +638,8 @@ impl Workspace {
         });
 
         // Update project status service
-        //         // let project_status = nucleotide_project::project_status_service(cx);
-        // // project_status.set_project_root(Some(dir.clone()), cx);
+        let project_status = nucleotide_project::project_status_service(cx);
+        project_status.set_project_root(Some(dir.clone()), cx);
 
         // Start VCS monitoring for the new directory
         let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
@@ -657,6 +657,15 @@ impl Workspace {
 
             // Update current project root tracking
             self.current_project_root = Some(dir.clone());
+
+            // Clear existing LSP state to avoid stale indicators from previous project
+            if let Some(lsp_state_entity) = self.core.read(cx).lsp_state.clone() {
+                lsp_state_entity.update(cx, |state, cx| {
+                    state.clear_all_state();
+                    cx.notify();
+                });
+                info!("Cleared LSP state for project root change");
+            }
 
             // Shutdown existing ProjectLspManager if present (workspace root changed)
             if let Some(existing_manager) = self.project_lsp_manager.take() {
@@ -737,6 +746,9 @@ impl Workspace {
 
             // Trigger project detection and LSP coordination
             self.trigger_project_detection_and_lsp_startup(dir, cx);
+
+            // Note: File tree header update will be handled via project status service update
+            // which triggers UI refresh through the project status service
 
             // Refresh UI indicators
             self.refresh_project_indicators(cx);

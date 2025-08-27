@@ -87,6 +87,18 @@ impl LspState {
         state
     }
 
+    /// Clear all LSP state (used when project root changes)
+    pub fn clear_all_state(&mut self) {
+        self.servers.clear();
+        self.progress.clear();
+        self.diagnostics.clear();
+        self.status_message = None;
+        self.spinner_frame = 0;
+        self.last_spinner_update = Instant::now();
+
+        nucleotide_logging::debug!("LSP state cleared - ready for new project LSP servers");
+    }
+
     /// Get the current spinner frame, advancing if needed
     pub fn get_spinner_frame(&mut self) -> &'static str {
         let now = Instant::now();
