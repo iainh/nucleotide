@@ -4702,18 +4702,66 @@ impl Workspace {
         nucleotide_logging::info!(
             item_index = item_index,
             completion_text = %completion_item.text,
+            insert_text_format = ?completion_item.insert_text_format,
             "Retrieved completion item for transaction"
         );
 
-        // Use Helix's transaction system to insert the completion text
+        // Check if this is a snippet completion
+        match completion_item.insert_text_format {
+            nucleotide_ui::completion_v2::InsertTextFormat::Snippet => {
+                self.handle_snippet_completion(completion_item, cx);
+            }
+            nucleotide_ui::completion_v2::InsertTextFormat::PlainText => {
+                self.handle_plain_text_completion(completion_item, cx);
+            }
+        }
+    }
+
+    fn handle_snippet_completion(
+        &mut self,
+        completion_item: nucleotide_ui::CompletionItem,
+        cx: &mut Context<Self>,
+    ) {
+        nucleotide_logging::info!(
+            completion_text = %completion_item.text,
+            "Processing snippet completion with cursor positioning"
+        );
+
+        // Parse the snippet
+        let snippet_template = match nucleotide_core::SnippetTemplate::parse(&completion_item.text)
+        {
+            Ok(template) => template,
+            Err(err) => {
+                nucleotide_logging::warn!(
+                    completion_text = %completion_item.text,
+                    error = %err,
+                    "Failed to parse snippet, falling back to plain text"
+                );
+                // Fall back to plain text handling
+                self.handle_plain_text_completion(completion_item, cx);
+                return;
+            }
+        };
+
+        // Render snippet to plain text and calculate cursor position
+        let plain_text = snippet_template.render_plain_text();
+
+        nucleotide_logging::info!(
+            original_snippet = %completion_item.text,
+            rendered_text = %plain_text,
+            has_final_tabstop = snippet_template.final_cursor_pos.is_some(),
+            "Snippet parsed successfully"
+        );
+
+        // Use Helix's transaction system to insert the plain text
         let rt_handle = self.handle.clone();
         self.core.update(cx, move |core, cx| {
             let _guard = rt_handle.enter();
             let editor = &mut core.editor;
 
             nucleotide_logging::info!(
-                completion_text = %completion_item.text,
-                "Creating Helix transaction for completion"
+                rendered_text = %plain_text,
+                "Creating Helix transaction for snippet completion"
             );
 
             // Apply the completion using Helix's transaction system
@@ -4729,7 +4777,124 @@ impl Workspace {
                 cursor_pos = primary_cursor,
                 doc_len = text.len_chars(),
                 selection_ranges = selection.len(),
-                "Transaction context before creation"
+                "Transaction context before snippet insertion"
+            );
+
+            // Create transaction to replace the partial word with completion text
+            let mut replacement_start_pos = primary_cursor;
+            let transaction = Transaction::change_by_selection(text, &selection, |range| {
+                // Find the start of the word being completed (go backward from cursor)
+                let cursor_pos = range.cursor(text.slice(..));
+                let mut start_pos = cursor_pos;
+                let text_slice = text.slice(..);
+                let mut chars_iter = text_slice.chars_at(cursor_pos);
+                chars_iter.reverse();
+
+                nucleotide_logging::info!(
+                    range_cursor = cursor_pos,
+                    "Processing range in snippet transaction"
+                );
+
+                for ch in chars_iter {
+                    if helix_core::chars::char_is_word(ch) {
+                        if start_pos > 0 {
+                            start_pos -= ch.len_utf8();
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                // Store the start position for cursor calculation
+                replacement_start_pos = start_pos;
+
+                nucleotide_logging::info!(
+                    start_pos = start_pos,
+                    end_pos = cursor_pos,
+                    replacement_text = %plain_text,
+                    "Snippet transaction replacement calculated"
+                );
+
+                // Return the replacement text for this range
+                (start_pos, cursor_pos, Some(plain_text.clone().into()))
+            });
+
+            // Apply the transaction
+            nucleotide_logging::info!("Applying snippet transaction to document");
+            doc.apply(&transaction, view.id);
+
+            // Calculate and set the final cursor position for snippet
+            if let Some(cursor_pos) =
+                snippet_template.calculate_final_cursor_position(replacement_start_pos)
+            {
+                nucleotide_logging::info!(
+                    calculated_cursor_pos = cursor_pos,
+                    replacement_start = replacement_start_pos,
+                    "Setting final cursor position for snippet"
+                );
+
+                // Create a new selection with the cursor at the calculated position
+                let new_selection = Selection::point(cursor_pos);
+                doc.set_selection(view.id, new_selection);
+
+                nucleotide_logging::info!(
+                    final_cursor_pos = cursor_pos,
+                    "Snippet cursor positioned successfully"
+                );
+            } else {
+                nucleotide_logging::info!(
+                    "No $0 tabstop found, cursor remains at end of insertion"
+                );
+            }
+
+            nucleotide_logging::info!("Applied snippet completion transaction successfully");
+
+            cx.notify();
+        });
+
+        // Dismiss the completion view after successful text insertion
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.dismiss_completion(cx);
+        });
+
+        nucleotide_logging::info!("Snippet completion processing complete - view dismissed");
+    }
+
+    fn handle_plain_text_completion(
+        &mut self,
+        completion_item: nucleotide_ui::CompletionItem,
+        cx: &mut Context<Self>,
+    ) {
+        nucleotide_logging::info!(
+            completion_text = %completion_item.text,
+            "Processing plain text completion"
+        );
+
+        // Use Helix's transaction system to insert the completion text
+        let rt_handle = self.handle.clone();
+        self.core.update(cx, move |core, cx| {
+            let _guard = rt_handle.enter();
+            let editor = &mut core.editor;
+
+            nucleotide_logging::info!(
+                completion_text = %completion_item.text,
+                "Creating Helix transaction for plain text completion"
+            );
+
+            // Apply the completion using Helix's transaction system
+            let (view, doc) = helix_view::current!(editor);
+            use helix_core::Selection;
+            use helix_core::Transaction;
+
+            let text = doc.text();
+            let selection = doc.selection(view.id);
+            let primary_cursor = selection.primary().cursor(text.slice(..));
+
+            nucleotide_logging::info!(
+                cursor_pos = primary_cursor,
+                doc_len = text.len_chars(),
+                selection_ranges = selection.len(),
+                "Transaction context before plain text creation"
             );
 
             // Create transaction to replace the partial word with completion text
@@ -4743,7 +4908,7 @@ impl Workspace {
 
                 nucleotide_logging::info!(
                     range_cursor = cursor_pos,
-                    "Processing range in transaction"
+                    "Processing range in plain text transaction"
                 );
 
                 for ch in chars_iter {
@@ -4760,7 +4925,7 @@ impl Workspace {
                     start_pos = start_pos,
                     end_pos = cursor_pos,
                     replacement_text = %completion_item.text,
-                    "Transaction replacement calculated"
+                    "Plain text transaction replacement calculated"
                 );
 
                 // Return the replacement text for this range
@@ -4772,10 +4937,10 @@ impl Workspace {
             });
 
             // Apply the transaction
-            nucleotide_logging::info!("Applying transaction to document");
+            nucleotide_logging::info!("Applying plain text transaction to document");
             doc.apply(&transaction, view.id);
 
-            nucleotide_logging::info!("Applied completion transaction successfully");
+            nucleotide_logging::info!("Applied plain text completion transaction successfully");
 
             cx.notify();
         });
@@ -4785,7 +4950,7 @@ impl Workspace {
             overlay.dismiss_completion(cx);
         });
 
-        nucleotide_logging::info!("Completion processing complete - view dismissed");
+        nucleotide_logging::info!("Plain text completion processing complete - view dismissed");
     }
 
     /// Handle completion acceptance - insert the selected text into the editor (DEPRECATED)
