@@ -271,7 +271,7 @@ impl CompletionView {
             last_error: None,
             documentation_loader: DocumentationLoader::new(DocumentationCacheConfig::default()),
             documentation_panel: DocumentationPanel::new(),
-            list_state: CompletionListState::new(24.0, 400.0),
+            list_state: CompletionListState::new(32.0, 400.0), // Increased from 24px to account for padding and multi-row layout
             current_documentation: None,
             focus_handle: cx.focus_handle(),
         }
@@ -857,6 +857,7 @@ impl CompletionView {
         self.visible = !self.filtered_entries.is_empty();
         self.filter_task = None;
         self.update_list_state();
+        self.scroll_to_selection();
         self.update_documentation_for_selection(cx);
         cx.notify();
     }
@@ -911,6 +912,7 @@ impl CompletionView {
                 new_index = self.selected_index,
                 "select_next: changed selection"
             );
+            self.scroll_to_selection();
             self.update_documentation_for_selection(cx);
             cx.notify();
         } else {
@@ -936,6 +938,7 @@ impl CompletionView {
                 new_index = self.selected_index,
                 "select_prev: changed selection"
             );
+            self.scroll_to_selection();
             self.update_documentation_for_selection(cx);
             cx.notify();
         } else {
@@ -997,6 +1000,135 @@ impl CompletionView {
     fn update_list_state(&mut self) {
         self.list_state
             .update_item_count(self.filtered_entries.len());
+    }
+
+    /// Scroll to make the currently selected item visible
+    fn scroll_to_selection(&mut self) {
+        if self.selected_index < self.filtered_entries.len() {
+            nucleotide_logging::debug!(
+                selected_index = self.selected_index,
+                total_items = self.filtered_entries.len(),
+                "Scrolling to selected completion item"
+            );
+
+            // Calculate scroll position for manual scrolling
+            let item_height = self.list_state.item_height;
+            let container_height = self.list_state.max_height;
+            let selected_position = (self.selected_index as f32) * item_height;
+
+            // Calculate if item is outside visible area
+            let visible_items = (container_height / item_height).floor() as usize;
+            let scroll_position = if self.selected_index < visible_items / 2 {
+                // Near top - scroll to top
+                0.0
+            } else if self.selected_index
+                >= self
+                    .filtered_entries
+                    .len()
+                    .saturating_sub(visible_items / 2)
+            {
+                // Near bottom - scroll to bottom
+                (self.filtered_entries.len().saturating_sub(visible_items) as f32 * item_height)
+                    .max(0.0)
+            } else {
+                // Center the selected item
+                selected_position - (container_height / 2.0)
+            };
+
+            nucleotide_logging::debug!(
+                selected_position = selected_position,
+                scroll_position = scroll_position,
+                item_height = item_height,
+                container_height = container_height,
+                "Calculated scroll position for selection"
+            );
+
+            // Note: For now, we rely on GPUI's built-in scroll behavior
+            // A future enhancement could implement programmatic scrolling
+            self.list_state.scroll_to_item(self.selected_index);
+        }
+    }
+
+    /// Move selection by a page (multiple items at once)
+    pub fn select_page_down(&mut self, cx: &mut Context<Self>) {
+        if self.filtered_entries.is_empty() {
+            return;
+        }
+
+        let page_size = (self.list_state.max_height / self.list_state.item_height).floor() as usize;
+        let old_index = self.selected_index;
+        self.selected_index =
+            (self.selected_index + page_size).min(self.filtered_entries.len() - 1);
+
+        if old_index != self.selected_index {
+            nucleotide_logging::info!(
+                old_index = old_index,
+                new_index = self.selected_index,
+                page_size = page_size,
+                "select_page_down: changed selection"
+            );
+            self.scroll_to_selection();
+            self.update_documentation_for_selection(cx);
+            cx.notify();
+        }
+    }
+
+    /// Move selection up by a page (multiple items at once)
+    pub fn select_page_up(&mut self, cx: &mut Context<Self>) {
+        if self.filtered_entries.is_empty() {
+            return;
+        }
+
+        let page_size = (self.list_state.max_height / self.list_state.item_height).floor() as usize;
+        let old_index = self.selected_index;
+        self.selected_index = self.selected_index.saturating_sub(page_size);
+
+        if old_index != self.selected_index {
+            nucleotide_logging::info!(
+                old_index = old_index,
+                new_index = self.selected_index,
+                page_size = page_size,
+                "select_page_up: changed selection"
+            );
+            self.scroll_to_selection();
+            self.update_documentation_for_selection(cx);
+            cx.notify();
+        }
+    }
+
+    /// Jump to first item
+    pub fn select_first(&mut self, cx: &mut Context<Self>) {
+        if !self.filtered_entries.is_empty() && self.selected_index != 0 {
+            let old_index = self.selected_index;
+            self.selected_index = 0;
+            nucleotide_logging::info!(
+                old_index = old_index,
+                new_index = self.selected_index,
+                "select_first: changed selection"
+            );
+            self.scroll_to_selection();
+            self.update_documentation_for_selection(cx);
+            cx.notify();
+        }
+    }
+
+    /// Jump to last item
+    pub fn select_last(&mut self, cx: &mut Context<Self>) {
+        if !self.filtered_entries.is_empty() {
+            let old_index = self.selected_index;
+            let last_index = self.filtered_entries.len() - 1;
+            if self.selected_index != last_index {
+                self.selected_index = last_index;
+                nucleotide_logging::info!(
+                    old_index = old_index,
+                    new_index = self.selected_index,
+                    "select_last: changed selection"
+                );
+                self.scroll_to_selection();
+                self.update_documentation_for_selection(cx);
+                cx.notify();
+            }
+        }
     }
 
     /// Get the list state for rendering
@@ -1270,6 +1402,14 @@ impl Render for CompletionView {
             self.filtered_entries.len()
         );
 
+        nucleotide_logging::debug!(
+            visible = self.is_visible(),
+            all_items_count = self.all_items.len(),
+            filtered_count = self.filtered_entries.len(),
+            selected_index = self.selected_index,
+            "CompletionView render start"
+        );
+
         if !self.is_visible() {
             println!("🎨 COMPLETION_VIEW RENDER: Not visible, returning empty div");
             return div().id("completion-hidden");
@@ -1288,26 +1428,22 @@ impl Render for CompletionView {
         };
         let tokens = &theme.tokens;
 
-        // Create completion items using the enhanced CompletionItemElement
-        let completion_items: Vec<gpui::AnyElement> = self
-            .filtered_entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, string_match)| {
-                // Find the item by matching candidate ID
-                let item = self.all_items.iter().find(|item| {
-                    let candidate = StringMatchCandidate::from(*item);
-                    candidate.id == string_match.candidate_id
-                })?;
-                let is_selected = index == self.selected_index;
+        // Store item count for uniform_list - processor will access view data directly
+        let filtered_entries = &self.filtered_entries;
 
-                // Use the rich CompletionItemElement with full feature set
-                let element =
-                    CompletionItemElement::new(item.clone(), string_match.clone(), is_selected);
+        // Use flexible layout - let container size itself based on content
+        let max_visible_items = 12; // Show up to 12 items
 
-                Some(element.into_any_element())
-            })
-            .collect();
+        // Calculate maximum container height to prevent it from growing too large
+        // Each item is approximately 32px, but let's use a more flexible approach
+        let max_container_height = px(384.0); // ~12 items * 32px = 384px, but flexible
+
+        nucleotide_logging::debug!(
+            filtered_count = filtered_entries.len(),
+            max_visible_items = max_visible_items,
+            max_container_height = max_container_height.0,
+            "Using flexible layout for completion list"
+        );
 
         // Focusable container with key handling for completion navigation
         let container = div()
@@ -1358,6 +1494,26 @@ impl Render for CompletionView {
                         // Stop propagation so arrow keys don't move cursor in editor
                         cx.stop_propagation();
                     }
+                    "pagedown" => {
+                        nucleotide_logging::info!("Page Down pressed in completion popup");
+                        view.select_page_down(cx);
+                        cx.stop_propagation();
+                    }
+                    "pageup" => {
+                        nucleotide_logging::info!("Page Up pressed in completion popup");
+                        view.select_page_up(cx);
+                        cx.stop_propagation();
+                    }
+                    "home" => {
+                        nucleotide_logging::info!("Home key pressed in completion popup");
+                        view.select_first(cx);
+                        cx.stop_propagation();
+                    }
+                    "end" => {
+                        nucleotide_logging::info!("End key pressed in completion popup");
+                        view.select_last(cx);
+                        cx.stop_propagation();
+                    }
                     "enter" => {
                         // Accept the currently selected completion item via Helix's system
                         if let Some(selected_index) = view.selected_index() {
@@ -1380,7 +1536,10 @@ impl Render for CompletionView {
 
         // TODO: Get actual cursor position from document/workspace
         // For now, use relative positioning that will be updated by parent container
-        println!("🎨 COMPLETION_VIEW RENDER: Completed render");
+        nucleotide_logging::debug!(
+            item_count = self.filtered_entries.len(),
+            "Completion view render completed"
+        );
         container
             .absolute()
             // Remove hardcoded positioning - parent will handle this
@@ -1389,18 +1548,230 @@ impl Render for CompletionView {
                     .id("completion-list")
                     .flex()
                     .flex_col()
-                    .min_w(px(250.0))
-                    .max_w(px(400.0))
+                    // Calculate optimal width based on content
+                    .w({
+                        // Calculate optimal width based on the longest item
+                        let base_width = 250.0; // Minimum practical width
+                        let _padding = 40.0; // Account for padding, borders, icons
+
+                        // Find the longest text in visible items
+                        let max_text_length = self
+                            .filtered_entries
+                            .iter()
+                            .take(12) // Only consider visible items for performance
+                            .map(|string_match| {
+                                // Find the corresponding completion item
+                                self.all_items
+                                    .iter()
+                                    .find(|item| {
+                                        let candidate = StringMatchCandidate::from(*item);
+                                        candidate.id == string_match.candidate_id
+                                    })
+                                    .map(|item| {
+                                        // Calculate total text length including signature and type info
+                                        let display_text = item
+                                            .display_text
+                                            .as_ref()
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_else(|| item.text.to_string());
+                                        let mut total_len = display_text.len();
+
+                                        if let Some(sig) = &item.signature_info {
+                                            total_len += sig.to_string().len();
+                                        }
+                                        if let Some(type_info) = &item.type_info {
+                                            total_len += type_info.to_string().len() + 3; // "→ " prefix
+                                        }
+                                        if let Some(detail) = &item.detail {
+                                            // Detail is on second line, consider it separately
+                                            total_len = total_len.max(detail.to_string().len());
+                                        }
+                                        total_len
+                                    })
+                                    .unwrap_or(0)
+                            })
+                            .max()
+                            .unwrap_or(0);
+
+                        // Estimate pixel width (rough approximation: 8px per character)
+                        let estimated_width: f32 = base_width + (max_text_length as f32 * 8.0);
+
+                        // Cap the width to reasonable bounds
+                        let optimal_width = estimated_width.min(600.0).max(base_width);
+
+                        nucleotide_logging::debug!(
+                            max_text_length = max_text_length,
+                            estimated_width = estimated_width,
+                            optimal_width = optimal_width,
+                            "Calculated dynamic completion width"
+                        );
+
+                        px(optimal_width)
+                    })
                     .bg(tokens.colors.popup_background)
                     .border_1()
                     .border_color(tokens.colors.popup_border)
                     .rounded(tokens.sizes.radius_md)
                     .shadow_lg()
-                    .max_h(px(300.0))
-                    .overflow_y_scroll()
                     .py(tokens.sizes.space_1)
                     .px(tokens.sizes.space_1)
-                    .children(completion_items),
+                    .child(
+                        div()
+                            .id("completion-list-container")
+                            .flex()
+                            .flex_col()
+                            .w_full()
+                            .max_h(max_container_height) // Flexible height with maximum constraint
+                            .min_h(px(64.0)) // Minimum height for at least 2 items
+                            .bg(tokens.colors.popup_background) // Ensure background is visible
+                            .child(
+                                // Scrollable container with working completion items
+                                div()
+                                    .id("completion-scrollable-container")
+                                    .flex()
+                                    .flex_col()
+                                    .w_full()
+                                    .h_full()
+                                    .overflow_y_scroll() // Enable scrolling
+                                    .children({
+                                        // Implement a sliding window of visible items centered around selection
+                                        let total_items = self.filtered_entries.len();
+                                        let max_visible = 12; // Show up to 12 items at a time
+
+                                        let (start_index, end_index) = if total_items <= max_visible
+                                        {
+                                            // Show all items if we have few enough
+                                            nucleotide_logging::debug!(
+                                                "Using full list - items fit in window"
+                                            );
+                                            (0, total_items)
+                                        } else {
+                                            // Need a sliding window
+                                            let selected = self.selected_index;
+
+                                            nucleotide_logging::debug!(
+                                                selected = selected,
+                                                total_items = total_items,
+                                                max_visible = max_visible,
+                                                "Calculating sliding window"
+                                            );
+
+                                            // Simple logic: ensure selected item is always visible
+                                            let start = if selected < max_visible - 1 {
+                                                // Selected is near beginning, show from start
+                                                0
+                                            } else if selected >= total_items - 1 {
+                                                // Selected is last item, show last window
+                                                total_items.saturating_sub(max_visible)
+                                            } else {
+                                                // Selected is in middle, center it
+                                                let half = max_visible / 2;
+                                                selected.saturating_sub(half)
+                                            };
+
+                                            // Ensure we don't go past the end
+                                            let start =
+                                                start.min(total_items.saturating_sub(max_visible));
+                                            let end = (start + max_visible).min(total_items);
+
+                                            nucleotide_logging::debug!(
+                                                calculated_start = start,
+                                                calculated_end = end,
+                                                "Calculated window bounds"
+                                            );
+
+                                            (start, end)
+                                        };
+
+                                        // Verify the selected item is actually in the window
+                                        let selected_visible = self.selected_index >= start_index
+                                            && self.selected_index < end_index;
+
+                                        nucleotide_logging::debug!(
+                                            total_items = total_items,
+                                            selected_index = self.selected_index,
+                                            start_index = start_index,
+                                            end_index = end_index,
+                                            window_size = end_index - start_index,
+                                            selected_visible = selected_visible,
+                                            "Rendering completion window"
+                                        );
+
+                                        if !selected_visible {
+                                            nucleotide_logging::error!(
+                                                selected_index = self.selected_index,
+                                                start_index = start_index,
+                                                end_index = end_index,
+                                                total_items = total_items,
+                                                max_visible = max_visible,
+                                                "SELECTED ITEM NOT IN VISIBLE WINDOW!"
+                                            );
+                                        }
+
+                                        // Special debugging for last few items
+                                        if self.selected_index >= total_items.saturating_sub(3) {
+                                            nucleotide_logging::info!(
+                                                selected_index = self.selected_index,
+                                                total_items = total_items,
+                                                start_index = start_index,
+                                                end_index = end_index,
+                                                is_last_item =
+                                                    self.selected_index == total_items - 1,
+                                                is_second_last =
+                                                    self.selected_index == total_items - 2,
+                                                "Debugging last few items"
+                                            );
+                                        }
+
+                                        let items_to_render: Vec<_> = self
+                                            .filtered_entries
+                                            .iter()
+                                            .enumerate()
+                                            .skip(start_index)
+                                            .take(end_index - start_index)
+                                            .collect();
+
+                                        nucleotide_logging::debug!(
+                                            items_to_render_count = items_to_render.len(),
+                                            expected_count = end_index - start_index,
+                                            first_index = items_to_render.first().map(|(i, _)| *i),
+                                            last_index = items_to_render.last().map(|(i, _)| *i),
+                                            "Items actually being rendered"
+                                        );
+
+                                        items_to_render
+                                            .into_iter()
+                                            .map(|(index, string_match)| {
+                                                // Find the original completion item
+                                                let item = self
+                                                    .all_items
+                                                    .iter()
+                                                    .find(|item| {
+                                                        let candidate =
+                                                            StringMatchCandidate::from(*item);
+                                                        candidate.id == string_match.candidate_id
+                                                    })
+                                                    .unwrap();
+
+                                                let is_selected = index == self.selected_index;
+
+                                                // Add explicit ID for scroll-to-element functionality
+                                                let completion_element = CompletionItemElement::new(
+                                                    item.clone(),
+                                                    string_match.clone(),
+                                                    is_selected,
+                                                );
+
+                                                // Wrap in div with ID for scroll targeting
+                                                div()
+                                                    .id(("completion-item-wrapper", index))
+                                                    .w_full()
+                                                    .child(completion_element)
+                                            })
+                                            .collect::<Vec<_>>()
+                                    }),
+                            ),
+                    ),
             )
     }
 }

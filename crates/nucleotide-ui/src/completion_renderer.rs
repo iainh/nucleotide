@@ -260,7 +260,7 @@ impl IntoElement for CompletionItemElement {
             .items_center()
             .w_full()
             .px_2()
-            .py(px(3.0))
+            .py(px(3.0)) // This is 6px total (3px top + 3px bottom)
             .gap_2()
             .when(self.is_selected, |div| {
                 div.bg(tokens.colors.selection_primary)
@@ -311,7 +311,7 @@ impl IntoElement for CompletionItemElement {
                 .flex_col() // Stack main text and details vertically
                 .min_w_0() // Allow text to truncate
                 .flex_1() // Take up remaining space
-                .gap_1()
+                .gap_1() // This adds gap between rows
                 .child(
                     // Top row: Primary text + signature/type info
                     div()
@@ -320,6 +320,7 @@ impl IntoElement for CompletionItemElement {
                         .items_center()
                         .gap_2()
                         .min_w_0()
+                        .w_full()
                         .child(
                             // Primary text with highlighting
                             div()
@@ -370,6 +371,7 @@ impl IntoElement for CompletionItemElement {
                             div()
                                 .text_xs()
                                 .text_color(tokens.colors.text_tertiary)
+                                .w_full()
                                 .max_w_full()
                                 .overflow_hidden()
                                 .text_ellipsis()
@@ -394,7 +396,8 @@ impl IntoElement for CompletionItemElement {
         #[cfg(not(debug_assertions))]
         let with_score = with_content;
 
-        with_score.into_any_element()
+        // Ensure the final element fills the full width
+        with_score.w_full().into_any_element()
     }
 }
 
@@ -428,44 +431,43 @@ impl CompletionListState {
         self.item_count = count;
     }
 
+    /// Scroll to make the specified item visible, with smart positioning
     pub fn scroll_to_item(&mut self, index: usize) {
         if index >= self.item_count {
             return;
         }
 
-        let visible_items = (self.max_height / self.item_height).floor() as usize;
-        let current_scroll_offset = 0.0; // TODO: Get actual scroll position from container
-        let current_first_visible = (current_scroll_offset / self.item_height).floor() as usize;
-        let current_last_visible = current_first_visible + visible_items - 1;
-
-        // Check if item is already visible
-        if index >= current_first_visible && index <= current_last_visible {
-            return; // Already visible, no scrolling needed
-        }
-
-        // Calculate new scroll position to center the item
-        let target_first_visible = if index < visible_items / 2 {
-            0
-        } else if index >= self.item_count - visible_items / 2 {
-            self.item_count.saturating_sub(visible_items)
+        // For uniform_list, we can use the ScrollStrategy to determine positioning
+        let strategy = if index == 0 {
+            // First item should be at the top
+            gpui::ScrollStrategy::Top
+        } else if index >= self.item_count.saturating_sub(1) {
+            // Last item - let Center handle it gracefully
+            gpui::ScrollStrategy::Center
         } else {
-            index.saturating_sub(visible_items / 2)
+            // Center the selected item for better visibility
+            gpui::ScrollStrategy::Center
         };
 
-        let target_scroll_offset = target_first_visible as f32 * self.item_height;
-
-        // Store the target scroll position for the container to use
-        // In a real implementation, this would trigger scroll animation
-        // For now, we just calculate the correct position
-        let _ = target_scroll_offset;
+        // Use the scroll handle to scroll to the item
+        self.scroll_handle.scroll_to_item(index, strategy);
     }
 
-    pub fn visible_range(&self) -> std::ops::Range<usize> {
-        let visible_items = (self.max_height / self.item_height).ceil() as usize;
-        let start_idx = 0; // Simplified for now - would need access to scroll position
-        let end_idx = visible_items.min(self.item_count);
+    /// Get the currently visible range of items
+    pub fn visible_item_range(&self) -> std::ops::Range<usize> {
+        let visible_items = (self.max_height / self.item_height).floor() as usize;
+        let max_items = visible_items.min(self.item_count);
+        0..max_items
+    }
 
-        start_idx..end_idx
+    /// Check if an item index is currently visible
+    pub fn is_item_visible(&self, index: usize) -> bool {
+        let range = self.visible_item_range();
+        range.contains(&index)
+    }
+
+    pub fn get_scroll_handle(&mut self) -> &mut UniformListScrollHandle {
+        &mut self.scroll_handle
     }
 }
 
