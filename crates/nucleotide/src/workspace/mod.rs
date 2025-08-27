@@ -458,7 +458,9 @@ impl Workspace {
                     }
                 }
                 "tab" => {
-                    nucleotide_logging::info!("Forwarding tab key to accept completion (secondary)");
+                    nucleotide_logging::info!(
+                        "Forwarding tab key to accept completion (secondary)"
+                    );
                     // Forward tab to completion view to accept selected item
                     let handled = self
                         .overlay
@@ -472,7 +474,9 @@ impl Workspace {
                     // Handle Helix-style control key combinations
                     match key {
                         "y" => {
-                            nucleotide_logging::info!("Forwarding C-y to accept completion (primary - Helix style)");
+                            nucleotide_logging::info!(
+                                "Forwarding C-y to accept completion (primary - Helix style)"
+                            );
                             // Forward C-y to completion view to accept selected item (Helix primary)
                             let handled = self
                                 .overlay
@@ -483,7 +487,9 @@ impl Workspace {
                             }
                         }
                         "n" => {
-                            nucleotide_logging::info!("Forwarding C-n to select next completion (Helix style)");
+                            nucleotide_logging::info!(
+                                "Forwarding C-n to select next completion (Helix style)"
+                            );
                             // Forward C-n to completion view for next selection
                             let handled = self.overlay.update(cx, |overlay, cx| {
                                 overlay.handle_completion_arrow_key("down", cx)
@@ -494,7 +500,9 @@ impl Workspace {
                             }
                         }
                         "p" => {
-                            nucleotide_logging::info!("Forwarding C-p to select previous completion (Helix style)");
+                            nucleotide_logging::info!(
+                                "Forwarding C-p to select previous completion (Helix style)"
+                            );
                             // Forward C-p to completion view for previous selection
                             let handled = self.overlay.update(cx, |overlay, cx| {
                                 overlay.handle_completion_arrow_key("up", cx)

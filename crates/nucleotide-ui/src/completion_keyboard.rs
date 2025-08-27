@@ -221,12 +221,12 @@ impl CompletionKeyboardHandler {
     pub fn default_key_bindings() -> Vec<(&'static str, &'static str)> {
         vec![
             // Helix primary keybindings
-            ("ctrl-y", "completion::accept"),          // Primary confirm in Helix
-            ("tab", "completion::accept"),             // Secondary confirm in Helix
-            ("escape", "completion::cancel"),          // Close completion
-            ("down", "completion::select_next"),       // Next item
-            ("up", "completion::select_previous"),     // Previous item
-            ("ctrl-n", "completion::select_next"),     // Next item (Helix style)
+            ("ctrl-y", "completion::accept"), // Primary confirm in Helix
+            ("tab", "completion::accept"),    // Secondary confirm in Helix
+            ("escape", "completion::cancel"), // Close completion
+            ("down", "completion::select_next"), // Next item
+            ("up", "completion::select_previous"), // Previous item
+            ("ctrl-n", "completion::select_next"), // Next item (Helix style)
             ("ctrl-p", "completion::select_previous"), // Previous item (Helix style)
             // Additional useful bindings (not in Helix core but commonly used)
             ("ctrl-d", "completion::toggle_documentation"),
@@ -256,19 +256,19 @@ impl CompletionKeyboardHandler {
         // This would typically be handled by GPUI's action system
         // For now, we'll provide a basic mapping that matches Helix
         match keystroke.key.as_str() {
-            "Tab" => Some(CompletionAction::Accept),        // Secondary accept (Helix)
-            "Escape" => Some(CompletionAction::Cancel),     // Close completion (Helix)
-            "ArrowDown" => Some(CompletionAction::SelectNext),     // Next item (Helix)
-            "ArrowUp" => Some(CompletionAction::SelectPrevious),   // Previous item (Helix)
+            "Tab" => Some(CompletionAction::Accept), // Secondary accept (Helix)
+            "Escape" => Some(CompletionAction::Cancel), // Close completion (Helix)
+            "ArrowDown" => Some(CompletionAction::SelectNext), // Next item (Helix)
+            "ArrowUp" => Some(CompletionAction::SelectPrevious), // Previous item (Helix)
             _ => {
                 // Check for modifier combinations
                 if keystroke.modifiers.control {
                     match keystroke.key.as_str() {
-                        "y" => Some(CompletionAction::Accept),    // Primary accept (Helix)
-                        "n" => Some(CompletionAction::SelectNext),     // Next item (Helix)
+                        "y" => Some(CompletionAction::Accept), // Primary accept (Helix)
+                        "n" => Some(CompletionAction::SelectNext), // Next item (Helix)
                         "p" => Some(CompletionAction::SelectPrevious), // Previous item (Helix)
                         "d" => Some(CompletionAction::ToggleDocumentation), // Extra feature
-                        " " => Some(CompletionAction::TriggerCompletion),   // Extra feature
+                        " " => Some(CompletionAction::TriggerCompletion), // Extra feature
                         _ => None,
                     }
                 } else {
