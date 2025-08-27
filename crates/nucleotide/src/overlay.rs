@@ -78,6 +78,43 @@ impl OverlayView {
         }
     }
 
+    pub fn handle_completion_tab_key(&self, cx: &mut Context<Self>) -> bool {
+        if let Some(completion_view) = &self.completion_view {
+            completion_view.update(cx, |view, cx| {
+                // Accept the currently selected completion item
+                if let Some(selected_index) = view.selected_index() {
+                    nucleotide_logging::info!(
+                        selected_index = selected_index,
+                        "Tab key forwarded - accepting selected completion via Helix"
+                    );
+                    // Signal to Helix that it should accept the completion
+                    // The overlay subscription will catch this and forward to workspace
+                    cx.emit(nucleotide_ui::CompleteViaHelixEvent {
+                        item_index: selected_index,
+                    });
+                    // Note: DismissEvent will be emitted by the overlay subscription
+                } else {
+                    nucleotide_logging::warn!("Tab key forwarded but no completion item selected");
+                }
+            });
+            true // Key was handled
+        } else {
+            false // No completion view to handle the key
+        }
+    }
+
+    pub fn get_completion_item(
+        &self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<nucleotide_ui::CompletionItem> {
+        if let Some(completion_view) = &self.completion_view {
+            completion_view.read(cx).get_item_at_index(index).cloned()
+        } else {
+            None
+        }
+    }
+
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         // Clean up picker before clearing
         if let Some(picker) = &self.native_picker_view {
@@ -256,11 +293,17 @@ impl OverlayView {
                     |this, _completion_view, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
                         nucleotide_logging::info!(
                             item_index = event.item_index,
-                            "Completion accepted via Helix transaction system"
+                            "Completion accepted via Helix transaction system - forwarding to workspace"
                         );
-                        // The completion view will handle the actual acceptance through Helix
-                        // This event is just for notification/coordination
-                        cx.emit(DismissEvent);
+                        // Forward the completion acceptance event to the workspace FIRST
+                        // (while completion_view is still available for item retrieval)
+                        cx.emit(nucleotide_ui::CompleteViaHelixEvent {
+                            item_index: event.item_index,
+                        });
+
+                        // IMPORTANT: Don't dismiss yet - let workspace handle completion first
+                        // The workspace will call dismiss_completion() after successful text insertion
+                        nucleotide_logging::info!("Completion acceptance forwarded - workspace will dismiss after processing");
                     },
                 )
                 .detach();

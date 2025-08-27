@@ -817,6 +817,19 @@ impl CompletionView {
         }
     }
 
+    /// Get completion item at specific index
+    pub fn get_item_at_index(&self, index: usize) -> Option<&CompletionItem> {
+        if let Some(string_match) = self.filtered_entries.get(index) {
+            // Find the original item by matching candidate ID
+            self.all_items.iter().find(|item| {
+                let candidate = StringMatchCandidate::from(*item);
+                candidate.id == string_match.candidate_id
+            })
+        } else {
+            None
+        }
+    }
+
     /// Get the currently selected item index in the filtered list
     pub fn selected_index(&self) -> Option<usize> {
         if self.selected_index < self.filtered_entries.len() {
@@ -1253,15 +1266,26 @@ impl Render for CompletionView {
                         cx.stop_propagation();
                     }
                     "tab" => {
-                        if ev.keystroke.modifiers.shift {
-                            // Shift+Tab: Move to previous item
-                            view.select_prev(cx);
+                        // Tab: Accept the currently selected completion item
+                        if let Some(selected_index) = view.selected_index() {
+                            nucleotide_logging::info!(
+                                selected_index = selected_index,
+                                "Tab pressed - accepting selected completion via Helix"
+                            );
+                            // Signal to Helix that it should accept the completion
+                            // This uses Helix's Transaction system for proper text insertion
+                            cx.emit(CompleteViaHelixEvent {
+                                item_index: selected_index,
+                            });
+                            // Dismiss the completion popup
+                            cx.emit(DismissEvent);
+                            // Stop propagation so Tab doesn't insert text in the editor after completion
+                            cx.stop_propagation();
                         } else {
-                            // Tab: Move to next item
-                            view.select_next(cx);
+                            nucleotide_logging::warn!(
+                                "Tab pressed but no completion item selected"
+                            );
                         }
-                        // Stop propagation so Tab doesn't insert text in the editor
-                        cx.stop_propagation();
                     }
                     "up" => {
                         nucleotide_logging::info!("Up arrow key pressed in completion popup");

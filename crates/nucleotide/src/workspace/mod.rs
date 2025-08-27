@@ -127,11 +127,14 @@ impl Workspace {
         )
         .detach();
 
-        // DISABLED: Custom completion acceptance event handling
-        // Let Helix handle completion natively instead
-        // cx.subscribe(&overlay, |workspace, _overlay, event: &CompletionAcceptedEvent, cx| {
-        //     workspace.handle_completion_accepted(&event.text, cx);
-        // }).detach();
+        // Subscribe to completion acceptance events from the overlay
+        cx.subscribe(
+            &overlay,
+            |workspace, _overlay, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
+                workspace.handle_completion_via_helix(event.item_index, cx);
+            },
+        )
+        .detach();
 
         // Subscribe to core (Application) events to receive Update events
         cx.subscribe(&core, |workspace, _core, event: &crate::Update, cx| {
@@ -432,7 +435,7 @@ impl Workspace {
             "Workspace received key event"
         );
 
-        // Check if completion is visible and handle arrow keys
+        // Check if completion is visible and handle navigation/control keys
         if self.overlay.read(cx).has_completion() {
             match ev.keystroke.key.as_str() {
                 "up" | "down" => {
@@ -448,6 +451,26 @@ impl Workspace {
                         // Don't let this key go to Helix - we handled it
                         return;
                     }
+                }
+                "tab" => {
+                    nucleotide_logging::info!("Forwarding tab key to accept completion");
+                    // Forward tab to completion view to accept selected item
+                    let handled = self
+                        .overlay
+                        .update(cx, |overlay, cx| overlay.handle_completion_tab_key(cx));
+                    if handled {
+                        // Don't let tab go to Helix - we handled it
+                        return;
+                    }
+                }
+                "escape" => {
+                    nucleotide_logging::info!("Forwarding escape key to close completion view");
+                    // Close the completion view without accepting any item
+                    self.overlay.update(cx, |overlay, cx| {
+                        overlay.dismiss_completion(cx);
+                    });
+                    // Don't let escape go to Helix - we handled it
+                    return;
                 }
                 _ => {
                     // For other keys when completion is visible, continue normal processing
@@ -4328,7 +4351,116 @@ impl Workspace {
     // The Application now handles completion results and emits Update::Completion events
     // which the workspace receives via the existing event subscription
 
-    /// Handle completion acceptance - insert the selected text into the editor
+    /// Handle completion acceptance via Helix's transaction system
+    fn handle_completion_via_helix(&mut self, item_index: usize, cx: &mut Context<Self>) {
+        nucleotide_logging::info!(
+            item_index = item_index,
+            "Accepting completion via Helix transaction system"
+        );
+
+        // Get the completion item from the current completion state
+        let completion_item = self.overlay.update(cx, |overlay, cx| {
+            overlay.get_completion_item(item_index, cx)
+        });
+
+        let Some(completion_item) = completion_item else {
+            nucleotide_logging::warn!(
+                item_index = item_index,
+                "No completion item at index for acceptance"
+            );
+            return;
+        };
+
+        nucleotide_logging::info!(
+            item_index = item_index,
+            completion_text = %completion_item.text,
+            "Retrieved completion item for transaction"
+        );
+
+        // Use Helix's transaction system to insert the completion text
+        let rt_handle = self.handle.clone();
+        self.core.update(cx, move |core, cx| {
+            let _guard = rt_handle.enter();
+            let editor = &mut core.editor;
+
+            nucleotide_logging::info!(
+                completion_text = %completion_item.text,
+                "Creating Helix transaction for completion"
+            );
+
+            // Apply the completion using Helix's transaction system
+            let (view, doc) = helix_view::current!(editor);
+            use helix_core::Selection;
+            use helix_core::Transaction;
+
+            let text = doc.text();
+            let selection = doc.selection(view.id);
+            let primary_cursor = selection.primary().cursor(text.slice(..));
+
+            nucleotide_logging::info!(
+                cursor_pos = primary_cursor,
+                doc_len = text.len_chars(),
+                selection_ranges = selection.len(),
+                "Transaction context before creation"
+            );
+
+            // Create transaction to replace the partial word with completion text
+            let transaction = Transaction::change_by_selection(text, &selection, |range| {
+                // Find the start of the word being completed (go backward from cursor)
+                let cursor_pos = range.cursor(text.slice(..));
+                let mut start_pos = cursor_pos;
+                let text_slice = text.slice(..);
+                let mut chars_iter = text_slice.chars_at(cursor_pos);
+                chars_iter.reverse();
+
+                nucleotide_logging::info!(
+                    range_cursor = cursor_pos,
+                    "Processing range in transaction"
+                );
+
+                for ch in chars_iter {
+                    if helix_core::chars::char_is_word(ch) {
+                        if start_pos > 0 {
+                            start_pos -= ch.len_utf8();
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                nucleotide_logging::info!(
+                    start_pos = start_pos,
+                    end_pos = cursor_pos,
+                    replacement_text = %completion_item.text,
+                    "Transaction replacement calculated"
+                );
+
+                // Return the replacement text for this range
+                (
+                    start_pos,
+                    cursor_pos,
+                    Some(completion_item.text.to_string().into()),
+                )
+            });
+
+            // Apply the transaction
+            nucleotide_logging::info!("Applying transaction to document");
+            doc.apply(&transaction, view.id);
+
+            nucleotide_logging::info!("Applied completion transaction successfully");
+
+            cx.notify();
+        });
+
+        // Dismiss the completion view after successful text insertion
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.dismiss_completion(cx);
+        });
+
+        nucleotide_logging::info!("Completion processing complete - view dismissed");
+    }
+
+    /// Handle completion acceptance - insert the selected text into the editor (DEPRECATED)
     fn handle_completion_accepted(&mut self, text: &str, cx: &mut Context<Self>) {
         nucleotide_logging::info!(completion_text = %text, "DISABLED: Custom completion handling - should use Helix's native completion system");
 
