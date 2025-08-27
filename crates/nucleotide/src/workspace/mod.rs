@@ -1,8 +1,10 @@
 // ABOUTME: Workspace module decomposition for cleaner architecture
 // ABOUTME: Separates view management from workspace coordination logic
 
+pub mod prefix_extraction;
 pub mod view_manager;
 
+use prefix_extraction::PrefixExtractor;
 pub use view_manager::ViewManager;
 
 // Main workspace implementation
@@ -71,6 +73,7 @@ pub struct Workspace {
     project_lsp_manager: Option<Arc<nucleotide_lsp::ProjectLspManager>>, // Project-level LSP management
     current_project_root: Option<std::path::PathBuf>, // Track current project root for change detection
     pending_lsp_startup: Option<std::path::PathBuf>,  // Track pending server startup requests
+    prefix_extractor: PrefixExtractor,                // Language-aware completion prefix extraction
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -288,6 +291,7 @@ impl Workspace {
             project_lsp_manager,
             current_project_root: root_path_for_manager.clone(),
             pending_lsp_startup: None,
+            prefix_extractor: PrefixExtractor::new(),
         };
 
         // Set initial focus restore state
@@ -480,16 +484,30 @@ impl Workspace {
                     // For backspace, predict by removing the last character from current prefix
                     self.update_completion_filter_with_predicted_backspace(cx);
                 }
-                key if key.len() == 1 && key.chars().all(|c| c.is_alphanumeric() || c == '_') => {
-                    nucleotide_logging::debug!(
-                        key = %key,
-                        "Character typed while completion active - will update filter with predicted prefix"
-                    );
-                    // Instead of trying to wait for document update, predict what the prefix will be
-                    self.update_completion_filter_with_predicted_char(
-                        key.chars().next().unwrap(),
-                        cx,
-                    );
+                key if key.len() == 1 => {
+                    let typed_char = key.chars().next().unwrap();
+                    if typed_char.is_alphanumeric() || typed_char == '_' {
+                        nucleotide_logging::debug!(
+                            key = %key,
+                            "Character typed while completion active - will update filter with predicted prefix"
+                        );
+                        // Regular alphanumeric character - update filter with prediction
+                        self.update_completion_filter_with_predicted_char(typed_char, cx);
+                    } else if typed_char == '.' {
+                        nucleotide_logging::debug!(
+                            key = %key,
+                            "Dot typed while completion active - will trigger new completion request"
+                        );
+                        // Dot should trigger a new completion request for methods/properties
+                        // Let the dot go to Helix first, then trigger new completion
+                        self.schedule_completion_filter_update(cx);
+                    } else {
+                        // Other punctuation might close completion
+                        nucleotide_logging::debug!(
+                            key = %key,
+                            "Non-alphanumeric character typed - letting Helix handle normally"
+                        );
+                    }
                 }
                 _ => {
                     // For other keys when completion is visible, continue normal processing
@@ -4029,7 +4047,7 @@ impl Workspace {
     }
 
     /// Get the current word prefix under the cursor for completion filtering
-    fn get_current_completion_prefix(&self, cx: &mut Context<Self>) -> Option<String> {
+    fn get_current_completion_prefix(&mut self, cx: &mut Context<Self>) -> Option<String> {
         let core = self.core.clone();
         core.update(cx, |core, _cx| {
             let editor = &mut core.editor;
@@ -4067,28 +4085,60 @@ impl Workspace {
                 "Text extraction analysis"
             );
 
-            // Find the last word boundary (non-alphanumeric/underscore character)
-            let word_start = line_text_to_cursor
-                .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-                .map(|pos| pos + 1)
-                .unwrap_or(0);
+            // Configure prefix extractor based on current document's file extension
+            if let Some(path) = doc.path() {
+                if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
+                    let language = self.map_extension_to_language(extension);
+                    self.prefix_extractor.configure_for_language(&language);
+                }
+            }
 
-            // Extract the current word prefix
-            let prefix = &line_text_to_cursor[word_start..];
+            // Use the enhanced prefix extractor for language-aware completion
+            let (prefix, is_trigger_completion) = self
+                .prefix_extractor
+                .extract_prefix(line_text_to_cursor, cursor_in_line);
+
+            nucleotide_logging::debug!(
+                is_trigger_completion = is_trigger_completion,
+                extracted_prefix = %prefix,
+                "Enhanced prefix extraction result"
+            );
 
             nucleotide_logging::debug!(
                 prefix = %prefix,
                 cursor_pos = cursor_pos,
                 line = line,
-                "Extracted completion prefix from document"
+                line_text_to_cursor = %line_text_to_cursor,
+                ends_with_dot = line_text_to_cursor.ends_with('.'),
+                is_trigger_completion = is_trigger_completion,
+                "Enhanced completion prefix extraction completed"
             );
 
-            if prefix.is_empty() {
-                None
-            } else {
-                Some(prefix.to_string())
-            }
+            // Even empty prefix is valid for trigger completions (e.g., method completion after a dot)
+            Some(prefix)
         })
+    }
+
+    /// Map file extensions to language identifiers
+    fn map_extension_to_language(&self, extension: &str) -> String {
+        match extension.to_lowercase().as_str() {
+            "rs" => "rust".to_string(),
+            "js" | "mjs" => "javascript".to_string(),
+            "ts" | "mts" => "typescript".to_string(),
+            "tsx" => "typescript".to_string(),
+            "jsx" => "javascript".to_string(),
+            "css" => "css".to_string(),
+            "scss" => "scss".to_string(),
+            "less" => "less".to_string(),
+            "php" => "php".to_string(),
+            "c" => "c".to_string(),
+            "cpp" | "cc" | "cxx" | "c++" => "cpp".to_string(),
+            "h" | "hpp" | "hxx" => "cpp".to_string(),
+            "py" => "python".to_string(),
+            "go" => "go".to_string(),
+            "java" => "java".to_string(),
+            _ => "generic".to_string(),
+        }
     }
 
     /// Update completion filter by predicting what the prefix will be after the character is typed
