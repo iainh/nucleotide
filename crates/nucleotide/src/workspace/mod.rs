@@ -4334,7 +4334,7 @@ impl Workspace {
                 };
 
                 UiCompletionItem {
-                    text: item.label.clone().into(),
+                    text: item.insert_text.into(),
                     description: item.detail.as_ref().map(|d| d.clone().into()),
                     display_text: Some(item.label.into()),
                     kind: Some(ui_kind),
@@ -4419,9 +4419,9 @@ impl Workspace {
                 };
 
                 UiCompletionItem {
-                    text: item.label.into(),
+                    text: item.insert_text.into(),
                     description: item.detail.as_ref().map(|d| d.clone().into()),
-                    display_text: Some(SharedString::from(item.insert_text)),
+                    display_text: Some(item.label.into()),
                     kind: Some(ui_kind),
                     documentation: item.documentation.map(|d| d.into()),
                     detail: item.detail.map(|d| d.into()),
@@ -4632,9 +4632,9 @@ impl Workspace {
                                 };
 
                                 nucleotide_ui::completion_v2::CompletionItem {
-                                    text: item.label.into(),
+                                    text: item.insert_text.into(),
                                     description: item.detail.as_ref().map(|d| d.clone().into()),
-                                    display_text: Some(item.insert_text.into()),
+                                    display_text: Some(item.label.into()),
                                     kind: ui_kind,
                                     documentation: item.documentation.map(|d| d.into()),
                                     detail: item.detail.map(|d| d.into()),
@@ -4705,15 +4705,6 @@ impl Workspace {
             insert_text_format = ?completion_item.insert_text_format,
             "Retrieved completion item for transaction"
         );
-
-        // Debug: Check if this is the ellipsis issue
-        if completion_item.text.contains('…') {
-            nucleotide_logging::warn!(
-                completion_text = %completion_item.text,
-                insert_text_format = ?completion_item.insert_text_format,
-                "DEBUGGING: Completion item contains ellipsis character - investigating source"
-            );
-        }
 
         // Check if this is a snippet completion
         match completion_item.insert_text_format {

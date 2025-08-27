@@ -366,23 +366,4 @@ mod tests {
         let result = SnippetTemplate::parse("invalid ${1 tabstop");
         assert!(result.is_err());
     }
-
-    #[test]
-    fn test_concat_snippet_debug() {
-        let template = SnippetTemplate::parse("concat!($0)").unwrap();
-
-        println!("Original snippet: concat!($0)");
-        println!("Parsed template: {:#?}", template);
-
-        let rendered = template.render_plain_text();
-        println!("Rendered plain text: {}", rendered);
-
-        let cursor_pos = template.calculate_final_cursor_position(0);
-        println!("Final cursor position: {:?}", cursor_pos);
-
-        // Verify correct parsing
-        assert_eq!(rendered, "concat!()");
-        assert_eq!(template.final_cursor_pos, Some("concat!(".chars().count()));
-        assert_eq!(cursor_pos, Some("concat!(".chars().count()));
-    }
 }
