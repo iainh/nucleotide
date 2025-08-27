@@ -899,22 +899,45 @@ fn gui_main(
                                                         },
                                                         insert_text: {
                                                             // Priority order: text_edit.new_text -> insert_text -> label
-                                                            if let Some(ref text_edit) = lsp_item.item.text_edit {
-                                                                match text_edit {
+                                                            let final_text = if let Some(ref text_edit) = lsp_item.item.text_edit {
+                                                                let text = match text_edit {
                                                                     helix_lsp::lsp::CompletionTextEdit::Edit(edit) => edit.new_text.clone(),
                                                                     helix_lsp::lsp::CompletionTextEdit::InsertAndReplace(edit) => edit.new_text.clone(),
-                                                                }
+                                                                };
+                                                                nucleotide_logging::debug!(
+                                                                    label = %lsp_item.item.label,
+                                                                    text_edit_content = %text,
+                                                                    "Using text_edit.new_text for completion"
+                                                                );
+                                                                text
                                                             } else {
-                                                                lsp_item.item.insert_text.clone().unwrap_or_else(|| lsp_item.item.label.clone())
-                                                            }
+                                                                let text = lsp_item.item.insert_text.clone().unwrap_or_else(|| lsp_item.item.label.clone());
+                                                                nucleotide_logging::debug!(
+                                                                    label = %lsp_item.item.label,
+                                                                    insert_text_content = %text,
+                                                                    has_insert_text = lsp_item.item.insert_text.is_some(),
+                                                                    "Using insert_text/label for completion"
+                                                                );
+                                                                text
+                                                            };
+                                                            final_text
                                                         },
                                                         score: 1.0, // Default score for LSP items
                                                         signature_info: None,
                                                         type_info: None,
                                                         insert_text_format: {
                                                             // Check both insert_text_format and completion kind like Helix does
-                                                            if matches!(lsp_item.item.insert_text_format, Some(helix_lsp::lsp::InsertTextFormat::SNIPPET)) ||
-                                                               matches!(lsp_item.item.kind, Some(helix_lsp::lsp::CompletionItemKind::SNIPPET)) {
+                                                            let is_snippet = matches!(lsp_item.item.insert_text_format, Some(helix_lsp::lsp::InsertTextFormat::SNIPPET)) ||
+                                                                             matches!(lsp_item.item.kind, Some(helix_lsp::lsp::CompletionItemKind::SNIPPET));
+
+                                                            nucleotide_logging::debug!(
+                                                                label = %lsp_item.item.label,
+                                                                insert_text_format = ?lsp_item.item.insert_text_format,
+                                                                completion_kind = ?lsp_item.item.kind,
+                                                                detected_as_snippet = is_snippet,
+                                                                "LSP completion format detection"
+                                                            );
+                                                            if is_snippet {
                                                                 nucleotide_events::completion::InsertTextFormat::Snippet
                                                             } else {
                                                                 nucleotide_events::completion::InsertTextFormat::PlainText
