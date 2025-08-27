@@ -186,6 +186,9 @@ impl Application {
             self.lsp_state = Some(cx.new(|_cx| nucleotide_lsp::LspState::new()));
         }
 
+        // Perform initial LSP state sync to populate any existing servers
+        self.sync_lsp_state_initial(cx);
+
         // Initialize shotgun hook system for comprehensive completion pipeline tracing
         crate::completion_interception::initialize_shotgun_hooks();
 
@@ -775,6 +778,43 @@ impl Application {
                     "Received invalid LSP call"
                 );
                 // No response needed for invalid calls
+            }
+        }
+    }
+
+    /// Initial LSP state sync during application initialization
+    #[instrument(skip(self, cx))]
+    pub fn sync_lsp_state_initial(&self, cx: &mut gpui::Context<Self>) {
+        if let Some(lsp_state) = &self.lsp_state {
+            // Check for active language servers
+            let active_servers: Vec<(LanguageServerId, String)> = self
+                .editor
+                .language_servers
+                .iter_clients()
+                .map(|client| (client.id(), client.name().to_string()))
+                .collect();
+
+            debug!(active_servers = ?active_servers, "Initial LSP state sync");
+
+            if !active_servers.is_empty() {
+                lsp_state.update(cx, |state, cx| {
+                    // Register all active servers
+                    for (id, name) in active_servers {
+                        if !state.servers.contains_key(&id) {
+                            info!(
+                                server_id = ?id,
+                                server_name = %name,
+                                "Registering LSP server during initial sync"
+                            );
+                            state.register_server(id, name, None);
+                            state.update_server_status(id, ServerStatus::Running);
+                        }
+                    }
+                    cx.notify();
+                });
+                info!("Initial LSP state sync completed - registered active servers");
+            } else {
+                debug!("No active LSP servers found during initial sync");
             }
         }
     }
