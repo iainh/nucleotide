@@ -4706,6 +4706,15 @@ impl Workspace {
             "Retrieved completion item for transaction"
         );
 
+        // Debug: Check if this is the ellipsis issue
+        if completion_item.text.contains('…') {
+            nucleotide_logging::warn!(
+                completion_text = %completion_item.text,
+                insert_text_format = ?completion_item.insert_text_format,
+                "DEBUGGING: Completion item contains ellipsis character - investigating source"
+            );
+        }
+
         // Check if this is a snippet completion
         match completion_item.insert_text_format {
             nucleotide_ui::completion_v2::InsertTextFormat::Snippet => {
