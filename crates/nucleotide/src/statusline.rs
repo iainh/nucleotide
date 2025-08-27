@@ -22,15 +22,43 @@ impl StatusLineView {
         focused: bool,
         cx: &mut Context<Self>,
     ) -> Self {
+        nucleotide_logging::info!(
+            doc_id = ?doc_id,
+            view_id = ?view_id,
+            focused = focused,
+            "STATUSLINE: Creating new StatusLineView"
+        );
+
         // Get LSP state from core if available
         let lsp_state = core.read(cx).lsp_state.clone();
 
+        nucleotide_logging::info!(
+            lsp_state_available = lsp_state.is_some(),
+            doc_id = ?doc_id,
+            view_id = ?view_id,
+            "STATUSLINE: Retrieved LspState from core"
+        );
+
         // Observe LSP state changes if available
         if let Some(lsp) = &lsp_state {
+            nucleotide_logging::info!(
+                doc_id = ?doc_id,
+                view_id = ?view_id,
+                "STATUSLINE: Setting up LspState observation"
+            );
             cx.observe(lsp, |_, _, cx| {
+                nucleotide_logging::debug!(
+                    "STATUSLINE: LspState changed, notifying StatusLineView"
+                );
                 cx.notify();
             })
             .detach();
+        } else {
+            nucleotide_logging::warn!(
+                doc_id = ?doc_id,
+                view_id = ?view_id,
+                "STATUSLINE: No LspState available for observation"
+            );
         }
 
         Self {
@@ -97,8 +125,30 @@ impl Render for StatusLineView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Get LSP indicator first (before any other mutable borrows)
         let lsp_indicator = if let Some(lsp_state) = &self.lsp_state {
-            lsp_state.update(cx, |state, _| state.get_lsp_indicator())
+            nucleotide_logging::debug!(
+                doc_id = ?self.doc_id,
+                view_id = ?self.view_id,
+                "STATUSLINE: Getting LSP indicator from LspState"
+            );
+            let indicator = lsp_state.update(cx, |state, _| {
+                let server_count = state.servers.len();
+                let indicator = state.get_lsp_indicator();
+                nucleotide_logging::info!(
+                    server_count = server_count,
+                    indicator_available = indicator.is_some(),
+                    doc_id = ?self.doc_id,
+                    view_id = ?self.view_id,
+                    "STATUSLINE: LspState has servers and indicator"
+                );
+                indicator
+            });
+            indicator
         } else {
+            nucleotide_logging::warn!(
+                doc_id = ?self.doc_id,
+                view_id = ?self.view_id,
+                "STATUSLINE: No LspState available for indicator"
+            );
             None
         };
 
@@ -247,6 +297,12 @@ impl Render for StatusLineView {
 
         // Add LSP indicator if available
         if let Some(indicator) = lsp_indicator {
+            nucleotide_logging::info!(
+                doc_id = ?self.doc_id,
+                view_id = ?self.view_id,
+                indicator = %indicator,
+                "STATUSLINE: Adding LSP indicator to status bar"
+            );
             status_bar = status_bar
                 .child(
                     // Divider before LSP
@@ -265,6 +321,12 @@ impl Render for StatusLineView {
                         .text_size(tokens.sizes.text_sm) // Use design token text sizing
                         .whitespace_nowrap(), // Prevent text wrapping
                 );
+        } else {
+            nucleotide_logging::debug!(
+                doc_id = ?self.doc_id,
+                view_id = ?self.view_id,
+                "STATUSLINE: No LSP indicator available for display"
+            );
         }
 
         status_bar

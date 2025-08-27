@@ -178,13 +178,25 @@ impl gpui::EventEmitter<InputEvent> for Input {}
 impl Application {
     /// Initialize the application with its own entity handle for LSP completion
     pub fn post_init(&mut self, cx: &mut gpui::Context<Self>) {
+        nucleotide_logging::info!("POST_INIT: Starting application post-initialization");
+
         let app_handle = cx.entity().downgrade();
         self.core.set_app_handle(app_handle);
 
         // Initialize LSP state entity for statusline indicator
         if self.lsp_state.is_none() {
+            nucleotide_logging::info!("POST_INIT: Creating new LspState entity");
             self.lsp_state = Some(cx.new(|_cx| nucleotide_lsp::LspState::new()));
+        } else {
+            nucleotide_logging::warn!("POST_INIT: LspState entity already exists");
         }
+
+        // Log current LSP server state before initial sync
+        let server_count = self.editor.language_servers.iter_clients().count();
+        nucleotide_logging::info!(
+            server_count = server_count,
+            "POST_INIT: Active LSP servers before initial sync"
+        );
 
         // Perform initial LSP state sync to populate any existing servers
         self.sync_lsp_state_initial(cx);
@@ -193,7 +205,8 @@ impl Application {
         crate::completion_interception::initialize_shotgun_hooks();
 
         nucleotide_logging::info!(
-            "Application post-initialization completed - LSP completion ready with interception"
+            lsp_state_created = self.lsp_state.is_some(),
+            "POST_INIT: Application post-initialization completed - LSP completion ready with interception"
         );
     }
 
@@ -430,7 +443,7 @@ impl Application {
 
             _ => {
                 debug!(event = ?bridged_event, "V2 processing not yet implemented for this event type");
-                // Other events (LanguageServer events, Completion) will be handled
+                // Other events (Completion, etc.) will be handled
                 // as we implement their respective handlers in future phases
             }
         }
@@ -785,7 +798,13 @@ impl Application {
     /// Initial LSP state sync during application initialization
     #[instrument(skip(self, cx))]
     pub fn sync_lsp_state_initial(&self, cx: &mut gpui::Context<Self>) {
+        nucleotide_logging::info!("INITIAL_SYNC: Starting LSP state initial sync");
+
         if let Some(lsp_state) = &self.lsp_state {
+            nucleotide_logging::info!(
+                "INITIAL_SYNC: LspState entity found, checking for active servers"
+            );
+
             // Check for active language servers
             let active_servers: Vec<(LanguageServerId, String)> = self
                 .editor
@@ -794,28 +813,57 @@ impl Application {
                 .map(|client| (client.id(), client.name().to_string()))
                 .collect();
 
-            debug!(active_servers = ?active_servers, "Initial LSP state sync");
+            nucleotide_logging::info!(
+                server_count = active_servers.len(),
+                active_servers = ?active_servers,
+                "INITIAL_SYNC: Found active language servers"
+            );
 
             if !active_servers.is_empty() {
                 lsp_state.update(cx, |state, cx| {
+                    let initial_server_count = state.servers.len();
+                    nucleotide_logging::info!(
+                        initial_count = initial_server_count,
+                        "INITIAL_SYNC: LspState had servers before registration"
+                    );
+
                     // Register all active servers
                     for (id, name) in active_servers {
                         if !state.servers.contains_key(&id) {
-                            info!(
+                            nucleotide_logging::info!(
                                 server_id = ?id,
                                 server_name = %name,
-                                "Registering LSP server during initial sync"
+                                "INITIAL_SYNC: Registering LSP server during initial sync"
                             );
                             state.register_server(id, name, None);
                             state.update_server_status(id, ServerStatus::Running);
+                        } else {
+                            nucleotide_logging::warn!(
+                                server_id = ?id,
+                                server_name = %name,
+                                "INITIAL_SYNC: Server already registered, skipping"
+                            );
                         }
                     }
+
+                    let final_server_count = state.servers.len();
+                    nucleotide_logging::info!(
+                        final_count = final_server_count,
+                        "INITIAL_SYNC: LspState after registration"
+                    );
+
                     cx.notify();
                 });
-                info!("Initial LSP state sync completed - registered active servers");
+                nucleotide_logging::info!(
+                    "INITIAL_SYNC: Initial LSP state sync completed - registered active servers"
+                );
             } else {
-                debug!("No active LSP servers found during initial sync");
+                nucleotide_logging::warn!(
+                    "INITIAL_SYNC: No active LSP servers found during initial sync"
+                );
             }
+        } else {
+            nucleotide_logging::error!("INITIAL_SYNC: No LspState entity found - cannot sync");
         }
     }
 
@@ -2010,9 +2058,60 @@ impl Application {
                             );
                         }
 
-                        // Handle LSP server startup requests directly
-                        if let event_bridge::BridgedEvent::LspServerStartupRequested { workspace_root, server_name, language_id } = bridged_event {
-                            self.handle_lsp_server_startup_request(workspace_root, server_name, language_id).await;
+                        // Handle LSP server lifecycle events with GPUI context
+                        match &bridged_event {
+                            event_bridge::BridgedEvent::LspServerStartupRequested { workspace_root, server_name, language_id } => {
+                                self.handle_lsp_server_startup_request(workspace_root.clone(), server_name.clone(), language_id.clone()).await;
+                            }
+                            event_bridge::BridgedEvent::LanguageServerInitialized { server_id } => {
+                                info!(
+                                    server_id = ?server_id,
+                                    "MAIN_LOOP: Processing LanguageServerInitialized event with GPUI context"
+                                );
+
+                                // Update LSP state for statusline indicators
+                                if let Some(lsp_state) = &self.lsp_state {
+                                    lsp_state.update(cx, |state, cx| {
+                                        // Try to get server info from the LSP manager
+                                        let server_name = format!("Server-{}", server_id);
+                                        let workspace_path = self.project_directory.as_ref()
+                                            .map(|p| p.display().to_string());
+
+                                        info!(
+                                            server_id = ?server_id,
+                                            server_name = %server_name,
+                                            workspace = ?workspace_path,
+                                            "MAIN_LOOP: Registering LSP server in statusline state"
+                                        );
+
+                                        state.register_server(*server_id, server_name, workspace_path);
+                                        state.update_server_status(*server_id, nucleotide_lsp::ServerStatus::Running);
+                                        cx.notify();
+                                    });
+                                }
+                            }
+
+                            event_bridge::BridgedEvent::LanguageServerExited { server_id } => {
+                                info!(
+                                    server_id = ?server_id,
+                                    "MAIN_LOOP: Processing LanguageServerExited event with GPUI context"
+                                );
+
+                                // Update LSP state for statusline indicators
+                                if let Some(lsp_state) = &self.lsp_state {
+                                    lsp_state.update(cx, |state, cx| {
+                                        info!(
+                                            server_id = ?server_id,
+                                            "MAIN_LOOP: Removing LSP server from statusline state"
+                                        );
+
+                                        state.remove_server(*server_id);
+                                        cx.notify();
+                                    });
+                                }
+                            }
+
+                            _ => {}
                         }
                     }
 

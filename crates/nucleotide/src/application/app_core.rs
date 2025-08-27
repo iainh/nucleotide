@@ -307,9 +307,9 @@ impl ApplicationCore {
                 // Create LSP server initialized event with actual data
                 let v2_event = nucleotide_events::v2::lsp::Event::ServerInitialized {
                     server_id: *server_id,
-                    server_name,
+                    server_name: server_name.clone(),
                     capabilities: nucleotide_events::v2::lsp::ServerCapabilities::new(),
-                    workspace_root,
+                    workspace_root: workspace_root.clone(),
                 };
 
                 debug!(
@@ -335,9 +335,9 @@ impl ApplicationCore {
 
                 let v2_event = nucleotide_events::v2::lsp::Event::ServerExited {
                     server_id: *server_id,
-                    server_name,
+                    server_name: server_name.clone(),
                     exit_code: None, // Exit code is not available through Helix events
-                    workspace_root,
+                    workspace_root: workspace_root.clone(),
                 };
 
                 debug!(

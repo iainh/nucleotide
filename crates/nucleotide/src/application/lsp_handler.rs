@@ -102,6 +102,18 @@ impl LspHandler {
             let mut health = self.server_health.write().await;
             health.insert(*server_id, ServerHealth::Healthy);
 
+            // Send bridged event for statusline update
+            info!(
+                server_id = ?server_id,
+                server_name = %server_name,
+                "LSP_HANDLER: Sending LanguageServerInitialized bridged event"
+            );
+            nucleotide_core::event_bridge::send_bridged_event(
+                nucleotide_core::event_bridge::BridgedEvent::LanguageServerInitialized {
+                    server_id: *server_id,
+                },
+            );
+
             debug!(server_count = servers.len(), "Updated active server list");
         }
         Ok(())
@@ -144,6 +156,18 @@ impl LspHandler {
             // Clear progress tokens
             let mut progress = self.progress_tokens.write().await;
             progress.remove(server_id);
+
+            // Send bridged event for statusline update
+            info!(
+                server_id = ?server_id,
+                server_name = %server_name,
+                "LSP_HANDLER: Sending LanguageServerExited bridged event"
+            );
+            nucleotide_core::event_bridge::send_bridged_event(
+                nucleotide_core::event_bridge::BridgedEvent::LanguageServerExited {
+                    server_id: *server_id,
+                },
+            );
         }
         Ok(())
     }
