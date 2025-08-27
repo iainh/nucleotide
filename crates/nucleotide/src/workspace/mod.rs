@@ -458,7 +458,7 @@ impl Workspace {
                     }
                 }
                 "tab" => {
-                    nucleotide_logging::info!("Forwarding tab key to accept completion");
+                    nucleotide_logging::info!("Forwarding tab key to accept completion (secondary)");
                     // Forward tab to completion view to accept selected item
                     let handled = self
                         .overlay
@@ -466,6 +466,47 @@ impl Workspace {
                     if handled {
                         // Don't let tab go to Helix - we handled it
                         return;
+                    }
+                }
+                key if ev.keystroke.modifiers.control => {
+                    // Handle Helix-style control key combinations
+                    match key {
+                        "y" => {
+                            nucleotide_logging::info!("Forwarding C-y to accept completion (primary - Helix style)");
+                            // Forward C-y to completion view to accept selected item (Helix primary)
+                            let handled = self
+                                .overlay
+                                .update(cx, |overlay, cx| overlay.handle_completion_tab_key(cx));
+                            if handled {
+                                // Don't let C-y go to Helix - we handled it
+                                return;
+                            }
+                        }
+                        "n" => {
+                            nucleotide_logging::info!("Forwarding C-n to select next completion (Helix style)");
+                            // Forward C-n to completion view for next selection
+                            let handled = self.overlay.update(cx, |overlay, cx| {
+                                overlay.handle_completion_arrow_key("down", cx)
+                            });
+                            if handled {
+                                // Don't let C-n go to Helix - we handled it
+                                return;
+                            }
+                        }
+                        "p" => {
+                            nucleotide_logging::info!("Forwarding C-p to select previous completion (Helix style)");
+                            // Forward C-p to completion view for previous selection
+                            let handled = self.overlay.update(cx, |overlay, cx| {
+                                overlay.handle_completion_arrow_key("up", cx)
+                            });
+                            if handled {
+                                // Don't let C-p go to Helix - we handled it
+                                return;
+                            }
+                        }
+                        _ => {
+                            // Other control keys - let them pass through to Helix
+                        }
                     }
                 }
                 "escape" => {
@@ -3842,7 +3883,7 @@ impl Workspace {
             },
         ];
 
-        // Completion specific shortcuts (beyond the basic ones already registered)
+        // Completion specific shortcuts - Helix compatible keybindings
         let completion_shortcuts = vec![
             ShortcutDefinition {
                 key_combination: "up".to_string(),
@@ -3861,27 +3902,35 @@ impl Workspace {
                 enabled: true,
             },
             ShortcutDefinition {
-                key_combination: "enter".to_string(),
+                key_combination: "ctrl-y".to_string(),
                 action: ShortcutAction::Action("accept_completion".to_string()),
-                description: "Accept selected completion".to_string(),
+                description: "Accept selected completion (primary - Helix)".to_string(),
                 context: Some("completion".to_string()),
                 priority: EventPriority::Critical,
                 enabled: true,
             },
             ShortcutDefinition {
-                key_combination: "page-up".to_string(),
-                action: ShortcutAction::Navigate(GlobalNavigationDirection::First),
-                description: "Move to first completion item".to_string(),
+                key_combination: "tab".to_string(),
+                action: ShortcutAction::Action("accept_completion".to_string()),
+                description: "Accept selected completion (secondary)".to_string(),
                 context: Some("completion".to_string()),
                 priority: EventPriority::High,
                 enabled: true,
             },
             ShortcutDefinition {
-                key_combination: "page-down".to_string(),
-                action: ShortcutAction::Navigate(GlobalNavigationDirection::Last),
-                description: "Move to last completion item".to_string(),
+                key_combination: "ctrl-n".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::Down),
+                description: "Next completion item (Helix style)".to_string(),
                 context: Some("completion".to_string()),
-                priority: EventPriority::High,
+                priority: EventPriority::Critical,
+                enabled: true,
+            },
+            ShortcutDefinition {
+                key_combination: "ctrl-p".to_string(),
+                action: ShortcutAction::Navigate(GlobalNavigationDirection::Up),
+                description: "Previous completion item (Helix style)".to_string(),
+                context: Some("completion".to_string()),
+                priority: EventPriority::Critical,
                 enabled: true,
             },
         ];
