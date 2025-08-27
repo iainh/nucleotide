@@ -2042,6 +2042,67 @@ impl ChromeTokens {
     }
 }
 
+/// Completion icon tokens for semantic coloring and styling
+#[derive(Debug, Clone)]
+pub struct CompletionIconTokens {
+    // Icon colors by type (semantic use Helix colors)
+    pub function_color: Hsla,
+    pub method_color: Hsla,
+    pub variable_color: Hsla,
+    pub field_color: Hsla,
+    pub class_color: Hsla,
+    pub interface_color: Hsla,
+    pub module_color: Hsla,
+    pub enum_color: Hsla,
+    pub constant_color: Hsla,
+    pub keyword_color: Hsla,
+    pub snippet_color: Hsla,
+    pub type_color: Hsla,
+
+    // Container styles
+    pub icon_background: Hsla,
+    pub icon_background_hover: Hsla,
+    pub icon_background_selected: Hsla,
+    pub icon_border: Hsla,
+
+    // Generic/fallback colors
+    pub generic_color: Hsla,
+    pub file_color: Hsla,
+}
+
+impl ChromeTokens {
+    /// Generate completion icon tokens using semantic colors
+    pub fn completion_icon_tokens(&self, editor: &EditorTokens) -> CompletionIconTokens {
+        use crate::styling::ColorTheory;
+
+        CompletionIconTokens {
+            // Semantic colors mapped to completion types
+            function_color: editor.info,
+            method_color: editor.info,
+            variable_color: self.primary,
+            field_color: self.primary,
+            class_color: editor.warning,
+            interface_color: editor.info,
+            module_color: self.text_on_chrome,
+            enum_color: editor.warning,
+            constant_color: self.primary,
+            keyword_color: editor.error,
+            snippet_color: editor.info,
+            type_color: editor.warning,
+
+            // Container styles using chrome colors
+            icon_background: ColorTheory::with_alpha(self.surface_elevated, 0.8),
+            icon_background_hover: ColorTheory::with_alpha(self.surface_elevated, 0.9),
+            icon_background_selected: self.surface_selected,
+            icon_border: ColorTheory::with_alpha(self.border_default, 0.3),
+
+            // Fallback colors
+            generic_color: self.text_chrome_secondary,
+            file_color: self.text_chrome_secondary,
+        }
+    }
+}
+
 // Re-export commonly used types
 pub use utils::*;
 
