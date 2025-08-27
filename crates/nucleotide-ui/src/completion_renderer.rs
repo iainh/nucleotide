@@ -203,8 +203,11 @@ impl IntoElement for CompletionItemElement {
 
         // Icon section - using Lucide SVG icons with design tokens
         let with_icon = if self.show_icon && self.item.kind.is_some() {
-            let icon = get_completion_icon(self.item.kind.as_ref().unwrap(), &default_theme);
             let icon_tokens = tokens.chrome.completion_icon_tokens(&tokens.editor);
+            // Use icon_tokens directly instead of reconstructing theme to avoid theme switching issues
+            let kind = self.item.kind.as_ref().unwrap();
+            let svg = crate::completion_icons::get_completion_icon_svg(kind);
+            let icon_color = crate::completion_icons::get_completion_icon_color(kind, &default_theme);
 
             base_container.child(
                 div()
@@ -227,7 +230,7 @@ impl IntoElement for CompletionItemElement {
                     .when(!self.is_selected, |div| {
                         div.hover(|style| style.bg(icon_tokens.icon_background_hover))
                     })
-                    .child(icon.svg),
+                    .child(svg.size(gpui::px(12.0)).text_color(icon_color)),
             )
         } else if self.show_icon {
             // Fallback icon when no kind is specified
