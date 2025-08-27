@@ -151,6 +151,7 @@ pub struct CompletionItemElement {
 
 impl CompletionItemElement {
     pub fn new(item: CompletionItem, string_match: StringMatch, is_selected: bool) -> Self {
+        // Debug removed - enhanced completion display is working
         Self {
             item,
             string_match,
@@ -303,40 +304,80 @@ impl IntoElement for CompletionItemElement {
             base_container
         };
 
-        // Main content section - VS Code style compact layout
+        // Main content section - Enhanced Zed-style layout with richer information
         let with_content = with_icon.child(
             div()
                 .flex()
-                .flex_row()
-                .items_center()
+                .flex_col() // Stack main text and details vertically
                 .min_w_0() // Allow text to truncate
                 .flex_1() // Take up remaining space
-                .gap_2()
+                .gap_1()
                 .child(
-                    // Primary text with highlighting
+                    // Top row: Primary text + signature/type info
                     div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::NORMAL)
-                        .text_color(tokens.colors.text_primary)
-                        .child(self.render_highlighted_text(
-                            display_text,
-                            &self.string_match.positions,
-                            &default_theme,
-                        )),
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .min_w_0()
+                        .child(
+                            // Primary text with highlighting
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::NORMAL)
+                                .text_color(tokens.colors.text_primary)
+                                .child(self.render_highlighted_text(
+                                    display_text,
+                                    &self.string_match.positions,
+                                    &default_theme,
+                                )),
+                        )
+                        // Show signature info (parameters) directly after function name
+                        .when(self.item.signature_info.is_some(), |div_el| {
+                            let signature = self.item.signature_info.as_ref().unwrap().to_string();
+                            div_el.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(tokens.colors.text_secondary)
+                                    .font_weight(gpui::FontWeight::NORMAL)
+                                    .child(signature),
+                            )
+                        })
+                        // Show type info (return type) at the end
+                        .when(self.item.type_info.is_some(), |div_el| {
+                            let type_info = self.item.type_info.as_ref().unwrap().to_string();
+                            div_el.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(tokens.colors.text_tertiary)
+                                    .font_weight(gpui::FontWeight::LIGHT)
+                                    .child(format!("→ {}", type_info)),
+                            )
+                        }),
                 )
-                .when(self.item.description.is_some(), |div_el| {
-                    let description = self.item.description.as_ref().unwrap().to_string();
-                    div_el.child(
-                        div()
-                            .text_xs()
-                            .text_color(tokens.colors.text_tertiary)
-                            .max_w_full()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(description),
-                    )
-                }),
+                // Bottom row: Detail or description (less prominent)
+                .when(
+                    self.item.detail.is_some() || self.item.description.is_some(),
+                    |div_el| {
+                        let detail_text = self
+                            .item
+                            .detail
+                            .as_ref()
+                            .or(self.item.description.as_ref())
+                            .unwrap()
+                            .to_string();
+                        div_el.child(
+                            div()
+                                .text_xs()
+                                .text_color(tokens.colors.text_tertiary)
+                                .max_w_full()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(detail_text),
+                        )
+                    },
+                ),
         );
 
         // Score indicator (for debugging/development)

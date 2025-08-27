@@ -102,6 +102,12 @@ pub struct CompletionItem {
     pub kind: Option<CompletionItemKind>,
     /// Detailed documentation
     pub documentation: Option<SharedString>,
+    /// Additional details like function signature or type information
+    pub detail: Option<SharedString>,
+    /// Function signature details (parameters, return type)
+    pub signature_info: Option<SharedString>,
+    /// Return type or module information
+    pub type_info: Option<SharedString>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,6 +147,9 @@ impl CompletionItem {
             display_text: None,
             kind: None,
             documentation: None,
+            detail: None,
+            signature_info: None,
+            type_info: None,
         }
     }
 
@@ -161,6 +170,21 @@ impl CompletionItem {
 
     pub fn with_documentation(mut self, documentation: impl Into<SharedString>) -> Self {
         self.documentation = Some(documentation.into());
+        self
+    }
+
+    pub fn with_detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn with_signature_info(mut self, signature_info: impl Into<SharedString>) -> Self {
+        self.signature_info = Some(signature_info.into());
+        self
+    }
+
+    pub fn with_type_info(mut self, type_info: impl Into<SharedString>) -> Self {
+        self.type_info = Some(type_info.into());
         self
     }
 }
@@ -272,6 +296,8 @@ impl CompletionView {
             filter = %initial_filter.as_deref().unwrap_or(""),
             "Setting completion items with filter"
         );
+
+        // Enhanced completion data ready for display
 
         // Log first few completion items for debugging
         if !items.is_empty() {
@@ -435,6 +461,37 @@ impl CompletionView {
 
         // Apply filtering immediately with debouncing logic
         self.filter_immediate(query, position, cx);
+    }
+
+    /// Update the completion filter when the user's typing prefix changes
+    /// This is the main method that should be called when the user types/deletes characters
+    pub fn update_filter(&mut self, new_prefix: String, cx: &mut Context<Self>) {
+        nucleotide_logging::debug!(
+            prefix = %new_prefix,
+            current_query = ?self.current_query,
+            "Updating completion filter with new prefix"
+        );
+
+        // Use the async filter method which handles debouncing and optimization
+        self.filter_async(new_prefix, None, cx);
+    }
+
+    /// Update the completion filter with both prefix and cursor position
+    /// Useful when both the typed text and cursor position have changed
+    pub fn update_filter_with_position(
+        &mut self,
+        new_prefix: String,
+        position: Position,
+        cx: &mut Context<Self>,
+    ) {
+        nucleotide_logging::debug!(
+            prefix = %new_prefix,
+            position = ?position,
+            "Updating completion filter with new prefix and position"
+        );
+
+        // Use the async filter method which handles debouncing and optimization
+        self.filter_async(new_prefix, Some(position), cx);
     }
 
     /// Immediate filtering without debouncing (for internal use)

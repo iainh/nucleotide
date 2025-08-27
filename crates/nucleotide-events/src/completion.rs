@@ -124,6 +124,8 @@ pub struct CompletionItem {
     pub documentation: Option<String>,
     pub insert_text: String,
     pub score: f32,
+    pub signature_info: Option<String>,
+    pub type_info: Option<String>,
 }
 
 /// Types of completion items
@@ -245,6 +247,8 @@ impl CompletionItem {
             detail: None,
             documentation: None,
             score: 0.0,
+            signature_info: None,
+            type_info: None,
         }
     }
 
@@ -255,6 +259,16 @@ impl CompletionItem {
 
     pub fn with_documentation(mut self, documentation: String) -> Self {
         self.documentation = Some(documentation);
+        self
+    }
+
+    pub fn with_signature_info(mut self, signature_info: String) -> Self {
+        self.signature_info = Some(signature_info);
+        self
+    }
+
+    pub fn with_type_info(mut self, type_info: String) -> Self {
+        self.type_info = Some(type_info);
         self
     }
 

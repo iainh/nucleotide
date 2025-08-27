@@ -65,6 +65,22 @@ impl OverlayView {
         }
     }
 
+    /// Update the completion filter with a new prefix
+    pub fn update_completion_filter(&self, new_prefix: String, cx: &mut Context<Self>) -> bool {
+        if let Some(completion_view) = &self.completion_view {
+            completion_view.update(cx, |view, cx| {
+                nucleotide_logging::debug!(
+                    prefix = %new_prefix,
+                    "Updating completion view filter with new prefix"
+                );
+                view.update_filter(new_prefix, cx);
+            });
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn handle_completion_arrow_key(&self, key: &str, cx: &mut Context<Self>) -> bool {
         if let Some(completion_view) = &self.completion_view {
             completion_view.update(cx, |view, cx| match key {

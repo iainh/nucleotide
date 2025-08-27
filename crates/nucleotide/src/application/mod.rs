@@ -1233,35 +1233,46 @@ impl Application {
     ) -> Vec<nucleotide_ui::completion_v2::CompletionItem> {
         use nucleotide_ui::completion_v2::{CompletionItem, CompletionItemKind};
 
-        // Create sample completion items
+        // Create sample completion items with enhanced signature and type information
         vec![
             CompletionItem::new("println!")
                 .with_kind(CompletionItemKind::Snippet)
                 .with_description("macro")
+                .with_signature_info("($($arg:tt)*)")
+                .with_type_info("()")
                 .with_documentation("Prints to the standard output, with a newline."),
             CompletionItem::new("String")
                 .with_kind(CompletionItemKind::Struct)
-                .with_description("std::string::String")
+                .with_description("UTF-8 encoded, growable string")
+                .with_type_info("std::string::String")
                 .with_documentation("A UTF-8 encoded, growable string."),
             CompletionItem::new("Vec")
                 .with_kind(CompletionItemKind::Struct)
-                .with_description("std::vec::Vec<T>")
+                .with_description("Contiguous growable array")
+                .with_type_info("std::vec::Vec<T>")
                 .with_documentation("A contiguous growable array type."),
             CompletionItem::new("HashMap")
                 .with_kind(CompletionItemKind::Struct)
-                .with_description("std::collections::HashMap<K, V>")
+                .with_description("Hash map implementation")
+                .with_type_info("std::collections::HashMap<K, V>")
                 .with_documentation("A hash map implementation."),
             CompletionItem::new("println")
                 .with_kind(CompletionItemKind::Function)
-                .with_description("fn println(&str)")
+                .with_description("Print with newline")
+                .with_signature_info("(&str)")
+                .with_type_info("()")
                 .with_documentation("Print to stdout with newline"),
             CompletionItem::new("print")
                 .with_kind(CompletionItemKind::Function)
-                .with_description("fn print(&str)")
+                .with_description("Print without newline")
+                .with_signature_info("(&str)")
+                .with_type_info("()")
                 .with_documentation("Print to stdout without newline"),
             CompletionItem::new("format")
                 .with_kind(CompletionItemKind::Function)
-                .with_description("fn format(&str, ...) -> String")
+                .with_description("Create formatted string")
+                .with_signature_info("(&str, ...)")
+                .with_type_info("String")
                 .with_documentation("Create a formatted string"),
         ]
     }
@@ -2847,9 +2858,48 @@ impl Application {
                     .unwrap_or(&item.label)
                     .to_string();
 
+                // Extract signature information from label_details.detail or item.detail as fallback
+                let signature_info = item
+                    .label_details
+                    .as_ref()
+                    .and_then(|details| details.detail.clone())
+                    .or_else(|| {
+                        // Use item.detail as fallback for signature info if it looks like a function signature
+                        item.detail.as_ref().and_then(|detail| {
+                            if detail.contains('(') && detail.contains(')') {
+                                Some(detail.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    });
+
+                // Extract type information from label_details.description or parse from detail
+                let type_info = item
+                    .label_details
+                    .as_ref()
+                    .and_then(|details| details.description.clone())
+                    .or_else(|| {
+                        // Try to extract return type info from detail field
+                        item.detail.as_ref().and_then(|detail| {
+                            if let Some(arrow_pos) = detail.find(" -> ") {
+                                Some(detail[(arrow_pos + 4)..].trim().to_string())
+                            } else if detail.contains(':') && !detail.contains('(') {
+                                // For variables/fields with type annotations like "field: Type"
+                                detail.split(':').nth(1).map(|s| s.trim().to_string())
+                            } else {
+                                None
+                            }
+                        })
+                    });
+
+                // Enhanced LSP data extraction complete
+
                 CompletionItem::new(item.label.clone(), kind)
                     .with_insert_text(insert_text)
                     .with_detail(item.detail.unwrap_or_default())
+                    .with_signature_info(signature_info.unwrap_or_default())
+                    .with_type_info(type_info.unwrap_or_default())
                     .with_documentation(
                         item.documentation
                             .as_ref()

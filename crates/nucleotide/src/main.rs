@@ -899,6 +899,8 @@ fn gui_main(
                                                         },
                                                         insert_text: lsp_item.item.insert_text.clone().unwrap_or_else(|| lsp_item.item.label.clone()),
                                                         score: 1.0, // Default score for LSP items
+                                                        signature_info: None,
+                                                        type_info: None,
                                                     }
                                                 }
                                                 helix_term::handlers::completion::CompletionItem::Other(other_item) => {
@@ -909,6 +911,8 @@ fn gui_main(
                                                         documentation: other_item.documentation.clone(),
                                                         insert_text: other_item.label.to_string(),
                                                         score: 1.0,
+                                                        signature_info: None,
+                                                        type_info: None,
                                                     }
                                                 }
                                             }

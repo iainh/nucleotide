@@ -34,6 +34,7 @@ use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;
+use crate::editor_provider::EditorProviderExt;
 use crate::file_tree::{FileTreeConfig, FileTreeEvent, FileTreeView};
 use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
@@ -471,6 +472,24 @@ impl Workspace {
                     });
                     // Don't let escape go to Helix - we handled it
                     return;
+                }
+                "backspace" => {
+                    nucleotide_logging::debug!(
+                        "Backspace while completion active - will predict shorter prefix"
+                    );
+                    // For backspace, predict by removing the last character from current prefix
+                    self.update_completion_filter_with_predicted_backspace(cx);
+                }
+                key if key.len() == 1 && key.chars().all(|c| c.is_alphanumeric() || c == '_') => {
+                    nucleotide_logging::debug!(
+                        key = %key,
+                        "Character typed while completion active - will update filter with predicted prefix"
+                    );
+                    // Instead of trying to wait for document update, predict what the prefix will be
+                    self.update_completion_filter_with_predicted_char(
+                        key.chars().next().unwrap(),
+                        cx,
+                    );
                 }
                 _ => {
                     // For other keys when completion is visible, continue normal processing
@@ -3969,6 +3988,179 @@ impl Workspace {
         }
     }
 
+    /// Update completion filter if completion is active and prefix has changed
+    /// This should be called when text changes while completion is active
+    pub fn update_completion_filter(&mut self, new_prefix: String, cx: &mut Context<Self>) -> bool {
+        info!(
+            prefix = %new_prefix,
+            "Updating completion filter with new prefix"
+        );
+
+        // Check if we have an active completion view and update its filter
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.update_completion_filter(new_prefix, cx)
+        })
+    }
+
+    /// Update completion filter by detecting current prefix at cursor
+    /// This method attempts to auto-detect the current completion prefix
+    pub fn update_completion_filter_auto(&mut self, cx: &mut Context<Self>) -> bool {
+        // Get current text under cursor to determine new prefix
+        if let Some(current_prefix) = self.get_current_completion_prefix(cx) {
+            self.update_completion_filter(current_prefix, cx)
+        } else {
+            false
+        }
+    }
+
+    /// Schedule a completion filter update to happen after current key processing
+    /// This ensures the document text is updated before we extract the new prefix
+    fn schedule_completion_filter_update(&mut self, cx: &mut Context<Self>) {
+        // Use defer to schedule the filter update after the current key processing
+        let workspace_handle = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            if let Some(workspace) = workspace_handle.upgrade() {
+                workspace.update(cx, |workspace, cx| {
+                    nucleotide_logging::debug!("Executing deferred completion filter update");
+                    workspace.update_completion_filter_auto(cx);
+                });
+            }
+        });
+    }
+
+    /// Get the current word prefix under the cursor for completion filtering
+    fn get_current_completion_prefix(&self, cx: &mut Context<Self>) -> Option<String> {
+        let core = self.core.clone();
+        core.update(cx, |core, _cx| {
+            let editor = &mut core.editor;
+            let (view, doc) = helix_view::current!(editor);
+            let text = doc.text();
+            let selection = doc.selection(view.id);
+            let cursor_pos = selection.primary().cursor(text.slice(..));
+
+            // Find the start of the current word by looking backwards from cursor
+            let line = text.char_to_line(cursor_pos);
+            let line_start = text.line_to_char(line);
+            let line_end = text.line_to_char(line + 1).min(text.len_chars());
+
+            // Get the full line text to ensure we capture the most recent character
+            let full_line = text.slice(line_start..line_end).to_string();
+
+            // Find our position within the line
+            let cursor_in_line = cursor_pos - line_start;
+
+            nucleotide_logging::debug!(
+                cursor_pos = cursor_pos,
+                line_start = line_start,
+                cursor_in_line = cursor_in_line,
+                full_line = %full_line,
+                "Cursor position analysis"
+            );
+
+            // Try getting text up to cursor position
+            let line_text_to_cursor = &full_line[..cursor_in_line.min(full_line.len())];
+
+            nucleotide_logging::debug!(
+                line_text_to_cursor = %line_text_to_cursor,
+                full_line_len = full_line.len(),
+                cursor_in_line = cursor_in_line,
+                "Text extraction analysis"
+            );
+
+            // Find the last word boundary (non-alphanumeric/underscore character)
+            let word_start = line_text_to_cursor
+                .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+                .map(|pos| pos + 1)
+                .unwrap_or(0);
+
+            // Extract the current word prefix
+            let prefix = &line_text_to_cursor[word_start..];
+
+            nucleotide_logging::debug!(
+                prefix = %prefix,
+                cursor_pos = cursor_pos,
+                line = line,
+                "Extracted completion prefix from document"
+            );
+
+            if prefix.is_empty() {
+                None
+            } else {
+                Some(prefix.to_string())
+            }
+        })
+    }
+
+    /// Update completion filter by predicting what the prefix will be after the character is typed
+    fn update_completion_filter_with_predicted_char(
+        &mut self,
+        typed_char: char,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // Get the current prefix and append the character that was just typed
+        if let Some(current_prefix) = self.get_current_completion_prefix(cx) {
+            let predicted_prefix = format!("{}{}", current_prefix, typed_char);
+
+            nucleotide_logging::debug!(
+                current_prefix = %current_prefix,
+                typed_char = %typed_char,
+                predicted_prefix = %predicted_prefix,
+                "Predicting completion prefix after character input"
+            );
+
+            self.update_completion_filter(predicted_prefix, cx)
+        } else {
+            // If we can't get current prefix, use just the typed character
+            let predicted_prefix = typed_char.to_string();
+            nucleotide_logging::debug!(
+                typed_char = %typed_char,
+                predicted_prefix = %predicted_prefix,
+                "Using typed character as completion prefix (no current prefix available)"
+            );
+
+            self.update_completion_filter(predicted_prefix, cx)
+        }
+    }
+
+    /// Update completion filter by predicting what the prefix will be after backspace
+    fn update_completion_filter_with_predicted_backspace(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // Get the current prefix and remove the last character to predict the result of backspace
+        if let Some(current_prefix) = self.get_current_completion_prefix(cx) {
+            if current_prefix.is_empty() {
+                // If prefix is already empty, backspace won't change anything
+                nucleotide_logging::debug!("Backspace on empty prefix - no filter update needed");
+                false
+            } else {
+                // Remove the last character to predict what prefix will be after backspace
+                let mut chars: Vec<char> = current_prefix.chars().collect();
+                chars.pop(); // Remove last character
+                let predicted_prefix: String = chars.iter().collect();
+
+                nucleotide_logging::debug!(
+                    current_prefix = %current_prefix,
+                    predicted_prefix = %predicted_prefix,
+                    "Predicting completion prefix after backspace"
+                );
+
+                if predicted_prefix.is_empty() {
+                    // If predicted prefix becomes empty, show all items by clearing filter
+                    self.update_completion_filter("".to_string(), cx)
+                } else {
+                    self.update_completion_filter(predicted_prefix, cx)
+                }
+            }
+        } else {
+            // If we can't get current prefix, just clear the filter to show all items
+            nucleotide_logging::debug!(
+                "No current prefix available - clearing filter for backspace"
+            );
+            self.update_completion_filter("".to_string(), cx)
+        }
+    }
+
     /// Process completion trigger and request LSP completions
     fn process_completion_trigger(
         &mut self,
@@ -4036,10 +4228,13 @@ impl Workspace {
 
                 UiCompletionItem {
                     text: item.label.clone().into(),
-                    description: item.detail.map(|d| d.into()),
+                    description: item.detail.as_ref().map(|d| d.clone().into()),
                     display_text: Some(item.label.into()),
                     kind: Some(ui_kind),
                     documentation: item.documentation.map(|d| d.into()),
+                    detail: item.detail.map(|d| d.into()),
+                    signature_info: item.signature_info.map(|s| s.into()),
+                    type_info: item.type_info.map(|t| t.into()),
                 }
             })
             .collect();
@@ -4110,10 +4305,13 @@ impl Workspace {
 
                 UiCompletionItem {
                     text: item.label.into(),
-                    description: item.detail.map(|d| d.into()),
+                    description: item.detail.as_ref().map(|d| d.clone().into()),
                     display_text: Some(SharedString::from(item.insert_text)),
                     kind: Some(ui_kind),
                     documentation: item.documentation.map(|d| d.into()),
+                    detail: item.detail.map(|d| d.into()),
+                    signature_info: item.signature_info.map(|s| s.into()),
+                    type_info: item.type_info.map(|t| t.into()),
                 }
             })
             .collect();
@@ -4312,10 +4510,13 @@ impl Workspace {
 
                                 nucleotide_ui::completion_v2::CompletionItem {
                                     text: item.label.into(),
-                                    description: item.detail.map(|d| d.into()),
+                                    description: item.detail.as_ref().map(|d| d.clone().into()),
                                     display_text: Some(item.insert_text.into()),
                                     kind: ui_kind,
                                     documentation: item.documentation.map(|d| d.into()),
+                                    detail: item.detail.map(|d| d.into()),
+                                    signature_info: item.signature_info.map(|s| s.into()),
+                                    type_info: item.type_info.map(|t| t.into()),
                                 }
                             })
                             .collect();
