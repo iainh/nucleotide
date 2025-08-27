@@ -2363,7 +2363,8 @@ impl Workspace {
         }
 
         // Use set_project_directory to properly initialize LSP and project management
-        self.set_project_directory(path.to_path_buf(), cx);
+        // Pass the workspace root (not the selected directory) for proper project management
+        self.set_project_directory(workspace_root.clone(), cx);
 
         // Update the file tree with the new directory
         let handle_clone = self.handle.clone();
