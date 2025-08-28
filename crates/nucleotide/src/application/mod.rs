@@ -1015,6 +1015,31 @@ impl Application {
         }
     }
 
+    /// Format LSP progress message in Zed's clean style
+    fn format_lsp_progress_message(
+        &self,
+        title: Option<&str>,
+        message: Option<&str>,
+        percentage: Option<u32>,
+        token: &str,
+    ) -> String {
+        // Start with title, fallback to token
+        let mut display_message = title.filter(|s| !s.is_empty()).unwrap_or(token).to_string();
+
+        // Add percentage if available
+        if let Some(pct) = percentage {
+            display_message.push_str(&format!(" ({}%)", pct));
+        }
+
+        // Add detailed message if available and different from title
+        if let Some(msg) = message.filter(|s| !s.is_empty() && Some(*s) != title) {
+            display_message.push_str(": ");
+            display_message.push_str(msg);
+        }
+
+        display_message
+    }
+
     /// Sync LSP state from the editor and progress map
     #[instrument(skip(self, cx))]
     pub fn sync_lsp_state(&self, cx: &mut gpui::App) {
@@ -1104,7 +1129,8 @@ impl Application {
 
                     for server_id in &progressing_servers {
                         // Find the server name from active_servers
-                        let server_name = active_servers.iter()
+                        let server_name = active_servers
+                            .iter()
                             .find(|(id, _)| id == server_id)
                             .map(|(_, name)| name.as_str())
                             .unwrap_or("LSP Server");
@@ -1114,116 +1140,90 @@ impl Application {
                         let current_progress = self.lsp_progress.progress_map(*server_id);
                         let active_token_count = current_progress.map(|p| p.len()).unwrap_or(0);
 
+                        // Get the most recent progress information using Zed's approach
                         let message = if active_token_count > 0 {
-                            // We have active progress tokens - try to get the most relevant one
                             if let Some(progress_map) = current_progress {
-                                // Look for progress tokens with meaningful information
-                                // Priority: 1) Progress messages, 2) Progress titles, 3) Editor status
-                                let active_progress = progress_map
+                                // Find the most recent progress (like Zed does)
+                                let mut pending_work: Vec<(
+                                    String,
+                                    Option<String>,
+                                    Option<u32>,
+                                    String,
+                                )> = progress_map
                                     .iter()
-                                    .find_map(|(token, status)| {
-                                        info!(
-                                            server_id = ?server_id,
-                                            token = ?token,
-                                            status = ?status,
-                                            "Examining progress token"
-                                        );
-
-                                        match status {
-                                            helix_lsp::ProgressStatus::Started { title, progress } => {
-                                                // Extract message from WorkDoneProgress variants
-                                                let message_from_progress = match progress {
-                                                    helix_lsp::lsp::WorkDoneProgress::Begin(begin) => {
-                                                        begin.message.as_ref().or(Some(&begin.title))
-                                                    }
-                                                    helix_lsp::lsp::WorkDoneProgress::Report(report) => {
-                                                        report.message.as_ref()
-                                                    }
-                                                    helix_lsp::lsp::WorkDoneProgress::End(end) => {
-                                                        end.message.as_ref()
-                                                    }
-                                                };
-
-                                                // Prioritize progress message, then title
-                                                if let Some(msg) = message_from_progress.filter(|m| !m.is_empty()) {
-                                                    info!(
-                                                        message = %msg,
-                                                        token = ?token,
-                                                        "Using progress message"
-                                                    );
-                                                    Some(msg.clone())
-                                                } else if !title.is_empty() {
-                                                    info!(
-                                                        title = %title,
-                                                        token = ?token,
-                                                        "Using progress title"
-                                                    );
-                                                    Some(title.clone())
-                                                } else {
-                                                    None
+                                    .filter_map(|(token, status)| match status {
+                                        helix_lsp::ProgressStatus::Started { title, progress } => {
+                                            let (message, percentage) = match progress {
+                                                helix_lsp::lsp::WorkDoneProgress::Begin(begin) => (
+                                                    begin.message.clone(),
+                                                    begin.percentage.map(|p| p as u32),
+                                                ),
+                                                helix_lsp::lsp::WorkDoneProgress::Report(
+                                                    report,
+                                                ) => (
+                                                    report.message.clone(),
+                                                    report.percentage.map(|p| p as u32),
+                                                ),
+                                                helix_lsp::lsp::WorkDoneProgress::End(end) => {
+                                                    (end.message.clone(), None)
                                                 }
-                                            }
-                                            helix_lsp::ProgressStatus::Created => {
-                                                info!(
-                                                    token = ?token,
-                                                    "Skipping Created progress token"
-                                                );
-                                                None
-                                            }
-                                        }
-                                    })
-                                    .or_else(|| {
-                                        // Only use editor status if we have no progress tokens at all
-                                        // If we have Created tokens, it means new work is starting and old status should be ignored
-                                        let has_created_tokens = progress_map.values().any(|status| {
-                                            matches!(status, helix_lsp::ProgressStatus::Created)
-                                        });
-
-                                        if has_created_tokens {
-                                            // We have Created tokens, but check if editor status indicates ongoing work
-                                            // If editor status contains meaningful work info, use it; otherwise ignore stale status
-                                            if let Some((status_msg, _)) = &editor_status
-                                                && !status_msg.is_empty() && !status_msg.contains("building proc-macros") {
-                                                    // Editor status looks like active work, not stale build messages
-                                                    info!("Have Created tokens but editor status shows active work");
-                                                    return Some(status_msg.to_string());
+                                            };
+                                            let token_str = match token {
+                                                helix_lsp::lsp::NumberOrString::Number(n) => {
+                                                    n.to_string()
                                                 }
-                                            info!("Have Created progress tokens - ignoring stale/irrelevant editor status");
-                                            None
-                                        } else {
-                                            // Fallback to editor status only if no progress tokens exist at all
-                                            info!("No progress tokens found, checking editor status");
-                                            editor_status.as_ref()
-                                                .filter(|(msg, _)| !msg.is_empty())
-                                                .map(|(msg, _)| {
-                                                    info!(
-                                                        editor_message = %msg,
-                                                        "Using editor status as fallback"
-                                                    );
-                                                    msg.to_string()
-                                                })
+                                                helix_lsp::lsp::NumberOrString::String(s) => {
+                                                    s.clone()
+                                                }
+                                            };
+                                            Some((title.clone(), message, percentage, token_str))
                                         }
+                                        _ => None,
                                     })
-                                    .unwrap_or_else(|| {
-                                        info!("No active progress or meaningful editor status - showing idle");
-                                        "Ready".to_string()
-                                    });
-                                Some(active_progress)
+                                    .collect();
+
+                                if let Some((title, message, percentage, token)) =
+                                    pending_work.first()
+                                {
+                                    let additional_work_count =
+                                        pending_work.len().saturating_sub(1);
+                                    let mut formatted_msg = self.format_lsp_progress_message(
+                                        Some(title.as_str()),
+                                        message.as_deref(),
+                                        *percentage,
+                                        token.as_str(),
+                                    );
+
+                                    if additional_work_count > 0 {
+                                        formatted_msg.push_str(&format!(
+                                            " + {} more",
+                                            additional_work_count
+                                        ));
+                                    }
+
+                                    formatted_msg
+                                } else {
+                                    // Fallback to editor status if no active progress
+                                    editor_status
+                                        .as_ref()
+                                        .filter(|(msg, _)| !msg.is_empty())
+                                        .map(|(msg, _)| msg.to_string())
+                                        .unwrap_or_else(|| "Ready".to_string())
+                                }
                             } else {
-                                Some("Indexing project".to_string())
-                            }
-                        } else if let Some((status_msg, _severity)) = &editor_status {
-                            if !status_msg.is_empty() {
-                                Some(status_msg.to_string())
-                            } else {
-                                Some("Indexing project".to_string())
+                                "Indexing".to_string()
                             }
                         } else {
-                            Some("Indexing project".to_string())
+                            // No active tokens - check editor status or show ready
+                            editor_status
+                                .as_ref()
+                                .filter(|(msg, _)| !msg.is_empty())
+                                .map(|(msg, _)| msg.to_string())
+                                .unwrap_or_else(|| "Ready".to_string())
                         };
 
                         // Choose appropriate token and title based on whether we have meaningful progress
-                        let (token, title) = if message.as_ref().is_some_and(|m| m == "Ready") {
+                        let (token, title) = if message == "Ready" {
                             ("idle".to_string(), "Connected".to_string())
                         } else {
                             ("activity".to_string(), "Processing".to_string())
@@ -1233,11 +1233,11 @@ impl Application {
                             server_id: *server_id,
                             token,
                             title,
-                            message: message.clone(),
+                            message: Some(message.clone()),
                             percentage: None,
                         };
 
-                        let key = if message.as_ref().is_some_and(|m| m == "Ready") {
+                        let key = if message == "Ready" {
                             format!("{}-idle", server_id)
                         } else {
                             format!("{}-activity", server_id)
@@ -1248,17 +1248,6 @@ impl Application {
                         let title_clone = progress.title.clone();
 
                         state.progress.insert(key, progress);
-                        info!(
-                            server_id = ?server_id,
-                            server_name = %server_name,
-                            progress_message = ?message,
-                            token = %token_clone,
-                            title = %title_clone,
-                            is_idle = is_idle,
-                            active_token_count = active_token_count,
-                            editor_status = ?editor_status,
-                            "Added LSP indicator with appropriate visual state"
-                        );
                     }
                 } else {
                     // No progressing servers - ensure we're not stuck with old progress
@@ -4401,7 +4390,30 @@ pub fn init_editor(
         }
         detected_root
     } else {
-        None
+        // Fallback: Use current working directory if it's a valid project root
+        // This handles the case where workspace_root was detected in main.rs and set as CWD,
+        // but no explicit files or working directory were passed via command line args
+        if let Ok(current_dir) = std::env::current_dir() {
+            let workspace_root = find_workspace_root_from(&current_dir);
+            // Check if we found a valid project marker
+            if workspace_root.join(".git").exists()
+                || workspace_root.join(".svn").exists()
+                || workspace_root.join(".hg").exists()
+                || workspace_root.join(".jj").exists()
+                || workspace_root.join(".helix").exists()
+            {
+                nucleotide_logging::info!(
+                    current_dir = %current_dir.display(),
+                    project_directory = %workspace_root.display(),
+                    "Using current working directory as project directory (workspace_root fallback)"
+                );
+                Some(workspace_root)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     };
 
     let mut theme_parent_dirs = vec![helix_loader::config_dir()];

@@ -232,11 +232,22 @@ impl HelixLspBridge {
             "Starting language server lookup through Helix registry"
         );
 
+        // Find a representative file within the workspace for rust-analyzer to determine proper workspace root
+        // This is critical - Helix expects a file path, not the workspace root directory
+        let doc_path = find_representative_file(workspace_root, language_id);
+
+        info!(
+            doc_path = ?doc_path,
+            workspace_root = %workspace_root.display(),
+            language_id = %language_id,
+            "Representative file found for LSP initialization"
+        );
+
         let mut servers: Vec<_> = editor
             .language_servers
             .get(
                 language_config,
-                Some(workspace_root),
+                doc_path.as_ref(),
                 &root_dirs,
                 true, // enable_snippets
             )
@@ -560,4 +571,61 @@ impl MockHelixLspBridge {
             "definitionProvider": true
         }))
     }
+}
+
+/// Find a representative file within the workspace that rust-analyzer can use
+/// to determine the proper workspace root and configuration
+fn find_representative_file(workspace_root: &PathBuf, language_id: &str) -> Option<PathBuf> {
+    // For Rust projects, try to find common files that rust-analyzer can use
+    if language_id == "rust" {
+        // First, try Cargo.toml (the project root marker)
+        let cargo_toml = workspace_root.join("Cargo.toml");
+        if cargo_toml.exists() && cargo_toml.is_file() {
+            return Some(cargo_toml);
+        }
+
+        // Try src/main.rs
+        let main_rs = workspace_root.join("src").join("main.rs");
+        if main_rs.exists() && main_rs.is_file() {
+            return Some(main_rs);
+        }
+
+        // Try src/lib.rs
+        let lib_rs = workspace_root.join("src").join("lib.rs");
+        if lib_rs.exists() && lib_rs.is_file() {
+            return Some(lib_rs);
+        }
+
+        // Try to find any .rs file in src/
+        let src_dir = workspace_root.join("src");
+        if src_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&src_dir) {
+                for entry in entries {
+                    if let Ok(entry) = entry {
+                        let path = entry.path();
+                        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("rs")
+                        {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fall back to any .rs file in the workspace
+        if let Ok(entries) = std::fs::read_dir(workspace_root) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("rs") {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+
+    // For other languages, add similar logic here
+    // For now, fall back to the old behavior for non-Rust languages
+    None
 }
