@@ -659,6 +659,69 @@ fn gui_main(
                     app.post_init(cx);
                 });
 
+                // Start step() as a background task to process LSP events including progress messages
+                let app_for_step = app.downgrade();
+                cx.spawn(async move |cx| {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
+
+                    loop {
+                        interval.tick().await;
+
+                        if let Some(app_entity) = app_for_step.upgrade() {
+                            // Run step() in a non-blocking way to process LSP events
+                            let should_continue = app_entity.update(cx, |app, cx| {
+                                // Use now_or_never to avoid blocking - this processes waiting events
+                                use futures_util::future::FutureExt;
+                                if let Some(_step_result) = app.step(cx).now_or_never() {
+                                    // Step completed immediately, which means events were processed
+                                }
+                                // Continue as long as there are views
+                                app.editor.tree.views().count() > 0
+                            }).unwrap_or(false);
+
+                            if !should_continue {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }).detach();
+
+                // Start continuous event processing to fix the now_or_never() cancellation issue
+                app.update(cx, |app, cx| {
+                    app.handle_periodic_maintenance(cx, handle.clone());
+                });
+
+                // Start periodic maintenance timer 
+                let app_weak = app.downgrade();
+                let handle_for_timer = handle.clone();
+                cx.spawn(async move |cx| {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
+
+                    loop {
+                        interval.tick().await;
+
+                        if let Some(app_entity) = app_weak.upgrade() {
+                            let should_continue = app_entity.update(cx, |app, cx| {
+                                app.handle_periodic_maintenance(cx, handle_for_timer.clone());
+                                app.editor.tree.views().count() > 0
+                            }).unwrap_or(false);
+
+                            if !should_continue {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }).detach();
+
+                // step() is now integrated into handle_periodic_maintenance()
+                // This processes LSP messages including $/progress via the periodic timer above
+
+                nucleotide_logging::info!("Application initialized with continuous event processing");
+
                 // Completion is now handled directly through Helix's completion system
                 nucleotide_logging::info!("Using direct Helix completion integration - no coordinator needed");
 
