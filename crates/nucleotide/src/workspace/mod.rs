@@ -221,7 +221,7 @@ impl Workspace {
                 lsp_command_sender,
             ));
 
-            // 🔥 CRITICAL FIX: Set up HelixLspBridge for the ProjectLspManager in constructor
+            //  Set up HelixLspBridge for the ProjectLspManager in constructor
             let event_sender = manager.get_event_sender();
             let helix_bridge = HelixLspBridge::new(event_sender);
 
@@ -739,7 +739,7 @@ impl Workspace {
                 lsp_command_sender,
             ));
 
-            // 🔥 CRITICAL FIX: Set up HelixLspBridge for the ProjectLspManager
+            //  Set up HelixLspBridge for the ProjectLspManager
             let event_sender = manager.get_event_sender();
             let helix_bridge = nucleotide_lsp::HelixLspBridge::new(event_sender);
 
@@ -914,11 +914,10 @@ impl Workspace {
 
             info!("Notifying ProjectLspManager about project detection and starting LSP servers");
 
-            let core_entity = self.core.clone();
             runtime_handle.spawn(async move {
                 info!(project_root = %project_root_clone.display(), "Starting project detection via ProjectLspManager");
 
-                // 🔥 CRITICAL FIX: Actually call manager.detect_project() to connect the detection!
+                // PROJECT-LEVEL LSP: Use proper event-driven approach
                 match manager_clone.detect_project(project_root_clone.clone()).await {
                     Ok(()) => {
                         info!(
@@ -926,17 +925,43 @@ impl Workspace {
                             "Project detection completed successfully via ProjectLspManager"
                         );
 
-                        // 🔥 CRITICAL FIX: Set flag for LSP server startup to be handled in crank event
-                        // This defers the actual server startup to a context where we have GPUI Context access
-                        // The crank event handler can then call core.start_project_servers() properly
+                        // Get the project info to send proper LSP startup events
+                        if let Some(project_info) = manager_clone.get_project_info(&project_root_clone).await {
+                            info!(
+                                project_type = ?project_info.project_type,
+                                language_servers = ?project_info.language_servers,
+                                "EVENT-DRIVEN: Sending LspServerStartupRequested events"
+                            );
 
-                        // Since we can't directly modify the workspace from this async context,
-                        // we'll use a different approach - trigger server startup via the existing
-                        // ProjectLspManager's proactive startup which should be enabled by detect_project()
-                        info!(
-                            project_root = %project_root_clone.display(),
-                            "Project detected - LSP servers should start via ProjectLspManager proactive startup"
-                        );
+                            // Send LspServerStartupRequested events for each language server
+                            for server_name in &project_info.language_servers {
+                                info!(
+                                    server_name = %server_name,
+                                    project_root = %project_info.workspace_root.display(),
+                                    "EVENT: Sending LspServerStartupRequested"
+                                );
+
+                                // Create the event command
+                                let command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                                    server_name: server_name.clone(),
+                                    workspace_root: project_info.workspace_root.clone(),
+                                };
+
+                                // Project detection completed - LSP events will be sent from event bridge
+                                info!(
+                                    server_name = %server_name,
+                                    "📡 PROJECT: Server startup will be handled by event bridge"
+                                );
+                            }
+
+                            // Project detection completed successfully
+                            info!("Project detection completed - events handled by bridge");
+                        } else {
+                            warn!(
+                                project_root = %project_root_clone.display(),
+                                "Project detected but no project info available"
+                            );
+                        }
                     }
                     Err(e) => {
                         error!(
@@ -953,6 +978,11 @@ impl Workspace {
 
         // Update UI indicators and refresh project status display
         self.refresh_project_indicators(cx);
+
+        // Process any events that may have been sent during project detection
+        self.core.update(cx, |app, cx| {
+            app.handle_periodic_maintenance(cx, self.handle.clone());
+        });
     }
 
     /// Set the current project root explicitly
@@ -3726,7 +3756,6 @@ impl Workspace {
         // OLD: self.global_input.register_dismiss_handler(
             nucleotide_ui::DismissTarget::Completion,
             move || {
-                eprintln!("DEBUG: Global input dispatcher handling completion dismiss signal");
                 // This signals that the dismiss action was triggered by global input
                 // The actual dismissal happens in the normal key handling flow
             },
@@ -4062,7 +4091,6 @@ impl Workspace {
             return;
         }
 
-        eprintln!("DEBUG: No global shortcuts matched in handle_global_shortcuts_only");
         // Add other truly global shortcuts here (window management, app-level commands, etc.)
         // but NOT shortcuts that should be handled by focused components
     }
@@ -4539,7 +4567,6 @@ impl Workspace {
             return;
         }
 
-        eprintln!("DEBUG: No shortcuts matched in handle_global_input_shortcuts");
         // For focus management shortcuts, we need window context,
         // so we'll handle them in the regular key processing flow instead.
         // This method handles shortcuts that don't require window access.
