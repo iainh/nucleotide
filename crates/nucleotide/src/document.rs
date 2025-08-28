@@ -2149,9 +2149,9 @@ impl Element for DocumentElement {
                         let char_slice = text.slice(cursor_char_idx..grapheme_end);
                         let char_str: SharedString = RopeWrapper(char_slice).into();
 
-                        // Replace newlines with visible character for display
+                        // Don't show visible characters for newlines in cursor
                         let char_str = if char_str == "\n" || char_str == "\r\n" || char_str == "\r" {
-                            "⏎".into() // Use return symbol for newlines
+                            " ".into() // Use space for newlines so cursor is visible but no symbol
                         } else {
                             char_str
                         };
@@ -2830,9 +2830,9 @@ impl Element for DocumentElement {
                                         let char_slice = text.slice(cursor_char_idx..grapheme_end);
                                         let char_str: SharedString = RopeWrapper(char_slice).into();
 
-                                        // Replace newlines with visible character for display
+                                        // Don't show visible characters for newlines in cursor
                                         let char_str = if char_str == "\n" || char_str == "\r\n" || char_str == "\r" {
-                                            "⏎".into()
+                                            " ".into() // Use space for newlines so cursor is visible but no symbol
                                         } else {
                                             char_str
                                         };
