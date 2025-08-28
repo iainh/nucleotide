@@ -291,7 +291,8 @@ impl LspState {
     /// Get LSP indicator with intelligent content adaptation based on max width
     pub fn get_lsp_indicator_with_max_width(&mut self, max_width: Option<usize>) -> Option<String> {
         if !self.has_any_lsp_server() {
-            return None;
+            // Show placeholder when no LSP servers are registered
+            return Some("LSP: ●".to_string());
         }
 
         // If we have active progress, show detailed status like Helix
