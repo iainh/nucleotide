@@ -360,9 +360,9 @@ impl EventHandler<Event> for LspHandler {
                     workspace = %workspace_root.display(),
                     server_name = %server_name,
                     language_id = %language_id,
-                    "Server startup requested"
+                    "🚀 V2_HANDLER: Processing server startup request"
                 );
-                // This is a command event - actual startup would be handled elsewhere
+                // TODO: Need access to application's command sender to route to sync processor
             }
             Event::ServerRestarted {
                 server_id,

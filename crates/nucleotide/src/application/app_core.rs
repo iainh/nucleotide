@@ -367,6 +367,9 @@ impl ApplicationCore {
                 );
 
                 self.lsp_handler.handle(v2_event).await?;
+
+                // Note: Actual LSP server startup will be handled by sync processor
+                // when the main application processes this same bridged event
             }
 
             // Phase 2 Events - Completion Integration

@@ -1525,7 +1525,7 @@ impl Element for DocumentElement {
                         return;
                     }
                 };
-                // CRITICAL FIX: Calculate text bounds to get actual text area
+                // Calculate text bounds to get actual text area
                 // This is the missing piece - we need to know where the text area starts
                 let text_bounds = {
                     let gutter_width = Pixels::from(gutter_offset as f32 * cell_width.0);
