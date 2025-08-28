@@ -1016,7 +1016,7 @@ fn gui_main(
                 // Spawn task to process completion results and emit GPUI updates
                 {
                     let workspace_weak = workspace.downgrade();
-                    cx.spawn(async move |mut cx| {
+                    cx.spawn(async move |cx| {
                         while let Some(results) = completion_rx.recv().await {
                             nucleotide_logging::info!("📨 Received completion results from channel: {} items", results.items.len());
 

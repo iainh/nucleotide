@@ -3037,7 +3037,7 @@ impl Element for DocumentElement {
 
                                 // Update the global WorkspaceLayoutInfo with exact cursor coordinates
                                 {
-                                    let mut layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+                                    let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
                                     layout_info.cursor_position = Some(cursor_point);
                                     layout_info.cursor_size = Some(gpui::Size {
                                         width: cursor_width,
@@ -3604,7 +3604,7 @@ impl Element for DocumentElement {
 
                                     // Update the global WorkspaceLayoutInfo with exact cursor coordinates
                                     {
-                                        let mut layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+                                        let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
                                         layout_info.cursor_position = Some(cursor_point);
                                         layout_info.cursor_size = Some(gpui::Size {
                                             width: cursor_width,

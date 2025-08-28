@@ -1172,7 +1172,7 @@ impl Application {
                         let message = if active_token_count > 0 {
                             if let Some(progress_map) = current_progress {
                                 // Find the most recent progress (like Zed does)
-                                let mut pending_work: Vec<(
+                                let pending_work: Vec<(
                                     String,
                                     Option<String>,
                                     Option<u32>,

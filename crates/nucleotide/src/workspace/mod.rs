@@ -16,8 +16,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, BorrowAppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, TextStyle, Window, WindowAppearance, WindowBackgroundAppearance, black, div, px, white,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Render, StatefulInteractiveElement, Styled,
+    TextStyle, Window, WindowAppearance, WindowBackgroundAppearance, black, div, px, white,
 };
 use helix_core::Selection;
 use helix_view::ViewId;
@@ -36,7 +36,6 @@ use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;
-use crate::editor_provider::EditorProviderExt;
 use crate::file_tree::{FileTreeConfig, FileTreeEvent, FileTreeView};
 use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
@@ -4969,7 +4968,7 @@ impl Workspace {
 
             // Apply the completion using Helix's transaction system
             let (view, doc) = helix_view::current!(editor);
-            use helix_core::Selection;
+
             use helix_core::Transaction;
 
             let text = doc.text();

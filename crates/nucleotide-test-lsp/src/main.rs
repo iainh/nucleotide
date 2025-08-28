@@ -5,7 +5,7 @@ use anyhow::{Result, anyhow};
 use lsp_server::{Connection, Message, Request, RequestId, Response};
 use lsp_types::*;
 use std::io::Write;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 mod completion_engine;
 mod config;
@@ -13,7 +13,6 @@ mod protocol;
 mod test_scenarios;
 
 use completion_engine::CompletionEngine;
-use config::TestLspConfig;
 use protocol::ProtocolHandler;
 
 /// Main entry point for the Nucleotide Test LSP server
