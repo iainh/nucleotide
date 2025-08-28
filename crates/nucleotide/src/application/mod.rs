@@ -748,14 +748,33 @@ impl Application {
                                     (None, message, &None)
                                 } else {
                                     // End progress without message - clear status
+                                    debug!(
+                                        server_id = ?server_id,
+                                        server_name = %server_name,
+                                        token = ?token,
+                                        "Processing progress END message (first path)"
+                                    );
                                     self.lsp_progress.end_progress(server_id, &token);
-                                    if !self.lsp_progress.is_progressing(server_id) {
+                                    let still_progressing =
+                                        self.lsp_progress.is_progressing(server_id);
+                                    debug!(
+                                        server_id = ?server_id,
+                                        still_progressing = still_progressing,
+                                        "Checked if server is still progressing after ending token"
+                                    );
+                                    if !still_progressing {
                                         info!(
                                             server_id = ?server_id,
                                             server_name = %server_name,
                                             "Progress completed - clearing status"
                                         );
                                         self.editor.clear_status();
+                                    } else {
+                                        debug!(
+                                            server_id = ?server_id,
+                                            server_name = %server_name,
+                                            "Still have active progress - NOT clearing status"
+                                        );
                                     }
                                     return;
                                 }
@@ -781,7 +800,7 @@ impl Application {
                                 if let Some(message) = message {
                                     status.push_str(message);
                                 }
-                                info!(
+                                debug!(
                                     server_id = ?server_id,
                                     server_name = %server_name,
                                     status = %status,
@@ -821,6 +840,15 @@ impl Application {
                                     token = ?token,
                                     "Ended progress tracking"
                                 );
+                                // Clear status if no more progress operations are active
+                                if !self.lsp_progress.is_progressing(server_id) {
+                                    info!(
+                                        server_id = ?server_id,
+                                        server_name = %server_name,
+                                        "All progress completed - clearing status"
+                                    );
+                                    self.editor.clear_status();
+                                }
                             }
                         }
                     }
@@ -1073,7 +1101,7 @@ impl Application {
                 "Current editor status from Helix"
             );
 
-            lsp_state.update(cx, |state, cx| {
+            let zombie_tokens = lsp_state.update(cx, |state, cx| {
                 // Log current state before clearing
                 let old_progress_count = state.progress.len();
                 debug!(
@@ -2098,6 +2126,141 @@ impl Application {
         // Sync LSP state periodically
         self.sync_lsp_state(cx);
 
+        // WORKAROUND: Clean up zombie progress operations that are at 100% but never ended
+        // Collect the language server IDs that have progress
+        use helix_lsp::lsp;
+        let server_ids: Vec<LanguageServerId> = self
+            .editor
+            .language_servers
+            .iter_clients()
+            .map(|client| client.id())
+            .collect();
+
+        let mut zombie_tokens: Vec<(LanguageServerId, lsp::ProgressToken)> = Vec::new();
+
+        for server_id in server_ids {
+            if let Some(progress_map) = self.lsp_progress.progress_map(server_id) {
+                if progress_map.is_empty() {
+                    continue; // Skip servers with no progress
+                }
+
+                let server_name = self
+                    .editor
+                    .language_servers
+                    .iter_clients()
+                    .find(|client| client.id() == server_id)
+                    .map(|client| client.name())
+                    .unwrap_or("unknown");
+
+                debug!(
+                    server_id = ?server_id,
+                    server_name = %server_name,
+                    progress_count = progress_map.len(),
+                    "🧟 ZOMBIE: Checking server progress"
+                );
+
+                for (token, status) in progress_map {
+                    match status {
+                        helix_lsp::ProgressStatus::Created => {
+                            debug!(
+                                server_id = ?server_id,
+                                token = ?token,
+                                "🧟 ZOMBIE: Found Created status"
+                            );
+                        }
+                        helix_lsp::ProgressStatus::Started { title, progress } => {
+                            // Check the actual progress message for "(100%)"
+                            let message = match progress {
+                                lsp::WorkDoneProgress::Begin(begin) => &begin.message,
+                                lsp::WorkDoneProgress::Report(report) => &report.message,
+                                lsp::WorkDoneProgress::End(end) => &end.message,
+                            };
+
+                            debug!(
+                                server_id = ?server_id,
+                                token = ?token,
+                                title = %title,
+                                message = ?message,
+                                progress_type = match progress {
+                                    lsp::WorkDoneProgress::Begin(_) => "Begin",
+                                    lsp::WorkDoneProgress::Report(_) => "Report",
+                                    lsp::WorkDoneProgress::End(_) => "End",
+                                },
+                                "🧟 ZOMBIE: Found Started status"
+                            );
+
+                            if let Some(msg) = message {
+                                // Check for various zombie patterns:
+                                // 1. "(100%)" - explicit percentage
+                                // 2. "X/X" - where both numbers are equal (e.g., "637/637")
+                                let is_zombie = msg.contains("(100%)") || {
+                                    // Check for "number/number" pattern where both are equal
+                                    if let Some(slash_pos) = msg.find('/') {
+                                        let before = &msg[..slash_pos];
+                                        let after = &msg[slash_pos + 1..];
+
+                                        // Try to parse both sides as numbers
+                                        if let (Ok(num1), Ok(num2)) =
+                                            (before.parse::<u32>(), after.parse::<u32>())
+                                        {
+                                            num1 > 0 && num1 == num2
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                };
+
+                                if is_zombie {
+                                    info!(
+                                        server_id = ?server_id,
+                                        token = ?token,
+                                        message = %msg,
+                                        "🧟 ZOMBIE: Found zombie token!"
+                                    );
+                                    zombie_tokens.push((server_id, token.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                let server_name = self
+                    .editor
+                    .language_servers
+                    .iter_clients()
+                    .find(|client| client.id() == server_id)
+                    .map(|client| client.name())
+                    .unwrap_or("unknown");
+                debug!(
+                    server_id = ?server_id,
+                    server_name = %server_name,
+                    "🧟 ZOMBIE: No progress map found for server"
+                );
+            }
+        }
+
+        // Force end any zombie operations we found
+        for (server_id, token) in zombie_tokens {
+            let server_name = self
+                .editor
+                .language_servers
+                .iter_clients()
+                .find(|client| client.id() == server_id)
+                .map(|client| client.name())
+                .unwrap_or("unknown");
+
+            warn!(
+                server_id = ?server_id,
+                server_name = %server_name,
+                token = ?token,
+                "🧟 WORKAROUND: Force-ending zombie progress operation at 100%"
+            );
+
+            self.lsp_progress.end_progress(server_id, &token);
+        }
+
         // NOTE: step() should run in its own background task, not block the UI thread
         // The missing piece is to start step() as a background task during initialization
     }
@@ -2141,17 +2304,16 @@ impl Application {
             let has_cargo_toml = project_dir.join("Cargo.toml").exists();
             let rust_analyzer_running = self.is_rust_analyzer_running();
 
-            info!(
-                has_cargo_toml = has_cargo_toml,
-                rust_analyzer_running = rust_analyzer_running,
-                cycle_count = cycle_count,
-                "🔧 SYNC: Project checks for direct LSP startup"
-            );
-
             // Only try LSP startup after system has had time to initialize (cycle 10+)
             // and if no servers are currently running
             let any_servers_running = self.editor.language_servers.iter_clients().count() > 0;
             if cycle_count >= 10 && !any_servers_running {
+                info!(
+                    has_cargo_toml = has_cargo_toml,
+                    rust_analyzer_running = rust_analyzer_running,
+                    cycle_count = cycle_count,
+                    "🔧 SYNC: Project checks for direct LSP startup"
+                );
                 // Check if HelixLspBridge is initialized before attempting to start server
                 let bridge_initialized = handle.block_on(async {
                     let bridge_guard = self.helix_lsp_bridge.read().await;
