@@ -153,6 +153,12 @@ pub enum ProjectLspCommand {
         response: oneshot::Sender<Result<(), ProjectLspCommandError>>,
         span: Span,
     },
+
+    /// LSP server startup requested (fire-and-forget)
+    LspServerStartupRequested {
+        server_name: String,
+        workspace_root: PathBuf,
+    },
 }
 
 /// Result of project detection
