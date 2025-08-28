@@ -21,6 +21,130 @@ pub fn detect_bundle_runtime() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Setup comprehensive environment for LSP servers when launched from macOS dock
+/// This ensures rust-analyzer and other tools are available even when not launched from terminal
+#[cfg(target_os = "macos")]
+pub fn setup_macos_dock_environment() {
+    use std::env;
+
+    nucleotide_logging::info!("🔧 ENV_SETUP: Configuring environment for macOS dock launch");
+
+    // Log current environment state
+    nucleotide_logging::debug!(
+        path = %env::var("PATH").unwrap_or_else(|_| "NOT_SET".to_string()),
+        home = %env::var("HOME").unwrap_or_else(|_| "NOT_SET".to_string()),
+        "🔧 ENV_SETUP: Current environment before setup"
+    );
+
+    // Get the user's home directory
+    let home_dir = match env::var("HOME") {
+        Ok(home) => std::path::PathBuf::from(home),
+        Err(_) => {
+            nucleotide_logging::error!("🔧 ENV_SETUP: Could not determine HOME directory");
+            return;
+        }
+    };
+
+    // Common Rust toolchain locations to check
+    let mut additional_paths = Vec::new();
+
+    // 1. Cargo bin directory (most common)
+    let cargo_bin = home_dir.join(".cargo").join("bin");
+    if cargo_bin.exists() {
+        additional_paths.push(cargo_bin.to_string_lossy().to_string());
+        nucleotide_logging::info!(
+            path = %cargo_bin.display(),
+            "🔧 ENV_SETUP: Found cargo bin directory"
+        );
+    }
+
+    // 2. Rustup toolchain bin directories
+    let rustup_toolchains = home_dir.join(".rustup").join("toolchains");
+    if rustup_toolchains.exists() {
+        if let Ok(entries) = std::fs::read_dir(&rustup_toolchains) {
+            for entry in entries.flatten() {
+                if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+                    let toolchain_bin = entry.path().join("bin");
+                    if toolchain_bin.exists() {
+                        additional_paths.push(toolchain_bin.to_string_lossy().to_string());
+                        nucleotide_logging::debug!(
+                            path = %toolchain_bin.display(),
+                            "🔧 ENV_SETUP: Found rustup toolchain bin directory"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. System paths that might be missing when launched from dock
+    let system_paths = [
+        "/usr/local/bin",
+        "/opt/homebrew/bin",          // Apple Silicon Homebrew
+        "/run/current-system/sw/bin", // Nix system profile
+        "/usr/bin",
+        "/bin",
+    ];
+
+    for sys_path in &system_paths {
+        let path = std::path::Path::new(sys_path);
+        if path.exists() {
+            additional_paths.push(sys_path.to_string());
+            nucleotide_logging::debug!(
+                path = %sys_path,
+                "🔧 ENV_SETUP: Including system path"
+            );
+        }
+    }
+
+    // Update PATH environment variable
+    let current_path = env::var("PATH").unwrap_or_default();
+    let mut all_paths = additional_paths;
+
+    // Add existing PATH to the end to avoid overriding intentional user configurations
+    if !current_path.is_empty() {
+        all_paths.push(current_path);
+    }
+
+    let new_path = all_paths.join(":");
+    unsafe {
+        env::set_var("PATH", &new_path);
+    }
+
+    nucleotide_logging::info!(
+        new_path = %new_path,
+        "🔧 ENV_SETUP: Updated PATH environment variable"
+    );
+
+    // Verify rust-analyzer is now accessible
+    verify_rust_tools_accessibility();
+}
+
+/// Verify that essential Rust tools are accessible in the environment
+#[cfg(target_os = "macos")]
+fn verify_rust_tools_accessibility() {
+    let tools = ["rust-analyzer", "cargo", "rustc"];
+
+    for tool in &tools {
+        match which::which(tool) {
+            Ok(path) => {
+                nucleotide_logging::info!(
+                    tool = %tool,
+                    path = %path.display(),
+                    "✅ ENV_VERIFY: Tool found and accessible"
+                );
+            }
+            Err(e) => {
+                nucleotide_logging::warn!(
+                    tool = %tool,
+                    error = %e,
+                    "❌ ENV_VERIFY: Tool not found in PATH"
+                );
+            }
+        }
+    }
+}
+
 /// Map of Shift + number key combinations to their symbols
 const SHIFT_NUMBER_MAP: &[(char, char)] = &[
     ('1', '!'),

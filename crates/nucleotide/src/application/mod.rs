@@ -4516,6 +4516,74 @@ fn detect_project_root_from_file(file_path: &std::path::Path) -> Option<std::pat
     None
 }
 
+/// Detect if we need CLI environment and create appropriate ProjectEnvironment
+/// Detects dock launches vs command-line launches and handles environment accordingly
+#[cfg(target_os = "macos")]
+fn detect_and_create_project_environment() -> ProjectEnvironment {
+    use std::env;
+
+    nucleotide_logging::info!("🔧 ENV_DETECT: Detecting launch environment for macOS");
+
+    // Check if we have a minimal PATH that indicates dock launch
+    // Dock launches typically have very limited PATH like /usr/bin:/bin
+    let current_path = env::var("PATH").unwrap_or_default();
+    let path_components: Vec<&str> = current_path.split(':').collect();
+
+    // Indicators of dock launch (minimal environment):
+    // - Very few PATH components (typically 2-3)
+    // - Missing common development paths like /usr/local/bin
+    // - Missing user-specific paths like ~/.cargo/bin
+    // - Missing Nix system paths like /run/current-system/sw/bin
+    let has_cargo_bin = path_components.iter().any(|&p| p.contains(".cargo/bin"));
+    let has_usr_local = path_components.iter().any(|&p| p == "/usr/local/bin");
+    let has_homebrew = path_components.iter().any(|&p| p.contains("homebrew"));
+    let has_nix_system = path_components
+        .iter()
+        .any(|&p| p == "/run/current-system/sw/bin");
+    let path_count = path_components.len();
+
+    let likely_dock_launch =
+        !has_cargo_bin && !has_usr_local && !has_homebrew && !has_nix_system && path_count <= 4;
+
+    nucleotide_logging::info!(
+        path_components = path_count,
+        has_cargo_bin = has_cargo_bin,
+        has_usr_local = has_usr_local,
+        has_homebrew = has_homebrew,
+        has_nix_system = has_nix_system,
+        likely_dock_launch = likely_dock_launch,
+        current_path = %current_path,
+        "🔧 ENV_DETECT: Environment analysis"
+    );
+
+    if likely_dock_launch {
+        nucleotide_logging::info!(
+            "🔧 ENV_DETECT: Dock launch detected - setting up enhanced environment"
+        );
+
+        // For dock launches, we need to capture the full shell environment
+        // We'll set up the ProjectEnvironment to capture directory-specific environments
+        // which will include the full PATH from the user's shell
+        ProjectEnvironment::new(None) // Will use directory shell capture
+    } else {
+        nucleotide_logging::info!(
+            "🔧 ENV_DETECT: Command-line launch detected - using process environment"
+        );
+
+        // For command-line launches, we already have the full environment
+        // Pass the current environment as CLI environment to maintain it
+        let cli_env: std::collections::HashMap<String, String> = env::vars().collect();
+        ProjectEnvironment::new(Some(cli_env))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn detect_and_create_project_environment() -> ProjectEnvironment {
+    // On non-macOS systems, always use process environment as CLI environment
+    let cli_env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    ProjectEnvironment::new(Some(cli_env))
+}
+
 pub fn init_editor(
     args: Args,
     helix_config: Config,
@@ -4810,7 +4878,10 @@ pub fn init_editor(
     // Initialize completion coordinator - but we need to do this after Application is created
     // since it needs access to the Core. This will be done in the workspace.
 
-    // Create LSP manager with initial configuration
+    // CRITICAL: Create ProjectEnvironment BEFORE LSP system so LSP can get proper environment
+    let project_environment = Arc::new(detect_and_create_project_environment());
+
+    // Create LSP manager with initial configuration (after ProjectEnvironment is ready)
     let lsp_manager = nucleotide_lsp::LspManager::new(Arc::new(nucleotide_lsp::LspManagerConfig {
         project_lsp_startup: gui_config.gui.lsp.project_lsp_startup,
         startup_timeout_ms: gui_config.gui.lsp.startup_timeout_ms,
@@ -4843,7 +4914,7 @@ pub fn init_editor(
         shell_env_cache: Arc::new(tokio::sync::Mutex::new(
             nucleotide_env::ShellEnvironmentCache::new(),
         )),
-        project_environment: Arc::new(ProjectEnvironment::new(None)), // TODO: Detect CLI environment
+        project_environment, // Already created above before LSP system initialization
         // V2 Event System Core
         core: {
             let mut core = ApplicationCore::new();

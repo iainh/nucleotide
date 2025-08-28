@@ -41,3 +41,4 @@ signal-hook.workspace = true
 signal-hook-tokio.workspace = true
 parking_lot.workspace = true
 once_cell.workspace = true
+which = "6.0"

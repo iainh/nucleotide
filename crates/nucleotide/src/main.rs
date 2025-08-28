@@ -116,6 +116,10 @@ fn install_panic_handler() {
 #[cfg(target_os = "macos")]
 #[ctor::ctor]
 fn _early_runtime_init() {
+    // CRITICAL: Set up comprehensive environment BEFORE any LSP or other systems initialize
+    // This ensures rust-analyzer and other tools can be found when launched from dock
+    setup_comprehensive_environment();
+
     let needs_override = match std::env::var("HELIX_RUNTIME") {
         Ok(p) => p.contains("$(") || !std::path::Path::new(&p).join("themes").is_dir(),
         Err(_) => true,
@@ -131,6 +135,87 @@ fn _early_runtime_init() {
     // Only set if not already configured by user
     if std::env::var("RUST_LOG").is_err() {
         unsafe { std::env::set_var("RUST_LOG", "info") };
+    }
+}
+
+/// Setup comprehensive environment for macOS app bundle launches
+/// This runs in the constructor before any other initialization
+#[cfg(target_os = "macos")]
+fn setup_comprehensive_environment() {
+    use std::env;
+
+    // Get current PATH
+    let current_path = env::var("PATH").unwrap_or_default();
+    let path_components: Vec<&str> = current_path.split(':').collect();
+
+    // Detect if this looks like a dock launch (minimal PATH)
+    let has_cargo_bin = path_components.iter().any(|&p| p.contains(".cargo/bin"));
+    let has_usr_local = path_components.iter().any(|&p| p == "/usr/local/bin");
+    let has_homebrew = path_components.iter().any(|&p| p.contains("homebrew"));
+    let has_nix_system = path_components
+        .iter()
+        .any(|&p| p == "/run/current-system/sw/bin");
+    let path_count = path_components.len();
+
+    let likely_dock_launch =
+        !has_cargo_bin && !has_usr_local && !has_homebrew && !has_nix_system && path_count <= 4;
+
+    if likely_dock_launch {
+        // Dock launch detected - enhance the PATH immediately
+        let home_dir = match env::var("HOME") {
+            Ok(home) => std::path::PathBuf::from(home),
+            Err(_) => return, // Can't determine home, skip enhancement
+        };
+
+        let mut additional_paths = Vec::new();
+
+        // 1. Add ~/.cargo/bin if it exists
+        let cargo_bin = home_dir.join(".cargo").join("bin");
+        if cargo_bin.exists() {
+            additional_paths.push(cargo_bin.to_string_lossy().to_string());
+        }
+
+        // 2. Add rustup toolchain directories
+        let rustup_toolchains = home_dir.join(".rustup").join("toolchains");
+        if rustup_toolchains.exists() {
+            if let Ok(entries) = std::fs::read_dir(&rustup_toolchains) {
+                for entry in entries.flatten() {
+                    if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+                        let toolchain_bin = entry.path().join("bin");
+                        if toolchain_bin.exists() {
+                            additional_paths.push(toolchain_bin.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Add system paths that might be missing
+        let system_paths = [
+            "/usr/local/bin",
+            "/opt/homebrew/bin",          // Apple Silicon Homebrew
+            "/run/current-system/sw/bin", // Nix system profile
+            "/usr/bin",
+            "/bin",
+        ];
+
+        for sys_path in &system_paths {
+            let path = std::path::Path::new(sys_path);
+            if path.exists() {
+                additional_paths.push(sys_path.to_string());
+            }
+        }
+
+        // Update PATH environment variable
+        let mut all_paths = additional_paths;
+        if !current_path.is_empty() {
+            all_paths.push(current_path);
+        }
+
+        let new_path = all_paths.join(":");
+        unsafe {
+            env::set_var("PATH", &new_path);
+        }
     }
 }
 

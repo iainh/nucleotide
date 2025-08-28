@@ -3387,7 +3387,7 @@ dependencies = [
  "ropey",
  "rustix 1.0.8",
  "unicode-segmentation",
- "which",
+ "which 8.0.0",
  "windows-sys 0.60.2",
 ]
 
@@ -4776,6 +4776,7 @@ dependencies = [
  "signal-hook-tokio",
  "tokio",
  "tracing",
+ "which 6.0.3",
 ]
 
 [[package]]
@@ -8203,6 +8204,18 @@ name = "weezl"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a751b3277700db47d3e574514de2eced5e54dc8a5436a3bf7a0b248b2cee16f3"
+
+[[package]]
+name = "which"
+version = "6.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4ee928febd44d98f2f459a4a79bd4d928591333a494a10a868418ac1b39cf1f"
+dependencies = [
+ "either",
+ "home",
+ "rustix 0.38.44",
+ "winsafe",
+]
 
 [[package]]
 name = "which"

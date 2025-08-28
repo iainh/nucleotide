@@ -789,7 +789,7 @@ impl Workspace {
     ) {
         info!(
             new_project_root = %new_project_root.display(),
-            "Restarting LSP servers for workspace change"
+            "🔄 LSP_RESTART: Starting LSP server restart for workspace change"
         );
 
         // Get the old project root from the workspace state
@@ -802,7 +802,8 @@ impl Workspace {
             info!(
                 old_project_root = ?old_project_root.as_ref().map(|p| p.display()),
                 new_project_root = %new_project_root.display(),
-                "Sending RestartServersForWorkspaceChange command to Application"
+                current_working_dir = ?std::env::current_dir().ok(),
+                "🔄 LSP_RESTART: Sending RestartServersForWorkspaceChange command to Application"
             );
 
             // Create the command with a span for tracing
@@ -2420,17 +2421,37 @@ impl Workspace {
         info!(
             directory_path = %path.display(),
             workspace_root = %workspace_root.display(),
-            "Opening directory"
+            "🗂️ OPEN_DIR: Opening directory"
         );
 
-        // Update the editor's working directory
-        // This will affect file picker and other operations
+        // Update the editor's working directory FIRST
+        // This is critical for LSP servers to start with correct workspace
+        info!(
+            old_cwd = ?std::env::current_dir().ok(),
+            new_cwd = %workspace_root.display(),
+            "🗂️ OPEN_DIR: Changing working directory before LSP restart"
+        );
+
         if let Err(e) = std::env::set_current_dir(&workspace_root) {
-            warn!("Failed to change working directory: {}", e);
+            error!("🗂️ OPEN_DIR: Failed to change working directory: {}", e);
+        } else {
+            info!(
+                confirmed_cwd = ?std::env::current_dir().ok(),
+                "🗂️ OPEN_DIR: Working directory successfully changed"
+            );
+        }
+
+        // CRITICAL: Use helix_stdx to set working directory for consistency
+        // This ensures Helix's internal working directory is also updated
+        if let Err(e) = helix_stdx::env::set_current_working_dir(&workspace_root) {
+            error!("🗂️ OPEN_DIR: Failed to set Helix working directory: {}", e);
+        } else {
+            info!("🗂️ OPEN_DIR: Helix working directory updated successfully");
         }
 
         // Use set_project_directory to properly initialize LSP and project management
         // Pass the workspace root (not the selected directory) for proper project management
+        info!("🗂️ OPEN_DIR: Calling set_project_directory to trigger LSP restart");
         self.set_project_directory(workspace_root.clone(), cx);
 
         // Update the file tree with the new directory
