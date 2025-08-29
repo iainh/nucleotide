@@ -536,6 +536,9 @@ mod tests {
             documentation: None,
             insert_text: "test_function()".to_string(),
             score: 1.0,
+            signature_info: None,
+            type_info: None,
+            insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
         }];
 
         let results_event = Event::ResultsAvailable {

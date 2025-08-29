@@ -439,6 +439,9 @@ mod tests {
             documentation: None,
             insert_text: "println!".to_string(),
             score: 100.0,
+            signature_info: None,
+            type_info: None,
+            insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
         }];
 
         let response = LspCompletionResponse {
@@ -481,6 +484,9 @@ mod tests {
             documentation: None,
             insert_text: "test_function".to_string(),
             score: 100.0,
+            signature_info: None,
+            type_info: None,
+            insert_text_format: nucleotide_events::completion::InsertTextFormat::PlainText,
         }];
 
         let result = CompletionResult::ShowCompletions {
