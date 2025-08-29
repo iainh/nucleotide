@@ -94,9 +94,8 @@ impl PrefixExtractor {
     }
 
     fn is_trigger_context(&self, chars: &[char]) -> bool {
-        // Look for trigger characters at the end or recent positions
-        for i in (0..chars.len()).rev().take(5) {
-            // Check last 5 characters for performance
+        // Look for trigger characters walking backwards until we hit a separator
+        for i in (0..chars.len()).rev() {
             let c = chars[i];
             if self.trigger_chars.contains(&c) {
                 return true;
@@ -143,7 +142,7 @@ impl PrefixExtractor {
     pub fn configure_for_language(&mut self, language: &str) {
         match language {
             "rust" => {
-                self.identifier_chars.insert(':'); // For :: namespace resolution
+                // Don't add ':' to identifier_chars - it should trigger completion
                 self.trigger_chars.insert(':');
             }
             "javascript" | "typescript" => {
