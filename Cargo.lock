@@ -4785,7 +4785,6 @@ dependencies = [
 name = "nucleotide-project"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "gpui",
  "nucleotide-logging",
