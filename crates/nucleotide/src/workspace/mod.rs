@@ -30,7 +30,7 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 
 // ViewManager already imported above via pub use
-use nucleotide_ui::{Button, ButtonSize, ButtonVariant};
+use nucleotide_ui::{AboutWindow, Button, ButtonSize, ButtonVariant};
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 
@@ -73,6 +73,7 @@ pub struct Workspace {
     current_project_root: Option<std::path::PathBuf>, // Track current project root for change detection
     pending_lsp_startup: Option<std::path::PathBuf>,  // Track pending server startup requests
     prefix_extractor: PrefixExtractor,                // Language-aware completion prefix extraction
+    about_window: Entity<AboutWindow>,                // About dialog window
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -195,6 +196,9 @@ impl Workspace {
         // Initialize workspace-specific actions with the input coordinator
         Self::register_workspace_actions(&input_coordinator);
 
+        // Create about window
+        let about_window = cx.new(|_cx| AboutWindow::new());
+
         // Initialize ProjectLspManager for proactive LSP startup
         let project_lsp_manager = if let Some(ref root) = root_path_for_manager {
             info!(project_root = %root.display(), "Initializing ProjectLspManager for workspace");
@@ -291,6 +295,7 @@ impl Workspace {
             current_project_root: root_path_for_manager.clone(),
             pending_lsp_startup: None,
             prefix_extractor: PrefixExtractor::new(),
+            about_window,
         };
 
         // Set initial focus restore state
@@ -5582,6 +5587,7 @@ impl Render for Workspace {
                         let view = &self.overlay;
                         this.child(view.clone())
                     })
+                    .child(self.about_window.clone())
                     .when(
                         !self.info_hidden && !self.info.read(cx).is_empty(),
                         |this| this.child(self.info.clone()),
@@ -5664,8 +5670,10 @@ impl Render for Workspace {
 
         // Add action handlers
         workspace_div = workspace_div.on_action(cx.listener(
-            move |_, _: &crate::actions::help::About, _window, _cx| {
-                eprintln!("About Helix");
+            move |workspace, _: &crate::actions::help::About, _window, cx| {
+                workspace.about_window.update(cx, |about_window, cx| {
+                    about_window.show(cx);
+                });
             },
         ));
 

@@ -1,6 +1,7 @@
 // ABOUTME: Reusable UI components library following Zed's patterns
 // ABOUTME: Provides consistent, styled components for the application
 
+pub mod about_window;
 pub mod actions;
 pub mod advanced_theming;
 pub mod assets;
@@ -59,6 +60,7 @@ mod styling_tests;
 #[cfg(test)]
 mod theme_mapping_test;
 
+pub use about_window::AboutWindow;
 pub use advanced_theming::{
     AdvancedThemeManager, AnimationStep, HelixThemeBridge, HelixThemeDiscovery,
     RuntimeThemeSwitcher, ThemeAnimator, ThemeBuilder, ThemeCategory, ThemeMetadata, ThemeRegistry,

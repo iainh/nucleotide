@@ -9,6 +9,8 @@ use std::borrow::Cow;
 #[derive(RustEmbed)]
 #[folder = "../nucleotide/assets"]
 #[include = "icons/**/*"]
+#[include = "nucleotide.png"]
+#[include = "nucleotide.iconset/**/*"]
 #[exclude = "*.DS_Store"]
 pub struct Assets;
 
