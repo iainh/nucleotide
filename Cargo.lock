@@ -4673,12 +4673,8 @@ dependencies = [
 name = "nucleotide-editor"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "arc-swap",
  "gpui",
  "helix-core",
- "helix-term",
- "helix-tui",
  "helix-view",
  "nucleotide-core",
  "nucleotide-logging",

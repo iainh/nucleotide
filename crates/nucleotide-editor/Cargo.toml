@@ -20,10 +20,6 @@ gpui = { workspace = true }
 # Helix dependencies
 helix-core = { workspace = true }
 helix-view = { workspace = true }
-helix-term = { workspace = true }
-helix-tui = { workspace = true }
 
 # Standard dependencies
-anyhow = { workspace = true }
 nucleotide-logging = { workspace = true }
-arc-swap = { workspace = true }
