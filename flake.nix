@@ -401,6 +401,7 @@
             cargo-outdated
             cargo-deny
             cargo-flamegraph
+            cargo-machete
 
             # Build performance tools
             sccache
