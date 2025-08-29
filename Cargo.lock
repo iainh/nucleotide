@@ -4769,17 +4769,13 @@ name = "nucleotide-test-lsp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "futures",
  "lsp-server",
  "lsp-types",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
- "tokio",
  "toml 0.8.23",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
