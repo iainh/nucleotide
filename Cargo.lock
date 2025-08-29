@@ -993,15 +993,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
-name = "convert_case"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb402b8d4c85569410425650ce3eddc7d698ed96d39a73f941b08fb63082f1e7"
-dependencies = [
- "unicode-segmentation",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1240,26 +1231,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crossterm"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
-dependencies = [
- "bitflags 2.9.3",
- "crossterm_winapi",
- "derive_more 2.0.1",
- "document-features",
- "filedescriptor",
- "futures-core",
- "mio 1.0.4",
- "parking_lot",
- "rustix 1.0.8",
- "signal-hook",
- "signal-hook-mio",
- "winapi",
-]
-
-[[package]]
 name = "crossterm_winapi"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1352,31 +1323,10 @@ version = "0.99.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6edb4b64a43d977b8e99788fe3a04d483834fba1215a7e02caa415b626497f7f"
 dependencies = [
- "convert_case 0.4.0",
+ "convert_case",
  "proc-macro2",
  "quote",
  "rustc_version",
- "syn 2.0.106",
-]
-
-[[package]]
-name = "derive_more"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "093242cf7570c207c83073cf82f79706fe7b8317e98620a47d5be7c3d8497678"
-dependencies = [
- "derive_more-impl",
-]
-
-[[package]]
-name = "derive_more-impl"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bda628edc44c4bb645fbe0f758797143e4e07926f7ebf4e9bdfbd3d2ce621df3"
-dependencies = [
- "convert_case 0.7.1",
- "proc-macro2",
- "quote",
  "syn 2.0.106",
 ]
 
@@ -1498,15 +1448,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330c60081dcc4c72131f8eb70510f1ac07223e5d4163db481a04a0befcffa412"
 dependencies = [
  "libloading",
-]
-
-[[package]]
-name = "document-features"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95249b50c6c185bee49034bcb378a49dc2b5dff0be90ff6616d31d64febab05d"
-dependencies = [
- "litrs",
 ]
 
 [[package]]
@@ -3024,7 +2965,7 @@ dependencies = [
  "core-video",
  "cosmic-text",
  "ctor 0.4.3",
- "derive_more 0.99.20",
+ "derive_more",
  "embed-resource",
  "etagere",
  "filedescriptor",
@@ -3379,7 +3320,7 @@ dependencies = [
  "arc-swap",
  "chrono",
  "content_inspector",
- "crossterm 0.28.1",
+ "crossterm",
  "dashmap",
  "fern",
  "futures-util",
@@ -3421,7 +3362,7 @@ source = "git+https://github.com/iainh/helix?branch=nucleotide-lsp-integration#8
 dependencies = [
  "bitflags 2.9.3",
  "cassowary",
- "crossterm 0.28.1",
+ "crossterm",
  "helix-core",
  "helix-view",
  "log",
@@ -3456,7 +3397,7 @@ dependencies = [
  "bitflags 2.9.3",
  "chardetng",
  "clipboard-win",
- "crossterm 0.28.1",
+ "crossterm",
  "futures-util",
  "helix-core",
  "helix-dap",
@@ -3579,7 +3520,7 @@ source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d4
 dependencies = [
  "anyhow",
  "bytes",
- "derive_more 0.99.20",
+ "derive_more",
  "futures",
  "http",
  "http-body",
@@ -4238,12 +4179,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "241eaef5fd12c88705a01fc1066c48c4b36e0dd4377dcdc7ec3942cea7a69956"
 
 [[package]]
-name = "litrs"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5e54036fe321fd421e10d732f155734c4e4afd610dd556d9a82833ab3ee0bed"
-
-[[package]]
 name = "lock_api"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4720,25 +4655,15 @@ name = "nucleotide-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arc-swap",
- "crossterm 0.29.0",
- "futures",
  "gpui",
  "helix-core",
  "helix-event",
- "helix-loader",
  "helix-lsp",
- "helix-stdx",
  "helix-term",
- "helix-vcs",
  "helix-view",
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-types",
- "once_cell",
- "parking_lot",
- "signal-hook",
- "signal-hook-tokio",
  "tokio",
  "tracing",
  "which 6.0.3",
