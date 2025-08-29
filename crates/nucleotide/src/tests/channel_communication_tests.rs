@@ -2,8 +2,8 @@
 // ABOUTME: Verifies timeout handling and proper response channel lifecycle management
 
 use nucleotide_env::ProjectEnvironment;
-use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError, ServerStartResult};
-use nucleotide_lsp::{EnvironmentProvider, HelixLspBridge};
+use nucleotide_events::{ProjectLspCommand, ServerStartResult};
+use nucleotide_lsp::EnvironmentProvider;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;

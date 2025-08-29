@@ -427,7 +427,6 @@ impl CompletionCoordinator {
 mod tests {
     use super::*;
     use nucleotide_events::completion::{CompletionItem, CompletionItemKind};
-    use tokio::sync::mpsc;
 
     #[test]
     fn test_lsp_completion_response_with_prefix() {

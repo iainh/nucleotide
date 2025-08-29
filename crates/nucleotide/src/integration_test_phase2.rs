@@ -102,7 +102,7 @@ async fn test_command_channel_integration() {
     use nucleotide_events::ProjectLspCommand;
 
     // Test that we can create the same channel types used in Application
-    let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProjectLspCommand>();
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<ProjectLspCommand>();
 
     // Test that we can simulate the Application's channel management
     let rx_arc = std::sync::Arc::new(tokio::sync::RwLock::new(Some(rx)));
@@ -121,11 +121,10 @@ async fn test_command_channel_integration() {
 /// Test the full Event-Driven Command Pattern with MockHelixLspBridge
 #[tokio::test]
 async fn test_event_driven_command_pattern_end_to_end() {
-    use helix_lsp::LanguageServerId;
-    use nucleotide_events::{ProjectLspCommand, ServerStartResult};
+    use nucleotide_events::ProjectLspCommand;
     // Note: Using simplified test without MockHelixLspBridge
     // Real integration tests would use actual LSP infrastructure
-    use slotmap::KeyData;
+
     use std::path::PathBuf;
 
     // Create mock Application structure for testing

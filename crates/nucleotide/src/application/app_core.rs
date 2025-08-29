@@ -491,10 +491,6 @@ impl Default for ApplicationCore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arc_swap::ArcSwap;
-    use helix_view::{Document, DocumentId, Editor, graphics::Rect};
-    use std::path::PathBuf;
-    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_application_core_initialization() {

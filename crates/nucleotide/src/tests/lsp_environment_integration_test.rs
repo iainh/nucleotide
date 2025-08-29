@@ -5,10 +5,9 @@ use nucleotide_env::ProjectEnvironment;
 use nucleotide_events::ProjectLspEvent;
 use nucleotide_lsp::{EnvironmentProvider, HelixLspBridge};
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use tempfile;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 
 /// Mock environment provider for testing
 struct MockEnvironmentProvider {

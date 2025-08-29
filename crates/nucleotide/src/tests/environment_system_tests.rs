@@ -3,9 +3,8 @@
 
 use nucleotide_env::{ProjectEnvironment, ShellEnvironmentError};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tempfile;
-use tokio::test;
 
 /// Helper function to create a temporary directory for testing
 fn create_test_dir() -> tempfile::TempDir {

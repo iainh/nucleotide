@@ -460,7 +460,6 @@ mod tests {
     use nucleotide_events::v2::completion::{
         CancellationReason, CompletionItemKind, CompletionProvider,
     };
-    use std::path::PathBuf;
 
     #[tokio::test]
     async fn test_completion_handler_initialization() {

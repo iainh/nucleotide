@@ -5041,7 +5041,7 @@ fn should_update_env_var(key: &str) -> bool {
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-    use crate::Application;
+
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
         create_test_document_events, create_test_selection_events,

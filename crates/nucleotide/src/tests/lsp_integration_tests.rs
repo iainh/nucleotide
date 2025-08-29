@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::config::{Config as NucleotideConfig, GuiConfig, LspConfig};
 use nucleotide_events::{ProjectType, ServerHealthStatus};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspConfig, ProjectLspManager};
-use nucleotide_lsp::{LspManager, LspStartupMode, LspStartupResult};
+use nucleotide_lsp::{LspManager, LspStartupMode};
 
 /// Test helper to create a test configuration for LSP manager
 fn create_lsp_test_config(
@@ -279,7 +279,7 @@ async fn test_language_id_mapping() {
 #[tokio::test]
 async fn test_managed_server_lifecycle() {
     use helix_lsp::LanguageServerId;
-    use nucleotide_lsp::{ManagedServer, ProjectLspError};
+    use nucleotide_lsp::ManagedServer;
     use std::time::Instant;
 
     // Create a mock server ID - in practice this comes from Helix

@@ -1301,7 +1301,7 @@ impl Workspace {
         use nucleotide_ui::theme_manager::SystemAppearance;
         use objc2::runtime::AnyObject;
         use objc2::{class, msg_send};
-        use objc2_app_kit::{NSAppearance, NSApplication, NSWindow};
+        use objc2_app_kit::{NSApplication, NSWindow};
         use objc2_foundation::{MainThreadMarker, NSArray, NSString};
 
         // Get all windows from NSApplication instead of just the main window
@@ -1549,7 +1549,7 @@ impl Workspace {
         use nucleotide_ui::theme_manager::SystemAppearance;
         use objc2::runtime::AnyObject;
         use objc2::{class, msg_send};
-        use objc2_app_kit::{NSAppearance, NSApplication, NSWindow};
+        use objc2_app_kit::{NSApplication, NSWindow};
         use objc2_foundation::{MainThreadMarker, NSArray, NSString};
 
         let mtm = unsafe { MainThreadMarker::new_unchecked() };

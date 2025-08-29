@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests {
     use crate::application::find_workspace_root_from;
-    use nucleotide_logging::debug;
+
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;

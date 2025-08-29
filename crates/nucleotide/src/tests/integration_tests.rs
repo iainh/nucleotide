@@ -5,7 +5,7 @@
 mod tests {
     use crate::application::find_workspace_root_from;
     use crate::config::Config;
-    use nucleotide_logging::{debug, info};
+    use nucleotide_logging::debug;
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;

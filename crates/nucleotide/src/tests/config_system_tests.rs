@@ -7,7 +7,7 @@ mod tests {
         Config, EditorGuiConfig, GuiConfig, LspConfig, ThemeConfig, ThemeMode, UiConfig,
         WindowConfig,
     };
-    use helix_term::config::Config as HelixConfig;
+
     use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
     use std::fs;
     use std::path::Path;
