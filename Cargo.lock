@@ -1779,15 +1779,6 @@ dependencies = [
 
 [[package]]
 name = "fern"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9f0c14694cbd524c8720dd69b0e3179344f04ebb5f90f2e4a440c6ea3b2f1ee"
-dependencies = [
- "log",
-]
-
-[[package]]
-name = "fern"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4316185f709b23713e41e3195f90edef7fb00c3ed4adc79769cf09cc762a3b29"
@@ -3112,18 +3103,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui_tokio"
-version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
-dependencies = [
- "anyhow",
- "gpui",
- "tokio",
- "util",
- "workspace-hack",
-]
-
-[[package]]
 name = "grep-matcher"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3402,7 +3381,7 @@ dependencies = [
  "content_inspector",
  "crossterm 0.28.1",
  "dashmap",
- "fern 0.7.1",
+ "fern",
  "futures-util",
  "grep-regex",
  "grep-searcher",
@@ -4695,16 +4674,10 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
- "chrono",
- "content_inspector",
  "ctor 0.2.9",
  "dirs 5.0.1",
- "fern 0.6.2",
  "futures-util",
  "gpui",
- "gpui_tokio",
- "grep-regex",
- "grep-searcher",
  "helix-core",
  "helix-event",
  "helix-loader",
@@ -4715,7 +4688,6 @@ dependencies = [
  "helix-view",
  "ignore",
  "notify",
- "nucleo",
  "nucleotide-core",
  "nucleotide-editor",
  "nucleotide-env",
@@ -4726,28 +4698,20 @@ dependencies = [
  "nucleotide-types",
  "nucleotide-ui",
  "nucleotide-vcs",
- "nucleotide-workspace",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "once_cell",
- "open",
- "parking_lot",
- "pulldown-cmark",
- "rust-embed",
  "serde",
  "serde_json",
  "slotmap",
- "smallvec",
  "sum_tree",
  "tempfile",
- "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "toml 0.8.23",
  "tracing",
  "unicode-segmentation",
- "unicode-width 0.2.1",
  "url",
 ]
 
@@ -4817,8 +4781,6 @@ dependencies = [
  "helix-lsp",
  "helix-vcs",
  "helix-view",
- "nucleotide-types",
- "serde",
  "thiserror 2.0.16",
  "tokio",
  "tracing",
