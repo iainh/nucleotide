@@ -170,8 +170,8 @@ impl LinuxTitlebar {
     }
 }
 
-impl Render for LinuxTitlebar {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl LinuxTitlebar {
+    pub fn render_element(&mut self, window: &mut Window) -> impl IntoElement {
         let decorations = window.window_decorations();
 
         debug!(
@@ -232,22 +232,25 @@ impl Render for LinuxTitlebar {
                         .child(self.title.clone()),
                 ),
             )
-            .on_mouse_down(MouseButton::Left, |event, window, cx| {
-                // Handle titlebar dragging, but avoid interfering with window controls
-                let bounds = window.window_bounds().get_bounds();
-                let control_area_width = 120.0; // Approximate width of control area
+            .on_mouse_down(MouseButton::Left, {
+                let button_layout = self.platform_info.button_layout;
+                move |event, window, cx| {
+                    // Handle titlebar dragging, but avoid interfering with window controls
+                    let bounds = window.window_bounds().get_bounds();
+                    let control_area_width = 120.0; // Approximate width of control area
 
-                let should_drag = match self.platform_info.button_layout {
-                    WindowButtonLayout::Left => event.position.x.0 > control_area_width,
-                    WindowButtonLayout::Right | WindowButtonLayout::Custom => {
-                        event.position.x.0 < (bounds.size.width.0 - control_area_width)
+                    let should_drag = match button_layout {
+                        WindowButtonLayout::Left => event.position.x.0 > control_area_width,
+                        WindowButtonLayout::Right | WindowButtonLayout::Custom => {
+                            event.position.x.0 < (bounds.size.width.0 - control_area_width)
+                        }
+                    };
+
+                    if should_drag {
+                        window.start_window_move();
                     }
-                };
-
-                if should_drag {
-                    window.start_window_move();
+                    cx.stop_propagation();
                 }
-                cx.stop_propagation();
             })
             .on_mouse_move(|_, _, cx| cx.stop_propagation());
 

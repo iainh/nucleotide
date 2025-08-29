@@ -2,8 +2,8 @@
 // ABOUTME: Supports GNOME, KDE, and tiling window manager specific button arrangements and capabilities
 
 use gpui::{
-    App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce, Styled,
-    Window, WindowControlArea, div, hsla, svg,
+    App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce,
+    StatefulInteractiveElement, Styled, Window, WindowControlArea, div, hsla, svg,
 };
 
 use crate::styling::{ColorTheory, StyleSize, StyleState, StyleVariant, compute_component_style};
@@ -67,7 +67,7 @@ impl LinuxControlStyle {
     /// Create GNOME-style controls (Adwaita theme inspired)
     pub fn gnome_style(
         titlebar_tokens: TitleBarTokens,
-        theme_tokens: &crate::DesignTokens,
+        _theme_tokens: &crate::DesignTokens,
     ) -> Self {
         let bg = titlebar_tokens.background;
         let fg = titlebar_tokens.foreground;
@@ -94,7 +94,7 @@ impl LinuxControlStyle {
     }
 
     /// Create KDE-style controls (Breeze theme inspired)  
-    pub fn kde_style(titlebar_tokens: TitleBarTokens, theme_tokens: &crate::DesignTokens) -> Self {
+    pub fn kde_style(titlebar_tokens: TitleBarTokens, _theme_tokens: &crate::DesignTokens) -> Self {
         let bg = titlebar_tokens.background;
         let fg = titlebar_tokens.foreground;
 
@@ -122,7 +122,7 @@ impl LinuxControlStyle {
     /// Create minimal style for tiling window managers
     pub fn minimal_style(
         titlebar_tokens: TitleBarTokens,
-        theme_tokens: &crate::DesignTokens,
+        _theme_tokens: &crate::DesignTokens,
     ) -> Self {
         let bg = titlebar_tokens.background;
         let fg = titlebar_tokens.foreground;
@@ -420,7 +420,7 @@ impl RenderOnce for LinuxWindowControls {
         // Add all controls
         for control_type in controls {
             container = container.child(LinuxWindowControl::new(
-                format!("linux-{:?}", control_type),
+                format!("linux-{:?}", control_type).as_str(),
                 control_type,
                 self.titlebar_tokens,
                 &theme_tokens,

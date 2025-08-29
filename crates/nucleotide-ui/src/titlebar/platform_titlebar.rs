@@ -87,7 +87,8 @@ impl Render for PlatformTitleBar {
                 debug!("Using enhanced Linux titlebar");
                 let mut linux_titlebar = LinuxTitlebar::new(self.id.clone());
                 linux_titlebar.set_title(self.title.clone());
-                return linux_titlebar.render(window, cx).into_element();
+
+                return linux_titlebar.render_element(window);
             } else {
                 debug!("Using fallback platform titlebar on Linux");
             }
