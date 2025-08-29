@@ -171,7 +171,7 @@ impl LinuxTitlebar {
 }
 
 impl LinuxTitlebar {
-    pub fn render_element(&mut self, window: &mut Window) -> impl IntoElement {
+    pub fn render_element(&mut self, window: &mut Window) -> gpui::Stateful<gpui::Div> {
         let decorations = window.window_decorations();
 
         debug!(
@@ -269,6 +269,6 @@ impl LinuxTitlebar {
             titlebar = titlebar.child(LinuxWindowControls::new(titlebar_tokens));
         }
 
-        titlebar.into_element()
+        titlebar
     }
 }

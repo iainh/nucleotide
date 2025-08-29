@@ -438,6 +438,6 @@ impl RenderOnce for LinuxWindowControls {
             ));
         }
 
-        container.into_element()
+        container
     }
 }
