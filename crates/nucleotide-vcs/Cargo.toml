@@ -8,16 +8,12 @@ repository = "https://github.com/mralexgray/nucleotide"
 
 [dependencies]
 nucleotide-logging.workspace = true
-nucleotide-ui.workspace = true
 nucleotide-types.workspace = true
 nucleotide-events.workspace = true
 helix-vcs.workspace = true
 helix-core.workspace = true
 helix-view.workspace = true
 gpui.workspace = true
-anyhow.workspace = true
-parking_lot.workspace = true
-tokio = { workspace = true, features = ["time", "process"] }
 
 [dev-dependencies]
 tempfile = "3.0"

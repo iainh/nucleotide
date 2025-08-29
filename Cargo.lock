@@ -4817,7 +4817,6 @@ dependencies = [
 name = "nucleotide-vcs"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "gpui",
  "helix-core",
  "helix-vcs",
@@ -4825,10 +4824,7 @@ dependencies = [
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-types",
- "nucleotide-ui",
- "parking_lot",
  "tempfile",
- "tokio",
 ]
 
 [[package]]
