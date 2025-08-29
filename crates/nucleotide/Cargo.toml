@@ -95,8 +95,9 @@ thiserror.workspace = true
 
 # macOS integration
 [target.'cfg(target_os = "macos")'.dependencies]
-objc.workspace = true
-cocoa.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
 
 # ripgrep for global search
 grep-regex = "0.1.12"

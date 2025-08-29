@@ -1298,16 +1298,18 @@ impl Workspace {
     unsafe fn update_titlebar_appearance_native(
         system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
     ) {
-        use cocoa::base::{id, nil};
-        use cocoa::foundation::NSString;
         use nucleotide_ui::theme_manager::SystemAppearance;
-        use objc::{class, msg_send, sel, sel_impl};
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        use objc2_app_kit::{NSAppearance, NSApplication, NSWindow};
+        use objc2_foundation::{MainThreadMarker, NSArray, NSString};
 
         // Get all windows from NSApplication instead of just the main window
 
-        let app: id = msg_send![class!(NSApplication), sharedApplication];
-        let windows: id = msg_send![app, windows];
-        let window_count: usize = msg_send![windows, count];
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let app = NSApplication::sharedApplication(mtm);
+        let windows: &NSArray<NSWindow> = unsafe { msg_send![&**app, windows] };
+        let window_count = windows.count();
 
         nucleotide_logging::debug!(
             window_count = window_count,
@@ -1317,9 +1319,9 @@ impl Workspace {
 
         // Log details about all windows to make sure we're targeting the right one
         for i in 0..window_count {
-            let window: id = msg_send![windows, objectAtIndex: i];
-            let window_title: id = msg_send![window, title];
-            let title_str = if window_title != nil {
+            let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
+            let window_title: *mut AnyObject = msg_send![window, title];
+            let title_str = if !window_title.is_null() {
                 let cstr: *const i8 = msg_send![window_title, UTF8String];
                 unsafe { std::ffi::CStr::from_ptr(cstr) }
                     .to_str()
@@ -1345,11 +1347,11 @@ impl Workspace {
 
         if window_count > 0 {
             // Find the actual main/key window instead of just taking the first one
-            let mut target_window: id = nil;
+            let mut target_window: *mut AnyObject = std::ptr::null_mut();
 
             // First try to find the main window
             for i in 0..window_count {
-                let window: id = msg_send![windows, objectAtIndex: i];
+                let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
                 let is_main: bool = msg_send![window, isMainWindow];
                 if is_main {
                     target_window = window;
@@ -1359,9 +1361,9 @@ impl Workspace {
             }
 
             // If no main window, try to find the key window
-            if target_window == nil {
+            if target_window.is_null() {
                 for i in 0..window_count {
-                    let window: id = msg_send![windows, objectAtIndex: i];
+                    let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
                     let is_key: bool = msg_send![window, isKeyWindow];
                     if is_key {
                         target_window = window;
@@ -1372,9 +1374,9 @@ impl Workspace {
             }
 
             // If still no target, find the first visible window with a titlebar
-            if target_window == nil {
+            if target_window.is_null() {
                 for i in 0..window_count {
-                    let window: id = msg_send![windows, objectAtIndex: i];
+                    let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
                     let is_visible: bool = msg_send![window, isVisible];
                     let has_titlebar: bool = msg_send![window, hasTitleBar];
                     if is_visible && has_titlebar {
@@ -1389,7 +1391,7 @@ impl Workspace {
             }
 
             // Fall back to first window if all else fails
-            if target_window == nil {
+            if target_window.is_null() {
                 target_window = msg_send![windows, objectAtIndex: 0];
                 nucleotide_logging::warn!("Falling back to first window");
             }
@@ -1413,9 +1415,9 @@ impl Workspace {
             );
 
             // Check current appearance before setting
-            let current_appearance: id = msg_send![window, appearance];
+            let current_appearance: *mut AnyObject = msg_send![window, appearance];
             nucleotide_logging::debug!(
-                current_appearance_is_nil = (current_appearance == nil),
+                current_appearance_is_nil = (current_appearance.is_null()),
                 "Window appearance before setting"
             );
 
@@ -1423,33 +1425,31 @@ impl Workspace {
             match system_appearance {
                 SystemAppearance::Dark => {
                     // Set to dark appearance explicitly
-                    let dark_appearance_name =
-                        unsafe { NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua") };
-                    let dark_appearance: id =
-                        msg_send![class!(NSAppearance), appearanceNamed: dark_appearance_name];
+                    let dark_appearance_name = NSString::from_str("NSAppearanceNameDarkAqua");
+                    let dark_appearance: *mut AnyObject =
+                        msg_send![class!(NSAppearance), appearanceNamed: &*dark_appearance_name];
                     let _: () = msg_send![window, setAppearance: dark_appearance];
                     nucleotide_logging::debug!("Set window to dark appearance explicitly");
                 }
                 SystemAppearance::Light => {
                     // Set to light appearance explicitly
-                    let light_appearance_name =
-                        unsafe { NSString::alloc(nil).init_str("NSAppearanceNameAqua") };
-                    let light_appearance: id =
-                        msg_send![class!(NSAppearance), appearanceNamed: light_appearance_name];
+                    let light_appearance_name = NSString::from_str("NSAppearanceNameAqua");
+                    let light_appearance: *mut AnyObject =
+                        msg_send![class!(NSAppearance), appearanceNamed: &*light_appearance_name];
                     let _: () = msg_send![window, setAppearance: light_appearance];
                     nucleotide_logging::debug!("Set window to light appearance explicitly");
                 }
             }
 
             // Check appearance after setting and verify it took effect
-            let new_appearance: id = msg_send![window, appearance];
-            let new_appearance_name: id = if new_appearance != nil {
+            let new_appearance: *mut AnyObject = msg_send![window, appearance];
+            let new_appearance_name: *mut AnyObject = if !new_appearance.is_null() {
                 msg_send![new_appearance, name]
             } else {
-                nil
+                std::ptr::null_mut()
             };
 
-            let appearance_name_str = if new_appearance_name != nil {
+            let appearance_name_str = if !new_appearance_name.is_null() {
                 let cstr: *const i8 = msg_send![new_appearance_name, UTF8String];
                 unsafe { std::ffi::CStr::from_ptr(cstr) }
                     .to_str()
@@ -1460,20 +1460,20 @@ impl Workspace {
 
             nucleotide_logging::info!(
                 system_appearance = ?system_appearance,
-                new_appearance_is_nil = (new_appearance == nil),
+                new_appearance_is_nil = (new_appearance.is_null()),
                 new_appearance_name = appearance_name_str,
                 "Successfully set NSWindow appearance"
             );
 
             // Also check the actual effective appearance to see what macOS thinks
-            let effective_appearance: id = msg_send![window, effectiveAppearance];
-            let effective_appearance_name: id = if effective_appearance != nil {
+            let effective_appearance: *mut AnyObject = msg_send![window, effectiveAppearance];
+            let effective_appearance_name: *mut AnyObject = if !effective_appearance.is_null() {
                 msg_send![effective_appearance, name]
             } else {
-                nil
+                std::ptr::null_mut()
             };
 
-            let effective_name_str = if effective_appearance_name != nil {
+            let effective_name_str = if !effective_appearance_name.is_null() {
                 let cstr: *const i8 = msg_send![effective_appearance_name, UTF8String];
                 unsafe { std::ffi::CStr::from_ptr(cstr) }
                     .to_str()
@@ -1493,18 +1493,20 @@ impl Workspace {
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 unsafe {
-                    let app: id = msg_send![class!(NSApplication), sharedApplication];
-                    let windows: id = msg_send![app, windows];
+                    let mtm = MainThreadMarker::new_unchecked();
+                    let app = NSApplication::sharedApplication(mtm);
+                    let windows: *mut AnyObject = msg_send![&**app, windows];
                     let window_count: usize = msg_send![windows, count];
 
                     if window_count > 0 {
-                        let window: id = msg_send![windows, objectAtIndex: 0];
-                        let current_appearance: id = msg_send![window, appearance];
-                        let effective_appearance: id = msg_send![window, effectiveAppearance];
+                        let window: *mut AnyObject = msg_send![windows, objectAtIndex: 0];
+                        let current_appearance: *mut AnyObject = msg_send![window, appearance];
+                        let effective_appearance: *mut AnyObject =
+                            msg_send![window, effectiveAppearance];
 
-                        let current_name = if current_appearance != nil {
-                            let name: id = msg_send![current_appearance, name];
-                            if name != nil {
+                        let current_name = if !current_appearance.is_null() {
+                            let name: *mut AnyObject = msg_send![current_appearance, name];
+                            if !name.is_null() {
                                 let cstr: *const i8 = msg_send![name, UTF8String];
                                 std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
                             } else {
@@ -1514,9 +1516,9 @@ impl Workspace {
                             "nil"
                         };
 
-                        let effective_name = if effective_appearance != nil {
-                            let name: id = msg_send![effective_appearance, name];
-                            if name != nil {
+                        let effective_name = if !effective_appearance.is_null() {
+                            let name: *mut AnyObject = msg_send![effective_appearance, name];
+                            if !name.is_null() {
                                 let cstr: *const i8 = msg_send![name, UTF8String];
                                 std::ffi::CStr::from_ptr(cstr).to_str().unwrap_or("unknown")
                             } else {
@@ -1544,14 +1546,16 @@ impl Workspace {
         system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
         attempt: u32,
     ) -> bool {
-        use cocoa::base::{id, nil};
-        use cocoa::foundation::NSString;
         use nucleotide_ui::theme_manager::SystemAppearance;
-        use objc::{class, msg_send, sel, sel_impl};
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        use objc2_app_kit::{NSAppearance, NSApplication, NSWindow};
+        use objc2_foundation::{MainThreadMarker, NSArray, NSString};
 
-        let app: id = msg_send![class!(NSApplication), sharedApplication];
-        let windows: id = msg_send![app, windows];
-        let window_count: usize = msg_send![windows, count];
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let app = NSApplication::sharedApplication(mtm);
+        let windows: &NSArray<NSWindow> = unsafe { msg_send![&**app, windows] };
+        let window_count = windows.count();
 
         nucleotide_logging::debug!(
             attempt = attempt,
@@ -1566,12 +1570,12 @@ impl Workspace {
         }
 
         // Look for the proper main window - one with a title and main/key status
-        let mut target_window: id = nil;
+        let mut target_window: *mut AnyObject = std::ptr::null_mut();
 
         for i in 0..window_count {
-            let window: id = msg_send![windows, objectAtIndex: i];
-            let window_title: id = msg_send![window, title];
-            let title_str = if window_title != nil {
+            let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
+            let window_title: *mut AnyObject = msg_send![window, title];
+            let title_str = if !window_title.is_null() {
                 let cstr: *const i8 = msg_send![window_title, UTF8String];
                 unsafe { std::ffi::CStr::from_ptr(cstr) }
                     .to_str()
@@ -1606,7 +1610,7 @@ impl Workspace {
             }
         }
 
-        if target_window == nil {
+        if target_window.is_null() {
             nucleotide_logging::debug!(
                 attempt = attempt,
                 "No proper main window found yet, will retry"
@@ -1618,10 +1622,9 @@ impl Workspace {
         let window = target_window;
         match system_appearance {
             SystemAppearance::Dark => {
-                let dark_appearance_name =
-                    unsafe { NSString::alloc(nil).init_str("NSAppearanceNameDarkAqua") };
-                let dark_appearance: id =
-                    msg_send![class!(NSAppearance), appearanceNamed: dark_appearance_name];
+                let dark_appearance_name = NSString::from_str("NSAppearanceNameDarkAqua");
+                let dark_appearance: *mut AnyObject =
+                    msg_send![class!(NSAppearance), appearanceNamed: &*dark_appearance_name];
                 let _: () = msg_send![window, setAppearance: dark_appearance];
                 nucleotide_logging::info!(
                     attempt = attempt,
@@ -1629,10 +1632,9 @@ impl Workspace {
                 );
             }
             SystemAppearance::Light => {
-                let light_appearance_name =
-                    unsafe { NSString::alloc(nil).init_str("NSAppearanceNameAqua") };
-                let light_appearance: id =
-                    msg_send![class!(NSAppearance), appearanceNamed: light_appearance_name];
+                let light_appearance_name = NSString::from_str("NSAppearanceNameAqua");
+                let light_appearance: *mut AnyObject =
+                    msg_send![class!(NSAppearance), appearanceNamed: &*light_appearance_name];
                 let _: () = msg_send![window, setAppearance: light_appearance];
                 nucleotide_logging::info!(
                     attempt = attempt,

@@ -91,8 +91,9 @@ lsp-types = "0.97"
 lsp-server = "0.7"
 
 # macOS framework bindings
-objc = "0.2"
-cocoa = "0.25"
+objc2 = "0.6"
+objc2-foundation = "0.3" 
+objc2-app-kit = "0.3"
 
 # Inter-crate dependencies
 nucleotide-types = { path = "crates/nucleotide-types" }
