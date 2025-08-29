@@ -78,6 +78,21 @@ impl Render for PlatformTitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let decorations = window.window_decorations();
 
+        // On Linux, use enhanced Linux titlebar if available and appropriate
+        #[cfg(target_os = "linux")]
+        {
+            use crate::titlebar::linux_titlebar::LinuxTitlebar;
+
+            if LinuxTitlebar::should_create_for_decorations(&decorations) {
+                debug!("Using enhanced Linux titlebar");
+                let mut linux_titlebar = LinuxTitlebar::new(self.id.clone());
+                linux_titlebar.set_title(self.title.clone());
+                return linux_titlebar.render(window, cx).into_element();
+            } else {
+                debug!("Using fallback platform titlebar on Linux");
+            }
+        }
+
         // Get titlebar tokens from theme provider
         let theme_provider = crate::providers::use_provider::<crate::providers::ThemeProvider>();
         debug!(

@@ -4,7 +4,22 @@
 mod platform_titlebar;
 mod window_controls;
 
+// Linux-specific titlebar components
+#[cfg(target_os = "linux")]
+mod linux_platform_detector;
+#[cfg(target_os = "linux")]
+mod linux_titlebar;
+#[cfg(target_os = "linux")]
+mod linux_window_controls;
+
 pub use platform_titlebar::PlatformTitleBar;
+
+#[cfg(target_os = "linux")]
+pub use linux_platform_detector::{LinuxPlatformInfo, get_platform_info, refresh_platform_info};
+#[cfg(target_os = "linux")]
+pub use linux_titlebar::LinuxTitlebar;
+#[cfg(target_os = "linux")]
+pub use linux_window_controls::LinuxWindowControls;
 
 use gpui::{AppContext, Context, Entity, IntoElement, Render, Window};
 

@@ -563,6 +563,20 @@ fn gui_main(
             // Initialize nucleotide-ui first (sets up UIConfig and component registry)
             nucleotide_ui::init(cx, None);
 
+            // Initialize Linux platform detection if on Linux
+            #[cfg(target_os = "linux")]
+            {
+                // Force platform detection to run early and log results
+                let platform_info = nucleotide_ui::titlebar::get_platform_info();
+                info!(
+                    "Linux platform detection completed - DE: {:?}, WM: {:?}, Layout: {:?}, CSD: {:?}",
+                    platform_info.desktop_environment,
+                    platform_info.window_manager,
+                    platform_info.button_layout,
+                    platform_info.compositor_capability
+                );
+            }
+
             // Initialize SystemAppearance global state from current window appearance
             nucleotide_ui::theme_manager::SystemAppearance::init(cx);
 
