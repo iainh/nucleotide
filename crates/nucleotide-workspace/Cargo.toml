@@ -14,20 +14,12 @@ rust-version = "1.88"
 [dependencies]
 nucleotide-core = { path = "../nucleotide-core" }
 nucleotide-events = { path = "../nucleotide-events" }
-nucleotide-ui = { path = "../nucleotide-ui" }
 
 # GPUI
 gpui = { workspace = true }
 
 # Helix dependencies
-helix-core = { workspace = true }
 helix-view = { workspace = true }
-helix-term = { workspace = true }
-helix-vcs = { workspace = true, features = ["git"] }
 
 # Standard dependencies
-anyhow = { workspace = true }
 nucleotide-logging = { workspace = true }
-tokio = { workspace = true }
-notify = { workspace = true }
-sum_tree = { workspace = true }

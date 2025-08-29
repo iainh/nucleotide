@@ -4840,19 +4840,11 @@ dependencies = [
 name = "nucleotide-workspace"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "gpui",
- "helix-core",
- "helix-term",
- "helix-vcs",
  "helix-view",
- "notify",
  "nucleotide-core",
  "nucleotide-events",
  "nucleotide-logging",
- "nucleotide-ui",
- "sum_tree",
- "tokio",
 ]
 
 [[package]]
