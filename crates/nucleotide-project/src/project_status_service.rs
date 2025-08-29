@@ -262,7 +262,7 @@ pub fn project_status_service(cx: &gpui::App) -> ProjectStatusHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{App, Context};
+
     use std::fs::File;
     use std::io::Write;
     use tempfile::TempDir;
@@ -294,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lsp_status_update() {
-        let mut service = ProjectStatusService::new();
+        let service = ProjectStatusService::new();
 
         // Test that the update doesn't crash
         // Note: Simplified without actual LSP state update as it would require
