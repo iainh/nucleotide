@@ -598,7 +598,7 @@ mod tests {
         assert_eq!(state.item_count, 50);
 
         // Test visible range calculation
-        let range = state.visible_range();
+        let range = state.visible_item_range();
         assert!(range.start <= range.end);
         assert!(range.end <= state.item_count);
     }
