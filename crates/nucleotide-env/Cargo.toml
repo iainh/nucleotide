@@ -10,8 +10,6 @@ repository = "https://github.com/mralexgray/nucleotide"
 nucleotide-logging.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "process"] }
-anyhow.workspace = true
-parking_lot.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

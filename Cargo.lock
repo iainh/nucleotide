@@ -4763,9 +4763,7 @@ dependencies = [
 name = "nucleotide-env"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "nucleotide-logging",
- "parking_lot",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
