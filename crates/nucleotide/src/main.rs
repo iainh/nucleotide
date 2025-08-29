@@ -664,7 +664,7 @@ fn gui_main(
 
             let options = window_options(cx, &config, is_dark_theme);
 
-            let _ = cx.open_window(options, |_window, cx| {
+            let _ = cx.open_window(options, |window, cx| {
                 // Set up window event handlers to send events to Helix
                 info!("Setting up window event handlers");
 
