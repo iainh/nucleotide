@@ -678,7 +678,7 @@ fn gui_main(
 
             let options = window_options(cx, &config, is_dark_theme);
 
-            let _ = cx.open_window(options, |window, cx| {
+            let _ = cx.open_window(options, |#[allow(unused)] window, cx| {
                 // Set up window event handlers to send events to Helix
                 info!("Setting up window event handlers");
 
@@ -745,7 +745,7 @@ fn gui_main(
 
                 let app = cx.new(move |mc| {
                     let handle_1 = handle_1.clone();
-                    let handle_2 = handle_1.clone();
+                    let _handle_2 = handle_1.clone();
                     mc.subscribe(
                         &input_1.clone(),
                         move |this: &mut Application, _, ev, cx| {

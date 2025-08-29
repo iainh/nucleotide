@@ -1201,7 +1201,7 @@ impl Focusable for FileTreeView {
 // The component is already well-structured with ListItem usage
 
 impl Render for FileTreeView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Use nucleotide-ui theme access for consistent styling
         let theme = cx.theme();
         let entries = self.tree.visible_entries();
