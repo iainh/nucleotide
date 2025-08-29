@@ -90,17 +90,21 @@ use helix_view::document::DocumentSavedEventResult;
 use helix_view::{Editor, doc_mut, graphics::Rect, handlers::Handlers};
 
 // Helper function to find workspace root from a specific directory
-#[instrument]
 pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
+    // Check most common VCS types first for early exit optimization
+    const VCS_DIRS: &[&str] = &[".git", ".helix", ".hg", ".jj", ".svn"];
+
     // Walk up the directory tree looking for VCS directories
     for ancestor in start_dir.ancestors() {
-        if ancestor.join(".git").exists()
-            || ancestor.join(".svn").exists()
-            || ancestor.join(".hg").exists()
-            || ancestor.join(".jj").exists()
-            || ancestor.join(".helix").exists()
-        {
-            return ancestor.to_path_buf();
+        // Use path reuse optimization to avoid repeated allocations
+        let mut vcs_path = ancestor.to_path_buf();
+
+        for &vcs_dir in VCS_DIRS {
+            vcs_path.push(vcs_dir);
+            if vcs_path.exists() {
+                return ancestor.to_path_buf();
+            }
+            vcs_path.pop(); // Reuse the PathBuf for next iteration
         }
     }
 
