@@ -5918,40 +5918,36 @@ impl Render for Workspace {
         // Add file tree panel if needed, or show "Open a project" message
         if self.show_file_tree {
             let file_tree_left_offset = 0.0;
-            let resize_handle_width = 3.0;
+            let resize_handle_width = 4.0;
             let main_content_offset = self.file_tree_width + resize_handle_width;
 
             if let Some(file_tree) = &self.file_tree {
                 // Create file tree panel with absolute positioning
                 let ui_theme = cx.global::<nucleotide_ui::Theme>();
+                let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
                 let panel_bg = ui_theme.tokens.colors.surface;
-                let border_color = nucleotide_ui::styling::ColorTheory::subtle_border_color(
-                    panel_bg,
-                    &ui_theme.tokens,
-                );
+                let border_color = status_bar_tokens.border;
                 let file_tree_panel = div()
                     .absolute()
                     .left(px(file_tree_left_offset))
                     .top_0()
                     .bottom_0()
                     .w(px(self.file_tree_width))
-                    .border_r_1()
-                    .border_color(border_color)
                     .child(file_tree.clone());
 
                 // Create resize handle as border line
-                let border_color = nucleotide_ui::styling::ColorTheory::subtle_border_color(
-                    ui_theme.tokens.colors.surface,
-                    &ui_theme.tokens,
-                );
+                let border_color = status_bar_tokens.border;
                 let resize_handle = div()
                     .absolute()
                     .left(px(self.file_tree_width))
                     .top_0()
                     .bottom_0()
-                    .w(px(3.0)) // 3px wide drag handle
-                    .bg(border_color)
-                    .hover(|style| style.bg(ui_theme.tokens.colors.text_secondary))
+                    .w(px(4.0)) // 4px wide drag handle
+                    .bg(panel_bg) // Match file tree background
+                    .border_0() // Reset all borders
+                    .border_r_1() // Only right border
+                    .border_color(border_color)
+                    .hover(|style| style.border_color(ui_theme.tokens.colors.text_secondary))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .id("file-tree-resize-handle")
                     .on_mouse_down(
@@ -5981,15 +5977,13 @@ impl Render for Workspace {
             } else {
                 // No project directory set - show placeholder message
                 let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                let resize_handle_width = 3.0;
+                let resize_handle_width = 4.0;
                 let main_content_offset = self.file_tree_width + resize_handle_width;
 
                 // Use the same background color as the actual file tree for consistency
                 let prompt_bg = ui_theme.tokens.colors.surface;
-                let border_color = nucleotide_ui::styling::ColorTheory::subtle_border_color(
-                    prompt_bg,
-                    &ui_theme.tokens,
-                );
+                let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
+                let border_color = status_bar_tokens.border;
 
                 let placeholder_panel = div()
                     .absolute()
@@ -5998,8 +5992,6 @@ impl Render for Workspace {
                     .bottom_0()
                     .w(px(self.file_tree_width))
                     .bg(prompt_bg)
-                    .border_r_1()
-                    .border_color(border_color)
                     .flex()
                     .flex_col()
                     .child(div().w_full().p(px(12.0)).child({
@@ -6025,18 +6017,18 @@ impl Render for Workspace {
                     }));
 
                 // Add resize handle as border line
-                let border_color = nucleotide_ui::styling::ColorTheory::subtle_border_color(
-                    ui_theme.tokens.colors.surface,
-                    &ui_theme.tokens,
-                );
+                let border_color = status_bar_tokens.border;
                 let resize_handle = div()
                     .absolute()
                     .left(px(self.file_tree_width))
                     .top_0()
                     .bottom_0()
-                    .w(px(3.0)) // 3px wide drag handle
-                    .bg(border_color)
-                    .hover(|style| style.bg(ui_theme.tokens.colors.text_secondary))
+                    .w(px(4.0)) // 4px wide drag handle
+                    .bg(prompt_bg) // Match placeholder panel background
+                    .border_0() // Reset all borders
+                    .border_r_1() // Only right border
+                    .border_color(border_color)
+                    .hover(|style| style.border_color(ui_theme.tokens.colors.text_secondary))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .id("file-tree-resize-handle-placeholder")
                     .on_mouse_down(
