@@ -1984,12 +1984,11 @@ mod tests {
 
     mod filter_tests {
         use super::*;
-        use gpui::TestContext;
+        use gpui::{TestAppContext, test::observe};
 
-        #[test]
-        fn test_set_items_with_filter_basic() {
+        #[gpui::test]
+        async fn test_set_items_with_filter_basic(mut cx: &mut TestAppContext) {
             // Test that set_items_with_filter correctly applies an initial filter
-            let mut context = TestContext::new().unwrap();
 
             let completion_items = vec![
                 CompletionItem::new("println!").with_kind(CompletionItemKind::Function),
@@ -1998,21 +1997,16 @@ mod tests {
                 CompletionItem::new("vec!").with_kind(CompletionItemKind::Function),
             ];
 
-            let completion_view =
-                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
-                    let mut view = CompletionView::new();
-                    // Test filtering with "pri" prefix - should match print! and println!
-                    view.set_items_with_filter(
-                        completion_items.clone(),
-                        Some("pri".to_string()),
-                        cx,
-                    );
-                    view
-                });
+            let (completion_view, _cx) = cx.add_window_view(|_window, cx| {
+                let mut view = CompletionView::new(cx);
+                // Test filtering with "pri" prefix - should match print! and println!
+                view.set_items_with_filter(completion_items.clone(), Some("pri".to_string()), cx);
+                view
+            });
 
-            context.run_until_parked();
+            cx.run_until_parked();
 
-            completion_view.update(&mut context, |view, _cx| {
+            completion_view.update(cx, |view, _cx| {
                 // Should only show items matching "pri"
                 let filtered_count = view.filtered_entries.len();
                 assert!(
@@ -2028,10 +2022,9 @@ mod tests {
             });
         }
 
-        #[test]
-        fn test_set_items_with_filter_empty_prefix() {
+        #[gpui::test]
+        async fn test_set_items_with_filter_empty_prefix(mut cx: &mut TestAppContext) {
             // Test that empty prefix shows all items
-            let mut context = TestContext::new().unwrap();
 
             let completion_items = vec![
                 CompletionItem::new("alpha").with_kind(CompletionItemKind::Function),
@@ -2039,17 +2032,16 @@ mod tests {
                 CompletionItem::new("gamma").with_kind(CompletionItemKind::Function),
             ];
 
-            let completion_view =
-                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
-                    let mut view = CompletionView::new();
-                    // Test with empty filter - should show all items
-                    view.set_items_with_filter(completion_items.clone(), Some("".to_string()), cx);
-                    view
-                });
+            let (completion_view, _cx) = cx.add_window_view(|_window, cx| {
+                let mut view = CompletionView::new(cx);
+                // Test with empty filter - should show all items
+                view.set_items_with_filter(completion_items.clone(), Some("".to_string()), cx);
+                view
+            });
 
-            context.run_until_parked();
+            cx.run_until_parked();
 
-            completion_view.update(&mut context, |view, _cx| {
+            completion_view.update(cx, |view, _cx| {
                 let filtered_count = view.filtered_entries.len();
                 assert_eq!(
                     filtered_count, 3,
@@ -2059,10 +2051,9 @@ mod tests {
             });
         }
 
-        #[test]
-        fn test_set_items_with_filter_no_matches() {
+        #[gpui::test]
+        async fn test_set_items_with_filter_no_matches(mut cx: &mut TestAppContext) {
             // Test that non-matching prefix results in no items
-            let mut context = TestContext::new().unwrap();
 
             let completion_items = vec![
                 CompletionItem::new("alpha").with_kind(CompletionItemKind::Function),
@@ -2070,21 +2061,16 @@ mod tests {
                 CompletionItem::new("gamma").with_kind(CompletionItemKind::Function),
             ];
 
-            let completion_view =
-                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
-                    let mut view = CompletionView::new();
-                    // Test with non-matching filter
-                    view.set_items_with_filter(
-                        completion_items.clone(),
-                        Some("xyz".to_string()),
-                        cx,
-                    );
-                    view
-                });
+            let (completion_view, _cx) = cx.add_window_view(|_window, cx| {
+                let mut view = CompletionView::new(cx);
+                // Test with non-matching filter
+                view.set_items_with_filter(completion_items.clone(), Some("xyz".to_string()), cx);
+                view
+            });
 
-            context.run_until_parked();
+            cx.run_until_parked();
 
-            completion_view.update(&mut context, |view, _cx| {
+            completion_view.update(cx, |view, _cx| {
                 let filtered_count = view.filtered_entries.len();
                 assert_eq!(
                     filtered_count, 0,
@@ -2094,10 +2080,9 @@ mod tests {
             });
         }
 
-        #[test]
-        fn test_set_items_with_filter_none() {
+        #[gpui::test]
+        async fn test_set_items_with_filter_none(mut cx: &mut TestAppContext) {
             // Test that None filter shows all items (no initial filtering)
-            let mut context = TestContext::new().unwrap();
 
             let completion_items = vec![
                 CompletionItem::new("test1").with_kind(CompletionItemKind::Function),
@@ -2105,17 +2090,16 @@ mod tests {
                 CompletionItem::new("other").with_kind(CompletionItemKind::Function),
             ];
 
-            let completion_view =
-                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
-                    let mut view = CompletionView::new();
-                    // Test with None filter - should show all items
-                    view.set_items_with_filter(completion_items.clone(), None, cx);
-                    view
-                });
+            let (completion_view, _cx) = cx.add_window_view(|_window, cx| {
+                let mut view = CompletionView::new(cx);
+                // Test with None filter - should show all items
+                view.set_items_with_filter(completion_items.clone(), None, cx);
+                view
+            });
 
-            context.run_until_parked();
+            cx.run_until_parked();
 
-            completion_view.update(&mut context, |view, _cx| {
+            completion_view.update(cx, |view, _cx| {
                 let filtered_count = view.filtered_entries.len();
                 assert_eq!(
                     filtered_count, 3,
@@ -2125,10 +2109,9 @@ mod tests {
             });
         }
 
-        #[test]
-        fn test_set_items_with_filter_fuzzy_matching() {
+        #[gpui::test]
+        async fn test_set_items_with_filter_fuzzy_matching(mut cx: &mut TestAppContext) {
             // Test fuzzy matching behavior
-            let mut context = TestContext::new().unwrap();
 
             let completion_items = vec![
                 CompletionItem::new("print_debug").with_kind(CompletionItemKind::Function),
@@ -2137,21 +2120,16 @@ mod tests {
                 CompletionItem::new("prefix_test").with_kind(CompletionItemKind::Function),
             ];
 
-            let completion_view =
-                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
-                    let mut view = CompletionView::new();
-                    // Test fuzzy matching with "pr" - should match print_debug, println_macro, prefix_test
-                    view.set_items_with_filter(
-                        completion_items.clone(),
-                        Some("pr".to_string()),
-                        cx,
-                    );
-                    view
-                });
+            let (completion_view, _cx) = cx.add_window_view(|_window, cx| {
+                let mut view = CompletionView::new(cx);
+                // Test fuzzy matching with "pr" - should match print_debug, println_macro, prefix_test
+                view.set_items_with_filter(completion_items.clone(), Some("pr".to_string()), cx);
+                view
+            });
 
-            context.run_until_parked();
+            cx.run_until_parked();
 
-            completion_view.update(&mut context, |view, _cx| {
+            completion_view.update(cx, |view, _cx| {
                 let filtered_count = view.filtered_entries.len();
                 // Should match multiple items that contain "pr" characters
                 assert!(
@@ -2168,28 +2146,26 @@ mod tests {
             });
         }
 
-        #[test]
-        fn test_completion_view_visibility() {
+        #[gpui::test]
+        async fn test_completion_view_visibility(mut cx: &mut TestAppContext) {
             // Test that CompletionView is visible when it has items and invisible when empty
-            let mut context = TestContext::new().unwrap();
 
             let completion_items =
                 vec![CompletionItem::new("test").with_kind(CompletionItemKind::Function)];
 
-            let completion_view =
-                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
-                    let mut view = CompletionView::new();
-                    // Initially should not be visible
-                    assert!(!view.visible, "CompletionView should start invisible");
+            let (completion_view, _cx) = cx.add_window_view(|_window, cx| {
+                let mut view = CompletionView::new(cx);
+                // Initially should not be visible
+                assert!(!view.visible, "CompletionView should start invisible");
 
-                    // After setting items, should be visible
-                    view.set_items_with_filter(completion_items.clone(), None, cx);
-                    view
-                });
+                // After setting items, should be visible
+                view.set_items_with_filter(completion_items.clone(), None, cx);
+                view
+            });
 
-            context.run_until_parked();
+            cx.run_until_parked();
 
-            completion_view.update(&mut context, |view, _cx| {
+            completion_view.update(cx, |view, _cx| {
                 assert!(
                     view.visible,
                     "CompletionView should be visible after setting items"
@@ -2201,10 +2177,9 @@ mod tests {
             });
         }
 
-        #[test]
-        fn test_completion_view_selection() {
+        #[gpui::test]
+        async fn test_completion_view_selection(mut cx: &mut TestAppContext) {
             // Test selection behavior
-            let mut context = TestContext::new().unwrap();
 
             let completion_items = vec![
                 CompletionItem::new("first").with_kind(CompletionItemKind::Function),
@@ -2212,16 +2187,15 @@ mod tests {
                 CompletionItem::new("third").with_kind(CompletionItemKind::Function),
             ];
 
-            let completion_view =
-                context.build_view(|cx: &mut gpui::ViewContext<CompletionView>| {
-                    let mut view = CompletionView::new();
-                    view.set_items_with_filter(completion_items.clone(), None, cx);
-                    view
-                });
+            let (completion_view, _cx) = cx.add_window_view(|_window, cx| {
+                let mut view = CompletionView::new(cx);
+                view.set_items_with_filter(completion_items.clone(), None, cx);
+                view
+            });
 
-            context.run_until_parked();
+            cx.run_until_parked();
 
-            completion_view.update(&mut context, |view, _cx| {
+            completion_view.update(cx, |view, _cx| {
                 // Should start with first item selected
                 assert_eq!(
                     view.selected_index, 0,
@@ -2229,10 +2203,10 @@ mod tests {
                 );
 
                 // Test that we can move selection
-                view.select_next();
+                view.select_next(_cx);
                 assert_eq!(view.selected_index, 1, "Should move to second item");
 
-                view.select_previous();
+                view.select_prev(_cx);
                 assert_eq!(view.selected_index, 0, "Should move back to first item");
             });
         }
