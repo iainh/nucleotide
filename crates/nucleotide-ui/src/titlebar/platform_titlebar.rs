@@ -215,5 +215,6 @@ impl Render for PlatformTitleBar {
                     ),
                 }
             })
+            .into_element()
     }
 }

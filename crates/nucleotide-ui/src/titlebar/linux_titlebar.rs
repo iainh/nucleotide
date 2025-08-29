@@ -269,6 +269,6 @@ impl LinuxTitlebar {
             titlebar = titlebar.child(LinuxWindowControls::new(titlebar_tokens));
         }
 
-        titlebar
+        titlebar.into_element()
     }
 }

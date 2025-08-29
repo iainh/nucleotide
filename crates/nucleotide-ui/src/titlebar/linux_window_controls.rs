@@ -418,16 +418,26 @@ impl RenderOnce for LinuxWindowControls {
         }
 
         // Add all controls
-        for control_type in controls {
+        for control_type in controls.iter() {
+            let id = match control_type {
+                LinuxControlType::Minimize => "linux-minimize",
+                LinuxControlType::Maximize => "linux-maximize",
+                LinuxControlType::Restore => "linux-restore",
+                LinuxControlType::Close => "linux-close",
+                LinuxControlType::Shade => "linux-shade",
+                LinuxControlType::Pin => "linux-pin",
+                LinuxControlType::Menu => "linux-menu",
+            };
+
             container = container.child(LinuxWindowControl::new(
-                format!("linux-{:?}", control_type).as_str(),
-                control_type,
+                id,
+                *control_type,
                 self.titlebar_tokens,
                 &theme_tokens,
                 &self.platform_info,
             ));
         }
 
-        container
+        container.into_element()
     }
 }
