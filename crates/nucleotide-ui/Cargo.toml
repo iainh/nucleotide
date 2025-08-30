@@ -14,7 +14,6 @@ gpui.workspace = true
 nucleotide-logging.workspace = true
 helix-view.workspace = true
 helix-lsp.workspace = true
-helix-term.workspace = true
 smallvec.workspace = true
 nucleo.workspace = true
 parking_lot.workspace = true

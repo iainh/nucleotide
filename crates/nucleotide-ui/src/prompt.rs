@@ -73,23 +73,6 @@ impl std::fmt::Debug for Prompt {
     }
 }
 
-impl Prompt {
-    pub fn make(editor: &mut helix_view::Editor, _prompt: &mut helix_term::ui::Prompt) -> Prompt {
-        let area = editor.tree.area();
-        let _compositor_rect = helix_view::graphics::Rect {
-            x: 0,
-            y: 0,
-            width: area.width * 2 / 3,
-            height: area.height,
-        };
-
-        // TODO: Properly convert helix prompts to GPUI without TUI
-        // For now, just create a simple text prompt
-        let prompt_text = "Command: "; // Placeholder
-        Prompt::native(prompt_text, "", |_| {})
-    }
-}
-
 #[derive(IntoElement)]
 pub struct PromptElement {
     pub prompt: Prompt,
