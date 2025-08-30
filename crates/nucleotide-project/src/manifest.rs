@@ -107,7 +107,7 @@ pub trait ManifestProvider: Send + Sync {
 
     /// Validate that a found manifest is actually valid for this provider
     async fn validate_manifest(&self, path: &Path, delegate: &dyn ManifestDelegate)
-        -> Result<bool>;
+    -> Result<bool>;
 
     /// Get additional metadata about the detected project
     async fn get_project_metadata(

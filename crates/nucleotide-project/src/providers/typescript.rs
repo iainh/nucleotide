@@ -540,10 +540,12 @@ mod tests {
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&package_json, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&package_json, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -614,10 +616,12 @@ mod tests {
         assert_eq!(metadata.additional_info.get("framework").unwrap(), "react");
 
         // Test tsconfig.json validation and metadata
-        assert!(provider
-            .validate_manifest(&tsconfig_json, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&tsconfig_json, &*delegate)
+                .await
+                .unwrap()
+        );
         let ts_metadata = provider
             .get_project_metadata(&tsconfig_json, &*delegate)
             .await

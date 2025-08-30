@@ -5,7 +5,7 @@ use gpui::{App, AppContext, Context, Entity, EventEmitter};
 use helix_core::Rope;
 use helix_vcs::{DiffHandle, DiffProviderRegistry, Hunk};
 use nucleotide_events::{
-    v2::vcs::DiffHunk as DomainDiffHunk, v2::vcs::Event as DomainVcsEvent, EventBus,
+    EventBus, v2::vcs::DiffHunk as DomainDiffHunk, v2::vcs::Event as DomainVcsEvent,
 };
 use nucleotide_logging::{debug, error, info, warn};
 use nucleotide_types::{DiffChangeType, DiffHunkInfo, VcsStatus};

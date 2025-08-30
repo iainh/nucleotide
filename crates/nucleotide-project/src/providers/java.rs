@@ -745,10 +745,12 @@ mod tests {
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&pom_xml, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&pom_xml, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -810,10 +812,12 @@ dependencies {
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&build_gradle, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&build_gradle, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -827,9 +831,11 @@ dependencies {
             metadata.additional_info.get("build_tool").unwrap(),
             "gradle"
         );
-        assert!(metadata
-            .dependencies
-            .contains(&"spring-boot-starter".to_string()));
+        assert!(
+            metadata
+                .dependencies
+                .contains(&"spring-boot-starter".to_string())
+        );
         assert!(metadata.dependencies.contains(&"guava".to_string()));
     }
 
@@ -863,10 +869,12 @@ dependencies {
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&build_gradle_kts, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&build_gradle_kts, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider

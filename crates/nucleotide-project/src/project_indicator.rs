@@ -3,7 +3,7 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Window,
+    Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Window, div,
 };
 use nucleotide_ui::ThemedContext;
 use std::collections::HashMap;

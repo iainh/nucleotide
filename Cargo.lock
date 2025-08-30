@@ -4833,7 +4833,6 @@ dependencies = [
  "dirs 6.0.0",
  "gpui",
  "helix-lsp",
- "helix-term",
  "helix-view",
  "nucleo",
  "nucleotide-core",

@@ -248,10 +248,12 @@ tokio-test = "0.4"
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&cargo_toml, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&cargo_toml, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test project metadata extraction
         let metadata = provider
@@ -262,9 +264,11 @@ tokio-test = "0.4"
         assert_eq!(metadata.version.as_ref().unwrap(), "0.1.0");
         assert_eq!(metadata.language, "rust");
         assert!(metadata.dependencies.contains(&"serde".to_string()));
-        assert!(metadata
-            .dev_dependencies
-            .contains(&"tokio-test".to_string()));
+        assert!(
+            metadata
+                .dev_dependencies
+                .contains(&"tokio-test".to_string())
+        );
         assert_eq!(metadata.additional_info.get("edition").unwrap(), "2021");
     }
 
@@ -286,10 +290,12 @@ exclude = ["target"]
         let delegate = Arc::new(FsDelegate);
 
         // Test validation for workspace
-        assert!(provider
-            .validate_manifest(&cargo_toml, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&cargo_toml, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test workspace detection
         assert!(is_workspace_root(&cargo_toml, &*delegate).await.unwrap());

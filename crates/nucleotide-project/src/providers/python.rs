@@ -567,10 +567,12 @@ build-backend = "setuptools.build_meta"
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&pyproject_toml, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&pyproject_toml, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -580,10 +582,12 @@ build-backend = "setuptools.build_meta"
         assert_eq!(metadata.name.as_ref().unwrap(), "test-python-project");
         assert_eq!(metadata.version.as_ref().unwrap(), "0.1.0");
         assert_eq!(metadata.language, "python");
-        assert!(metadata
-            .dependencies
-            .iter()
-            .any(|d| d.starts_with("requests")));
+        assert!(
+            metadata
+                .dependencies
+                .iter()
+                .any(|d| d.starts_with("requests"))
+        );
     }
 
     #[tokio::test]
@@ -610,10 +614,12 @@ setup(
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&setup_py, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&setup_py, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -649,10 +655,12 @@ redis>=3.5.0  # For caching
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&requirements_txt, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&requirements_txt, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -689,10 +697,12 @@ python_version = "3.9"
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&pipfile, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&pipfile, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider

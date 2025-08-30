@@ -1182,10 +1182,12 @@ target_link_libraries(app
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&cmake_file, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&cmake_file, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -1254,10 +1256,12 @@ install: $(TARGET)
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&makefile, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&makefile, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -1301,10 +1305,12 @@ install: $(TARGET)
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&vcpkg_json, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&vcpkg_json, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -1319,9 +1325,11 @@ install: $(TARGET)
             "vcpkg"
         );
         assert!(metadata.dependencies.contains(&"boost-system".to_string()));
-        assert!(metadata
-            .dependencies
-            .contains(&"boost-filesystem".to_string()));
+        assert!(
+            metadata
+                .dependencies
+                .contains(&"boost-filesystem".to_string())
+        );
         assert!(metadata.dependencies.contains(&"openssl".to_string()));
     }
 
@@ -1350,10 +1358,12 @@ openssl:shared=False
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&conanfile, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&conanfile, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -1397,10 +1407,12 @@ subdir('tests')
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&meson_file, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&meson_file, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -1453,10 +1465,12 @@ subdir('tests')
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&presets_file, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&presets_file, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -1543,10 +1557,12 @@ Diagnostics:
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&clangd_file, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&clangd_file, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider

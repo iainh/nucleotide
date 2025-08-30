@@ -771,10 +771,12 @@ mod tests {
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&csproj, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&csproj, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -792,12 +794,16 @@ mod tests {
             metadata.additional_info.get("sdk").unwrap(),
             "Microsoft.NET.Sdk"
         );
-        assert!(metadata
-            .dependencies
-            .contains(&"Newtonsoft.Json".to_string()));
-        assert!(metadata
-            .dependencies
-            .contains(&"Microsoft.Extensions.Hosting".to_string()));
+        assert!(
+            metadata
+                .dependencies
+                .contains(&"Newtonsoft.Json".to_string())
+        );
+        assert!(
+            metadata
+                .dependencies
+                .contains(&"Microsoft.Extensions.Hosting".to_string())
+        );
     }
 
     #[tokio::test]
@@ -844,16 +850,20 @@ EndGlobal
             metadata.additional_info.get("project_type").unwrap(),
             "solution"
         );
-        assert!(metadata
-            .additional_info
-            .get("solution_projects")
-            .unwrap()
-            .contains("WebApp"));
-        assert!(metadata
-            .additional_info
-            .get("solution_projects")
-            .unwrap()
-            .contains("ClassLibrary"));
+        assert!(
+            metadata
+                .additional_info
+                .get("solution_projects")
+                .unwrap()
+                .contains("WebApp")
+        );
+        assert!(
+            metadata
+                .additional_info
+                .get("solution_projects")
+                .unwrap()
+                .contains("ClassLibrary")
+        );
     }
 
     #[tokio::test]
@@ -878,10 +888,12 @@ EndGlobal
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&global_json, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&global_json, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -928,10 +940,12 @@ EndGlobal
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&fsproj, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&fsproj, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -975,10 +989,12 @@ EndGlobal
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&directory_build, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&directory_build, &*delegate)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

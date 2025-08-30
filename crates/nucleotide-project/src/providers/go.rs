@@ -507,10 +507,12 @@ require (
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&go_mod, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&go_mod, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider
@@ -524,9 +526,11 @@ require (
             metadata.additional_info.get("module_path").unwrap(),
             "github.com/example/myproject"
         );
-        assert!(metadata
-            .dependencies
-            .contains(&"github.com/gin-gonic/gin".to_string()));
+        assert!(
+            metadata
+                .dependencies
+                .contains(&"github.com/gin-gonic/gin".to_string())
+        );
     }
 
     #[tokio::test]
@@ -549,10 +553,12 @@ use (
         let delegate = Arc::new(FsDelegate);
 
         // Test validation
-        assert!(provider
-            .validate_manifest(&go_work, &*delegate)
-            .await
-            .unwrap());
+        assert!(
+            provider
+                .validate_manifest(&go_work, &*delegate)
+                .await
+                .unwrap()
+        );
 
         // Test metadata extraction
         let metadata = provider

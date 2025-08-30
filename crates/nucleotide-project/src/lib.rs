@@ -17,8 +17,8 @@ pub use project_indicator::{
     ProjectInfo, ProjectLspStatus, ProjectLspStatusIndicator, ProjectType, ProjectTypeBadge,
 };
 pub use project_status_service::{
-    initialize_project_status_service, project_status_service, ProjectStatusHandle,
-    ProjectStatusService,
+    ProjectStatusHandle, ProjectStatusService, initialize_project_status_service,
+    project_status_service,
 };
 pub use registry::ManifestProviders;
 
