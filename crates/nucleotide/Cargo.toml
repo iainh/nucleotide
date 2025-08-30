@@ -3,7 +3,7 @@ name = "nucleotide"
 version.workspace = true
 edition.workspace = true
 authors = ["Iain H. <iain@spiralpoint.org>", "Alexander Polakov <alex@plhk.dev>", "Blaž Hrastnik <blaz@mxxn.io>"]
-license = "MPL-2.0"
+license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 publish = false
@@ -108,4 +108,3 @@ Nucleotide is a native GUI implementation of the Helix text editor,
 built with GPUI (the UI framework from Zed editor). It brings modal
 editing to a native GUI application.
 """
-

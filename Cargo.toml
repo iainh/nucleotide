@@ -20,9 +20,9 @@ resolver = "2"
 version = "0.1.0"
 authors = ["The Nucleotide Contributors"]
 edition = "2024"
-license = "GPL-3.0-or-later"
-repository = "https://github.com/spiralpoint/nucleotide"
-homepage = "https://github.com/spiralpoint/nucleotide"
+license = "MPL-2.0"
+repository = "https://github.com/iainh/nucleotide"
+homepage = "https://github.com/iainh/nucleotide"
 
 [workspace.dependencies]
 # GPUI and Zed dependencies - using v0.200.5 tag
