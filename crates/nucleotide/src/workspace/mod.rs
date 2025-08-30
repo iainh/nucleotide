@@ -44,6 +44,8 @@ use crate::overlay::OverlayView;
 use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_vcs::VcsServiceHandle;
+
+// (focus logging removed for commit; keep code minimal)
 pub struct Workspace {
     core: Entity<Core>,
     input: Entity<Input>,
@@ -86,6 +88,7 @@ impl Workspace {
         }
     }
 
+    // (debug focus logger removed for commit)
     pub fn current_filename(&self, cx: &App) -> Option<String> {
         let editor = &self.core.read(cx).editor;
 
@@ -5400,6 +5403,40 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Process completion results from the coordinator
         self.process_completion_results(cx);
+
+        // Failsafe: If the overlay is gone and no known element has focus, force-refocus.
+        // We see cases in logs where overlay_empty=true and both workspace and doc view
+        // report not focused, leaving the app with no key receiver. This block ensures
+        // that after overlay teardown, we always regain a valid focus target without a click.
+        if self.overlay.read(cx).is_empty() {
+            let ws_focused = self.focus_handle.is_focused(window);
+            let overlay_focused = self.overlay.focus_handle(cx).is_focused(window);
+
+            let (doc_focus_handle, doc_focused) = if let Some(id) =
+                self.view_manager.focused_view_id()
+                && let Some(doc_view) = self.view_manager.get_document_view(&id)
+            {
+                let fh = doc_view.focus_handle(cx);
+                (Some(fh.clone()), fh.is_focused(window))
+            } else {
+                (None, false)
+            };
+
+            let file_tree_focused = self
+                .file_tree
+                .as_ref()
+                .map(|ft| ft.focus_handle(cx).is_focused(window))
+                .unwrap_or(false);
+
+            if !ws_focused && !overlay_focused && !doc_focused && !file_tree_focused {
+                // First, nudge caret into the document view if we have one.
+                if let Some(fh) = doc_focus_handle {
+                    window.focus(&fh);
+                }
+                // Then ensure global key routing via workspace root.
+                window.focus(&self.focus_handle);
+            }
+        }
 
         // Update global workspace layout information for completion positioning
         self.update_workspace_layout_info(cx);
