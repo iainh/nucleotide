@@ -217,7 +217,21 @@ impl HelixLspBridge {
         }
 
         // Create root directories for server startup
-        let root_dirs = vec![workspace_root.clone()];
+        // For Rust, prefer Cargo workspace roots or nested Cargo.toml directories
+        let root_dirs = if language_id == "rust" {
+            let rust_roots = find_rust_workspace_roots(workspace_root);
+            if !rust_roots.is_empty() {
+                info!(
+                    count = rust_roots.len(),
+                    "Using detected Rust workspace roots"
+                );
+                rust_roots
+            } else {
+                vec![workspace_root.clone()]
+            }
+        } else {
+            vec![workspace_root.clone()]
+        };
 
         // Get language servers for this configuration
         // This integrates with the existing Helix LSP infrastructure
@@ -234,7 +248,46 @@ impl HelixLspBridge {
 
         // Find a representative file within the workspace for rust-analyzer to determine proper workspace root
         // This is critical - Helix expects a file path, not the workspace root directory
-        let doc_path = find_representative_file(workspace_root, language_id);
+        //
+        // IMPORTANT: If we detected a Cargo workspace (i.e. multiple roots including the workspace root),
+        // prefer the workspace Cargo.toml as the representative file. This ensures rust-analyzer initializes
+        // at the workspace root instead of a nested crate, avoiding overlapping roots and missing completions.
+        let doc_path = if language_id == "rust" {
+            let workspace_manifest = workspace_root.join("Cargo.toml");
+            let is_workspace =
+                workspace_manifest.is_file() && cargo_toml_has_workspace(&workspace_manifest);
+
+            if is_workspace && root_dirs.len() > 1 {
+                // Force workspace-level initialization for rust-analyzer
+                Some(workspace_manifest)
+            } else {
+                // First, prefer the currently active Rust document (so the chosen root matches the open file)
+                if let Some(active_rs) = find_active_rust_document(editor, workspace_root) {
+                    Some(active_rs)
+                } else {
+                    // Prefer a Rust source file from one of the detected roots; fall back as needed
+                    // Skip choosing from the bare workspace root if we also detected member roots.
+                    let mut candidate: Option<PathBuf> = None;
+                    for root in &root_dirs {
+                        // If this is the workspace root and we have more than one root, skip it for representative file selection
+                        if root == workspace_root && root_dirs.len() > 1 {
+                            continue;
+                        }
+                        if let Some(rs) = find_rs_file_shallow(root, 3) {
+                            candidate = Some(rs);
+                            break;
+                        }
+                    }
+                    // As a very last resort, try the workspace root
+                    if candidate.is_none() {
+                        candidate = find_rs_file_shallow(workspace_root, 2);
+                    }
+                    candidate.or_else(|| find_representative_file(workspace_root, language_id))
+                }
+            }
+        } else {
+            find_representative_file(workspace_root, language_id)
+        };
 
         info!(
             doc_path = ?doc_path,
@@ -242,6 +295,9 @@ impl HelixLspBridge {
             language_id = %language_id,
             "Representative file found for LSP initialization"
         );
+
+        // Keep all detected workspace roots to support multi-crate workspaces.
+        // This allows rust-analyzer to serve files across all member crates.
 
         let mut servers: Vec<_> = editor
             .language_servers
@@ -350,7 +406,12 @@ impl HelixLspBridge {
                 let url = doc.url();
                 let version = doc.version();
                 let text = doc.text();
-                let language_id = doc.language_id().map(ToOwned::to_owned).unwrap_or_default();
+                // Prefer explicit language_id; fall back to lowercased language_name if needed
+                let language_id = doc
+                    .language_id()
+                    .map(ToOwned::to_owned)
+                    .or_else(|| doc.language_name().map(|s| s.to_ascii_lowercase()))
+                    .unwrap_or_default();
 
                 (url, version, text, language_id)
             };
@@ -596,36 +657,181 @@ fn find_representative_file(workspace_root: &PathBuf, language_id: &str) -> Opti
             return Some(lib_rs);
         }
 
-        // Try to find any .rs file in src/
-        let src_dir = workspace_root.join("src");
-        if src_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&src_dir) {
-                for entry in entries {
-                    if let Ok(entry) = entry {
-                        let path = entry.path();
-                        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("rs")
-                        {
-                            return Some(path);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fall back to any .rs file in the workspace
-        if let Ok(entries) = std::fs::read_dir(workspace_root) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("rs") {
-                        return Some(path);
-                    }
-                }
-            }
+        // Try to find any .rs file in src/ or shallow subdirectories (limited depth)
+        if let Some(found) = find_rs_file_shallow(workspace_root, 2) {
+            return Some(found);
         }
     }
 
     // For other languages, add similar logic here
     // For now, fall back to the old behavior for non-Rust languages
+    None
+}
+
+/// For Rust workspaces, try to identify better workspace roots than the VCS root.
+/// Strategy:
+/// - If the provided root has a Cargo.toml with a [workspace] table, use it.
+/// - Else, collect immediate and shallow nested directories that contain a Cargo.toml.
+/// - Limit breadth and depth to avoid costly scans in very large repos.
+fn find_rust_workspace_roots(workspace_root: &PathBuf) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    let cargo_toml = workspace_root.join("Cargo.toml");
+    let is_workspace =
+        cargo_toml.exists() && cargo_toml.is_file() && cargo_toml_has_workspace(&cargo_toml);
+    if is_workspace {
+        // Include the workspace root to serve as a workspaceFolder for RA
+        roots.push(workspace_root.clone());
+        // Fall through to also collect shallow member crates so we can choose better representative files
+    } else if cargo_toml.exists() && cargo_toml.is_file() {
+        // Single crate root
+        roots.push(workspace_root.clone());
+        return roots;
+    }
+
+    // Collect shallow nested Cargo.toml directories (depth 2). This helps pick member crates in a workspace.
+    const MAX_DIRS: usize = 64; // safety cap
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(workspace_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.file_name().and_then(|s| s.to_str()) != Some("target") {
+                let cargo = path.join("Cargo.toml");
+                if cargo.exists() && cargo.is_file() {
+                    roots.push(path.clone());
+                    count += 1;
+                    if count >= MAX_DIRS {
+                        break;
+                    }
+                    continue;
+                }
+                // One more level deep
+                if let Ok(subs) = std::fs::read_dir(&path) {
+                    for sub in subs.flatten() {
+                        let subpath = sub.path();
+                        if subpath.is_dir()
+                            && subpath.file_name().and_then(|s| s.to_str()) != Some("target")
+                        {
+                            let cargo2 = subpath.join("Cargo.toml");
+                            if cargo2.exists() && cargo2.is_file() {
+                                roots.push(subpath.clone());
+                                count += 1;
+                                if count >= MAX_DIRS {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if count >= MAX_DIRS {
+                break;
+            }
+        }
+    }
+
+    // Provide a stable ordering to reduce nondeterminism; lexicographic is fine
+    roots.sort_by(|a, b| a.as_os_str().cmp(b.as_os_str()));
+    roots
+}
+
+fn cargo_toml_has_workspace(path: &PathBuf) -> bool {
+    if let Ok(contents) = std::fs::read_to_string(path) {
+        // Cheap check to avoid pulling in a full TOML parser here
+        contents.contains("[workspace]")
+    } else {
+        false
+    }
+}
+
+/// Find any .rs file within the directory up to a limited depth to use as a representative file.
+fn find_rs_file_shallow(root: &PathBuf, max_depth: usize) -> Option<PathBuf> {
+    // Prefer conventional entry points if present
+    let lib_rs = root.join("src").join("lib.rs");
+    if lib_rs.is_file() {
+        return Some(lib_rs);
+    }
+    let main_rs = root.join("src").join("main.rs");
+    if main_rs.is_file() {
+        return Some(main_rs);
+    }
+
+    fn walk(dir: &PathBuf, depth: usize, max_depth: usize) -> Option<PathBuf> {
+        if depth > max_depth {
+            return None;
+        }
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("rs") {
+                return Some(path);
+            } else if path.is_dir() {
+                // Skip common large/irrelevant directories
+                if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                    if matches!(name, "target" | ".git" | "node_modules" | ".cache") {
+                        continue;
+                    }
+                }
+                if let Some(found) = walk(&path, depth + 1, max_depth) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+    walk(root, 0, max_depth)
+}
+/// Try to pick the currently active Rust document within the given workspace root
+fn find_active_rust_document(editor: &Editor, workspace_root: &PathBuf) -> Option<PathBuf> {
+    // Prefer the focused view if available, otherwise scan visible views
+    // Fallback: first Rust document whose path is inside the workspace root
+    // Note: We intentionally avoid borrowing the editor mutably here
+
+    // Helper to validate a document path
+    let is_candidate = |path: &std::path::Path| -> bool {
+        path.extension().map(|e| e == "rs").unwrap_or(false) && path.starts_with(workspace_root)
+    };
+
+    // 1) Try focused view first
+    let focused = editor.tree.focus;
+    if editor.tree.contains(focused) {
+        let view = editor.tree.get(focused);
+        if let Some(doc) = editor.documents.get(&view.doc) {
+            if let Some(path) = doc.path() {
+                if is_candidate(&path) {
+                    return Some(path.to_path_buf());
+                }
+            }
+        }
+    }
+
+    // 2) Fall back to any open view within the workspace
+    for (view_ref, _) in editor.tree.views() {
+        let view = editor.tree.get(view_ref.id);
+        if let Some(doc) = editor.documents.get(&view.doc) {
+            if let Some(path) = doc.path() {
+                if is_candidate(&path) {
+                    return Some(path.to_path_buf());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Ascend from a file path to the nearest ancestor directory containing Cargo.toml
+fn find_cargo_root_for(file_path: &PathBuf) -> Option<PathBuf> {
+    let mut cur = file_path.as_path();
+    if cur.is_file() {
+        cur = cur.parent()?;
+    }
+    while let Some(parent) = cur.parent() {
+        let manifest = cur.join("Cargo.toml");
+        if manifest.is_file() {
+            return Some(cur.to_path_buf());
+        }
+        cur = parent;
+    }
     None
 }

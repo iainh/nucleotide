@@ -407,6 +407,14 @@ impl ProjectLspManager {
                             "Language server started successfully via event bridge"
                         );
 
+                        // Record managed server for this workspace
+                        {
+                            let mut map = self.servers.write().await;
+                            map.entry(workspace_root.clone())
+                                .or_default()
+                                .push(managed_server.clone());
+                        }
+
                         Ok(managed_server)
                     }
                     Ok(Err(e)) => {

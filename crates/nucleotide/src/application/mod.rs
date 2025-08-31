@@ -911,6 +911,27 @@ impl Application {
                         debug!(server_id = ?server_id, token = ?token, "Created work done progress");
                         Ok(serde_json::Value::Null)
                     }
+                    Ok(MethodCall::WorkspaceConfiguration(params)) => {
+                        // Reply with per-item configuration values. Prefer the client's config() if available.
+                        let cfg_value = {
+                            let lang = language_server!();
+                            lang.config().cloned()
+                        };
+
+                        let mut result = Vec::with_capacity(params.items.len());
+                        for _item in &params.items {
+                            // Mirror Helix behavior: return the same config per requested item section
+                            result.push(cfg_value.clone().unwrap_or(serde_json::Value::Null));
+                        }
+
+                        debug!(
+                            server_id = ?server_id,
+                            items = params.items.len(),
+                            has_config = cfg_value.is_some(),
+                            "Responding to WorkspaceConfiguration with client config"
+                        );
+                        Ok(serde_json::Value::Array(result))
+                    }
                     Ok(MethodCall::ApplyWorkspaceEdit(params)) => {
                         // Handle workspace edit requests
                         let (is_initialized, offset_encoding) = {
@@ -3286,6 +3307,47 @@ impl Application {
                                     workspace_root = %workspace_root.display(),
                                     "Language server started proactively"
                                 );
+
+                                // After starting the server, ensure all open documents matching the language are tracked
+                                // This is important when servers start before or after docs open, ensuring didOpen is sent.
+                                // Build a list of doc IDs to track first to avoid immutable borrow conflicts
+                                let target_lang = language_id.to_ascii_lowercase();
+                                let mut docs_to_track: Vec<helix_view::DocumentId> = Vec::new();
+                                for (view, _focused) in self.editor.tree.views() {
+                                    let doc_id = view.doc;
+                                    if let Some(doc) = self.editor.document(doc_id) {
+                                        let doc_lang: String = doc
+                                            .language_id()
+                                            .map(|s| s.to_ascii_lowercase())
+                                            .or_else(|| {
+                                                doc.language_name().map(|s| s.to_ascii_lowercase())
+                                            })
+                                            .unwrap_or_default();
+                                        if doc_lang == target_lang {
+                                            docs_to_track.push(doc_id);
+                                        }
+                                    }
+                                }
+                                for doc_id in docs_to_track {
+                                    if let Err(e) = bridge_ref.ensure_document_tracked(
+                                        &mut self.editor,
+                                        server_id,
+                                        doc_id,
+                                    ) {
+                                        nucleotide_logging::warn!(
+                                            error = %e,
+                                            doc_id = ?doc_id,
+                                            server_id = ?server_id,
+                                            "Failed to ensure document tracking for started server"
+                                        );
+                                    } else {
+                                        nucleotide_logging::info!(
+                                            doc_id = ?doc_id,
+                                            server_id = ?server_id,
+                                            "Ensured document is tracked by newly started server"
+                                        );
+                                    }
+                                }
                             }
                             Err(e) => {
                                 // Use error handler for server startup failure
@@ -3400,30 +3462,24 @@ impl Application {
             return Err(anyhow::anyhow!("No language servers available"));
         }
 
-        // Get text and convert cursor to position
+        // Get text and convert cursor (byte offset) to char index
+        // Helix selections/cursors are in bytes; Rope operations here expect char indices
         let text = doc.text();
-        let cursor_pos = match cursor.min(text.len_chars()).try_into() {
-            Ok(pos) => pos,
-            Err(e) => {
-                nucleotide_logging::error!(
-                    cursor = cursor,
-                    text_len = text.len_chars(),
-                    error = %e,
-                    "Failed to convert cursor position"
-                );
-                return Err(anyhow::anyhow!("Invalid cursor position: {}", e));
-            }
-        };
+        let cursor_bytes = cursor.min(text.len_bytes());
+        let cursor_pos = text.byte_to_char(cursor_bytes);
 
         let line = text.char_to_line(cursor_pos);
         let line_start = text.line_to_char(line);
-        let col = cursor_pos - line_start;
-        let position = helix_lsp::lsp::Position::new(line as u32, col as u32);
+        // Compute UTF-16 code units for the column as required by LSP when using UTF-16
+        let line_prefix = text.slice(line_start..cursor_pos);
+        let col_utf16: u32 = String::from(line_prefix).encode_utf16().count() as u32;
+        let position = helix_lsp::lsp::Position::new(line as u32, col_utf16);
 
         nucleotide_logging::debug!(
-            cursor = cursor,
+            cursor_bytes = cursor,
+            cursor_chars = cursor_pos,
             line = line,
-            col = col,
+            col_utf16 = col_utf16,
             server_count = language_servers.len(),
             "Requesting completions from language servers"
         );
@@ -3432,18 +3488,30 @@ impl Application {
         // TODO: Handle multiple language servers or select the best one
         let language_server = language_servers[0];
 
-        // Create LSP completion context for manual trigger
-        let completion_context = helix_lsp::lsp::CompletionContext {
+        // Create LSP completion context, upgrading to TriggerCharacter when applicable
+        // rust-analyzer advertises trigger characters like ':', '.', '\'', '('
+        let mut completion_context = helix_lsp::lsp::CompletionContext {
             trigger_kind: helix_lsp::lsp::CompletionTriggerKind::INVOKED,
             trigger_character: None,
         };
+
+        // If immediately preceding character is a known trigger, inform the server
+        let maybe_prev = text.chars_at(cursor_pos).reversed().next();
+        if let Some(prev_ch) = maybe_prev {
+            const TRIGGERS: &[char] = &[':', '.', '\'', '('];
+            if TRIGGERS.contains(&prev_ch) {
+                completion_context.trigger_kind =
+                    helix_lsp::lsp::CompletionTriggerKind::TRIGGER_CHARACTER;
+                completion_context.trigger_character = Some(prev_ch.to_string());
+            }
+        }
 
         // Get document identifier for LSP request
         let doc_id_lsp = doc.identifier();
 
         nucleotide_logging::info!(
             line = line,
-            col = col,
+            col_utf16 = col_utf16,
             server_id = ?language_server.id(),
             "Making actual LSP completion request"
         );
@@ -3619,7 +3687,9 @@ impl Application {
     fn extract_completion_prefix(&self, doc_id: helix_view::DocumentId, cursor: usize) -> String {
         if let Some(doc) = self.editor.documents.get(&doc_id) {
             let text = doc.text();
-            let cursor_pos = std::cmp::min(cursor, text.len_chars());
+            // Convert cursor (byte offset) to char index for rope operations
+            let cursor_bytes = std::cmp::min(cursor, text.len_bytes());
+            let cursor_pos = text.byte_to_char(cursor_bytes);
             let text_len = text.len_chars();
 
             nucleotide_logging::debug!(
@@ -3648,7 +3718,8 @@ impl Application {
 
             nucleotide_logging::info!(
                 doc_id = ?doc_id,
-                cursor_pos = cursor_pos,
+                cursor_bytes = cursor,
+                cursor_chars = cursor_pos,
                 start_offset = start_offset,
                 offset = offset,
                 prefix = %prefix,
@@ -3934,6 +4005,41 @@ impl Application {
                     language_id = %language_id,
                     "Successfully started LSP server"
                 );
+
+                // Ensure currently open documents of this language are tracked by the server
+                let target_lang = language_id.to_ascii_lowercase();
+                let mut docs_to_track: Vec<helix_view::DocumentId> = Vec::new();
+                for (view, _focused) in self.editor.tree.views() {
+                    let doc_id = view.doc;
+                    if let Some(doc) = self.editor.document(doc_id) {
+                        let doc_lang: String = doc
+                            .language_id()
+                            .map(|s| s.to_ascii_lowercase())
+                            .or_else(|| doc.language_name().map(|s| s.to_ascii_lowercase()))
+                            .unwrap_or_default();
+                        if doc_lang == target_lang {
+                            docs_to_track.push(doc_id);
+                        }
+                    }
+                }
+                for doc_id in docs_to_track {
+                    if let Err(e) =
+                        bridge.ensure_document_tracked(&mut self.editor, server_id, doc_id)
+                    {
+                        nucleotide_logging::warn!(
+                            error = %e,
+                            doc_id = ?doc_id,
+                            server_id = ?server_id,
+                            "Failed to ensure document tracking for started server"
+                        );
+                    } else {
+                        nucleotide_logging::info!(
+                            doc_id = ?doc_id,
+                            server_id = ?server_id,
+                            "Ensured document is tracked by started server"
+                        );
+                    }
+                }
 
                 Ok(ServerStartResult {
                     server_id,
@@ -4411,7 +4517,7 @@ impl Application {
 
         // GPUI Integration: Use direct completion call instead of async event system
         // This bypasses Helix's async event loop which doesn't work properly with GPUI
-        let trigger_kind = match &event {
+        let mut trigger_kind = match &event {
             helix_view::handlers::completion::CompletionEvent::AutoTrigger { .. } => {
                 helix_term::handlers::completion::TriggerKind::Auto
             }
@@ -4429,9 +4535,54 @@ impl Application {
             }
         };
 
+        // If user pressed ManualTrigger but we're right after a known trigger character,
+        // upgrade the trigger to TriggerChar so rust-analyzer receives a trigger-character context.
+        if matches!(
+            event,
+            helix_view::handlers::completion::CompletionEvent::ManualTrigger { .. }
+        ) {
+            if let Some(doc) = self.editor.document(doc_id) {
+                let text = doc.text();
+                if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
+                    let cursor_chars = text.byte_to_char(cursor.min(text.len_bytes()));
+                    if let Some(prev_ch) = text.chars_at(cursor_chars).reversed().next() {
+                        if matches!(prev_ch, ':' | '.' | '\'' | '(') {
+                            nucleotide_logging::info!(
+                                prev_char = %prev_ch,
+                                "Upgrading ManualTrigger to TriggerChar based on context"
+                            );
+                            trigger_kind =
+                                helix_term::handlers::completion::TriggerKind::TriggerChar;
+                        }
+                    }
+                }
+            }
+        }
+
         nucleotide_logging::info!(
             "🎯 DIRECT_COMPLETION_CALL: Using direct completion bypass for GPUI compatibility"
         );
+
+        // If the user just typed an identifier character and immediately hit ManualTrigger,
+        // give the LSP a brief moment to receive the didChange before requesting completions.
+        // This avoids races where RA still sees the old buffer (leading to null results).
+        if matches!(
+            event,
+            helix_view::handlers::completion::CompletionEvent::ManualTrigger { .. }
+        ) {
+            if let Some(doc) = self.editor.document(doc_id) {
+                let text = doc.text();
+                if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
+                    let cursor_chars = text.byte_to_char(cursor.min(text.len_bytes()));
+                    if let Some(prev_ch) = text.chars_at(cursor_chars).reversed().next() {
+                        if helix_core::chars::char_is_word(prev_ch) || prev_ch == ':' {
+                            // Small, bounded delay to allow didChange to propagate
+                            std::thread::sleep(std::time::Duration::from_millis(30));
+                        }
+                    }
+                }
+            }
+        }
 
         // Call the direct completion function that bypasses async event system
         if let Err(e) = helix_term::handlers::completion::request_completions_direct(

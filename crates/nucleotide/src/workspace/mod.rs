@@ -2817,6 +2817,10 @@ impl Workspace {
             }
             crate::Update::ShouldQuit => {
                 info!("ShouldQuit event received - triggering application quit");
+                // Ensure editor state is cleanly flushed and views are closed before quit
+                let handle = self.handle.clone();
+                let core = self.core.clone();
+                quit(core, handle, cx);
                 cx.quit();
             }
             crate::Update::CommandSubmitted(command) => self.handle_command_submitted(command, cx),
@@ -2855,6 +2859,10 @@ impl Workspace {
                         match core_event {
                             crate::types::CoreEvent::ShouldQuit => {
                                 info!("ShouldQuit event received via Event system");
+                                // Ensure editor state is cleanly flushed and views are closed before quit
+                                let handle = self.handle.clone();
+                                let core = self.core.clone();
+                                quit(core, handle, cx);
                                 cx.quit();
                             }
                             crate::types::CoreEvent::RedrawRequested => {
