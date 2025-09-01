@@ -167,6 +167,15 @@ pub struct PickerView {
             ) -> gpui::AnyElement,
         >,
     >,
+    // Optional provider to fetch preview text for non-file items (e.g., buffers)
+    preview_text_provider_cb: Option<
+        Box<
+            dyn for<'a> Fn(
+                &PickerItem,
+                &mut Context<PickerView>,
+            ) -> Option<(String, Option<std::path::PathBuf>)>,
+        >,
+    >,
     initial_preview_loaded: bool,
     preview_task: Option<Task<()>>,
 
@@ -260,6 +269,7 @@ impl PickerView {
             close_preview_cb: None,
             preview_element_cb: None,
             preview_text_renderer_cb: None,
+            preview_text_provider_cb: None,
             initial_preview_loaded: false,
             preview_task: None,
             on_select: None,
@@ -291,6 +301,7 @@ impl PickerView {
             close_preview_cb: None,
             preview_element_cb: None,
             preview_text_renderer_cb: None,
+            preview_text_provider_cb: None,
             initial_preview_loaded: false,
             preview_task: None,
             on_select: None,
@@ -341,6 +352,19 @@ impl PickerView {
         + 'static,
     ) -> Self {
         self.preview_text_renderer_cb = Some(Box::new(f));
+        self
+    }
+
+    /// Provide a function that fetches preview text for non-file items (e.g., buffers)
+    pub fn with_preview_text_provider_fn(
+        mut self,
+        f: impl for<'a> Fn(
+            &PickerItem,
+            &mut Context<PickerView>,
+        ) -> Option<(String, Option<std::path::PathBuf>)>
+        + 'static,
+    ) -> Self {
+        self.preview_text_provider_cb = Some(Box::new(f));
         self
     }
 
@@ -639,6 +663,15 @@ impl PickerView {
             //         cx.notify();
             //     }
             // }
+            // Try provider to fetch buffer content
+            if let Some(provider) = &self.preview_text_provider_cb {
+                if let Some((text, _path)) = provider(item, cx) {
+                    self.preview_loading = false;
+                    self.preview_content = Some(text);
+                    cx.notify();
+                    return;
+                }
+            }
         }
         // Try standalone PathBuf (for file picker)
         else if let Some(path_buf) = item.data.downcast_ref::<std::path::PathBuf>() {
@@ -649,6 +682,15 @@ impl PickerView {
                 type_id = ?item.data.type_id(),
                 "Preview not available for item with type_id"
             );
+            // Try provider as a last resort for non-file items
+            if let Some(provider) = &self.preview_text_provider_cb {
+                if let Some((text, _path)) = provider(item, cx) {
+                    self.preview_loading = false;
+                    self.preview_content = Some(text);
+                    cx.notify();
+                    return;
+                }
+            }
             self.preview_content = Some("Preview not available".to_string());
             cx.notify();
         }
@@ -763,6 +805,8 @@ impl PickerView {
                 cx.notify();
             });
         }));
+
+        // (Non-file provider handled in load_preview_for_selected_item)
     }
 
     /// Clean up preview document - public method for external cleanup

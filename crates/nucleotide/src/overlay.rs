@@ -635,6 +635,32 @@ impl OverlayView {
 
                                 container.into_any_element()
                             });
+                            // Provide a preview text provider for buffer items
+                            let text_core = core_weak.clone();
+                            view = view.with_preview_text_provider_fn(move |item, cx| {
+                                if let Some((doc_id, path_opt)) = item
+                                    .data
+                                    .downcast_ref::<(helix_view::DocumentId, Option<std::path::PathBuf>)>()
+                                {
+                                    if let Some(core) = text_core.upgrade() {
+                                        let core_read = core.read(cx);
+                                        if let Some(doc) = core_read.editor.documents.get(doc_id) {
+                                            let content = String::from(doc.text().slice(..));
+                                            return Some((content, path_opt.clone()));
+                                        }
+                                    }
+                                } else if let Some(doc_id) = item.data.downcast_ref::<helix_view::DocumentId>() {
+                                    if let Some(core) = text_core.upgrade() {
+                                        let core_read = core.read(cx);
+                                        if let Some(doc) = core_read.editor.documents.get(doc_id) {
+                                            let content = String::from(doc.text().slice(..));
+                                            let path_opt = doc.path().cloned();
+                                            return Some((content, path_opt));
+                                        }
+                                    }
+                                }
+                                None
+                            });
 
                             // Preview capability integration can be wired here in the future
 
