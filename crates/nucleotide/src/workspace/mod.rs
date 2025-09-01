@@ -9,6 +9,7 @@ pub use view_manager::ViewManager;
 
 // Main workspace implementation
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 
 use gpui::FontFeatures;
@@ -30,7 +31,9 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 
 // ViewManager already imported above via pub use
-use nucleotide_ui::{AboutWindow, Button, ButtonSize, ButtonVariant};
+use nucleotide_ui::{
+    AboutWindow, Button, ButtonSize, ButtonVariant, ListItem, ListItemSpacing, ListItemVariant,
+};
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 
@@ -69,6 +72,11 @@ pub struct Workspace {
     needs_window_appearance_update: bool,
     pending_appearance: Option<gpui::WindowAppearance>,
     tab_overflow_dropdown_open: bool,
+    // File tree context menu state
+    context_menu_open: bool,
+    context_menu_pos: (f32, f32),
+    context_menu_path: Option<std::path::PathBuf>,
+    context_menu_index: usize,
     document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
     input_coordinator: Arc<InputCoordinator>,    // Central input coordination system
     project_lsp_manager: Option<Arc<nucleotide_lsp::ProjectLspManager>>, // Project-level LSP management
@@ -76,11 +84,41 @@ pub struct Workspace {
     pending_lsp_startup: Option<std::path::PathBuf>,  // Track pending server startup requests
     prefix_extractor: PrefixExtractor,                // Language-aware completion prefix extraction
     about_window: Entity<AboutWindow>,                // About dialog window
+    // Pending file operation that expects a text input via prompt
+    pending_file_op: Option<PendingFileOp>,
+    // Defer a file tree refresh until after processing core events
+    needs_file_tree_refresh: bool,
+    // Delete confirmation modal state
+    delete_confirm_open: bool,
+    delete_confirm_path: Option<std::path::PathBuf>,
+}
+
+// Pending file operation kinds awaiting user input (used with the prompt overlay)
+enum PendingFileOp {
+    NewFile { parent: std::path::PathBuf },
+    NewFolder { parent: std::path::PathBuf },
+    Rename { path: std::path::PathBuf },
+    Duplicate { path: std::path::PathBuf },
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
 
 impl Workspace {
+    fn context_menu_items() -> Vec<(&'static str, fn(&mut Workspace, &mut Context<Workspace>))> {
+        vec![
+            ("New File", Workspace::cm_action_new_file),
+            ("New Folder", Workspace::cm_action_new_folder),
+            ("Rename", Workspace::cm_action_rename),
+            ("Delete", Workspace::cm_action_delete),
+            ("Duplicate", Workspace::cm_action_duplicate),
+            ("Copy Path", Workspace::cm_action_copy_path),
+            (
+                "Copy Relative Path",
+                Workspace::cm_action_copy_relative_path,
+            ),
+            ("Reveal in OS", Workspace::cm_action_reveal_in_os),
+        ]
+    }
     /// Ensure document is in the order list, adding it to the end if new
     fn ensure_document_in_order(&mut self, doc_id: helix_view::DocumentId) {
         if !self.document_order.contains(&doc_id) {
@@ -292,6 +330,10 @@ impl Workspace {
             needs_window_appearance_update: false,
             pending_appearance: None,
             tab_overflow_dropdown_open: false,
+            context_menu_open: false,
+            context_menu_pos: (0.0, 0.0),
+            context_menu_path: None,
+            context_menu_index: 0,
             document_order: Vec::new(),
             input_coordinator,
             project_lsp_manager,
@@ -299,6 +341,10 @@ impl Workspace {
             pending_lsp_startup: None,
             prefix_extractor: PrefixExtractor::new(),
             about_window,
+            pending_file_op: None,
+            needs_file_tree_refresh: false,
+            delete_confirm_open: false,
+            delete_confirm_path: None,
         };
 
         // Set initial focus restore state
@@ -342,6 +388,459 @@ impl Workspace {
         // Completion results are now processed directly through Helix's completion system
         // via hooks that we register to capture when Helix has completion results ready
         // This method is kept as a placeholder for when we implement the hook-based system
+    }
+
+    /// Rescan a single directory and update the file tree entries for that folder only
+    fn rescan_directory(&mut self, dir: &Path, cx: &mut Context<Self>) {
+        if let Some(ref file_tree) = self.file_tree {
+            let dir = dir.to_path_buf();
+            file_tree.update(cx, |view, tree_cx| {
+                view.refresh_directory(&dir, tree_cx);
+            });
+        }
+    }
+
+    /// Render a simple delete confirmation modal overlay with two actions
+    fn render_delete_confirm_modal(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
+
+        let message = if let Some(path) = &self.delete_confirm_path {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("this item");
+            format!("Delete '{}' permanently?", name)
+        } else {
+            "Delete permanently?".to_string()
+        };
+
+        // Backdrop to block clicks
+        let backdrop = div()
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .occlude()
+            .bg(gpui::hsla(0.0, 0.0, 0.0, 0.35))
+            .on_mouse_down(MouseButton::Left, |_, _, _| {});
+
+        // Dialog content
+        let dialog = div()
+            .absolute()
+            .top(px(120.0))
+            .w_full()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .bg(tokens.colors.popup_background)
+                    .border_1()
+                    .border_color(tokens.colors.popup_border)
+                    .rounded(tokens.sizes.radius_lg)
+                    .shadow_xl()
+                    .w(px(380.0))
+                    .p(tokens.sizes.space_4)
+                    .flex()
+                    .flex_col()
+                    .gap(tokens.sizes.space_3)
+                    .child(
+                        div()
+                            .text_size(tokens.sizes.text_md)
+                            .child("Confirm Delete"),
+                    )
+                    .child(div().text_size(tokens.sizes.text_sm).child(message))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(tokens.sizes.space_2)
+                            .justify_end()
+                            .child({
+                                let btn = Button::new("cancel-delete", "Cancel")
+                                    .variant(ButtonVariant::Secondary)
+                                    .size(ButtonSize::Small);
+                                div().child(btn).on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(|view: &mut Workspace, _ev, _w, cx| {
+                                        view.delete_confirm_open = false;
+                                        view.delete_confirm_path = None;
+                                        cx.notify();
+                                    }),
+                                )
+                            })
+                            .child({
+                                let btn_label =
+                                    match self.core.read(cx).config.gui.file_ops.delete_behavior {
+                                        crate::config::DeleteBehavior::Trash => "Move to Trash",
+                                        crate::config::DeleteBehavior::Permanent => {
+                                            "Delete Permanently"
+                                        }
+                                    };
+                                let btn = Button::new("confirm-delete", btn_label)
+                                    .variant(ButtonVariant::Danger)
+                                    .size(ButtonSize::Small);
+                                div().child(btn).on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(|view: &mut Workspace, _ev, _w, cx| {
+                                        view.perform_delete_confirm(cx);
+                                    }),
+                                )
+                            }),
+                    ),
+            );
+
+        div().child(backdrop).child(dialog)
+    }
+
+    /// Execute the delete after confirmation
+    fn perform_delete_confirm(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.delete_confirm_path.clone() {
+            let mode = match self.core.read(cx).config.gui.file_ops.delete_behavior {
+                crate::config::DeleteBehavior::Trash => {
+                    nucleotide_events::v2::workspace::DeleteMode::Trash
+                }
+                crate::config::DeleteBehavior::Permanent => {
+                    nucleotide_events::v2::workspace::DeleteMode::Permanent
+                }
+            };
+            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
+                intent: nucleotide_events::v2::workspace::FileOpIntent::Delete {
+                    path: path.clone(),
+                    mode,
+                },
+            };
+            self.core.read(cx).dispatch_workspace_event(event);
+            if let Some(parent) = path.parent() {
+                self.rescan_directory(parent, cx);
+            }
+        }
+        self.delete_confirm_open = false;
+        self.delete_confirm_path = None;
+        cx.notify();
+    }
+
+    /// Render the file tree context menu anchored at the last click position
+    fn render_file_tree_context_menu(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        use gpui::{Corner, anchored, point};
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
+        let (x, y) = self.context_menu_pos;
+
+        let items = Self::context_menu_items();
+
+        // Use anchored popup at the stored cursor position, relative to window
+        let dd_tokens = tokens.dropdown_tokens();
+
+        let popup = div()
+            .bg(dd_tokens.container_background)
+            .border_1()
+            .border_color(dd_tokens.border)
+            .rounded(tokens.sizes.radius_md)
+            .shadow_lg()
+            .min_w(px(200.0))
+            .py(tokens.sizes.space_1)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .children(items.into_iter().enumerate().map(|(i, (label, handler))| {
+                let hover_bg = dd_tokens.item_background_hover;
+                let text_default = dd_tokens.item_text;
+                let text_hover = dd_tokens.item_text_selected;
+                div()
+                    .w_full()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_move(cx.listener(move |w: &mut Workspace, _ev, _win, cx| {
+                        if w.context_menu_index != i {
+                            w.context_menu_index = i;
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_up(MouseButton::Left, {
+                        let handler_fn = handler;
+                        cx.listener(move |workspace: &mut Workspace, _ev, _window, cx| {
+                            workspace.context_menu_open = false;
+                            handler_fn(workspace, cx);
+                            cx.stop_propagation();
+                        })
+                    })
+                    .child(
+                        ListItem::new(("filetree-cm", i as u32))
+                            .variant(ListItemVariant::Ghost)
+                            .spacing(ListItemSpacing::Compact)
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_size(tokens.sizes.text_sm)
+                                    .px(tokens.sizes.space_3)
+                                    .py(tokens.sizes.space_2)
+                                    .text_color(text_default)
+                                    .hover(|s| s.bg(hover_bg).text_color(text_hover))
+                                    .when(self.context_menu_index == i, |s| {
+                                        s.bg(dd_tokens.item_background_selected)
+                                            .text_color(dd_tokens.item_text_selected)
+                                    })
+                                    .child(label),
+                            ),
+                    )
+            }));
+
+        // Fullscreen backdrop to block clicks and handle outside-click dismiss
+        div()
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|w: &mut Workspace, _ev, _win, cx| {
+                    // Clicking backdrop closes the menu
+                    if w.context_menu_open {
+                        w.context_menu_open = false;
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|w: &mut Workspace, _ev, _win, cx| {
+                    if w.context_menu_open {
+                        w.context_menu_open = false;
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(
+                anchored()
+                    .position(point(px(x), px(y)))
+                    .anchor(Corner::TopLeft)
+                    .offset(point(px(0.0), px(2.0)))
+                    .snap_to_window_with_margin(tokens.sizes.space_2)
+                    .child(popup),
+            )
+    }
+
+    // --- Context menu action handlers (stubs that close the menu and log) ---
+    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+        self.context_menu_open = false;
+        cx.notify();
+    }
+
+    fn cm_action_new_file(this: &mut Workspace, cx: &mut Context<Workspace>) {
+        if let Some(clicked) = this.context_menu_path.clone() {
+            let parent = if clicked.is_dir() {
+                clicked
+            } else {
+                clicked
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .to_path_buf()
+            };
+            // Queue pending op and show prompt (overlay will emit CommandSubmitted)
+            this.pending_file_op = Some(PendingFileOp::NewFile { parent });
+            this.core.update(cx, |_core, cx| {
+                let prompt = crate::prompt::Prompt::native("New file name", "", |_input| {});
+                cx.emit(crate::Update::Prompt(prompt));
+            });
+        }
+        this.close_context_menu(cx);
+    }
+
+    fn cm_action_new_folder(this: &mut Workspace, cx: &mut Context<Workspace>) {
+        if let Some(clicked) = this.context_menu_path.clone() {
+            let parent = if clicked.is_dir() {
+                clicked
+            } else {
+                clicked
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .to_path_buf()
+            };
+            this.pending_file_op = Some(PendingFileOp::NewFolder { parent });
+            this.core.update(cx, |_core, cx| {
+                let prompt = crate::prompt::Prompt::native("New folder name", "", |_input| {});
+                cx.emit(crate::Update::Prompt(prompt));
+            });
+        }
+        this.close_context_menu(cx);
+    }
+
+    fn cm_action_rename(this: &mut Workspace, cx: &mut Context<Workspace>) {
+        if let Some(path) = this.context_menu_path.clone() {
+            let current_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            this.pending_file_op = Some(PendingFileOp::Rename { path });
+            this.core.update(cx, move |_core, cx| {
+                let prompt = crate::prompt::Prompt::native("Rename to", current_name, |_input| {});
+                cx.emit(crate::Update::Prompt(prompt));
+            });
+        }
+        this.close_context_menu(cx);
+    }
+
+    fn cm_action_delete(this: &mut Workspace, cx: &mut Context<Workspace>) {
+        if let Some(path) = this.context_menu_path.clone() {
+            // Open confirmation modal
+            this.delete_confirm_open = true;
+            this.delete_confirm_path = Some(path);
+            cx.notify();
+        }
+        this.close_context_menu(cx);
+    }
+
+    fn cm_action_duplicate(this: &mut Workspace, cx: &mut Context<Workspace>) {
+        if let Some(path) = this.context_menu_path.clone() {
+            let base_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| format!("{} copy", s))
+                .unwrap_or_else(|| "copy".to_string());
+            this.pending_file_op = Some(PendingFileOp::Duplicate { path });
+            this.core.update(cx, move |_core, cx| {
+                let prompt = crate::prompt::Prompt::native("Duplicate as", base_name, |_input| {});
+                cx.emit(crate::Update::Prompt(prompt));
+            });
+        }
+        this.close_context_menu(cx);
+    }
+
+    fn cm_action_copy_path(this: &mut Workspace, cx: &mut Context<Workspace>) {
+        if let Some(path) = this.context_menu_path.clone() {
+            // Copy absolute path to clipboard
+            let text = path.display().to_string();
+            if !Self::copy_to_clipboard_impl(&text) {
+                nucleotide_logging::warn!(path=%text, "Failed to copy path to clipboard");
+            }
+            // Optionally dispatch intent for telemetry/handlers
+            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
+                intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
+                    path,
+                    kind: nucleotide_events::v2::workspace::PathCopyKind::Absolute,
+                },
+            };
+            this.core.read(cx).dispatch_workspace_event(event);
+        }
+        this.close_context_menu(cx);
+    }
+
+    fn cm_action_copy_relative_path(this: &mut Workspace, cx: &mut Context<Workspace>) {
+        if let Some(path) = this.context_menu_path.clone() {
+            // Compute relative to current project root if available
+            let text = if let Some(root) = &this.current_project_root {
+                match path.strip_prefix(root) {
+                    Ok(rel) => rel.display().to_string(),
+                    Err(_) => path.display().to_string(),
+                }
+            } else {
+                path.display().to_string()
+            };
+            if !Self::copy_to_clipboard_impl(&text) {
+                nucleotide_logging::warn!(path=%text, "Failed to copy relative path to clipboard");
+            }
+            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
+                intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
+                    path,
+                    kind: nucleotide_events::v2::workspace::PathCopyKind::RelativeToWorkspace,
+                },
+            };
+            this.core.read(cx).dispatch_workspace_event(event);
+        }
+        this.close_context_menu(cx);
+    }
+
+    /// Best-effort clipboard copy using platform tools
+    fn copy_to_clipboard_impl(text: &str) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            use std::io::Write;
+            let mut child = match std::process::Command::new("pbcopy")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
+            if let Some(stdin) = &mut child.stdin {
+                if stdin.write_all(text.as_bytes()).is_err() {
+                    return false;
+                }
+            }
+            let _ = child.wait();
+            return true;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::io::Write;
+            let mut child = match std::process::Command::new("cmd")
+                .args(["/C", "clip"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
+            if let Some(stdin) = &mut child.stdin {
+                if stdin.write_all(text.as_bytes()).is_err() {
+                    return false;
+                }
+            }
+            let _ = child.wait();
+            return true;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::io::Write;
+            // Try wl-copy (Wayland)
+            if let Ok(mut child) = std::process::Command::new("wl-copy")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                if let Some(stdin) = &mut child.stdin {
+                    if stdin.write_all(text.as_bytes()).is_ok() {
+                        let _ = child.wait();
+                        return true;
+                    }
+                }
+            }
+            // Fallback to xclip
+            if let Ok(mut child) = std::process::Command::new("xclip")
+                .args(["-selection", "clipboard"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                if let Some(stdin) = &mut child.stdin {
+                    if stdin.write_all(text.as_bytes()).is_ok() {
+                        let _ = child.wait();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        #[allow(unreachable_code)]
+        {
+            // Other platforms: not implemented
+            false
+        }
+    }
+
+    fn cm_action_reveal_in_os(this: &mut Workspace, cx: &mut Context<Workspace>) {
+        if let Some(path) = this.context_menu_path.clone() {
+            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
+                intent: nucleotide_events::v2::workspace::FileOpIntent::RevealInOs { path },
+            };
+            this.core.read(cx).dispatch_workspace_event(event);
+        }
+        this.close_context_menu(cx);
     }
 
     /// Register workspace-specific actions with the input coordinator
@@ -446,6 +945,70 @@ impl Workspace {
             modifiers = ?ev.keystroke.modifiers,
             "Workspace received key event"
         );
+
+        // Delete modal keyboard handling
+        if self.delete_confirm_open {
+            match ev.keystroke.key.as_str() {
+                "enter" => {
+                    self.perform_delete_confirm(cx);
+                    return;
+                }
+                "escape" => {
+                    self.delete_confirm_open = false;
+                    self.delete_confirm_path = None;
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Context menu keyboard handling
+        if self.context_menu_open {
+            match ev.keystroke.key.as_str() {
+                "escape" => {
+                    self.context_menu_open = false;
+                    cx.notify();
+                    return;
+                }
+                "down" => {
+                    let len = Self::context_menu_items().len();
+                    if len > 0 {
+                        self.context_menu_index = (self.context_menu_index + 1) % len;
+                        cx.notify();
+                    }
+                    return;
+                }
+                "up" => {
+                    let len = Self::context_menu_items().len();
+                    if len > 0 {
+                        self.context_menu_index = (self.context_menu_index + len - 1) % len;
+                        cx.notify();
+                    }
+                    return;
+                }
+                "enter" => {
+                    let items = Self::context_menu_items();
+                    if let Some((_, handler)) = items.get(self.context_menu_index) {
+                        let handler_fn = *handler;
+                        self.context_menu_open = false;
+                        handler_fn(self, cx);
+                    } else {
+                        self.context_menu_open = false;
+                        cx.notify();
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Close context menu on Escape
+        if self.context_menu_open && ev.keystroke.key == "escape" {
+            self.context_menu_open = false;
+            cx.notify();
+            return;
+        }
 
         // Check if completion is visible and handle navigation/control keys
         if self.overlay.read(cx).has_completion() {
@@ -611,6 +1174,22 @@ impl Workspace {
             InputResult::WorkspaceAction(action) => {
                 debug!(action = %action, "Executing workspace action");
                 self.handle_workspace_action(&action, cx);
+            }
+        }
+
+        // Trigger delete confirmation from keyboard when file tree has focus
+        if ev.keystroke.key.as_str() == "delete" {
+            if let Some(ref file_tree) = self.file_tree {
+                let is_tree_focused = file_tree.focus_handle(cx).is_focused(window);
+                if is_tree_focused {
+                    let selected = file_tree.read(cx).selected_path().cloned();
+                    if let Some(path) = selected {
+                        self.delete_confirm_open = true;
+                        self.delete_confirm_path = Some(path);
+                        cx.notify();
+                        return;
+                    }
+                }
             }
         }
     }
@@ -2141,15 +2720,66 @@ impl Workspace {
     }
 
     fn handle_command_submitted(&mut self, command: &str, cx: &mut Context<Self>) {
-        info!(
-            "handle_command_submitted called with command: '{}'",
-            command
-        );
+        info!("handle_command_submitted called with '{}'", command);
+
+        // If a file op is pending, treat the submitted text as the name and dispatch an intent
+        if let Some(pending) = self.pending_file_op.take() {
+            use nucleotide_events::v2::workspace::{Event as WsEvent, FileOpIntent};
+
+            // Build event and decide which directory to rescan using references to avoid moves
+            let (event, refresh_dir): (WsEvent, Option<std::path::PathBuf>) = match &pending {
+                PendingFileOp::NewFile { parent } => (
+                    WsEvent::FileOpRequested {
+                        intent: FileOpIntent::NewFile {
+                            parent: parent.clone(),
+                            name: command.to_string(),
+                        },
+                    },
+                    Some(parent.clone()),
+                ),
+                PendingFileOp::NewFolder { parent } => (
+                    WsEvent::FileOpRequested {
+                        intent: FileOpIntent::NewFolder {
+                            parent: parent.clone(),
+                            name: command.to_string(),
+                        },
+                    },
+                    Some(parent.clone()),
+                ),
+                PendingFileOp::Rename { path } => (
+                    WsEvent::FileOpRequested {
+                        intent: FileOpIntent::Rename {
+                            path: path.clone(),
+                            new_name: command.to_string(),
+                        },
+                    },
+                    path.parent().map(|p| p.to_path_buf()),
+                ),
+                PendingFileOp::Duplicate { path } => (
+                    WsEvent::FileOpRequested {
+                        intent: FileOpIntent::Duplicate {
+                            path: path.clone(),
+                            target_name: command.to_string(),
+                        },
+                    },
+                    path.parent().map(|p| p.to_path_buf()),
+                ),
+            };
+
+            // Clear the overlay and dispatch the event
+            self.overlay.update(cx, |overlay, cx| overlay.clear(cx));
+            self.core.read(cx).dispatch_workspace_event(event);
+
+            if let Some(dir) = refresh_dir {
+                self.rescan_directory(&dir, cx);
+            }
+            return;
+        }
+
+        // No pending file op: proceed with normal command handling
 
         // Clear the overlay first to hide the prompt
-        self.overlay.update(cx, |overlay, cx| {
-            overlay.clear(cx);
-        });
+        self.overlay.update(cx, |overlay, cx| overlay.clear(cx));
 
         // Parse the command using our typed system
         match nucleotide_core::ParsedCommand::parse(command) {
@@ -3577,6 +4207,17 @@ impl Workspace {
                 expanded: _,
             } => {
                 // Update UI for directory expansion/collapse
+                cx.notify();
+            }
+            FileTreeEvent::ContextMenuRequested { path, x, y } => {
+                info!(
+                    "FileTreeEvent::ContextMenuRequested at ({}, {}): {:?}",
+                    x, y, path
+                );
+                self.context_menu_open = true;
+                self.context_menu_pos = (*x, *y);
+                self.context_menu_path = Some(path.clone());
+                self.context_menu_index = 0;
                 cx.notify();
             }
             FileTreeEvent::FileSystemChanged { path, kind } => {
@@ -5417,6 +6058,20 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Drive V2 event processing so FsOpHandler can execute intents
+        if let Some(aggregator) = self.core.read(cx).event_aggregator.as_ref() {
+            aggregator.process_events();
+        }
+        // Fallback: full refresh if any pending flag remains
+        if self.needs_file_tree_refresh {
+            if let Some(ref file_tree) = self.file_tree {
+                file_tree.update(cx, |view, tree_cx| {
+                    view.refresh(tree_cx);
+                });
+            }
+            self.needs_file_tree_refresh = false;
+        }
+
         // Process completion results from the coordinator
         self.process_completion_results(cx);
 
@@ -5651,6 +6306,14 @@ impl Render for Workspace {
                     .when(self.tab_overflow_dropdown_open, |this| {
                         // Render the overflow menu as an overlay
                         this.child(self.render_tab_overflow_menu(window, cx))
+                    })
+                    .when(self.context_menu_open, |this| {
+                        // Render file tree context menu when open
+                        this.child(self.render_file_tree_context_menu(window, cx))
+                    })
+                    .when(self.delete_confirm_open, |this| {
+                        // Render delete confirmation modal overlay
+                        this.child(self.render_delete_confirm_modal(window, cx))
                     }),
             );
 
@@ -5714,6 +6377,19 @@ impl Render for Workspace {
                     // Close tab overflow dropdown when clicking elsewhere
                     if workspace.tab_overflow_dropdown_open {
                         workspace.tab_overflow_dropdown_open = false;
+                        cx.notify();
+                    }
+
+                    // Close context menu when clicking elsewhere
+                    if workspace.context_menu_open {
+                        workspace.context_menu_open = false;
+                        cx.notify();
+                    }
+
+                    // Clicking outside the delete confirm modal closes it
+                    if workspace.delete_confirm_open {
+                        workspace.delete_confirm_open = false;
+                        workspace.delete_confirm_path = None;
                         cx.notify();
                     }
 
