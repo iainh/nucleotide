@@ -85,7 +85,7 @@ pub struct ContextActionHandlers {
     /// Global action handlers that work in this context
     global_handlers: HashMap<String, Arc<dyn Fn() + Send + Sync>>,
     /// Context-specific action handlers
-    context_handlers: HashMap<String, Arc<dyn Fn() + Send + Sync>>,
+    _context_handlers: HashMap<String, Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Focus group manager for Tab navigation

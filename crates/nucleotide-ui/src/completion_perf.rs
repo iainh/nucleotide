@@ -136,10 +136,12 @@ impl RollingWindow {
         }
     }
 
+    #[cfg(test)]
     fn max_value(&self) -> Duration {
         self.values.iter().max().copied().unwrap_or(Duration::ZERO)
     }
 
+    #[cfg(test)]
     fn min_value(&self) -> Duration {
         self.values.iter().min().copied().unwrap_or(Duration::ZERO)
     }

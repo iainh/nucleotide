@@ -17,7 +17,7 @@ impl FsOpHandler {
 
 impl crate::EventHandler for FsOpHandler {
     fn handle_workspace(&mut self, event: &WorkspaceEvent) {
-        use nucleotide_events::v2::workspace::{FileOpIntent, PathCopyKind};
+        use nucleotide_events::v2::workspace::FileOpIntent;
         use operations::*;
 
         match event {

@@ -81,7 +81,7 @@ pub struct Workspace {
     input_coordinator: Arc<InputCoordinator>,    // Central input coordination system
     project_lsp_manager: Option<Arc<nucleotide_lsp::ProjectLspManager>>, // Project-level LSP management
     current_project_root: Option<std::path::PathBuf>, // Track current project root for change detection
-    pending_lsp_startup: Option<std::path::PathBuf>,  // Track pending server startup requests
+    _pending_lsp_startup: Option<std::path::PathBuf>, // Track pending server startup requests
     prefix_extractor: PrefixExtractor,                // Language-aware completion prefix extraction
     about_window: Entity<AboutWindow>,                // About dialog window
     // Pending file operation that expects a text input via prompt
@@ -338,7 +338,7 @@ impl Workspace {
             input_coordinator,
             project_lsp_manager,
             current_project_root: root_path_for_manager.clone(),
-            pending_lsp_startup: None,
+            _pending_lsp_startup: None,
             prefix_extractor: PrefixExtractor::new(),
             about_window,
             pending_file_op: None,
@@ -1529,7 +1529,7 @@ impl Workspace {
                                 );
 
                                 // Create the event command
-                                let command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                    let _command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
                                     server_name: server_name.clone(),
                                     workspace_root: project_info.workspace_root.clone(),
                                 };
@@ -1721,83 +1721,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn switch_theme_by_name(
-        &mut self,
-        theme_name: &str,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // Load the theme using the existing theme loader from the editor
-        let theme_result = self.core.read(cx).editor.theme_loader.load(theme_name);
-        match theme_result {
-            Ok(theme) => {
-                // Update editor theme
-                self.core.update(cx, |core, _cx| {
-                    core.editor.set_theme(theme.clone());
-                });
-
-                // Update theme manager
-                cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
-                    theme_manager.set_theme(theme);
-                });
-
-                // Update global UI theme
-                let new_ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
-                cx.update_global(|ui_theme: &mut nucleotide_ui::Theme, _cx| {
-                    *ui_theme = new_ui_theme.clone();
-                });
-
-                // Update theme provider with the new theme
-                nucleotide_ui::providers::update_provider_context(|context| {
-                    // Create a new theme provider with the updated theme
-                    let theme_provider = nucleotide_ui::providers::ThemeProvider::new(new_ui_theme);
-                    context.register_global_provider(theme_provider);
-                });
-
-                // Update window appearance if configured to follow theme
-                let config = self.core.read(cx).config.clone();
-                if config.gui.window.appearance_follows_theme {
-                    // Determine system appearance based on theme darkness
-                    let theme_manager = cx.global::<crate::ThemeManager>();
-                    let is_dark = theme_manager.is_dark_theme();
-                    let system_appearance = if is_dark {
-                        nucleotide_ui::theme_manager::SystemAppearance::Dark
-                    } else {
-                        nucleotide_ui::theme_manager::SystemAppearance::Light
-                    };
-
-                    nucleotide_logging::info!(
-                        theme_name = %theme_name,
-                        is_dark = is_dark,
-                        system_appearance = ?system_appearance,
-                        "Updating window appearance to match loaded theme"
-                    );
-
-                    // Update system appearance in theme manager
-                    cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
-                        theme_manager.set_system_appearance(system_appearance);
-                    });
-
-                    // Update global SystemAppearance state for GPUI integration
-                    *nucleotide_ui::theme_manager::SystemAppearance::global_mut(cx) =
-                        system_appearance;
-
-                    // Update window background appearance
-                    self.update_window_appearance(_window, cx);
-
-                    // Update titlebar appearance to match theme
-                    self.update_titlebar_appearance(_window, system_appearance);
-                }
-
-                // Clear caches and redraw
-                self.clear_shaped_lines_cache(cx);
-                cx.notify();
-            }
-            Err(e) => {
-                error!("Failed to load theme '{}': {}", theme_name, e);
-            }
-        }
-    }
+    // removed unused switch_theme_by_name
 
     fn update_window_appearance(&self, window: &mut Window, cx: &Context<Self>) {
         let config = self.core.read(cx).config.clone();
@@ -1842,41 +1766,11 @@ impl Workspace {
         cx.notify(); // Trigger re-render
     }
 
-    fn update_titlebar_appearance(
-        &self,
-        _window: &mut Window,
-        system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
-    ) {
-        nucleotide_logging::debug!(
-            system_appearance = ?system_appearance,
-            "Updating titlebar appearance"
-        );
+    // removed unused update_titlebar_appearance
 
-        #[cfg(target_os = "macos")]
-        {
-            // For macOS, we'll use a platform-specific approach to ensure the window
-            // follows the system appearance for the titlebar
-            self.set_macos_window_appearance(system_appearance);
-        }
-    }
+    // removed unused set_macos_window_appearance (macOS)
 
-    #[cfg(target_os = "macos")]
-    fn set_macos_window_appearance(
-        &self,
-        system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
-    ) {
-        nucleotide_logging::info!(
-            system_appearance = ?system_appearance,
-            "Setting NSWindow appearance to follow system"
-        );
-
-        // Call the native function to set window appearance
-        unsafe {
-            Self::update_titlebar_appearance_native(system_appearance);
-        }
-    }
-
-    #[cfg(target_os = "macos")]
+    #[cfg(any())]
     unsafe fn update_titlebar_appearance_native(
         system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
     ) {
@@ -2123,7 +2017,7 @@ impl Workspace {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any())]
     unsafe fn update_titlebar_appearance_native_with_retry(
         system_appearance: nucleotide_ui::theme_manager::SystemAppearance,
         attempt: u32,
@@ -2228,17 +2122,9 @@ impl Workspace {
         true
     }
 
-    fn ensure_window_follows_system_appearance(&self, _window: &mut Window) {
-        nucleotide_logging::info!("Ensuring window follows system appearance");
+    // removed unused ensure_window_follows_system_appearance
 
-        #[cfg(target_os = "macos")]
-        {
-            // For macOS, we need to set the NSWindow appearance to nil to follow system
-            self.ensure_nswindow_follows_system();
-        }
-    }
-
-    #[cfg(target_os = "macos")]
+    #[cfg(any())]
     fn ensure_nswindow_follows_system(&self) {
         // For now, log that we would set the NSWindow appearance to nil
         nucleotide_logging::info!("Would set NSWindow appearance to nil to follow system");
@@ -4480,7 +4366,8 @@ impl Workspace {
         }
     }
 
-    /// Setup additional keyboard navigation shortcuts for comprehensive app navigation
+    // removed unused setup_additional_navigation_shortcuts
+    /*
     fn setup_additional_navigation_shortcuts(&mut self) {
         use nucleotide_ui::providers::EventPriority;
         use nucleotide_ui::{GlobalNavigationDirection, ShortcutAction, ShortcutDefinition};
@@ -4698,7 +4585,7 @@ impl Workspace {
         ];
 
         // Register all shortcuts
-        for shortcut in global_shortcuts
+        for _shortcut in global_shortcuts
             .into_iter()
             .chain(file_tree_shortcuts.into_iter())
             .chain(completion_shortcuts.into_iter())
@@ -4711,20 +4598,16 @@ impl Workspace {
 
         nucleotide_logging::info!("Setup additional navigation shortcuts");
     }
+    */
 
-    /// Setup action handlers for keyboard shortcuts
-    fn setup_action_handlers(&mut self) {
-        nucleotide_logging::info!("Setup comprehensive action handlers for keyboard navigation");
-        // Note: Action handlers are now implemented as workspace methods
-        // The global input system will call these methods via the action execution system
-    }
+    // removed unused setup_action_handlers
 
     /// Register action handlers with the global input system
     fn register_action_handlers(&mut self, cx: &mut Context<Self>) {
         nucleotide_logging::info!("Registering action handlers with global input system");
 
         // Get weak references to avoid circular dependencies
-        let workspace_handle = cx.entity().downgrade();
+        let _workspace_handle = cx.entity().downgrade();
 
         // For now, register simple logging handlers - the real functionality will be
         // implemented via proper GPUI actions below
@@ -4756,31 +4639,7 @@ impl Workspace {
     }
 
     /// Handle only truly global shortcuts that should work regardless of focus state
-    fn handle_global_shortcuts_only(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let modifiers = &event.keystroke.modifiers;
-        let key = &event.keystroke.key;
-
-        eprintln!(
-            "DEBUG: handle_global_shortcuts_only called for key: '{}', ctrl: {}",
-            key, modifiers.control
-        );
-
-        // Only handle shortcuts that are truly global and don't interfere with component input
-
-        // Ctrl+B (toggle file tree) - should work from anywhere
-        if key == "b" && modifiers.control {
-            eprintln!(
-                "DEBUG: Handling global ToggleFileTree shortcut in handle_global_shortcuts_only"
-            );
-            nucleotide_logging::debug!("Handling global ToggleFileTree shortcut");
-            self.show_file_tree = !self.show_file_tree;
-            cx.notify();
-            return;
-        }
-
-        // Add other truly global shortcuts here (window management, app-level commands, etc.)
-        // but NOT shortcuts that should be handled by focused components
-    }
+    // removed unused handle_global_shortcuts_only
 
     /// Handle completion events directly using the event system
     fn handle_completion_event(
@@ -5041,88 +4900,7 @@ impl Workspace {
     }
 
     /// Convert completion items and show completion popup
-    fn show_completion_items(
-        &mut self,
-        items: Vec<nucleotide_events::completion::CompletionItem>,
-        _cursor: usize,
-        _doc_id: helix_view::DocumentId,
-        _view_id: helix_view::ViewId,
-        cx: &mut Context<Self>,
-    ) {
-        // Convert between completion item types
-        let ui_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = items
-            .into_iter()
-            .map(|item| {
-                use nucleotide_events::completion::CompletionItemKind;
-                use nucleotide_ui::completion_v2::{
-                    CompletionItem as UiCompletionItem, CompletionItemKind as UiCompletionItemKind,
-                };
-
-                let ui_kind = match item.kind {
-                    CompletionItemKind::Text => UiCompletionItemKind::Text,
-                    CompletionItemKind::Method => UiCompletionItemKind::Method,
-                    CompletionItemKind::Function => UiCompletionItemKind::Function,
-                    CompletionItemKind::Constructor => UiCompletionItemKind::Constructor,
-                    CompletionItemKind::Field => UiCompletionItemKind::Field,
-                    CompletionItemKind::Variable => UiCompletionItemKind::Variable,
-                    CompletionItemKind::Class => UiCompletionItemKind::Class,
-                    CompletionItemKind::Interface => UiCompletionItemKind::Interface,
-                    CompletionItemKind::Module => UiCompletionItemKind::Module,
-                    CompletionItemKind::Property => UiCompletionItemKind::Property,
-                    CompletionItemKind::Unit => UiCompletionItemKind::Unit,
-                    CompletionItemKind::Value => UiCompletionItemKind::Value,
-                    CompletionItemKind::Enum => UiCompletionItemKind::Enum,
-                    CompletionItemKind::Keyword => UiCompletionItemKind::Keyword,
-                    CompletionItemKind::Snippet => UiCompletionItemKind::Snippet,
-                    CompletionItemKind::Color => UiCompletionItemKind::Color,
-                    CompletionItemKind::File => UiCompletionItemKind::File,
-                    CompletionItemKind::Reference => UiCompletionItemKind::Reference,
-                    CompletionItemKind::Folder => UiCompletionItemKind::Folder,
-                    CompletionItemKind::EnumMember => UiCompletionItemKind::EnumMember,
-                    CompletionItemKind::Constant => UiCompletionItemKind::Constant,
-                    CompletionItemKind::Struct => UiCompletionItemKind::Struct,
-                    CompletionItemKind::Event => UiCompletionItemKind::Event,
-                    CompletionItemKind::Operator => UiCompletionItemKind::Operator,
-                    CompletionItemKind::TypeParameter => UiCompletionItemKind::TypeParameter,
-                };
-
-                UiCompletionItem {
-                    text: item.insert_text.into(),
-                    description: item.detail.as_ref().map(|d| d.clone().into()),
-                    display_text: Some(item.label.into()),
-                    kind: Some(ui_kind),
-                    documentation: item.documentation.map(|d| d.into()),
-                    detail: item.detail.map(|d| d.into()),
-                    signature_info: item.signature_info.map(|s| s.into()),
-                    type_info: item.type_info.map(|t| t.into()),
-                    insert_text_format: match item.insert_text_format {
-                        nucleotide_events::completion::InsertTextFormat::PlainText => {
-                            nucleotide_ui::completion_v2::InsertTextFormat::PlainText
-                        }
-                        nucleotide_events::completion::InsertTextFormat::Snippet => {
-                            nucleotide_ui::completion_v2::InsertTextFormat::Snippet
-                        }
-                    },
-                }
-            })
-            .collect();
-
-        info!(
-            ui_item_count = ui_items.len(),
-            "Converted to UI completion items, creating completion view"
-        );
-
-        // Create completion view and emit update
-        let completion_view = cx.new(|cx| {
-            let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
-            view.set_items(ui_items, cx);
-            view
-        });
-
-        info!("Created completion view, emitting Update::Completion event");
-        cx.emit(crate::Update::Completion(completion_view));
-        cx.notify();
-    }
+    // removed unused show_completion_items
 
     /// Convert completion items and show completion popup with prefix filtering
     pub fn show_completion_items_with_prefix(
@@ -5234,30 +5012,7 @@ impl Workspace {
     }
 
     /// Handle keyboard shortcuts detected by the global input system (full processing)
-    fn handle_global_input_shortcuts(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let modifiers = &event.keystroke.modifiers;
-        let key = &event.keystroke.key;
-
-        eprintln!(
-            "DEBUG: handle_global_input_shortcuts called for key: '{}', ctrl: {}",
-            key, modifiers.control
-        );
-
-        // Check for Ctrl+B (toggle file tree)
-        if key == "b" && modifiers.control {
-            eprintln!(
-                "DEBUG: Handling global ToggleFileTree shortcut in handle_global_input_shortcuts"
-            );
-            nucleotide_logging::debug!("Handling ToggleFileTree shortcut");
-            self.show_file_tree = !self.show_file_tree;
-            cx.notify();
-            return;
-        }
-
-        // For focus management shortcuts, we need window context,
-        // so we'll handle them in the regular key processing flow instead.
-        // This method handles shortcuts that don't require window access.
-    }
+    // removed unused handle_global_input_shortcuts
 
     // === Action Handler Implementations ===
 
@@ -5345,7 +5100,7 @@ impl Workspace {
         // Instead of going through the coordinator, call the LSP completion directly
         let core_handle = self.core.clone();
         core_handle.update(cx, |core, cx| {
-            match core.request_lsp_completions_sync_with_prefix(cursor, doc_id, view_id, cx) {
+            match core.request_lsp_completions_sync_with_prefix(cursor, doc_id, view_id) {
                 Ok((completion_items, prefix)) => {
                     nucleotide_logging::info!(
                         item_count = completion_items.len(),
@@ -5706,13 +5461,7 @@ impl Workspace {
     }
 
     /// Handle completion acceptance - insert the selected text into the editor (DEPRECATED)
-    fn handle_completion_accepted(&mut self, text: &str, cx: &mut Context<Self>) {
-        nucleotide_logging::info!(completion_text = %text, "DISABLED: Custom completion handling - should use Helix's native completion system");
-
-        // DISABLED: Custom completion insertion causes double insertion and bypasses
-        // Helix's proper Transaction-based text replacement system. The correct solution
-        // is to use Helix's native completion UI which handles text replacement correctly.
-    }
+    // removed unused handle_completion_accepted
 
     /// Accept the current completion selection
     pub fn accept_completion(&mut self, cx: &mut Context<Self>) {
@@ -6219,7 +5968,7 @@ impl Render for Workspace {
             .and_then(utils::color_to_hsla)
             .unwrap_or(white());
         let window_style = cx.theme_style("ui.window");
-        let border_color = window_style
+        let _border_color = window_style
             .fg
             .and_then(utils::color_to_hsla)
             .unwrap_or(white());
@@ -6269,7 +6018,7 @@ impl Render for Workspace {
             // Focus is managed by DocumentView's focus state
         }
 
-        let has_overlay = !self.overlay.read(cx).is_empty();
+        let _has_overlay = !self.overlay.read(cx).is_empty();
 
         // Create main content area using semantic layout with design tokens
         let main_content = div()
@@ -6657,7 +6406,7 @@ impl Render for Workspace {
                 let ui_theme = cx.global::<nucleotide_ui::Theme>();
                 let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
                 let panel_bg = ui_theme.tokens.colors.surface;
-                let border_color = status_bar_tokens.border;
+                let _panel_border_color = status_bar_tokens.border;
                 let file_tree_panel = div()
                     .absolute()
                     .left(px(file_tree_left_offset))
@@ -6714,7 +6463,7 @@ impl Render for Workspace {
                 // Use the same background color as the actual file tree for consistency
                 let prompt_bg = ui_theme.tokens.colors.surface;
                 let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
-                let border_color = status_bar_tokens.border;
+                let _border_color = status_bar_tokens.border;
 
                 let placeholder_panel = div()
                     .absolute()
@@ -6910,7 +6659,7 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     info!("File picker has {} items", items.len());
 
     // Populate VCS status for all file items using the global VCS service
-    let file_paths: Vec<std::path::PathBuf> = items
+    let _file_paths: Vec<std::path::PathBuf> = items
         .iter()
         .filter_map(|item| item.file_path.clone())
         .collect();

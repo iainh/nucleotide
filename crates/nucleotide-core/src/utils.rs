@@ -293,55 +293,7 @@ fn translate_character_key(key: &str, shift_pressed: bool) -> KeyCode {
 /// if event was handled (a command was executed or a subkeymap was
 /// activated). Only KeymapResult::{NotFound, Cancelled} is returned
 /// otherwise.
-#[allow(unused)]
-pub fn handle_key_result(
-    mode: helix_view::document::Mode,
-    cxt: &mut helix_term::commands::Context,
-    key_result: helix_term::keymap::KeymapResult,
-) -> Option<helix_term::keymap::KeymapResult> {
-    use helix_term::events::{OnModeSwitch, PostCommand};
-    use helix_term::keymap::KeymapResult;
-    use helix_view::document::Mode;
-
-    let mut last_mode = mode;
-
-    let mut execute_command = |command: &helix_term::commands::MappableCommand| {
-        command.execute(cxt);
-        helix_event::dispatch(PostCommand { command, cx: cxt });
-
-        let current_mode = cxt.editor.mode();
-        if current_mode != last_mode {
-            helix_event::dispatch(OnModeSwitch {
-                old_mode: last_mode,
-                new_mode: current_mode,
-                cx: cxt,
-            });
-
-            // HAXX: if we just entered insert mode from normal, clear key buf
-            // and record the command that got us into this mode.
-            if current_mode == Mode::Insert {
-                // how we entered insert mode is important, and we should track that so
-                // we can repeat the side effect.
-            }
-        }
-
-        last_mode = current_mode;
-    };
-
-    match &key_result {
-        KeymapResult::Matched(command) => {
-            execute_command(command);
-        }
-        KeymapResult::Pending(node) => cxt.editor.autoinfo = Some(node.infobox()),
-        KeymapResult::MatchedSequence(commands) => {
-            for command in commands {
-                execute_command(command);
-            }
-        }
-        KeymapResult::NotFound | KeymapResult::Cancelled(_) => return Some(key_result),
-    }
-    None
-}
+// removed unused handle_key_result to eliminate dead code warnings
 
 #[cfg(test)]
 mod tests {

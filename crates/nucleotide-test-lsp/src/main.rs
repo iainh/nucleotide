@@ -1,19 +1,10 @@
 // ABOUTME: Nucleotide Testing LSP Server - provides mock completions for testing completion functionality
 // ABOUTME: This server implements the Language Server Protocol over stdio for integration with Helix/Nucleotide
 
-use anyhow::{Result, anyhow};
-use lsp_server::{Connection, Message, Request, RequestId, Response};
+use anyhow::Result;
+use lsp_server::{Connection, Message, Request, Response};
 use lsp_types::*;
 use std::io::Write;
-use tracing::{debug, error, info};
-
-mod completion_engine;
-mod config;
-mod protocol;
-mod test_scenarios;
-
-use completion_engine::CompletionEngine;
-use protocol::ProtocolHandler;
 
 /// Main entry point for the Nucleotide Test LSP server
 fn main() -> Result<()> {
@@ -57,11 +48,11 @@ fn main() -> Result<()> {
 
     match result {
         Ok(()) => {
-            info!("Nucleotide Test LSP Server shutdown successfully");
+            eprintln!("NUCLEOTIDE-TEST-LSP: Shutdown successfully");
             Ok(())
         }
         Err(e) => {
-            error!("Server error: {}", e);
+            eprintln!("NUCLEOTIDE-TEST-LSP: Server error: {}", e);
             Err(e)
         }
     }
@@ -244,36 +235,6 @@ fn handle_request_simple(connection: &Connection, req: Request) -> Result<()> {
     Ok(())
 }
 
-/// Handle incoming LSP requests (original version)
-fn handle_request(
-    connection: &Connection,
-    req: Request,
-    completion_engine: &CompletionEngine,
-    _protocol_handler: &ProtocolHandler,
-) -> Result<()> {
-    info!("Received request: method={}, id={:?}", req.method, req.id);
-    match req.method.as_str() {
-        "textDocument/completion" => {
-            info!("Handling textDocument/completion request");
-            handle_completion_request(connection, req, completion_engine)?;
-        }
-        method => {
-            debug!("Unhandled request method: {}", method);
-            let response = Response {
-                id: req.id,
-                result: None,
-                error: Some(lsp_server::ResponseError {
-                    code: lsp_server::ErrorCode::MethodNotFound as i32,
-                    message: format!("Method not found: {}", method),
-                    data: None,
-                }),
-            };
-            connection.sender.send(Message::Response(response))?;
-        }
-    }
-    Ok(())
-}
-
 /// Handle textDocument/completion requests (simplified for debugging)
 fn handle_completion_request_simple(connection: &Connection, req: Request) -> Result<()> {
     eprintln!(
@@ -335,87 +296,6 @@ fn handle_completion_request_simple(connection: &Connection, req: Request) -> Re
     Ok(())
 }
 
-/// Handle textDocument/completion requests
-fn handle_completion_request(
-    connection: &Connection,
-    req: Request,
-    _completion_engine: &CompletionEngine,
-) -> Result<()> {
-    info!("Received completion request: {:?}", req.method);
-
-    let (id, params) = match extract_completion_params(req) {
-        Ok(result) => {
-            info!("Successfully extracted completion parameters");
-            result
-        }
-        Err(e) => {
-            error!("Failed to extract completion parameters: {}", e);
-            return Err(e);
-        }
-    };
-    let completion_params: CompletionParams = params;
-
-    info!(
-        "Completion request for URI: {:?} at position {}:{}",
-        completion_params.text_document_position.text_document.uri,
-        completion_params.text_document_position.position.line,
-        completion_params.text_document_position.position.character
-    );
-
-    // Generate completion response - temporarily use simple completions for debugging
-    info!("Generating simple test completions instead of using completion engine");
-    let completions = vec![
-        CompletionItem {
-            label: "test_completion_1".to_string(),
-            kind: Some(CompletionItemKind::FUNCTION),
-            detail: Some("Test completion from LSP server".to_string()),
-            documentation: Some(Documentation::String("A test completion item".to_string())),
-            insert_text: Some("test_completion_1()".to_string()),
-            ..Default::default()
-        },
-        CompletionItem {
-            label: "test_completion_2".to_string(),
-            kind: Some(CompletionItemKind::VARIABLE),
-            detail: Some("Another test completion".to_string()),
-            documentation: Some(Documentation::String("Another test item".to_string())),
-            insert_text: Some("test_completion_2".to_string()),
-            ..Default::default()
-        },
-    ];
-
-    info!("Generated {} simple completions", completions.len());
-
-    let result = CompletionResponse::Array(completions);
-    let response = Response {
-        id,
-        result: Some(serde_json::to_value(result)?),
-        error: None,
-    };
-
-    info!("Sending completion response with ID: {:?}", response.id);
-    connection.sender.send(Message::Response(response))?;
-
-    // Removed stdout flush - let lsp-server handle it
-
-    eprintln!("NUCLEOTIDE-TEST-LSP: Response sent successfully");
-    Ok(())
-}
-
-/// Extract completion parameters from request
-fn extract_completion_params(req: Request) -> Result<(RequestId, CompletionParams)> {
-    let id = req.id.clone();
-
-    if req.method != "textDocument/completion" {
-        return Err(anyhow!(
-            "Expected textDocument/completion, got {}",
-            req.method
-        ));
-    }
-
-    let params: CompletionParams = serde_json::from_value(req.params)?;
-    Ok((id, params))
-}
-
 /// Handle LSP notifications (simplified for debugging)
 fn handle_notification_simple(not: lsp_server::Notification) -> Result<()> {
     match not.method.as_str() {
@@ -446,27 +326,4 @@ fn handle_notification_simple(not: lsp_server::Notification) -> Result<()> {
     Ok(())
 }
 
-/// Handle LSP notifications
-fn handle_notification(
-    not: lsp_server::Notification,
-    _protocol_handler: &ProtocolHandler,
-) -> Result<()> {
-    match not.method.as_str() {
-        "textDocument/didOpen" => {
-            debug!("Document opened");
-        }
-        "textDocument/didChange" => {
-            debug!("Document changed");
-        }
-        "textDocument/didSave" => {
-            debug!("Document saved");
-        }
-        "textDocument/didClose" => {
-            debug!("Document closed");
-        }
-        method => {
-            debug!("Unhandled notification method: {}", method);
-        }
-    }
-    Ok(())
-}
+// End of file

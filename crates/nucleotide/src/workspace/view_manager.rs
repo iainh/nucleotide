@@ -90,7 +90,8 @@ impl ViewManager {
     #[instrument(skip(self, cx))]
     pub fn update_document_views(&mut self, cx: &mut Context<Workspace>) -> Option<SharedString> {
         let mut view_ids = HashSet::new();
-        let mut focused_file_name = None;
+        // Will be initialized from collected state below
+        let focused_file_name: Option<SharedString>;
 
         // Read editor state to get current views and collect view information
         let workspace = cx.entity();
@@ -149,7 +150,7 @@ impl ViewManager {
         }
 
         // Track which views have right borders (split layout detection)
-        let right_borders = right_borders_set;
+        let _right_borders = right_borders_set;
 
         // Update or create document views for all active views
         for (view, is_focused) in view_data {

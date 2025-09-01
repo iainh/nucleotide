@@ -295,10 +295,10 @@ impl RenderOnce for TabBar {
         // Get tab bar tokens for hybrid color system
         let tab_bar_tokens = tokens.tab_bar_tokens();
         let tabbar_bg = tab_bar_tokens.container_background;
-        let border_color = tab_bar_tokens.tab_border;
+        let _border_color = tab_bar_tokens.tab_border;
 
         // For inactive tab areas, use the same container background and border
-        let inactive_tab_bg = tab_bar_tokens.container_background;
+        let _inactive_tab_bg = tab_bar_tokens.container_background;
         let inactive_border_color = tab_bar_tokens.tab_border;
 
         // Create tabs for visible documents

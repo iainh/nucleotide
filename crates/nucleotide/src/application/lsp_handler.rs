@@ -72,7 +72,7 @@ impl LspHandler {
         if let Event::ServerInitialized {
             server_id,
             server_name,
-            capabilities,
+            capabilities: _,
             workspace_root,
         } = event
         {

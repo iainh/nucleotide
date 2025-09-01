@@ -1,9 +1,6 @@
-use std::{
-    path::Path,
-    sync::{Arc, RwLock},
-};
+use std::sync::{Arc, RwLock};
 
-use gpui::{Entity, ParentElement};
+use gpui::Entity;
 use helix_view::{DocumentId, ViewId};
 use std::collections::HashMap;
 
@@ -11,14 +8,14 @@ use crate::Core;
 
 /// Concrete implementation that uses the application's Helix editor
 pub struct HelixPickerCapability {
-    core: gpui::WeakEntity<Core>,
+    _core: gpui::WeakEntity<Core>,
     previews: HashMap<(DocumentId, ViewId), Entity<crate::document::DocumentView>>,
 }
 
 impl HelixPickerCapability {
     pub fn new(core: &Entity<Core>) -> Arc<RwLock<Self>> {
         Arc::new(RwLock::new(Self {
-            core: core.downgrade(),
+            _core: core.downgrade(),
             previews: HashMap::new(),
         }))
     }
@@ -28,7 +25,6 @@ impl nucleotide_core::capabilities::PickerCapability for HelixPickerCapability {
     fn render_preview(&self, doc_id: DocumentId, view_id: ViewId) -> gpui::AnyElement {
         // For now, render a simple text preview container. A richer integration
         // could embed a DocumentView in the future.
-        use gpui::prelude::FluentBuilder;
         use gpui::{IntoElement, ParentElement as _, Styled, div};
 
         if let Some(entity) = self.previews.get(&(doc_id, view_id)).cloned() {

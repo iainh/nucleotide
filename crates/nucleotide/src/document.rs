@@ -37,7 +37,9 @@ use nucleotide_ui::style_utils::{
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
-#[cfg(debug_assertions)]
+// Removed unused debug helper: test_synthetic_click_accuracy
+/*
+#[cfg(test)]
 fn test_synthetic_click_accuracy(
     line_cache: &nucleotide_editor::LineLayoutCache,
     target_line_idx: usize,
@@ -74,7 +76,7 @@ fn test_synthetic_click_accuracy(
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(test)]
 fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, _font_size: f32) {
     // Test various x positions and see if they map to sensible character indices
     let test_positions = vec![
@@ -97,6 +99,7 @@ fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, _f
             .count();
     }
 }
+*/
 
 /// Custom scroll handle for DocumentView that integrates with ScrollManager
 #[derive(Clone)]
@@ -624,6 +627,7 @@ impl DocumentElement {
     /// Convert a byte index within a line to a grapheme index
     /// GPUI's shaped line works with UTF-8 byte indices
     /// but Helix works with grapheme cluster indices (visual units)
+    #[allow(dead_code)]
     fn byte_idx_to_grapheme_idx(line_text: &str, byte_idx: usize) -> usize {
         use unicode_segmentation::UnicodeSegmentation;
 
@@ -644,6 +648,7 @@ impl DocumentElement {
 
     /// Calculate text area bounds excluding gutters, headers, scrollbars
     /// This returns the bounds of the actual text editing area in window coordinates
+    #[allow(dead_code)]
     fn text_bounds(
         &self,
         element_bounds: Bounds<Pixels>,
@@ -677,6 +682,7 @@ impl DocumentElement {
 
     /// Convert window-local coordinates to text-area coordinates
     /// This is the critical transformation that fixes mouse positioning issues
+    #[allow(dead_code)]
     fn window_to_text_area(
         &self,
         window_pos: Point<Pixels>,
@@ -690,6 +696,7 @@ impl DocumentElement {
 
     /// Convert text-area coordinates to content coordinates by applying scroll
     /// Uses positive scroll positions matching Zed's conventions
+    #[allow(dead_code)]
     fn text_area_to_content(&self, text_area_pos: Point<Pixels>) -> Point<Pixels> {
         let scroll_position = self.scroll_manager.scroll_position();
 
@@ -704,6 +711,7 @@ impl DocumentElement {
 
     /// Unified coordinate transformation: Window -> Text Area -> Content
     /// This implements the correct transformation chain from coordinate_system.md with bounds validation
+    #[allow(dead_code)]
     fn screen_to_content(
         &self,
         window_pos: Point<Pixels>,
@@ -730,6 +738,7 @@ impl DocumentElement {
 
     /// Coordinate transformation with x-overshoot tracking
     /// Returns (clamped_point, x_overshoot_amount) for selection dragging past line ends
+    #[allow(dead_code)]
     fn screen_to_content_with_overshoot(
         &self,
         window_pos: Point<Pixels>,
@@ -819,7 +828,6 @@ impl DocumentElement {
                 if grapheme.visual_pos.col <= visual_col {
                     // This is the closest grapheme to our target column
                     target_char_pos = Some(char_pos);
-                    last_char_pos = char_pos;
                 } else {
                     // We've passed the target column, use the previous character
                     break;
@@ -827,9 +835,10 @@ impl DocumentElement {
             } else if grapheme.visual_pos.row > absolute_visual_row {
                 // We've passed the target row
                 break;
+            } else {
+                // Row is before target; track last known position
+                last_char_pos = char_pos;
             }
-
-            last_char_pos = char_pos;
         }
 
         // Use the found character position or the last valid position
@@ -853,6 +862,7 @@ impl DocumentElement {
 
     /// Calculate x-overshoot for a given position and line width
     /// Returns (clamped_x, overshoot_amount)
+    #[allow(dead_code)]
     fn calculate_x_overshoot(&self, x: Pixels, line_width: Pixels) -> (Pixels, Pixels) {
         if x > line_width {
             let overshoot = x - line_width;
@@ -3267,7 +3277,7 @@ impl Element for DocumentElement {
                 // Calculate how many lines we've rendered vs viewport capacity
                 // Since we skip phantom lines, we need to count actual rendered lines, not just last_row - first_row
                 // Count lines by iterating through the range and checking which ones weren't skipped
-                let mut actual_lines_rendered = 0;
+                let mut _actual_lines_rendered = 0;
                 for line_idx in first_row..last_row {
                     let line_start_char = if line_idx < total_lines { text.line_to_char(line_idx) } else { text.len_chars() };
                     let line_end_char = if line_idx + 1 < total_lines {
@@ -3280,7 +3290,7 @@ impl Element for DocumentElement {
                                          (line_idx >= total_lines) ||
                                          (line_idx == total_lines - 1 && line_is_empty && total_lines > 1);
                     if !is_phantom_line {
-                        actual_lines_rendered += 1;
+                        _actual_lines_rendered += 1;
                     }
                 }
                 let viewport_height_in_lines = (bounds.size.height - px(2.0)) / after_layout.line_height;

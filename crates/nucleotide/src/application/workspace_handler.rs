@@ -34,10 +34,10 @@ pub struct WorkspaceHandler {
 /// Information about an active tab
 #[derive(Debug, Clone)]
 pub struct TabInfo {
-    doc_id: DocumentId,
-    title: String,
-    path: Option<PathBuf>,
-    is_modified: bool,
+    _doc_id: DocumentId,
+    _title: String,
+    _path: Option<PathBuf>,
+    _is_modified: bool,
 }
 
 /// Current workspace layout state
@@ -287,10 +287,10 @@ impl WorkspaceHandler {
                 );
 
                 let tab_info = TabInfo {
-                    doc_id: *doc_id,
-                    title: title.clone(),
-                    path: None, // Would be populated from document info
-                    is_modified: false,
+                    _doc_id: *doc_id,
+                    _title: title.clone(),
+                    _path: None, // Would be populated from document info
+                    _is_modified: false,
                 };
 
                 let mut tabs = self.active_tabs.write().await;

@@ -94,7 +94,6 @@ impl std::error::Error for SnippetParseError {}
 
 /// Parser for LSP snippet syntax
 struct SnippetParser<'a> {
-    input: &'a str,
     chars: std::str::Chars<'a>,
     position: usize,
     current_char: Option<char>,
@@ -105,7 +104,6 @@ impl<'a> SnippetParser<'a> {
         let mut chars = input.chars();
         let current_char = chars.next();
         Self {
-            input,
             chars,
             position: 0,
             current_char,

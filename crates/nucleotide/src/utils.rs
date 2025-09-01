@@ -2,7 +2,7 @@
 // ABOUTME: Keeps only app-specific utilities, others moved to appropriate layers
 
 // Re-export utilities from lower layers
-pub use nucleotide_core::utils::{handle_key_result, translate_key};
+pub use nucleotide_core::utils::translate_key;
 
 // Only available on macOS
 #[cfg(target_os = "macos")]

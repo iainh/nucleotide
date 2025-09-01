@@ -307,7 +307,7 @@ impl OverlayView {
                 // Subscribe to the new completion acceptance event
                 cx.subscribe(
                     &completion_view,
-                    |this, _completion_view, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
+                    |_this, _completion_view, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
                         nucleotide_logging::info!(
                             item_index = event.item_index,
                             "Completion accepted via Helix transaction system - forwarding to workspace"
@@ -449,7 +449,6 @@ impl OverlayView {
                             // Provide a lightweight syntax renderer: non-destructive, no Helix view needed.
                             let render_core = core_weak.clone();
                             view = view.with_preview_text_renderer_fn(move |text, path, cx| {
-                                use gpui::prelude::FluentBuilder;
                                 use gpui::{div, px, IntoElement, Styled};
 
                                 // Resolve simple scope colors from the theme
@@ -599,13 +598,6 @@ impl OverlayView {
                                 if !used_loader {
                                     for line in text.lines() {
                                         // Handle line comments (// or # for py/toml)
-                                        let (code_part, comment_part): (&str, Option<&str>) = if rust_like {
-                                            if let Some(idx) = line.find("//") { (&line[..idx], Some(&line[idx..])) } else { (line, None) }
-                                        } else if py_like || toml_like {
-                                            if let Some(idx) = line.find('#') { (&line[..idx], Some(&line[idx..])) } else { (line, None) }
-                                        } else {
-                                            (line, None)
-                                        };
                                     // Handle line comments (// or # for py/toml)
                                     let (code_part, comment_part): (&str, Option<&str>) = if rust_like {
                                         if let Some(idx) = line.find("//") { (&line[..idx], Some(&line[idx..])) } else { (line, None) }

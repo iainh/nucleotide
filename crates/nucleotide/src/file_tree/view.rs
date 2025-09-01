@@ -34,7 +34,7 @@ pub struct FileTreeView {
     /// Scrollbar state for managing scrollbar UI
     scrollbar_state: ScrollbarState,
     /// Tokio runtime handle for async VCS operations
-    tokio_handle: Option<tokio::runtime::Handle>,
+    _tokio_handle: Option<tokio::runtime::Handle>,
     /// File system watcher for detecting changes
     file_watcher: Option<FileTreeWatcher>,
     /// Pending file system events for debouncing
@@ -62,7 +62,7 @@ impl FileTreeView {
             focus_handle: cx.focus_handle(),
             scroll_handle,
             scrollbar_state,
-            tokio_handle: None,
+            _tokio_handle: None,
             file_watcher: None,
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
@@ -121,7 +121,7 @@ impl FileTreeView {
             focus_handle: cx.focus_handle(),
             scroll_handle,
             scrollbar_state,
-            tokio_handle,
+            _tokio_handle: tokio_handle,
             file_watcher,
             pending_fs_events: std::collections::HashMap::new(),
             last_fs_event_time: None,
@@ -498,32 +498,23 @@ impl FileTreeView {
     }
 
     /// Start async VCS refresh
+    #[allow(dead_code)]
     fn start_vcs_refresh(&mut self, cx: &mut Context<Self>) {
         // VCS refresh rate limiting is now handled by the global VCS service
 
-        if let Some(ref handle) = self.tokio_handle {
-            self.start_async_vcs_refresh_with_handle(handle.clone(), cx);
-        } else {
-            debug!("VCS refresh requested but no Tokio handle available");
-        }
+        self.start_async_vcs_refresh_with_handle(cx);
     }
 
     /// Start async VCS refresh using the stored Tokio handle
+    #[allow(dead_code)]
     fn start_async_vcs_refresh(&self, cx: &mut Context<Self>) {
-        if let Some(ref handle) = self.tokio_handle {
-            debug!("Starting VCS refresh with handle");
-            self.start_async_vcs_refresh_with_handle(handle.clone(), cx);
-        } else {
-            debug!("VCS refresh requested but no Tokio handle available");
-        }
+        debug!("Starting VCS refresh");
+        self.start_async_vcs_refresh_with_handle(cx);
     }
 
     /// Start async VCS refresh using GPUI's background executor
-    fn start_async_vcs_refresh_with_handle(
-        &self,
-        _handle: tokio::runtime::Handle,
-        cx: &mut Context<Self>,
-    ) {
+    #[allow(dead_code)]
+    fn start_async_vcs_refresh_with_handle(&self, cx: &mut Context<Self>) {
         let root_path = self.tree.root_path().to_path_buf();
 
         debug!(root_path = ?root_path, "VCS refresh starting");
@@ -614,7 +605,7 @@ impl FileTreeView {
 
             // Apply VCS status results to the UI
             if let Some(this) = this.upgrade() {
-                this.update(cx, |view, cx| {
+                this.update(cx, |_view, cx| {
                     let mut status_map = std::collections::HashMap::new();
 
                     for change in vcs_result {
@@ -1097,7 +1088,6 @@ impl FileTreeView {
                     .selected(is_selected)
                     .class("file-tree-entry")
                     .with_listener({
-                        let theme = theme.clone();
                         let file_tree_tokens = file_tree_tokens;
                         move |item| {
                             // Apply minimal custom styling - let nucleotide-ui handle most of it

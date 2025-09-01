@@ -820,18 +820,4 @@ fn find_active_rust_document(editor: &Editor, workspace_root: &PathBuf) -> Optio
     None
 }
 
-/// Ascend from a file path to the nearest ancestor directory containing Cargo.toml
-fn find_cargo_root_for(file_path: &PathBuf) -> Option<PathBuf> {
-    let mut cur = file_path.as_path();
-    if cur.is_file() {
-        cur = cur.parent()?;
-    }
-    while let Some(parent) = cur.parent() {
-        let manifest = cur.join("Cargo.toml");
-        if manifest.is_file() {
-            return Some(cur.to_path_buf());
-        }
-        cur = parent;
-    }
-    None
-}
+// removed unused helper find_cargo_root_for to eliminate dead code warnings

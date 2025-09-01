@@ -24,7 +24,6 @@ use std::{
 use tokio::sync::RwLock;
 
 use arc_swap::{ArcSwap, access::Map};
-use futures_util::FutureExt;
 use helix_core::{Position, Selection, pos_at_coords, syntax};
 use helix_lsp::{LanguageServerId, LspProgressMap};
 use helix_stdx::path::get_relative_path;
@@ -1140,7 +1139,7 @@ impl Application {
                 "Current editor status from Helix"
             );
 
-            let zombie_tokens = lsp_state.update(cx, |state, cx| {
+            let _zombie_tokens = lsp_state.update(cx, |state, cx| {
                 // Log current state before clearing
                 let old_progress_count = state.progress.len();
                 debug!(
@@ -1196,7 +1195,7 @@ impl Application {
 
                     for server_id in &progressing_servers {
                         // Find the server name from active_servers
-                        let server_name = active_servers
+                        let _server_name = active_servers
                             .iter()
                             .find(|(id, _)| id == server_id)
                             .map(|(_, name)| name.as_str())
@@ -1310,9 +1309,9 @@ impl Application {
                             format!("{}-activity", server_id)
                         };
 
-                        let is_idle = progress.token == "idle";
-                        let token_clone = progress.token.clone();
-                        let title_clone = progress.title.clone();
+                        let _is_idle = progress.token == "idle";
+                        let _token_clone = progress.token.clone();
+                        let _title_clone = progress.title.clone();
 
                         state.progress.insert(key, progress);
                     }
@@ -1358,9 +1357,9 @@ impl Application {
 
         // Then add project-specific information if available
         if let Some(lsp_state) = &self.lsp_state
-            && let Some(manager_ref) = self.project_lsp_manager.read().await.as_ref()
+            && let Some(_manager_ref) = self.project_lsp_manager.read().await.as_ref()
         {
-            lsp_state.update(cx, |state, cx| {
+            lsp_state.update(cx, |_state, cx| {
                 // Add project-specific server information
                 // This would include information about proactively started servers
                 // and their relationship to projects
@@ -2157,10 +2156,10 @@ impl Application {
         // NOTE: LSP completion requests are now processed event-driven in start_event_driven_lsp_completion_processing
 
         // Process pending LSP commands synchronously by draining the channel
-        self.process_pending_lsp_commands_sync(cx, &handle);
+        self.process_pending_lsp_commands_sync(&handle);
 
         // Process any remaining commands that may have arrived
-        self.process_pending_lsp_commands_sync(cx, &handle);
+        self.process_pending_lsp_commands_sync(&handle);
 
         // Sync LSP state periodically
         self.sync_lsp_state(cx);
@@ -2305,11 +2304,7 @@ impl Application {
     }
 
     /// Process pending LSP commands synchronously by draining the channel
-    fn process_pending_lsp_commands_sync(
-        &mut self,
-        cx: &mut gpui::Context<crate::Core>,
-        handle: &tokio::runtime::Handle,
-    ) {
+    fn process_pending_lsp_commands_sync(&mut self, handle: &tokio::runtime::Handle) {
         let _guard = handle.enter();
 
         info!("🔧 SYNC: Starting synchronous LSP command processing");
@@ -2592,7 +2587,7 @@ impl Application {
                             event_bridge::BridgedEvent::LspServerStartupRequested {
                                 workspace_root,
                                 server_name,
-                                language_id
+                                language_id: _
                             } => {
                                 // BRIDGE TO SYNC: Convert bridged event to sync processor command
                                 info!(
@@ -3000,7 +2995,7 @@ impl Application {
         debug!("Handling document with integrated LSP startup");
 
         // Get document information
-        let (doc_path, language_name) = if let Some(doc) = self.editor.document(doc_id) {
+        let (doc_path, _language_name) = if let Some(doc) = self.editor.document(doc_id) {
             let doc_path = doc.path().map(|p| p.to_path_buf());
             let language_name = doc.language_name().map(|s| s.to_string());
             (doc_path, language_name)
@@ -3398,13 +3393,12 @@ impl Application {
     }
 
     /// Request LSP completions synchronously with prefix extraction for filtering
-    #[instrument(skip(self, cx))]
+    #[instrument(skip(self))]
     pub fn request_lsp_completions_sync_with_prefix(
         &mut self,
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
-        cx: &mut gpui::Context<Self>,
     ) -> anyhow::Result<(Vec<nucleotide_events::completion::CompletionItem>, String)> {
         nucleotide_logging::info!(
             cursor = cursor,
@@ -3423,19 +3417,18 @@ impl Application {
         );
 
         // Call the existing sync method to get completions
-        let items = self.request_lsp_completions_sync(cursor, doc_id, view_id, cx)?;
+        let items = self.request_lsp_completions_sync(cursor, doc_id, view_id)?;
 
         Ok((items, prefix))
     }
 
     /// Request LSP completions synchronously for event-driven completion system
-    #[instrument(skip(self, cx))]
+    #[instrument(skip(self))]
     pub fn request_lsp_completions_sync(
         &mut self,
         cursor: usize,
         doc_id: helix_view::DocumentId,
         view_id: helix_view::ViewId,
-        cx: &mut gpui::Context<Self>,
     ) -> anyhow::Result<Vec<nucleotide_events::completion::CompletionItem>> {
         nucleotide_logging::info!(
             cursor = cursor,
@@ -3759,67 +3752,7 @@ impl Application {
         }
     }
 
-    /// Handle a single LSP server startup request from the event bridge
-    /// This method runs in the main thread where it has mutable access to the editor
-    #[instrument(skip(self), fields(
-        workspace_root = %workspace_root.display(),
-        server_name = %server_name,
-        language_id = %language_id
-    ))]
-    async fn handle_lsp_server_startup_request(
-        &mut self,
-        workspace_root: std::path::PathBuf,
-        server_name: String,
-        language_id: String,
-    ) {
-        debug!("Handling LSP server startup request through event bridge");
-
-        // Get the bridge and start the server with timeout
-        let bridge_guard = self.helix_lsp_bridge.read().await;
-        if let Some(ref bridge) = *bridge_guard {
-            // Add timeout to prevent hanging during server lookup
-            let startup_timeout = std::time::Duration::from_secs(30);
-
-            match tokio::time::timeout(
-                startup_timeout,
-                bridge.start_server(
-                    &mut self.editor,
-                    &workspace_root,
-                    &server_name,
-                    &language_id,
-                ),
-            )
-            .await
-            {
-                Ok(Ok(server_id)) => {
-                    info!(
-                        server_id = ?server_id,
-                        server_name = %server_name,
-                        workspace_root = %workspace_root.display(),
-                        "Successfully started LSP server"
-                    );
-                }
-                Ok(Err(e)) => {
-                    error!(
-                        error = %e,
-                        server_name = %server_name,
-                        workspace_root = %workspace_root.display(),
-                        "Failed to start LSP server"
-                    );
-                }
-                Err(_) => {
-                    error!(
-                        server_name = %server_name,
-                        workspace_root = %workspace_root.display(),
-                        timeout_seconds = startup_timeout.as_secs(),
-                        "LSP server startup timed out - server binary might not be found or startup is taking too long"
-                    );
-                }
-            }
-        } else {
-            warn!("HelixLspBridge not available for server startup");
-        }
-    }
+    // removed unused handle_lsp_server_startup_request
 
     /// Handle LSP commands that require direct Editor access
     #[instrument(skip(self, command), fields(command_type = ?std::mem::discriminant(&command)))]
@@ -5114,11 +5047,6 @@ pub fn init_editor(
 }
 
 impl Application {
-    /// Get the current count of processed commands
-    fn get_commands_processed_count(&self) -> usize {
-        0
-    }
-
     /// Check if rust-analyzer is already running for the current project
     fn is_rust_analyzer_running(&self) -> bool {
         // For simplicity, assume rust-analyzer is not running and let the start method handle duplicates

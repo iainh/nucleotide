@@ -12,7 +12,6 @@ use gpui::{
 use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;
 use nucleo::Nucleo;
-use nucleotide_core::preview_tracker::PreviewTracker;
 use nucleotide_logging::warn;
 use nucleotide_types::VcsStatus;
 use std::{ops::Range, sync::Arc};

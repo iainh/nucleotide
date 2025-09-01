@@ -30,10 +30,10 @@ pub struct CompletionHandler {
 /// Active completion session information
 #[derive(Debug, Clone)]
 pub struct CompletionSession {
-    doc_id: DocumentId,
-    view_id: ViewId,
-    trigger: CompletionTrigger,
-    cursor_position: Position,
+    _doc_id: DocumentId,
+    _view_id: ViewId,
+    _trigger: CompletionTrigger,
+    _cursor_position: Position,
     items: Vec<CompletionItem>,
     selected_index: Option<usize>,
     is_menu_visible: bool,
@@ -132,10 +132,10 @@ impl CompletionHandler {
             );
 
             let session = CompletionSession {
-                doc_id: *doc_id,
-                view_id: *view_id,
-                trigger: trigger.clone(),
-                cursor_position: *cursor_position,
+                _doc_id: *doc_id,
+                _view_id: *view_id,
+                _trigger: trigger.clone(),
+                _cursor_position: *cursor_position,
                 items: Vec::new(),
                 selected_index: None,
                 is_menu_visible: false,
