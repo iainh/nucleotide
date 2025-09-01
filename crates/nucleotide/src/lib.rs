@@ -17,6 +17,7 @@ pub mod input_coordinator;
 #[cfg(test)]
 pub mod integration_test_phase2;
 pub mod overlay;
+pub mod picker_capability;
 pub mod statusline;
 pub mod tab;
 pub mod tab_bar;

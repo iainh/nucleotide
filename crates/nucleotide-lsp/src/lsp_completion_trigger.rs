@@ -19,7 +19,13 @@ pub fn trigger_completion(editor: &helix_view::Editor, manual: bool) {
         }
     };
 
-    let view = editor.tree.get(focused_view_id);
+    let view = match editor.tree.try_get(focused_view_id) {
+        Some(v) => v,
+        None => {
+            debug!("Focused view not found for completion");
+            return;
+        }
+    };
 
     let doc = match editor.documents.get(&view.doc) {
         Some(doc) => doc,
@@ -78,7 +84,13 @@ pub fn should_trigger_auto_completion(
         }
     };
 
-    let view = editor.tree.get(focused_view_id);
+    let view = match editor.tree.try_get(focused_view_id) {
+        Some(v) => v,
+        None => {
+            debug!("Focused view not found for auto-completion check");
+            return false;
+        }
+    };
     let doc = match editor.documents.get(&view.doc) {
         Some(doc) => doc,
         None => {

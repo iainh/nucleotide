@@ -266,9 +266,12 @@ impl Application {
 
             event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
                 // Extract actual selection from the document
-                let view = self.editor.tree.get(*view_id);
-                let selection = if let Some(doc) = self.editor.document(view.doc) {
-                    doc.selection(view.id).clone()
+                let selection = if let Some(view) = self.editor.tree.try_get(*view_id) {
+                    if let Some(doc) = self.editor.document(view.doc) {
+                        doc.selection(view.id).clone()
+                    } else {
+                        helix_core::Selection::point(0)
+                    }
                 } else {
                     helix_core::Selection::point(0)
                 };
@@ -428,26 +431,29 @@ impl Application {
 
             event_bridge::BridgedEvent::ViewFocused { view_id } => {
                 // Extract associated document ID from the view
-                let view = self.editor.tree.get(*view_id);
-                let doc_id = view.doc;
-                let previous_view = self.core.view_handler.get_focused_view();
+                if let Some(view) = self.editor.tree.try_get(*view_id) {
+                    let doc_id = view.doc;
+                    let previous_view = self.core.view_handler.get_focused_view();
 
-                let v2_event = nucleotide_events::v2::view::Event::Focused {
-                    view_id: *view_id,
-                    doc_id,
-                    previous_view,
-                };
+                    let v2_event = nucleotide_events::v2::view::Event::Focused {
+                        view_id: *view_id,
+                        doc_id,
+                        previous_view,
+                    };
 
-                debug!(
-                    view_id = ?view_id,
-                    doc_id = ?doc_id,
-                    "Processing ViewFocused through V2 ViewHandler"
-                );
-                self.core
-                    .view_handler
-                    .handle(v2_event)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                    debug!(
+                        view_id = ?view_id,
+                        doc_id = ?doc_id,
+                        "Processing ViewFocused through V2 ViewHandler"
+                    );
+                    self.core
+                        .view_handler
+                        .handle(v2_event)
+                        .await
+                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                } else {
+                    nucleotide_logging::warn!(view_id = ?view_id, "Ignoring focus event for unknown view");
+                }
             }
 
             event_bridge::BridgedEvent::LspServerStartupRequested {
@@ -3440,7 +3446,13 @@ impl Application {
         };
 
         // Get view to check if it exists
-        let view = self.editor.tree.get(view_id);
+        let view = match self.editor.tree.try_get(view_id) {
+            Some(v) => v,
+            None => {
+                nucleotide_logging::error!(view_id = ?view_id, "View not found for completion request");
+                return Err(anyhow::anyhow!("View not found"));
+            }
+        };
         if view.doc != doc_id {
             nucleotide_logging::error!(
                 doc_id = ?doc_id,

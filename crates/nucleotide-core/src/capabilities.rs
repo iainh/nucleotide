@@ -177,3 +177,24 @@ pub trait OverlayProvider {
     /// Get helix theme for styling overlays
     fn get_helix_theme(&self) -> helix_view::Theme;
 }
+
+/// Optional capabilities used by UI pickers to preview files
+/// Implementations can choose how to open and close lightweight preview documents/views.
+pub trait PickerCapability {
+    /// Open a preview for the given path, returning the associated document and view IDs.
+    /// Accepts any GPUI context so implementations can update entities.
+    fn open_preview<C: gpui::AppContext>(
+        &mut self,
+        path: &Path,
+        cx: &mut C,
+    ) -> Result<(helix_view::DocumentId, helix_view::ViewId), String>;
+
+    /// Close a previously opened preview identified by document and view IDs.
+    /// Accepts any GPUI context so implementations can update entities.
+    fn close_preview<C: gpui::AppContext>(
+        &mut self,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+        cx: &mut C,
+    ) -> Result<(), String>;
+}

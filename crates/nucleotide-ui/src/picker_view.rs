@@ -138,8 +138,35 @@ pub struct PickerView {
     preview_loading: bool,
     preview_doc_id: Option<DocumentId>,
     preview_view_id: Option<helix_view::ViewId>,
-    // TODO: Replace with capability trait
-    // core: Option<WeakEntity<crate::Core>>,
+    // Optional hooks for preview integration with core/editor
+    open_preview_cb: Option<
+        Box<
+            dyn for<'a> Fn(
+                &std::path::Path,
+                &mut Context<PickerView>,
+            ) -> Option<(DocumentId, helix_view::ViewId)>,
+        >,
+    >,
+    close_preview_cb:
+        Option<Box<dyn for<'a> Fn(DocumentId, helix_view::ViewId, &mut Context<PickerView>)>>,
+    preview_element_cb: Option<
+        Box<
+            dyn for<'a> Fn(
+                DocumentId,
+                helix_view::ViewId,
+                &mut Context<PickerView>,
+            ) -> gpui::AnyElement,
+        >,
+    >,
+    preview_text_renderer_cb: Option<
+        Box<
+            dyn for<'a> Fn(
+                &str,
+                Option<&std::path::Path>,
+                &mut Context<PickerView>,
+            ) -> gpui::AnyElement,
+        >,
+    >,
     initial_preview_loaded: bool,
     preview_task: Option<Task<()>>,
 
@@ -229,7 +256,10 @@ impl PickerView {
             preview_loading: false,
             preview_doc_id: None,
             preview_view_id: None,
-            // core: None, // TODO: Replace with capability trait
+            open_preview_cb: None,
+            close_preview_cb: None,
+            preview_element_cb: None,
+            preview_text_renderer_cb: None,
             initial_preview_loaded: false,
             preview_task: None,
             on_select: None,
@@ -257,7 +287,10 @@ impl PickerView {
             preview_loading: false,
             preview_doc_id: None,
             preview_view_id: None,
-            // core: None, // TODO: Replace with capability trait
+            open_preview_cb: None,
+            close_preview_cb: None,
+            preview_element_cb: None,
+            preview_text_renderer_cb: None,
             initial_preview_loaded: false,
             preview_task: None,
             on_select: None,
@@ -267,11 +300,49 @@ impl PickerView {
         }
     }
 
-    // TODO: Replace with capability trait
-    // pub fn with_core(mut self, core: WeakEntity<crate::Core>) -> Self {
-    //     self.core = Some(core);
-    //     self
-    // }
+    // Future: with_capability(...) to integrate with core/editor
+
+    /// Provide a function that opens a preview document and returns (doc_id, view_id)
+    pub fn with_preview_open_fn(
+        mut self,
+        f: impl for<'a> Fn(
+            &std::path::Path,
+            &mut Context<PickerView>,
+        ) -> Option<(DocumentId, helix_view::ViewId)>
+        + 'static,
+    ) -> Self {
+        self.open_preview_cb = Some(Box::new(f));
+        self
+    }
+
+    /// Provide a function that closes a previously opened preview document
+    pub fn with_preview_close_fn(
+        mut self,
+        f: impl for<'a> Fn(DocumentId, helix_view::ViewId, &mut Context<PickerView>) + 'static,
+    ) -> Self {
+        self.close_preview_cb = Some(Box::new(f));
+        self
+    }
+
+    /// Provide a function that renders the preview element for a given (doc_id, view_id)
+    pub fn with_preview_element_fn(
+        mut self,
+        f: impl for<'a> Fn(DocumentId, helix_view::ViewId, &mut Context<PickerView>) -> gpui::AnyElement
+        + 'static,
+    ) -> Self {
+        self.preview_element_cb = Some(Box::new(f));
+        self
+    }
+
+    /// Provide a function that renders a lightweight preview from raw text and optional path
+    pub fn with_preview_text_renderer_fn(
+        mut self,
+        f: impl for<'a> Fn(&str, Option<&std::path::Path>, &mut Context<PickerView>) -> gpui::AnyElement
+        + 'static,
+    ) -> Self {
+        self.preview_text_renderer_cb = Some(Box::new(f));
+        self
+    }
 
     pub fn with_items(mut self, items: Vec<PickerItem>) -> Self {
         self.items = items;
@@ -672,11 +743,22 @@ impl PickerView {
                     return;
                 }
 
-                // TODO: Replace with capability trait
-                // For files, we would normally create a document for syntax highlighting
-                // but that requires Core access which we don't have in the UI crate
-                // For now, just display the plain text
+                // If a preview opener is provided and this is a file, try opening a lightweight preview
+                if let Some(open_preview) = &this.open_preview_cb {
+                    if let Some((doc_id, view_id)) = open_preview(&path, cx) {
+                        this.preview_doc_id = Some(doc_id);
+                        this.preview_view_id = Some(view_id);
+                        if let Some(tracker) = cx.try_global::<PreviewTracker>() {
+                            tracker.register(doc_id, view_id);
+                        }
+                    }
+                }
 
+                // Always store the loaded preview text so the text renderer can use it
+                this.preview_content = Some(content);
+
+                // Display the plain text or syntax-rendered preview regardless of capability
+                // (Rich document rendering can be added in a future step.)
                 this.preview_loading = false;
                 cx.notify();
             });
@@ -697,28 +779,12 @@ impl PickerView {
         if let (Some(doc_id), Some(view_id)) =
             (self.preview_doc_id.take(), self.preview_view_id.take())
         {
-            // TODO: Replace with capability trait
-            // if let Some(core_weak) = &self.core {
-            //     if let Some(core) = core_weak.upgrade() {
-            //         core.update(cx, |core, _cx| {
-            //             // Close the view first, but only if it still exists
-            //             if core.editor.tree.contains(view_id) {
-            //                 core.editor.close(view_id);
-            //             }
-            //             // Then close the document without saving
-            //             let _ = core.editor.close_document(doc_id, false);
-            //
-            //             // Note: Unregistering from preview tracker happens in the outer scope
-            //         });
-            //
-            //         // Unregister from preview tracker
-            //         if let Some(tracker) = cx.try_global::<PreviewTracker>() {
-            //             tracker.unregister(doc_id, view_id);
-            //         }
-            //     }
-            // }
+            // Attempt to close via provided callback
+            if let Some(close_preview) = &self.close_preview_cb {
+                (close_preview)(doc_id, view_id, cx);
+            }
 
-            // Unregister from preview tracker even without Core
+            // Unregister from preview tracker
             if let Some(tracker) = cx.try_global::<PreviewTracker>() {
                 tracker.unregister(doc_id, view_id);
             }
@@ -1184,19 +1250,31 @@ impl PickerView {
                                         .h_full() // Use full height instead of flex_1
                                         .overflow_y_hidden() // Hide overflow for preview content
                                         .child({
-                                            // TODO: Replace with capability trait - for now just show text preview
-                                            // Regular text preview for directories or when no document
-                                            div()
-                                                .px_3()
-                                                .py_2()
-                                                .text_size(px(12.))
-                                                .text_color(self.style.modal_style.text)
-                                                .font_family("monospace")
-                                                .child(match &self.preview_content {
-                                                    Some(content) => content.clone(),
-                                                    None => "Select a file to preview".to_string(),
-                                                })
-                                                .into_any_element()
+                                            // If we have a loaded preview doc/view and a renderer, use it
+                                            if let (Some(doc_id), Some(view_id), Some(renderer)) = (
+                                                self.preview_doc_id,
+                                                self.preview_view_id,
+                                                self.preview_element_cb.as_ref(),
+                                            ) {
+                                                (renderer)(doc_id, view_id, cx)
+                                            } else if let (Some(text), Some(renderer)) =
+                                                (self.preview_content.as_deref(), self.preview_text_renderer_cb.as_ref())
+                                            {
+                                                (renderer)(text, None, cx)
+                                            } else {
+                                                // Fallback: plain text preview content
+                                                div()
+                                                    .px_3()
+                                                    .py_2()
+                                                    .text_size(px(12.))
+                                                    .text_color(self.style.modal_style.text)
+                                                    .font_family("monospace")
+                                                    .child(match &self.preview_content {
+                                                        Some(content) => content.clone(),
+                                                        None => "Select a file to preview".to_string(),
+                                                    })
+                                                    .into_any_element()
+                                            }
                                         }),
                                 ),
                         )

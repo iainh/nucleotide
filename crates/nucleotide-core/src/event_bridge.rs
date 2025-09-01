@@ -255,7 +255,13 @@ pub fn register_event_hooks() {
     register_hook!(move |event: &mut PostInsertChar<'_, '_>| {
         // Get the current view and document
         let view_id = event.cx.editor.tree.focus;
-        let doc_id = event.cx.editor.tree.get(view_id).doc;
+        let doc_id = match event.cx.editor.tree.try_get(view_id) {
+            Some(v) => v.doc,
+            None => {
+                // No focused view; skip triggering completion
+                return Ok(());
+            }
+        };
 
         debug!(
             doc_id = ?doc_id,

@@ -3,6 +3,7 @@ use gpui::{
     InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled, Window,
     div, px,
 };
+use helix_stdx::rope::RopeSliceExt;
 
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
@@ -356,6 +357,287 @@ impl OverlayView {
 
                             view = view.with_items(items);
 
+                            // Wire minimal preview open/close hooks
+                            let open_core = core_weak.clone();
+                            // Do not open a Helix view for preview; keep user's layout unchanged
+                            view = view.with_preview_open_fn(move |_path, _picker_cx| None);
+
+                            let close_core = core_weak.clone();
+                            view = view.with_preview_close_fn(move |doc_id, view_id, picker_cx| {
+                                if let Some(core) = close_core.upgrade() {
+                                    core.update(picker_cx, |core, _| {
+                                        if core.editor.tree.contains(view_id) {
+                                            core.editor.close(view_id);
+                                        }
+                                        let _ = core.editor.close_document(doc_id, false);
+                                    });
+                                }
+                            });
+
+                            // Render the preview using current document content with simple styling
+                            // Provide a lightweight syntax renderer: non-destructive, no Helix view needed.
+                            let render_core = core_weak.clone();
+                            view = view.with_preview_text_renderer_fn(move |text, path, cx| {
+                                use gpui::prelude::FluentBuilder;
+                                use gpui::{div, px, IntoElement, Styled};
+
+                                // Resolve simple scope colors from the theme
+                                let theme = cx.helix_theme();
+                                let color_for = |scope: &str| -> Option<gpui::Hsla> {
+                                    theme
+                                        .get(scope)
+                                        .fg
+                                        .and_then(nucleotide_ui::theme_utils::color_to_hsla)
+                                };
+                                let kw_color = color_for("keyword");
+                                let str_color = color_for("string");
+                                let com_color = color_for("comment");
+                                let num_color = color_for("constant.numeric").or_else(|| color_for("number"));
+
+                                // Pick a basic keyword set by extension (fallback to Rust-like)
+                                let ext = path.and_then(|p| p.extension().and_then(|e| e.to_str())).unwrap_or("");
+                                let rust_like = matches!(ext, "rs"|"js"|"ts"|"jsx"|"tsx"|"c"|"cpp"|"cc"|"h"|"hpp"|"java"|"kt"|"swift");
+                                let py_like = matches!(ext, "py");
+                                let toml_like = matches!(ext, "toml"|"ini"|"cfg");
+
+                                // Very lightweight tokenization: comments, strings, numbers, keywords
+                                let keywords: &[&str] = if py_like {
+                                    &[
+                                        "def","class","return","if","elif","else","for","while","try","except","with","as","import","from","pass","break","continue","in","not","and","or","lambda","yield","global","nonlocal","assert","raise","del","is",
+                                    ]
+                                } else if toml_like {
+                                    &["true","false"]
+                                } else {
+                                    // Rust/JS-like
+                                    &[
+                                        "fn","let","mut","const","pub","struct","enum","impl","trait","use","mod","crate","super","self","Self","match","if","else","for","while","loop","break","continue","return","async","await","move","ref","type","where","as","in","from","import","export","class","extends","new","this","static","final","const",
+                                    ]
+                                };
+
+                                // Render line by line with simple highlighting
+                                // Default text color from theme
+                                let default_text = theme
+                                    .get("ui.text")
+                                    .fg
+                                    .and_then(nucleotide_ui::theme_utils::color_to_hsla)
+                                    .unwrap_or(gpui::white());
+
+                                // Use the editor font and size for preview
+                                let editor_font = cx.global::<nucleotide_types::FontSettings>().var_font.clone();
+                                let editor_size = cx.global::<nucleotide_types::UiFontConfig>().size;
+
+                                let mut container = div()
+                                    .px_3()
+                                    .py_2()
+                                    .font(editor_font.into())
+                                    .text_size(px(editor_size))
+                                    .text_color(default_text)
+                                    .overflow_y_hidden()
+                                    .size_full();
+
+                                // Try Helix loader-based highlighter for accurate colors
+                                let mut used_loader = false;
+                                if let Some(core) = render_core.upgrade() {
+                                    let core_read = core.read(cx);
+                                    let loader_arc = core_read.editor.syn_loader.load();
+                                    let loader: &helix_core::syntax::Loader = &loader_arc;
+                                    // Prepare rope
+                                    let rope = helix_core::Rope::from(text);
+                                    let slice = rope.slice(..);
+                                    // Detect language by filename, shebang, or match
+                                    let lang_opt = path
+                                        .and_then(|p| loader.language_for_filename(p))
+                                        .or_else(|| loader.language_for_shebang(slice))
+                                        .or_else(|| loader.language_for_match(slice));
+
+                                    if let Some(lang) = lang_opt {
+                                        if let Ok(syntax) = helix_core::syntax::Syntax::new(slice, lang, loader) {
+                                            // Build highlighter for full range
+                                            let mut hl = syntax.highlighter(
+                                                slice,
+                                                loader,
+                                                0u32..(slice.len_bytes() as u32),
+                                            );
+
+                                            // Base colors
+                                            let default_text = theme
+                                                .get("ui.text")
+                                                .fg
+                                                .and_then(nucleotide_ui::theme_utils::color_to_hsla)
+                                                .unwrap_or(gpui::white());
+
+                                            // Build a single StyledText with highlight ranges
+                                            use nucleotide_ui::text_utils::TextWithStyle;
+                                            use gpui::{HighlightStyle, TextStyle};
+
+                                            let full = String::from(slice);
+                                            let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
+
+                                            let mut current_char = 0usize;
+                                            let mut current_color = default_text;
+
+                                            while hl.next_event_offset() != u32::MAX {
+                                                let next_byte: u32 = hl.next_event_offset();
+                                                let next_char = slice.byte_to_char(slice.ceil_char_boundary(next_byte as usize));
+
+                                                if next_char > current_char && current_color != default_text {
+                                                    highlights.push((current_char..next_char, HighlightStyle::color(current_color)));
+                                                }
+
+                                                // Advance style stack
+                                                let (event, iter) = hl.advance();
+                                                match event {
+                                                    helix_core::syntax::HighlightEvent::Refresh => {
+                                                        current_color = default_text;
+                                                    }
+                                                    helix_core::syntax::HighlightEvent::Push => {
+                                                        for h in iter {
+                                                            let style = theme.highlight(h);
+                                                            if let Some(fg) = style.fg.and_then(nucleotide_ui::theme_utils::color_to_hsla) {
+                                                                current_color = fg;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                current_char = next_char;
+                                            }
+
+                                            // Tail
+                                            if current_char < slice.len_chars() && current_color != default_text {
+                                                highlights.push((current_char..slice.len_chars(), HighlightStyle::color(current_color)));
+                                            }
+
+                                            let default_style = TextStyle {
+                                                font_family: cx
+                                                    .global::<crate::types::FontSettings>()
+                                                    .fixed_font
+                                                    .family
+                                                    .clone()
+                                                    .into(),
+                                                font_size: px(cx.global::<nucleotide_types::UiFontConfig>().size).into(),
+                                                ..Default::default()
+                                            };
+
+                                            let styled = TextWithStyle::new(full).with_highlights(highlights).into_styled_text(&default_style);
+                                            container = container.child(styled);
+                                            used_loader = true;
+                                        }
+                                    }
+                                }
+
+                                if !used_loader {
+                                    for line in text.lines() {
+                                        // Handle line comments (// or # for py/toml)
+                                        let (code_part, comment_part): (&str, Option<&str>) = if rust_like {
+                                            if let Some(idx) = line.find("//") { (&line[..idx], Some(&line[idx..])) } else { (line, None) }
+                                        } else if py_like || toml_like {
+                                            if let Some(idx) = line.find('#') { (&line[..idx], Some(&line[idx..])) } else { (line, None) }
+                                        } else {
+                                            (line, None)
+                                        };
+                                    // Handle line comments (// or # for py/toml)
+                                    let (code_part, comment_part): (&str, Option<&str>) = if rust_like {
+                                        if let Some(idx) = line.find("//") { (&line[..idx], Some(&line[idx..])) } else { (line, None) }
+                                    } else if py_like || toml_like {
+                                        if let Some(idx) = line.find('#') { (&line[..idx], Some(&line[idx..])) } else { (line, None) }
+                                    } else {
+                                        (line, None)
+                                    };
+
+                                    // Tokenize strings in code_part (simple double-quoted)
+                                    let mut row = div();
+                                    let mut rest = code_part;
+                                    while let Some(start) = rest.find('"') {
+                                        let (before, after_start) = rest.split_at(start);
+                                        // Find closing quote
+                                        if let Some(end_rel) = after_start[1..].find('"') {
+                                            let end = 1 + end_rel; // position of closing quote relative to after_start
+                                            // before
+                                            if !before.is_empty() {
+                                                row = row.child(before.to_string());
+                                            }
+                                            // string token
+                                            let tok = &after_start[..=end];
+                                            let mut s = div().child(tok.to_string());
+                                            if let Some(c) = str_color { s = s.text_color(c); }
+                                            row = row.child(s);
+                                            // advance
+                                            rest = &after_start[end+1..];
+                                        } else {
+                                            // no closing quote; push remainder and break
+                                            row = row.child(rest.to_string());
+                                            rest = "";
+                                            break;
+                                        }
+                                    }
+                                    if !rest.is_empty() {
+                                        row = row.child(rest.to_string());
+                                    }
+
+                                    // Apply simple keyword and number coloring on the assembled row children if plain text
+                                    // For simplicity, re-render a plain span with coarse keyword/number highlighting when no strings were found
+                                    if !code_part.contains('"') {
+                                        // Split by whitespace and punctuation
+                                        let mut buf = String::new();
+                                        let mut styled_row = div();
+                                        for ch in code_part.chars() {
+                                            if ch.is_alphanumeric() || ch == '_' {
+                                                buf.push(ch);
+                                            } else {
+                                                // flush word with style if keyword/number
+                                                if !buf.is_empty() {
+                                                    let word = buf.clone();
+                                                    if keywords.iter().any(|kw| *kw == word.as_str()) {
+                                                        let mut span = div().child(word);
+                                                        if let Some(c) = kw_color { span = span.text_color(c); }
+                                                        styled_row = styled_row.child(span);
+                                                        buf.clear();
+                                                    } else if word.chars().all(|c| c.is_ascii_digit()) {
+                                                        let mut span = div().child(word);
+                                                        if let Some(c) = num_color { span = span.text_color(c); }
+                                                        styled_row = styled_row.child(span);
+                                                        buf.clear();
+                                                    } else {
+                                                        styled_row = styled_row.child(std::mem::take(&mut buf));
+                                                    }
+                                                }
+                                                // punctuation
+                                                styled_row = styled_row.child(ch.to_string());
+                                            }
+                                        }
+                                        if !buf.is_empty() {
+                                            let word = std::mem::take(&mut buf);
+                                            if keywords.iter().any(|kw| *kw == word.as_str()) {
+                                                let mut span = div().child(word);
+                                                if let Some(c) = kw_color { span = span.text_color(c); }
+                                                styled_row = styled_row.child(span);
+                                            } else if word.chars().all(|c| c.is_ascii_digit()) {
+                                                let mut span = div().child(word);
+                                                if let Some(c) = num_color { span = span.text_color(c); }
+                                                styled_row = styled_row.child(span);
+                                            } else {
+                                                styled_row = styled_row.child(word);
+                                            }
+                                        }
+                                        row = styled_row;
+                                    }
+
+                                    // Append comment part with comment color
+                                    if let Some(cmt) = comment_part {
+                                        let mut cspan = div().child(cmt.to_string());
+                                        if let Some(c) = com_color { cspan = cspan.text_color(c); }
+                                        row = row.child(cspan);
+                                    }
+
+                                    container = container.child(row);
+                                    }
+                                }
+
+                                container.into_any_element()
+                            });
+
+                            // Preview capability integration can be wired here in the future
+
                             // Set up the selection callback
                             view = view.on_select(move |selected_item: &PickerItem, picker_cx| {
                                 // Find the index of the selected item
@@ -599,8 +881,13 @@ impl OverlayView {
 
             // Get focused view and document
             let focused_view_id = editor.tree.focus;
-            let view = editor.tree.get(focused_view_id);
-            let doc_id = view.doc;
+            let (view, doc_id) = match editor.tree.try_get(focused_view_id) {
+                Some(view) => (view, view.doc),
+                None => {
+                    // No focused view; fallback to conservative defaults
+                    return (px(0.0), px(0.0));
+                }
+            };
 
             match editor.documents.get(&doc_id) {
                 Some(document) => {
