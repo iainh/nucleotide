@@ -33,5 +33,14 @@ anyhow.workspace = true
 tracing.workspace = true
 which = "6.0"
 
+[features]
+default = []
+# Enable OS trash integration using the `trash` crate
+trash = ["dep:trash"]
+
+[dependencies.trash]
+version = "3"
+optional = true
+
 [package.metadata.cargo-machete]
 ignored = ["tracing"]
