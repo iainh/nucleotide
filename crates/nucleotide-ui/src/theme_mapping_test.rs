@@ -127,7 +127,7 @@ mod tests {
         // This test ensures that as new fields are added to SemanticColors,
         // they get proper mappings in the Helix theme functions
 
-        let different_color = hsla(0.8, 0.2, 0.7, 1.0);
+        let _different_color = hsla(0.8, 0.2, 0.7, 1.0);
         let base_colors = BaseColors::light();
 
         // Create helix colors with easily identifiable values

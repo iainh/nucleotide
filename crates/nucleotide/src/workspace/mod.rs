@@ -6905,13 +6905,14 @@ impl Workspace {}
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
     use std::path::PathBuf;
 
     #[test]
     fn test_project_detection_basic() {
         // Test that project detection function exists and doesn't panic with valid path
-        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let _current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         //         let _detected_types = crate::project_indicator::detect_project_types_for_path(&current_dir);
 
         // The main goal is ensuring the integration compiles and doesn't panic

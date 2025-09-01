@@ -148,7 +148,7 @@ async fn test_event_driven_command_pattern_end_to_end() {
             while let Some(command) = command_rx.recv().await {
                 match command {
                     ProjectLspCommand::StartServer {
-                        workspace_root,
+                        workspace_root: _,
                         server_name,
                         language_id,
                         response,
@@ -256,9 +256,9 @@ async fn test_event_driven_command_pattern_failure() {
             while let Some(command) = command_rx.recv().await {
                 match command {
                     ProjectLspCommand::StartServer {
-                        workspace_root,
-                        server_name,
-                        language_id,
+                        workspace_root: _,
+                        server_name: _,
+                        language_id: _,
                         response,
                         span,
                     } => {

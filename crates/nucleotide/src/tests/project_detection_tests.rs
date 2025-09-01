@@ -391,6 +391,7 @@ mod tests {
         trait ProjectDetector {
             fn detect_project_type(&self, path: &Path) -> ProjectType;
             fn find_project_root(&self, path: &Path) -> Option<PathBuf>;
+            #[allow(dead_code)]
             fn get_project_metadata(&self, path: &Path) -> ProjectMetadata;
         }
 
@@ -404,6 +405,7 @@ mod tests {
         }
 
         #[derive(Debug, Default)]
+        #[allow(dead_code)]
         struct ProjectMetadata {
             name: Option<String>,
             version: Option<String>,
@@ -437,7 +439,7 @@ mod tests {
                 }
             }
 
-            fn get_project_metadata(&self, path: &Path) -> ProjectMetadata {
+            fn get_project_metadata(&self, _path: &Path) -> ProjectMetadata {
                 // Simplified metadata extraction for testing
                 ProjectMetadata::default()
             }

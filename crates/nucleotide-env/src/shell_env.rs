@@ -323,16 +323,13 @@ pub mod shell_command_builder {
         // Build command string with cd to trigger directory hooks (direnv, asdf, etc.)
         let mut command_string = format!("cd '{}' && ", directory.display());
 
-        // Use printenv to capture environment variables
-        command_string.push_str("printenv -0"); // Use null separators for reliable parsing
+        // Use `env -0` to capture environment variables with null separators (portable)
+        command_string.push_str("env -0");
 
         match shell_name {
             "fish" => {
                 // Fish requires special handling to trigger hooks
-                command_string = format!(
-                    "cd '{}'; emit fish_prompt; printenv -0",
-                    directory.display()
-                );
+                command_string = format!("cd '{}'; emit fish_prompt; env -0", directory.display());
                 command.arg("-l").arg("-c").arg(command_string);
             }
             "tcsh" | "csh" => {
@@ -342,7 +339,7 @@ pub mod shell_command_builder {
             }
             "nu" => {
                 // Nushell requires ^ prefix for external commands
-                let nu_command = format!("cd '{}'; ^printenv -0", directory.display());
+                let nu_command = format!("cd '{}'; ^env -0", directory.display());
                 command.arg("-l").arg("-c").arg(nu_command);
             }
             _ => {
@@ -515,7 +512,6 @@ impl ShellEnvironmentCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::test;
 
     #[tokio::test]
     async fn test_shell_detection() {

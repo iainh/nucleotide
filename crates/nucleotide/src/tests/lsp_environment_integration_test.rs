@@ -58,7 +58,7 @@ async fn test_helix_lsp_bridge_environment_injection() {
     let env_provider = Arc::new(MockEnvironmentProvider::new());
 
     // Create HelixLspBridge with environment provider
-    let bridge = HelixLspBridge::new_with_environment(event_tx, env_provider.clone());
+    let _bridge = HelixLspBridge::new_with_environment(event_tx, env_provider.clone());
 
     // Test that the bridge can access the environment provider
     // This is an indirect test since the actual server startup requires a full Editor

@@ -27,9 +27,9 @@ mod lsp_lifecycle_integration_tests {
         /// Test directory for creating temporary project structures
         test_dir: PathBuf,
         /// Timeout for operations
-        operation_timeout: Duration,
+        _operation_timeout: Duration,
         /// Mock server startup delay
-        server_startup_delay: Duration,
+        _server_startup_delay: Duration,
     }
 
     impl Default for TestConfig {
@@ -41,8 +41,8 @@ mod lsp_lifecycle_integration_tests {
             let unique_dir = format!("nucleotide_lsp_tests_{}_{}", std::process::id(), unique_id);
             Self {
                 test_dir: std::env::temp_dir().join(unique_dir),
-                operation_timeout: Duration::from_secs(5),
-                server_startup_delay: Duration::from_millis(50),
+                _operation_timeout: Duration::from_secs(5),
+                _server_startup_delay: Duration::from_millis(50),
             }
         }
     }
@@ -183,6 +183,7 @@ edition = "2021"
             self.events.write().await.push(event);
         }
 
+        #[allow(dead_code)]
         async fn get_events(&self) -> Vec<ProjectLspEvent> {
             self.events.read().await.clone()
         }
@@ -223,6 +224,7 @@ edition = "2021"
             None
         }
 
+        #[allow(dead_code)]
         async fn clear(&self) {
             self.events.write().await.clear();
         }
@@ -247,6 +249,7 @@ edition = "2021"
             }
         }
 
+        #[allow(dead_code)]
         fn record_server_startup(&mut self, duration: Duration) {
             self.server_startup_times.push(duration);
         }
@@ -272,6 +275,7 @@ edition = "2021"
             Some(total / self.server_startup_times.len() as u32)
         }
 
+        #[allow(dead_code)]
         fn max_startup_time(&self) -> Option<Duration> {
             self.server_startup_times.iter().max().copied()
         }
@@ -897,10 +901,10 @@ edition = "2021"
         let _ = helper.cleanup_test_directory().await;
 
         let config = ProjectLspConfig::default();
-        let lifecycle_manager = ServerLifecycleManager::new(config);
+        let _lifecycle_manager = ServerLifecycleManager::new(config);
 
         // Test without bridge (should use mock ID)
-        let rust_project = helper
+        let _rust_project = helper
             .create_rust_project("editor_integration")
             .await
             .expect("Failed to create test project");

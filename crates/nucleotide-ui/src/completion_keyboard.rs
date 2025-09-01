@@ -455,6 +455,7 @@ mod tests {
 
     #[test]
     #[ignore = "Test uses unsafe FocusHandle initialization causing undefined behavior"]
+    #[allow(invalid_value)]
     fn test_keyboard_action_handling() {
         // Test action handling without GPUI context for simplicity
         let config = KeyboardConfig::default();
@@ -479,6 +480,7 @@ mod tests {
 
     #[test]
     #[ignore = "Test uses unsafe FocusHandle initialization causing undefined behavior"]
+    #[allow(invalid_value)]
     fn test_keystroke_processing() {
         let config = KeyboardConfig::default();
 
@@ -530,6 +532,7 @@ mod tests {
 
     #[test]
     #[ignore = "Test uses unsafe FocusHandle initialization causing undefined behavior"]
+    #[allow(invalid_value)]
     fn test_pass_through_behavior() {
         let config = KeyboardConfig::default();
 

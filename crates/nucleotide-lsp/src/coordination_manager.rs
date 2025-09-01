@@ -603,7 +603,7 @@ mod tests {
         let mut manager = LspManager::new(initial_config);
 
         let new_config = create_test_config(true, false, 3000);
-        manager.update_config(new_config);
+        let _ = manager.update_config(new_config);
 
         assert_eq!(manager.config.project_lsp_startup, true);
         assert_eq!(manager.config.enable_fallback, false);

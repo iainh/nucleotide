@@ -72,10 +72,10 @@ mod focused_shell_env_tests {
         let cmd = result.unwrap();
         assert_eq!(cmd.get_program(), "/bin/bash");
 
-        // Command should include both cd and printenv
+        // Command should include both cd and env -0
         let debug_str = format!("{:?}", cmd);
         assert!(debug_str.contains("cd"));
-        assert!(debug_str.contains("printenv"));
+        assert!(debug_str.contains("env -0"));
     }
 
     #[tokio::test]

@@ -4,8 +4,8 @@
 #[cfg(test)]
 mod tests {
     use crate::config::{
-        Config, EditorGuiConfig, GuiConfig, LspConfig, ThemeConfig, ThemeMode, UiConfig,
-        WindowConfig,
+        Config, EditorGuiConfig, FileOpsConfig, GuiConfig, LspConfig, ThemeConfig, ThemeMode,
+        UiConfig, WindowConfig,
     };
 
     use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
@@ -389,6 +389,7 @@ dark_theme = "custom_dark"
             },
             lsp: LspConfig::default(),
             project_markers: ProjectMarkersConfig::default(),
+            file_ops: FileOpsConfig::default(),
         };
 
         // Serialize to TOML

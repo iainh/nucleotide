@@ -19,6 +19,7 @@ pub mod lsp_stress_tests {
     use crate::{ProjectLspConfig, ProjectLspManager};
 
     /// Test configuration for stress tests
+    #[allow(dead_code)]
     #[derive(Debug, Clone)]
     struct StressTestConfig {
         /// Number of concurrent projects

@@ -26,6 +26,7 @@ mod tests {
         Secondary,
     }
 
+    #[allow(dead_code)]
     #[derive(Debug, Clone, PartialEq, Default)]
     enum MockSize {
         Small,
@@ -247,6 +248,7 @@ mod tests {
         // but we can verify the trait compiles and the methods exist
 
         // Test that we can reference the trait methods
+        #[allow(dead_code)]
         fn check_themed_context<T: ThemedContext>(_ctx: &T) {
             // These calls would work in a real GPUI context
             // let theme = ctx.theme();
@@ -256,7 +258,7 @@ mod tests {
 
         // Verify trait is implemented for the right types
         fn _compile_check() {
-            check_themed_context::<gpui::App>;
+            let _ = check_themed_context::<gpui::App> as fn(&gpui::App);
             // Note: Can't easily test Context<V> without generic parameter
         }
     }

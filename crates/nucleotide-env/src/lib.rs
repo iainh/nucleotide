@@ -11,4 +11,5 @@ pub use shell_env::{
 };
 
 #[cfg(test)]
+#[allow(unused_imports)]
 pub use shell_env_focused_test::*;

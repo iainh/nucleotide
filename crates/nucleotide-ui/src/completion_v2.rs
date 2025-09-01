@@ -1984,10 +1984,10 @@ mod tests {
 
     mod filter_tests {
         use super::*;
-        use gpui::{TestAppContext, test::observe};
+        use gpui::TestAppContext;
 
         #[gpui::test]
-        async fn test_set_items_with_filter_basic(mut cx: &mut TestAppContext) {
+        async fn test_set_items_with_filter_basic(cx: &mut TestAppContext) {
             // Test that set_items_with_filter correctly applies an initial filter
 
             let completion_items = vec![
@@ -2023,7 +2023,7 @@ mod tests {
         }
 
         #[gpui::test]
-        async fn test_set_items_with_filter_empty_prefix(mut cx: &mut TestAppContext) {
+        async fn test_set_items_with_filter_empty_prefix(cx: &mut TestAppContext) {
             // Test that empty prefix shows all items
 
             let completion_items = vec![
@@ -2052,7 +2052,7 @@ mod tests {
         }
 
         #[gpui::test]
-        async fn test_set_items_with_filter_no_matches(mut cx: &mut TestAppContext) {
+        async fn test_set_items_with_filter_no_matches(cx: &mut TestAppContext) {
             // Test that non-matching prefix results in no items
 
             let completion_items = vec![
@@ -2081,7 +2081,7 @@ mod tests {
         }
 
         #[gpui::test]
-        async fn test_set_items_with_filter_none(mut cx: &mut TestAppContext) {
+        async fn test_set_items_with_filter_none(cx: &mut TestAppContext) {
             // Test that None filter shows all items (no initial filtering)
 
             let completion_items = vec![
@@ -2110,7 +2110,7 @@ mod tests {
         }
 
         #[gpui::test]
-        async fn test_set_items_with_filter_fuzzy_matching(mut cx: &mut TestAppContext) {
+        async fn test_set_items_with_filter_fuzzy_matching(cx: &mut TestAppContext) {
             // Test fuzzy matching behavior
 
             let completion_items = vec![
@@ -2147,7 +2147,7 @@ mod tests {
         }
 
         #[gpui::test]
-        async fn test_completion_view_visibility(mut cx: &mut TestAppContext) {
+        async fn test_completion_view_visibility(cx: &mut TestAppContext) {
             // Test that CompletionView is visible when it has items and invisible when empty
 
             let completion_items =
@@ -2178,7 +2178,7 @@ mod tests {
         }
 
         #[gpui::test]
-        async fn test_completion_view_selection(mut cx: &mut TestAppContext) {
+        async fn test_completion_view_selection(cx: &mut TestAppContext) {
             // Test selection behavior
 
             let completion_items = vec![

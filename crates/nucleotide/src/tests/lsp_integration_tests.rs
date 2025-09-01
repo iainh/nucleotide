@@ -24,6 +24,7 @@ fn create_lsp_test_config(
 }
 
 /// Test helper to create a full nucleotide config (if needed for other tests)
+#[allow(dead_code)]
 fn create_test_config(
     project_lsp_startup: bool,
     enable_fallback: bool,

@@ -283,7 +283,7 @@ mod tests {
         let mut profiler = Profiler::new();
 
         // Record multiple measurements
-        for i in 0..3 {
+        for _ in 0..3 {
             profiler.start_timer("test_op");
             thread::sleep(Duration::from_millis(1));
             profiler.stop_timer("test_op");

@@ -101,7 +101,7 @@ pub mod test_support {
                 let update = match event {
                     BridgedEvent::DocumentChanged {
                         doc_id,
-                        change_summary,
+                        change_summary: _,
                     } => TestUpdate::DocumentChanged { doc_id },
                     BridgedEvent::SelectionChanged { doc_id, view_id } => {
                         TestUpdate::SelectionChanged { doc_id, view_id }
@@ -117,7 +117,7 @@ pub mod test_support {
                     }
                     BridgedEvent::DocumentClosed {
                         doc_id,
-                        was_modified,
+                        was_modified: _,
                     } => TestUpdate::DocumentClosed { doc_id },
                     BridgedEvent::ViewFocused { view_id } => TestUpdate::ViewFocused { view_id },
                     BridgedEvent::LanguageServerInitialized { server_id } => {

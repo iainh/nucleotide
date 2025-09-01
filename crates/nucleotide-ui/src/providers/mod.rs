@@ -752,7 +752,7 @@ mod tests {
             .child(gpui::div().id("child1"))
             .child(gpui::div().id("child2"));
 
-        let element = tree.build();
+        let _element = tree.build();
         // Test would verify the element structure in a real implementation
         assert!(true); // Placeholder assertion
     }

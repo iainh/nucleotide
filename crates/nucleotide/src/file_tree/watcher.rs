@@ -301,7 +301,7 @@ mod tests {
         let test_file = temp_dir.path().join("test_file.txt");
 
         // Spawn the watcher task
-        let mut event_received = false;
+        let mut _event_received = false;
 
         // Use tokio::select to race file creation with event detection
         tokio::select! {
@@ -313,7 +313,7 @@ mod tests {
                 if let Some(FileTreeEvent::FileSystemChanged { path, kind }) = event {
                     assert_eq!(path, test_file);
                     assert!(matches!(kind, FileSystemEventKind::Created));
-                    event_received = true;
+                    _event_received = true;
                 }
             },
             _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {

@@ -13,6 +13,7 @@ mod tests {
     /// Integration test builder for creating realistic project scenarios
     struct IntegrationTestProject {
         temp_dir: TempDir,
+        #[allow(dead_code)]
         name: String,
     }
 
@@ -280,6 +281,7 @@ edition = "2021"
             fs::write(self.path().join("nucleotide.toml"), config_content)
         }
 
+        #[allow(dead_code)]
         fn add_helix_config(&self, config_content: &str) -> std::io::Result<()> {
             fs::write(self.path().join("config.toml"), config_content)
         }
