@@ -204,6 +204,40 @@ pub struct GuiConfig {
     /// Project markers configuration for custom project detection
     #[serde(default)]
     pub project_markers: ProjectMarkersConfig,
+
+    /// File operations behavior
+    #[serde(default)]
+    pub file_ops: FileOpsConfig,
+}
+
+/// Delete behavior preference
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DeleteBehavior {
+    Trash,
+    Permanent,
+}
+
+impl Default for DeleteBehavior {
+    fn default() -> Self {
+        DeleteBehavior::Trash
+    }
+}
+
+/// File operations configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileOpsConfig {
+    /// How delete should behave: move to trash or delete permanently
+    #[serde(default)]
+    pub delete_behavior: DeleteBehavior,
+}
+
+impl Default for FileOpsConfig {
+    fn default() -> Self {
+        Self {
+            delete_behavior: DeleteBehavior::Trash,
+        }
+    }
 }
 
 /// Combined configuration merging GUI and Helix configs
