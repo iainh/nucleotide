@@ -188,6 +188,13 @@ pub struct PickerView {
 
     // Cached dimensions to prevent resizing on key presses
     cached_dimensions: Option<CachedDimensions>,
+
+    // Optional capability bridge for preview operations
+    capability: Option<
+        std::sync::Arc<
+            std::sync::RwLock<dyn nucleotide_core::capabilities::PickerCapability + Send + Sync>,
+        >,
+    >,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -276,6 +283,7 @@ impl PickerView {
             on_cancel: None,
             style: PickerStyle::default(),
             cached_dimensions: None,
+            capability: None,
         }
     }
 
@@ -308,10 +316,21 @@ impl PickerView {
             on_cancel: None,
             style,
             cached_dimensions: None,
+            capability: None,
         }
     }
 
     // Future: with_capability(...) to integrate with core/editor
+    /// Attach a capability implementation to drive preview open/close/render without direct core access
+    pub fn with_capability(
+        mut self,
+        capability: std::sync::Arc<
+            std::sync::RwLock<dyn nucleotide_core::capabilities::PickerCapability + Send + Sync>,
+        >,
+    ) -> Self {
+        self.capability = Some(capability);
+        self
+    }
 
     /// Provide a function that opens a preview document and returns (doc_id, view_id)
     pub fn with_preview_open_fn(
@@ -708,9 +727,7 @@ impl PickerView {
         self.preview_content = Some("Loading...".to_string());
         cx.notify();
 
-        // TODO: Replace with capability trait
-        // let core_weak = self.core.clone();
-        let _core_weak = None::<gpui::WeakEntity<()>>;
+        // Capability-driven open is not used in this minimal integration; rely on callbacks
         // When spawning from Context<T>, the closure gets WeakEntity<T> as first param
         self.preview_task = Some(cx.spawn(async move |view_weak, cx| {
             let content = if path.is_dir() {
@@ -785,13 +802,12 @@ impl PickerView {
                     return;
                 }
 
-                // If a preview opener is provided and this is a file, try opening a lightweight preview
-                if let Some(open_preview) = &this.open_preview_cb {
-                    if let Some((doc_id, view_id)) = open_preview(&path, cx) {
-                        this.preview_doc_id = Some(doc_id);
-                        this.preview_view_id = Some(view_id);
-                        if let Some(tracker) = cx.try_global::<PreviewTracker>() {
-                            tracker.register(doc_id, view_id);
+                // If we didn't manage to open via capability earlier, try legacy callback
+                if this.preview_doc_id.is_none() || this.preview_view_id.is_none() {
+                    if let Some(open_preview) = &this.open_preview_cb {
+                        if let Some((doc_id, view_id)) = open_preview(&path, cx) {
+                            this.preview_doc_id = Some(doc_id);
+                            this.preview_view_id = Some(view_id);
                         }
                     }
                 }
@@ -820,18 +836,15 @@ impl PickerView {
 
         // Only clean up if we have both doc_id and view_id
         // (view_id indicates we created a new document for preview)
-        if let (Some(doc_id), Some(view_id)) =
-            (self.preview_doc_id.take(), self.preview_view_id.take())
-        {
-            // Attempt to close via provided callback
+        if let (Some(doc_id), Some(view_id)) = (self.preview_doc_id, self.preview_view_id) {
+            // Use provided callback for closing
             if let Some(close_preview) = &self.close_preview_cb {
                 (close_preview)(doc_id, view_id, cx);
             }
 
-            // Unregister from preview tracker
-            if let Some(tracker) = cx.try_global::<PreviewTracker>() {
-                tracker.unregister(doc_id, view_id);
-            }
+            // Clear IDs
+            self.preview_doc_id = None;
+            self.preview_view_id = None;
         } else {
             // If we only have doc_id (no view_id), it means we're showing an existing buffer
             // Just clear the reference, don't close the document
@@ -1294,16 +1307,41 @@ impl PickerView {
                                         .h_full() // Use full height instead of flex_1
                                         .overflow_y_hidden() // Hide overflow for preview content
                                         .child({
-                                            // If we have a loaded preview doc/view and a renderer, use it
-                                            if let (Some(doc_id), Some(view_id), Some(renderer)) = (
-                                                self.preview_doc_id,
-                                                self.preview_view_id,
-                                                self.preview_element_cb.as_ref(),
-                                            ) {
-                                                (renderer)(doc_id, view_id, cx)
-                                            } else if let (Some(text), Some(renderer)) =
-                                                (self.preview_content.as_deref(), self.preview_text_renderer_cb.as_ref())
+                                            // Compute a single AnyElement for the preview area
+                                            let preview_el: gpui::AnyElement = if let (Some(doc_id), Some(view_id)) =
+                                                (self.preview_doc_id, self.preview_view_id)
                                             {
+                                                if let Some(cap) = &self.capability {
+                                                    if let Ok(cap) = cap.read() {
+                                                        cap.render_preview(doc_id, view_id)
+                                                    } else if let Some(renderer) = &self.preview_element_cb {
+                                                        (renderer)(doc_id, view_id, cx)
+                                                    } else {
+                                                        div()
+                                                            .px_3()
+                                                            .py_2()
+                                                            .text_size(px(12.))
+                                                            .text_color(self.style.modal_style.text)
+                                                            .font_family("monospace")
+                                                            .child("Preview available (no renderer)")
+                                                            .into_any_element()
+                                                    }
+                                                } else if let Some(renderer) = &self.preview_element_cb {
+                                                    (renderer)(doc_id, view_id, cx)
+                                                } else {
+                                                    div()
+                                                        .px_3()
+                                                        .py_2()
+                                                        .text_size(px(12.))
+                                                        .text_color(self.style.modal_style.text)
+                                                        .font_family("monospace")
+                                                        .child("Preview available (no renderer)")
+                                                        .into_any_element()
+                                                }
+                                            } else if let (Some(text), Some(renderer)) = (
+                                                self.preview_content.as_deref(),
+                                                self.preview_text_renderer_cb.as_ref(),
+                                            ) {
                                                 (renderer)(text, None, cx)
                                             } else {
                                                 // Fallback: plain text preview content
@@ -1318,7 +1356,8 @@ impl PickerView {
                                                         None => "Select a file to preview".to_string(),
                                                     })
                                                     .into_any_element()
-                                            }
+                                            };
+                                            preview_el
                                         }),
                                 ),
                         )
