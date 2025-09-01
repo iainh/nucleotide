@@ -533,13 +533,11 @@ impl ThemeManager {
 
         // Helper functions to compute derived colors from ui.background
         let compute_surface_from_bg = |bg: Hsla| -> Hsla {
-            // Create a surface color by adjusting lightness from background based on actual brightness
+            // Perceptual lightness adjustment from background using OKLab L
             if bg.l > 0.5 {
-                // Background is light, make surface slightly darker
-                hsla(bg.h, bg.s, (bg.l - 0.05).max(0.0), bg.a)
+                crate::styling::ColorTheory::adjust_oklab_lightness(bg, -0.05)
             } else {
-                // Background is dark, make surface slightly lighter
-                hsla(bg.h, bg.s, (bg.l + 0.05).min(1.0), bg.a)
+                crate::styling::ColorTheory::adjust_oklab_lightness(bg, 0.05)
             }
         };
 
@@ -567,24 +565,20 @@ impl ThemeManager {
         };
 
         let compute_hover_from_bg = |bg: Hsla| -> Hsla {
-            // Create hover state color from background based on actual background brightness
+            // Perceptual hover using OKLab L
             if bg.l > 0.5 {
-                // Background is light, make hover slightly darker
-                hsla(bg.h, bg.s, (bg.l - 0.03).max(0.0), bg.a)
+                crate::styling::ColorTheory::adjust_oklab_lightness(bg, -0.03)
             } else {
-                // Background is dark, make hover slightly lighter
-                hsla(bg.h, bg.s, (bg.l + 0.03).min(1.0), bg.a)
+                crate::styling::ColorTheory::adjust_oklab_lightness(bg, 0.03)
             }
         };
 
         let compute_active_from_bg = |bg: Hsla| -> Hsla {
-            // Create active state color from background based on actual background brightness
+            // Perceptual active using OKLab L
             if bg.l > 0.5 {
-                // Background is light, make active darker than hover
-                hsla(bg.h, bg.s, (bg.l - 0.08).max(0.0), bg.a)
+                crate::styling::ColorTheory::adjust_oklab_lightness(bg, -0.08)
             } else {
-                // Background is dark, make active lighter than hover
-                hsla(bg.h, bg.s, (bg.l + 0.08).min(1.0), bg.a)
+                crate::styling::ColorTheory::adjust_oklab_lightness(bg, 0.08)
             }
         };
 
@@ -941,8 +935,8 @@ impl ThemeManager {
             text_muted: hsla(text.h, text.s, text.l * 0.7, text.a),
             text_disabled: hsla(text.h, text.s, text.l * 0.5, text.a),
             accent,
-            accent_hover: hsla(accent.h, accent.s, accent.l + 0.1, accent.a),
-            accent_active: hsla(accent.h, accent.s, accent.l - 0.1, accent.a),
+            accent_hover: crate::styling::ColorTheory::adjust_oklab_lightness(accent, 0.1),
+            accent_active: crate::styling::ColorTheory::adjust_oklab_lightness(accent, -0.1),
             error,
             warning,
             success,

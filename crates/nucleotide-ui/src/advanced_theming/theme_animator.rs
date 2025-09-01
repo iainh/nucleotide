@@ -555,31 +555,9 @@ impl ThemeAnimator {
         result
     }
 
-    /// Interpolate between two colors
+    /// Interpolate between two colors (perceptual OKLCH)
     fn interpolate_color(&self, from: Hsla, to: Hsla, progress: f32) -> Hsla {
-        // Handle hue interpolation (shortest path around color wheel)
-        let hue_diff = to.h - from.h;
-        let adjusted_hue_diff = if hue_diff > 180.0 {
-            hue_diff - 360.0
-        } else if hue_diff < -180.0 {
-            hue_diff + 360.0
-        } else {
-            hue_diff
-        };
-
-        let interpolated_hue = (from.h + adjusted_hue_diff * progress) % 360.0;
-        let interpolated_hue = if interpolated_hue < 0.0 {
-            interpolated_hue + 360.0
-        } else {
-            interpolated_hue
-        };
-
-        Hsla {
-            h: interpolated_hue,
-            s: from.s + (to.s - from.s) * progress,
-            l: from.l + (to.l - from.l) * progress,
-            a: from.a + (to.a - from.a) * progress,
-        }
+        crate::styling::ColorTheory::mix_oklch(from, to, progress)
     }
 
     /// Interpolate between two pixel values

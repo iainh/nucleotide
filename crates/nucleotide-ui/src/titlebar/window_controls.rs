@@ -55,7 +55,7 @@ impl WindowControlStyle {
             bg, fg, hover_bg
         );
 
-        let icon_color = ColorTheory::mix(fg, bg, 0.3);
+        let icon_color = ColorTheory::mix_oklch(fg, bg, 0.3);
         debug!(
             "TITLEBAR WINDOW_CONTROL: Computed icon colors - normal={:?}, hover={:?}",
             icon_color, fg
@@ -111,7 +111,7 @@ impl WindowControlStyle {
             bg, fg, error_color
         );
 
-        let icon_color = ColorTheory::mix(fg, bg, 0.3);
+        let icon_color = ColorTheory::mix_oklch(fg, bg, 0.3);
         let icon_hover = ColorTheory::best_text_color(error_color, theme_tokens);
 
         debug!(

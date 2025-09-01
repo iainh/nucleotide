@@ -215,10 +215,11 @@ pub struct PickerStyle {
 
 impl Default for PickerStyle {
     fn default() -> Self {
+        let dt = crate::DesignTokens::dark();
         Self {
             modal_style: ModalStyle::default(),
-            preview_background: hsla(0.0, 0.0, 0.05, 1.0),
-            cursor: hsla(0.0, 0.0, 0.9, 1.0),
+            preview_background: dt.chrome.surface_elevated,
+            cursor: dt.editor.cursor_normal,
         }
     }
 }
@@ -226,19 +227,33 @@ impl Default for PickerStyle {
 impl PickerStyle {
     /// Create PickerStyle from helix theme using appropriate theme keys
     pub fn from_theme(theme: &helix_view::Theme) -> Self {
+        // Prefer provider tokens (OKLab/OKLCH-driven); fallback to Helix mapping
+        if let Some(provider) = crate::providers::use_theme_provider() {
+            let ui = provider.current_theme();
+            let dt = ui.tokens;
+            let modal_style = ModalStyle {
+                background: dt.chrome.popup_background,
+                text: dt.chrome.text_on_chrome,
+                border: dt.chrome.popup_border,
+                selected_background: dt.editor.selection_primary,
+                selected_text: dt.editor.text_on_primary,
+                prompt_text: dt.chrome.text_chrome_secondary,
+            };
+            return Self {
+                modal_style,
+                preview_background: dt.chrome.surface_elevated,
+                cursor: dt.editor.cursor_normal,
+            };
+        }
+
         use crate::theme_utils::color_to_hsla;
-
         let modal_style = ModalStyle::from_theme(theme);
-
-        // Get preview background - slightly different from main background
         let preview_background = theme
             .get("ui.background.separator")
             .bg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.background").bg.and_then(color_to_hsla))
             .unwrap_or(modal_style.background);
-
-        // Get cursor color from theme
         let cursor = theme
             .get("ui.cursor")
             .fg
@@ -246,7 +261,6 @@ impl PickerStyle {
             .or_else(|| theme.get("ui.cursor.primary").fg.and_then(color_to_hsla))
             .or_else(|| theme.get("ui.cursor").bg.and_then(color_to_hsla))
             .unwrap_or(modal_style.text);
-
         Self {
             modal_style,
             preview_background,

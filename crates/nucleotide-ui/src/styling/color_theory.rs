@@ -2,6 +2,7 @@
 // ABOUTME: Provides WCAG-compliant contrast calculations and contextual color awareness
 
 use crate::DesignTokens;
+use core::f32::consts::PI;
 use gpui::{Hsla, hsla};
 
 /// WCAG contrast ratios for accessibility compliance
@@ -18,27 +19,63 @@ impl ContrastRatios {
 pub struct ColorTheory;
 
 impl ColorTheory {
+    // ==========================
+    // Linear sRGB companding
+    // ==========================
+    fn srgb_to_linear(v: f32) -> f32 {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn linear_to_srgb(v: f32) -> f32 {
+        if v <= 0.0031308 {
+            12.92 * v
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    // ==========================
+    // RGB <-> HSL helpers
+    // ==========================
+    fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+        let max = r.max(g.max(b));
+        let min = r.min(g.min(b));
+        let l = (max + min) * 0.5;
+        if (max - min).abs() < 1e-6 {
+            return (0.0, 0.0, l);
+        }
+        let d = max - min;
+        let s = if l > 0.5 {
+            d / (2.0 - max - min)
+        } else {
+            d / (max + min)
+        };
+        let h = if (max - r).abs() < 1e-6 {
+            ((g - b) / d) % 6.0
+        } else if (max - g).abs() < 1e-6 {
+            (b - r) / d + 2.0
+        } else {
+            (r - g) / d + 4.0
+        } / 6.0;
+        // Normalize h to [0,1)
+        let mut h = if h < 0.0 { h + 1.0 } else { h };
+        if h >= 1.0 {
+            h -= 1.0;
+        }
+        (h, s.clamp(0.0, 1.0), l.clamp(0.0, 1.0))
+    }
     /// Calculate relative luminance for contrast calculations
     /// Based on WCAG 2.1 specification
     pub fn relative_luminance(color: Hsla) -> f32 {
         let (r, g, b) = Self::hsl_to_rgb(color.h, color.s, color.l);
-
         // Convert to linear RGB
-        let r_linear = if r <= 0.03928 {
-            r / 12.92
-        } else {
-            ((r + 0.055) / 1.055).powf(2.4)
-        };
-        let g_linear = if g <= 0.03928 {
-            g / 12.92
-        } else {
-            ((g + 0.055) / 1.055).powf(2.4)
-        };
-        let b_linear = if b <= 0.03928 {
-            b / 12.92
-        } else {
-            ((b + 0.055) / 1.055).powf(2.4)
-        };
+        let r_linear = Self::srgb_to_linear(r);
+        let g_linear = Self::srgb_to_linear(g);
+        let b_linear = Self::srgb_to_linear(b);
 
         // Calculate luminance
         0.2126 * r_linear + 0.7152 * g_linear + 0.0722 * b_linear
@@ -62,12 +99,30 @@ impl ColorTheory {
             return tokens.colors.text_primary;
         }
 
+        // Build a candidate set that includes theme texts and OKLab-neutral extremes
+        let oklab_white = Self::oklch_to_hsla(
+            Oklch {
+                L: 0.97,
+                C: 0.0,
+                h: 0.0,
+            },
+            1.0,
+        );
+        let oklab_black = Self::oklch_to_hsla(
+            Oklch {
+                L: 0.03,
+                C: 0.0,
+                h: 0.0,
+            },
+            1.0,
+        );
+
         let candidates = [
             tokens.colors.text_primary,
             tokens.colors.text_secondary,
             tokens.colors.text_on_primary,
-            hsla(0.0, 0.0, 0.95, 1.0), // Near white
-            hsla(0.0, 0.0, 0.05, 1.0), // Near black
+            oklab_white, // Perceptual near-white
+            oklab_black, // Perceptual near-black
         ];
 
         let mut best_color = tokens.colors.text_primary;
@@ -81,14 +136,12 @@ impl ColorTheory {
             }
         }
 
-        // If still not good enough, generate a high-contrast color
+        // If still not good enough, pick an OKLab neutral that meets or maximizes contrast
         if best_contrast < ContrastRatios::AA_NORMAL {
-            let high_contrast = Self::generate_high_contrast_text(background);
-            let high_contrast_ratio = Self::contrast_ratio(background, high_contrast);
-
-            // Use the generated high-contrast color if it's better
-            if high_contrast_ratio > best_contrast {
-                high_contrast
+            let candidate = Self::oklab_high_contrast_text(background, ContrastRatios::AA_NORMAL);
+            let cand_contrast = Self::contrast_ratio(background, candidate);
+            if cand_contrast > best_contrast {
+                candidate
             } else {
                 best_color
             }
@@ -97,20 +150,60 @@ impl ColorTheory {
         }
     }
 
-    /// Generate a high-contrast text color for any background
-    fn generate_high_contrast_text(background: Hsla) -> Hsla {
-        // Try pure white and pure black for maximum contrast
-        let pure_white = hsla(0.0, 0.0, 1.0, 1.0);
-        let pure_black = hsla(0.0, 0.0, 0.0, 1.0);
+    /// Generate a high-contrast neutral text color using OKLab (neutral chroma, optimized L)
+    fn oklab_high_contrast_text(background: Hsla, min_ratio: f32) -> Hsla {
+        // Start with perceptual near-white and near-black neutrals
+        let mut best = Self::oklch_to_hsla(
+            Oklch {
+                L: 0.97,
+                C: 0.0,
+                h: 0.0,
+            },
+            1.0,
+        );
+        let mut best_c = Self::contrast_ratio(background, best);
+        let black = Self::oklch_to_hsla(
+            Oklch {
+                L: 0.03,
+                C: 0.0,
+                h: 0.0,
+            },
+            1.0,
+        );
+        let black_c = Self::contrast_ratio(background, black);
+        if black_c > best_c {
+            best = black;
+            best_c = black_c;
+        }
 
-        let white_contrast = Self::contrast_ratio(background, pure_white);
-        let black_contrast = Self::contrast_ratio(background, pure_black);
-
-        // Choose the option with better contrast
-        if white_contrast > black_contrast {
-            pure_white
+        // If not enough, search along OKLab L for a neutral that maximizes contrast
+        if best_c < min_ratio {
+            let mut local_best = best;
+            let mut local_best_c = best_c;
+            // Search with a few samples biased to extremes
+            for i in 0..=12 {
+                let l = i as f32 / 12.0; // 0..1
+                let l = l.clamp(0.0, 1.0);
+                let candidate = Self::oklch_to_hsla(
+                    Oklch {
+                        L: l,
+                        C: 0.0,
+                        h: 0.0,
+                    },
+                    1.0,
+                );
+                let c = Self::contrast_ratio(background, candidate);
+                if c > local_best_c {
+                    local_best = candidate;
+                    local_best_c = c;
+                }
+                if local_best_c >= min_ratio {
+                    break;
+                }
+            }
+            local_best
         } else {
-            pure_black
+            best
         }
     }
 
@@ -289,24 +382,14 @@ impl ColorTheory {
         Self::mix(primary, tokens.colors.surface, 0.15)
     }
 
-    /// Create a lighter variant of a color
+    /// Create a lighter variant (perceptual OKLab L increase)
     pub fn lighten(color: Hsla, amount: f32) -> Hsla {
-        hsla(
-            color.h,
-            color.s,
-            (color.l + amount).clamp(0.0, 1.0),
-            color.a,
-        )
+        Self::adjust_oklab_lightness(color, amount)
     }
 
-    /// Create a darker variant of a color
+    /// Create a darker variant (perceptual OKLab L decrease)
     pub fn darken(color: Hsla, amount: f32) -> Hsla {
-        hsla(
-            color.h,
-            color.s,
-            (color.l - amount).clamp(0.0, 1.0),
-            color.a,
-        )
+        Self::adjust_oklab_lightness(color, -amount)
     }
 
     /// Mix two colors
@@ -318,6 +401,130 @@ impl ColorTheory {
             color1.l + (color2.l - color1.l) * ratio,
             color1.a + (color2.a - color1.a) * ratio,
         )
+    }
+
+    // ==========================
+    // OKLab / OKLCH conversions (D65, per OKLab definition)
+    // Source: Wikipedia: Oklab color space — "Conversion from CIE XYZ" and OKLab/OKLCH formulas
+    // Implements direct linear sRGB <-> OKLab transforms with cube-root nonlinearity.
+    // ==========================
+
+    pub fn hsla_to_oklab(color: Hsla) -> Oklab {
+        let (r_srgb, g_srgb, b_srgb) = Self::hsl_to_rgb(color.h, color.s, color.l);
+        let r = Self::srgb_to_linear(r_srgb);
+        let g = Self::srgb_to_linear(g_srgb);
+        let b = Self::srgb_to_linear(b_srgb);
+
+        // Linear sRGB -> LMS (OKLab M1)
+        let l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
+        let m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
+        let s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+
+        // Nonlinearity (cube root)
+        let l_ = l.cbrt();
+        let m_ = m.cbrt();
+        let s_ = s.cbrt();
+
+        // LMS' -> OKLab (OKLab M2)
+        let L = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_;
+        let a = 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_;
+        let b = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_;
+
+        Oklab { L, a, b }
+    }
+
+    pub fn oklab_to_hsla(lab: Oklab, alpha: f32) -> Hsla {
+        // OKLab -> LMS'
+        let l_ = lab.L + 0.3963377774 * lab.a + 0.2158037573 * lab.b;
+        let m_ = lab.L - 0.1055613458 * lab.a - 0.0638541728 * lab.b;
+        let s_ = lab.L - 0.0894841775 * lab.a - 1.2914855480 * lab.b;
+
+        // Inverse nonlinearity
+        let l = l_.powi(3);
+        let m = m_.powi(3);
+        let s = s_.powi(3);
+
+        // LMS -> linear sRGB
+        let r_lin = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+        let g_lin = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+        let b_lin = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+
+        // Linear -> gamma sRGB
+        let r = Self::linear_to_srgb(r_lin).clamp(0.0, 1.0);
+        let g = Self::linear_to_srgb(g_lin).clamp(0.0, 1.0);
+        let b = Self::linear_to_srgb(b_lin).clamp(0.0, 1.0);
+
+        // sRGB -> HSL (gpui::Hsla uses HSL)
+        let (h, s, l) = Self::rgb_to_hsl(r, g, b);
+        hsla(h, s, l, alpha)
+    }
+
+    pub fn hsla_to_oklch(color: Hsla) -> Oklch {
+        let lab = Self::hsla_to_oklab(color);
+        let C = (lab.a * lab.a + lab.b * lab.b).sqrt();
+        let mut h = lab.b.atan2(lab.a); // atan2(y=b, x=a)
+        // Normalize hue to [0, 2π)
+        if h < 0.0 {
+            h += 2.0 * PI;
+        }
+        Oklch { L: lab.L, C, h }
+    }
+
+    pub fn oklch_to_hsla(lch: Oklch, alpha: f32) -> Hsla {
+        let a = lch.C * lch.h.cos();
+        let b = lch.C * lch.h.sin();
+        Self::oklab_to_hsla(Oklab { L: lch.L, a, b }, alpha)
+    }
+
+    // Shortest-arc hue interpolation in OKLCH
+    pub fn mix_oklch(a: Hsla, b: Hsla, t: f32) -> Hsla {
+        let t = t.clamp(0.0, 1.0);
+        let a_lch = Self::hsla_to_oklch(a);
+        let b_lch = Self::hsla_to_oklch(b);
+
+        let mut dh = b_lch.h - a_lch.h;
+        if dh.abs() > PI {
+            dh -= (2.0 * PI) * dh.signum();
+        }
+
+        let L = a_lch.L + (b_lch.L - a_lch.L) * t;
+        let C = a_lch.C + (b_lch.C - a_lch.C) * t;
+        let h = a_lch.h + dh * t;
+
+        // Preserve alpha by linear interpolation
+        let alpha = a.a + (b.a - a.a) * t;
+        Self::oklch_to_hsla(Oklch { L, C, h }, alpha)
+    }
+
+    // Reduce chroma until the color fits sRGB gamut (linear), preserving hue and roughly L
+    pub fn clamp_oklch_to_srgb_gamut(mut lch: Oklch) -> Oklch {
+        for _ in 0..16 {
+            let hsla = Self::oklch_to_hsla(lch, 1.0);
+            // Convert to linear sRGB and check component bounds
+            let (r, g, b) = Self::hsl_to_rgb(hsla.h, hsla.s, hsla.l);
+            let (r, g, b) = (
+                Self::srgb_to_linear(r),
+                Self::srgb_to_linear(g),
+                Self::srgb_to_linear(b),
+            );
+            if r >= 0.0 && r <= 1.0 && g >= 0.0 && g <= 1.0 && b >= 0.0 && b <= 1.0 {
+                return lch;
+            }
+            lch.C *= 0.9; // iteratively reduce chroma
+            if lch.C < 1e-4 {
+                break;
+            }
+        }
+        lch.C = lch.C.max(0.0);
+        lch
+    }
+
+    // Adjust OKLab lightness by delta, keeping hue; moderates chroma if needed
+    pub fn adjust_oklab_lightness(color: Hsla, delta_L: f32) -> Hsla {
+        let mut lch = Self::hsla_to_oklch(color);
+        lch.L = (lch.L + delta_L).clamp(0.0, 1.0);
+        let lch = Self::clamp_oklch_to_srgb_gamut(lch);
+        Self::oklch_to_hsla(lch, color.a)
     }
 
     /// Create a surface color variant by slightly adjusting lightness
@@ -365,22 +572,45 @@ impl ColorTheory {
         hsla(color.h, color.s, color.l, alpha.clamp(0.0, 1.0))
     }
 
-    /// Ensure text has sufficient contrast against background
+    /// Ensure text has sufficient contrast against background using OKLab-guided adjustments
     pub fn ensure_contrast(background: Hsla, text: Hsla, min_ratio: f32) -> Hsla {
-        let contrast = Self::contrast_ratio(background, text);
-        if contrast >= min_ratio {
-            text
+        let mut best = text;
+        let mut best_c = Self::contrast_ratio(background, text);
+        if best_c >= min_ratio {
+            return text;
+        }
+
+        // Try OKLab lightness adjustments on the provided text (preserve hue, reduce chroma a bit)
+        let mut lch = Self::hsla_to_oklch(text);
+        lch.C = (lch.C * 0.5).min(0.05); // neutralize chroma for readability
+        // Determine direction based on background luminance
+        let bg_is_dark = Self::relative_luminance(background) < 0.5;
+        let search = if bg_is_dark {
+            [0.6, 0.7, 0.8, 0.9, 0.97]
         } else {
-            // Adjust lightness to meet contrast requirement
-            let is_dark_bg = background.l < 0.5;
-            if is_dark_bg {
-                // Dark background - make text lighter
-                hsla(text.h, text.s, (text.l + 0.5).min(1.0), text.a)
-            } else {
-                // Light background - make text darker
-                hsla(text.h, text.s, (text.l - 0.5).max(0.0), text.a)
+            [0.4, 0.3, 0.2, 0.1, 0.03]
+        };
+        for &target_l in &search {
+            let candidate = Self::oklch_to_hsla(
+                Oklch {
+                    L: target_l,
+                    C: lch.C,
+                    h: lch.h,
+                },
+                text.a,
+            );
+            let c = Self::contrast_ratio(background, candidate);
+            if c > best_c {
+                best = candidate;
+                best_c = c;
+            }
+            if best_c >= min_ratio {
+                return best;
             }
         }
+
+        // Fallback to OKLab neutral search across L extremes
+        Self::oklab_high_contrast_text(background, min_ratio)
     }
 
     /// Derive chrome colors from a surface color for UI components
@@ -531,6 +761,22 @@ pub struct ContextualColors {
     pub border: Hsla,
 }
 
+/// OKLab color (L, a, b)
+#[derive(Debug, Clone, Copy)]
+pub struct Oklab {
+    pub L: f32,
+    pub a: f32,
+    pub b: f32,
+}
+
+/// OKLCH color (L, C, h [radians])
+#[derive(Debug, Clone, Copy)]
+pub struct Oklch {
+    pub L: f32,
+    pub C: f32,
+    pub h: f32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,5 +893,56 @@ mod tests {
         assert_eq!(uniform_colors.file_tree_background, test_color);
         assert_eq!(uniform_colors.tab_empty_background, test_color);
         assert_eq!(uniform_colors.separator_color, test_color);
+    }
+
+    #[test]
+    fn test_oklab_oklch_roundtrip() {
+        let samples = [
+            hsla(0.0, 0.0, 0.0, 1.0),
+            hsla(0.0, 0.0, 1.0, 1.0),
+            hsla(210.0 / 360.0, 0.5, 0.5, 1.0),
+            hsla(0.33, 0.8, 0.4, 1.0),
+            hsla(0.85, 0.6, 0.7, 1.0),
+        ];
+        for c in samples {
+            let lch = ColorTheory::hsla_to_oklch(c);
+            let c2 = ColorTheory::oklch_to_hsla(lch, c.a);
+            // Compare in sRGB space for stability
+            let (r1, g1, b1) = ColorTheory::hsl_to_rgb(c.h, c.s, c.l);
+            let (r2, g2, b2) = ColorTheory::hsl_to_rgb(c2.h, c2.s, c2.l);
+            assert!((r1 - r2).abs() < 1e-3, "r mismatch: {} vs {}", r1, r2);
+            assert!((g1 - g2).abs() < 1e-3, "g mismatch: {} vs {}", g1, g2);
+            assert!((b1 - b2).abs() < 1e-3, "b mismatch: {} vs {}", b1, b2);
+        }
+    }
+
+    #[test]
+    fn test_oklch_polar_conversion_relations() {
+        let lch = Oklch {
+            L: 0.6,
+            C: 0.1,
+            h: 1.2,
+        };
+        let lab = ColorTheory::hsla_to_oklab(ColorTheory::oklch_to_hsla(lch, 1.0));
+        let a_expected = lch.C * lch.h.cos();
+        let b_expected = lch.C * lch.h.sin();
+        assert!((lab.a - a_expected).abs() < 2e-3);
+        assert!((lab.b - b_expected).abs() < 2e-3);
+    }
+
+    #[test]
+    fn test_mix_oklch_monotonic_lightness() {
+        let c1 = hsla(220.0 / 360.0, 0.8, 0.3, 1.0);
+        let c2 = hsla(220.0 / 360.0, 0.8, 0.8, 1.0);
+        let mut last_L = None;
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            let m = ColorTheory::mix_oklch(c1, c2, t);
+            let lch = ColorTheory::hsla_to_oklch(m);
+            if let Some(prev) = last_L {
+                assert!(lch.L >= prev - 1e-5);
+            }
+            last_L = Some(lch.L);
+        }
     }
 }

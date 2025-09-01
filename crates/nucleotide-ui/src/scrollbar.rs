@@ -285,24 +285,27 @@ impl Element for Scrollbar {
             // Use adaptive theme colors with 50% transparency
             let thumb_bg = {
                 if let Some(theme) = cx.try_global::<crate::Theme>() {
-                    let background = &theme.background;
-                    let is_light = is_light_color(background);
-
-                    // If background is light, use darker thumb; if dark, use lighter thumb
-                    let base_lightness = if is_light { 0.3 } else { 0.7 };
-
-                    // Adjust lightness slightly based on state for visual feedback
-                    let lightness = match thumb_state {
+                    let surface = theme.tokens.chrome.surface;
+                    let base = crate::styling::ColorTheory::adjust_oklab_lightness(
+                        surface,
+                        if theme.is_dark() { 0.25 } else { -0.25 },
+                    );
+                    let bg = match thumb_state {
                         ThumbState::Dragging(_) => {
-                            base_lightness + (if is_light { -0.1 } else { 0.1 })
+                            crate::styling::ColorTheory::adjust_oklab_lightness(
+                                base,
+                                if theme.is_dark() { 0.05 } else { -0.05 },
+                            )
                         }
-                        ThumbState::Hover => base_lightness + (if is_light { -0.05 } else { 0.05 }),
-                        ThumbState::Inactive => base_lightness,
+                        ThumbState::Hover => crate::styling::ColorTheory::adjust_oklab_lightness(
+                            base,
+                            if theme.is_dark() { 0.02 } else { -0.02 },
+                        ),
+                        ThumbState::Inactive => base,
                     };
-
-                    hsla(0.0, 0.0, lightness, 0.5) // Always 50% transparent
+                    crate::styling::ColorTheory::with_alpha(bg, 0.5)
                 } else {
-                    // Fallback: neutral gray with 50% transparency
+                    // Fallback
                     hsla(0.0, 0.0, 0.5, 0.5)
                 }
             };

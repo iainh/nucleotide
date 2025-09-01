@@ -15,9 +15,16 @@ pub struct ModalContainer;
 impl ModalContainer {
     /// Create a modal container with standard styling
     pub fn container() -> Div {
+        // Prefer provider tokens for overlay color
+        let overlay = if let Some(provider) = crate::providers::use_theme_provider() {
+            provider.current_theme().tokens.chrome.surface_overlay
+        } else {
+            // Fallback to tokenized overlay instead of a hardcoded black
+            crate::DesignTokens::dark().chrome.surface_overlay
+        };
         div()
             .absolute()
-            .bg(black().opacity(0.5))
+            .bg(overlay)
             .flex()
             .items_center()
             .justify_center()
@@ -65,39 +72,47 @@ impl Default for ModalStyle {
 }
 
 impl ModalStyle {
-    /// Create ModalStyle from helix theme
+    /// Create ModalStyle using our ThemeProvider tokens when available (OKLab/OKLCH-driven)
+    /// Falls back to Helix theme mapping only if provider is unavailable
     pub fn from_theme(theme: &helix_view::Theme) -> Self {
+        if let Some(provider) = crate::providers::use_theme_provider() {
+            let theme = provider.current_theme();
+            let dt = theme.tokens;
+            return Self {
+                background: dt.chrome.popup_background,
+                text: dt.chrome.text_on_chrome,
+                border: dt.chrome.popup_border,
+                selected_background: dt.editor.selection_primary,
+                selected_text: dt.editor.text_on_primary,
+                prompt_text: dt.chrome.text_chrome_secondary,
+            };
+        }
+
+        // Fallback: Derive from Helix theme (legacy path)
         use crate::theme_utils::color_to_hsla;
-
-        // Use design tokens for intelligent fallbacks instead of hardcoded grays
         let fallback_tokens = Self::default();
-
         let background = theme
             .get("ui.popup")
             .bg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.background").bg.and_then(color_to_hsla))
             .unwrap_or(fallback_tokens.background);
-
         let text = theme
             .get("ui.text")
             .fg
             .and_then(color_to_hsla)
             .unwrap_or(fallback_tokens.text);
-
         let selected_background = theme
             .get("ui.menu.selected")
             .bg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.selection").bg.and_then(color_to_hsla))
             .unwrap_or(fallback_tokens.selected_background);
-
         let selected_text = theme
             .get("ui.menu.selected")
             .fg
             .and_then(color_to_hsla)
             .unwrap_or(text);
-
         let border = theme
             .get("ui.popup")
             .fg
@@ -105,7 +120,6 @@ impl ModalStyle {
             .or_else(|| theme.get("ui.text").fg.and_then(color_to_hsla))
             .map(|color| hsla(color.h, color.s, color.l * 0.5, color.a))
             .unwrap_or(fallback_tokens.border);
-
         let prompt_text = theme
             .get("ui.text")
             .fg

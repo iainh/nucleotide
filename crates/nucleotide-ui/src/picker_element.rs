@@ -125,26 +125,47 @@ impl<D: PickerDelegate> Render for Picker<D> {
         let supports_preview = delegate.supports_preview();
         let show_preview = self.show_preview && supports_preview;
 
-        // Get theme colors from delegate if available, otherwise use defaults
-        let (bg_color, border_color, _text_color, prompt_color) = {
-            // Try to get theme colors through delegate
-            if let Some(theme_colors) = delegate.theme_colors() {
+        // Get UI colors from ThemeProvider tokens when available (preferred),
+        // otherwise use delegate's theme colors or static fallbacks
+        let (bg_color, border_color, _text_color, prompt_color, preview_bg) =
+            if let Some(provider) = crate::providers::use_theme_provider() {
+                let ui = provider.current_theme();
+                let dt = ui.tokens;
+                (
+                    dt.chrome.popup_background,
+                    dt.chrome.popup_border,
+                    dt.chrome.text_on_chrome,
+                    dt.chrome.text_chrome_secondary,
+                    dt.chrome.surface_elevated,
+                )
+            } else if let Some(theme_colors) = delegate.theme_colors() {
                 (
                     theme_colors.background,
                     theme_colors.border,
                     theme_colors.text,
                     theme_colors.prompt_text,
+                    crate::DesignTokens::dark().chrome.surface_elevated,
                 )
             } else {
-                // Fall back to static colors
+                // Choose light/dark tokens based on current Theme if available
+                let dt = cx
+                    .try_global::<crate::Theme>()
+                    .map(|t| {
+                        if t.is_dark() {
+                            crate::DesignTokens::dark()
+                        } else {
+                            crate::DesignTokens::light()
+                        }
+                    })
+                    .unwrap_or_else(crate::DesignTokens::dark);
                 (
-                    hsla(0.0, 0.0, 0.1, 1.0),
-                    hsla(0.0, 0.0, 0.3, 1.0),
-                    hsla(0.0, 0.0, 0.9, 1.0),
-                    hsla(0.0, 0.0, 0.7, 1.0),
+                    dt.chrome.popup_background,
+                    dt.chrome.popup_border,
+                    dt.chrome.text_on_chrome,
+                    dt.chrome.text_chrome_secondary,
+                    dt.chrome.surface_elevated,
                 )
-            }
-        };
+            };
 
         // Calculate dimensions
         let window_size = window.viewport_size();
@@ -286,29 +307,23 @@ impl<D: PickerDelegate> Render for Picker<D> {
                     )
                     // Preview panel
                     .when(show_preview, |this| {
-                        this.child(
-                            div()
-                                .w(preview_width)
-                                .flex_1()
-                                .bg(hsla(0.0, 0.0, 0.05, 1.0))
-                                .child(
-                                    if let Some(preview) =
-                                        delegate.render_preview(selected_index, window, cx)
-                                    {
-                                        preview.into_element().into_any()
-                                    } else {
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .h_full()
-                                            .text_color(prompt_color)
-                                            .child("No preview available")
-                                            .into_element()
-                                            .into_any()
-                                    },
-                                ),
-                        )
+                        this.child(div().w(preview_width).flex_1().bg(preview_bg).child(
+                            if let Some(preview) =
+                                delegate.render_preview(selected_index, window, cx)
+                            {
+                                preview.into_element().into_any()
+                            } else {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .h_full()
+                                    .text_color(prompt_color)
+                                    .child("No preview available")
+                                    .into_element()
+                                    .into_any()
+                            },
+                        ))
                     }),
             )
             // Footer

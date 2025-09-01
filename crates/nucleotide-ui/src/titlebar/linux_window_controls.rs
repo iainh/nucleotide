@@ -80,9 +80,9 @@ impl LinuxControlStyle {
         let fg = titlebar_tokens.foreground;
 
         // GNOME uses more prominent button styling
-        let button_bg = ColorTheory::mix(bg, fg, 0.08); // Subtle background
-        let hover_bg = ColorTheory::mix(bg, fg, 0.15);
-        let active_bg = ColorTheory::mix(bg, fg, 0.25);
+        let button_bg = ColorTheory::mix_oklch(bg, fg, 0.08); // Subtle background
+        let hover_bg = ColorTheory::mix_oklch(bg, fg, 0.15);
+        let active_bg = ColorTheory::mix_oklch(bg, fg, 0.25);
 
         debug!(
             "Creating GNOME-style controls - bg: {:?}, hover: {:?}, active: {:?}",
@@ -93,9 +93,9 @@ impl LinuxControlStyle {
             background: button_bg,
             background_hover: hover_bg,
             background_active: active_bg,
-            icon: ColorTheory::mix(fg, bg, 0.2), // Softer icon color
+            icon: ColorTheory::mix_oklch(fg, bg, 0.2), // Softer icon color
             icon_hover: fg,
-            border: Some(ColorTheory::mix(bg, fg, 0.12)),
+            border: Some(ColorTheory::mix_oklch(bg, fg, 0.12)),
             border_radius: 8.0, // GNOME's rounded corners
         }
     }
@@ -107,8 +107,8 @@ impl LinuxControlStyle {
 
         // KDE uses flatter, more subtle styling
         let button_bg = hsla(0.0, 0.0, 0.0, 0.0); // Transparent by default
-        let hover_bg = ColorTheory::mix(bg, fg, 0.1);
-        let active_bg = ColorTheory::mix(bg, fg, 0.2);
+        let hover_bg = ColorTheory::mix_oklch(bg, fg, 0.1);
+        let active_bg = ColorTheory::mix_oklch(bg, fg, 0.2);
 
         debug!(
             "Creating KDE-style controls - bg: {:?}, hover: {:?}, active: {:?}",
@@ -119,7 +119,7 @@ impl LinuxControlStyle {
             background: button_bg,
             background_hover: hover_bg,
             background_active: active_bg,
-            icon: ColorTheory::mix(fg, bg, 0.25),
+            icon: ColorTheory::mix_oklch(fg, bg, 0.25),
             icon_hover: fg,
             border: None,       // KDE typically doesn't use borders
             border_radius: 4.0, // Subtle rounded corners
@@ -139,9 +139,9 @@ impl LinuxControlStyle {
 
         Self {
             background: hsla(0.0, 0.0, 0.0, 0.0), // Fully transparent
-            background_hover: ColorTheory::mix(bg, fg, 0.05), // Very subtle
-            background_active: ColorTheory::mix(bg, fg, 0.1),
-            icon: ColorTheory::mix(fg, bg, 0.4), // More subtle icons
+            background_hover: ColorTheory::mix_oklch(bg, fg, 0.05), // Very subtle
+            background_active: ColorTheory::mix_oklch(bg, fg, 0.1),
+            icon: ColorTheory::mix_oklch(fg, bg, 0.4), // More subtle icons
             icon_hover: fg,
             border: None,
             border_radius: 2.0,

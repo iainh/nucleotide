@@ -390,23 +390,11 @@ impl<'a> StyleContext<'a> {
 
         let luminance = ColorTheory::relative_luminance(background);
 
-        // Lighten dark colors, darken light colors for hover
+        // Perceptual lightness shift in OKLab for hover
         if luminance < 0.5 {
-            // Dark background - lighten
-            hsla(
-                background.h,
-                background.s,
-                (background.l + 0.08).min(1.0),
-                background.a,
-            )
+            ColorTheory::adjust_oklab_lightness(background, 0.08)
         } else {
-            // Light background - darken
-            hsla(
-                background.h,
-                background.s,
-                (background.l - 0.08).max(0.0),
-                background.a,
-            )
+            ColorTheory::adjust_oklab_lightness(background, -0.08)
         }
     }
 
@@ -432,23 +420,11 @@ impl<'a> StyleContext<'a> {
 
         let luminance = ColorTheory::relative_luminance(background);
 
-        // More pronounced change for active state
+        // Perceptual lightness shift in OKLab for active
         if luminance < 0.5 {
-            // Dark background - lighten more
-            hsla(
-                background.h,
-                background.s,
-                (background.l + 0.12).min(1.0),
-                background.a,
-            )
+            ColorTheory::adjust_oklab_lightness(background, 0.12)
         } else {
-            // Light background - darken more
-            hsla(
-                background.h,
-                background.s,
-                (background.l - 0.12).max(0.0),
-                background.a,
-            )
+            ColorTheory::adjust_oklab_lightness(background, -0.12)
         }
     }
 }

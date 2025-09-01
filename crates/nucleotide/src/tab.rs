@@ -263,7 +263,7 @@ impl RenderOnce for Tab {
                 // Inactive tabs: use tab bar tokens with appropriate hover state
                 let bg = if self.is_modified {
                     // Modified tabs get a subtle warning tint
-                    nucleotide_ui::styling::ColorTheory::mix(
+                    nucleotide_ui::styling::ColorTheory::mix_oklch(
                         tab_tokens.tab_inactive_background,
                         tokens.colors.warning,
                         0.1,

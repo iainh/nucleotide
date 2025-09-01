@@ -936,9 +936,9 @@ impl ChromeTokens {
             // Surface system based on computed surface
             surface: surface_color,
             surface_elevated: if is_dark {
-                utils::lighten(surface_color, 0.05)
+                ColorTheory::adjust_oklab_lightness(surface_color, 0.05)
             } else {
-                utils::darken(surface_color, 0.05)
+                ColorTheory::adjust_oklab_lightness(surface_color, -0.05)
             },
             surface_overlay: if is_dark {
                 hsla(surface_color.h, surface_color.s, 0.0, 0.95)
@@ -946,14 +946,14 @@ impl ChromeTokens {
                 hsla(surface_color.h, surface_color.s, 1.0, 0.95)
             },
             surface_hover: if is_dark {
-                utils::lighten(surface_color, 0.03)
+                ColorTheory::adjust_oklab_lightness(surface_color, 0.03)
             } else {
-                utils::darken(surface_color, 0.03)
+                ColorTheory::adjust_oklab_lightness(surface_color, -0.03)
             },
             surface_active: if is_dark {
-                utils::lighten(surface_color, 0.08)
+                ColorTheory::adjust_oklab_lightness(surface_color, 0.08)
             } else {
-                utils::darken(surface_color, 0.08)
+                ColorTheory::adjust_oklab_lightness(surface_color, -0.08)
             },
             surface_selected: utils::with_alpha(base_colors.primary_500, 0.2),
             surface_disabled: utils::with_alpha(surface_color, 0.6),
@@ -962,9 +962,9 @@ impl ChromeTokens {
             border_default: chrome_colors.separator_color,
             border_muted: utils::with_alpha(chrome_colors.separator_color, 0.5),
             border_strong: if is_dark {
-                utils::lighten(chrome_colors.separator_color, 0.1)
+                ColorTheory::adjust_oklab_lightness(chrome_colors.separator_color, 0.1)
             } else {
-                utils::darken(chrome_colors.separator_color, 0.1)
+                ColorTheory::adjust_oklab_lightness(chrome_colors.separator_color, -0.1)
             },
             border_focus: base_colors.primary_500,
 
@@ -1124,23 +1124,20 @@ pub mod utils {
 
     /// Create a lighter variant of a color
     pub fn lighten(color: Hsla, amount: f32) -> Hsla {
-        hsla(color.h, color.s, color.l + amount, color.a)
+        // Perceptual lightness adjustment via OKLab L
+        crate::styling::ColorTheory::adjust_oklab_lightness(color, amount)
     }
 
     /// Create a darker variant of a color
     pub fn darken(color: Hsla, amount: f32) -> Hsla {
-        hsla(color.h, color.s, color.l - amount, color.a)
+        // Perceptual lightness adjustment via OKLab L
+        crate::styling::ColorTheory::adjust_oklab_lightness(color, -amount)
     }
 
     /// Interpolate between two colors
     pub fn mix(color1: Hsla, color2: Hsla, ratio: f32) -> Hsla {
-        let ratio = ratio.clamp(0.0, 1.0);
-        hsla(
-            color1.h + (color2.h - color1.h) * ratio,
-            color1.s + (color2.s - color1.s) * ratio,
-            color1.l + (color2.l - color1.l) * ratio,
-            color1.a + (color2.a - color1.a) * ratio,
-        )
+        // Perceptual interpolation in OKLCH with shortest-arc hue blending
+        crate::styling::ColorTheory::mix_oklch(color1, color2, ratio)
     }
 }
 
@@ -1495,8 +1492,8 @@ impl ButtonTokens {
 
         // Primary buttons use chrome colors for UI consistency
         let primary_bg = chrome.surface_hover; // Interactive chrome surface
-        let primary_bg_hover = ColorTheory::lighten(primary_bg, 0.1);
-        let primary_bg_active = ColorTheory::darken(primary_bg, 0.1);
+        let primary_bg_hover = ColorTheory::adjust_oklab_lightness(primary_bg, 0.1);
+        let primary_bg_active = ColorTheory::adjust_oklab_lightness(primary_bg, -0.1);
         let primary_text = chrome.text_on_chrome;
         let primary_border = chrome.border_strong;
 
@@ -1515,19 +1512,19 @@ impl ButtonTokens {
 
         // Semantic buttons use Helix editor colors for familiarity
         let danger_bg = editor.error;
-        let danger_bg_hover = ColorTheory::lighten(danger_bg, 0.1);
+        let danger_bg_hover = ColorTheory::adjust_oklab_lightness(danger_bg, 0.1);
         let danger_text = ColorTheory::ensure_contrast(danger_bg, editor.text_on_primary, 4.5);
 
         let success_bg = editor.success;
-        let success_bg_hover = ColorTheory::lighten(success_bg, 0.1);
+        let success_bg_hover = ColorTheory::adjust_oklab_lightness(success_bg, 0.1);
         let success_text = ColorTheory::ensure_contrast(success_bg, editor.text_on_primary, 4.5);
 
         let warning_bg = editor.warning;
-        let warning_bg_hover = ColorTheory::lighten(warning_bg, 0.1);
+        let warning_bg_hover = ColorTheory::adjust_oklab_lightness(warning_bg, 0.1);
         let warning_text = ColorTheory::ensure_contrast(warning_bg, editor.text_on_primary, 4.5);
 
         let info_bg = editor.info;
-        let info_bg_hover = ColorTheory::lighten(info_bg, 0.1);
+        let info_bg_hover = ColorTheory::adjust_oklab_lightness(info_bg, 0.1);
         let info_text = ColorTheory::ensure_contrast(info_bg, editor.text_on_primary, 4.5);
 
         // Disabled states are muted versions
@@ -1748,7 +1745,7 @@ impl DropdownTokens {
 
         // Trigger button uses chrome colors for consistency
         let trigger_bg = chrome.surface_hover;
-        let trigger_bg_hover = ColorTheory::lighten(chrome.surface_hover, 0.1);
+        let trigger_bg_hover = ColorTheory::adjust_oklab_lightness(chrome.surface_hover, 0.1);
         let trigger_text = chrome.text_on_chrome;
         let trigger_border = chrome.border_muted;
 

@@ -1,6 +1,7 @@
 // ABOUTME: Common UI utilities and helper functions for nucleotide-ui components
 // ABOUTME: Provides layout, styling, and interaction utilities for component development
 
+use crate::styling::ColorTheory;
 use gpui::{ElementId, Hsla, Pixels, Point, SharedString, Size, px};
 use std::time::Duration;
 
@@ -99,24 +100,14 @@ impl LayoutHelpers {
 pub struct ColorHelpers;
 
 impl ColorHelpers {
-    /// Lighten a color by a percentage (0.0 to 1.0)
+    /// Lighten a color by a percentage (perceptual OKLab L)
     pub fn lighten(color: Hsla, amount: f32) -> Hsla {
-        Hsla {
-            h: color.h,
-            s: color.s,
-            l: (color.l + amount).min(1.0),
-            a: color.a,
-        }
+        ColorTheory::adjust_oklab_lightness(color, amount)
     }
 
-    /// Darken a color by a percentage (0.0 to 1.0)
+    /// Darken a color by a percentage (perceptual OKLab L)
     pub fn darken(color: Hsla, amount: f32) -> Hsla {
-        Hsla {
-            h: color.h,
-            s: color.s,
-            l: (color.l - amount).max(0.0),
-            a: color.a,
-        }
+        ColorTheory::adjust_oklab_lightness(color, -amount)
     }
 
     /// Adjust color opacity
@@ -129,39 +120,28 @@ impl ColorHelpers {
         }
     }
 
-    /// Mix two colors with a ratio (0.0 = color1, 1.0 = color2)
+    /// Mix two colors with a ratio (perceptual OKLCH)
     pub fn mix_colors(color1: Hsla, color2: Hsla, ratio: f32) -> Hsla {
-        let ratio = ratio.clamp(0.0, 1.0);
-        let inv_ratio = 1.0 - ratio;
-
-        Hsla {
-            h: color1.h * inv_ratio + color2.h * ratio,
-            s: color1.s * inv_ratio + color2.s * ratio,
-            l: color1.l * inv_ratio + color2.l * ratio,
-            a: color1.a * inv_ratio + color2.a * ratio,
-        }
+        ColorTheory::mix_oklch(color1, color2, ratio)
     }
 
-    /// Get contrast color (black or white) for best readability
+    /// Get contrast color (black or white) for best readability using WCAG luminance
     pub fn contrast_color(background: Hsla) -> Hsla {
-        // Calculate relative luminance
-        let luminance = 0.299 * background.l + 0.587 * background.l + 0.114 * background.l;
-
-        if luminance > 0.5 {
-            Hsla {
-                h: 0.0,
-                s: 0.0,
-                l: 0.0,
-                a: 1.0,
-            } // Black
-        } else {
-            Hsla {
-                h: 0.0,
-                s: 0.0,
-                l: 1.0,
-                a: 1.0,
-            } // White
-        }
+        let white = Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 1.0,
+            a: 1.0,
+        };
+        let black = Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.0,
+            a: 1.0,
+        };
+        let c_white = ColorTheory::contrast_ratio(background, white);
+        let c_black = ColorTheory::contrast_ratio(background, black);
+        if c_white >= c_black { white } else { black }
     }
 
     /// Check if a color is considered "dark"
@@ -172,10 +152,10 @@ impl ColorHelpers {
     /// Generate a color variant for different states
     pub fn state_variant(base_color: Hsla, state: &str) -> Hsla {
         match state {
-            "hover" => Self::lighten(base_color, 0.1),
-            "active" => Self::darken(base_color, 0.1),
+            "hover" => ColorTheory::adjust_oklab_lightness(base_color, 0.1),
+            "active" => ColorTheory::adjust_oklab_lightness(base_color, -0.1),
             "disabled" => Self::with_opacity(base_color, 0.5),
-            "selected" => Self::lighten(base_color, 0.2),
+            "selected" => ColorTheory::adjust_oklab_lightness(base_color, 0.2),
             "error" => Hsla {
                 h: 0.0,
                 s: 0.8,
@@ -507,10 +487,20 @@ mod tests {
         };
 
         let lighter = ColorHelpers::lighten(color, 0.2);
-        assert_eq!(lighter.l, 0.7);
+        assert!(
+            lighter.l > color.l,
+            "lighter.l should increase lightness: {} > {}",
+            lighter.l,
+            color.l
+        );
 
         let darker = ColorHelpers::darken(color, 0.2);
-        assert_eq!(darker.l, 0.3);
+        assert!(
+            darker.l < color.l,
+            "darker.l should decrease lightness: {} < {}",
+            darker.l,
+            color.l
+        );
 
         let transparent = ColorHelpers::with_opacity(color, 0.5);
         assert_eq!(transparent.a, 0.5);

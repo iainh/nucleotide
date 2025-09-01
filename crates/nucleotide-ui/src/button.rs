@@ -933,16 +933,21 @@ mod tests {
             StyleSize::Medium.as_str(),
         );
 
-        // Primary should use primary colors
+        // Primary should use primary background and a high-contrast foreground
         assert_eq!(primary_style.background, theme.tokens.colors.primary);
-        assert_eq!(
+        let contrast = crate::styling::ColorTheory::contrast_ratio(
+            primary_style.background,
             primary_style.foreground,
-            theme.tokens.colors.text_on_primary
         );
+        assert!(contrast >= crate::styling::ContrastRatios::AA_NORMAL);
 
-        // Secondary should use surface colors and have border
+        // Secondary should use surface colors and have border; foreground must be readable
         assert_eq!(secondary_style.background, theme.tokens.colors.surface);
-        assert_eq!(secondary_style.foreground, theme.tokens.colors.text_primary);
+        let sec_contrast = crate::styling::ColorTheory::contrast_ratio(
+            secondary_style.background,
+            secondary_style.foreground,
+        );
+        assert!(sec_contrast >= crate::styling::ContrastRatios::AA_NORMAL);
         assert_eq!(secondary_style.border_width, px(1.0));
     }
 }

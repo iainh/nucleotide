@@ -1,7 +1,7 @@
 // ABOUTME: VCS status indicator component for consistent git status display
 // ABOUTME: Provides colored dots and overlays showing file modification status
 
-use gpui::{IntoElement, Styled, div, px};
+use gpui::{Context, IntoElement, Styled, div, px};
 use nucleotide_types::VcsStatus;
 use std::path::Path;
 
@@ -51,40 +51,83 @@ impl VcsIndicator {
     }
 }
 
+/// Renderer to produce a theme-aware VCS indicator with access to tokens
+pub trait VcsIndicatorRenderer {
+    fn render_vcs_indicator(&self, indicator: VcsIndicator, cx: &mut Context<Self>) -> gpui::Div
+    where
+        Self: Sized;
+}
+
+impl<T> VcsIndicatorRenderer for T {
+    fn render_vcs_indicator(&self, indicator: VcsIndicator, cx: &mut Context<Self>) -> gpui::Div {
+        // Don't render anything for up-to-date files
+        if !indicator.should_show() {
+            return div();
+        }
+
+        // Fetch tokens from the current Theme via provider
+        let theme = cx.global::<crate::Theme>();
+        let dt = theme.tokens;
+
+        // Map VCS status to token colors
+        let color = match indicator.status {
+            VcsStatus::Modified => dt.editor.warning,
+            VcsStatus::Added => dt.editor.success,
+            VcsStatus::Deleted => dt.editor.error,
+            VcsStatus::Untracked => dt.chrome.text_chrome_secondary,
+            VcsStatus::Renamed => dt.chrome.primary,
+            VcsStatus::Conflicted => dt.editor.error,
+            VcsStatus::Clean => return div(),
+            VcsStatus::Unknown => dt.chrome.text_chrome_secondary,
+        };
+
+        let mut indicator_div = div()
+            .w(px(indicator.size))
+            .h(px(indicator.size))
+            .rounded_full()
+            .bg(color)
+            .border_1()
+            .border_color(dt.chrome.border_muted)
+            .flex_shrink_0();
+
+        if indicator.overlay_mode {
+            indicator_div = indicator_div.absolute().bottom(px(-2.0)).left(px(-2.0));
+        }
+
+        indicator_div
+    }
+}
+
 impl IntoElement for VcsIndicator {
     type Element = gpui::Div;
 
     fn into_element(self) -> Self::Element {
-        // Don't render anything for up-to-date files
+        // Fallback rendering without context (no provider access)
         if !self.should_show() {
             return div();
         }
-
-        // Use fallback colors since we can't access theme in IntoElement
+        let dt = crate::DesignTokens::dark();
         let color = match self.status {
-            VcsStatus::Modified => gpui::hsla(0.15, 0.8, 0.6, 1.0), // Orange/warning
-            VcsStatus::Added => gpui::hsla(0.33, 0.6, 0.5, 1.0),    // Green/success
-            VcsStatus::Deleted => gpui::hsla(0.0, 0.8, 0.5, 1.0),   // Red/error
-            VcsStatus::Untracked => gpui::hsla(0.0, 0.0, 0.7, 1.0), // Muted
-            VcsStatus::Renamed => gpui::hsla(0.61, 0.6, 0.5, 1.0),  // Accent/blue
-            VcsStatus::Conflicted => gpui::hsla(0.0, 0.8, 0.5, 1.0), // Red/error
-            VcsStatus::Clean => return div(),                       // Shouldn't reach here
-            VcsStatus::Unknown => gpui::hsla(0.0, 0.0, 0.5, 1.0),   // Gray/unknown
+            VcsStatus::Modified => dt.editor.warning,
+            VcsStatus::Added => dt.editor.success,
+            VcsStatus::Deleted => dt.editor.error,
+            VcsStatus::Untracked => dt.chrome.text_chrome_secondary,
+            VcsStatus::Renamed => dt.chrome.primary,
+            VcsStatus::Conflicted => dt.editor.error,
+            VcsStatus::Clean => return div(),
+            VcsStatus::Unknown => dt.chrome.text_chrome_secondary,
         };
-
         let mut indicator = div()
             .w(px(self.size))
             .h(px(self.size))
             .rounded_full()
             .bg(color)
             .border_1()
-            .border_color(gpui::hsla(0.0, 0.0, 0.1, 1.0)) // Dark border
+            .border_color(dt.chrome.border_muted)
             .flex_shrink_0();
-
         if self.overlay_mode {
             indicator = indicator.absolute().bottom(px(-2.0)).left(px(-2.0));
         }
-
         indicator
     }
 }
