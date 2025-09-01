@@ -359,19 +359,90 @@ impl OverlayView {
 
                             // Wire minimal preview open/close hooks
                             let open_core = core_weak.clone();
-                            // Do not open a Helix view for preview; keep user's layout unchanged
-                            view = view.with_preview_open_fn(move |_path, _picker_cx| None);
+                            // Use a preview executor (event-based sketch). Currently no-op to avoid layout changes.
+                            let preview_exec = crate::picker_capability::PickerPreviewExecutor::new_from_weak(open_core.clone());
+                            // Keep a handle to the concrete capability to register DocumentView entities
+                            let cap_for_open = core_weak.clone();
+                            let cap_for_picker: Option<
+                                std::sync::Arc<
+                                    std::sync::RwLock<crate::picker_capability::HelixPickerCapability>,
+                                >,
+                            > = if let Some(core) = core_weak.upgrade() {
+                                let cap_arc = crate::picker_capability::HelixPickerCapability::new(&core);
+                                view = view.with_capability(
+                                    cap_arc.clone()
+                                        as std::sync::Arc<
+                                            std::sync::RwLock<
+                                                dyn nucleotide_core::capabilities::PickerCapability
+                                                    + Send
+                                                    + Sync,
+                                            >,
+                                        >,
+                                );
+                                Some(cap_arc)
+                            } else {
+                                None
+                            };
+
+                            // Clone capability handle for each closure to avoid moving the original
+                            let cap_for_open_reg = cap_for_picker.clone();
+                            let cap_for_close = cap_for_picker.clone();
+
+                            view = view.with_preview_open_fn(move |path, picker_cx| {
+                                let result = preview_exec.open(path, picker_cx);
+                                if let Some((doc_id, view_id)) = result {
+                                    // Mount a DocumentView entity and register with capability for rendering
+                                    if let Some(core) = cap_for_open.upgrade() {
+                                        let entity = picker_cx.new(|cx| {
+                                            // Build theme-aware TextStyle similar to editor views
+                                            let editor_font = cx.global::<crate::types::EditorFontConfig>();
+                                            let theme = cx.theme();
+                                            let tokens = &theme.tokens;
+                                            let default_style = gpui::TextStyle {
+                                                color: tokens.colors.text_primary,
+                                                font_family: cx
+                                                    .global::<crate::types::FontSettings>()
+                                                    .fixed_font
+                                                    .family
+                                                    .clone()
+                                                    .into(),
+                                                font_features: gpui::FontFeatures::default(),
+                                                font_fallbacks: None,
+                                                font_size: gpui::px(editor_font.size).into(),
+                                                line_height: gpui::phi(),
+                                                font_weight: editor_font.weight.into(),
+                                                font_style: gpui::FontStyle::Normal,
+                                                background_color: None,
+                                                underline: None,
+                                                strikethrough: None,
+                                                white_space: gpui::WhiteSpace::Normal,
+                                                text_overflow: None,
+                                                text_align: gpui::TextAlign::default(),
+                                                line_clamp: None,
+                                            };
+                                            let focus = cx.focus_handle();
+                                            crate::document::DocumentView::new(core.clone(), view_id, default_style, &focus, false)
+                                        });
+                                        if let Some(cap_arc) = &cap_for_open_reg {
+                                            if let Ok(mut cap) = cap_arc.write() {
+                                                cap.register_preview_entity(doc_id, view_id, entity);
+                                            }
+                                        }
+                                    }
+                                }
+                                result
+                            });
 
                             let close_core = core_weak.clone();
+                            let preview_exec_close = crate::picker_capability::PickerPreviewExecutor::new_from_weak(close_core.clone());
                             view = view.with_preview_close_fn(move |doc_id, view_id, picker_cx| {
-                                if let Some(core) = close_core.upgrade() {
-                                    core.update(picker_cx, |core, _| {
-                                        if core.editor.tree.contains(view_id) {
-                                            core.editor.close(view_id);
-                                        }
-                                        let _ = core.editor.close_document(doc_id, false);
-                                    });
+                                // Unregister entity before closing
+                                if let Some(cap_arc) = &cap_for_close {
+                                    if let Ok(mut cap) = cap_arc.write() {
+                                        cap.unregister_preview_entity(doc_id, view_id);
+                                    }
                                 }
+                                preview_exec_close.close(doc_id, view_id, picker_cx);
                             });
 
                             // Render the preview using current document content with simple styling
@@ -665,6 +736,7 @@ impl OverlayView {
                             // Preview capability integration can be wired here in the future
 
                             // Set up the selection callback
+                            let core_for_on_select = core_weak.clone();
                             view = view.on_select(move |selected_item: &PickerItem, picker_cx| {
                                 // Find the index of the selected item
                                 if let Some(index) = items_for_callback
@@ -682,7 +754,7 @@ impl OverlayView {
                                 )>(
                                 ) {
                                     // Switch to the selected buffer
-                                    if let Some(core) = core_weak.upgrade() {
+                                    if let Some(core) = core_for_on_select.upgrade() {
                                         core.update(picker_cx, |core, _cx| {
                                             core.editor.switch(
                                                 *doc_id,
@@ -696,7 +768,7 @@ impl OverlayView {
                                     selected_item.data.downcast_ref::<std::path::PathBuf>()
                                 {
                                     // Emit OpenFile event to actually open the file
-                                    if let Some(core) = core_weak.upgrade() {
+                                    if let Some(core) = core_for_on_select.upgrade() {
                                         core.update(picker_cx, |_core, core_cx| {
                                             core_cx.emit(crate::Update::OpenFile(path.clone()));
                                         });
@@ -707,7 +779,7 @@ impl OverlayView {
                                     selected_item.data.downcast_ref::<helix_view::DocumentId>()
                                 {
                                     // Switch to the selected buffer
-                                    if let Some(core) = core_weak.upgrade() {
+                                    if let Some(core) = core_for_on_select.upgrade() {
                                         core.update(picker_cx, |core, _cx| {
                                             // Switch to the selected document
                                             core.editor.switch(
@@ -727,6 +799,8 @@ impl OverlayView {
                                 // The PickerView will handle its own dismissal
                                 cx.emit(DismissEvent);
                             });
+
+                            // Capability already attached above
 
                             view
                         });
