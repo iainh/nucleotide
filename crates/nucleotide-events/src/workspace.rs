@@ -91,6 +91,37 @@ pub enum Event {
         previous_directory: Option<PathBuf>,
         new_directory: PathBuf,
     },
+
+    // File operation intents (user-initiated requests)
+    FileOpRequested {
+        intent: FileOpIntent,
+    },
+}
+
+/// File operation intent kinds initiated from UI (e.g., context menu)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileOpIntent {
+    NewFile { parent: PathBuf, name: String },
+    NewFolder { parent: PathBuf, name: String },
+    Rename { path: PathBuf, new_name: String },
+    Delete { path: PathBuf, mode: DeleteMode },
+    Duplicate { path: PathBuf, target_name: String },
+    CopyPath { path: PathBuf, kind: PathCopyKind },
+    RevealInOs { path: PathBuf },
+}
+
+/// Kind of path to copy to clipboard
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathCopyKind {
+    Absolute,
+    RelativeToWorkspace,
+}
+
+/// Delete behavior mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteMode {
+    Trash,
+    Permanent,
 }
 
 /// Source of file selection

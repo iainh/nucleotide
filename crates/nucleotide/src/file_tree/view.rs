@@ -8,7 +8,7 @@ use crate::file_tree::{
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled,
+    MouseButton, MouseDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nucleotide_logging::{debug, error, warn};
@@ -419,6 +419,27 @@ impl FileTreeView {
             // Apply test VCS statuses for demonstration
             self.apply_test_statuses(cx);
             cx.notify();
+        }
+    }
+
+    /// Refresh a single directory by rescanning its entries and expanding it
+    pub fn refresh_directory(&mut self, dir: &Path, cx: &mut Context<Self>) {
+        match std::fs::read_dir(dir) {
+            Ok(read_dir) => {
+                let mut entries = Vec::new();
+                for entry in read_dir.flatten() {
+                    if let Ok(metadata) = entry.metadata() {
+                        entries.push((entry.path(), metadata));
+                    }
+                }
+                if let Err(e) = self.tree.expand_directory_with_entries(dir, entries) {
+                    error!(path=%dir.display(), error=%e, "Failed to refresh directory entries");
+                }
+                cx.notify();
+            }
+            Err(e) => {
+                error!(path=%dir.display(), error=%e, "Failed to read directory during refresh");
+            }
         }
     }
 
@@ -1036,6 +1057,7 @@ impl FileTreeView {
 
         // Use enhanced ListItem for styling and structure, leveraging nucleotide-ui improvements
         div()
+            .w_full()
             .on_mouse_up(MouseButton::Left, {
                 let path = path.clone();
                 let is_dir = is_dir;
@@ -1053,30 +1075,40 @@ impl FileTreeView {
                     }
                 })
             })
+            .on_mouse_down(MouseButton::Right, {
+                let path = path.clone();
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    // Focus and select the item under cursor, then request context menu
+                    view.focus_handle.focus(window);
+                    view.select_path(Some(path.clone()), cx);
+                    // Emit context menu request with screen coordinates
+                    cx.emit(FileTreeEvent::ContextMenuRequested {
+                        path: path.clone(),
+                        x: event.position.x.0,
+                        y: event.position.y.0,
+                    });
+                })
+            })
             .child(
                 ListItem::new(("file-tree-entry", entry.id.0))
                     // Use Ghost variant for no borders/background, or Primary for selected
-                    .variant(if is_selected {
-                        ListItemVariant::Primary
-                    } else {
-                        ListItemVariant::Ghost
-                    })
+                    .variant(ListItemVariant::Ghost)
                     .spacing(ListItemSpacing::Compact)
                     .selected(is_selected)
                     .class("file-tree-entry")
                     .with_listener({
                         let theme = theme.clone();
+                        let file_tree_tokens = file_tree_tokens;
                         move |item| {
                             // Apply minimal custom styling - let nucleotide-ui handle most of it
-                            let item = item.pl(indentation).pr(px(8.0)).h(px(24.0));
-
-                            // Apply hover effects conditionally based on animation config
-                            // Use computed chrome hover color for non-selected items
-                            if enable_animations && !is_selected {
-                                item.hover(|style| style.bg(file_tree_tokens.item_background_hover))
-                            } else {
-                                item
+                            let mut item = item.w_full().pl(indentation).pr(px(8.0)).h(px(24.0));
+                            // Selection and hover using color theory tokens (not Helix theme)
+                            if is_selected {
+                                item = item.bg(file_tree_tokens.item_background_selected);
+                            } else if enable_animations {
+                                item = item.hover(|s| s.bg(file_tree_tokens.item_background_hover));
                             }
+                            item
                         }
                     })
                     .start_slot(
@@ -1094,11 +1126,12 @@ impl FileTreeView {
                     .child(
                         // Fix icon alignment by using flex container with items_center for better alignment
                         div()
+                            .w_full()
                             .flex()
                             .items_center()
                             .gap_1() // Small gap between icon and text
-                            .child(self.render_icon_with_vcs_status(entry, cx))
-                            .child(self.render_filename(entry, cx)),
+                            .child(self.render_icon_with_vcs_status(entry, is_selected, cx))
+                            .child(self.render_filename_with_selection(entry, is_selected, cx)),
                     ),
             )
     }
@@ -1117,25 +1150,33 @@ impl FileTreeView {
     fn render_icon_with_vcs_status(
         &self,
         entry: &FileTreeEntry,
+        is_selected: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>();
+        let selected_text = theme.tokens.colors.text_on_primary;
+        let normal_text = theme.text;
+        let icon_color = if is_selected {
+            selected_text
+        } else {
+            normal_text
+        };
 
         // Create the appropriate VcsIcon based on the entry type
         let vcs_icon = match &entry.kind {
             crate::file_tree::FileKind::Directory { .. } => VcsIcon::directory(entry.is_expanded)
                 .size(16.0)
-                .text_color(theme.text),
+                .text_color(icon_color),
             crate::file_tree::FileKind::File { extension } => {
                 VcsIcon::from_extension(extension.as_deref())
                     .size(16.0)
-                    .text_color(theme.text)
+                    .text_color(icon_color)
             }
             crate::file_tree::FileKind::Symlink { target_exists, .. } => {
                 VcsIcon::symlink(*target_exists)
                     .size(16.0)
                     .text_color(if *target_exists {
-                        theme.tokens.colors.primary
+                        icon_color
                     } else {
                         theme.error
                     })
@@ -1150,10 +1191,16 @@ impl FileTreeView {
         self.render_vcs_icon(vcs_icon_with_status, cx)
     }
 
-    /// Render the filename using computed chrome text colors
-    fn render_filename(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Render the filename using color theory text colors
+    fn render_filename_with_selection(
+        &self,
+        entry: &FileTreeEntry,
+        is_selected: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.theme();
         let file_tree_tokens = theme.tokens.file_tree_tokens();
+        let selected_text = theme.tokens.colors.text_on_primary;
 
         // For root directory, show just the directory name
         let filename = if entry.depth == 0 && entry.is_directory() {
@@ -1175,15 +1222,20 @@ impl FileTreeView {
         };
 
         // Use computed chrome text colors for consistency with chrome background
-        div()
+        let mut node = div()
             .flex_1()
             .text_size(px(14.0)) // Use consistent text size
-            .text_color(if entry.is_hidden {
-                file_tree_tokens.item_text_secondary
-            } else {
-                file_tree_tokens.item_text
-            })
-            .child(filename)
+            .child(filename);
+
+        if is_selected {
+            node = node.text_color(selected_text);
+        } else if entry.is_hidden {
+            node = node.text_color(file_tree_tokens.item_text_secondary);
+        } else {
+            node = node.text_color(file_tree_tokens.item_text);
+        }
+
+        node
     }
 }
 

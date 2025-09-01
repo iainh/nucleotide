@@ -182,6 +182,14 @@ impl gpui::EventEmitter<InputEvent> for Input {}
 // Crank struct removed - replaced with event-driven LSP completion processing
 
 impl Application {
+    /// Dispatch a workspace event via the event aggregator if available
+    pub fn dispatch_workspace_event(&self, event: nucleotide_events::v2::workspace::Event) {
+        if let Some(aggregator) = &self.event_aggregator {
+            aggregator.dispatch_workspace(event);
+        } else {
+            nucleotide_logging::debug!("No event aggregator; workspace event not dispatched");
+        }
+    }
     /// Initialize the application with its own entity handle for LSP completion
     pub fn post_init(&mut self, cx: &mut gpui::Context<Self>) {
         nucleotide_logging::info!("POST_INIT: Starting application post-initialization");
@@ -5059,6 +5067,16 @@ pub fn init_editor(
         "Application created with completion_rx stored and LSP manager initialized - ready for coordinator initialization"
     );
 
+    // Initialize V2 Event Aggregator and register core handlers
+    let event_aggregator = {
+        let agg = nucleotide_core::EventAggregator::new();
+        let handle = nucleotide_core::EventAggregatorHandle::new(agg);
+        // Register FS operation handler
+        let fs_handler = nucleotide_core::fs::FsOpHandler::new(handle.clone());
+        handle.register_handler(fs_handler);
+        handle
+    };
+
     Ok(Application {
         editor,
         compositor,
@@ -5089,8 +5107,8 @@ pub fn init_editor(
                 .expect("Failed to initialize ApplicationCore");
             core
         },
-        // Event aggregator for UI integration events - initialized as None, can be set later
-        event_aggregator: None,
+        // Event aggregator for UI and workspace events
+        event_aggregator: Some(event_aggregator),
         sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
 }
