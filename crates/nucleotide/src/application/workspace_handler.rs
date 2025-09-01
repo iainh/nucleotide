@@ -430,6 +430,10 @@ impl EventHandler<Event> for WorkspaceHandler {
             | Event::WorkingDirectoryChanged { .. } => {
                 self.handle_file_operation(&event).await?;
             }
+            Event::FileOpRequested { .. } => {
+                // Intent events are routed to the core FS layer elsewhere; log for now
+                debug!("Workspace received file operation intent");
+            }
         }
 
         Ok(())

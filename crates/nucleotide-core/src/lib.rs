@@ -8,6 +8,7 @@ pub mod document_manager;
 pub mod editor_capabilities;
 pub mod event_aggregator;
 pub mod event_bridge;
+pub mod fs;
 pub mod gpui_to_helix_bridge;
 pub mod preview_tracker;
 pub mod snippets;

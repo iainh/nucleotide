@@ -69,6 +69,16 @@ pub mod file_tree {
             SelectPrev,
             OpenFile,
             RefreshTree,
+            // Context menu and common file ops
+            OpenContextMenu,
+            Rename,
+            Delete,
+            NewFile,
+            NewFolder,
+            Duplicate,
+            CopyPath,
+            CopyRelativePath,
+            RevealInOs,
         ]
     );
 }
