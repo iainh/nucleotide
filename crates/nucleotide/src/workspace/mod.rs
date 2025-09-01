@@ -3086,13 +3086,21 @@ impl Workspace {
             self.ensure_document_in_order(doc_id);
         }
 
-        // Now collect document information in the stable order
+        // Now collect document information in the stable order, excluding ephemeral preview docs
         let mut documents = Vec::new();
         let core = self.core.read(cx);
         let editor = &core.editor;
+        // Build a set of ephemeral preview doc_ids to exclude from the tab bar
+        let ephemeral_docs: std::collections::HashSet<_> = cx
+            .try_global::<nucleotide_core::preview_tracker::PreviewTracker>()
+            .map(|t| t.ephemeral_doc_ids())
+            .unwrap_or_default();
 
         // Iterate in our stable order, not HashMap order
         for (order_index, &doc_id) in self.document_order.iter().enumerate() {
+            if ephemeral_docs.contains(&doc_id) {
+                continue;
+            }
             if let Some(doc) = editor.documents.get(&doc_id) {
                 documents.push(DocumentInfo {
                     id: doc_id,
