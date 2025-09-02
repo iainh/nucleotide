@@ -52,10 +52,7 @@ fn sanitize_name(name: &str) -> String {
         .collect()
 }
 
-fn get_file_mut(
-    server_id: LanguageServerId,
-    server_name: &str,
-) -> Option<std::sync::MutexGuard<'static, Inner>> {
+fn get_file_mut() -> Option<std::sync::MutexGuard<'static, Inner>> {
     if !LOGGER_STATE.enabled {
         return None;
     }
@@ -104,7 +101,7 @@ pub fn log_incoming(
     if !LOGGER_STATE.enabled {
         return;
     }
-    if let Some(mut inner) = get_file_mut(server_id, server_name) {
+    if let Some(mut inner) = get_file_mut() {
         open_file_if_needed(&mut inner, server_id, server_name);
         if let Some(file) = inner.files.get_mut(&server_id) {
             let entry = serde_json::json!({
@@ -125,7 +122,7 @@ pub fn log_server_trace(server_id: LanguageServerId, server_name: &str, message:
     if !LOGGER_STATE.enabled {
         return;
     }
-    if let Some(mut inner) = get_file_mut(server_id, server_name) {
+    if let Some(mut inner) = get_file_mut() {
         open_file_if_needed(&mut inner, server_id, server_name);
         if let Some(file) = inner.files.get_mut(&server_id) {
             let entry = serde_json::json!({
@@ -150,7 +147,7 @@ pub fn log_outgoing(
     if !LOGGER_STATE.enabled {
         return;
     }
-    if let Some(mut inner) = get_file_mut(server_id, server_name) {
+    if let Some(mut inner) = get_file_mut() {
         open_file_if_needed(&mut inner, server_id, server_name);
         if let Some(file) = inner.files.get_mut(&server_id) {
             let entry = serde_json::json!({
