@@ -5,8 +5,8 @@ use std::{any::Any, cell::Cell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
 
 use gpui::{
     Along, App, Axis, BorderStyle, Bounds, ContentMask, Corners, CursorStyle, Edges, Element,
-    ElementId, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    IsZero, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    ElementId, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, IsZero,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     ScrollHandle, ScrollWheelEvent, Size, Style, UniformListScrollHandle, Window, hsla, px, quad,
     relative,
 };
@@ -269,7 +269,7 @@ impl Element for Scrollbar {
             let axis = self.axis;
             let thumb_state = self.state.thumb_state.get();
 
-            // Use adaptive theme colors with 50% transparency
+            // Use adaptive theme colors and adjust the thumb only on hover/drag
             let thumb_bg = {
                 if let Some(theme) = cx.try_global::<crate::Theme>() {
                     let surface = theme.tokens.chrome.surface;
@@ -277,27 +277,31 @@ impl Element for Scrollbar {
                         surface,
                         if theme.is_dark() { 0.25 } else { -0.25 },
                     );
-                    let bg = match thumb_state {
-                        ThumbState::Dragging(_) => {
+                    let (bg, alpha) = match thumb_state {
+                        ThumbState::Dragging(_) => (
                             crate::styling::ColorTheory::adjust_oklab_lightness(
                                 base,
-                                if theme.is_dark() { 0.05 } else { -0.05 },
-                            )
-                        }
-                        ThumbState::Hover => crate::styling::ColorTheory::adjust_oklab_lightness(
-                            base,
-                            if theme.is_dark() { 0.02 } else { -0.02 },
+                                if theme.is_dark() { 0.10 } else { -0.10 },
+                            ),
+                            0.7,
                         ),
-                        ThumbState::Inactive => base,
+                        ThumbState::Hover => (
+                            crate::styling::ColorTheory::adjust_oklab_lightness(
+                                base,
+                                if theme.is_dark() { 0.06 } else { -0.06 },
+                            ),
+                            0.6,
+                        ),
+                        ThumbState::Inactive => (base, 0.5),
                     };
-                    crate::styling::ColorTheory::with_alpha(bg, 0.5)
+                    crate::styling::ColorTheory::with_alpha(bg, alpha)
                 } else {
                     // Fallback
                     hsla(0.0, 0.0, 0.5, 0.5)
                 }
             };
 
-            // No gutter background - removed track background painting
+            // No gutter highlight; only the thumb lightens on hover/drag
 
             let padded_bounds = Bounds::from_corners(
                 bounds
@@ -429,6 +433,7 @@ impl Element for Scrollbar {
             // Mouse move events
             window.on_mouse_event({
                 let state = self.state.clone();
+                let bounds = bounds;
                 move |event: &MouseMoveEvent, phase, window, _| {
                     // Handle dragging in capture phase to prevent text selection
                     if phase.capture() && state.thumb_state.get().is_dragging() && event.dragging()
@@ -447,8 +452,13 @@ impl Element for Scrollbar {
                             // Event is consumed by handling it in capture phase
                         }
                     } else if phase.bubble() && event.pressed_button.is_none() {
-                        // Handle hover state in bubble phase
-                        state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position))
+                        // Handle hover state in bubble phase - only the thumb changes
+                        let over_thumb = actual_thumb_bounds.contains(&event.position);
+                        let was_hover = matches!(state.thumb_state.get(), ThumbState::Hover);
+                        state.set_thumb_hovered(over_thumb);
+                        if over_thumb || was_hover {
+                            window.refresh();
+                        }
                     }
                 }
             });
@@ -456,7 +466,8 @@ impl Element for Scrollbar {
             // Mouse up events
             window.on_mouse_event({
                 let state = self.state.clone();
-                move |event: &MouseUpEvent, phase, _window, _| {
+                let bounds = bounds;
+                move |event: &MouseUpEvent, phase, window, _| {
                     // Handle in capture phase if we were dragging
                     if phase.capture() && state.is_dragging() {
                         state.scroll_handle().drag_ended();
@@ -465,6 +476,7 @@ impl Element for Scrollbar {
                     } else if phase.bubble() && !state.is_dragging() {
                         // Update hover state for non-drag releases
                         state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position));
+                        window.refresh();
                     }
                 }
             });
