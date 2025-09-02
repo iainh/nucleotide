@@ -284,17 +284,67 @@ impl<D: PickerDelegate> Render for Picker<D> {
                                         let selected_index = delegate.selected_index();
                                         range
                                             .map(|ix| {
-                                                delegate
-                                                    .render_match(
-                                                        ix,
-                                                        ix == selected_index,
-                                                        window,
-                                                        cx,
-                                                    )
+                                                let is_selected = ix == selected_index;
+
+                                                // Wrap delegate item with token-based styling for consistency
+                                                let (bg, fg, hover_bg) = if let Some(provider) =
+                                                    crate::providers::use_theme_provider()
+                                                {
+                                                    let dt = provider.current_theme().tokens;
+                                                    if is_selected {
+                                                        (
+                                                            dt.editor.selection_primary,
+                                                            dt.editor.text_on_primary,
+                                                            dt.editor.selection_primary,
+                                                        )
+                                                    } else {
+                                                        (
+                                                            crate::styling::ColorTheory::transparent(),
+                                                            dt.chrome.text_on_chrome,
+                                                            crate::styling::ColorTheory::with_alpha(
+                                                                dt.chrome.surface_hover,
+                                                                0.3,
+                                                            ),
+                                                        )
+                                                    }
+                                                } else {
+                                                    let dt = crate::DesignTokens::dark();
+                                                    if is_selected {
+                                                        (
+                                                            dt.editor.selection_primary,
+                                                            dt.editor.text_on_primary,
+                                                            dt.editor.selection_primary,
+                                                        )
+                                                    } else {
+                                                        (
+                                                            crate::styling::ColorTheory::transparent(),
+                                                            dt.chrome.text_on_chrome,
+                                                            crate::styling::ColorTheory::with_alpha(
+                                                                dt.chrome.surface_hover,
+                                                                0.3,
+                                                            ),
+                                                        )
+                                                    }
+                                                };
+
+                                                let content = delegate
+                                                    .render_match(ix, is_selected, window, cx)
                                                     .map(|el| el.into_element().into_any())
-                                                    .unwrap_or_else(|| {
-                                                        div().into_element().into_any()
+                                                    .unwrap_or_else(|| div().into_element().into_any());
+
+                                                div()
+                                                    .bg(bg)
+                                                    .text_color(fg)
+                                                    .hover(|this| {
+                                                        if !is_selected {
+                                                            this.bg(hover_bg)
+                                                        } else {
+                                                            this
+                                                        }
                                                     })
+                                                    .child(content)
+                                                    .into_element()
+                                                    .into_any()
                                             })
                                             .collect::<Vec<_>>()
                                     },
