@@ -52,6 +52,60 @@ impl HelixLspBridge {
         }
     }
 
+    /// Send a custom JSON-RPC notification to a server. Prototype: returns Unsupported until helix_lsp exposes it.
+    #[instrument(skip(self, editor), fields(server_id = ?server_id, method = %method))]
+    pub async fn send_custom_notification(
+        &self,
+        editor: &mut Editor,
+        server_id: LanguageServerId,
+        method: &str,
+        params: JsonValue,
+    ) -> Result<(), ProjectLspError> {
+        // Try to find the target server for logging context
+        if let Some(ls) = editor.language_server_by_id(server_id) {
+            info!(
+                server_name = ls.name(),
+                "Attempting custom LSP notification (prototype)"
+            );
+        } else {
+            return Err(ProjectLspError::ServerCommunication(
+                "Target language server not found".to_string(),
+            ));
+        }
+
+        // Currently helix_lsp does not expose a generic custom notify surface in our dependency.
+        // Return a clear error so callers know this path requires upstream support.
+        Err(ProjectLspError::ServerCommunication(format!(
+            "Custom notification '{}' not supported by helix-lsp (prototype)",
+            method
+        )))
+    }
+
+    /// Send a custom JSON-RPC request to a server and await a raw JSON response. Prototype stub.
+    #[instrument(skip(self, editor), fields(server_id = ?server_id, method = %method))]
+    pub async fn send_custom_request(
+        &self,
+        editor: &mut Editor,
+        server_id: LanguageServerId,
+        method: &str,
+        params: JsonValue,
+    ) -> Result<JsonValue, ProjectLspError> {
+        if let Some(ls) = editor.language_server_by_id(server_id) {
+            info!(
+                server_name = ls.name(),
+                "Attempting custom LSP request (prototype)"
+            );
+        } else {
+            return Err(ProjectLspError::ServerCommunication(
+                "Target language server not found".to_string(),
+            ));
+        }
+
+        Err(ProjectLspError::ServerCommunication(format!(
+            "Custom request '{}' not supported by helix-lsp (prototype)",
+            method
+        )))
+    }
     /// Create a new bridge with environment provider for dynamic environment injection
     pub fn new_with_environment(
         project_event_tx: broadcast::Sender<ProjectLspEvent>,
