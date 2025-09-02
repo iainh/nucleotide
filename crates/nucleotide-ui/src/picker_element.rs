@@ -11,7 +11,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, Element, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy, Styled,
-    UniformListScrollHandle, Window, div, hsla, px, uniform_list,
+    UniformListScrollHandle, Window, div, px, uniform_list,
 };
 
 /// Generic picker element that works with any PickerDelegate

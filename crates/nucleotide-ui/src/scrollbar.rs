@@ -269,19 +269,6 @@ impl Element for Scrollbar {
             let axis = self.axis;
             let thumb_state = self.state.thumb_state.get();
 
-            // Helper function to determine if a color is light or dark
-            let is_light_color = |color: &Hsla| -> bool {
-                // Convert HSLA to relative luminance for perceptual lightness
-                let rgba = color.to_rgb();
-                let r = rgba.r;
-                let g = rgba.g;
-                let b = rgba.b;
-
-                // Using relative luminance formula: 0.299*R + 0.587*G + 0.114*B
-                let luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-                luminance > 0.5
-            };
-
             // Use adaptive theme colors with 50% transparency
             let thumb_bg = {
                 if let Some(theme) = cx.try_global::<crate::Theme>() {

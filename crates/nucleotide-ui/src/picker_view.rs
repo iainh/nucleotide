@@ -7,7 +7,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
     KeyDownEvent, ParentElement, Pixels, Render, Result, SharedString, Size, Styled, Task,
-    UniformListScrollHandle, div, hsla, px, uniform_list,
+    UniformListScrollHandle, div, px, uniform_list,
 };
 use gpui::{Context, ScrollStrategy, Window};
 use helix_view::DocumentId;

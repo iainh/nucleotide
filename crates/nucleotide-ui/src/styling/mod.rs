@@ -376,8 +376,6 @@ impl<'a> StyleContext<'a> {
 
     /// Create an appropriate hover color based on background
     fn create_hover_color(&self, background: Hsla) -> Hsla {
-        use gpui::hsla;
-
         // For ghost variant, use secondary selection color for better list selection UX
         if self.variant == "ghost" {
             return self.tokens.colors.selection_secondary;
