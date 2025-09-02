@@ -287,6 +287,64 @@ impl HelixLspBridge {
             vec![workspace_root.clone()]
         };
 
+        // Optionally wrap the server launch through our stdio proxy by PATH shimming.
+        // Controlled via env var NUCLEOTIDE_LSP_USE_PROXY=1.
+        let mut shim_dir_to_cleanup: Option<std::path::PathBuf> = None;
+        if std::env::var("NUCLEOTIDE_LSP_USE_PROXY")
+            .map_or(false, |v| v == "1" || v.eq_ignore_ascii_case("true"))
+        {
+            // Best-effort: build a shim dir with an executable named `server_name` that execs our proxy.
+            if let Ok(real_path) = which::which(server_name) {
+                use std::fs;
+                use std::io::Write as _;
+                let shim_dir =
+                    std::env::temp_dir().join(format!("nuc-lsp-shims-{}", std::process::id()));
+                let _ = fs::create_dir_all(&shim_dir);
+                let shim_path = shim_dir.join(server_name);
+
+                let log_dir = std::path::Path::new("logs").join("lsp");
+                let _ = fs::create_dir_all(&log_dir);
+                let log_file = log_dir.join(format!(
+                    "proxy-{}-{}.jsonl",
+                    server_name,
+                    chrono::Utc::now().timestamp_millis()
+                ));
+
+                // Write a simple POSIX shell wrapper
+                let script = format!(
+                    "#!/bin/sh\nexec nucleotide-lsp-proxy --server-cmd '{}' --log '{}' -- \"$@\"\n",
+                    real_path.display(),
+                    log_file.display()
+                );
+                if let Ok(mut f) = fs::File::create(&shim_path) {
+                    let _ = f.write_all(script.as_bytes());
+                    let _ = f.flush();
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(&shim_path, fs::Permissions::from_mode(0o755));
+                    }
+                }
+
+                // Prepend to PATH via our temporary env injection mechanism
+                let original = std::env::var("PATH").ok();
+                original_env_vars.push(("PATH".to_string(), original));
+                let new_path = match std::env::var("PATH") {
+                    Ok(p) => format!("{}:{}", shim_dir.display(), p),
+                    Err(_) => shim_dir.display().to_string(),
+                };
+                unsafe { std::env::set_var("PATH", &new_path) };
+                shim_dir_to_cleanup = Some(shim_dir);
+                info!(
+                    server_name = %server_name,
+                    shim_dir = %shim_dir_to_cleanup.as_ref().unwrap().display(),
+                    "Enabled LSP proxy via PATH shim"
+                );
+            } else {
+                warn!(server_name = %server_name, "NUCLEOTIDE_LSP_USE_PROXY enabled but real server not found in PATH");
+            }
+        }
+
         // Get language servers for this configuration
         // This integrates with the existing Helix LSP infrastructure
         // The environment variables we just set will be inherited by the server process
@@ -387,6 +445,12 @@ impl HelixLspBridge {
                     }
                 }
             }
+        }
+
+        // Best-effort cleanup of shims (directory may remain if in use)
+        if let Some(dir) = shim_dir_to_cleanup {
+            let _ = std::fs::remove_file(dir.join(server_name));
+            let _ = std::fs::remove_dir(dir);
         }
 
         // Find the server with matching name

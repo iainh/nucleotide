@@ -35,6 +35,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 rand.workspace = true
 slotmap.workspace = true
+which.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 tempfile = "3.10"

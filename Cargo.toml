@@ -12,6 +12,7 @@ members = [
     "crates/nucleotide-env",
     "crates/nucleotide-vcs",
     "crates/nucleotide-test-lsp",
+    "crates/nucleotide-lsp-proxy",
     "crates/nucleotide",
 ]
 resolver = "2"
