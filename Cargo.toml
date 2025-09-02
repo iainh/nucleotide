@@ -55,7 +55,7 @@ env_logger = "0.11"
 arc-swap = "1.7"
 bitflags = "2.5"
 notify = { version = "6.1", default-features = false, features = ["macos_fsevent"] }
-which = "6.0"
+which = "8.0"
 regex = "1.10"
 libc = "0.2"
 chardetng = "0.1"
@@ -116,3 +116,5 @@ codegen-units = 1
 strip = "debuginfo"
 split-debuginfo = "packed"  # Faster linking on macOS
 incremental = false  # Disable for release builds for maximum optimization
+
+# Local gpui patch available in docs/patches; not wired by default

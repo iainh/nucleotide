@@ -31,7 +31,7 @@ gpui.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-which = "6.0"
+which = "8.0"
 
 [features]
 default = []
@@ -39,7 +39,7 @@ default = []
 trash = ["dep:trash"]
 
 [dependencies.trash]
-version = "3"
+version = "5.2"
 optional = true
 
 [package.metadata.cargo-machete]

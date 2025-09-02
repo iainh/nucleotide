@@ -1,0 +1,301 @@
+diff -ruN /Users/iheggie/.cargo/git/checkouts/zed-a70e2ad075855582/537f678/crates/gpui/Cargo.toml vendor/zed/crates/gpui/Cargo.toml
+--- /Users/iheggie/.cargo/git/checkouts/zed-a70e2ad075855582/537f678/crates/gpui/Cargo.toml	2025-08-24 20:34:27
++++ vendor/zed/crates/gpui/Cargo.toml	2025-09-02 18:22:38
+@@ -5,7 +5,7 @@
+ authors = ["Nathan Sobo <nathan@zed.dev>"]
+ description = "Zed's GPU-accelerated UI framework"
+ repository = "https://github.com/zed-industries/zed"
+-publish.workspace = true
++publish = false
+ license = "Apache-2.0"
+ 
+ [lints]
+diff -ruN /Users/iheggie/.cargo/git/checkouts/zed-a70e2ad075855582/537f678/crates/gpui/src/app.rs vendor/zed/crates/gpui/src/app.rs
+--- /Users/iheggie/.cargo/git/checkouts/zed-a70e2ad075855582/537f678/crates/gpui/src/app.rs	2025-08-24 20:34:27
++++ vendor/zed/crates/gpui/src/app.rs	2025-09-02 18:22:17
+@@ -24,6 +24,7 @@
+ use collections::{FxHashMap, FxHashSet, HashMap, VecDeque};
+ pub use context::*;
+ pub use entity_map::*;
++#[cfg(feature = "http_client")]
+ use http_client::{HttpClient, Url};
+ use smallvec::SmallVec;
+ #[cfg(any(test, feature = "test-support"))]
+@@ -135,6 +136,7 @@
+         Self(App::new_app(
+             current_platform(false),
+             Arc::new(()),
++            #[cfg(feature = "http_client")]
+             Arc::new(NullHttpClient),
+         ))
+     }
+@@ -146,6 +148,7 @@
+         Self(App::new_app(
+             current_platform(true),
+             Arc::new(()),
++            #[cfg(feature = "http_client")]
+             Arc::new(NullHttpClient),
+         ))
+     }
+@@ -161,6 +164,7 @@
+     }
+ 
+     /// Sets the HTTP client for the application.
++    #[cfg(feature = "http_client")]
+     pub fn with_http_client(self, http_client: Arc<dyn HttpClient>) -> Self {
+         let mut context_lock = self.0.borrow_mut();
+         context_lock.http_client = http_client;
+@@ -253,6 +257,7 @@
+     pub(crate) loading_assets: FxHashMap<(TypeId, u64), Box<dyn Any>>,
+     asset_source: Arc<dyn AssetSource>,
+     pub(crate) svg_renderer: SvgRenderer,
++    #[cfg(feature = "http_client")]
+     http_client: Arc<dyn HttpClient>,
+     pub(crate) globals_by_type: FxHashMap<TypeId, Box<dyn Any>>,
+     pub(crate) entities: EntityMap,
+@@ -297,6 +302,7 @@
+ 
+ impl App {
+     #[allow(clippy::new_ret_no_self)]
++    #[cfg(feature = "http_client")]
+     pub(crate) fn new_app(
+         platform: Rc<dyn Platform>,
+         asset_source: Arc<dyn AssetSource>,
+@@ -393,6 +399,78 @@
+         app
+     }
+ 
++    #[cfg(not(feature = "http_client"))]
++    pub(crate) fn new_app(
++        platform: Rc<dyn Platform>,
++        asset_source: Arc<dyn AssetSource>,
++    ) -> Rc<AppCell> {
++        let executor = platform.background_executor();
++        let foreground_executor = platform.foreground_executor();
++        assert!(
++            executor.is_main_thread(),
++            "must construct App on main thread"
++        );
++
++        let text_system = Arc::new(TextSystem::new(platform.text_system()));
++        let entities = EntityMap::new();
++        let keyboard_layout = platform.keyboard_layout();
++
++        let app = Rc::new_cyclic(|this| AppCell {
++            app: RefCell::new(App {
++                this: this.clone(),
++                platform: platform.clone(),
++                text_system,
++                actions: Rc::new(ActionRegistry::default()),
++                flushing_effects: false,
++                pending_updates: 0,
++                active_drag: None,
++                background_executor: executor,
++                foreground_executor,
++                svg_renderer: SvgRenderer::new(asset_source.clone()),
++                loading_assets: Default::default(),
++                asset_source,
++                globals_by_type: FxHashMap::default(),
++                entities,
++                new_entity_observers: SubscriberSet::new(),
++                windows: SlotMap::with_key(),
++                window_update_stack: Vec::new(),
++                window_handles: FxHashMap::default(),
++                focus_handles: Arc::new(RwLock::new(SlotMap::with_key())),
++                keymap: Rc::new(RefCell::new(Keymap::default())),
++                keyboard_layout,
++                global_action_listeners: FxHashMap::default(),
++                pending_effects: VecDeque::new(),
++                pending_notifications: FxHashSet::default(),
++                pending_global_notifications: FxHashSet::default(),
++                observers: SubscriberSet::new(),
++                tracked_entities: FxHashMap::default(),
++                window_invalidators_by_entity: FxHashMap::default(),
++                event_listeners: SubscriberSet::new(),
++                release_listeners: SubscriberSet::new(),
++                keystroke_observers: SubscriberSet::new(),
++                keystroke_interceptors: SubscriberSet::new(),
++                keyboard_layout_observers: SubscriberSet::new(),
++                global_observers: SubscriberSet::new(),
++                quit_observers: SubscriberSet::new(),
++                restart_observers: SubscriberSet::new(),
++                restart_path: None,
++                window_closed_observers: SubscriberSet::new(),
++                layout_id_buffer: Default::default(),
++                propagate_event: true,
++                prompt_builder: Some(PromptBuilder::Default),
++                #[cfg(any(feature = "inspector", debug_assertions))]
++                inspector_renderer: None,
++                #[cfg(any(feature = "inspector", debug_assertions))]
++                inspector_element_registry: Default::default(),
++                #[cfg(any(test, feature = "test-support", debug_assertions))]
++                name: None,
++                quitting: false,
++            }),
++        });
++
++        app
++    }
++
+     /// Quit the application gracefully. Handlers registered with [`Context::on_app_quit`]
+     /// will be given 100ms to complete before exiting.
+     pub fn shutdown(&mut self) {
+@@ -849,11 +927,13 @@
+     }
+ 
+     /// Returns the HTTP client for the application.
++    #[cfg(feature = "http_client")]
+     pub fn http_client(&self) -> Arc<dyn HttpClient> {
+         self.http_client.clone()
+     }
+ 
+     /// Sets the HTTP client for the application.
++    #[cfg(feature = "http_client")]
+     pub fn set_http_client(&mut self, new_client: Arc<dyn HttpClient>) {
+         self.http_client = new_client;
+     }
+@@ -2034,8 +2114,10 @@
+     pub context_stack: Vec<KeyContext>,
+ }
+ 
++#[cfg(feature = "http_client")]
+ struct NullHttpClient;
+ 
++#[cfg(feature = "http_client")]
+ impl HttpClient for NullHttpClient {
+     fn send(
+         &self,
+diff -ruN /Users/iheggie/.cargo/git/checkouts/zed-a70e2ad075855582/537f678/crates/gpui/src/elements/img.rs vendor/zed/crates/gpui/src/elements/img.rs
+--- /Users/iheggie/.cargo/git/checkouts/zed-a70e2ad075855582/537f678/crates/gpui/src/elements/img.rs	2025-08-24 20:34:28
++++ vendor/zed/crates/gpui/src/elements/img.rs	2025-09-02 18:22:23
+@@ -49,10 +49,16 @@
+     Custom(Arc<dyn Fn(&mut Window, &mut App) -> Option<Result<Arc<RenderImage>, ImageCacheError>>>),
+ }
+ 
++#[cfg(feature = "http_client")]
+ fn is_uri(uri: &str) -> bool {
+     http_client::Uri::from_str(uri).is_ok()
+ }
+ 
++#[cfg(not(feature = "http_client"))]
++fn is_uri(uri: &str) -> bool {
++    uri.contains("://") || uri.starts_with("data:")
++}
++
+ impl From<SharedUri> for ImageSource {
+     fn from(value: SharedUri) -> Self {
+         Self::Resource(Resource::Uri(value))
+@@ -592,6 +598,7 @@
+         source: Self::Source,
+         cx: &mut App,
+     ) -> impl Future<Output = Self::Output> + Send + 'static {
++        #[cfg(feature = "http_client")]
+         let client = cx.http_client();
+         // TODO: Can we make SVGs always rescale?
+         // let scale_factor = cx.scale_factor();
+@@ -601,23 +608,33 @@
+             let bytes = match source.clone() {
+                 Resource::Path(uri) => fs::read(uri.as_ref())?,
+                 Resource::Uri(uri) => {
+-                    let mut response = client
+-                        .get(uri.as_ref(), ().into(), true)
+-                        .await
+-                        .with_context(|| format!("loading image asset from {uri:?}"))?;
+-                    let mut body = Vec::new();
+-                    response.body_mut().read_to_end(&mut body).await?;
+-                    if !response.status().is_success() {
+-                        let mut body = String::from_utf8_lossy(&body).into_owned();
+-                        let first_line = body.lines().next().unwrap_or("").trim_end();
+-                        body.truncate(first_line.len());
+-                        return Err(ImageCacheError::BadStatus {
+-                            uri,
+-                            status: response.status(),
+-                            body,
+-                        });
++                    #[cfg(feature = "http_client")]
++                    {
++                        let mut response = client
++                            .get(uri.as_ref(), ().into(), true)
++                            .await
++                            .with_context(|| format!("loading image asset from {uri:?}"))?;
++                        let mut body = Vec::new();
++                        response.body_mut().read_to_end(&mut body).await?;
++                        if !response.status().is_success() {
++                            let mut body = String::from_utf8_lossy(&body).into_owned();
++                            let first_line = body.lines().next().unwrap_or("").trim_end();
++                            body.truncate(first_line.len());
++                            return Err(ImageCacheError::BadStatus {
++                                uri,
++                                status: response.status(),
++                                body,
++                            });
++                        }
++                        body
+                     }
+-                    body
++                    #[cfg(not(feature = "http_client"))]
++                    {
++                        return Err(ImageCacheError::Asset(
++                            format!("URI loading requires gpui `http_client` feature: {}", uri)
++                                .into(),
++                        ));
++                    }
+                 }
+                 Resource::Embedded(path) => {
+                     let data = asset_source.load(&path).ok().flatten();
+@@ -721,6 +738,7 @@
+     Io(Arc<std::io::Error>),
+     /// An error that occurred while processing an image.
+     #[error("unexpected http status for {uri}: {status}, body: {body}")]
++    #[cfg(feature = "http_client")]
+     BadStatus {
+         /// The URI of the image.
+         uri: SharedUri,
+diff -ruN /Users/iheggie/.cargo/git/checkouts/zed-a70e2ad075855582/537f678/crates/gpui/src/gpui.rs vendor/zed/crates/gpui/src/gpui.rs
+--- /Users/iheggie/.cargo/git/checkouts/zed-a70e2ad075855582/537f678/crates/gpui/src/gpui.rs	2025-08-24 20:34:28
++++ vendor/zed/crates/gpui/src/gpui.rs	2025-09-02 18:22:02
+@@ -135,6 +135,7 @@
+ pub use geometry::*;
+ pub use global::*;
+ pub use gpui_macros::{AppContext, IntoElement, Render, VisualContext, register_action, test};
++#[cfg(feature = "http_client")]
+ pub use http_client;
+ pub use input::*;
+ pub use inspector::*;
+diff -ruN /Users/iheggie/.cargo/git/checkouts/zed-a70e2ad075855582/537f678/crates/gpui/src/platform/linux/wayland/client.rs vendor/zed/crates/gpui/src/platform/linux/wayland/client.rs
+--- /Users/iheggie/.cargo/git/checkouts/zed-a70e2ad075855582/537f678/crates/gpui/src/platform/linux/wayland/client.rs	2025-08-24 20:34:28
++++ vendor/zed/crates/gpui/src/platform/linux/wayland/client.rs	2025-09-02 18:22:27
+@@ -14,6 +14,7 @@
+ use calloop_wayland_source::WaylandSource;
+ use collections::HashMap;
+ use filedescriptor::Pipe;
++#[cfg(feature = "http_client")]
+ use http_client::Url;
+ use smallvec::SmallVec;
+ use util::ResultExt;
+@@ -1926,11 +1927,20 @@
+                                 }
+                             };
+ 
+-                            let paths: SmallVec<[_; 2]> = file_list
+-                                .lines()
+-                                .filter_map(|path| Url::parse(path).log_err())
+-                                .filter_map(|url| url.to_file_path().log_err())
+-                                .collect();
++                            let paths: SmallVec<[_; 2]> = {
++                                #[cfg(feature = "http_client")]
++                                {
++                                    file_list
++                                        .lines()
++                                        .filter_map(|path| Url::parse(path).log_err())
++                                        .filter_map(|url| url.to_file_path().log_err())
++                                        .collect()
++                                }
++                                #[cfg(not(feature = "http_client"))]
++                                {
++                                    SmallVec::new()
++                                }
++                            };
+                             let position = Point::new(x.into(), y.into());
+ 
+                             // Prevent dropping text from other programs.
