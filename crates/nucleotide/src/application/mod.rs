@@ -647,6 +647,13 @@ impl Application {
     ) {
         use helix_lsp::{Call, MethodCall, Notification};
 
+        // Best-effort to resolve a server name for per-server traffic logs
+        let server_name_for_log = self
+            .editor
+            .language_server_by_id(server_id)
+            .map(|ls| ls.name().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
         macro_rules! language_server {
             () => {
                 match self.editor.language_server_by_id(server_id) {
@@ -661,6 +668,21 @@ impl Application {
 
         match call {
             Call::Notification(helix_lsp::jsonrpc::Notification { method, params, .. }) => {
+                // Log raw incoming notification traffic (JSONL per server when enabled)
+                crate::lsp_traffic_logger::log_incoming(
+                    server_id,
+                    &server_name_for_log,
+                    &method,
+                    &serde_json::json!({ "raw": format!("{:?}", params) }),
+                );
+                // Also capture $/logTrace hint (payload shape is server-specific)
+                if method == "$/logTrace" {
+                    crate::lsp_traffic_logger::log_server_trace(
+                        server_id,
+                        &server_name_for_log,
+                        &format!("{:?}", params),
+                    );
+                }
                 let notification = match Notification::parse(&method, params) {
                     Ok(notification) => notification,
                     Err(helix_lsp::Error::Unhandled) => {
@@ -881,6 +903,13 @@ impl Application {
             Call::MethodCall(helix_lsp::jsonrpc::MethodCall {
                 method, params, id, ..
             }) => {
+                // Log raw incoming server->client method call traffic
+                crate::lsp_traffic_logger::log_incoming(
+                    server_id,
+                    &server_name_for_log,
+                    &method,
+                    &serde_json::json!({ "raw": format!("{:?}", params) }),
+                );
                 debug!(
                     server_id = ?server_id,
                     method = %method,
@@ -3527,6 +3556,21 @@ impl Application {
             col_utf16 = col_utf16,
             server_id = ?language_server.id(),
             "Making actual LSP completion request"
+        );
+
+        // Optional: log outgoing LSP completion request for traffic tracing
+        crate::lsp_traffic_logger::log_outgoing(
+            language_server.id(),
+            language_server.name(),
+            "textDocument/completion",
+            &serde_json::json!({
+                "textDocument": doc_id_lsp,
+                "position": {"line": line as u32, "character": col_utf16},
+                "context": {
+                    "triggerKind": completion_context.trigger_kind,
+                    "triggerCharacter": completion_context.trigger_character
+                }
+            }),
         );
 
         // Make the LSP completion request
