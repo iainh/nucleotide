@@ -303,7 +303,7 @@ impl<'a> StyleContext<'a> {
                 }
             }
             StyleState::Focused => {
-                style.border_color = self.tokens.colors.border_focus;
+                style.border_color = self.tokens.chrome.border_focus;
                 style.border_width = px(2.0);
 
                 // Add focus ring shadow
@@ -313,7 +313,7 @@ impl<'a> StyleContext<'a> {
                     blur_radius: px(0.0),
                     spread_radius: px(2.0),
                     color: {
-                        let focus_color = self.tokens.colors.border_focus;
+                        let focus_color = self.tokens.chrome.border_focus;
                         Hsla {
                             h: focus_color.h,
                             s: focus_color.s,
@@ -324,9 +324,9 @@ impl<'a> StyleContext<'a> {
                 });
             }
             StyleState::Disabled => {
-                style.background = self.tokens.colors.surface_disabled;
-                style.foreground = self.tokens.colors.text_disabled;
-                style.border_color = self.tokens.colors.border_muted;
+                style.background = self.tokens.chrome.surface_disabled;
+                style.foreground = self.tokens.chrome.text_chrome_disabled;
+                style.border_color = self.tokens.chrome.border_muted;
                 style.opacity = 0.6;
             }
             StyleState::Loading => {
@@ -335,9 +335,9 @@ impl<'a> StyleContext<'a> {
             }
             StyleState::Selected => {
                 // Use primary selection color for active selection
-                style.background = self.tokens.colors.selection_primary;
-                style.foreground = self.tokens.colors.text_on_primary;
-                style.border_color = self.tokens.colors.selection_primary;
+                style.background = self.tokens.editor.selection_primary;
+                style.foreground = self.tokens.editor.text_on_primary;
+                style.border_color = self.tokens.editor.selection_primary;
             }
             StyleState::Default => {
                 // Default state already handled in base and variant styles

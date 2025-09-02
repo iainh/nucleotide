@@ -1144,7 +1144,7 @@ impl FileTreeView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>();
-        let selected_text = theme.tokens.colors.text_on_primary;
+        let selected_text = theme.tokens.editor.text_on_primary;
         let normal_text = theme.text;
         let icon_color = if is_selected {
             selected_text
@@ -1190,7 +1190,7 @@ impl FileTreeView {
     ) -> impl IntoElement {
         let theme = cx.theme();
         let file_tree_tokens = theme.tokens.file_tree_tokens();
-        let selected_text = theme.tokens.colors.text_on_primary;
+        let selected_text = theme.tokens.editor.text_on_primary;
 
         // For root directory, show just the directory name
         let filename = if entry.depth == 0 && entry.is_directory() {

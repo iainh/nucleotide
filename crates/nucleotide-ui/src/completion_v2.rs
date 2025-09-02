@@ -1625,9 +1625,9 @@ impl Render for CompletionView {
 
                         px(optimal_width)
                     })
-                    .bg(tokens.colors.popup_background)
+                    .bg(tokens.chrome.popup_background)
                     .border_1()
-                    .border_color(tokens.colors.popup_border)
+                    .border_color(tokens.chrome.popup_border)
                     .rounded(tokens.sizes.radius_md)
                     .shadow_lg()
                     .py(tokens.sizes.space_1)
@@ -1640,7 +1640,7 @@ impl Render for CompletionView {
                             .w_full()
                             .max_h(max_container_height) // Flexible height with maximum constraint
                             .min_h(px(64.0)) // Minimum height for at least 2 items
-                            .bg(tokens.colors.popup_background) // Ensure background is visible
+                            .bg(tokens.chrome.popup_background) // Ensure background is visible
                             .child(
                                 // Scrollable container with working completion items
                                 div()

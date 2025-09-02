@@ -184,8 +184,9 @@ impl RenderOnce for TabOverflowMenu {
         let theme = cx.theme();
         let tokens = &theme.tokens;
 
-        // Use popup colors derived from Helix theme for consistency
-        let dropdown_bg = tokens.colors.popup_background;
+        // Use dropdown component tokens (hybrid system)
+        let dd_tokens = tokens.dropdown_tokens();
+        let dropdown_bg = dd_tokens.container_background;
 
         // Positioned absolutely to appear right below the overflow button
         div()
@@ -196,7 +197,7 @@ impl RenderOnce for TabOverflowMenu {
             .max_h(px(400.0)) // Maximum height for scrolling
             .bg(dropdown_bg)
             .border_1()
-            .border_color(tokens.colors.popup_border)
+            .border_color(dd_tokens.border)
             .rounded(tokens.sizes.radius_lg)
             .shadow_lg()
             .overflow_y_hidden()
@@ -260,7 +261,7 @@ impl RenderOnce for TabOverflowMenu {
                                                     .w(px(6.0))
                                                     .h(px(6.0))
                                                     .rounded(px(3.0))
-                                                    .bg(tokens.colors.primary)
+                                                    .bg(tokens.chrome.primary)
                                                     .into_any_element()
                                             } else {
                                                 div().into_any_element()

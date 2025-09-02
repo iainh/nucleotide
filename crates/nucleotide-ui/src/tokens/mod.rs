@@ -1,6 +1,7 @@
 // ABOUTME: Design token system providing semantic color and spacing values
 // ABOUTME: Replaces hardcoded values with systematic, theme-aware design tokens
 
+use crate::ContrastRatios;
 use crate::styling::ColorTheory;
 use gpui::{Hsla, Pixels, hsla, px};
 use nucleotide_logging::debug;
@@ -468,6 +469,21 @@ impl SemanticColors {
         colors.focus_ring_error = helix_colors.error;
         colors.focus_ring_warning = helix_colors.warning;
 
+        // Ensure selection text has adequate contrast
+        {
+            use crate::ContrastRatios;
+            let white = hsla(0.0, 0.0, 1.0, 1.0);
+            let black = hsla(0.0, 0.0, 0.0, 1.0);
+            let cw = ColorTheory::contrast_ratio(colors.selection_primary, white);
+            let cb = ColorTheory::contrast_ratio(colors.selection_primary, black);
+            let base_text = if cw >= cb { white } else { black };
+            colors.text_on_primary = ColorTheory::ensure_contrast(
+                colors.selection_primary,
+                base_text,
+                ContrastRatios::AA_NORMAL,
+            );
+        }
+
         // Also update primary brand color to match selection for consistency
         colors.primary = helix_colors.selection;
         colors.primary_hover = utils::lighten(helix_colors.selection, 0.1);
@@ -530,6 +546,21 @@ impl SemanticColors {
         colors.focus_ring = helix_colors.focus;
         colors.focus_ring_error = helix_colors.error;
         colors.focus_ring_warning = helix_colors.warning;
+
+        // Ensure selection text has adequate contrast
+        {
+            use crate::ContrastRatios;
+            let white = hsla(0.0, 0.0, 1.0, 1.0);
+            let black = hsla(0.0, 0.0, 0.0, 1.0);
+            let cw = ColorTheory::contrast_ratio(colors.selection_primary, white);
+            let cb = ColorTheory::contrast_ratio(colors.selection_primary, black);
+            let base_text = if cw >= cb { white } else { black };
+            colors.text_on_primary = ColorTheory::ensure_contrast(
+                colors.selection_primary,
+                base_text,
+                ContrastRatios::AA_NORMAL,
+            );
+        }
 
         // Also update primary brand color to match selection for consistency
         colors.primary = helix_colors.selection;
@@ -742,15 +773,25 @@ impl EditorTokens {
         };
         let text_secondary = utils::with_alpha(text_primary, 0.7);
 
-        // Compute text_on_primary based on selection background for proper contrast
-        let selection_luminance = ColorTheory::relative_luminance(helix_colors.selection);
-        let text_on_primary = if selection_luminance > 0.5 {
-            // Light selection background - use dark text
-            hsla(0.0, 0.0, 0.1, 1.0)
+        // Compute text_on_primary with dark-theme preference for white when valid
+        let white = hsla(0.0, 0.0, 1.0, 1.0);
+        let black = hsla(0.0, 0.0, 0.0, 1.0);
+        let cw = ColorTheory::contrast_ratio(helix_colors.selection, white);
+        let cb = ColorTheory::contrast_ratio(helix_colors.selection, black);
+        // Infer dark editor from gutter background
+        let is_dark_editor = helix_colors.gutter_background.l < 0.5;
+        let base_text = if is_dark_editor && cw >= ContrastRatios::AA_NORMAL {
+            white
+        } else if cw >= cb {
+            white
         } else {
-            // Dark selection background - use light text
-            hsla(0.0, 0.0, 0.9, 1.0)
+            black
         };
+        let text_on_primary = ColorTheory::ensure_contrast(
+            helix_colors.selection,
+            base_text,
+            ContrastRatios::AA_NORMAL,
+        );
 
         Self {
             // Selection and cursor system
@@ -833,16 +874,26 @@ impl EditorTokens {
             } else {
                 base_colors.neutral_300
             },
-            // Compute text_on_primary based on selection background for proper contrast
+            // Compute text_on_primary with enforced contrast and dark-theme preference
             text_on_primary: {
-                let selection_luminance = ColorTheory::relative_luminance(selection_color);
-                if selection_luminance > 0.5 {
-                    // Light selection background - use dark text
-                    base_colors.neutral_900
+                let white = hsla(0.0, 0.0, 1.0, 1.0);
+                let black = hsla(0.0, 0.0, 0.0, 1.0);
+                let cw = ColorTheory::contrast_ratio(selection_color, white);
+                let cb = ColorTheory::contrast_ratio(selection_color, black);
+                let base_text = if is_dark {
+                    if cw >= ContrastRatios::AA_NORMAL {
+                        white
+                    } else if cw >= cb {
+                        white
+                    } else {
+                        black
+                    }
+                } else if cw >= cb {
+                    white
                 } else {
-                    // Dark selection background - use light text
-                    base_colors.neutral_100
-                }
+                    black
+                };
+                ColorTheory::ensure_contrast(selection_color, base_text, ContrastRatios::AA_NORMAL)
             },
 
             error: base_colors.error_500,
@@ -1015,23 +1066,27 @@ impl DesignTokens {
     /// Create design tokens for light theme
     pub fn light() -> Self {
         let base_colors = BaseColors::light();
-        Self {
+        let mut dt = Self {
             editor: EditorTokens::fallback(false),
             chrome: ChromeTokens::fallback(false),
             colors: SemanticColors::from_base_light(&base_colors),
             sizes: SizeTokens::default(),
-        }
+        };
+        dt.synchronize_semantic_view();
+        dt
     }
 
     /// Create design tokens for dark theme
     pub fn dark() -> Self {
         let base_colors = BaseColors::dark();
-        Self {
+        let mut dt = Self {
             editor: EditorTokens::fallback(true),
             chrome: ChromeTokens::fallback(true),
             colors: SemanticColors::from_base_dark(&base_colors),
             sizes: SizeTokens::default(),
-        }
+        };
+        dt.synchronize_semantic_view();
+        dt
     }
 
     /// Create design tokens for light theme with Helix-derived selection color
@@ -1059,23 +1114,27 @@ impl DesignTokens {
     /// Create design tokens for light theme with comprehensive Helix-derived colors
     pub fn light_with_helix_colors(helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
         let base_colors = BaseColors::light();
-        Self {
+        let mut dt = Self {
             editor: EditorTokens::from_helix_colors(helix_colors),
             chrome: ChromeTokens::fallback(false), // Temporary fallback, will use surface color later
             colors: SemanticColors::from_base_light_with_helix_colors(&base_colors, helix_colors),
             sizes: SizeTokens::default(),
-        }
+        };
+        dt.synchronize_semantic_view();
+        dt
     }
 
     /// Create design tokens for dark theme with comprehensive Helix-derived colors
     pub fn dark_with_helix_colors(helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
         let base_colors = BaseColors::dark();
-        Self {
+        let mut dt = Self {
             editor: EditorTokens::from_helix_colors(helix_colors),
             chrome: ChromeTokens::fallback(true), // Temporary fallback, will use surface color later
             colors: SemanticColors::from_base_dark_with_helix_colors(&base_colors, helix_colors),
             sizes: SizeTokens::default(),
-        }
+        };
+        dt.synchronize_semantic_view();
+        dt
     }
 
     /// Create design tokens from Helix theme and surface color (hybrid approach)
@@ -1104,12 +1163,65 @@ impl DesignTokens {
             SemanticColors::from_base_light_with_helix_colors(&base_colors, helix_colors)
         };
 
-        Self {
+        let mut dt = Self {
             editor,
             chrome,
             colors, // Keep for backwards compatibility
             sizes: SizeTokens::default(),
-        }
+        };
+        dt.synchronize_semantic_view();
+        dt
+    }
+
+    /// Synchronize legacy `colors` view from chrome/editor tokens so existing code paths
+    /// referencing `tokens.colors.*` see the new design-token values.
+    pub fn synchronize_semantic_view(&mut self) {
+        let c = &self.chrome;
+        let e = &self.editor;
+        let colors = &mut self.colors;
+
+        // Surfaces
+        colors.background = c.surface;
+        colors.surface = c.surface;
+        colors.surface_elevated = c.surface_elevated;
+        colors.surface_overlay = c.surface_overlay;
+        colors.surface_hover = c.surface_hover;
+        colors.surface_active = c.surface_active;
+        colors.surface_selected = c.surface_selected;
+        colors.surface_disabled = c.surface_disabled;
+
+        // Text
+        colors.text_primary = c.text_on_chrome;
+        colors.text_secondary = c.text_chrome_secondary;
+        colors.text_disabled = c.text_chrome_disabled;
+        colors.text_on_primary = e.text_on_primary;
+
+        // Borders
+        colors.border_default = c.border_default;
+        colors.border_muted = c.border_muted;
+        colors.border_strong = c.border_strong;
+        colors.border_focus = c.border_focus;
+
+        // Brand
+        colors.primary = c.primary;
+        colors.primary_hover = c.primary_hover;
+        colors.primary_active = c.primary_active;
+
+        // Selection
+        colors.selection_primary = e.selection_primary;
+        colors.selection_secondary = e.selection_secondary;
+
+        // Menus / popups
+        colors.popup_background = c.popup_background;
+        colors.popup_border = c.popup_border;
+        colors.menu_background = c.menu_background;
+        colors.menu_selected = c.menu_selected;
+        colors.menu_separator = c.menu_separator;
+
+        // Separators
+        colors.separator_horizontal = c.separator_color;
+        colors.separator_vertical = c.separator_color;
+        colors.separator_subtle = utils::with_alpha(c.separator_color, 0.5);
     }
 }
 

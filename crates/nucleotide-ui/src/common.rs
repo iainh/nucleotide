@@ -61,12 +61,12 @@ impl Default for ModalStyle {
         // Use design tokens for better theme consistency
         let tokens = crate::DesignTokens::dark();
         Self {
-            background: tokens.colors.popup_background,
-            text: tokens.colors.text_primary,
-            border: tokens.colors.border_default,
-            selected_background: tokens.colors.selection_primary,
-            selected_text: tokens.colors.text_on_primary,
-            prompt_text: tokens.colors.text_secondary,
+            background: tokens.chrome.popup_background,
+            text: tokens.chrome.text_on_chrome,
+            border: tokens.chrome.popup_border,
+            selected_background: tokens.editor.selection_primary,
+            selected_text: tokens.editor.text_on_primary,
+            prompt_text: tokens.chrome.text_chrome_secondary,
         }
     }
 }

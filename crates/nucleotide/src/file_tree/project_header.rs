@@ -72,7 +72,7 @@ impl ProjectHeader {
         let tokens = &theme.tokens;
         let project_name = self.get_project_name();
 
-        let header_bg = tokens.colors.surface_elevated;
+        let header_bg = tokens.chrome.surface_elevated;
         let border_color = nucleotide_ui::styling::ColorTheory::subtle_border_color(
             header_bg,
             &tokens,
@@ -105,7 +105,7 @@ impl ProjectHeader {
                                 div()
                                     .text_size(tokens.sizes.text_base)
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(tokens.colors.text_primary)
+                                    .text_color(tokens.chrome.text_on_chrome)
                                     .child(project_name)
                             )
                             .when(self.show_project_type, |div| {
@@ -141,7 +141,7 @@ impl ProjectHeader {
                         .child(
                             div()
                                 .text_size(tokens.sizes.text_sm)
-                                .text_color(tokens.colors.text_secondary)
+                                .text_color(tokens.chrome.text_chrome_secondary)
                                 .child("Language Servers")
                         )
                         .child(
@@ -163,7 +163,7 @@ impl ProjectHeader {
                         .child(
                             div()
                                 .text_size(tokens.sizes.text_sm)
-                                .text_color(tokens.colors.text_muted)
+                                .text_color(tokens.chrome.text_chrome_secondary)
                                 .child("No project directory selected")
                         )
                         .child(

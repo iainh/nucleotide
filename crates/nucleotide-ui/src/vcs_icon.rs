@@ -107,7 +107,7 @@ impl VcsIcon {
             Some(VcsStatus::Added) => Some(theme.success),
             Some(VcsStatus::Deleted) => Some(theme.error),
             Some(VcsStatus::Untracked) => Some(theme.text_muted),
-            Some(VcsStatus::Renamed) => Some(theme.tokens.colors.primary),
+            Some(VcsStatus::Renamed) => Some(theme.tokens.chrome.primary),
             Some(VcsStatus::Conflicted) => Some(theme.error),
             Some(VcsStatus::Unknown) => Some(theme.text_muted),
             Some(VcsStatus::Clean) | None => None,
@@ -132,7 +132,7 @@ impl VcsIcon {
             .rounded_full()
             .bg(color)
             .border_1()
-            .border_color(theme.tokens.colors.background) // Border to separate from icon
+            .border_color(theme.tokens.chrome.border_default) // Border to separate from icon
     }
 }
 

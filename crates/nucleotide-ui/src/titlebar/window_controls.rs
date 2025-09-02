@@ -92,8 +92,8 @@ impl WindowControlStyle {
         Self {
             background: default_style.background, // transparent by default for ghost variant
             background_hover: hover_style.background,
-            icon: ui_theme.tokens.colors.text_secondary,
-            icon_hover: ui_theme.tokens.colors.text_primary,
+            icon: ui_theme.tokens.chrome.text_chrome_secondary,
+            icon_hover: ui_theme.tokens.chrome.text_on_chrome,
         }
     }
 
@@ -104,7 +104,7 @@ impl WindowControlStyle {
         // Create danger button style for close button
         let bg = titlebar_tokens.background;
         let fg = titlebar_tokens.foreground;
-        let error_color = theme_tokens.colors.error;
+        let error_color = theme_tokens.editor.error;
 
         debug!(
             "TITLEBAR WINDOW_CONTROL: Creating close button style - bg={:?}, fg={:?}, error_color={:?}",
@@ -144,7 +144,7 @@ impl WindowControlStyle {
         Self {
             background: hsla(0.0, 0.0, 0.0, 0.0),      // transparent default
             background_hover: danger_style.background, // Use computed danger color
-            icon: ui_theme.tokens.colors.text_secondary,
+            icon: ui_theme.tokens.chrome.text_chrome_secondary,
             icon_hover: danger_style.foreground, // Use computed text color on danger background
         }
     }

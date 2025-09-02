@@ -96,7 +96,7 @@ impl ColorTheory {
     pub fn best_text_color(background: Hsla, tokens: &DesignTokens) -> Hsla {
         // For transparent backgrounds, use primary text
         if background.a < 0.1 {
-            return tokens.colors.text_primary;
+            return tokens.chrome.text_on_chrome;
         }
 
         // Build a candidate set that includes theme texts and OKLab-neutral extremes
@@ -118,14 +118,14 @@ impl ColorTheory {
         );
 
         let candidates = [
-            tokens.colors.text_primary,
-            tokens.colors.text_secondary,
-            tokens.colors.text_on_primary,
+            tokens.chrome.text_on_chrome,
+            tokens.chrome.text_chrome_secondary,
+            tokens.editor.text_on_primary,
             oklab_white, // Perceptual near-white
             oklab_black, // Perceptual near-black
         ];
 
-        let mut best_color = tokens.colors.text_primary;
+        let mut best_color = tokens.chrome.text_on_chrome;
         let mut best_contrast = 0.0;
 
         for &candidate in &candidates {
@@ -230,29 +230,29 @@ impl ColorTheory {
     fn on_surface_colors(variant: &str, tokens: &DesignTokens) -> ContextualColors {
         let (background, foreground) = match variant {
             "primary" => (
-                tokens.colors.primary,
-                Self::best_text_color(tokens.colors.primary, tokens),
+                tokens.chrome.primary,
+                Self::best_text_color(tokens.chrome.primary, tokens),
             ),
-            "secondary" => (tokens.colors.surface, tokens.colors.text_primary),
+            "secondary" => (tokens.chrome.surface, tokens.chrome.text_on_chrome),
             "ghost" => {
                 // Ghost variant: transparent background, foreground based on surface
                 let bg = hsla(0.0, 0.0, 0.0, 0.0); // Transparent
-                let fg = Self::best_text_color(tokens.colors.surface, tokens);
+                let fg = Self::best_text_color(tokens.chrome.surface, tokens);
                 (bg, fg)
             }
             "danger" => (
-                tokens.colors.error,
-                Self::best_text_color(tokens.colors.error, tokens),
+                tokens.editor.error,
+                Self::best_text_color(tokens.editor.error, tokens),
             ),
             "success" => (
-                tokens.colors.success,
-                Self::best_text_color(tokens.colors.success, tokens),
+                tokens.editor.success,
+                Self::best_text_color(tokens.editor.success, tokens),
             ),
             "warning" => (
-                tokens.colors.warning,
-                Self::best_text_color(tokens.colors.warning, tokens),
+                tokens.editor.warning,
+                Self::best_text_color(tokens.editor.warning, tokens),
             ),
-            _ => (tokens.colors.surface, tokens.colors.text_primary),
+            _ => (tokens.chrome.surface, tokens.chrome.text_on_chrome),
         };
 
         let border = if variant == "ghost" {
@@ -272,12 +272,12 @@ impl ColorTheory {
     fn on_primary_colors(variant: &str, tokens: &DesignTokens) -> ContextualColors {
         let background = match variant {
             "ghost" => hsla(0.0, 0.0, 1.0, 0.1), // Subtle overlay
-            _ => Self::adjust_for_primary_context(tokens.colors.primary, tokens),
+            _ => Self::adjust_for_primary_context(tokens.chrome.primary, tokens),
         };
 
         ContextualColors {
             background,
-            foreground: tokens.colors.text_on_primary,
+            foreground: tokens.editor.text_on_primary,
             border: Self::subtle_border_color(background, tokens),
         }
     }
@@ -289,9 +289,9 @@ impl ColorTheory {
         tokens: &DesignTokens,
     ) -> ContextualColors {
         let base_bg = if is_dark_theme {
-            tokens.colors.surface_elevated
+            tokens.chrome.surface_elevated
         } else {
-            tokens.colors.surface_overlay
+            tokens.chrome.surface_overlay
         };
 
         let (background, foreground) = match variant {
@@ -328,7 +328,7 @@ impl ColorTheory {
         tokens: &DesignTokens,
     ) -> ContextualColors {
         let background = match variant {
-            "primary" => tokens.colors.primary,
+            "primary" => tokens.chrome.primary,
             "ghost" => hsla(0.0, 0.0, 0.0, 0.0),
             _ => {
                 if is_dark_theme {
@@ -409,6 +409,7 @@ impl ColorTheory {
     // Implements direct linear sRGB <-> OKLab transforms with cube-root nonlinearity.
     // ==========================
 
+    #[allow(non_snake_case)]
     pub fn hsla_to_oklab(color: Hsla) -> Oklab {
         let (r_srgb, g_srgb, b_srgb) = Self::hsl_to_rgb(color.h, color.s, color.l);
         let r = Self::srgb_to_linear(r_srgb);
@@ -459,6 +460,7 @@ impl ColorTheory {
         hsla(h, s, l, alpha)
     }
 
+    #[allow(non_snake_case)]
     pub fn hsla_to_oklch(color: Hsla) -> Oklch {
         let lab = Self::hsla_to_oklab(color);
         let C = (lab.a * lab.a + lab.b * lab.b).sqrt();
@@ -477,6 +479,7 @@ impl ColorTheory {
     }
 
     // Shortest-arc hue interpolation in OKLCH
+    #[allow(non_snake_case)]
     pub fn mix_oklch(a: Hsla, b: Hsla, t: f32) -> Hsla {
         let t = t.clamp(0.0, 1.0);
         let a_lch = Self::hsla_to_oklch(a);
@@ -520,6 +523,7 @@ impl ColorTheory {
     }
 
     // Adjust OKLab lightness by delta, keeping hue; moderates chroma if needed
+    #[allow(non_snake_case)]
     pub fn adjust_oklab_lightness(color: Hsla, delta_L: f32) -> Hsla {
         let mut lch = Self::hsla_to_oklch(color);
         lch.L = (lch.L + delta_L).clamp(0.0, 1.0);
@@ -763,6 +767,7 @@ pub struct ContextualColors {
 
 /// OKLab color (L, a, b)
 #[derive(Debug, Clone, Copy)]
+#[allow(non_snake_case)]
 pub struct Oklab {
     pub L: f32,
     pub a: f32,
@@ -771,6 +776,7 @@ pub struct Oklab {
 
 /// OKLCH color (L, C, h [radians])
 #[derive(Debug, Clone, Copy)]
+#[allow(non_snake_case)]
 pub struct Oklch {
     pub L: f32,
     pub C: f32,

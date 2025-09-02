@@ -433,7 +433,7 @@ impl Element for Scrollbar {
             // Mouse move events
             window.on_mouse_event({
                 let state = self.state.clone();
-                let bounds = bounds;
+                let _bounds = bounds;
                 move |event: &MouseMoveEvent, phase, window, _| {
                     // Handle dragging in capture phase to prevent text selection
                     if phase.capture() && state.thumb_state.get().is_dragging() && event.dragging()
@@ -466,7 +466,7 @@ impl Element for Scrollbar {
             // Mouse up events
             window.on_mouse_event({
                 let state = self.state.clone();
-                let bounds = bounds;
+                let _bounds = bounds;
                 move |event: &MouseUpEvent, phase, window, _| {
                     // Handle in capture phase if we were dragging
                     if phase.capture() && state.is_dragging() {

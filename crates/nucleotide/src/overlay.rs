@@ -399,7 +399,7 @@ impl OverlayView {
                                             let theme = cx.theme();
                                             let tokens = &theme.tokens;
                                             let default_style = gpui::TextStyle {
-                                                color: tokens.colors.text_primary,
+                                                color: tokens.editor.text_primary,
                                                 font_family: cx
                                                     .global::<crate::types::FontSettings>()
                                                     .fixed_font
@@ -889,7 +889,7 @@ impl OverlayView {
         let theme = cx.theme();
         let tokens = &theme.tokens;
 
-        // Get ui.menu style with fallback to design tokens
+        // Get ui.menu style with fallback to dropdown tokens
         let ui_menu = cx.theme_style("ui.menu");
 
         nucleotide_ui::prompt_view::PromptStyle {
@@ -897,7 +897,7 @@ impl OverlayView {
             completion_background: ui_menu
                 .bg
                 .and_then(color_to_hsla)
-                .unwrap_or(tokens.colors.menu_background),
+                .unwrap_or(tokens.dropdown_tokens().container_background),
         }
     }
 
@@ -914,27 +914,27 @@ impl OverlayView {
         let ui_text = cx.theme_style("ui.text");
         let ui_menu_selected = cx.theme_style("ui.menu.selected");
 
-        // Use design tokens as fallbacks - guaranteed to exist
+        // Use component/chrome tokens as fallbacks - guaranteed to exist
         let background = ui_popup
             .bg
             .and_then(color_to_hsla)
-            .unwrap_or(tokens.colors.popup_background);
+            .unwrap_or(tokens.picker_tokens().container_background);
         let text = ui_text
             .fg
             .and_then(color_to_hsla)
-            .unwrap_or(tokens.colors.text_primary);
+            .unwrap_or(tokens.chrome.text_on_chrome);
         let selected_background = ui_menu_selected
             .bg
             .and_then(color_to_hsla)
-            .unwrap_or(tokens.colors.surface_selected);
+            .unwrap_or(tokens.picker_tokens().item_background_selected);
         let selected_text = ui_menu_selected
             .fg
             .and_then(color_to_hsla)
-            .unwrap_or(tokens.colors.text_primary);
+            .unwrap_or(tokens.picker_tokens().item_text_selected);
         let border = ui_popup
             .fg
             .and_then(color_to_hsla)
-            .unwrap_or(tokens.colors.border_default);
+            .unwrap_or(tokens.picker_tokens().border);
         let prompt_text = text;
 
         nucleotide_ui::common::ModalStyle {
@@ -1099,15 +1099,15 @@ impl OverlayView {
         let ui_background_separator = cx.theme_style("ui.background.separator");
         let ui_cursor = cx.theme_style("ui.cursor");
 
-        // Use design tokens as fallbacks - guaranteed to exist
+        // Use chrome/editor tokens as fallbacks - guaranteed to exist
         let preview_background = ui_background_separator
             .bg
             .and_then(color_to_hsla)
-            .unwrap_or(tokens.colors.surface);
+            .unwrap_or(tokens.chrome.surface);
         let cursor = ui_cursor
             .bg
             .and_then(color_to_hsla)
-            .unwrap_or(tokens.colors.primary);
+            .unwrap_or(tokens.editor.cursor_normal);
 
         let picker_style = nucleotide_ui::picker_view::PickerStyle {
             modal_style,

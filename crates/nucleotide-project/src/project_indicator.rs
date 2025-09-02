@@ -208,11 +208,11 @@ impl Render for ProjectTypeBadge {
                 ),
             };
 
-            let badge_bg = project_type.color.unwrap_or(tokens.colors.surface_elevated);
+            let badge_bg = project_type.color.unwrap_or(tokens.chrome.surface_elevated);
             let text_color = if theme.is_dark() {
-                tokens.colors.text_primary
+                tokens.chrome.text_on_chrome
             } else {
-                tokens.colors.text_secondary
+                tokens.chrome.text_chrome_secondary
             };
 
             let mut badge = div()
@@ -224,7 +224,7 @@ impl Render for ProjectTypeBadge {
                 .py(tokens.sizes.space_1)
                 .bg(badge_bg)
                 .border_1()
-                .border_color(tokens.colors.border_muted)
+                .border_color(tokens.chrome.border_muted)
                 .rounded(tokens.sizes.radius_sm)
                 .text_color(text_color);
 
@@ -303,9 +303,9 @@ impl Render for ProjectLspStatusIndicator {
         // Server count and status
         if lsp_status.running_servers > 0 {
             let status_color = if lsp_status.failed_servers > 0 {
-                tokens.colors.warning
+                tokens.editor.warning
             } else {
-                tokens.colors.success
+                tokens.editor.success
             };
 
             status_parts.push(
@@ -329,7 +329,7 @@ impl Render for ProjectLspStatusIndicator {
         if lsp_status.initializing_servers > 0 {
             status_parts.push(
                 div()
-                    .text_color(tokens.colors.text_secondary)
+                    .text_color(tokens.chrome.text_chrome_secondary)
                     .child("⟳") // Spinning indicator
                     .when(self.show_details, |div| {
                         div.child(format!(" {}", lsp_status.initializing_servers))
@@ -341,7 +341,7 @@ impl Render for ProjectLspStatusIndicator {
         if lsp_status.failed_servers > 0 {
             status_parts.push(
                 div()
-                    .text_color(tokens.colors.error)
+                    .text_color(tokens.editor.error)
                     .child("⚠")
                     .when(self.show_details, |div| {
                         div.child(format!(" {}", lsp_status.failed_servers))
@@ -353,7 +353,7 @@ impl Render for ProjectLspStatusIndicator {
         if lsp_status.has_diagnostics {
             status_parts.push(
                 div()
-                    .text_color(tokens.colors.warning)
+                    .text_color(tokens.editor.warning)
                     .child("▲")
                     .when(self.show_details, |div| {
                         div.child(format!(" {}", lsp_status.diagnostic_count))

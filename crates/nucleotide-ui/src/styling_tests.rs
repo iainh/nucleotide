@@ -185,20 +185,18 @@ mod tests {
     fn test_variant_colors() {
         let theme = Theme::dark();
 
-        let primary_colors = VariantColors::for_variant(StyleVariant::Primary, &theme);
-        assert_eq!(primary_colors.background, theme.tokens.colors.primary);
-        assert_eq!(
-            primary_colors.foreground,
-            theme.tokens.colors.text_on_primary
-        );
+        let primary_colors = VariantColors::for_variant_hybrid(StyleVariant::Primary, &theme);
+        let btn = theme.tokens.button_tokens();
+        assert_eq!(primary_colors.background, btn.primary_background);
+        assert_eq!(primary_colors.foreground, btn.primary_text);
         assert_eq!(
             primary_colors.hover_background,
-            theme.tokens.colors.primary_hover
+            btn.primary_background_hover
         );
 
-        let ghost_colors = VariantColors::for_variant(StyleVariant::Ghost, &theme);
-        assert_eq!(ghost_colors.background, hsla(0.0, 0.0, 0.0, 0.0)); // Transparent
-        assert_eq!(ghost_colors.foreground, theme.tokens.colors.text_primary);
+        let ghost_colors = VariantColors::for_variant_hybrid(StyleVariant::Ghost, &theme);
+        assert_eq!(ghost_colors.background, btn.ghost_background); // Transparent
+        assert_eq!(ghost_colors.foreground, btn.ghost_text);
     }
 
     #[test]
@@ -210,7 +208,8 @@ mod tests {
 
         assert_eq!(variant_style.variant, StyleVariant::Primary);
         assert_eq!(variant_style.size, StyleSize::Medium);
-        assert_eq!(variant_style.colors.background, theme.tokens.colors.primary);
+        let btn2 = theme.tokens.button_tokens();
+        assert_eq!(variant_style.colors.background, btn2.primary_background);
         assert_eq!(variant_style.padding_x, theme.tokens.sizes.space_3);
         assert_eq!(variant_style.font_size, px(14.0));
         assert_eq!(variant_style.border_width, px(0.0)); // Primary has no border

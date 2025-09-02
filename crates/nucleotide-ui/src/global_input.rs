@@ -1329,9 +1329,9 @@ impl GlobalInputDispatcher {
         match &config.style {
             FocusIndicatorStyle::Border { color, width } => {
                 let focus_color = color.unwrap_or(if config.accessibility_high_contrast {
-                    tokens.colors.primary_active
+                    tokens.chrome.primary_active
                 } else {
-                    tokens.colors.primary
+                    tokens.chrome.primary
                 });
                 let focus_width = width.unwrap_or(gpui::px(2.0));
 
@@ -1348,9 +1348,9 @@ impl GlobalInputDispatcher {
             }
             FocusIndicatorStyle::Background { color, opacity } => {
                 let focus_color = color.unwrap_or(if config.accessibility_high_contrast {
-                    tokens.colors.primary_active.alpha(0.2)
+                    tokens.chrome.primary_active.alpha(0.2)
                 } else {
-                    tokens.colors.primary.alpha(0.1)
+                    tokens.chrome.primary.alpha(0.1)
                 });
                 let focus_opacity = opacity.unwrap_or(0.1);
 
@@ -1371,9 +1371,9 @@ impl GlobalInputDispatcher {
                 offset,
             } => {
                 let focus_color = color.unwrap_or(if config.accessibility_high_contrast {
-                    tokens.colors.primary_active
+                    tokens.chrome.primary_active
                 } else {
-                    tokens.colors.primary
+                    tokens.chrome.primary
                 });
                 let focus_width = width.unwrap_or(gpui::px(2.0));
                 let focus_offset = offset.unwrap_or(gpui::px(1.0));
@@ -1400,7 +1400,7 @@ impl GlobalInputDispatcher {
                 if let Some(border_style) = border
                     && let FocusIndicatorStyle::Border { color, width } = border_style.as_ref()
                 {
-                    styles.border_color = Some(color.unwrap_or(tokens.colors.primary));
+                    styles.border_color = Some(color.unwrap_or(tokens.chrome.primary));
                     styles.border_width = Some(width.unwrap_or(gpui::px(1.0)));
                 }
 
@@ -1408,7 +1408,7 @@ impl GlobalInputDispatcher {
                     && let FocusIndicatorStyle::Background { color, opacity } = bg_style.as_ref()
                 {
                     styles.background_color =
-                        Some(color.unwrap_or(tokens.colors.primary.alpha(0.1)));
+                        Some(color.unwrap_or(tokens.chrome.primary.alpha(0.1)));
                     styles.background_opacity = Some(opacity.unwrap_or(0.1));
                 }
 
@@ -1419,7 +1419,7 @@ impl GlobalInputDispatcher {
                         offset,
                     } = outline_style.as_ref()
                 {
-                    styles.outline_color = Some(color.unwrap_or(tokens.colors.primary));
+                    styles.outline_color = Some(color.unwrap_or(tokens.chrome.primary));
                     styles.outline_width = Some(width.unwrap_or(gpui::px(2.0)));
                     styles.outline_offset = Some(offset.unwrap_or(gpui::px(1.0)));
                 }

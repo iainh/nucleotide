@@ -352,13 +352,13 @@ impl VariantColors {
 pub struct VariantStyler;
 
 impl VariantStyler {
-    /// Compute variant-specific styles (legacy system)
+    /// Compute variant-specific styles (legacy system) — kept for tests; prefer hybrid
     pub fn compute_variant_style(
         variant: StyleVariant,
         size: StyleSize,
         theme: &Theme,
     ) -> VariantStyle {
-        let colors = VariantColors::for_variant(variant, theme);
+        let colors = VariantColors::for_variant_hybrid(variant, theme);
         let tokens = &theme.tokens;
         let (padding_x, padding_y) = size.padding(tokens);
 

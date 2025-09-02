@@ -136,9 +136,9 @@ impl ComponentStyles {
     /// Create component styles from theme and component properties
     pub fn from_theme<V, S>(theme: &Theme, _variant: &V, _size: &S) -> Self {
         Self {
-            background: theme.tokens.colors.surface,
-            text_color: theme.tokens.colors.text_primary,
-            border_color: theme.tokens.colors.border_default,
+            background: theme.tokens.chrome.surface,
+            text_color: theme.tokens.chrome.text_on_chrome,
+            border_color: theme.tokens.chrome.border_default,
             padding: theme.tokens.sizes.space_3,
             border_radius: theme.tokens.sizes.radius_md,
         }
@@ -147,7 +147,7 @@ impl ComponentStyles {
     /// Create hover state styles
     pub fn hover_state(&self, theme: &Theme) -> Self {
         Self {
-            background: theme.tokens.colors.surface_hover,
+            background: theme.tokens.chrome.surface_hover,
             text_color: self.text_color,
             border_color: self.border_color,
             padding: self.padding,
@@ -158,7 +158,7 @@ impl ComponentStyles {
     /// Create active state styles
     pub fn active_state(&self, theme: &Theme) -> Self {
         Self {
-            background: theme.tokens.colors.surface_active,
+            background: theme.tokens.chrome.surface_active,
             text_color: self.text_color,
             border_color: self.border_color,
             padding: self.padding,
@@ -169,9 +169,9 @@ impl ComponentStyles {
     /// Create disabled state styles
     pub fn disabled_state(&self, theme: &Theme) -> Self {
         Self {
-            background: theme.tokens.colors.surface_disabled,
-            text_color: theme.tokens.colors.text_disabled,
-            border_color: theme.tokens.colors.border_muted,
+            background: theme.tokens.chrome.surface_disabled,
+            text_color: theme.tokens.chrome.text_chrome_disabled,
+            border_color: theme.tokens.chrome.border_muted,
             padding: self.padding,
             border_radius: self.border_radius,
         }

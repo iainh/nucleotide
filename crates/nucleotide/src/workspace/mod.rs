@@ -430,6 +430,7 @@ impl Workspace {
             .on_mouse_down(MouseButton::Left, |_, _, _| {});
 
         // Dialog content
+        let picker_tokens = tokens.picker_tokens();
         let dialog = div()
             .absolute()
             .top(px(120.0))
@@ -438,9 +439,9 @@ impl Workspace {
             .justify_center()
             .child(
                 div()
-                    .bg(tokens.colors.popup_background)
+                    .bg(picker_tokens.container_background)
                     .border_1()
-                    .border_color(tokens.colors.popup_border)
+                    .border_color(picker_tokens.border)
                     .rounded(tokens.sizes.radius_lg)
                     .shadow_xl()
                     .w(px(380.0))
@@ -6405,7 +6406,7 @@ impl Render for Workspace {
                 // Create file tree panel with absolute positioning
                 let ui_theme = cx.global::<nucleotide_ui::Theme>();
                 let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
-                let panel_bg = ui_theme.tokens.colors.surface;
+                let panel_bg = ui_theme.tokens.chrome.surface;
                 let _panel_border_color = status_bar_tokens.border;
                 let file_tree_panel = div()
                     .absolute()
@@ -6427,7 +6428,7 @@ impl Render for Workspace {
                     .border_0() // Reset all borders
                     .border_r_1() // Only right border
                     .border_color(border_color)
-                    .hover(|style| style.border_color(ui_theme.tokens.colors.text_secondary))
+                    .hover(|style| style.border_color(ui_theme.tokens.chrome.text_chrome_secondary))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .id("file-tree-resize-handle")
                     .on_mouse_down(
@@ -6461,7 +6462,7 @@ impl Render for Workspace {
                 let main_content_offset = self.file_tree_width + resize_handle_width;
 
                 // Use the same background color as the actual file tree for consistency
-                let prompt_bg = ui_theme.tokens.colors.surface;
+                let prompt_bg = ui_theme.tokens.chrome.surface;
                 let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
                 let _border_color = status_bar_tokens.border;
 
@@ -6508,7 +6509,7 @@ impl Render for Workspace {
                     .border_0() // Reset all borders
                     .border_r_1() // Only right border
                     .border_color(border_color)
-                    .hover(|style| style.border_color(ui_theme.tokens.colors.text_secondary))
+                    .hover(|style| style.border_color(ui_theme.tokens.chrome.text_chrome_secondary))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .id("file-tree-resize-handle-placeholder")
                     .on_mouse_down(

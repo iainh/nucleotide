@@ -265,7 +265,7 @@ impl RenderOnce for Tab {
                     // Modified tabs get a subtle warning tint
                     nucleotide_ui::styling::ColorTheory::mix_oklch(
                         tab_tokens.tab_inactive_background,
-                        tokens.colors.warning,
+                        tokens.editor.warning,
                         0.1,
                     )
                 } else {
