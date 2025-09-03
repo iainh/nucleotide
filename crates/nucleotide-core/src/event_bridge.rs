@@ -94,10 +94,20 @@ pub fn initialize_lsp_command_bridge(sender: mpsc::UnboundedSender<ProjectLspCom
 /// Send a bridged event - used by Helix event hooks
 pub fn send_bridged_event(event: BridgedEvent) {
     if let Some(sender) = EVENT_BRIDGE_SENDER.get() {
-        debug!(
-            event.type = ?std::mem::discriminant(&event),
-            "Sending bridged event"
-        );
+        debug!(event.type = ?std::mem::discriminant(&event), "Sending bridged event");
+        // DIAG: Special-case diagnostics/picker for clearer tracing
+        match &event {
+            BridgedEvent::DiagnosticsChanged { doc_id } => {
+                info!(doc_id = ?doc_id, "DIAG: Bridging DiagnosticsChanged to GPUI");
+            }
+            BridgedEvent::DiagnosticsPickerRequested { workspace } => {
+                info!(
+                    workspace = *workspace,
+                    "DIAG: Bridging DiagnosticsPickerRequested to GPUI"
+                );
+            }
+            _ => {}
+        }
         if let Err(e) = sender.send(event) {
             warn!(
                 error = %e,
@@ -200,7 +210,7 @@ pub fn register_event_hooks() {
         let doc_id = event.doc;
         debug!(
             doc_id = ?doc_id,
-            "Diagnostics changed event"
+            "DIAG: Helix DiagnosticsDidChange observed"
         );
         send_bridged_event(BridgedEvent::DiagnosticsChanged { doc_id });
         Ok(())
@@ -285,6 +295,11 @@ pub fn register_event_hooks() {
     // Map Helix diagnostics picker commands to bridged events
     register_hook!(move |event: &mut PostCommand<'_, '_>| {
         use helix_term::keymap::MappableCommand;
+        // Log every command name to aid integration/mapping
+        if let MappableCommand::Static { name, .. } = event.command {
+            debug!(command = *name, "PostCommand observed");
+        }
+
         let show = match event.command {
             MappableCommand::Static { name, .. } => match *name {
                 "diagnostics_picker" => Some(false),
@@ -294,6 +309,10 @@ pub fn register_event_hooks() {
             _ => None,
         };
         if let Some(workspace) = show {
+            info!(
+                workspace = workspace,
+                "DIAG: Diagnostics picker command observed"
+            );
             send_bridged_event(BridgedEvent::DiagnosticsPickerRequested { workspace });
         }
         Ok(())

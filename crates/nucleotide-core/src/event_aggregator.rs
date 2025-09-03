@@ -117,6 +117,7 @@ impl EventBus for EventAggregator {
     }
 
     fn dispatch_diagnostics(&self, event: DiagnosticsEvent) {
+        nucleotide_logging::info!(event = ?event, "DIAG: Aggregator queue diagnostics event");
         self.queue_event(AppEvent::Diagnostics(event));
     }
 
@@ -190,6 +191,7 @@ impl EventBus for EventAggregatorHandle {
     }
 
     fn dispatch_diagnostics(&self, event: DiagnosticsEvent) {
+        nucleotide_logging::info!(event = ?event, "DIAG: AggregatorHandle dispatch diagnostics event");
         self.inner.dispatch_diagnostics(event);
     }
 

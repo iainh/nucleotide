@@ -2290,6 +2290,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // LSP diagnostics changed - update specific document view
+        nucleotide_logging::info!(doc_id = ?doc_id, "DIAG: Workspace handling DiagnosticsChanged - updating view");
         self.update_specific_document_view(doc_id, cx);
         cx.notify();
     }
@@ -3449,7 +3450,10 @@ impl Workspace {
                     }
                     crate::types::AppEvent::Ui(ui_event) => {
                         match ui_event {
-                            crate::types::UiEvent::OverlayShown { overlay_type, .. } => {
+                            crate::types::UiEvent::OverlayShown {
+                                overlay_type,
+                                overlay_id,
+                            } => {
                                 use nucleotide_events::v2::ui::OverlayType;
                                 match overlay_type {
                                     OverlayType::FilePicker => {
@@ -3458,10 +3462,12 @@ impl Workspace {
                                         open(core, handle, cx);
                                     }
                                     OverlayType::CommandPalette => {
-                                        // For now, treat command palette as buffer picker
-                                        let handle = self.handle.clone();
-                                        let core = self.core.clone();
-                                        show_buffer_picker(core, handle, cx);
+                                        // Only treat explicitly-tagged command palette as buffer picker
+                                        if overlay_id == "buffer_picker" {
+                                            let handle = self.handle.clone();
+                                            let core = self.core.clone();
+                                            show_buffer_picker(core, handle, cx);
+                                        }
                                     }
                                     _ => {
                                         // Other overlay types not yet implemented

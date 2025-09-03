@@ -331,6 +331,7 @@ impl OverlayView {
                 cx.notify();
             }
             crate::Update::DiagnosticsPanel(panel) => {
+                nucleotide_logging::info!("DIAG: Showing Diagnostics panel overlay");
                 // Replace any existing diagnostics panel
                 self.diagnostics_panel = Some(panel.clone());
                 // Subscribe to dismiss from panel via global dismiss event
@@ -352,6 +353,11 @@ impl OverlayView {
                         if let Some(core) = core_for_nav.upgrade() {
                             let path = ev.path.clone();
                             let offset = ev.offset;
+                            nucleotide_logging::info!(
+                                path = %path.display(),
+                                offset = offset,
+                                "DIAG: Diagnostics item selected - opening and jumping"
+                            );
                             // Open the file, then move cursor after a short delay
                             core.update(cx, |app, cx| {
                                 cx.emit(crate::Update::OpenFile(path.clone()));
@@ -378,6 +384,12 @@ impl OverlayView {
                                             let selection = helix_core::Selection::point(offset);
                                             let doc = helix_view::doc_mut!(app.editor, &doc_id);
                                             doc.set_selection(view_id, selection);
+                                            nucleotide_logging::info!(
+                                                doc_id = ?doc_id,
+                                                view_id = ?view_id,
+                                                offset = offset,
+                                                "DIAG: Cursor moved to diagnostic offset"
+                                            );
                                         }
                                     });
                                 }

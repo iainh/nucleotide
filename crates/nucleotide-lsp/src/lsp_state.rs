@@ -159,6 +159,7 @@ impl LspState {
             diagnostics.retain(|d| d.server_id != id);
         }
         self.diagnostics.retain(|_, diags| !diags.is_empty());
+        nucleotide_logging::info!(server_id = ?id, "DIAG: LspState cleared diagnostics for server");
     }
 
     /// Start a progress operation
@@ -204,8 +205,21 @@ impl LspState {
     /// Set diagnostics for a file
     pub fn set_diagnostics(&mut self, uri: Uri, diagnostics: Vec<DiagnosticInfo>) {
         if diagnostics.is_empty() {
+            nucleotide_logging::info!(uri = %uri.to_string(), "DIAG: Clearing diagnostics for URI");
             self.diagnostics.remove(&uri);
         } else {
+            let total = diagnostics.len();
+            let mut by_server: std::collections::BTreeMap<LanguageServerId, usize> =
+                Default::default();
+            for d in diagnostics.iter() {
+                *by_server.entry(d.server_id).or_default() += 1;
+            }
+            nucleotide_logging::info!(
+                uri = %uri.to_string(),
+                total = total,
+                by_server = ?by_server,
+                "DIAG: Setting diagnostics for URI"
+            );
             self.diagnostics.insert(uri, diagnostics);
         }
     }

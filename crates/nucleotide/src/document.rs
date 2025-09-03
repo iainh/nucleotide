@@ -202,6 +202,8 @@ struct HighlightLineParams<'a> {
     line_end: usize,
     fg_color: Hsla,
     font: Font,
+    /// Optional diagnostic overlays to merge (underline ranges)
+    diag_overlays: Option<helix_core::syntax::OverlayHighlights>,
 }
 
 pub struct DocumentView {
@@ -589,6 +591,72 @@ impl IntoElement for DocumentElement {
 }
 
 impl DocumentElement {
+    fn severity_color(theme: &Theme, sev: helix_core::diagnostic::Severity) -> Option<Hsla> {
+        let key = match sev {
+            helix_core::diagnostic::Severity::Error => "diagnostic.error",
+            helix_core::diagnostic::Severity::Warning => "diagnostic.warning",
+            helix_core::diagnostic::Severity::Info => "diagnostic.info",
+            helix_core::diagnostic::Severity::Hint => "diagnostic.hint",
+        };
+        let style = theme.get(key);
+        // Prefer underline color (used by diagnostics), fallback to fg if present
+        style
+            .underline_color
+            .or(style.fg)
+            .and_then(crate::utils::color_to_hsla)
+    }
+    /// Build diagnostic overlay highlights for the entire document.
+    /// Uses theme keys diagnostic.error|warning|info|hint to set underline color.
+    fn diagnostics_overlays(
+        doc: &Document,
+        theme: &Theme,
+    ) -> Option<helix_core::syntax::OverlayHighlights> {
+        let mut spans: Vec<(helix_core::syntax::Highlight, std::ops::Range<usize>)> = Vec::new();
+        // Resolve highlight ids once
+        let error_h = theme.find_highlight_exact("diagnostic.error");
+        let warn_h = theme.find_highlight_exact("diagnostic.warning");
+        let info_h = theme.find_highlight_exact("diagnostic.info");
+        let hint_h = theme.find_highlight_exact("diagnostic.hint");
+
+        let diagnostics = doc.diagnostics();
+        if diagnostics.is_empty() {
+            return None;
+        }
+        for d in diagnostics.iter() {
+            let (start, end) = (d.range.start, d.range.end);
+            // Skip invalid ranges
+            if start >= end {
+                // Zero-width or invalid; underline a single char if possible
+                let s = start;
+                let e = s.saturating_add(1);
+                let h = match d.severity {
+                    Some(helix_core::diagnostic::Severity::Error) => error_h,
+                    Some(helix_core::diagnostic::Severity::Warning) => warn_h,
+                    Some(helix_core::diagnostic::Severity::Info) => info_h,
+                    Some(helix_core::diagnostic::Severity::Hint) | None => hint_h,
+                };
+                if let Some(h) = h {
+                    spans.push((h, s..e));
+                }
+            } else {
+                let h = match d.severity {
+                    Some(helix_core::diagnostic::Severity::Error) => error_h,
+                    Some(helix_core::diagnostic::Severity::Warning) => warn_h,
+                    Some(helix_core::diagnostic::Severity::Info) => info_h,
+                    Some(helix_core::diagnostic::Severity::Hint) | None => hint_h,
+                };
+                if let Some(h) = h {
+                    spans.push((h, start..end));
+                }
+            }
+        }
+
+        if spans.is_empty() {
+            None
+        } else {
+            Some(helix_core::syntax::OverlayHighlights::Heterogenous { highlights: spans })
+        }
+    }
     /// Get the text style (with syntax highlighting) at a specific character position
     fn get_text_style_at_position(
         doc: &Document,
@@ -1068,6 +1136,7 @@ impl DocumentElement {
         };
         let view = editor.tree.try_get(self.view_id)?;
 
+        let diag_overlays = Self::diagnostics_overlays(document, params.cx.helix_theme());
         let line_runs = Self::highlight_line_with_params(HighlightLineParams {
             doc: document,
             view,
@@ -1080,6 +1149,7 @@ impl DocumentElement {
             line_end,
             fg_color: params.fg_color,
             font: self.style.font(),
+            diag_overlays,
         });
 
         // Create the shaped line
@@ -1303,7 +1373,7 @@ impl DocumentElement {
             Self::doc_syntax_highlights(params.doc, anchor, height, theme, &loader);
 
         // Get overlay highlights
-        let overlay_highlights = Self::overlay_highlights(
+        let selection_overlay = Self::overlay_highlights(
             params.editor_mode,
             params.doc,
             params.view,
@@ -1322,7 +1392,13 @@ impl DocumentElement {
 
         // Create syntax and overlay highlighters
         let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
-        let mut overlay_hl = OverlayHighlighter::new(overlay_highlights, theme);
+        // Build overlay list: selections + optional diagnostics
+        let mut overlays = Vec::new();
+        overlays.push(selection_overlay);
+        if let Some(diag) = params.diag_overlays {
+            overlays.push(diag);
+        }
+        let mut overlay_hl = OverlayHighlighter::new(overlays, theme);
 
         // Get the line text slice to convert character positions to byte lengths
         let line_slice = text.slice(params.line_start..params.line_end);
@@ -2512,6 +2588,8 @@ impl Element for DocumentElement {
                                         Some(v) => v,
                                         None => return,
                                     };
+                                    // Precompute diagnostic overlays once
+                                    let diag_overlays = Self::diagnostics_overlays(document, cx.helix_theme());
                                     Self::highlight_line_with_params(HighlightLineParams {
                                         doc: document,
                                         view,
@@ -2524,6 +2602,7 @@ impl Element for DocumentElement {
                                         line_end,
                                         fg_color,
                                         font: self.style.font(),
+                                        diag_overlays: diag_overlays,
                                     })
                                 } else {
                                     Vec::new()
@@ -2692,6 +2771,16 @@ impl Element for DocumentElement {
                             view_offset.anchor,
                         );
 
+                        // Compute gutter width in pixels to reserve space for diagnostic markers
+                        let gutter_width_px = {
+                            let core = self.core.read(cx);
+                            let editor = &core.editor;
+                            let document = match editor.document(self.doc_id) { Some(d) => d, None => return };
+                            let view = match editor.tree.try_get(self.view_id) { Some(v) => v, None => return };
+                            let gutter_cells = view.gutter_offset(document);
+                            f32::from(gutter_cells) * after_layout.cell_width
+                        };
+
                         // Skip to viewport (same as main loop)
                         let mut visual_line = 0;
                         let mut pending_grapheme = None;
@@ -2762,6 +2851,38 @@ impl Element for DocumentElement {
                             current_y += after_layout.line_height;
                         }
 
+                        // Build a map of line -> highest diagnostic severity for quick lookup
+                        let diag_line_severity = {
+                            let core = self.core.read(cx);
+                            let editor = &core.editor;
+                            if let Some(document) = editor.document(self.doc_id) {
+                                let mut m: std::collections::BTreeMap<usize, helix_core::diagnostic::Severity> = std::collections::BTreeMap::new();
+                                for d in document.diagnostics().iter() {
+                                    // Derive start/end lines from character positions
+                                    let start_line = text.char_to_line(d.range.start);
+                                    let end_char = d.range.end.min(text.len_chars());
+                                    let end_line = text.char_to_line(end_char);
+                                    if let Some(sev) = d.severity {
+                                        for line in start_line..=end_line {
+                                            m.entry(line)
+                                                .and_modify(|s| {
+                                                    // Keep highest severity (Error > Warning > Info > Hint)
+                                                    if matches!((sev, *s), (helix_core::diagnostic::Severity::Error, _)
+                                                        | (helix_core::diagnostic::Severity::Warning, helix_core::diagnostic::Severity::Info | helix_core::diagnostic::Severity::Hint)
+                                                        | (helix_core::diagnostic::Severity::Info, helix_core::diagnostic::Severity::Hint)) {
+                                                        *s = sev;
+                                                    }
+                                                })
+                                                .or_insert(sev);
+                                        }
+                                    }
+                                }
+                                m
+                            } else {
+                                std::collections::BTreeMap::new()
+                            }
+                        };
+
                         // Now render the line numbers with highlighting for current line
                         let gutter_style = cx.theme_style("ui.linenr");
                         let gutter_selected_style = cx.theme_style("ui.linenr.selected");
@@ -2818,6 +2939,69 @@ impl Element for DocumentElement {
                                 .shape_line(line_num_str.into(), self.style.font_size.to_pixels(px(16.0)), &[run], None);
 
                             let _ = shaped.paint(point(gutter_origin.x, y), after_layout.line_height, window, cx);
+
+                            // Paint a small diagnostic marker in the gutter if this line has diagnostics
+                            if let Some(sev) = diag_line_severity.get(&doc_line).copied() {
+                                if let Some(color) = Self::severity_color(cx.helix_theme(), sev) {
+                                    let marker_size = px(6.0);
+                                    // Place marker to the left of the line number
+                                    let marker_x = gutter_origin.x + px(2.0);
+                                    let marker_y = y + (after_layout.line_height - marker_size) * 0.5;
+                                    // Paint a background strip to hide built-in sign indicators
+                                    let strip_width = marker_size + px(4.0);
+                                    let strip_bounds = Bounds {
+                                        origin: point(gutter_origin.x, y),
+                                        size: size(strip_width, after_layout.line_height),
+                                    };
+                                    if let Some(gutter_bg) = cx
+                                        .theme_style("ui.gutter")
+                                        .bg
+                                        .and_then(crate::utils::color_to_hsla)
+                                    {
+                                        window.paint_quad(fill(strip_bounds, gutter_bg));
+                                    }
+
+                                    // Draw shape by severity: Info=Circle, Warning=Triangle, Error=Square, Hint=Circle
+                                    match sev {
+                                        helix_core::diagnostic::Severity::Error => {
+                                            let marker_bounds = Bounds {
+                                                origin: point(marker_x, marker_y),
+                                                size: size(marker_size, marker_size),
+                                            };
+                                            window.paint_quad(fill(marker_bounds, color));
+                                        }
+                                        helix_core::diagnostic::Severity::Warning => {
+                                            // Upright triangle inside marker square
+                                            let top = point(marker_x + marker_size * 0.5, marker_y);
+                                            let bl = point(marker_x, marker_y + marker_size);
+                                            let br = point(marker_x + marker_size, marker_y + marker_size);
+                                            let mut pb = gpui::PathBuilder::fill();
+                                            pb.move_to(top);
+                                            pb.line_to(bl);
+                                            pb.line_to(br);
+                                            pb.close();
+                                            if let Ok(path) = pb.build() {
+                                                window.paint_path(path, color);
+                                            }
+                                        }
+                                        helix_core::diagnostic::Severity::Info | helix_core::diagnostic::Severity::Hint => {
+                                            let marker_bounds = Bounds {
+                                                origin: point(marker_x, marker_y),
+                                                size: size(marker_size, marker_size),
+                                            };
+                                            let radius = marker_size * 0.5;
+                                            window.paint_quad(gpui::quad(
+                                                marker_bounds,
+                                                radius,
+                                                color,
+                                                0.0,
+                                                gpui::transparent_black(),
+                                                gpui::BorderStyle::default(),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -3149,6 +3333,7 @@ impl Element for DocumentElement {
                             None => return,
                         };
 
+                        let diag_overlays = Self::diagnostics_overlays(document, cx.helix_theme());
                         let line_runs = Self::highlight_line_with_params(HighlightLineParams {
                             doc: document,
                             view,
@@ -3161,6 +3346,7 @@ impl Element for DocumentElement {
                             line_end,
                             fg_color,
                             font: self.style.font(),
+                            diag_overlays,
                         });
 
                         (line_str, line_runs)
@@ -3643,84 +3829,88 @@ impl Element for DocumentElement {
                     gutter_origin.x += px(2.);
                     gutter_origin.y += px(1.);
 
-                    // Re-read core for gutter rendering
-                    let core = self.core.read(cx);
-                    let editor = &core.editor;
-                    let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                    let view = match editor.tree.try_get(self.view_id) {
-                        Some(v) => v,
-                        None => return,
-                    };
-                    let document = match editor.document(self.doc_id) {
-                    Some(doc) => doc,
-                    None => return,
-                };
+                    // Build gutter lines and diagnostics map inside a limited borrow scope, then paint
+                    let (gutter_lines, diag_line_severity_nonwrap) = {
+                        let core = self.core.read(cx);
+                        let editor = &core.editor;
+                        let view = match editor.tree.try_get(self.view_id) {
+                            Some(v) => v,
+                            None => return,
+                        };
+                        let document = match editor.document(self.doc_id) {
+                            Some(doc) => doc,
+                            None => return,
+                        };
+                        let theme = cx.global::<crate::ThemeManager>().helix_theme();
 
-                    // Clone necessary values before creating mutable references
-                    let text_system = window.text_system().clone();
-                    let style = self.style.clone();
+                        // Precompute per-line highest diagnostic severity for marker painting
+                        let diag_map = {
+                            let mut m: std::collections::BTreeMap<usize, helix_core::diagnostic::Severity> = std::collections::BTreeMap::new();
+                            let text = document.text();
+                            for d in document.diagnostics().iter() {
+                                if let Some(sev) = d.severity {
+                                    let start_line = text.char_to_line(d.range.start);
+                                    let end_char = d.range.end.min(text.len_chars());
+                                    let end_line = text.char_to_line(end_char);
+                                    for line in start_line..=end_line {
+                                        m.entry(line)
+                                            .and_modify(|s| {
+                                                if matches!((sev, *s), (helix_core::diagnostic::Severity::Error, _)
+                                                    | (helix_core::diagnostic::Severity::Warning, helix_core::diagnostic::Severity::Info | helix_core::diagnostic::Severity::Hint)
+                                                    | (helix_core::diagnostic::Severity::Info, helix_core::diagnostic::Severity::Hint)) {
+                                                    *s = sev;
+                                                }
+                                            })
+                                            .or_insert(sev);
+                                    }
+                                }
+                            }
+                            m
+                        };
 
-                    // Include phantom lines for gutter so it can render "~" for empty lines
-                    let gutter_last_row = last_row;
-
-                    // SOFTWRAP HANDLING: Generate LinePos entries for each visual line
-                    // When softwrap is enabled, long document lines can span multiple visual lines
-                    let mut lines = Vec::new();
-                    let mut current_visual_line = 0u16;
-
-                    for doc_line in first_row..gutter_last_row {
-                        // For now, assume each document line maps to one visual line (no softwrap)
-                        // TODO: Integrate with Helix's softwrap calculation when available
-                        // This would require checking document.softwrap settings and calculating
-                        // how many visual lines each document line spans based on line width
-                        lines.push(LinePos {
-                            first_visual_line: true, // Always true since we're not handling softwrap yet
-                            doc_line,
-                            visual_line: current_visual_line,
-                            start_char_idx: 0, // Start of the document line
-                        });
-                        current_visual_line += 1;
-                    }
-
-                    let lines = lines.into_iter();
-
-                    let mut gutter = Gutter {
-                        after_layout,
-                        text_system,
-                        lines: Vec::new(),
-                        style,
-                        origin: gutter_origin,
-                    };
-
-                    let mut gutters = Vec::new();
-                    Gutter::init_gutter(
-                        editor,
-                        document,
-                        view,
-                        theme,
-                        is_focused,
-                        &mut gutters,
-                    );
-
-                    // Execute gutters while we still have the borrow
-                    for line in lines {
-                        for gut in &mut gutters {
-                            gut(line, &mut gutter)
+                        // Prepare gutter lines (no wrapping assumed here)
+                        let text_system = window.text_system().clone();
+                        let style = self.style.clone();
+                        let gutter_last_row = last_row;
+                        let mut lines = Vec::new();
+                        let mut current_visual_line = 0u16;
+                        for doc_line in first_row..gutter_last_row {
+                            lines.push(LinePos {
+                                first_visual_line: true,
+                                doc_line,
+                                visual_line: current_visual_line,
+                                start_char_idx: 0,
+                            });
+                            current_visual_line += 1;
                         }
-                    }
+                        let lines = lines.into_iter();
 
-                    // Drop gutters first (contains references to core)
-                    drop(gutters);
-
-                    // Drop core borrow before painting
-                    // core goes out of scope here
+                        let mut gutter = Gutter {
+                            after_layout,
+                            text_system,
+                            lines: Vec::new(),
+                            style,
+                            origin: gutter_origin,
+                        };
+                        let mut gutters = Vec::new();
+                        Gutter::init_gutter(editor, document, view, theme, is_focused, &mut gutters);
+                        for line in lines {
+                            for gut in &mut gutters {
+                                gut(line, &mut gutter)
+                            }
+                        }
+                        (gutter.lines, diag_map)
+                    };
 
                     // Now paint the gutter lines
-                    for (origin, line) in gutter.lines {
+                    for (origin, line) in gutter_lines {
                         if let Err(e) = line.paint(origin, after_layout.line_height, window, cx) {
                             error!(error = ?e, "Failed to paint gutter line");
                         }
                     }
+
+                    // Note: In non-soft-wrap mode, we rely on Helix's built-in sign gutters.
+                    // Custom diagnostic indicators (circle/triangle/square) are only drawn in soft-wrap mode.
                 }
             });
 
@@ -4031,8 +4221,8 @@ struct OverlayHighlighter<'t> {
 }
 
 impl<'t> OverlayHighlighter<'t> {
-    fn new(overlays: syntax::OverlayHighlights, theme: &'t Theme) -> Self {
-        let inner = syntax::OverlayHighlighter::new(vec![overlays]);
+    fn new(overlays: Vec<syntax::OverlayHighlights>, theme: &'t Theme) -> Self {
+        let inner = syntax::OverlayHighlighter::new(overlays);
         let mut highlighter = Self {
             inner,
             pos: 0,

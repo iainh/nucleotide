@@ -30,6 +30,7 @@ impl DiagnosticsPanel {
         filter: DiagnosticsFilter,
         cx: &mut Context<Self>,
     ) -> Self {
+        nucleotide_logging::info!("DIAG: DiagnosticsPanel created");
         Self {
             lsp_state,
             filter,
@@ -39,6 +40,12 @@ impl DiagnosticsPanel {
 
     /// Update filter and request re-render
     pub fn set_filter(&mut self, filter: DiagnosticsFilter, cx: &mut Context<Self>) {
+        nucleotide_logging::info!(
+            only_uri = filter.only_uri.as_ref().map(|u| u.to_string()).unwrap_or_else(|| "<all>".into()),
+            min_severity = ?filter.min_severity,
+            query = filter.query.as_deref().unwrap_or("") ,
+            "DIAG: DiagnosticsPanel filter updated"
+        );
         self.filter = filter;
         cx.notify();
     }
@@ -89,6 +96,14 @@ impl Render for DiagnosticsPanel {
                 }
             }
         });
+
+        nucleotide_logging::info!(
+            count = rows.len(),
+            only_uri = filter.only_uri.as_ref().map(|u| u.to_string()).unwrap_or_else(|| "<all>".into()),
+            min_severity = ?filter.min_severity,
+            query = filter.query.as_deref().unwrap_or("") ,
+            "DIAG: DiagnosticsPanel rendered rows"
+        );
 
         // Sort by severity desc, then by uri, then by start position
         rows.sort_by(|a, b| {
@@ -144,6 +159,11 @@ impl Render for DiagnosticsPanel {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this: &mut DiagnosticsPanel, _e, _w, cx| {
+                        nucleotide_logging::info!(
+                            path = %path_for_event.display(),
+                            offset = offset,
+                            "DIAG: DiagnosticsPanel item clicked"
+                        );
                         cx.emit(DiagnosticsJumpEvent {
                             path: path_for_event.clone(),
                             offset,

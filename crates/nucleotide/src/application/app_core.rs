@@ -265,7 +265,7 @@ impl ApplicationCore {
                     diagnostic_count = diagnostic_count,
                     error_count = error_count,
                     warning_count = warning_count,
-                    "Processing DiagnosticsChanged through V2 DocumentHandler"
+                    "DIAG: Processing DiagnosticsChanged through V2 DocumentHandler"
                 );
 
                 self.document_handler.handle(v2_event).await?;

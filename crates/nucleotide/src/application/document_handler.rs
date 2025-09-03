@@ -286,7 +286,7 @@ impl EventHandler<DocumentEvent> for DocumentHandler {
                     diagnostic_count = diagnostic_count,
                     error_count = error_count,
                     warning_count = warning_count,
-                    "Diagnostics updated for document"
+                    "DIAG: Diagnostics updated for document"
                 );
                 // UI events are now emitted by the main Application after V2 event processing
                 Ok(())

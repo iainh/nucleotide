@@ -27,7 +27,6 @@ use arc_swap::{ArcSwap, access::Map};
 use helix_core::{Position, Selection, pos_at_coords, syntax};
 use helix_lsp::{LanguageServerId, LspProgressMap};
 use helix_stdx::path::get_relative_path;
-use helix_term::ui::FilePickerData;
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
 
@@ -121,7 +120,7 @@ use nucleotide_events::v2::diagnostics::Event as DiagnosticsEvent;
 use nucleotide_logging::{Level, debug, error, info, instrument, span, timed, warn};
 use nucleotide_lsp::lsp_state::DiagnosticInfo;
 
-use crate::types::{AppEvent, CoreEvent, UiEvent, Update};
+use crate::types::{AppEvent, CoreEvent, Update};
 // ApplicationCore already imported above via pub use
 use gpui::EventEmitter;
 use tokio_stream::StreamExt;
@@ -427,7 +426,7 @@ impl Application {
                 debug!(
                     doc_id = ?doc_id,
                     diagnostic_count = diagnostic_count,
-                    "Processing DiagnosticsChanged through V2 handler"
+                    "DIAG: Processing DiagnosticsChanged through V2 handler"
                 );
                 self.core
                     .document_handler
@@ -716,9 +715,42 @@ impl Application {
                 match notification {
                     Notification::Initialized => {
                         let language_server = language_server!();
-                        // Trigger workspace configuration if available
-                        if let Some(config) = language_server.config() {
-                            language_server.did_change_configuration(config.clone());
+                        // Trigger workspace configuration if available; force-enable diagnostics for RA
+                        let server_name = language_server.name().to_string();
+                        if let Some(mut cfg) = language_server.config().cloned() {
+                            // DIAG: Try to force-enable diagnostics for rust-analyzer
+                            if server_name == "rust-analyzer" {
+                                use serde_json::{Value, json};
+                                fn merge(a: &mut serde_json::Value, b: serde_json::Value) {
+                                    match (a, b) {
+                                        (Value::Object(ao), Value::Object(bo)) => {
+                                            for (k, v) in bo {
+                                                merge(ao.entry(k).or_insert(Value::Null), v);
+                                            }
+                                        }
+                                        (a_slot, b_val) => {
+                                            *a_slot = b_val;
+                                        }
+                                    }
+                                }
+                                let mut override_cfg =
+                                    serde_json::Value::Object(serde_json::Map::new());
+                                merge(
+                                    &mut override_cfg,
+                                    json!({
+                                        "rust-analyzer": {"diagnostics": {"enable": true}}
+                                    }),
+                                );
+                                merge(&mut cfg, override_cfg);
+                                info!(
+                                    "DIAG: Sending didChangeConfiguration with diagnostics enabled for rust-analyzer"
+                                );
+                            } else {
+                                info!(server = %server_name, "DIAG: Sending didChangeConfiguration (no RA-specific overrides)");
+                            }
+                            language_server.did_change_configuration(cfg);
+                        } else {
+                            info!(server = %server_name, "DIAG: No config available to send in didChangeConfiguration");
                         }
                         debug!(server_id = ?server_id, "LSP server initialized");
                     }
@@ -740,6 +772,35 @@ impl Application {
                             return;
                         }
 
+                        // DIAG: Summarize incoming diagnostics by severity
+                        let total = params.diagnostics.len();
+                        let mut errors = 0usize;
+                        let mut warnings = 0usize;
+                        let mut infos = 0usize;
+                        let mut hints = 0usize;
+                        for d in &params.diagnostics {
+                            match d.severity {
+                                Some(helix_lsp::lsp::DiagnosticSeverity::ERROR) => errors += 1,
+                                Some(helix_lsp::lsp::DiagnosticSeverity::WARNING) => warnings += 1,
+                                Some(helix_lsp::lsp::DiagnosticSeverity::INFORMATION) => infos += 1,
+                                Some(helix_lsp::lsp::DiagnosticSeverity::HINT) => hints += 1,
+                                Some(_) => {}
+                                None => {}
+                            }
+                        }
+                        info!(
+                            server_id = ?server_id,
+                            server_name = %language_server.name(),
+                            uri = %uri.to_string(),
+                            version = ?params.version,
+                            total = total,
+                            errors = errors,
+                            warnings = warnings,
+                            infos = infos,
+                            hints = hints,
+                            "DIAG: Received LSP publishDiagnostics"
+                        );
+
                         // Handle diagnostics through the editor like Helix does
                         let provider = helix_core::diagnostic::DiagnosticProvider::Lsp {
                             server_id,
@@ -752,6 +813,7 @@ impl Application {
                             params.version,
                             params.diagnostics,
                         );
+                        info!("DIAG: Forwarded diagnostics to Helix editor for application");
                     }
                     Notification::ProgressMessage(params) => {
                         use helix_lsp::lsp;
@@ -1499,40 +1561,15 @@ impl Application {
     }
 
     /// Check if helix created a picker and emit the appropriate event
-    #[instrument(skip(self, cx))]
-    pub fn check_for_picker_and_emit_event(&mut self, cx: &mut gpui::Context<crate::Core>) -> bool {
-        use helix_term::ui::{Picker, overlay::Overlay};
-
-        // Check for file picker first
-        if self
-            .compositor
-            .find_id::<Overlay<Picker<PathBuf, FilePickerData>>>(helix_term::ui::picker::ID)
-            .is_some()
-        {
-            info!("Detected file picker in compositor, emitting ShowFilePicker event");
-            self.compositor.remove(helix_term::ui::picker::ID);
-            cx.emit(Update::Event(AppEvent::Ui(UiEvent::OverlayShown {
-                overlay_type: nucleotide_events::v2::ui::OverlayType::FilePicker,
-                overlay_id: "file_picker".to_string(),
-            })));
-            return true;
-        }
-
-        // Check for any picker - if we have multiple docs, it's likely buffer picker
-        // We need to check if any picker exists by trying to remove it
-        if self.compositor.remove(helix_term::ui::picker::ID).is_some() {
-            info!("Found and removed picker from compositor");
-            if self.editor.documents.len() > 1 {
-                info!(
-                    "Multiple documents open, assuming buffer picker, emitting ShowBufferPicker event"
-                );
-                cx.emit(Update::Event(AppEvent::Ui(UiEvent::OverlayShown {
-                    overlay_type: nucleotide_events::v2::ui::OverlayType::CommandPalette,
-                    overlay_id: "buffer_picker".to_string(),
-                })));
-                return true;
-            }
-        }
+    #[instrument(skip(self, _cx))]
+    pub fn check_for_picker_and_emit_event(
+        &mut self,
+        _cx: &mut gpui::Context<crate::Core>,
+    ) -> bool {
+        // Legacy Helix picker interception removed to avoid misclassification.
+        // - Do not remove generic pickers or assume type (e.g., buffer vs diagnostics).
+        // - File/buffer pickers should be opened via explicit app actions.
+        // - Diagnostics picker is handled via event bridge PostCommand hooks.
 
         false
     }
@@ -2622,6 +2659,17 @@ impl Application {
                                     if let (Some(lsp_state), Some(path)) = (&self.lsp_state, document.path()) {
                                         let diagnostics = document.diagnostics();
                                         let uri = helix_core::Uri::from(path.clone());
+                                        let total = diagnostics.len();
+                                        let errors = diagnostics.iter().filter(|d| matches!(d.severity, Some(helix_core::diagnostic::Severity::Error))).count();
+                                        let warnings = diagnostics.iter().filter(|d| matches!(d.severity, Some(helix_core::diagnostic::Severity::Warning))).count();
+
+                                        info!(
+                                            uri = %uri.to_string(),
+                                            total = total,
+                                            errors = errors,
+                                            warnings = warnings,
+                                            "DIAG: Updating LspState diagnostics for URI"
+                                        );
 
                                         // Update LspState with per-URI diagnostics
                                         lsp_state.update(cx, |state, cx| {
@@ -2640,6 +2688,8 @@ impl Application {
                                             cx.notify();
                                         });
 
+                                        info!(uri = %uri.to_string(), "DIAG: LspState.set_diagnostics applied");
+
                                         // Dispatch diagnostics events grouped by provider
                                         if let Some(aggregator) = &self.event_aggregator {
                                             use std::collections::BTreeMap;
@@ -2650,6 +2700,11 @@ impl Application {
                                                 by_provider.entry(d.provider.clone()).or_default().push(d);
                                             }
                                             for (provider, diags) in by_provider {
+                                                info!(
+                                                    provider = ?provider,
+                                                    count = diags.len(),
+                                                    "DIAG: Dispatching diagnostics provider set"
+                                                );
                                                 aggregator.dispatch_diagnostics(DiagnosticsEvent::DocumentDiagnosticsSet {
                                                     uri: uri.clone(),
                                                     diagnostics: diags,
@@ -2697,6 +2752,7 @@ impl Application {
                                 }
                             }
                             event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace } => {
+                                info!(workspace = workspace, "DIAG: DiagnosticsPickerRequested received - showing panel");
                                 // Show diagnostics panel overlay using current LspState
                                 if let Some(lsp_state) = &self.lsp_state {
                                     let lsp_state = lsp_state.clone();
@@ -2710,7 +2766,7 @@ impl Application {
                                     cx.emit(crate::Update::DiagnosticsPanel(panel));
                                 } else {
                                     nucleotide_logging::warn!(
-                                        "DiagnosticsPickerRequested but no LspState entity available"
+                                        "DIAG: DiagnosticsPickerRequested but no LspState entity available"
                                     );
                                 }
                             }
@@ -2765,6 +2821,7 @@ impl Application {
 
                                 // Dispatch diagnostics-cleared domain event for this server
                                 if let Some(aggregator) = &self.event_aggregator {
+                                    info!(server_id = ?server_id, "DIAG: Dispatching workspace diagnostics cleared for server");
                                     aggregator.dispatch_diagnostics(
                                         DiagnosticsEvent::WorkspaceDiagnosticsClearedForServer {
                                             server_id: *server_id,
