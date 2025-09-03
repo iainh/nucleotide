@@ -98,6 +98,7 @@ pub enum Update {
     },
     ShowFilePicker,
     ShowBufferPicker,
+    DiagnosticsPanel(gpui::Entity<crate::DiagnosticsPanel>),
 }
 
 impl std::fmt::Debug for Update {
@@ -148,6 +149,7 @@ impl std::fmt::Debug for Update {
             Update::CompletionEvent(_) => write!(f, "CompletionEvent(...)"),
             Update::ShowFilePicker => write!(f, "ShowFilePicker"),
             Update::ShowBufferPicker => write!(f, "ShowBufferPicker"),
+            Update::DiagnosticsPanel(_) => write!(f, "DiagnosticsPanel(...)"),
         }
     }
 }

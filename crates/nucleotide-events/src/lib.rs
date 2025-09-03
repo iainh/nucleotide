@@ -12,6 +12,7 @@ pub mod document;
 pub mod editor;
 pub mod handler;
 pub mod integration;
+pub mod diagnostics;
 pub mod lsp;
 pub mod ui;
 pub mod vcs;
@@ -26,6 +27,7 @@ pub mod v2 {
     pub use crate::editor;
     pub use crate::handler;
     pub use crate::integration;
+    pub use crate::diagnostics;
     pub use crate::lsp;
     pub use crate::ui;
     pub use crate::vcs;

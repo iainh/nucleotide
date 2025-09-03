@@ -18,6 +18,7 @@ pub struct OverlayView {
     native_picker_view: Option<Entity<PickerView>>,
     native_prompt_view: Option<Entity<PromptView>>,
     completion_view: Option<Entity<CompletionView>>,
+    diagnostics_panel: Option<Entity<crate::DiagnosticsPanel>>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
 }
@@ -29,6 +30,7 @@ impl OverlayView {
             native_picker_view: None,
             native_prompt_view: None,
             completion_view: None,
+            diagnostics_panel: None,
             focus: focus.clone(),
             core: core.downgrade(),
         }
@@ -38,7 +40,8 @@ impl OverlayView {
         let empty = self.prompt.is_none()
             && self.native_picker_view.is_none()
             && self.native_prompt_view.is_none()
-            && self.completion_view.is_none();
+            && self.completion_view.is_none()
+            && self.diagnostics_panel.is_none();
 
         if !empty && self.completion_view.is_some() {
             println!("COMP: Overlay is NOT empty - has completion view");
@@ -325,6 +328,51 @@ impl OverlayView {
                 )
                 .detach();
 
+                cx.notify();
+            }
+            crate::Update::DiagnosticsPanel(panel) => {
+                // Replace any existing diagnostics panel
+                self.diagnostics_panel = Some(panel.clone());
+                // Subscribe to dismiss from panel via global dismiss event
+                cx.subscribe(&panel, |this, _panel, _ev: &DismissEvent, cx| {
+                    this.diagnostics_panel = None;
+                    cx.emit(DismissEvent);
+                    cx.notify();
+                })
+                .detach();
+
+                // Subscribe to diagnostics navigation events
+                let core_for_nav = self.core.clone();
+                cx.subscribe(&panel, move |_this, _panel, ev: &crate::diagnostics_panel::DiagnosticsJumpEvent, cx| {
+                    if let Some(core) = core_for_nav.upgrade() {
+                        let path = ev.path.clone();
+                        let offset = ev.offset;
+                        // Open the file, then move cursor after a short delay
+                        core.update(cx, |app, cx| {
+                            cx.emit(crate::Update::OpenFile(path.clone()));
+                        });
+                        let core2 = core_for_nav.clone();
+                        let path_for_lookup = path.clone();
+                        cx.spawn(async move |this, cx| {
+                            // Small delay to allow file to open
+                            cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+                            if let Some(core) = core2.upgrade() {
+                                core.update(cx, |app, _cx| {
+                                    // Find document by path
+                                    if let Some(doc_id) = app.editor.documents.iter().find_map(|(id, doc)| {
+                                        doc.path().filter(|p| *p == &path_for_lookup).map(|_| *id)
+                                    }) {
+                                        // Set cursor selection to offset
+                                        let view_id = app.editor.tree.focus;
+                                        let selection = helix_core::Selection::point(offset);
+                                        let doc = helix_view::doc_mut!(app.editor, &doc_id);
+                                        doc.set_selection(view_id, selection);
+                                    }
+                                });
+                            }
+                        }).detach();
+                    }
+                }).detach();
                 cx.notify();
             }
             crate::Update::Picker(picker) => {
@@ -1189,6 +1237,30 @@ impl Render for OverlayView {
                         .items_start()
                         .pt(tokens.sizes.space_8)
                         .child(prompt_view.clone()),
+                )
+                .into_any_element();
+        }
+
+        if let Some(diag_panel) = &self.diagnostics_panel {
+            let theme = cx.theme();
+            let tokens = &theme.tokens;
+
+            return div()
+                .key_context("Overlay")
+                .absolute()
+                .size_full()
+                .bottom_0()
+                .left_0()
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                .child(
+                    div()
+                        .flex()
+                        .size_full()
+                        .justify_center()
+                        .items_start()
+                        .pt(tokens.sizes.space_8)
+                        .child(diag_panel.clone()),
                 )
                 .into_any_element();
         }

@@ -5,8 +5,9 @@ use nucleotide_events::{
     EventBus, EventHandler,
     integration::Event as IntegrationEvent,
     v2::{
-        document::Event as DocumentEvent, editor::Event as EditorEvent, lsp::Event as LspEvent,
-        ui::Event as UiEvent, vcs::Event as VcsEvent, workspace::Event as WorkspaceEvent,
+        diagnostics::Event as DiagnosticsEvent, document::Event as DocumentEvent,
+        editor::Event as EditorEvent, lsp::Event as LspEvent, ui::Event as UiEvent,
+        vcs::Event as VcsEvent, workspace::Event as WorkspaceEvent,
     },
 };
 use std::sync::{Arc, Mutex};
@@ -20,6 +21,7 @@ pub enum AppEvent {
     Workspace(WorkspaceEvent),
     Lsp(LspEvent),
     Vcs(VcsEvent),
+    Diagnostics(DiagnosticsEvent),
     Integration(IntegrationEvent),
     Core(crate::core_event::CoreEvent),
 }
@@ -67,6 +69,7 @@ impl EventAggregator {
                     AppEvent::Lsp(e) => handler.handle_lsp(e),
                     AppEvent::Vcs(e) => handler.handle_vcs(e),
                     AppEvent::Integration(e) => handler.handle_integration(e),
+                    AppEvent::Diagnostics(e) => handler.handle_diagnostics(e),
                     AppEvent::Core(_) => {
                         // Core events are handled through the legacy Update system
                         // Future enhancement: Migrate core events to proper V2 domain events
@@ -111,6 +114,10 @@ impl EventBus for EventAggregator {
 
     fn dispatch_vcs(&self, event: VcsEvent) {
         self.queue_event(AppEvent::Vcs(event));
+    }
+
+    fn dispatch_diagnostics(&self, event: DiagnosticsEvent) {
+        self.queue_event(AppEvent::Diagnostics(event));
     }
 
     fn dispatch_integration(&self, event: IntegrationEvent) {
@@ -180,6 +187,10 @@ impl EventBus for EventAggregatorHandle {
 
     fn dispatch_vcs(&self, event: VcsEvent) {
         self.inner.dispatch_vcs(event);
+    }
+
+    fn dispatch_diagnostics(&self, event: DiagnosticsEvent) {
+        self.inner.dispatch_diagnostics(event);
     }
 
     fn dispatch_integration(&self, event: IntegrationEvent) {

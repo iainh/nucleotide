@@ -117,6 +117,8 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 
 use anyhow::Error;
 use nucleotide_core::{EventAggregatorHandle, EventBus, event_bridge, gpui_to_helix_bridge};
+use nucleotide_lsp::lsp_state::DiagnosticInfo;
+use nucleotide_events::v2::diagnostics::Event as DiagnosticsEvent;
 use nucleotide_logging::{Level, debug, error, info, instrument, span, timed, warn};
 
 use crate::types::{AppEvent, CoreEvent, UiEvent, Update};
@@ -408,6 +410,8 @@ impl Application {
                             matches!(d.severity, Some(helix_core::diagnostic::Severity::Warning))
                         })
                         .count();
+
+                    // LSP diagnostics state is synchronized in the GPUI-context loop
                     (total, errors, warnings)
                 } else {
                     (0, 0, 0)
@@ -2613,6 +2617,49 @@ impl Application {
 
                         // Handle LSP server lifecycle events with GPUI context
                         match &bridged_event {
+                            event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
+                                if let Some(document) = self.editor.document(*doc_id) {
+                                    if let (Some(lsp_state), Some(path)) = (&self.lsp_state, document.path()) {
+                                        let diagnostics = document.diagnostics();
+                                        let uri = helix_core::Uri::from(path.clone());
+
+                                        // Update LspState with per-URI diagnostics
+                                        lsp_state.update(cx, |state, cx| {
+                                            let infos: Vec<DiagnosticInfo> = diagnostics
+                                                .iter()
+                                                .filter_map(|d| {
+                                                    d.provider
+                                                        .language_server_id()
+                                                        .map(|server_id| DiagnosticInfo {
+                                                            diagnostic: d.clone(),
+                                                            server_id,
+                                                        })
+                                                })
+                                                .collect();
+                                            state.set_diagnostics(uri.clone(), infos);
+                                            cx.notify();
+                                        });
+
+                                        // Dispatch diagnostics events grouped by provider
+                                        if let Some(aggregator) = &self.event_aggregator {
+                                            use std::collections::BTreeMap;
+                                            use helix_core::diagnostic::DiagnosticProvider;
+                                            let mut by_provider: BTreeMap<DiagnosticProvider, Vec<helix_core::diagnostic::Diagnostic>> =
+                                                BTreeMap::new();
+                                            for d in diagnostics.iter().cloned() {
+                                                by_provider.entry(d.provider.clone()).or_default().push(d);
+                                            }
+                                            for (provider, diags) in by_provider {
+                                                aggregator.dispatch_diagnostics(DiagnosticsEvent::DocumentDiagnosticsSet {
+                                                    uri: uri.clone(),
+                                                    diagnostics: diags,
+                                                    provider,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             event_bridge::BridgedEvent::LspServerStartupRequested {
                                 workspace_root,
                                 server_name,
@@ -2647,6 +2694,24 @@ impl Application {
                                     }
                                 } else {
                                     warn!("🔗 BRIDGE: No sync processor command sender available");
+                                }
+                            }
+                            event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace } => {
+                                // Show diagnostics panel overlay using current LspState
+                                if let Some(lsp_state) = &self.lsp_state {
+                                    let lsp_state = lsp_state.clone();
+                                    let panel = cx.new(|cx| {
+                                        crate::DiagnosticsPanel::new(
+                                            lsp_state,
+                                            crate::DiagnosticsFilter::default(),
+                                            cx,
+                                        )
+                                    });
+                                    cx.emit(crate::Update::DiagnosticsPanel(panel));
+                                } else {
+                                    nucleotide_logging::warn!(
+                                        "DiagnosticsPickerRequested but no LspState entity available"
+                                    );
                                 }
                             }
                             event_bridge::BridgedEvent::LanguageServerInitialized { server_id } => {
@@ -2696,6 +2761,15 @@ impl Application {
                                         state.remove_server(*server_id);
                                         cx.notify();
                                     });
+                                }
+
+                                // Dispatch diagnostics-cleared domain event for this server
+                                if let Some(aggregator) = &self.event_aggregator {
+                                    aggregator.dispatch_diagnostics(
+                                        DiagnosticsEvent::WorkspaceDiagnosticsClearedForServer {
+                                            server_id: *server_id,
+                                        },
+                                    );
                                 }
                             }
 

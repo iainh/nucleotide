@@ -50,6 +50,8 @@ pub enum BridgedEvent {
         view_id: ViewId,
         trigger: CompletionTrigger,
     },
+    /// Request to show diagnostics picker (mapped from Helix keybindings)
+    DiagnosticsPickerRequested { workspace: bool },
     /// LSP server startup requested for a project
     LspServerStartupRequested {
         workspace_root: std::path::PathBuf,
@@ -141,7 +143,7 @@ fn analyze_change_type(changes: &ChangeSet) -> ChangeType {
 #[instrument]
 pub fn register_event_hooks() {
     use helix_event::register_hook;
-    use helix_term::events::{OnModeSwitch, PostInsertChar};
+    use helix_term::events::{OnModeSwitch, PostCommand, PostInsertChar};
     use helix_view::events::{
         DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen,
         LanguageServerExited, LanguageServerInitialized, SelectionDidChange,
@@ -275,6 +277,23 @@ pub fn register_event_hooks() {
             view_id,
             trigger: CompletionTrigger::Character(event.c),
         });
+        Ok(())
+    });
+
+    // Map Helix diagnostics picker commands to bridged events
+    register_hook!(move |event: &mut PostCommand<'_, '_>| {
+        use helix_term::keymap::MappableCommand;
+        let show = match event.command {
+            MappableCommand::Static { name, .. } => match *name {
+                "diagnostics_picker" => Some(false),
+                "workspace_diagnostics_picker" => Some(true),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(workspace) = show {
+            send_bridged_event(BridgedEvent::DiagnosticsPickerRequested { workspace });
+        }
         Ok(())
     });
 

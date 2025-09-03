@@ -260,15 +260,32 @@ impl Config {
     /// Load configuration from a specific directory
     pub fn load_from_dir(dir: &Path) -> anyhow::Result<Self> {
         // First, load the base Helix configuration
-        let helix_config = load_helix_config(dir)?;
+        let mut helix_config = load_helix_config(dir)?;
 
         // Then, load GUI-specific configuration if it exists
         let gui_config = load_gui_config(dir).unwrap_or_default();
 
-        Ok(Self {
-            helix: helix_config,
-            gui: gui_config,
-        })
+        // Enable recommended diagnostics rendering by default when user has not configured it.
+        // Matches Helix book guidance: end-of-line diagnostics = "hint" and inline cursor-line = "warning".
+        {
+            use helix_core::diagnostic::Severity;
+            use helix_view::annotations::diagnostics::DiagnosticFilter;
+
+            let editor_cfg = &mut helix_config.editor;
+            let inline = &mut editor_cfg.inline_diagnostics;
+
+            let no_inline_configured = matches!(inline.cursor_line, DiagnosticFilter::Disable)
+                && matches!(inline.other_lines, DiagnosticFilter::Disable);
+            let no_eol_configured = matches!(editor_cfg.end_of_line_diagnostics, DiagnosticFilter::Disable);
+
+            if no_inline_configured && no_eol_configured {
+                editor_cfg.end_of_line_diagnostics = DiagnosticFilter::Enable(Severity::Hint);
+                inline.cursor_line = DiagnosticFilter::Enable(Severity::Warning);
+                // Keep other_lines disabled unless user opts in via helix config
+            }
+        }
+
+        Ok(Self { helix: helix_config, gui: gui_config })
     }
 
     /// Apply a config update from Helix (e.g., from toggle command)

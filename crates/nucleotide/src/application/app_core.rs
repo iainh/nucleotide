@@ -127,6 +127,9 @@ impl ApplicationCore {
 
                 self.document_handler.handle(v2_event).await?;
             }
+            event_bridge::BridgedEvent::DiagnosticsPickerRequested { .. } => {
+                // Handled in Application main loop with GPUI context
+            }
 
             event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
                 // Extract actual selection from the document

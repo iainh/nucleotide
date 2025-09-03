@@ -19,6 +19,7 @@ pub mod integration_test_phase2;
 pub mod lsp_traffic_logger;
 pub mod overlay;
 pub mod picker_capability;
+pub mod diagnostics_panel;
 pub mod statusline;
 pub mod tab;
 pub mod tab_bar;
@@ -53,6 +54,7 @@ pub use nucleotide_ui::{
 
 // Re-export commonly used items
 pub use application::{Application, Input, InputEvent};
+pub use diagnostics_panel::{DiagnosticsFilter, DiagnosticsPanel};
 pub use nucleotide_ui::theme_manager::ThemeManager;
 pub use types::{
     EditorFontConfig, EditorStatus as EditorStatusType, FontSettings, UiFontConfig, Update,

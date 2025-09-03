@@ -3302,7 +3302,8 @@ impl Workspace {
             }
             crate::Update::Prompt(_)
             | crate::Update::Picker(_)
-            | crate::Update::DirectoryPicker(_) => {
+            | crate::Update::DirectoryPicker(_)
+            | crate::Update::DiagnosticsPanel(_) => {
                 self.handle_overlay_update(cx);
             }
             crate::Update::Completion(_completion_view) => {
@@ -3510,6 +3511,9 @@ impl Workspace {
                         // - Tab bar updates
                         // - Save indicator changes
                         // - Diagnostic indicator updates
+                    }
+                    crate::types::AppEvent::Diagnostics(_d) => {
+                        // Diagnostics domain events are handled upstream to update LspState
                     }
                 }
             }

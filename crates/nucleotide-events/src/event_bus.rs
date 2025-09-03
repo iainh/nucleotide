@@ -4,8 +4,9 @@
 use crate::{
     integration::Event as IntegrationEvent,
     v2::{
-        document::Event as DocumentEvent, editor::Event as EditorEvent, lsp::Event as LspEvent,
-        ui::Event as UiEvent, vcs::Event as VcsEvent, workspace::Event as WorkspaceEvent,
+        diagnostics::Event as DiagnosticsEvent, document::Event as DocumentEvent,
+        editor::Event as EditorEvent, lsp::Event as LspEvent, ui::Event as UiEvent,
+        vcs::Event as VcsEvent, workspace::Event as WorkspaceEvent,
     },
 };
 
@@ -28,6 +29,9 @@ pub trait EventBus {
 
     /// Dispatch a VCS event
     fn dispatch_vcs(&self, event: VcsEvent);
+
+    /// Dispatch a diagnostics event
+    fn dispatch_diagnostics(&self, event: DiagnosticsEvent);
 
     /// Dispatch an integration event
     fn dispatch_integration(&self, event: IntegrationEvent);
@@ -52,6 +56,9 @@ pub trait EventHandler {
 
     /// Handle a VCS event
     fn handle_vcs(&mut self, _event: &VcsEvent) {}
+
+    /// Handle a diagnostics event
+    fn handle_diagnostics(&mut self, _event: &DiagnosticsEvent) {}
 
     /// Handle an integration event
     fn handle_integration(&mut self, _event: &IntegrationEvent) {}
