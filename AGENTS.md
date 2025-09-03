@@ -33,3 +33,87 @@
 ## Security & Configuration Tips
 - App config: `~/.config/helix/nucleotide.toml` (falls back to Helix `config.toml`).
 - Useful env vars: `RUST_LOG=info` for logs; `HELIX_RUNTIME` when running from a bundle (set automatically on macOS).
+
+## Event System
+- Overview: Bidirectional GPUI ↔ Helix system with domain events and bridges. See `docs/event_system.md` for diagrams and flows.
+- Crate: `crates/nucleotide-events` defines domain events (`v2::{document, view, editor, lsp, ui, workspace, vcs}`) and the bus (`event_bus.rs`).
+- Emit: Use `EventBus::dispatch_{document,editor,ui,workspace,lsp,vcs}(... )` for publishing events; avoid ad‑hoc channels.
+- Handle: Implement `EventHandler` and override `handle_*` methods scoped to your domain.
+- Bridges: GPUI→Helix translation and Helix hooks live under `crates/nucleotide/src/application/*` and `crates/nucleotide-events/src/{bridge,ui,editor,document,...}.rs`.
+- Best practices:
+  - Prefer domain events over integration/legacy events; keep handlers fast and side‑effect‑free when possible.
+  - Don’t block the app loop; offload heavy work to async tasks and send results back as events.
+  - Put focused tests near handlers and new event types.
+
+## Design Tokens
+- Module: `crates/nucleotide-ui/src/tokens` with `DesignTokens`, `SemanticColors`, `SizeTokens`. Read `crates/nucleotide-ui/src/tokens/README.md`.
+- Layers: Base colors → semantic colors → component tokens. Consistent spacing scale and elevation helpers.
+- Use:
+  - Access via `Theme.tokens` (e.g., `theme.tokens.colors.text_primary`, `theme.tokens.sizes.space_3`).
+  - Prefer semantic tokens over hardcoded colors or px values; use utilities like `lighten`, `darken`, `with_alpha`.
+  - Components map tokens to styles (see `crates/nucleotide-ui/src/button.rs` compute style from tokens).
+- Migration: Legacy theme fields remain (e.g., `Theme::dark()`); new work should favor tokens and `Theme::from_tokens(...)`.
+
+## UI Paradigms
+- Providers: `crates/nucleotide-ui/src/providers` offers React‑style providers for theme, config, and events.
+  - Compose: `ProviderComposition::app_providers()` or build via `provider_tree()`.
+  - Access: `use_theme()`, `use_provider<T>()`, `use_provider_or_default<T>()`.
+- Styling: Use `Styled`, `ComponentFactory`, and `Variant*` types from `nucleotide-ui::styling` to compute styles from tokens/state.
+- Keyboard & Focus: Centralized input handling in `nucleotide-ui::{global_input, keyboard_navigation}` with focus rings and navigation helpers.
+- Popups & Layout: Use `completion_popup` and sizing utilities for anchored overlays; avoid manual positioning where helpers exist.
+- Theming: `theme_manager`, `advanced_theming` support runtime switching and Helix theme bridge while keeping token‑first APIs.
+
+## Where To Add Things
+- New domain events: `crates/nucleotide-events/src/v2/<domain>/` plus handler wiring in `crates/nucleotide/src/application/*`.
+- New component tokens: extend `crates/nucleotide-ui/src/tokens/mod.rs` and add tests in `tokens/tests.rs`.
+- New UI components: `crates/nucleotide-ui/src/` with local tests (e.g., `*_tests.rs`).
+- Logging/metrics: use `nucleotide-logging` macros and layers (`crates/nucleotide-logging`).
+
+## References
+- Event system: `docs/event_system.md`
+- Token system: `crates/nucleotide-ui/src/tokens/README.md`
+- UI theming & providers: `crates/nucleotide-ui/src/{providers,theme_manager,advanced_theming}`
+
+## Version Control (jj + Git)
+- Purpose: jj (Jujutsu) provides easy stacked changes and rebases while keeping Git as the remote/CI source of truth.
+- New clones: `jj git clone <git-url> nucleotide && cd nucleotide` (creates a jj workspace backed by Git).
+- Existing Git clone: run `jj git import` once in the repo to initialize jj state.
+- Status & review:
+  - `jj status` (working copy + current change)
+  - `jj log -r ::@` (your stack) and `jj diff -s` (summary of current change)
+- Create/shape changes:
+  - Start a change: `jj new -m "feat: short message"` then edit files.
+  - Update message: `jj describe -m "refine: clearer message"`.
+  - Split or squash when cleaning up: `jj split` and `jj squash`.
+  - Rebase your stack on latest main: `jj git fetch && jj git import && jj rebase -d main -r ::@`.
+- Branches and publishing:
+  - Point a Git branch at the current change: `jj branch set my-branch -r @`.
+  - Push to remote: `jj git push -b my-branch` (updates the Git branch; CI/PRs see normal Git commits).
+  - Pull remote updates: `jj git fetch && jj git import`.
+- Conventions:
+  - Keep Conventional Commit prefixes (feat:, fix:, chore:, etc.) in `jj` change messages.
+  - Prefer small, reviewable stacks over large single changes; rebase/squash before pushing.
+  - Teammates can continue to use plain Git; jj changes appear as normal Git commits/branches.
+
+### jj Config (recommended)
+- Scope: add to user config `~/.jjconfig` (applies everywhere) or set per-repo via `jj config set --repo ...`.
+- Minimal TOML snippet:
+  ```toml
+  [ui]
+  # Show a compact graph by default in `jj log`
+  default-command = "log"
+
+  [aliases]
+  # My stack (ancestors and descendants of the current change)
+  l = ["log", "-r", "::@", "-T", "builtin_log_detailed"]
+  # Quick summary of current change
+  d = ["diff", "-s"]
+  # Rebase current stack onto main
+  rebase-stack = ["rebase", "-d", "main", "-r", "::@"]
+  # Show heads for your stack (useful before pushing)
+  heads = ["log", "-r", "heads(::@) - hidden()", "-T", "builtin_log_compact"]
+  ```
+- Or set via commands (repo-scoped):
+  - `jj config set --repo aliases.l '["log", "-r", "::@", "-T", "builtin_log_detailed"]'`
+  - `jj config set --repo aliases.d '["diff", "-s"]'`
+  - `jj config set --repo aliases.rebase-stack '["rebase", "-d", "main", "-r", "::@"]'`
