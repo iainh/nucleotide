@@ -3645,8 +3645,8 @@ impl Workspace {
                 if service.root_path() != Some(project_dir.as_path()) {
                     service.start_monitoring(project_dir.clone(), cx);
                 }
-                // Always refresh to get current status
-                service.force_refresh(cx);
+                // Avoid forcing a refresh on every tab bar recompute; rely on
+                // initial monitoring refresh and explicit triggers elsewhere.
             });
         }
 
