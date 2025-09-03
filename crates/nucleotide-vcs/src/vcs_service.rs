@@ -633,7 +633,7 @@ impl VcsService {
             }
         }
 
-        info!("VCS: Force refresh requested");
+        debug!("VCS: Force refresh requested");
         self.refresh_status(cx);
     }
 
@@ -662,7 +662,7 @@ impl VcsService {
         // Run git status synchronously for now to avoid async issues
         match run_git_status(&root_path, self.config.max_files) {
             Ok(new_status) => {
-                info!(
+                debug!(
                     status_count = new_status.len(),
                     "VCS: Got git status results"
                 );
