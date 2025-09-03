@@ -2866,6 +2866,15 @@ impl Application {
                             self.editor.refresh_config(&old_config);
                             info!("After refresh_config, editor bufferline: {:?}", self.editor.config().bufferline);
 
+                            // Re-send LSP configuration to all running language servers (ensures rust-analyzer checkOnSave is applied)
+                            for client in self.editor.language_servers.iter_clients() {
+                                let cfg = client.config();
+                                if let Some(cfg) = cfg.clone() {
+                                    info!(server = %client.name(), "Re-sending LSP didChangeConfiguration with current settings");
+                                    client.did_change_configuration(cfg.clone());
+                                }
+                            }
+
                             // Forward the ConfigEvent to the workspace so it knows config changed
                             info!("Forwarding ConfigEvent to workspace");
                             cx.emit(crate::Update::EditorEvent(EditorEvent::ConfigEvent(config_event)));
