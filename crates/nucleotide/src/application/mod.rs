@@ -117,9 +117,9 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 
 use anyhow::Error;
 use nucleotide_core::{EventAggregatorHandle, EventBus, event_bridge, gpui_to_helix_bridge};
-use nucleotide_lsp::lsp_state::DiagnosticInfo;
 use nucleotide_events::v2::diagnostics::Event as DiagnosticsEvent;
 use nucleotide_logging::{Level, debug, error, info, instrument, span, timed, warn};
+use nucleotide_lsp::lsp_state::DiagnosticInfo;
 
 use crate::types::{AppEvent, CoreEvent, UiEvent, Update};
 // ApplicationCore already imported above via pub use
@@ -2189,9 +2189,7 @@ impl Application {
         // NOTE: LSP completion requests are now processed event-driven in start_event_driven_lsp_completion_processing
 
         // Process pending LSP commands synchronously by draining the channel
-        self.process_pending_lsp_commands_sync(&handle);
-
-        // Process any remaining commands that may have arrived
+        // (Single pass is sufficient; the channel is drained in one call.)
         self.process_pending_lsp_commands_sync(&handle);
 
         // Sync LSP state periodically
@@ -2340,7 +2338,7 @@ impl Application {
     fn process_pending_lsp_commands_sync(&mut self, handle: &tokio::runtime::Handle) {
         let _guard = handle.enter();
 
-        info!("🔧 SYNC: Starting synchronous LSP command processing");
+        debug!("🔧 SYNC: Starting synchronous LSP command processing");
 
         // Increment sync cycle counter
         let cycle_count = self
@@ -2362,55 +2360,57 @@ impl Application {
 
         // DIRECT APPROACH: Check if we need to start rust-analyzer for current project
         // Wait for 10 cycles to let the system fully initialize
-        info!(
-            project_directory = ?self.project_directory,
-            cycle_count = cycle_count,
-            "🔧 SYNC: Checking project directory for direct LSP startup"
-        );
-        if let Some(ref project_dir) = self.project_directory {
-            let has_cargo_toml = project_dir.join("Cargo.toml").exists();
-            let rust_analyzer_running = self.is_rust_analyzer_running();
+        if self.config.gui.lsp.project_lsp_startup {
+            debug!(
+                project_directory = ?self.project_directory,
+                cycle_count = cycle_count,
+                "🔧 SYNC: Checking project directory for direct LSP startup"
+            );
+            if let Some(ref project_dir) = self.project_directory {
+                let has_cargo_toml = project_dir.join("Cargo.toml").exists();
+                let rust_analyzer_running = self.is_rust_analyzer_running();
 
-            // Only try LSP startup after system has had time to initialize (cycle 10+)
-            // and if no servers are currently running
-            let any_servers_running = self.editor.language_servers.iter_clients().count() > 0;
-            if cycle_count >= 10 && !any_servers_running {
-                info!(
-                    has_cargo_toml = has_cargo_toml,
-                    rust_analyzer_running = rust_analyzer_running,
-                    cycle_count = cycle_count,
-                    "🔧 SYNC: Project checks for direct LSP startup"
-                );
-                // Check if HelixLspBridge is initialized before attempting to start server
-                let bridge_initialized = handle.block_on(async {
-                    let bridge_guard = self.helix_lsp_bridge.read().await;
-                    bridge_guard.is_some()
-                });
-
-                info!(
-                    bridge_initialized = bridge_initialized,
-                    has_cargo_toml = has_cargo_toml,
-                    "🔧 SYNC: Bridge initialization check for project LSP startup"
-                );
-
-                if bridge_initialized {
-                    // Use generic project detection logic
+                // Only try LSP startup after system has had time to initialize (cycle 10+)
+                // and if no servers are currently running
+                let any_servers_running = self.editor.language_servers.iter_clients().count() > 0;
+                if cycle_count >= 10 && !any_servers_running {
                     info!(
-                        project_root = %project_dir.display(),
-                        "🔧 SYNC: Starting LSP servers for detected project types"
+                        has_cargo_toml = has_cargo_toml,
+                        rust_analyzer_running = rust_analyzer_running,
+                        cycle_count = cycle_count,
+                        "🔧 SYNC: Project checks for direct LSP startup"
+                    );
+                    // Check if HelixLspBridge is initialized before attempting to start server
+                    let bridge_initialized = handle.block_on(async {
+                        let bridge_guard = self.helix_lsp_bridge.read().await;
+                        bridge_guard.is_some()
+                    });
+
+                    info!(
+                        bridge_initialized = bridge_initialized,
+                        has_cargo_toml = has_cargo_toml,
+                        "🔧 SYNC: Bridge initialization check for project LSP startup"
                     );
 
-                    let project_path = project_dir.clone();
-                    let detected_servers =
-                        handle.block_on(self.detect_and_start_project_servers(&project_path));
-
-                    if !detected_servers.is_empty() {
+                    if bridge_initialized {
+                        // Use generic project detection logic
                         info!(
-                            server_count = detected_servers.len(),
-                            "🚀 SYNC: Successfully started LSP servers using bridge approach"
+                            project_root = %project_dir.display(),
+                            "🔧 SYNC: Starting LSP servers for detected project types"
                         );
-                    } else {
-                        info!("🔧 SYNC: No project types detected - no LSP servers started");
+
+                        let project_path = project_dir.clone();
+                        let detected_servers =
+                            handle.block_on(self.detect_and_start_project_servers(&project_path));
+
+                        if !detected_servers.is_empty() {
+                            info!(
+                                server_count = detected_servers.len(),
+                                "🚀 SYNC: Successfully started LSP servers using bridge approach"
+                            );
+                        } else {
+                            info!("🔧 SYNC: No project types detected - no LSP servers started");
+                        }
                     }
                 }
             }
@@ -2500,7 +2500,7 @@ impl Application {
                     );
                 }
                 None => {
-                    info!(
+                    debug!(
                         commands_processed = commands_processed,
                         "🔧 SYNC: No more commands available, exiting loop"
                     );
@@ -2509,7 +2509,7 @@ impl Application {
             }
         }
 
-        info!(
+        debug!(
             total_commands_processed = commands_processed,
             "🔧 SYNC: Completed synchronous LSP command processing"
         );

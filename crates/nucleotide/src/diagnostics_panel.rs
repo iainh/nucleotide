@@ -1,7 +1,7 @@
 // ABOUTME: Diagnostics list panel rendering diagnostics from LspState with simple filters
 
 use gpui::{prelude::FluentBuilder, *};
-use helix_core::{diagnostic::Severity, Uri};
+use helix_core::{Uri, diagnostic::Severity};
 use nucleotide_lsp::lsp_state::DiagnosticInfo;
 use nucleotide_ui::{ListItem, ListItemSpacing, ListItemVariant};
 use std::path::PathBuf;
@@ -25,8 +25,16 @@ pub struct DiagnosticsPanel {
 }
 
 impl DiagnosticsPanel {
-    pub fn new(lsp_state: Entity<nucleotide_lsp::LspState>, filter: DiagnosticsFilter, cx: &mut Context<Self>) -> Self {
-        Self { lsp_state, filter, focus: cx.focus_handle() }
+    pub fn new(
+        lsp_state: Entity<nucleotide_lsp::LspState>,
+        filter: DiagnosticsFilter,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            lsp_state,
+            filter,
+            focus: cx.focus_handle(),
+        }
     }
 
     /// Update filter and request re-render
@@ -57,18 +65,26 @@ impl Render for DiagnosticsPanel {
         lsp_state.update(cx, |state, _| {
             for (uri, infos) in state.diagnostics.iter() {
                 if let Some(only) = &filter_ref.only_uri {
-                    if uri != only { continue; }
+                    if uri != only {
+                        continue;
+                    }
                 }
                 for info in infos {
                     let sev_ok = filter_ref
                         .min_severity
                         .map_or(true, |min| info.diagnostic.severity() >= min);
-                    if !sev_ok { continue; }
-                    let msg_ok = filter_ref
-                        .query
-                        .as_ref()
-                        .map_or(true, |q| info.diagnostic.message.to_lowercase().contains(&q.to_lowercase()));
-                    if !msg_ok { continue; }
+                    if !sev_ok {
+                        continue;
+                    }
+                    let msg_ok = filter_ref.query.as_ref().map_or(true, |q| {
+                        info.diagnostic
+                            .message
+                            .to_lowercase()
+                            .contains(&q.to_lowercase())
+                    });
+                    if !msg_ok {
+                        continue;
+                    }
                     rows.push((uri.clone(), info.clone()));
                 }
             }
@@ -105,7 +121,10 @@ impl Render for DiagnosticsPanel {
             let secondary = path_display.clone();
             let primary = info.diagnostic.message.clone();
 
-            let id = SharedString::from(format!("diag-{}-{}", path_display, info.diagnostic.range.start));
+            let id = SharedString::from(format!(
+                "diag-{}-{}",
+                path_display, info.diagnostic.range.start
+            ));
 
             // Build list item
             let item = ListItem::new(id.clone())
@@ -121,11 +140,19 @@ impl Render for DiagnosticsPanel {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from(path_display.clone()));
             let offset = info.diagnostic.range.start;
-            div().on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut DiagnosticsPanel, _e, _w, cx| {
-                cx.emit(DiagnosticsJumpEvent { path: path_for_event.clone(), offset });
-                // Also dismiss panel after emitting
-                cx.emit(DismissEvent);
-            })).child(item)
+            div()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this: &mut DiagnosticsPanel, _e, _w, cx| {
+                        cx.emit(DiagnosticsJumpEvent {
+                            path: path_for_event.clone(),
+                            offset,
+                        });
+                        // Also dismiss panel after emitting
+                        cx.emit(DismissEvent);
+                    }),
+                )
+                .child(item)
         });
 
         div()

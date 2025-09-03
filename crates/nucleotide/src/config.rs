@@ -276,7 +276,10 @@ impl Config {
 
             let no_inline_configured = matches!(inline.cursor_line, DiagnosticFilter::Disable)
                 && matches!(inline.other_lines, DiagnosticFilter::Disable);
-            let no_eol_configured = matches!(editor_cfg.end_of_line_diagnostics, DiagnosticFilter::Disable);
+            let no_eol_configured = matches!(
+                editor_cfg.end_of_line_diagnostics,
+                DiagnosticFilter::Disable
+            );
 
             if no_inline_configured && no_eol_configured {
                 editor_cfg.end_of_line_diagnostics = DiagnosticFilter::Enable(Severity::Hint);
@@ -285,7 +288,10 @@ impl Config {
             }
         }
 
-        Ok(Self { helix: helix_config, gui: gui_config })
+        Ok(Self {
+            helix: helix_config,
+            gui: gui_config,
+        })
     }
 
     /// Apply a config update from Helix (e.g., from toggle command)

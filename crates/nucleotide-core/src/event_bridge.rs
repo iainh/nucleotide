@@ -51,7 +51,9 @@ pub enum BridgedEvent {
         trigger: CompletionTrigger,
     },
     /// Request to show diagnostics picker (mapped from Helix keybindings)
-    DiagnosticsPickerRequested { workspace: bool },
+    DiagnosticsPickerRequested {
+        workspace: bool,
+    },
     /// LSP server startup requested for a project
     LspServerStartupRequested {
         workspace_root: std::path::PathBuf,

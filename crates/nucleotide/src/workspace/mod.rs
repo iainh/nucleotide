@@ -6047,7 +6047,7 @@ impl Render for Workspace {
                     .when_some(Some(docs_root), gpui::ParentElement::child)
                     .child(self.notifications.clone())
                     .when(!self.overlay.read(cx).is_empty(), |this| {
-                        println!("COMP: Workspace rendering overlay because it's not empty");
+                        debug!("COMP: Workspace rendering overlay because it's not empty");
                         let view = &self.overlay;
                         this.child(view.clone())
                     })

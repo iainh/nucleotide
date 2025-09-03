@@ -343,36 +343,50 @@ impl OverlayView {
 
                 // Subscribe to diagnostics navigation events
                 let core_for_nav = self.core.clone();
-                cx.subscribe(&panel, move |_this, _panel, ev: &crate::diagnostics_panel::DiagnosticsJumpEvent, cx| {
-                    if let Some(core) = core_for_nav.upgrade() {
-                        let path = ev.path.clone();
-                        let offset = ev.offset;
-                        // Open the file, then move cursor after a short delay
-                        core.update(cx, |app, cx| {
-                            cx.emit(crate::Update::OpenFile(path.clone()));
-                        });
-                        let core2 = core_for_nav.clone();
-                        let path_for_lookup = path.clone();
-                        cx.spawn(async move |this, cx| {
-                            // Small delay to allow file to open
-                            cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
-                            if let Some(core) = core2.upgrade() {
-                                core.update(cx, |app, _cx| {
-                                    // Find document by path
-                                    if let Some(doc_id) = app.editor.documents.iter().find_map(|(id, doc)| {
-                                        doc.path().filter(|p| *p == &path_for_lookup).map(|_| *id)
-                                    }) {
-                                        // Set cursor selection to offset
-                                        let view_id = app.editor.tree.focus;
-                                        let selection = helix_core::Selection::point(offset);
-                                        let doc = helix_view::doc_mut!(app.editor, &doc_id);
-                                        doc.set_selection(view_id, selection);
-                                    }
-                                });
-                            }
-                        }).detach();
-                    }
-                }).detach();
+                cx.subscribe(
+                    &panel,
+                    move |_this,
+                          _panel,
+                          ev: &crate::diagnostics_panel::DiagnosticsJumpEvent,
+                          cx| {
+                        if let Some(core) = core_for_nav.upgrade() {
+                            let path = ev.path.clone();
+                            let offset = ev.offset;
+                            // Open the file, then move cursor after a short delay
+                            core.update(cx, |app, cx| {
+                                cx.emit(crate::Update::OpenFile(path.clone()));
+                            });
+                            let core2 = core_for_nav.clone();
+                            let path_for_lookup = path.clone();
+                            cx.spawn(async move |this, cx| {
+                                // Small delay to allow file to open
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(20))
+                                    .await;
+                                if let Some(core) = core2.upgrade() {
+                                    core.update(cx, |app, _cx| {
+                                        // Find document by path
+                                        if let Some(doc_id) =
+                                            app.editor.documents.iter().find_map(|(id, doc)| {
+                                                doc.path()
+                                                    .filter(|p| *p == &path_for_lookup)
+                                                    .map(|_| *id)
+                                            })
+                                        {
+                                            // Set cursor selection to offset
+                                            let view_id = app.editor.tree.focus;
+                                            let selection = helix_core::Selection::point(offset);
+                                            let doc = helix_view::doc_mut!(app.editor, &doc_id);
+                                            doc.set_selection(view_id, selection);
+                                        }
+                                    });
+                                }
+                            })
+                            .detach();
+                        }
+                    },
+                )
+                .detach();
                 cx.notify();
             }
             crate::Update::Picker(picker) => {

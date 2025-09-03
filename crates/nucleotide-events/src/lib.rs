@@ -8,11 +8,11 @@ pub mod lsp_events;
 // V2 Bounded Context Event Modules
 pub mod bridge;
 pub mod completion;
+pub mod diagnostics;
 pub mod document;
 pub mod editor;
 pub mod handler;
 pub mod integration;
-pub mod diagnostics;
 pub mod lsp;
 pub mod ui;
 pub mod vcs;
@@ -23,11 +23,11 @@ pub mod workspace;
 pub mod v2 {
     pub use crate::bridge;
     pub use crate::completion;
+    pub use crate::diagnostics;
     pub use crate::document;
     pub use crate::editor;
     pub use crate::handler;
     pub use crate::integration;
-    pub use crate::diagnostics;
     pub use crate::lsp;
     pub use crate::ui;
     pub use crate::vcs;

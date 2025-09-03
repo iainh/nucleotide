@@ -2,8 +2,8 @@
 // ABOUTME: Carries structured diagnostic data and provider info (server/id)
 
 use helix_core::{
-    diagnostic::{Diagnostic, DiagnosticProvider},
     Uri,
+    diagnostic::{Diagnostic, DiagnosticProvider},
 };
 use helix_lsp::LanguageServerId;
 
@@ -24,9 +24,7 @@ pub enum Event {
     },
 
     /// Clear all diagnostics for a language server (e.g., server exit)
-    WorkspaceDiagnosticsClearedForServer {
-        server_id: LanguageServerId,
-    },
+    WorkspaceDiagnosticsClearedForServer { server_id: LanguageServerId },
 
     /// Aggregated workspace summary (optional helper for statusline/indicators)
     WorkspaceDiagnosticsSummary {
@@ -61,4 +59,3 @@ mod tests {
         }
     }
 }
-
