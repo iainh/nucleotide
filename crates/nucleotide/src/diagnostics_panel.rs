@@ -3,6 +3,9 @@
 use gpui::{prelude::FluentBuilder, *};
 use helix_core::{Uri, diagnostic::Severity};
 use nucleotide_lsp::lsp_state::DiagnosticInfo;
+use nucleotide_ui::ThemedContext;
+use nucleotide_ui::common::FocusableModal;
+use nucleotide_ui::theme_manager::HelixThemedContext;
 use nucleotide_ui::{ListItem, ListItemSpacing, ListItemVariant};
 use std::path::PathBuf;
 
@@ -22,6 +25,7 @@ pub struct DiagnosticsPanel {
     lsp_state: Entity<nucleotide_lsp::LspState>,
     filter: DiagnosticsFilter,
     focus: FocusHandle,
+    selected_index: usize,
 }
 
 impl DiagnosticsPanel {
@@ -35,6 +39,7 @@ impl DiagnosticsPanel {
             lsp_state,
             filter,
             focus: cx.focus_handle(),
+            selected_index: 0,
         }
     }
 
@@ -60,11 +65,21 @@ pub struct DiagnosticsJumpEvent {
 impl EventEmitter<DismissEvent> for DiagnosticsPanel {}
 impl EventEmitter<DiagnosticsJumpEvent> for DiagnosticsPanel {}
 
+impl Focusable for DiagnosticsPanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl FocusableModal for DiagnosticsPanel {}
+
 impl Render for DiagnosticsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Ensure the panel obtains focus to capture keyboard input
+        self.ensure_focus(window, &self.focus);
         let lsp_state = self.lsp_state.clone();
         let filter = self.filter.clone();
-        let _theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+        let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
 
         // Build a flattened, filtered list of diagnostics
         let mut rows: Vec<(Uri, DiagnosticInfo)> = Vec::new();
@@ -117,15 +132,47 @@ impl Render for DiagnosticsPanel {
 
         // Map severity to label/icon
         let sev_label = |s: Severity| match s {
-            Severity::Error => ("E", "diagnostic.error"),
-            Severity::Warning => ("W", "diagnostic.warning"),
-            Severity::Info => ("I", "diagnostic.info"),
-            Severity::Hint => ("H", "diagnostic.hint"),
+            Severity::Error => ("ERROR", "diagnostic.error"),
+            Severity::Warning => ("WARN", "diagnostic.warning"),
+            Severity::Info => ("INFO", "diagnostic.info"),
+            Severity::Hint => ("HINT", "diagnostic.hint"),
         };
 
         // Emit jump-to event on click if an event provider is present
         let _emit = nucleotide_ui::providers::use_emit_event();
 
+        // Header row
+        let header = {
+            let header_style = cx.theme_style("ui.text.muted");
+            let color = header_style
+                .fg
+                .and_then(nucleotide_ui::theme_utils::color_to_hsla)
+                .unwrap_or(gpui::white());
+            div()
+                .flex()
+                .px_3()
+                .py_1()
+                .gap_4()
+                .child(div().w(gpui::px(16.0)).child(" "))
+                .child(div().w(gpui::px(90.0)).text_color(color).child("severity"))
+                .child(div().w(gpui::px(120.0)).text_color(color).child("source"))
+                .child(div().w(gpui::px(70.0)).text_color(color).child("code"))
+                .child(div().flex_1().text_color(color).child("message"))
+        };
+
+        let total = rows.len();
+        // Snapshot server names to avoid borrowing cx/LspState inside row map closure
+        let server_names: std::collections::HashMap<helix_lsp::LanguageServerId, String> = {
+            let mut m = std::collections::HashMap::new();
+            lsp_state.update(cx, |state, _| {
+                for (id, server) in state.servers.iter() {
+                    m.insert(*id, server.name.clone());
+                }
+            });
+            m
+        };
+
+        let mut idx_counter = 0usize;
         let list = rows.into_iter().map(|(uri, info)| {
             let path_display = uri
                 .as_path()
@@ -133,21 +180,49 @@ impl Render for DiagnosticsPanel {
                 .unwrap_or_else(|| uri.to_string());
             let (label, _style_key) = sev_label(info.diagnostic.severity());
 
-            let secondary = path_display.clone();
             let primary = info.diagnostic.message.clone();
+            let source = info
+                .diagnostic
+                .source
+                .clone()
+                .or_else(|| server_names.get(&info.server_id).cloned())
+                .unwrap_or_else(|| "lsp".to_string());
+            let code = match &info.diagnostic.code {
+                Some(helix_core::diagnostic::NumberOrString::Number(n)) => n.to_string(),
+                Some(helix_core::diagnostic::NumberOrString::String(s)) => s.clone(),
+                None => String::new(),
+            };
 
             let id = SharedString::from(format!(
                 "diag-{}-{}",
                 path_display, info.diagnostic.range.start
             ));
 
-            // Build list item
-            let item = ListItem::new(id.clone())
-                .spacing(ListItemSpacing::Compact)
-                .variant(ListItemVariant::Default)
-                .start_slot(div().child(label))
-                .child(div().child(primary))
-                .end_slot(div().child(secondary.clone()));
+            // Colors for severity label
+            let sev_color = match info.diagnostic.severity() {
+                Severity::Error => theme.get("diagnostic.error").fg,
+                Severity::Warning => theme.get("diagnostic.warning").fg,
+                Severity::Info => theme.get("diagnostic.info").fg,
+                Severity::Hint => theme.get("diagnostic.hint").fg,
+            }
+            .and_then(nucleotide_ui::theme_utils::color_to_hsla)
+            .unwrap_or(gpui::white());
+
+            let is_selected = idx_counter == self.selected_index;
+            let prefix = if is_selected { ">" } else { " " };
+
+            let row = div()
+                .id(id.clone())
+                .flex()
+                .items_center()
+                .px_3()
+                .py_1()
+                .gap_4()
+                .child(div().w(gpui::px(16.0)).child(prefix))
+                .child(div().w(gpui::px(90.0)).text_color(sev_color).child(label))
+                .child(div().w(gpui::px(120.0)).child(source.clone()))
+                .child(div().w(gpui::px(70.0)).child(code.clone()))
+                .child(div().flex_1().child(primary.clone()));
 
             // Emit navigation event on click via GPUI event
             let path_for_event = uri
@@ -155,7 +230,8 @@ impl Render for DiagnosticsPanel {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from(path_display.clone()));
             let offset = info.diagnostic.range.start;
-            div()
+            let idx_here = idx_counter;
+            let row = div()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this: &mut DiagnosticsPanel, _e, _w, cx| {
@@ -164,6 +240,7 @@ impl Render for DiagnosticsPanel {
                             offset = offset,
                             "DIAG: DiagnosticsPanel item clicked"
                         );
+                        this.selected_index = idx_here;
                         cx.emit(DiagnosticsJumpEvent {
                             path: path_for_event.clone(),
                             offset,
@@ -172,14 +249,134 @@ impl Render for DiagnosticsPanel {
                         cx.emit(DismissEvent);
                     }),
                 )
-                .child(item)
+                .child(row);
+            idx_counter += 1;
+            row
         });
 
+        // Top bar with count (like 1/1)
+        let count_text = format!("{}/{}", total, total);
+        let top_bar = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_3()
+            .py_1()
+            .child(div().child(""))
+            .child(div().child(count_text));
+
+        // Container styling similar to file picker
+        let modal_tokens = &cx.theme().tokens;
+        let container = div()
+            .key_context("DiagnosticsPicker")
+            .w(gpui::px(900.0))
+            .max_h(gpui::px(520.0))
+            .bg(modal_tokens.picker_tokens().container_background)
+            .border_1()
+            .border_color(modal_tokens.picker_tokens().border)
+            .rounded_md()
+            .shadow_lg()
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                match event.keystroke.key.as_str() {
+                    "up" => {
+                        if this.selected_index > 0 {
+                            this.selected_index -= 1;
+                            cx.notify();
+                        }
+                    }
+                    "down" => {
+                        // Recompute row count to clamp
+                        let mut count = 0usize;
+                        let filter = this.filter.clone();
+                        this.lsp_state.update(cx, |state, _| {
+                            for (_uri, infos) in state.diagnostics.iter() {
+                                for info in infos {
+                                    let sev_ok = filter
+                                        .min_severity
+                                        .map_or(true, |min| info.diagnostic.severity() >= min);
+                                    let msg_ok = filter.query.as_ref().map_or(true, |q| {
+                                        info.diagnostic
+                                            .message
+                                            .to_lowercase()
+                                            .contains(&q.to_lowercase())
+                                    });
+                                    if sev_ok && msg_ok {
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        });
+                        if count > 0 {
+                            this.selected_index = (this.selected_index + 1).min(count - 1);
+                            cx.notify();
+                        }
+                    }
+                    "enter" => {
+                        // Find selected row and emit jump
+                        let mut rows: Vec<(Uri, DiagnosticInfo)> = Vec::new();
+                        let filter = this.filter.clone();
+                        this.lsp_state.update(cx, |state, _| {
+                            for (uri, infos) in state.diagnostics.iter() {
+                                for info in infos {
+                                    let sev_ok = filter
+                                        .min_severity
+                                        .map_or(true, |min| info.diagnostic.severity() >= min);
+                                    let msg_ok = filter.query.as_ref().map_or(true, |q| {
+                                        info.diagnostic
+                                            .message
+                                            .to_lowercase()
+                                            .contains(&q.to_lowercase())
+                                    });
+                                    if sev_ok && msg_ok {
+                                        rows.push((uri.clone(), info.clone()));
+                                    }
+                                }
+                            }
+                        });
+                        rows.sort_by(|a, b| {
+                            let sa = a.1.diagnostic.severity();
+                            let sb = b.1.diagnostic.severity();
+                            sb.cmp(&sa)
+                                .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+                                .then_with(|| {
+                                    a.1.diagnostic.range.start.cmp(&b.1.diagnostic.range.start)
+                                })
+                        });
+                        if !rows.is_empty() {
+                            let idx = this.selected_index.min(rows.len() - 1);
+                            let (uri, info) = rows[idx].clone();
+                            let path_for_event = uri
+                                .as_path()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_else(|| std::path::PathBuf::from(uri.to_string()));
+                            let offset = info.diagnostic.range.start;
+                            cx.emit(DiagnosticsJumpEvent {
+                                path: path_for_event,
+                                offset,
+                            });
+                            cx.emit(DismissEvent);
+                        }
+                    }
+                    "escape" => {
+                        cx.emit(DismissEvent);
+                    }
+                    _ => {}
+                }
+            }))
+            .child(top_bar)
+            .child(header)
+            .children(list);
+
+        // Root wrapper (no visual styling needed; overlay adds centering)
         div()
             .id("diagnostics-panel")
             .flex()
             .flex_col()
             .gap_2()
-            .children(list)
+            .child(container)
     }
 }

@@ -334,6 +334,7 @@ impl OverlayView {
                 nucleotide_logging::info!("DIAG: Showing Diagnostics panel overlay");
                 // Replace any existing diagnostics panel
                 self.diagnostics_panel = Some(panel.clone());
+                // Focus will be ensured by the diagnostics panel during render
                 // Subscribe to dismiss from panel via global dismiss event
                 cx.subscribe(&panel, |this, _panel, _ev: &DismissEvent, cx| {
                     this.diagnostics_panel = None;
