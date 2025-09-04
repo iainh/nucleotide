@@ -348,6 +348,8 @@ impl Workspace {
             needs_file_tree_refresh: false,
             delete_confirm_open: false,
             delete_confirm_path: None,
+            leader_active: false,
+            leader_deadline: None,
         };
 
         // Set initial focus restore state
@@ -1151,7 +1153,7 @@ impl Workspace {
 
         // Leader key handling: SPACE as prefix in Normal context
         if self.input_coordinator.current_context() == InputContext::Normal
-            && ev.keystroke.modifiers.is_empty()
+            && ev.keystroke.modifiers.number_of_modifiers() == 0
         {
             match ev.keystroke.key.as_str() {
                 "space" if !self.leader_active => {
