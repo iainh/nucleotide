@@ -26,22 +26,15 @@ pub enum LinuxControlType {
 }
 
 impl LinuxControlType {
-    pub fn lucide_icon_path(&self) -> &'static str {
+    pub fn asset_icon_path(&self) -> &'static str {
         match self {
-            // Lucide "minus" icon - perfect for minimize
-            LinuxControlType::Minimize => "M5 12h14",
-            // Lucide "copy" icon - represents restore/unmaximize
-            LinuxControlType::Restore => "m9 9 3-3m-3 3-3-3m3 3v6a3 3 0 0 1-3 3H9m3-3H6m3 3-3-3",
-            // Lucide "square" icon - perfect for maximize
-            LinuxControlType::Maximize => "M3 3h18v18H3z",
-            // Lucide "x" icon - perfect for close
-            LinuxControlType::Close => "M18 6 6 18M6 6l12 12",
-            // Lucide "chevron-up" icon - for window shade/roll up
-            LinuxControlType::Shade => "m18 15-6-6-6 6",
-            // Lucide "pin" icon - for keep on top
-            LinuxControlType::Pin => "M9 12l-2 2 2 2m0-4 2-2-2-2m0 4V9a3 3 0 0 1 3-3h3",
-            // Lucide "menu" icon - for window menu
-            LinuxControlType::Menu => "M3 12h18M3 6h18M3 18h18",
+            LinuxControlType::Minimize => "icons/window-minimize.svg",
+            LinuxControlType::Restore => "icons/window-restore.svg",
+            LinuxControlType::Maximize => "icons/window-maximize.svg",
+            LinuxControlType::Close => "icons/close.svg",
+            LinuxControlType::Shade => "icons/chevron-up.svg",
+            LinuxControlType::Pin => "icons/pin.svg",
+            LinuxControlType::Menu => "icons/menu.svg",
         }
     }
 
@@ -255,7 +248,7 @@ impl RenderOnce for LinuxWindowControl {
         let icon = svg()
             .size_4()
             .flex_none()
-            .path(self.control_type.lucide_icon_path())
+            .path(self.control_type.asset_icon_path())
             .text_color(self.style.icon)
             .group_hover("", |this| this.text_color(self.style.icon_hover));
 

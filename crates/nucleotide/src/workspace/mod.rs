@@ -3455,7 +3455,9 @@ impl Workspace {
                                 use nucleotide_events::v2::ui::OverlayType;
                                 match overlay_type {
                                     OverlayType::FilePicker => {
-                                        nucleotide_logging::info!("DIAG: Workspace observed OverlayShown(FilePicker)");
+                                        nucleotide_logging::info!(
+                                            "DIAG: Workspace observed OverlayShown(FilePicker)"
+                                        );
                                         let handle = self.handle.clone();
                                         let core = self.core.clone();
                                         open(core, handle, cx);
@@ -3463,7 +3465,9 @@ impl Workspace {
                                     OverlayType::CommandPalette => {
                                         // Only treat explicitly-tagged command palette as buffer picker
                                         if overlay_id == "buffer_picker" {
-                                            nucleotide_logging::info!("DIAG: Workspace observed OverlayShown(CommandPalette as buffer_picker)");
+                                            nucleotide_logging::info!(
+                                                "DIAG: Workspace observed OverlayShown(CommandPalette as buffer_picker)"
+                                            );
                                             let handle = self.handle.clone();
                                             let core = self.core.clone();
                                             show_buffer_picker(core, handle, cx);

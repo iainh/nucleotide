@@ -11,6 +11,7 @@
 - Run app: `cargo run -p nucleotide` (produces `nucl`).
 - Test all crates: `cargo test --all` (CI runs this).
 - Format check: `cargo fmt --all -- --check` (install hooks: `./scripts/install-hooks.sh`).
+- Linux setup: see `docs/linux_install.md` for distro prerequisites and runtime notes.
 - Architecture check: `./scripts/check-layering.sh`.
 - Dependency checks: `cargo deny check` and `cargo +nightly udeps --all-targets --workspace`.
 - macOS bundle: `./bundle-mac.sh` then `open Nucleotide.app`.
@@ -74,46 +75,7 @@
 - Token system: `crates/nucleotide-ui/src/tokens/README.md`
 - UI theming & providers: `crates/nucleotide-ui/src/{providers,theme_manager,advanced_theming}`
 
-## Version Control (jj + Git)
-- Purpose: jj (Jujutsu) provides easy stacked changes and rebases while keeping Git as the remote/CI source of truth.
-- New clones: `jj git clone <git-url> nucleotide && cd nucleotide` (creates a jj workspace backed by Git).
-- Existing Git clone: run `jj git import` once in the repo to initialize jj state.
-- Status & review:
-  - `jj status` (working copy + current change)
-  - `jj log -r ::@` (your stack) and `jj diff -s` (summary of current change)
-- Create/shape changes:
-  - Start a change: `jj new -m "feat: short message"` then edit files.
-  - Update message: `jj describe -m "refine: clearer message"`.
-  - Split or squash when cleaning up: `jj split` and `jj squash`.
-  - Rebase your stack on latest main: `jj git fetch && jj git import && jj rebase -d main -r ::@`.
-- Branches and publishing:
-  - Point a Git branch at the current change: `jj branch set my-branch -r @`.
-  - Push to remote: `jj git push -b my-branch` (updates the Git branch; CI/PRs see normal Git commits).
-  - Pull remote updates: `jj git fetch && jj git import`.
-- Conventions:
-  - Keep Conventional Commit prefixes (feat:, fix:, chore:, etc.) in `jj` change messages.
-  - Prefer small, reviewable stacks over large single changes; rebase/squash before pushing.
-  - Teammates can continue to use plain Git; jj changes appear as normal Git commits/branches.
-
-### jj Config (recommended)
-- Scope: add to user config `~/.jjconfig` (applies everywhere) or set per-repo via `jj config set --repo ...`.
-- Minimal TOML snippet:
-  ```toml
-  [ui]
-  # Show a compact graph by default in `jj log`
-  default-command = "log"
-
-  [aliases]
-  # My stack (ancestors and descendants of the current change)
-  l = ["log", "-r", "::@", "-T", "builtin_log_detailed"]
-  # Quick summary of current change
-  d = ["diff", "-s"]
-  # Rebase current stack onto main
-  rebase-stack = ["rebase", "-d", "main", "-r", "::@"]
-  # Show heads for your stack (useful before pushing)
-  heads = ["log", "-r", "heads(::@) - hidden()", "-T", "builtin_log_compact"]
-  ```
-- Or set via commands (repo-scoped):
-  - `jj config set --repo aliases.l '["log", "-r", "::@", "-T", "builtin_log_detailed"]'`
-  - `jj config set --repo aliases.d '["diff", "-s"]'`
-  - `jj config set --repo aliases.rebase-stack '["rebase", "-d", "main", "-r", "::@"]'`
+## Version Control
+- Use standard Git for committing, branching, and pushing.
+- Keep Conventional Commit prefixes (feat:, fix:, chore:, etc.) in commit messages.
+- Prefer small, reviewable changes and keep branches up to date with main.

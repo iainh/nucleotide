@@ -20,12 +20,12 @@ pub enum WindowControlType {
 }
 
 impl WindowControlType {
-    pub fn icon_path(&self) -> &'static str {
+    pub fn asset_icon_path(&self) -> &'static str {
         match self {
-            WindowControlType::Minimize => "M 2 7 L 10 7",
-            WindowControlType::Restore => "M 2 2 L 8 2 L 8 8 L 2 8 Z M 4 4 L 10 4 L 10 10 L 4 10",
-            WindowControlType::Maximize => "M 2 2 L 10 2 L 10 10 L 2 10 Z",
-            WindowControlType::Close => "M 2 2 L 10 10 M 10 2 L 2 10",
+            WindowControlType::Minimize => "icons/window-minimize.svg",
+            WindowControlType::Restore => "icons/window-restore.svg",
+            WindowControlType::Maximize => "icons/window-maximize.svg",
+            WindowControlType::Close => "icons/close.svg",
         }
     }
 }
@@ -202,7 +202,7 @@ impl RenderOnce for WindowControl {
         let icon = svg()
             .size_4()
             .flex_none()
-            .path(self.control_type.icon_path())
+            .path(self.control_type.asset_icon_path())
             .text_color(self.style.icon)
             .group_hover("", |this| this.text_color(self.style.icon_hover));
 
