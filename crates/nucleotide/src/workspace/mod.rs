@@ -3319,11 +3319,13 @@ impl Workspace {
                 self.handle_file_tree_event(event, cx);
             }
             crate::Update::ShowFilePicker => {
+                nucleotide_logging::info!("DIAG: Workspace received ShowFilePicker");
                 let handle = self.handle.clone();
                 let core = self.core.clone();
                 open(core, handle, cx);
             }
             crate::Update::ShowBufferPicker => {
+                nucleotide_logging::info!("DIAG: Workspace received ShowBufferPicker");
                 let handle = self.handle.clone();
                 let core = self.core.clone();
                 show_buffer_picker(core, handle, cx);
@@ -3421,9 +3423,7 @@ impl Workspace {
                             } => {
                                 self.handle_completion_requested(*doc_id, *view_id, trigger, cx);
                             }
-                            _ => {
-                                // Other core events not yet handled
-                            }
+                            _ => {}
                         }
                     }
                     crate::types::AppEvent::Workspace(workspace_event) => {
@@ -3443,9 +3443,7 @@ impl Workspace {
                                     }
                                 }
                             }
-                            _ => {
-                                // Other workspace events not yet handled
-                            }
+                            _ => {}
                         }
                     }
                     crate::types::AppEvent::Ui(ui_event) => {
@@ -3457,6 +3455,7 @@ impl Workspace {
                                 use nucleotide_events::v2::ui::OverlayType;
                                 match overlay_type {
                                     OverlayType::FilePicker => {
+                                        nucleotide_logging::info!("DIAG: Workspace observed OverlayShown(FilePicker)");
                                         let handle = self.handle.clone();
                                         let core = self.core.clone();
                                         open(core, handle, cx);
@@ -3464,6 +3463,7 @@ impl Workspace {
                                     OverlayType::CommandPalette => {
                                         // Only treat explicitly-tagged command palette as buffer picker
                                         if overlay_id == "buffer_picker" {
+                                            nucleotide_logging::info!("DIAG: Workspace observed OverlayShown(CommandPalette as buffer_picker)");
                                             let handle = self.handle.clone();
                                             let core = self.core.clone();
                                             show_buffer_picker(core, handle, cx);
@@ -5926,8 +5926,7 @@ impl Render for Workspace {
 
         // Handle focus restoration if needed
         if self.view_manager.needs_focus_restore() {
-            // ALWAYS focus the workspace for key handling, not individual document views
-            // The InputCoordinator will handle routing keys to the appropriate context
+            // Focus the workspace; input routing will handle contexts
             window.focus(&self.focus_handle);
             self.view_manager.set_needs_focus_restore(false);
         }

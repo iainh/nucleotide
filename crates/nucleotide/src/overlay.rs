@@ -161,6 +161,7 @@ impl OverlayView {
     pub fn handle_event(&mut self, ev: &crate::Update, cx: &mut Context<Self>) {
         match ev {
             crate::Update::Prompt(prompt) => {
+                nucleotide_logging::info!("DIAG: Overlay Update::Prompt received");
                 match prompt {
                     Prompt::Native {
                         prompt: prompt_text,
@@ -289,6 +290,7 @@ impl OverlayView {
                 cx.notify();
             }
             crate::Update::Completion(completion_view) => {
+                nucleotide_logging::info!("DIAG: Overlay Update::Completion received");
                 nucleotide_logging::info!(
                     "🎨 OVERLAY RECEIVED COMPLETION VIEW: Setting up completion overlay"
                 );
@@ -332,7 +334,7 @@ impl OverlayView {
             }
             crate::Update::DiagnosticsPanel(panel) => {
                 nucleotide_logging::info!("DIAG: Showing Diagnostics panel overlay");
-                // Replace any existing diagnostics panel
+                // Replace any existing diagnostics panel (do not clear other overlays here; overlay render ordering handles precedence)
                 self.diagnostics_panel = Some(panel.clone());
                 // Focus will be ensured by the diagnostics panel during render
                 // Subscribe to dismiss from panel via global dismiss event
@@ -403,6 +405,9 @@ impl OverlayView {
                 cx.notify();
             }
             crate::Update::Picker(picker) => {
+                nucleotide_logging::info!("DIAG: Overlay Update::Picker received");
+                // Clear any diagnostics panel if present to avoid overlay conflicts
+                self.diagnostics_panel = None;
                 // Clean up any existing picker before creating a new one
                 if let Some(existing_picker) = &self.native_picker_view {
                     existing_picker.update(cx, |picker, cx| {
@@ -814,6 +819,9 @@ impl OverlayView {
                                     (on_select)(index);
                                 }
 
+                                // Proactively dismiss the picker first so focus can restore immediately
+                                picker_cx.emit(gpui::DismissEvent);
+
                                 // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
                                 if let Some((doc_id, _path)) = selected_item.data.downcast_ref::<(
                                     helix_view::DocumentId,
@@ -856,9 +864,7 @@ impl OverlayView {
                                         });
                                     }
                                 }
-
-                                // Dismiss the picker after selection
-                                picker_cx.emit(gpui::DismissEvent);
+                                // (Picker was already dismissed above)
                             });
 
                             // Set up the cancel callback
@@ -1199,6 +1205,7 @@ impl Focusable for OverlayView {
         // Delegate focus to the active native component, but not completion views
         // Completion views should not steal focus - let the editor maintain focus
         if let Some(picker_view) = &self.native_picker_view {
+            nucleotide_logging::info!("DIAG: Render overlay branch: picker");
             picker_view.focus_handle(cx)
         } else if let Some(prompt_view) = &self.native_prompt_view {
             prompt_view.focus_handle(cx)
@@ -1242,6 +1249,7 @@ impl Render for OverlayView {
         }
 
         if let Some(prompt_view) = &self.native_prompt_view {
+            nucleotide_logging::info!("DIAG: Render overlay branch: prompt");
             // Render prompt with design tokens and consistent overlay patterns
             let theme = cx.theme();
             let tokens = &theme.tokens;
@@ -1269,6 +1277,7 @@ impl Render for OverlayView {
         }
 
         if let Some(diag_panel) = &self.diagnostics_panel {
+            nucleotide_logging::info!("DIAG: Render overlay branch: diagnostics");
             let theme = cx.theme();
             let tokens = &theme.tokens;
 
@@ -1279,7 +1288,17 @@ impl Render for OverlayView {
                 .bottom_0()
                 .left_0()
                 .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                // Clicking outside the diagnostics panel dismisses it and restores editor focus group
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this: &mut OverlayView, _e, window, cx| {
+                        // Release focus from overlay elements before dismissing
+                        window.disable_focus();
+                        this.diagnostics_panel = None;
+                        cx.emit(DismissEvent);
+                        cx.notify();
+                    }),
+                )
                 .child(
                     div()
                         .flex()
@@ -1287,12 +1306,15 @@ impl Render for OverlayView {
                         .justify_center()
                         .items_start()
                         .pt(tokens.sizes.space_8)
+                        // Consume clicks inside the panel area so they don't bubble to the overlay
+                        .on_mouse_down(MouseButton::Left, |_, _, _| {})
                         .child(diag_panel.clone()),
                 )
                 .into_any_element();
         }
 
         if let Some(completion_view) = &self.completion_view {
+            nucleotide_logging::info!("DIAG: Render overlay branch: completion");
             use gpui::{Corner, anchored, point};
 
             // Calculate proper completion position based on cursor location
@@ -1358,6 +1380,7 @@ impl Render for OverlayView {
         }
 
         // Empty overlay using design tokens
+        nucleotide_logging::info!("DIAG: Render overlay branch: none");
         div().size_0().into_any_element()
     }
 }

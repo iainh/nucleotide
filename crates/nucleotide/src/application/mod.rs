@@ -2770,6 +2770,14 @@ impl Application {
                                     );
                                 }
                             }
+                            event_bridge::BridgedEvent::FilePickerRequested => {
+                                info!("DIAG: FilePickerRequested received - emitting ShowFilePicker");
+                                cx.emit(crate::Update::ShowFilePicker);
+                            }
+                            event_bridge::BridgedEvent::BufferPickerRequested => {
+                                info!("DIAG: BufferPickerRequested received - emitting ShowBufferPicker");
+                                cx.emit(crate::Update::ShowBufferPicker);
+                            }
                             event_bridge::BridgedEvent::LanguageServerInitialized { server_id } => {
                                 info!(
                                     server_id = ?server_id,

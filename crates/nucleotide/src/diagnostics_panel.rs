@@ -234,13 +234,15 @@ impl Render for DiagnosticsPanel {
             let row = div()
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this: &mut DiagnosticsPanel, _e, _w, cx| {
+                    cx.listener(move |this: &mut DiagnosticsPanel, _e, window, cx| {
                         nucleotide_logging::info!(
                             path = %path_for_event.display(),
                             offset = offset,
                             "DIAG: DiagnosticsPanel item clicked"
                         );
                         this.selected_index = idx_here;
+                        // Drop focus immediately so the editor can regain it after dismissal
+                        window.disable_focus();
                         cx.emit(DiagnosticsJumpEvent {
                             path: path_for_event.clone(),
                             offset,
@@ -265,8 +267,14 @@ impl Render for DiagnosticsPanel {
             .child(div().child(""))
             .child(div().child(count_text));
 
-        // Container styling similar to file picker
+        // Container styling using design tokens (match picker style and font)
         let modal_tokens = &cx.theme().tokens;
+        let ui_font = cx
+            .global::<nucleotide_types::FontSettings>()
+            .var_font
+            .clone()
+            .into();
+        let ui_text_size = px(cx.global::<nucleotide_types::UiFontConfig>().size);
         let container = div()
             .key_context("DiagnosticsPicker")
             .w(gpui::px(900.0))
@@ -276,11 +284,13 @@ impl Render for DiagnosticsPanel {
             .border_color(modal_tokens.picker_tokens().border)
             .rounded_md()
             .shadow_lg()
+            .font(ui_font)
+            .text_size(ui_text_size)
             .overflow_hidden()
             .flex()
             .flex_col()
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
                     "up" => {
                         if this.selected_index > 0 {
@@ -354,6 +364,8 @@ impl Render for DiagnosticsPanel {
                                 .map(|p| p.to_path_buf())
                                 .unwrap_or_else(|| std::path::PathBuf::from(uri.to_string()));
                             let offset = info.diagnostic.range.start;
+                            // Drop focus immediately so the editor can regain it after dismissal
+                            window.disable_focus();
                             cx.emit(DiagnosticsJumpEvent {
                                 path: path_for_event,
                                 offset,

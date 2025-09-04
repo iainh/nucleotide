@@ -127,6 +127,14 @@ impl ApplicationCore {
 
                 self.document_handler.handle(v2_event).await?;
             }
+            event_bridge::BridgedEvent::FilePickerRequested => {
+                // Forward to main application loop with GPUI context
+                // The main loop in application/mod.rs handles Update::ShowFilePicker
+            }
+            event_bridge::BridgedEvent::BufferPickerRequested => {
+                // Forward to main application loop with GPUI context
+                // The main loop in application/mod.rs handles Update::ShowBufferPicker
+            }
             event_bridge::BridgedEvent::DiagnosticsPickerRequested { .. } => {
                 // Handled in Application main loop with GPUI context
             }

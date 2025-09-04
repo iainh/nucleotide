@@ -54,6 +54,10 @@ pub enum BridgedEvent {
     DiagnosticsPickerRequested {
         workspace: bool,
     },
+    /// Request to show file picker (mapped from Helix keybindings)
+    FilePickerRequested,
+    /// Request to show buffer picker (mapped from Helix keybindings)
+    BufferPickerRequested,
     /// LSP server startup requested for a project
     LspServerStartupRequested {
         workspace_root: std::path::PathBuf,
@@ -314,6 +318,21 @@ pub fn register_event_hooks() {
                 "DIAG: Diagnostics picker command observed"
             );
             send_bridged_event(BridgedEvent::DiagnosticsPickerRequested { workspace });
+        }
+
+        // Map file/buffer picker commands
+        if let MappableCommand::Static { name, .. } = event.command {
+            match *name {
+                "file_picker" => {
+                    info!("DIAG: File picker command observed");
+                    send_bridged_event(BridgedEvent::FilePickerRequested);
+                }
+                "buffer_picker" => {
+                    info!("DIAG: Buffer picker command observed");
+                    send_bridged_event(BridgedEvent::BufferPickerRequested);
+                }
+                _ => {}
+            }
         }
         Ok(())
     });
