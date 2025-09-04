@@ -1021,6 +1021,19 @@ impl Workspace {
         // Check if completion is visible and handle navigation/control keys
         if self.overlay.read(cx).has_completion() {
             match ev.keystroke.key.as_str() {
+                // Accept with Enter when showing code actions dropdown
+                "enter" => {
+                    let accept_with_enter = self.overlay.read(cx).has_code_actions();
+                    if accept_with_enter {
+                        nucleotide_logging::info!("Accepting code action via Enter key");
+                        let handled = self
+                            .overlay
+                            .update(cx, |overlay, cx| overlay.handle_completion_enter_key(cx));
+                        if handled {
+                            return;
+                        }
+                    }
+                }
                 "up" | "down" => {
                     nucleotide_logging::info!(
                         key = %ev.keystroke.key,

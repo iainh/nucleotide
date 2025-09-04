@@ -61,6 +61,11 @@ impl OverlayView {
         self.completion_view.is_some()
     }
 
+    /// Whether the current completion popup represents a Code Actions list
+    pub fn has_code_actions(&self) -> bool {
+        self.code_action_pairs.is_some()
+    }
+
     pub fn has_picker(&self) -> bool {
         self.native_picker_view.is_some()
     }
@@ -128,6 +133,12 @@ impl OverlayView {
         } else {
             false // No completion view to handle the key
         }
+    }
+
+    /// Handle Enter key for accepting the highlighted item in completion/code-action popup
+    pub fn handle_completion_enter_key(&self, cx: &mut Context<Self>) -> bool {
+        // Reuse the same acceptance flow as Tab
+        self.handle_completion_tab_key(cx)
     }
 
     pub fn get_completion_item(
