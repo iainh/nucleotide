@@ -101,15 +101,17 @@ impl VcsIcon {
     }
 
     /// Get the VCS status indicator color using design system colors
+    /// Use editor VCS token colors so indicators match gutter, file tree, and tabs
     fn get_vcs_status_color(&self, theme: &Theme) -> Option<Hsla> {
+        let dt = &theme.tokens;
         match &self.vcs_status {
-            Some(VcsStatus::Modified) => Some(theme.warning),
-            Some(VcsStatus::Added) => Some(theme.success),
-            Some(VcsStatus::Deleted) => Some(theme.error),
-            Some(VcsStatus::Untracked) => Some(theme.text_muted),
-            Some(VcsStatus::Renamed) => Some(theme.tokens.chrome.primary),
-            Some(VcsStatus::Conflicted) => Some(theme.error),
-            Some(VcsStatus::Unknown) => Some(theme.text_muted),
+            Some(VcsStatus::Modified) => Some(dt.editor.vcs_modified),
+            Some(VcsStatus::Added) => Some(dt.editor.vcs_added),
+            Some(VcsStatus::Deleted) => Some(dt.editor.vcs_deleted),
+            Some(VcsStatus::Untracked) => Some(dt.chrome.text_chrome_secondary),
+            Some(VcsStatus::Renamed) => Some(dt.chrome.primary),
+            Some(VcsStatus::Conflicted) => Some(dt.editor.error),
+            Some(VcsStatus::Unknown) => Some(dt.chrome.text_chrome_secondary),
             Some(VcsStatus::Clean) | None => None,
         }
     }
