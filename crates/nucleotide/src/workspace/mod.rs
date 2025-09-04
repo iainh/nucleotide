@@ -7124,7 +7124,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
         let picker = crate::picker::Picker::native("Code Actions", items, move |index| {
             if let Some(core) = core_weak.upgrade() {
                 let pairs = pairs_arc.clone();
-                core.update_in(|core| {
+                core.update_in(|core: &mut Core| {
                     // Safety: index from picker selection is within bounds
                     if let Some((ref action, ls_id, offset)) = pairs.get(index) {
                         // Find language server by id
