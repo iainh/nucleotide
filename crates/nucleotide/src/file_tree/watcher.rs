@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
-use nucleotide_logging::warn;
+use nucleotide_logging::{debug, info, warn};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -60,7 +60,15 @@ impl FileTreeWatcher {
         while let Some(event_result) = self.event_receiver.recv().await {
             match event_result {
                 Ok(event) => {
+                    // Log raw notify event details
+                    debug!(
+                        kind = ?event.kind,
+                        paths = ?event.paths,
+                        "notify event received"
+                    );
+
                     if let Some(file_tree_event) = self.convert_event(event) {
+                        debug!(evt = ?file_tree_event, "converted file tree event");
                         return Some(file_tree_event);
                     }
                 }
@@ -153,22 +161,50 @@ impl FileTreeWatcher {
         // Filter out events for paths outside our root
         let paths: Vec<_> = event
             .paths
+            .iter()
+            .filter(|path| path.starts_with(&self.root_path))
+            .cloned()
+            .collect();
+
+        // Log pre-filter existence and ignore decisions
+        for p in &paths {
+            let exists = p.exists();
+            let ignored = self.should_ignore_path(p);
+            debug!(
+                path = %p.display(),
+                exists = exists,
+                ignored = ignored,
+                "event path status"
+            );
+        }
+
+        let paths: Vec<_> = paths
             .into_iter()
-            .filter(|path| path.starts_with(&self.root_path) && !self.should_ignore_path(path))
+            .filter(|path| !self.should_ignore_path(path))
             .collect();
 
         if paths.is_empty() {
             return None;
         }
 
+        // Handle rename specially when we have at least two paths
+        // Notify represents rename as a Modify(Name(...)) event kind.
+        // We map that to a Renamed event when possible.
+        if matches!(event.kind, EventKind::Modify(_)) && paths.len() >= 2 {
+            debug!(from = %paths[0].display(), to = %paths[1].display(), "mapping rename event");
+            return Some(FileTreeEvent::FileSystemChanged {
+                path: paths[1].clone(),
+                kind: FileSystemEventKind::Renamed {
+                    from: paths[0].clone(),
+                    to: paths[1].clone(),
+                },
+            });
+        }
+
         let kind = match event.kind {
             EventKind::Create(_) => FileSystemEventKind::Created,
-            EventKind::Modify(_) => FileSystemEventKind::Modified,
             EventKind::Remove(_) => FileSystemEventKind::Deleted,
-            _ => {
-                // For other event types, just treat as modified
-                FileSystemEventKind::Modified
-            }
+            _ => FileSystemEventKind::Modified,
         };
 
         // Use the first path as the main path for the event
@@ -222,7 +258,11 @@ impl DebouncedFileTreeWatcher {
                 && let Some(last_time) = self.last_event_time
                 && last_time.elapsed() >= self.debounce_duration
             {
-                return self.flush_pending_events();
+                let evt = self.flush_pending_events();
+                if let Some(ref e) = evt {
+                    debug!(evt = ?e, remaining = self.pending_events.len(), "debounce flush emitted event");
+                }
+                return evt;
             }
 
             // Wait for new events with a small timeout to check debounce
@@ -247,26 +287,91 @@ impl DebouncedFileTreeWatcher {
         }
     }
 
-    /// Handle a new file system event
+    /// Handle a new file system event with coalescing to preserve semantics
     fn handle_new_event(&mut self, event: FileTreeEvent) {
-        if let FileTreeEvent::FileSystemChanged { path, kind } = event {
-            // Store the latest event for this path
-            self.pending_events.insert(
-                path.clone(),
-                FileTreeEvent::FileSystemChanged { path, kind },
-            );
+        if let FileTreeEvent::FileSystemChanged { path, .. } = &event {
+            if let Some(prev) = self.pending_events.get(path) {
+                let merged = merge_events(prev, &event);
+                self.pending_events.insert(path.clone(), merged);
+                debug!(
+                    pending = self.pending_events.len(),
+                    "coalesced pending event"
+                );
+            } else {
+                self.pending_events.insert(path.clone(), event);
+                debug!(
+                    pending = self.pending_events.len(),
+                    "queued new pending event"
+                );
+            }
         }
     }
 
-    /// Flush pending events and return the next one
+    /// Flush pending events and return a single next event without discarding others
+    ///
+    /// Previously this drained the entire pending set and returned only one event,
+    /// dropping the rest. That could miss fast create→delete sequences (e.g.,
+    /// atomic-save backup files), leaving stale entries in the tree. This now
+    /// removes and returns just one event at a time, preserving the remainder
+    /// for subsequent flushes.
     fn flush_pending_events(&mut self) -> Option<FileTreeEvent> {
         self.last_event_time = None;
 
-        if let Some((_, event)) = self.pending_events.drain().next() {
-            Some(event)
-        } else {
-            None
+        if let Some(key) = self.pending_events.keys().next().cloned() {
+            let remaining_before = self.pending_events.len();
+            let out = self.pending_events.remove(&key);
+            debug!(
+                remaining_after = remaining_before.saturating_sub(1),
+                "flushed one pending event"
+            );
+            return out;
         }
+        None
+    }
+}
+
+/// Coalesce two file events for the same path preserving the strongest effect.
+fn merge_events(prev: &FileTreeEvent, next: &FileTreeEvent) -> FileTreeEvent {
+    use crate::file_tree::FileSystemEventKind as K;
+    let (p_kind, p_path) = match prev {
+        FileTreeEvent::FileSystemChanged { path, kind } => (kind, path),
+        _ => return next.clone(),
+    };
+    let (n_kind, n_path) = match next {
+        FileTreeEvent::FileSystemChanged { path, kind } => (kind, path),
+        _ => return next.clone(),
+    };
+
+    if p_path != n_path {
+        return next.clone();
+    }
+
+    let rank = |k: &K| match k {
+        K::Deleted => 3,
+        K::Renamed { .. } => 2,
+        K::Created => 1,
+        K::Modified => 0,
+    };
+
+    match (p_kind, n_kind) {
+        // Created then Deleted => Deleted
+        (K::Created, K::Deleted) => FileTreeEvent::FileSystemChanged {
+            path: n_path.clone(),
+            kind: K::Deleted,
+        },
+        // Deleted then Created => Created (recreated)
+        (K::Deleted, K::Created) => FileTreeEvent::FileSystemChanged {
+            path: n_path.clone(),
+            kind: K::Created,
+        },
+        // Deleted then Modified => keep Deleted
+        (K::Deleted, K::Modified) => FileTreeEvent::FileSystemChanged {
+            path: n_path.clone(),
+            kind: K::Deleted,
+        },
+        // Otherwise prefer higher-precedence, or the incoming on tie
+        _ if rank(n_kind) >= rank(p_kind) => next.clone(),
+        _ => prev.clone(),
     }
 }
 

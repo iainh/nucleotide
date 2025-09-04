@@ -782,8 +782,14 @@ impl FileTreeView {
                 debug!(parent = ?parent, is_expanded = is_expanded, "Parent directory expansion status");
             }
 
-            // Store the latest event for this path
-            self.pending_fs_events.insert(path.clone(), event);
+            // Coalesce with any pending event for this path to avoid losing deletes/renames
+            if let Some(prev) = self.pending_fs_events.get(path) {
+                let merged = Self::merge_fs_events(prev, &event);
+                debug!(prev = ?prev, new = ?event, merged = ?merged, "Coalesced FS event");
+                self.pending_fs_events.insert(path.clone(), merged);
+            } else {
+                self.pending_fs_events.insert(path.clone(), event);
+            }
             self.last_fs_event_time = Some(std::time::Instant::now());
 
             // Schedule a debounced processing after 300ms
@@ -962,6 +968,13 @@ impl FileTreeView {
     fn handle_file_modified(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
         debug!(path = ?path, "Handling file modification");
 
+        // If it no longer exists on disk, treat as deletion
+        if !path.exists() {
+            debug!(path = ?path, "Modified event but path missing on disk; treating as deletion");
+            self.handle_file_deleted(path, cx);
+            return;
+        }
+
         // Check if this file exists in the tree
         if let Some(_existing_entry) = self.tree.entry_by_path(path) {
             // File exists in tree - this is a genuine modification
@@ -982,6 +995,48 @@ impl FileTreeView {
             } else {
                 debug!(path = ?path, "File doesn't exist on disk or in tree, ignoring");
             }
+        }
+    }
+
+    /// Coalesce two file-system events for the same path using precedence:
+    /// Deleted > Renamed > Created > Modified
+    fn merge_fs_events(prev: &FileTreeEvent, next: &FileTreeEvent) -> FileTreeEvent {
+        use crate::file_tree::FileSystemEventKind as K;
+        let (p_kind, p_path) = match prev {
+            FileTreeEvent::FileSystemChanged { path, kind } => (kind, path),
+            _ => return next.clone(),
+        };
+        let (n_kind, n_path) = match next {
+            FileTreeEvent::FileSystemChanged { path, kind } => (kind, path),
+            _ => return next.clone(),
+        };
+
+        if p_path != n_path {
+            return next.clone();
+        }
+
+        let rank = |k: &K| match k {
+            K::Deleted => 3,
+            K::Renamed { .. } => 2,
+            K::Created => 1,
+            K::Modified => 0,
+        };
+
+        match (p_kind, n_kind) {
+            (K::Created, K::Deleted) => FileTreeEvent::FileSystemChanged {
+                path: n_path.clone(),
+                kind: K::Deleted,
+            },
+            (K::Deleted, K::Created) => FileTreeEvent::FileSystemChanged {
+                path: n_path.clone(),
+                kind: K::Created,
+            },
+            (K::Deleted, K::Modified) => FileTreeEvent::FileSystemChanged {
+                path: n_path.clone(),
+                kind: K::Deleted,
+            },
+            _ if rank(n_kind) >= rank(p_kind) => next.clone(),
+            _ => prev.clone(),
         }
     }
 
