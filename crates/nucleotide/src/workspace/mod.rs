@@ -6865,6 +6865,197 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
     });
 }
 
+fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
+    use futures_util::stream::{FuturesOrdered, StreamExt};
+    use helix_lsp::lsp;
+    use helix_lsp::util::{diagnostic_to_lsp_diagnostic, range_to_lsp_range};
+
+    info!("Opening code actions picker");
+
+    // Snapshot needed editor state under read lock
+    let (doc_id, view_id, offset_encoding, identifier, range, diags, servers): (
+        helix_view::DocumentId,
+        helix_view::ViewId,
+        helix_lsp::OffsetEncoding,
+        lsp::TextDocumentIdentifier,
+        lsp::Range,
+        Vec<helix_core::diagnostic::Diagnostic>,
+        Vec<helix_view::handlers::lsp::LanguageServerHandle>,
+    ) = {
+        let core_r = core.read(cx);
+        let editor = &core_r.editor;
+        let view = editor.tree.get(editor.tree.focus);
+        let doc = editor.documents.get(&view.doc).expect("doc exists");
+
+        let selection_range = doc.selection(view.id).primary();
+        let diags = doc
+            .diagnostics()
+            .iter()
+            .filter(|d| {
+                selection_range.overlaps(&helix_core::Range::new(d.range.start, d.range.end))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        // Collect unique servers supporting CodeAction
+        let mut seen = std::collections::HashSet::new();
+        let servers: Vec<_> = doc
+            .language_servers_with_feature(
+                helix_view::handlers::lsp::LanguageServerFeature::CodeAction,
+            )
+            .filter(|ls| seen.insert(ls.id()))
+            .collect();
+
+        let offset_encoding = servers
+            .get(0)
+            .map(|ls| ls.offset_encoding())
+            .unwrap_or_default();
+        let identifier = doc.identifier();
+        let range = range_to_lsp_range(doc.text(), selection_range, offset_encoding);
+
+        (
+            view.doc,
+            view.id,
+            offset_encoding,
+            identifier,
+            range,
+            diags,
+            servers,
+        )
+    };
+
+    if servers.is_empty() {
+        info!("No language servers with CodeAction support");
+        return;
+    }
+
+    // Build per-server requests
+    let doc_text_for_diag = {
+        let core_r = core.read(cx);
+        // Safe: doc exists
+        core_r.editor.documents.get(&doc_id).unwrap().text().clone()
+    };
+
+    let mut futures: FuturesOrdered<_> = servers
+        .into_iter()
+        .filter_map(|ls| {
+            let offset = ls.offset_encoding();
+            let ctx = lsp::CodeActionContext {
+                diagnostics: diags
+                    .iter()
+                    .map(|d| diagnostic_to_lsp_diagnostic(&doc_text_for_diag, d, offset))
+                    .collect(),
+                only: None,
+                trigger_kind: Some(lsp::CodeActionTriggerKind::INVOKED),
+            };
+            let req = ls.code_actions(identifier.clone(), range, ctx)?;
+            Some(async move {
+                req.await
+                    .map(|opt| (opt.unwrap_or_default(), ls.id(), offset))
+            })
+        })
+        .collect();
+
+    // Spawn async collection job
+    let core_weak = core.downgrade();
+    cx.spawn(|_this, cx| async move {
+        let mut items: Vec<crate::picker_view::PickerItem> = Vec::new();
+        // Store paired action + server metadata alongside items for on_select
+        let mut pairs: Vec<(
+            lsp::CodeActionOrCommand,
+            helix_core::diagnostic::LanguageServerId,
+            helix_lsp::OffsetEncoding,
+        )> = Vec::new();
+
+        while let Some(result) = futures.next().await {
+            match result {
+                Ok((mut actions, ls_id, offset)) => {
+                    // Drop disabled actions
+                    actions.retain(|a| match a {
+                        lsp::CodeActionOrCommand::CodeAction(ca) => ca.disabled.is_none(),
+                        _ => true,
+                    });
+
+                    for action in actions.into_iter() {
+                        let label = match &action {
+                            lsp::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
+                            lsp::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
+                        };
+                        let item = crate::picker_view::PickerItem::new(label.clone())
+                            .with_sublabel(None)
+                            .with_data(std::sync::Arc::new(label)
+                                as std::sync::Arc<dyn std::any::Any + Send + Sync>);
+                        items.push(item);
+                        pairs.push((action, ls_id, offset));
+                    }
+                }
+                Err(err) => {
+                    warn!(error = %err, "Error collecting code actions from server");
+                }
+            }
+        }
+
+        // If none, exit with a notification
+        if items.is_empty() {
+            if let Some(core) = core_weak.upgrade() {
+                core.update(cx, |_core, cx| {
+                    cx.emit(crate::Update::EditorStatus(
+                        nucleotide_types::EditorStatus::info("No code actions available"),
+                    ));
+                });
+            }
+            return;
+        }
+
+        // Build picker and wire selection to apply action
+        let pairs_arc = std::sync::Arc::new(pairs);
+        let picker = crate::picker::Picker::native("Code Actions", items, move |index| {
+            if let Some(core) = core_weak.upgrade() {
+                let pairs = pairs_arc.clone();
+                core.update_in(|core| {
+                    // Safety: index from picker selection is within bounds
+                    if let Some((ref action, ls_id, offset)) = pairs.get(index) {
+                        // Find language server by id
+                        if let Some(ls) = core.editor.language_server_by_id(*ls_id) {
+                            match action {
+                                lsp::CodeActionOrCommand::Command(command) => {
+                                    core.editor.execute_lsp_command(command.clone(), *ls_id);
+                                }
+                                lsp::CodeActionOrCommand::CodeAction(ca) => {
+                                    // Resolve if missing edit or command
+                                    let mut resolved: Option<lsp::CodeAction> = None;
+                                    if ca.edit.is_none() || ca.command.is_none() {
+                                        if let Some(fut) = ls.resolve_code_action(ca) {
+                                            if let Ok(c) = helix_lsp::block_on(fut) {
+                                                resolved = Some(c);
+                                            }
+                                        }
+                                    }
+                                    let action_ref = resolved.as_ref().unwrap_or(ca);
+                                    if let Some(edit) = &action_ref.edit {
+                                        let _ = core.editor.apply_workspace_edit(offset, edit);
+                                    }
+                                    if let Some(cmd) = &action_ref.command {
+                                        core.editor.execute_lsp_command(cmd.clone(), *ls_id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        // Emit picker into overlay
+        if let Some(core) = core_weak.upgrade() {
+            core.update(cx, |_core, cx| {
+                cx.emit(crate::Update::Picker(picker));
+            });
+        }
+    })
+    .detach();
+}
+
 fn test_prompt(core: Entity<Core>, handle: tokio::runtime::Handle, cx: &mut App) {
     // Create and emit a native prompt for testing
     core.update(cx, move |core, cx| {
