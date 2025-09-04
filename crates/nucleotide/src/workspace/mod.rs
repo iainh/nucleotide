@@ -21,6 +21,7 @@ use gpui::{
     TextStyle, Window, WindowAppearance, WindowBackgroundAppearance, black, div, px, white,
 };
 use helix_core::Selection;
+use helix_core::syntax::config::LanguageServerFeature;
 use helix_view::ViewId;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
@@ -6930,15 +6931,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
     info!("Opening code actions picker");
 
     // Snapshot needed editor state under read lock
-    let (doc_id, view_id, offset_encoding, identifier, range, diags, servers): (
-        helix_view::DocumentId,
-        helix_view::ViewId,
-        helix_lsp::OffsetEncoding,
-        lsp::TextDocumentIdentifier,
-        lsp::Range,
-        Vec<helix_core::diagnostic::Diagnostic>,
-        Vec<helix_view::handlers::lsp::LanguageServerHandle>,
-    ) = {
+    let (doc_id, view_id, offset_encoding, identifier, range, diags, servers) = {
         let core_r = core.read(cx);
         let editor = &core_r.editor;
         let view = editor.tree.get(editor.tree.focus);
@@ -6957,9 +6950,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
         // Collect unique servers supporting CodeAction
         let mut seen = std::collections::HashSet::new();
         let servers: Vec<_> = doc
-            .language_servers_with_feature(
-                helix_view::handlers::lsp::LanguageServerFeature::CodeAction,
-            )
+            .language_servers_with_feature(LanguageServerFeature::CodeAction)
             .filter(|ls| seen.insert(ls.id()))
             .collect();
 
