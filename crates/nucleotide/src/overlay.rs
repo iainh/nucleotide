@@ -4,7 +4,6 @@ use gpui::{
     div, px,
 };
 use helix_stdx::rope::RopeSliceExt;
-
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
 use nucleotide_ui::picker::Picker;
@@ -18,6 +17,13 @@ pub struct OverlayView {
     native_picker_view: Option<Entity<PickerView>>,
     native_prompt_view: Option<Entity<PromptView>>,
     completion_view: Option<Entity<CompletionView>>,
+    code_action_pairs: Option<
+        Vec<(
+            helix_lsp::lsp::CodeActionOrCommand,
+            helix_core::diagnostic::LanguageServerId,
+            helix_lsp::OffsetEncoding,
+        )>,
+    >,
     diagnostics_panel: Option<Entity<crate::DiagnosticsPanel>>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
@@ -30,6 +36,7 @@ impl OverlayView {
             native_picker_view: None,
             native_prompt_view: None,
             completion_view: None,
+            code_action_pairs: None,
             diagnostics_panel: None,
             focus: focus.clone(),
             core: core.downgrade(),
@@ -326,6 +333,85 @@ impl OverlayView {
                         // IMPORTANT: Don't dismiss yet - let workspace handle completion first
                         // The workspace will call dismiss_completion() after successful text insertion
                         nucleotide_logging::info!("Completion acceptance forwarded - workspace will dismiss after processing");
+                    },
+                )
+                .detach();
+
+                cx.notify();
+            }
+            crate::Update::CodeActions(completion_view, pairs) => {
+                nucleotide_logging::info!("🎨 OVERLAY RECEIVED CODE ACTIONS VIEW");
+                self.completion_view = Some(completion_view.clone());
+                self.code_action_pairs = Some(pairs.clone());
+                // Dismiss subscription
+                cx.subscribe(&completion_view, |this, _cv, _ev: &DismissEvent, cx| {
+                    this.completion_view = None;
+                    this.code_action_pairs = None;
+                    cx.emit(DismissEvent);
+                    cx.notify();
+                })
+                .detach();
+
+                // Accept subscription maps selection index to code action application
+                let core_for_apply = self.core.clone();
+                cx.subscribe(
+                    &completion_view,
+                    move |this, _cv, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
+                        if let Some(pairs) = this.code_action_pairs.clone() {
+                            if let Some((action, ls_id, offset)) = pairs.get(event.item_index) {
+                                if let Some(core) = core_for_apply.upgrade() {
+                                    core.update(cx, |core, _| {
+                                        if let Some(ls) = core.editor.language_server_by_id(*ls_id)
+                                        {
+                                            match action {
+                                                helix_lsp::lsp::CodeActionOrCommand::Command(
+                                                    cmd,
+                                                ) => {
+                                                    core.editor
+                                                        .execute_lsp_command(cmd.clone(), *ls_id);
+                                                }
+                                                helix_lsp::lsp::CodeActionOrCommand::CodeAction(
+                                                    ca,
+                                                ) => {
+                                                    let mut resolved = None;
+                                                    if ca.edit.is_none() || ca.command.is_none() {
+                                                        if let Some(fut) =
+                                                            ls.resolve_code_action(ca)
+                                                        {
+                                                            if let Ok(c) = helix_lsp::block_on(fut)
+                                                            {
+                                                                resolved = Some(c);
+                                                            }
+                                                        }
+                                                    }
+                                                    let action_ref =
+                                                        resolved.as_ref().unwrap_or(ca);
+                                                    if let Some(edit) = &action_ref.edit {
+                                                        let _ = core
+                                                            .editor
+                                                            .apply_workspace_edit(*offset, edit);
+                                                    }
+                                                    if let Some(cmd) = &action_ref.command {
+                                                        core.editor.execute_lsp_command(
+                                                            cmd.clone(),
+                                                            *ls_id,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            this.completion_view = None;
+                            this.code_action_pairs = None;
+                            cx.notify();
+                        } else {
+                            // Fallback to standard completion handling if pairs are missing
+                            cx.emit(nucleotide_ui::CompleteViaHelixEvent {
+                                item_index: event.item_index,
+                            });
+                        }
                     },
                 )
                 .detach();

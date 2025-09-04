@@ -3428,6 +3428,10 @@ impl Workspace {
                 // Overlay will handle completion view setup in its own Update handler
                 self.handle_overlay_update(cx);
             }
+            crate::Update::CodeActions(_completion_view, _pairs) => {
+                nucleotide_logging::info!("Forwarding code actions dropdown to overlay");
+                self.handle_overlay_update(cx);
+            }
             crate::Update::OpenFile(path) => self.handle_open_file(path, cx),
             crate::Update::OpenDirectory(path) => self.handle_open_directory(path, cx),
             crate::Update::FileTreeEvent(event) => {
@@ -6994,7 +6998,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
     use helix_lsp::lsp;
     use helix_lsp::util::{diagnostic_to_lsp_diagnostic, range_to_lsp_range};
 
-    info!("Opening code actions picker");
+    info!("Opening code actions dropdown");
 
     // Snapshot needed editor state under read lock
     let (doc_id, view_id, offset_encoding, identifier, range, diags, servers) = {
@@ -7116,7 +7120,8 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
     // Spawn async collection job
     let core_weak = core.downgrade();
     cx.spawn(async move |cx| {
-        let mut items: Vec<crate::picker_view::PickerItem> = Vec::new();
+        // Build items for the completion-style dropdown
+        let mut completion_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = Vec::new();
         // Store paired action + server metadata alongside items for on_select
         let mut pairs: Vec<(
             lsp::CodeActionOrCommand,
@@ -7153,13 +7158,9 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
                             lsp::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
                             lsp::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
                         };
-                        // Use buffer-style columns to render a simple list row (id/flags empty)
-                        let data = std::sync::Arc::new((action.clone(), ls_id, offset))
-                            as std::sync::Arc<dyn std::any::Any + Send + Sync>;
-                        let item = crate::picker_view::PickerItem::with_buffer_columns(
-                            "", "", label, data,
-                        );
-                        items.push(item);
+                        // Build a simple completion item for the dropdown
+                        let ci = nucleotide_ui::completion_v2::CompletionItem::new(label);
+                        completion_items.push(ci);
                         pairs.push((action, ls_id, offset));
                     }
                 }
@@ -7170,7 +7171,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
         }
 
         // If none, exit with a notification
-        if items.is_empty() {
+        if completion_items.is_empty() {
             if let Some(core) = core_weak.upgrade() {
                 core.update(cx, |_core, cx| {
                     cx.emit(crate::Update::EditorStatus(
@@ -7184,13 +7185,19 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
             return;
         }
 
-        // Build picker; execution handled by Overlay via PickerItem.data
-        let picker = crate::picker::Picker::native("Code Actions", items, move |_index| {});
-
-        // Emit picker into overlay
+        // Create a CompletionView and load items
         if let Some(core) = core_weak.upgrade() {
+            let completion_view = cx
+                .new(|cx| {
+                    let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
+                    view.set_items(completion_items, cx);
+                    view
+                })
+                .expect("create code actions completion view");
+
+            // Emit completion-style code actions into overlay
             core.update(cx, |_core, cx| {
-                cx.emit(crate::Update::Picker(picker));
+                cx.emit(crate::Update::CodeActions(completion_view, pairs));
             });
         }
     })
