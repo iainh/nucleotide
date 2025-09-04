@@ -23,6 +23,7 @@ use gpui::{
 use helix_core::Selection;
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_view::ViewId;
+use helix_view::info::Info as HelixInfo;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
@@ -1142,12 +1143,6 @@ impl Workspace {
         }
 
         // Leader key timeout handling
-        if let Some(deadline) = self.leader_deadline
-            && std::time::Instant::now() > deadline
-        {
-            self.leader_active = false;
-            self.leader_deadline = None;
-        }
 
         // Update input context based on current focus state
         self.update_input_context(window, cx);
@@ -1158,30 +1153,57 @@ impl Workspace {
         {
             match ev.keystroke.key.as_str() {
                 "space" | " " if !self.leader_active => {
+                    info!("Leader: SPACE pressed, activating leader mode");
                     // Activate leader, swallow the space
                     self.leader_active = true;
                     self.leader_deadline =
                         Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
+
+                    // Show leader key hint list
+                    let info = HelixInfo {
+                        title: "Leader (space)".into(),
+                        text: "a   Code Actions".into(),
+                        width: 0,
+                        height: 0,
+                    };
+                    let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(Some(info));
+                        key_hints.set_theme(theme);
+                        cx.notify();
+                    });
                     return;
                 }
                 "a" if self.leader_active => {
+                    info!("Leader: SPACE-a detected, opening Code Actions");
                     // SPACE-a => Show code actions
                     self.leader_active = false;
                     self.leader_deadline = None;
+                    // Clear leader hint
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
                     show_code_actions(self.core.clone(), self.handle.clone(), cx);
                     return;
                 }
                 "escape" if self.leader_active => {
+                    info!("Leader: cancelled by Escape");
                     // Cancel leader
                     self.leader_active = false;
                     self.leader_deadline = None;
+                    // Clear leader hint
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
                     return;
                 }
                 _ => {
                     if self.leader_active {
-                        // Cancel leader and fall through to normal handling (do not replay space)
-                        self.leader_active = false;
-                        self.leader_deadline = None;
+                        // Keep leader active and swallow unrelated keys until ESC or valid sequence
+                        info!(key = %ev.keystroke.key, "Leader: awaiting sequence; key ignored");
+                        return;
                     }
                 }
             }
