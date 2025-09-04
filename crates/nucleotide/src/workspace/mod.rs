@@ -1156,13 +1156,17 @@ impl Workspace {
                     info!("Leader: SPACE pressed, activating leader mode");
                     // Activate leader, swallow the space
                     self.leader_active = true;
-                    self.leader_deadline =
-                        Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
+                    // No timeout in Normal mode
 
                     // Show leader key hint list
                     let info = HelixInfo {
                         title: "Leader (space)".into(),
-                        text: "a   Code Actions".into(),
+                        text: "f   File Finder\n\
+                               b   Buffer Picker\n\
+                               t   Toggle File Tree\n\
+                               a   Code Actions\n\
+                               esc Cancel"
+                            .into(),
                         width: 0,
                         height: 0,
                     };
@@ -1185,6 +1189,46 @@ impl Workspace {
                         cx.notify();
                     });
                     show_code_actions(self.core.clone(), self.handle.clone(), cx);
+                    return;
+                }
+                "f" if self.leader_active => {
+                    info!("Leader: SPACE-f detected, opening File Finder");
+                    // Clear leader state and hint
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    // Invoke file finder
+                    let core = self.core.clone();
+                    let handle = self.handle.clone();
+                    open(core, handle, cx);
+                    return;
+                }
+                "b" if self.leader_active => {
+                    info!("Leader: SPACE-b detected, opening Buffer Picker");
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    let core = self.core.clone();
+                    let handle = self.handle.clone();
+                    show_buffer_picker(core, handle, cx);
+                    return;
+                }
+                "t" if self.leader_active => {
+                    info!("Leader: SPACE-t detected, toggling File Tree");
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    self.show_file_tree = !self.show_file_tree;
+                    cx.notify();
                     return;
                 }
                 "escape" if self.leader_active => {
