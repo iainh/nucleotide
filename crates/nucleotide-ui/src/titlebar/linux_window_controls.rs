@@ -288,8 +288,13 @@ impl RenderOnce for LinuxWindowControl {
                         debug!("Minimize button clicked (not implemented in GPUI)");
                     }
                     LinuxControlType::Restore | LinuxControlType::Maximize => {
-                        debug!("Toggling window fullscreen/maximize");
-                        window.toggle_fullscreen();
+                        // Guard against X11 re-entrancy panics by allowing opt-out
+                        if std::env::var("NUCL_DISABLE_FULLSCREEN").ok().as_deref() == Some("1") {
+                            debug!("Fullscreen/maximize disabled via NUCL_DISABLE_FULLSCREEN=1");
+                        } else {
+                            debug!("Toggling window fullscreen/maximize");
+                            window.toggle_fullscreen();
+                        }
                     }
                     LinuxControlType::Close => {
                         debug!("Close button clicked");
