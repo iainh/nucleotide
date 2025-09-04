@@ -1157,7 +1157,7 @@ impl Workspace {
             && ev.keystroke.modifiers.number_of_modifiers() == 0
         {
             match ev.keystroke.key.as_str() {
-                "space" if !self.leader_active => {
+                "space" | " " if !self.leader_active => {
                     // Activate leader, swallow the space
                     self.leader_active = true;
                     self.leader_deadline =
@@ -6988,6 +6988,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
         .into_iter()
         .filter_map(|ls| {
             let offset = ls.offset_encoding();
+            let ls_id = ls.id();
             let ctx = lsp::CodeActionContext {
                 diagnostics: diags
                     .iter()
@@ -6999,7 +7000,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
             let req = ls.code_actions(identifier.clone(), range, ctx)?;
             Some(async move {
                 req.await
-                    .map(|opt| (opt.unwrap_or_default(), ls.id(), offset))
+                    .map(|opt| (opt.unwrap_or_default(), ls_id, offset))
             })
         })
         .collect();
@@ -7087,12 +7088,10 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
                             lsp::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
                         };
                         // Use buffer-style columns to render a simple list row (id/flags empty)
+                        let data = std::sync::Arc::new((action.clone(), ls_id, offset))
+                            as std::sync::Arc<dyn std::any::Any + Send + Sync>;
                         let item = crate::picker_view::PickerItem::with_buffer_columns(
-                            "",
-                            "",
-                            label.clone(),
-                            std::sync::Arc::new(())
-                                as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+                            "", "", label, data,
                         );
                         items.push(item);
                         pairs.push((action, ls_id, offset));
@@ -7119,44 +7118,8 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
             return;
         }
 
-        // Build picker and wire selection to apply action
-        let pairs_arc = std::sync::Arc::new(pairs);
-        let picker = crate::picker::Picker::native("Code Actions", items, move |index| {
-            if let Some(core) = core_weak.upgrade() {
-                let pairs = pairs_arc.clone();
-                core.update_in(|core: &mut Core| {
-                    // Safety: index from picker selection is within bounds
-                    if let Some((ref action, ls_id, offset)) = pairs.get(index) {
-                        // Find language server by id
-                        if let Some(ls) = core.editor.language_server_by_id(*ls_id) {
-                            match action {
-                                lsp::CodeActionOrCommand::Command(command) => {
-                                    core.editor.execute_lsp_command(command.clone(), *ls_id);
-                                }
-                                lsp::CodeActionOrCommand::CodeAction(ca) => {
-                                    // Resolve if missing edit or command
-                                    let mut resolved: Option<lsp::CodeAction> = None;
-                                    if ca.edit.is_none() || ca.command.is_none() {
-                                        if let Some(fut) = ls.resolve_code_action(ca) {
-                                            if let Ok(c) = helix_lsp::block_on(fut) {
-                                                resolved = Some(c);
-                                            }
-                                        }
-                                    }
-                                    let action_ref = resolved.as_ref().unwrap_or(ca);
-                                    if let Some(edit) = &action_ref.edit {
-                                        let _ = core.editor.apply_workspace_edit(offset, edit);
-                                    }
-                                    if let Some(cmd) = &action_ref.command {
-                                        core.editor.execute_lsp_command(cmd.clone(), *ls_id);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                });
-            }
-        });
+        // Build picker; execution handled by Overlay via PickerItem.data
+        let picker = crate::picker::Picker::native("Code Actions", items, move |_index| {});
 
         // Emit picker into overlay
         if let Some(core) = core_weak.upgrade() {

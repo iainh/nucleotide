@@ -822,6 +822,66 @@ impl OverlayView {
                                 // Proactively dismiss the picker first so focus can restore immediately
                                 picker_cx.emit(gpui::DismissEvent);
 
+                                // Handle LSP code action items (action, server id, offset)
+                                if let Some((action, ls_id, offset)) = selected_item
+                                    .data
+                                    .downcast_ref::<(
+                                        helix_lsp::lsp::CodeActionOrCommand,
+                                        helix_core::diagnostic::LanguageServerId,
+                                        helix_lsp::OffsetEncoding,
+                                    )>()
+                                {
+                                    if let Some(core) = core_for_on_select.upgrade() {
+                                        core.update(picker_cx, |core, _cx| {
+                                            if let Some(ls) = core.editor.language_server_by_id(*ls_id)
+                                            {
+                                                match action {
+                                                    helix_lsp::lsp::CodeActionOrCommand::Command(
+                                                        cmd,
+                                                    ) => {
+                                                        core.editor.execute_lsp_command(
+                                                            cmd.clone(),
+                                                            *ls_id,
+                                                        );
+                                                    }
+                                                    helix_lsp::lsp::CodeActionOrCommand::CodeAction(
+                                                        ca,
+                                                    ) => {
+                                                        let mut resolved: Option<
+                                                            helix_lsp::lsp::CodeAction,
+                                                        > = None;
+                                                        if ca.edit.is_none() || ca.command.is_none()
+                                                        {
+                                                            if let Some(fut) =
+                                                                ls.resolve_code_action(ca)
+                                                            {
+                                                                if let Ok(c) =
+                                                                    helix_lsp::block_on(fut)
+                                                                {
+                                                                    resolved = Some(c);
+                                                                }
+                                                            }
+                                                        }
+                                                        let action_ref =
+                                                            resolved.as_ref().unwrap_or(ca);
+                                                        if let Some(edit) = &action_ref.edit {
+                                                            let _ = core.editor.apply_workspace_edit(
+                                                                *offset,
+                                                                edit,
+                                                            );
+                                                        }
+                                                        if let Some(cmd) = &action_ref.command {
+                                                            core.editor.execute_lsp_command(
+                                                                cmd.clone(),
+                                                                *ls_id,
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
                                 // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
                                 if let Some((doc_id, _path)) = selected_item.data.downcast_ref::<(
                                     helix_view::DocumentId,
