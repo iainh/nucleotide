@@ -120,6 +120,7 @@ pub mod workspace {
         workspace,
         [
             ShowBufferPicker,
+            ShowCodeActions,
             ToggleFileTree,
             ShowFileFinder,
             NewFile,

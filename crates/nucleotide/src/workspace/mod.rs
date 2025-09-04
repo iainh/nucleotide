@@ -6316,6 +6316,15 @@ impl Render for Workspace {
             },
         ));
 
+        // Code actions picker
+        let handle = self.handle.clone();
+        let core = self.core.clone();
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |_, _: &crate::actions::workspace::ShowCodeActions, _window, cx| {
+                show_code_actions(core.clone(), handle.clone(), cx)
+            },
+        ));
+
         // Toggle file tree action
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::workspace::ToggleFileTree, _window, cx| {
@@ -6956,6 +6965,48 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
         })
         .collect();
 
+    // Helper sorters to mirror Helix ordering
+    fn action_category(action: &lsp::CodeActionOrCommand) -> u32 {
+        if let lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+            kind: Some(kind), ..
+        }) = action
+        {
+            let mut components = kind.as_str().split('.');
+            match components.next() {
+                Some("quickfix") => 0,
+                Some("refactor") => match components.next() {
+                    Some("extract") => 1,
+                    Some("inline") => 2,
+                    Some("rewrite") => 3,
+                    Some("move") => 4,
+                    Some("surround") => 5,
+                    _ => 7,
+                },
+                Some("source") => 6,
+                _ => 7,
+            }
+        } else {
+            7
+        }
+    }
+
+    fn action_preferred(action: &lsp::CodeActionOrCommand) -> bool {
+        matches!(
+            action,
+            lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+                is_preferred: Some(true),
+                ..
+            })
+        )
+    }
+
+    fn action_fixes_diagnostics(action: &lsp::CodeActionOrCommand) -> bool {
+        matches!(
+            action,
+            lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction { diagnostics: Some(diags), .. }) if !diags.is_empty()
+        )
+    }
+
     // Spawn async collection job
     let core_weak = core.downgrade();
     cx.spawn(|_this, cx| async move {
@@ -6974,6 +7025,21 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
                     actions.retain(|a| match a {
                         lsp::CodeActionOrCommand::CodeAction(ca) => ca.disabled.is_none(),
                         _ => true,
+                    });
+
+                    // Sort as in Helix: category, then fixes diagnostics, then preferred
+                    actions.sort_by(|a, b| {
+                        let cat = action_category(a).cmp(&action_category(b));
+                        if cat != std::cmp::Ordering::Equal {
+                            return cat;
+                        }
+                        let fix = action_fixes_diagnostics(a)
+                            .cmp(&action_fixes_diagnostics(b))
+                            .reverse();
+                        if fix != std::cmp::Ordering::Equal {
+                            return fix;
+                        }
+                        action_preferred(a).cmp(&action_preferred(b)).reverse()
                     });
 
                     for action in actions.into_iter() {
