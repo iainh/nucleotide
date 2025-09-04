@@ -7009,7 +7009,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
 
     // Spawn async collection job
     let core_weak = core.downgrade();
-    cx.spawn(|_this, cx| async move {
+    cx.spawn(async move |cx| {
         let mut items: Vec<crate::picker_view::PickerItem> = Vec::new();
         // Store paired action + server metadata alongside items for on_select
         let mut pairs: Vec<(
@@ -7066,7 +7066,10 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
             if let Some(core) = core_weak.upgrade() {
                 core.update(cx, |_core, cx| {
                     cx.emit(crate::Update::EditorStatus(
-                        nucleotide_types::EditorStatus::info("No code actions available"),
+                        nucleotide_types::EditorStatus {
+                            status: "No code actions available".to_string(),
+                            severity: nucleotide_types::Severity::Info,
+                        },
                     ));
                 });
             }
