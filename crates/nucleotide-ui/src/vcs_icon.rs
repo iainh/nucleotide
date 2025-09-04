@@ -1,7 +1,7 @@
 // ABOUTME: Combined file icon and VCS status indicator component for consistent UI
 // ABOUTME: Provides unified icon display with integrated VCS status using design system colors
 
-use gpui::{Context, Hsla, IntoElement, ParentElement, Styled, div, px};
+use gpui::{Context, Hsla, IntoElement, ParentElement, Styled, div, hsla, px};
 use std::path::Path;
 
 use crate::{FileIcon, Theme};
@@ -117,24 +117,82 @@ impl VcsIcon {
     }
 
     /// Render the VCS status overlay
+    /// Now draws a pseudo-3D glossy sphere using layered elements:
+    /// - Base colored circle
+    /// - Soft outer shadow (bottom-right) for lift
+    /// - Two specular highlights (small/large) top-left for gloss
     fn render_vcs_overlay(&self, theme: &Theme) -> impl IntoElement {
         if !self.should_show_vcs_status() {
             return div();
         }
+        use crate::tokens::utils;
 
-        let color = self.get_vcs_status_color(theme).unwrap_or(theme.text_muted);
+        let base_color = self.get_vcs_status_color(theme).unwrap_or(theme.text_muted);
         let indicator_size = (self.container_size * 0.5).max(6.0); // 50% of container size, min 6px
 
-        div()
+        let border_color = utils::darken(base_color, 0.15);
+        let shadow_color = utils::with_alpha(hsla(0.0, 0.0, 0.0, 1.0), 0.35);
+        let highlight_core = utils::with_alpha(hsla(0.0, 0.0, 1.0, 1.0), 0.45);
+        let highlight_halo = utils::with_alpha(hsla(0.0, 0.0, 1.0, 1.0), 0.14);
+
+        // Masking container for the sphere and highlights (prevents highlight bleed)
+        let mut container = div()
             .absolute()
-            .bottom(px(0.0)) // Position at bottom edge
-            .left(px(0.0)) // Position at left edge (no negative offset)
+            .bottom(px(0.0))
+            .left(px(0.0))
             .w(px(indicator_size))
             .h(px(indicator_size))
             .rounded_full()
-            .bg(color)
-            .border_1()
-            .border_color(theme.tokens.chrome.border_default) // Border to separate from icon
+            .overflow_hidden()
+            .shadow(vec![gpui::BoxShadow {
+                color: shadow_color,
+                offset: gpui::point(px(1.0), px(1.5)),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+            }]);
+
+        // Base filled circle with border
+        // Slight transparency for base fill to let background subtly show through
+        let base_fill = utils::with_alpha(base_color, 0.85);
+        let border_col = utils::with_alpha(border_color, 0.9);
+        container = container.child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded_full()
+                .bg(base_fill)
+                .border_1()
+                .border_color(border_col),
+        );
+
+        // Specular highlights (top-left) – use masking container as clipping
+        let offset = indicator_size * 0.14;
+        let halo_size = indicator_size * 0.52;
+        let core_size = indicator_size * 0.26;
+
+        container = container
+            .child(
+                div()
+                    .absolute()
+                    .top(px(offset))
+                    .left(px(offset))
+                    .w(px(halo_size))
+                    .h(px(halo_size))
+                    .rounded_full()
+                    .bg(highlight_halo),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(offset + (halo_size - core_size) * 0.25))
+                    .left(px(offset + (halo_size - core_size) * 0.25))
+                    .w(px(core_size))
+                    .h(px(core_size))
+                    .rounded_full()
+                    .bg(highlight_core),
+            );
+
+        container
     }
 
     /// Render this VcsIcon using a provided Theme (for contexts where the
@@ -164,7 +222,8 @@ impl VcsIcon {
         };
 
         if should_show {
-            let color = match &vcs_status {
+            use crate::tokens::utils;
+            let base_color = match &vcs_status {
                 Some(VcsStatus::Modified) => theme.tokens.editor.vcs_modified,
                 Some(VcsStatus::Added) => theme.tokens.editor.vcs_added,
                 Some(VcsStatus::Deleted) => theme.tokens.editor.vcs_deleted,
@@ -175,18 +234,67 @@ impl VcsIcon {
             };
 
             let indicator_size = (container_size * 0.5).max(6.0);
-            let overlay = div()
+            let border_color = utils::darken(base_color, 0.15);
+            let shadow_color = utils::with_alpha(hsla(0.0, 0.0, 0.0, 1.0), 0.35);
+            let highlight_core = utils::with_alpha(hsla(0.0, 0.0, 1.0, 1.0), 0.55);
+            let highlight_halo = utils::with_alpha(hsla(0.0, 0.0, 1.0, 1.0), 0.18);
+
+            // Masking container for the sphere and highlights (prevents highlight bleed)
+            let mut sphere_container = div()
                 .absolute()
                 .bottom(px(0.0))
                 .left(px(0.0))
                 .w(px(indicator_size))
                 .h(px(indicator_size))
                 .rounded_full()
-                .bg(color)
-                .border_1()
-                .border_color(theme.tokens.chrome.border_default);
+                .overflow_hidden()
+                .shadow(vec![gpui::BoxShadow {
+                    color: shadow_color,
+                    offset: gpui::point(px(1.0), px(1.5)),
+                    blur_radius: px(2.0),
+                    spread_radius: px(0.0),
+                }]);
 
-            container = container.child(overlay);
+            // Base fill with slight transparency and nearly-opaque border
+            let base_fill = utils::with_alpha(base_color, 0.85);
+            let border_col = utils::with_alpha(border_color, 0.9);
+            sphere_container = sphere_container.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded_full()
+                    .bg(base_fill)
+                    .border_1()
+                    .border_color(border_col),
+            );
+
+            let offset = indicator_size * 0.14;
+            let halo_size = indicator_size * 0.52;
+            let core_size = indicator_size * 0.26;
+
+            sphere_container = sphere_container
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(offset))
+                        .left(px(offset))
+                        .w(px(halo_size))
+                        .h(px(halo_size))
+                        .rounded_full()
+                        .bg(highlight_halo),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(offset + (halo_size - core_size) * 0.25))
+                        .left(px(offset + (halo_size - core_size) * 0.25))
+                        .w(px(core_size))
+                        .h(px(core_size))
+                        .rounded_full()
+                        .bg(highlight_core),
+                );
+
+            container = container.child(sphere_container);
         }
 
         container
