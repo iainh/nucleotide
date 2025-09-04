@@ -91,6 +91,9 @@ pub struct Workspace {
     // Delete confirmation modal state
     delete_confirm_open: bool,
     delete_confirm_path: Option<std::path::PathBuf>,
+    // Leader key state (e.g., SPACE as prefix)
+    leader_active: bool,
+    leader_deadline: Option<std::time::Instant>,
 }
 
 // Pending file operation kinds awaiting user input (used with the prompt overlay)
@@ -1135,8 +1138,51 @@ impl Workspace {
             }
         }
 
+        // Leader key timeout handling
+        if let Some(deadline) = self.leader_deadline
+            && std::time::Instant::now() > deadline
+        {
+            self.leader_active = false;
+            self.leader_deadline = None;
+        }
+
         // Update input context based on current focus state
         self.update_input_context(window, cx);
+
+        // Leader key handling: SPACE as prefix in Normal context
+        if self.input_coordinator.current_context() == InputContext::Normal
+            && ev.keystroke.modifiers.is_empty()
+        {
+            match ev.keystroke.key.as_str() {
+                "space" if !self.leader_active => {
+                    // Activate leader, swallow the space
+                    self.leader_active = true;
+                    self.leader_deadline =
+                        Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
+                    return;
+                }
+                "a" if self.leader_active => {
+                    // SPACE-a => Show code actions
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    show_code_actions(self.core.clone(), self.handle.clone(), cx);
+                    return;
+                }
+                "escape" if self.leader_active => {
+                    // Cancel leader
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    return;
+                }
+                _ => {
+                    if self.leader_active {
+                        // Cancel leader and fall through to normal handling (do not replay space)
+                        self.leader_active = false;
+                        self.leader_deadline = None;
+                    }
+                }
+            }
+        }
 
         // Delegate to InputCoordinator for processing
         let result = self.input_coordinator.handle_key_event(ev, window);
@@ -7047,10 +7093,14 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
                             lsp::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
                             lsp::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
                         };
-                        let item = crate::picker_view::PickerItem::new(label.clone())
-                            .with_sublabel(None)
-                            .with_data(std::sync::Arc::new(label)
-                                as std::sync::Arc<dyn std::any::Any + Send + Sync>);
+                        // Use buffer-style columns to render a simple list row (id/flags empty)
+                        let item = crate::picker_view::PickerItem::with_buffer_columns(
+                            "",
+                            "",
+                            label.clone(),
+                            std::sync::Arc::new(())
+                                as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+                        );
                         items.push(item);
                         pairs.push((action, ls_id, offset));
                     }
