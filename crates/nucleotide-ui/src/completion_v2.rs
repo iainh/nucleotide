@@ -1639,7 +1639,7 @@ impl Render for CompletionView {
                             .flex_col()
                             .w_full()
                             .max_h(max_container_height) // Flexible height with maximum constraint
-                            .min_h(px(64.0)) // Minimum height for at least 2 items
+                            .min_h(px(28.0)) // Allow single-item height without excessive padding
                             .bg(tokens.chrome.popup_background) // Ensure background is visible
                             .child(
                                 // Scrollable container with working completion items
@@ -1648,7 +1648,8 @@ impl Render for CompletionView {
                                     .flex()
                                     .flex_col()
                                     .w_full()
-                                    .h_full()
+                                    // Let height be content-driven; don't force full container height
+                                    .max_h(max_container_height)
                                     .overflow_y_scroll() // Enable scrolling
                                     .children({
                                         // Implement a sliding window of visible items centered around selection
