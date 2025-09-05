@@ -89,7 +89,7 @@ impl ViewHandler {
             self.view_metadata.insert(view_id, metadata);
         }
 
-        info!(
+        debug!(
             view_id = ?view_id,
             doc_id = ?doc_id,
             primary_cursor = ?selection.primary().cursor(helix_core::ropey::Rope::from("").slice(..)),
