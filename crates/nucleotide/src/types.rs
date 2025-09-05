@@ -47,6 +47,14 @@ pub enum Update {
     Picker(crate::picker::Picker),
     DirectoryPicker(crate::picker::Picker),
     Completion(gpui::Entity<nucleotide_ui::completion_v2::CompletionView>),
+    CodeActions(
+        gpui::Entity<nucleotide_ui::completion_v2::CompletionView>,
+        Vec<(
+            helix_lsp::lsp::CodeActionOrCommand,
+            helix_core::diagnostic::LanguageServerId,
+            helix_lsp::OffsetEncoding,
+        )>,
+    ),
     CompletionEvent(helix_view::handlers::completion::CompletionEvent),
     Info(helix_view::info::Info),
 
@@ -147,6 +155,7 @@ impl std::fmt::Debug for Update {
             }
             Update::FileTreeEvent(_) => write!(f, "FileTreeEvent(...)"),
             Update::CompletionEvent(_) => write!(f, "CompletionEvent(...)"),
+            Update::CodeActions(_, _) => write!(f, "CodeActions(...)"),
             Update::ShowFilePicker => write!(f, "ShowFilePicker"),
             Update::ShowBufferPicker => write!(f, "ShowBufferPicker"),
             Update::DiagnosticsPanel(_) => write!(f, "DiagnosticsPanel(...)"),

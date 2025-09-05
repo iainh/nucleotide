@@ -1,8 +1,8 @@
 // ABOUTME: GPUI-native picker component for fuzzy searching and selection
 // ABOUTME: Uses proper GPUI uniform_list for scrollable content like Zed
 
-use crate::VcsIcon;
 use crate::common::{FocusableModal, ModalStyle, SearchInput};
+use crate::{VcsIcon, VcsIconRenderer};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
@@ -1156,7 +1156,7 @@ impl PickerView {
                                             move |picker,
                                                   visible_range: Range<usize>,
                                                   _window,
-                                                  _cx| {
+                                                  cx| {
                                                 visible_range
                                                     .map(|visible_idx| {
                                                         let item_idx = picker.filtered_indices
@@ -1252,11 +1252,14 @@ impl PickerView {
                                                                                 |this, file_path| {
                                                                                     // Render VcsIcon for file items
                                                                                     this.child({
-                                                                                        // Create VcsIcon with embedded VCS status and proper text color
-                                                                                        VcsIcon::from_path(file_path, false)
+                                                                                        // Create VcsIcon with embedded VCS status and proper text color,
+                                                                                        // then render with theme-aware colors using the current Theme
+                                                                                        let icon = VcsIcon::from_path(file_path, false)
                                                                                             .size(16.0)
                                                                                             .text_color(picker.style.modal_style.text)
-                                                                                            .vcs_status(item.vcs_status)
+                                                                                            .vcs_status(item.vcs_status);
+                                                                                        let theme = cx.global::<crate::Theme>();
+                                                                                        icon.render_with_theme(theme)
                                                                                     })
                                                                                 }
                                                                             )

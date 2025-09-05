@@ -46,7 +46,6 @@ pub mod traits;
 pub mod utils;
 pub mod vcs_gutter;
 pub mod vcs_icon;
-pub mod vcs_indicator;
 
 #[cfg(test)]
 mod integration_tests;
@@ -149,7 +148,6 @@ pub use utils::{
 };
 pub use vcs_gutter::{VcsGutter, VcsLineIndicator, get_vcs_indicator_for_line};
 pub use vcs_icon::{VcsIcon, VcsIconRenderer};
-pub use vcs_indicator::VcsIndicator;
 // VcsStatus is now re-exported from nucleotide-types
 
 // Export initialization and configuration types
@@ -424,7 +422,6 @@ pub fn init(cx: &mut App, config: Option<UIConfig>) {
     // Register built-in components
     registry.register_component("Button");
     registry.register_component("ListItem");
-    registry.register_component("VcsIndicator");
     registry.register_component("FileIcon");
     registry.register_component("Picker");
     registry.register_component("Prompt");

@@ -2943,9 +2943,12 @@ impl Element for DocumentElement {
                             // Paint a small diagnostic marker in the gutter if this line has diagnostics
                             if let Some(sev) = diag_line_severity.get(&doc_line).copied() {
                                 if let Some(color) = Self::severity_color(cx.helix_theme(), sev) {
-                                    let marker_size = px(6.0);
+                                    use nucleotide_ui::tokens::utils;
+                                    // Indicator size: 60% of line height
+                                    let marker_size = (after_layout.line_height * 0.6).max(px(2.0));
                                     // Place marker to the left of the line number
                                     let marker_x = gutter_origin.x + px(2.0);
+                                    // Vertically centered
                                     let marker_y = y + (after_layout.line_height - marker_size) * 0.5;
                                     // Paint a background strip to hide built-in sign indicators
                                     let strip_width = marker_size + px(4.0);
@@ -2961,14 +2964,42 @@ impl Element for DocumentElement {
                                         window.paint_quad(fill(strip_bounds, gutter_bg));
                                     }
 
-                                    // Draw shape by severity: Info=Circle, Warning=Triangle, Error=Square, Hint=Circle
+                                    // Derived colors with slight transparency + subtle border for 3D effect
+                                    let base_fill = utils::with_alpha(color, 0.85);
+                                    let border_col = utils::with_alpha(utils::darken(color, 0.15), 0.9);
+
+                                    // Draw shape by severity: Info/Hint=Sphere, Warning=Triangle, Error=Square
                                     match sev {
                                         helix_core::diagnostic::Severity::Error => {
                                             let marker_bounds = Bounds {
                                                 origin: point(marker_x, marker_y),
                                                 size: size(marker_size, marker_size),
                                             };
-                                            window.paint_quad(fill(marker_bounds, color));
+                                            // Slightly rounded square with border and glossy dot
+                                            window.paint_quad(gpui::quad(
+                                                marker_bounds,
+                                                px(1.0),
+                                                base_fill,
+                                                px(1.0),
+                                                border_col,
+                                                gpui::BorderStyle::default(),
+                                            ));
+
+                                            // Small top-left highlight
+                                            let h_size = marker_size * 0.22;
+                                            let h_bounds = Bounds {
+                                                origin: point(marker_x + marker_size * 0.18, marker_y + marker_size * 0.18),
+                                                size: size(h_size, h_size),
+                                            };
+                                            let h_color = utils::with_alpha(gpui::white(), 0.18);
+                                            window.paint_quad(gpui::quad(
+                                                h_bounds,
+                                                h_size * 0.5,
+                                                h_color,
+                                                0.0,
+                                                gpui::transparent_black(),
+                                                gpui::BorderStyle::default(),
+                                            ));
                                         }
                                         helix_core::diagnostic::Severity::Warning => {
                                             // Upright triangle inside marker square
@@ -2981,19 +3012,70 @@ impl Element for DocumentElement {
                                             pb.line_to(br);
                                             pb.close();
                                             if let Ok(path) = pb.build() {
-                                                window.paint_path(path, color);
+                                                window.paint_path(path, base_fill);
                                             }
+
+                                            // Small internal highlight near top-left edge
+                                            let h_size = marker_size * 0.2;
+                                            let h_bounds = Bounds {
+                                                origin: point(marker_x + marker_size * 0.22, marker_y + marker_size * 0.18),
+                                                size: size(h_size, h_size),
+                                            };
+                                            let h_color = utils::with_alpha(gpui::white(), 0.14);
+                                            window.paint_quad(gpui::quad(
+                                                h_bounds,
+                                                h_size * 0.5,
+                                                h_color,
+                                                0.0,
+                                                gpui::transparent_black(),
+                                                gpui::BorderStyle::default(),
+                                            ));
                                         }
                                         helix_core::diagnostic::Severity::Info | helix_core::diagnostic::Severity::Hint => {
                                             let marker_bounds = Bounds {
                                                 origin: point(marker_x, marker_y),
                                                 size: size(marker_size, marker_size),
                                             };
+                                            // Sphere base with border
                                             let radius = marker_size * 0.5;
                                             window.paint_quad(gpui::quad(
                                                 marker_bounds,
                                                 radius,
-                                                color,
+                                                base_fill,
+                                                px(1.0),
+                                                border_col,
+                                                gpui::BorderStyle::default(),
+                                            ));
+
+                                            // Specular highlights fully inside the circle bounds
+                                            let offset = marker_size * 0.14;
+                                            let halo_size = marker_size * 0.52;
+                                            let core_size = marker_size * 0.26;
+                                            let halo_bounds = Bounds {
+                                                origin: point(marker_x + offset, marker_y + offset),
+                                                size: size(halo_size, halo_size),
+                                            };
+                                            let core_bounds = Bounds {
+                                                origin: point(
+                                                    marker_x + offset + (halo_size - core_size) * 0.25,
+                                                    marker_y + offset + (halo_size - core_size) * 0.25,
+                                                ),
+                                                size: size(core_size, core_size),
+                                            };
+                                            let highlight_halo = utils::with_alpha(gpui::white(), 0.14);
+                                            let highlight_core = utils::with_alpha(gpui::white(), 0.45);
+                                            window.paint_quad(gpui::quad(
+                                                halo_bounds,
+                                                halo_size * 0.5,
+                                                highlight_halo,
+                                                0.0,
+                                                gpui::transparent_black(),
+                                                gpui::BorderStyle::default(),
+                                            ));
+                                            window.paint_quad(gpui::quad(
+                                                core_bounds,
+                                                core_size * 0.5,
+                                                highlight_core,
                                                 0.0,
                                                 gpui::transparent_black(),
                                                 gpui::BorderStyle::default(),
@@ -4192,24 +4274,41 @@ impl<'h, 'r, 't> SyntaxHighlighter<'h, 'r, 't> {
             return;
         };
 
-        let (event, highlights) = highlighter.advance();
-        let base = match event {
-            HighlightEvent::Refresh => self.text_style,
-            HighlightEvent::Push => self.style,
-        };
-
-        self.style = highlights.fold(base, |acc, highlight| {
-            let highlight_style = safe_highlight(self.theme, highlight);
-            let patched = acc.patch(highlight_style);
-            if patched != acc {
-                debug!(
-                    "Applying highlight: {:?} -> style: {:?}",
-                    highlight, patched.fg
-                );
+        // Guard against panics from upstream highlighter (tree-house). Process in-place.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (event, highlights) = highlighter.advance();
+            // Collect highlights to detach borrow from highlighter
+            let mut collected: Vec<syntax::Highlight> = Vec::new();
+            for h in highlights {
+                collected.push(h);
             }
-            patched
-        });
-        self.update_pos();
+            (event, collected)
+        }));
+
+        if let Ok((event, collected)) = result {
+            let base = match event {
+                HighlightEvent::Refresh => self.text_style,
+                HighlightEvent::Push => self.style,
+            };
+
+            self.style = collected.into_iter().fold(base, |acc, highlight| {
+                let highlight_style = safe_highlight(self.theme, highlight);
+                let patched = acc.patch(highlight_style);
+                if patched != acc {
+                    debug!(
+                        "Applying highlight: {:?} -> style: {:?}",
+                        highlight, patched.fg
+                    );
+                }
+                patched
+            });
+            self.update_pos();
+        } else {
+            // Disable syntax highlighting for this render cycle to avoid crashing the app
+            self.inner = None;
+            self.pos = usize::MAX;
+            return;
+        }
     }
 }
 
@@ -4238,17 +4337,32 @@ impl<'t> OverlayHighlighter<'t> {
     }
 
     fn advance(&mut self) {
-        let (event, highlights) = self.inner.advance();
-        let base = match event {
-            HighlightEvent::Refresh => helix_view::graphics::Style::default(),
-            HighlightEvent::Push => self.style,
-        };
+        // Guard against panics from upstream overlay highlighter. Process in-place.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (event, highlights) = self.inner.advance();
+            let mut collected: Vec<syntax::Highlight> = Vec::new();
+            for h in highlights {
+                collected.push(h);
+            }
+            (event, collected)
+        }));
 
-        self.style = highlights.fold(base, |acc, highlight| {
-            let highlight_style = safe_highlight(self.theme, highlight);
-            acc.patch(highlight_style)
-        });
-        self.update_pos();
+        if let Ok((event, collected)) = result {
+            let base = match event {
+                HighlightEvent::Refresh => helix_view::graphics::Style::default(),
+                HighlightEvent::Push => self.style,
+            };
+
+            self.style = collected.into_iter().fold(base, |acc, highlight| {
+                let highlight_style = safe_highlight(self.theme, highlight);
+                acc.patch(highlight_style)
+            });
+            self.update_pos();
+        } else {
+            // Disable overlay highlights on panic
+            self.pos = usize::MAX;
+            return;
+        }
     }
 }
 

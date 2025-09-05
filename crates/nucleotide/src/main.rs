@@ -838,8 +838,8 @@ fn gui_main(
 
                 // Import workspace actions for global bindings
                 use nucleotide::actions::workspace::{
-                    NewFile, NewWindow, ShowBufferPicker, ShowCommandPalette, ShowFileFinder,
-                    ToggleFileTree,
+                    NewFile, NewWindow, ShowBufferPicker, ShowCodeActions, ShowCommandPalette,
+                    ShowFileFinder, ToggleFileTree,
                 };
 
                 // Global actions - work regardless of focus (no context specified)
@@ -864,6 +864,8 @@ fn gui_main(
                     gpui::KeyBinding::new("cmd--", DecreaseFontSize, None),
                     // Completion trigger
                     gpui::KeyBinding::new("ctrl-space", TriggerCompletion, None),
+                    // Temporary keybinding for Code Actions (Ctrl-.)
+                    gpui::KeyBinding::new("ctrl-.", ShowCodeActions, None),
                     // File tree toggle
                     gpui::KeyBinding::new("ctrl-b", ToggleFileTree, None),
                 ]);

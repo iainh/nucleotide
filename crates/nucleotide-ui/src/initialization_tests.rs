@@ -114,7 +114,6 @@ mod tests {
         // Simulate registering built-in components (like init() does)
         registry.register_component("Button");
         registry.register_component("ListItem");
-        registry.register_component("VcsIndicator");
         registry.register_component("FileIcon");
         registry.register_component("Picker");
         registry.register_component("Prompt");
@@ -122,14 +121,13 @@ mod tests {
         // Test that all built-in components are registered
         assert!(registry.is_registered("Button"));
         assert!(registry.is_registered("ListItem"));
-        assert!(registry.is_registered("VcsIndicator"));
         assert!(registry.is_registered("FileIcon"));
         assert!(registry.is_registered("Picker"));
         assert!(registry.is_registered("Prompt"));
 
         // Test component count
         let components: Vec<_> = registry.registered_components().collect();
-        assert_eq!(components.len(), 6);
+        assert_eq!(components.len(), 5);
     }
 
     #[test]

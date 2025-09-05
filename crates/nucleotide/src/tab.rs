@@ -11,7 +11,8 @@ use nucleotide_types::VcsStatus;
 use nucleotide_ui::ThemedContext;
 use nucleotide_ui::{
     Button, ButtonSize, ButtonVariant, Component, ComponentFactory, ComponentState, Interactive,
-    StyleVariant, Styled as UIStyled, Tooltipped, VcsIcon, compute_component_state,
+    StyleVariant, Styled as UIStyled, Tooltipped, VcsIcon, VcsIconRenderer,
+    compute_component_state,
 };
 
 /// Type alias for mouse event handlers in tabs
@@ -354,8 +355,9 @@ impl RenderOnce for Tab {
                                         .text_color(text_color)
                                 };
 
-                                // Add VCS status if available and render directly
-                                vcs_icon.vcs_status(git_status)
+                                // Add VCS status if available and render with theme-aware colors
+                                let theme = cx.global::<nucleotide_ui::Theme>();
+                                vcs_icon.vcs_status(git_status).render_with_theme(theme)
                             }),
                     )
                     .child(

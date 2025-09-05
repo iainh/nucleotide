@@ -21,7 +21,9 @@ use gpui::{
     TextStyle, Window, WindowAppearance, WindowBackgroundAppearance, black, div, px, white,
 };
 use helix_core::Selection;
+use helix_core::syntax::config::LanguageServerFeature;
 use helix_view::ViewId;
+use helix_view::info::Info as HelixInfo;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
@@ -91,6 +93,9 @@ pub struct Workspace {
     // Delete confirmation modal state
     delete_confirm_open: bool,
     delete_confirm_path: Option<std::path::PathBuf>,
+    // Leader key state (e.g., SPACE as prefix)
+    leader_active: bool,
+    leader_deadline: Option<std::time::Instant>,
 }
 
 // Pending file operation kinds awaiting user input (used with the prompt overlay)
@@ -345,6 +350,8 @@ impl Workspace {
             needs_file_tree_refresh: false,
             delete_confirm_open: false,
             delete_confirm_path: None,
+            leader_active: false,
+            leader_deadline: None,
         };
 
         // Set initial focus restore state
@@ -527,7 +534,7 @@ impl Workspace {
     /// Render the file tree context menu anchored at the last click position
     fn render_file_tree_context_menu(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         use gpui::{Corner, anchored, point};
@@ -536,9 +543,13 @@ impl Workspace {
         let (x, y) = self.context_menu_pos;
 
         let items = Self::context_menu_items();
+        let item_count = items.len();
 
         // Use anchored popup at the stored cursor position, relative to window
         let dd_tokens = tokens.dropdown_tokens();
+
+        // Move keyboard focus to the workspace focus group so arrow/enter navigation works
+        window.focus(&self.focus_handle);
 
         let popup = div()
             .bg(dd_tokens.container_background)
@@ -547,12 +558,21 @@ impl Workspace {
             .rounded(tokens.sizes.radius_md)
             .shadow_lg()
             .min_w(px(200.0))
+            // Use equal padding on all sides so the selection has the same
+            // inset from the border horizontally as vertically
             .py(tokens.sizes.space_1)
+            .px(tokens.sizes.space_1)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // Prevent hover/move from reaching the file tree beneath the menu
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .children(items.into_iter().enumerate().map(|(i, (label, handler))| {
                 let hover_bg = dd_tokens.item_background_hover;
                 let text_default = dd_tokens.item_text;
                 let text_hover = dd_tokens.item_text_selected;
+                // Compute rounded corner radius for selected rows at the top/bottom of the menu
+                let inner_radius = tokens.sizes.radius_md - px(0.5); // Outer radius minus half border
+                let is_first = i == 0;
+                let is_last = i + 1 == item_count;
                 div()
                     .w_full()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -562,6 +582,17 @@ impl Workspace {
                             cx.notify();
                         }
                     }))
+                    // Apply selection background on the full-width wrapper so it stretches edge to edge
+                    .when(self.context_menu_index == i, |d| {
+                        d.bg(dd_tokens.item_background_selected)
+                    })
+                    // Round selection corners to match the popup for first/last items
+                    .when(self.context_menu_index == i && is_first, |d| {
+                        d.rounded_tl(inner_radius).rounded_tr(inner_radius)
+                    })
+                    .when(self.context_menu_index == i && is_last, |d| {
+                        d.rounded_bl(inner_radius).rounded_br(inner_radius)
+                    })
                     .on_mouse_up(MouseButton::Left, {
                         let handler_fn = handler;
                         cx.listener(move |workspace: &mut Workspace, _ev, _window, cx| {
@@ -578,13 +609,13 @@ impl Workspace {
                                 div()
                                     .w_full()
                                     .text_size(tokens.sizes.text_sm)
-                                    .px(tokens.sizes.space_3)
-                                    .py(tokens.sizes.space_2)
-                                    .text_color(text_default)
-                                    .hover(|s| s.bg(hover_bg).text_color(text_hover))
-                                    .when(self.context_menu_index == i, |s| {
-                                        s.bg(dd_tokens.item_background_selected)
-                                            .text_color(dd_tokens.item_text_selected)
+                                    // Tighter spacing for compact context menu rows
+                                    .px(tokens.sizes.space_2)
+                                    .py(tokens.sizes.space_1)
+                                    .text_color(if self.context_menu_index == i {
+                                        dd_tokens.item_text_selected
+                                    } else {
+                                        text_default
                                     })
                                     .child(label),
                             ),
@@ -598,6 +629,8 @@ impl Workspace {
             .top_0()
             .left_0()
             .occlude()
+            // Swallow mouse move/hover so it doesn't update file tree hover beneath
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|w: &mut Workspace, _ev, _win, cx| {
@@ -621,7 +654,8 @@ impl Workspace {
                 anchored()
                     .position(point(px(x), px(y)))
                     .anchor(Corner::TopLeft)
-                    .offset(point(px(0.0), px(2.0)))
+                    // Offset the menu away from the cursor so the pointer isn't directly above the first item
+                    .offset(point(px(8.0), px(8.0)))
                     .snap_to_window_with_margin(tokens.sizes.space_2)
                     .child(popup),
             )
@@ -1014,6 +1048,19 @@ impl Workspace {
         // Check if completion is visible and handle navigation/control keys
         if self.overlay.read(cx).has_completion() {
             match ev.keystroke.key.as_str() {
+                // Accept with Enter when showing code actions dropdown
+                "enter" => {
+                    let accept_with_enter = self.overlay.read(cx).has_code_actions();
+                    if accept_with_enter {
+                        nucleotide_logging::info!("Accepting code action via Enter key");
+                        let handled = self
+                            .overlay
+                            .update(cx, |overlay, cx| overlay.handle_completion_enter_key(cx));
+                        if handled {
+                            return;
+                        }
+                    }
+                }
                 "up" | "down" => {
                     nucleotide_logging::info!(
                         key = %ev.keystroke.key,
@@ -1135,8 +1182,131 @@ impl Workspace {
             }
         }
 
+        // Leader key timeout handling
+
         // Update input context based on current focus state
         self.update_input_context(window, cx);
+
+        // Determine current Helix editor mode for precise gating
+        let helix_mode = { self.core.read(cx).editor.mode() };
+
+        // If we left Normal mode while a leader sequence was active, cancel it
+        if self.leader_active && helix_mode != helix_view::document::Mode::Normal {
+            info!("Leader: cancelled due to leaving Normal mode");
+            self.leader_active = false;
+            self.leader_deadline = None;
+            self.key_hints.update(cx, |key_hints, cx| {
+                key_hints.set_info(None);
+                cx.notify();
+            });
+        }
+
+        // Leader key handling: SPACE as prefix only in Normal editor mode
+        if self.input_coordinator.current_context() == InputContext::Normal
+            && helix_mode == helix_view::document::Mode::Normal
+            && ev.keystroke.modifiers.number_of_modifiers() == 0
+        {
+            match ev.keystroke.key.as_str() {
+                "space" | " " if !self.leader_active => {
+                    info!("Leader: SPACE pressed, activating leader mode");
+                    // Activate leader, swallow the space
+                    self.leader_active = true;
+                    // No timeout in Normal mode
+
+                    // Show leader key hint list
+                    let info = HelixInfo {
+                        title: "Leader (space)".into(),
+                        text: "f   File Finder\n\
+                               b   Buffer Picker\n\
+                               t   Toggle File Tree\n\
+                               a   Code Actions\n\
+                               esc Cancel"
+                            .into(),
+                        width: 0,
+                        height: 0,
+                    };
+                    let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(Some(info));
+                        key_hints.set_theme(theme);
+                        cx.notify();
+                    });
+                    return;
+                }
+                "a" if self.leader_active => {
+                    info!("Leader: SPACE-a detected, opening Code Actions");
+                    // SPACE-a => Show code actions
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    // Clear leader hint
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    show_code_actions(self.core.clone(), self.handle.clone(), cx);
+                    return;
+                }
+                "f" if self.leader_active => {
+                    info!("Leader: SPACE-f detected, opening File Finder");
+                    // Clear leader state and hint
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    // Invoke file finder
+                    let core = self.core.clone();
+                    let handle = self.handle.clone();
+                    open(core, handle, cx);
+                    return;
+                }
+                "b" if self.leader_active => {
+                    info!("Leader: SPACE-b detected, opening Buffer Picker");
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    let core = self.core.clone();
+                    let handle = self.handle.clone();
+                    show_buffer_picker(core, handle, cx);
+                    return;
+                }
+                "t" if self.leader_active => {
+                    info!("Leader: SPACE-t detected, toggling File Tree");
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    self.show_file_tree = !self.show_file_tree;
+                    cx.notify();
+                    return;
+                }
+                "escape" if self.leader_active => {
+                    info!("Leader: cancelled by Escape");
+                    // Cancel leader
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    // Clear leader hint
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    return;
+                }
+                _ => {
+                    if self.leader_active {
+                        // Keep leader active and swallow unrelated keys until ESC or valid sequence
+                        info!(key = %ev.keystroke.key, "Leader: awaiting sequence; key ignored");
+                        return;
+                    }
+                }
+            }
+        }
 
         // Delegate to InputCoordinator for processing
         let result = self.input_coordinator.handle_key_event(ev, window);
@@ -3311,6 +3481,10 @@ impl Workspace {
                 nucleotide_logging::info!("Forwarding completion to overlay");
 
                 // Overlay will handle completion view setup in its own Update handler
+                self.handle_overlay_update(cx);
+            }
+            crate::Update::CodeActions(_completion_view, _pairs) => {
+                nucleotide_logging::info!("Forwarding code actions dropdown to overlay");
                 self.handle_overlay_update(cx);
             }
             crate::Update::OpenFile(path) => self.handle_open_file(path, cx),
@@ -6316,6 +6490,15 @@ impl Render for Workspace {
             },
         ));
 
+        // Code actions picker
+        let handle = self.handle.clone();
+        let core = self.core.clone();
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |_, _: &crate::actions::workspace::ShowCodeActions, _window, cx| {
+                show_code_actions(core.clone(), handle.clone(), cx)
+            },
+        ));
+
         // Toggle file tree action
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::workspace::ToggleFileTree, _window, cx| {
@@ -6863,6 +7046,217 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
     core.update(cx, |_core, cx| {
         cx.emit(crate::Update::Picker(buffer_picker));
     });
+}
+
+fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
+    use futures_util::stream::{FuturesOrdered, StreamExt};
+    use helix_lsp::lsp;
+    use helix_lsp::util::{diagnostic_to_lsp_diagnostic, range_to_lsp_range};
+
+    info!("Opening code actions dropdown");
+
+    // Snapshot needed editor state under read lock
+    let (doc_id, view_id, offset_encoding, identifier, range, diags, servers) = {
+        let core_r = core.read(cx);
+        let editor = &core_r.editor;
+        let view = editor.tree.get(editor.tree.focus);
+        let doc = editor.documents.get(&view.doc).expect("doc exists");
+
+        let selection_range = doc.selection(view.id).primary();
+        let diags = doc
+            .diagnostics()
+            .iter()
+            .filter(|d| {
+                selection_range.overlaps(&helix_core::Range::new(d.range.start, d.range.end))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        // Collect unique servers supporting CodeAction
+        let mut seen = std::collections::HashSet::new();
+        let servers: Vec<_> = doc
+            .language_servers_with_feature(LanguageServerFeature::CodeAction)
+            .filter(|ls| seen.insert(ls.id()))
+            .collect();
+
+        let offset_encoding = servers
+            .get(0)
+            .map(|ls| ls.offset_encoding())
+            .unwrap_or_default();
+        let identifier = doc.identifier();
+        let range = range_to_lsp_range(doc.text(), selection_range, offset_encoding);
+
+        (
+            view.doc,
+            view.id,
+            offset_encoding,
+            identifier,
+            range,
+            diags,
+            servers,
+        )
+    };
+
+    if servers.is_empty() {
+        info!("No language servers with CodeAction support");
+        return;
+    }
+
+    // Build per-server requests
+    let doc_text_for_diag = {
+        let core_r = core.read(cx);
+        // Safe: doc exists
+        core_r.editor.documents.get(&doc_id).unwrap().text().clone()
+    };
+
+    let mut futures: FuturesOrdered<_> = servers
+        .into_iter()
+        .filter_map(|ls| {
+            let offset = ls.offset_encoding();
+            let ls_id = ls.id();
+            let ctx = lsp::CodeActionContext {
+                diagnostics: diags
+                    .iter()
+                    .map(|d| diagnostic_to_lsp_diagnostic(&doc_text_for_diag, d, offset))
+                    .collect(),
+                only: None,
+                trigger_kind: Some(lsp::CodeActionTriggerKind::INVOKED),
+            };
+            let req = ls.code_actions(identifier.clone(), range, ctx)?;
+            Some(async move {
+                req.await
+                    .map(|opt| (opt.unwrap_or_default(), ls_id, offset))
+            })
+        })
+        .collect();
+
+    // Helper sorters to mirror Helix ordering
+    fn action_category(action: &lsp::CodeActionOrCommand) -> u32 {
+        if let lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+            kind: Some(kind), ..
+        }) = action
+        {
+            let mut components = kind.as_str().split('.');
+            match components.next() {
+                Some("quickfix") => 0,
+                Some("refactor") => match components.next() {
+                    Some("extract") => 1,
+                    Some("inline") => 2,
+                    Some("rewrite") => 3,
+                    Some("move") => 4,
+                    Some("surround") => 5,
+                    _ => 7,
+                },
+                Some("source") => 6,
+                _ => 7,
+            }
+        } else {
+            7
+        }
+    }
+
+    fn action_preferred(action: &lsp::CodeActionOrCommand) -> bool {
+        matches!(
+            action,
+            lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+                is_preferred: Some(true),
+                ..
+            })
+        )
+    }
+
+    fn action_fixes_diagnostics(action: &lsp::CodeActionOrCommand) -> bool {
+        matches!(
+            action,
+            lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction { diagnostics: Some(diags), .. }) if !diags.is_empty()
+        )
+    }
+
+    // Spawn async collection job
+    let core_weak = core.downgrade();
+    cx.spawn(async move |cx| {
+        // Build items for the completion-style dropdown
+        let mut completion_items: Vec<nucleotide_ui::completion_v2::CompletionItem> = Vec::new();
+        // Store paired action + server metadata alongside items for on_select
+        let mut pairs: Vec<(
+            lsp::CodeActionOrCommand,
+            helix_core::diagnostic::LanguageServerId,
+            helix_lsp::OffsetEncoding,
+        )> = Vec::new();
+
+        while let Some(result) = futures.next().await {
+            match result {
+                Ok((mut actions, ls_id, offset)) => {
+                    // Drop disabled actions
+                    actions.retain(|a| match a {
+                        lsp::CodeActionOrCommand::CodeAction(ca) => ca.disabled.is_none(),
+                        _ => true,
+                    });
+
+                    // Sort as in Helix: category, then fixes diagnostics, then preferred
+                    actions.sort_by(|a, b| {
+                        let cat = action_category(a).cmp(&action_category(b));
+                        if cat != std::cmp::Ordering::Equal {
+                            return cat;
+                        }
+                        let fix = action_fixes_diagnostics(a)
+                            .cmp(&action_fixes_diagnostics(b))
+                            .reverse();
+                        if fix != std::cmp::Ordering::Equal {
+                            return fix;
+                        }
+                        action_preferred(a).cmp(&action_preferred(b)).reverse()
+                    });
+
+                    for action in actions.into_iter() {
+                        let label = match &action {
+                            lsp::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
+                            lsp::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
+                        };
+                        // Build a simple completion item for the dropdown
+                        let ci = nucleotide_ui::completion_v2::CompletionItem::new(label);
+                        completion_items.push(ci);
+                        pairs.push((action, ls_id, offset));
+                    }
+                }
+                Err(err) => {
+                    warn!(error = %err, "Error collecting code actions from server");
+                }
+            }
+        }
+
+        // If none, exit with a notification
+        if completion_items.is_empty() {
+            if let Some(core) = core_weak.upgrade() {
+                core.update(cx, |_core, cx| {
+                    cx.emit(crate::Update::EditorStatus(
+                        nucleotide_types::EditorStatus {
+                            status: "No code actions available".to_string(),
+                            severity: nucleotide_types::Severity::Info,
+                        },
+                    ));
+                });
+            }
+            return;
+        }
+
+        // Create a CompletionView and load items
+        if let Some(core) = core_weak.upgrade() {
+            let completion_view = cx
+                .new(|cx| {
+                    let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
+                    view.set_items(completion_items, cx);
+                    view
+                })
+                .expect("create code actions completion view");
+
+            // Emit completion-style code actions into overlay
+            core.update(cx, |_core, cx| {
+                cx.emit(crate::Update::CodeActions(completion_view, pairs));
+            });
+        }
+    })
+    .detach();
 }
 
 fn test_prompt(core: Entity<Core>, handle: tokio::runtime::Handle, cx: &mut App) {

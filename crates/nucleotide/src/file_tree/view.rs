@@ -1145,13 +1145,14 @@ impl FileTreeView {
                     .with_listener({
                         let file_tree_tokens = file_tree_tokens;
                         move |item| {
-                            // Apply minimal custom styling - let nucleotide-ui handle most of it
+                            // Apply minimal custom styling - remove hover highlight for file tree rows
                             let mut item = item.w_full().pl(indentation).pr(px(8.0)).h(px(24.0));
-                            // Selection and hover using color theory tokens (not Helix theme)
                             if is_selected {
+                                // Keep selected highlight
                                 item = item.bg(file_tree_tokens.item_background_selected);
-                            } else if enable_animations {
-                                item = item.hover(|s| s.bg(file_tree_tokens.item_background_hover));
+                            } else {
+                                // Override any internal hover to keep background unchanged
+                                item = item.hover(|s| s.bg(file_tree_tokens.background));
                             }
                             item
                         }
