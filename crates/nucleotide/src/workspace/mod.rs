@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use gpui::FontFeatures;
 use gpui::prelude::FluentBuilder;
+use gpui::svg;
 use gpui::{
     App, AppContext, BorrowAppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
@@ -4087,7 +4088,7 @@ impl Workspace {
         let font_size = gpui::px(ui_font_config.size);
 
         // Get current document info first (without LSP indicator to avoid borrow conflicts)
-        let (mode_name, file_name, position_text, has_lsp_state) = {
+        let (mode_name, file_name, position_text, has_lsp_state, preferred_server_id) = {
             let core = self.core.read(cx);
             let editor = &core.editor;
 
@@ -4134,8 +4135,24 @@ impl Workspace {
                 position_text = format!("{}:{}", position.row + 1, position.col + 1);
             }
 
+            // Determine preferred LSP server for the current document
+            let preferred_server_id = if let Some(view_id) = self.view_manager.focused_view_id()
+                && let Some(view) = editor.tree.try_get(view_id)
+                && let Some(doc) = editor.document(view.doc)
+            {
+                doc.language_servers().next().map(|ls| ls.id())
+            } else {
+                None
+            };
+
             let has_lsp_state = core.lsp_state.is_some();
-            (mode_name, file_name, position_text, has_lsp_state)
+            (
+                mode_name,
+                file_name,
+                position_text,
+                has_lsp_state,
+                preferred_server_id,
+            )
         };
 
         // Get LSP indicator separately to avoid borrowing conflicts
@@ -4146,7 +4163,43 @@ impl Workspace {
                 core.lsp_state.clone()
             };
             if let Some(lsp_state) = lsp_state_entity {
-                lsp_state.update(cx, |state, _| state.get_lsp_indicator())
+                lsp_state.update(cx, |state, _| {
+                    if let Some(pref_id) = preferred_server_id {
+                        if let Some(server) = state.servers.get(&pref_id).cloned() {
+                            // Prefer progress for this server if any
+                            if let Some(p) = state
+                                .progress
+                                .values()
+                                .find(|p| p.server_id == pref_id)
+                                .cloned()
+                            {
+                                let indicator = state.get_spinner_frame().to_string();
+                                let mut s = format!("{} {}: ", indicator, server.name);
+                                if let Some(pct) = p.percentage {
+                                    s.push_str(&format!("{:>2}% ", pct));
+                                }
+                                s.push_str(&p.title);
+                                if let Some(msg) = &p.message {
+                                    s.push_str(" ⋅ ");
+                                    s.push_str(msg);
+                                }
+                                return Some(s);
+                            }
+
+                            // Otherwise show basic server indicator based on status
+                            let indicator = match server.status {
+                                ServerStatus::Starting | ServerStatus::Initializing => {
+                                    state.get_spinner_frame().to_string()
+                                }
+                                _ => "◉".to_string(),
+                            };
+                            return Some(format!("{} {}", indicator, server.name));
+                        }
+                    }
+
+                    // Fallback to default indicator
+                    state.get_lsp_indicator()
+                })
             } else {
                 None
             }
@@ -4242,18 +4295,12 @@ impl Workspace {
                                 // Divider before LSP
                                 div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2(),
                             )
-                            .child(
-                                // LSP indicator - dynamic width based on content using design tokens
+                            .child({
+                                let chevron_path = "icons/chevron-up.svg";
+
                                 div()
-                                    .child(indicator.clone())
-                                    .flex_shrink() // Allow shrinking when space is limited
-                                    .max_w(px(400.)) // Max width prevents taking over the entire status bar
-                                    .min_w(px(16.)) // Minimum for icon-only display
-                                    .overflow_hidden()
-                                    .text_ellipsis() // Graceful text truncation
-                                    .px(space_3) // Use design token spacing
-                                    .text_size(text_sm) // Use design token text sizing
-                                    .whitespace_nowrap() // Prevent text wrapping
+                                    .flex()
+                                    .items_center()
                                     .cursor_pointer()
                                     .on_any_mouse_down(cx.listener(
                                         |this: &mut Workspace,
@@ -4264,8 +4311,28 @@ impl Workspace {
                                             this.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
                                             cx.notify();
                                         },
-                                    )),
-                            )
+                                    ))
+                                    .child(
+                                        svg()
+                                            .path(chevron_path)
+                                            .w(px(10.0))
+                                            .h(px(10.0))
+                                            .text_color(fg_color)
+                                            .mr(px(6.0)),
+                                    )
+                                    .child(
+                                        div()
+                                            .child(indicator.clone())
+                                            .flex_shrink()
+                                            .max_w(px(400.))
+                                            .min_w(px(16.))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .px(space_3)
+                                            .text_size(text_sm)
+                                            .whitespace_nowrap(),
+                                    )
+                            })
                     }), // .child({
                         //     // Project status indicator section - temporarily disabled
                         //     // let project_status_handle = nucleotide_project::project_status_service(cx);
