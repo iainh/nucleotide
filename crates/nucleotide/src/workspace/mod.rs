@@ -4314,42 +4314,21 @@ impl Workspace {
                                 div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2(),
                             )
                             .child({
-                                use nucleotide_ui::{Button, ButtonSize, ButtonVariant};
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(space_3)
-                                    .child(
-                                        Button::icon_only(
-                                            "lsp-status-trigger",
-                                            "icons/chevron-up.svg",
-                                        )
-                                        .variant(ButtonVariant::Ghost)
-                                        .size(ButtonSize::ExtraSmall)
-                                        .on_click(cx.listener(
-                                            |this: &mut Workspace,
-                                             ev: &gpui::MouseUpEvent,
-                                             _w,
-                                             cx| {
-                                                this.lsp_menu_open = true;
-                                                this.lsp_menu_pos =
-                                                    (ev.position.x.0, ev.position.y.0);
-                                                cx.notify();
-                                            },
-                                        )),
-                                    )
-                                    .child(
-                                        div()
-                                            .child(indicator.clone())
-                                            .flex_shrink()
-                                            .max_w(px(400.))
-                                            .min_w(px(16.))
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .px(space_3)
-                                            .text_size(text_sm)
-                                            .whitespace_nowrap(),
-                                    )
+                                use nucleotide_ui::{
+                                    Button, ButtonSize, ButtonVariant, IconPosition,
+                                };
+                                Button::new("lsp-status-trigger", indicator.clone())
+                                    .variant(ButtonVariant::Ghost)
+                                    .size(ButtonSize::ExtraSmall)
+                                    .icon("icons/chevron-up.svg")
+                                    .icon_position(IconPosition::End)
+                                    .on_click(cx.listener(
+                                        |this: &mut Workspace, ev: &gpui::MouseUpEvent, _w, cx| {
+                                            this.lsp_menu_open = true;
+                                            this.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
+                                            cx.notify();
+                                        },
+                                    ))
                             })
                     }), // .child({
                         //     // Project status indicator section - temporarily disabled

@@ -318,38 +318,18 @@ impl Render for StatusLineView {
                     div().w(px(1.)).h(px(16.)).bg(status_bar_tokens.border),
                 )
                 .child(
-                    // LSP trigger: ghost button + adjacent indicator text
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(tokens.sizes.space_2)
-                        .child(
-                            Button::icon_only("lsp-status-trigger", "icons/chevron-up.svg")
-                                .variant(ButtonVariant::Ghost)
-                                .size(ButtonSize::ExtraSmall)
-                                .on_click(cx.listener(
-                                    |view: &mut StatusLineView,
-                                     ev: &gpui::MouseUpEvent,
-                                     _win,
-                                     cx| {
-                                        view.lsp_menu_open = true;
-                                        view.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
-                                        cx.notify();
-                                    },
-                                )),
-                        )
-                        .child(
-                            div()
-                                .child(indicator)
-                                .flex_shrink()
-                                .max_w(px(400.))
-                                .min_w(px(16.))
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .px(tokens.sizes.space_3)
-                                .text_size(tokens.sizes.text_sm)
-                                .whitespace_nowrap(),
-                        ),
+                    Button::new("lsp-status-trigger", indicator)
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::ExtraSmall)
+                        .icon("icons/chevron-up.svg")
+                        .icon_position(nucleotide_ui::IconPosition::End)
+                        .on_click(cx.listener(
+                            |view: &mut StatusLineView, ev: &gpui::MouseUpEvent, _win, cx| {
+                                view.lsp_menu_open = true;
+                                view.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
+                                cx.notify();
+                            },
+                        )),
                 );
         } else {
             nucleotide_logging::debug!(
