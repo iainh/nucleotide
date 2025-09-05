@@ -534,7 +534,7 @@ impl Workspace {
     /// Render the file tree context menu anchored at the last click position
     fn render_file_tree_context_menu(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         use gpui::{Corner, anchored, point};
@@ -547,6 +547,9 @@ impl Workspace {
         // Use anchored popup at the stored cursor position, relative to window
         let dd_tokens = tokens.dropdown_tokens();
 
+        // Move keyboard focus to the workspace focus group so arrow/enter navigation works
+        window.focus(&self.focus_handle);
+
         let popup = div()
             .bg(dd_tokens.container_background)
             .border_1()
@@ -556,6 +559,8 @@ impl Workspace {
             .min_w(px(200.0))
             .py(tokens.sizes.space_1)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // Prevent hover/move from reaching the file tree beneath the menu
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .children(items.into_iter().enumerate().map(|(i, (label, handler))| {
                 let hover_bg = dd_tokens.item_background_hover;
                 let text_default = dd_tokens.item_text;
@@ -569,6 +574,10 @@ impl Workspace {
                             cx.notify();
                         }
                     }))
+                    // Apply selection background on the full-width wrapper so it stretches edge to edge
+                    .when(self.context_menu_index == i, |d| {
+                        d.bg(dd_tokens.item_background_selected)
+                    })
                     .on_mouse_up(MouseButton::Left, {
                         let handler_fn = handler;
                         cx.listener(move |workspace: &mut Workspace, _ev, _window, cx| {
@@ -585,13 +594,13 @@ impl Workspace {
                                 div()
                                     .w_full()
                                     .text_size(tokens.sizes.text_sm)
-                                    .px(tokens.sizes.space_3)
-                                    .py(tokens.sizes.space_2)
-                                    .text_color(text_default)
-                                    .hover(|s| s.bg(hover_bg).text_color(text_hover))
-                                    .when(self.context_menu_index == i, |s| {
-                                        s.bg(dd_tokens.item_background_selected)
-                                            .text_color(dd_tokens.item_text_selected)
+                                    // Tighter spacing for compact context menu rows
+                                    .px(tokens.sizes.space_2)
+                                    .py(tokens.sizes.space_1)
+                                    .text_color(if self.context_menu_index == i {
+                                        dd_tokens.item_text_selected
+                                    } else {
+                                        text_default
                                     })
                                     .child(label),
                             ),
@@ -605,6 +614,8 @@ impl Workspace {
             .top_0()
             .left_0()
             .occlude()
+            // Swallow mouse move/hover so it doesn't update file tree hover beneath
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|w: &mut Workspace, _ev, _win, cx| {
@@ -628,7 +639,8 @@ impl Workspace {
                 anchored()
                     .position(point(px(x), px(y)))
                     .anchor(Corner::TopLeft)
-                    .offset(point(px(0.0), px(2.0)))
+                    // Offset the menu away from the cursor so the pointer isn't directly above the first item
+                    .offset(point(px(8.0), px(8.0)))
                     .snap_to_window_with_margin(tokens.sizes.space_2)
                     .child(popup),
             )
