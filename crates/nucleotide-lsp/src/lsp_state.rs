@@ -278,9 +278,9 @@ impl LspState {
     /// Check if we should show spinner (when there's LSP activity)
     pub fn should_show_spinner(&self) -> bool {
         // Show spinner if:
-        // - There are active progress operations
+        // - There are active, non-idle progress operations
         // - Any server is starting/initializing
-        let has_progress = !self.progress.is_empty();
+        let has_active_progress = self.progress.values().any(|p| p.token.as_str() != "idle");
         let has_busy_servers = self.servers.values().any(|s| {
             matches!(
                 s.status,
@@ -288,7 +288,7 @@ impl LspState {
             )
         });
 
-        has_progress || has_busy_servers
+        has_active_progress || has_busy_servers
     }
 
     /// Check if any LSP servers are present (regardless of activity)
