@@ -472,25 +472,25 @@ impl ThemeManager {
 
         for (theme_key, description) in &extraction_attempts {
             let style = helix_theme.get(theme_key);
-            if let Some(helix_color) = style.bg {
-                if let Some(hsla_color) = color_to_hsla(helix_color) {
-                    nucleotide_logging::info!(
-                        theme_key = theme_key,
-                        description = description,
-                        extracted_color = ?hsla_color,
-                        lightness = hsla_color.l,
-                        "Surface color extracted from Helix theme"
-                    );
+            if let Some(helix_color) = style.bg
+                && let Some(hsla_color) = color_to_hsla(helix_color)
+            {
+                nucleotide_logging::info!(
+                    theme_key = theme_key,
+                    description = description,
+                    extracted_color = ?hsla_color,
+                    lightness = hsla_color.l,
+                    "Surface color extracted from Helix theme"
+                );
 
-                    let source = match *theme_key {
-                        "ui.background" => SurfaceColorSource::UiBackground,
-                        "ui.window" => SurfaceColorSource::UiWindow,
-                        "ui.menu" => SurfaceColorSource::UiMenu,
-                        _ => SurfaceColorSource::UiBackground, // fallback
-                    };
+                let source = match *theme_key {
+                    "ui.background" => SurfaceColorSource::UiBackground,
+                    "ui.window" => SurfaceColorSource::UiWindow,
+                    "ui.menu" => SurfaceColorSource::UiMenu,
+                    _ => SurfaceColorSource::UiBackground, // fallback
+                };
 
-                    return (hsla_color, source);
-                }
+                return (hsla_color, source);
             }
 
             nucleotide_logging::debug!(

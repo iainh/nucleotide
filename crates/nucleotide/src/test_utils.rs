@@ -2,6 +2,7 @@
 // ABOUTME: Provides mock implementations and helpers for testing event batching and deduplication
 
 #[cfg(test)]
+#[allow(dead_code, clippy::new_without_default)]
 pub mod test_support {
     use helix_view::document::Mode;
     use helix_view::{DocumentId, ViewId};
@@ -60,6 +61,12 @@ pub mod test_support {
     /// Mock update counter for tracking how many updates are emitted
     pub struct UpdateCounter {
         count: Arc<AtomicUsize>,
+    }
+
+    impl Default for UpdateCounter {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl UpdateCounter {

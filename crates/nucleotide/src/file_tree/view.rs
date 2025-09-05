@@ -1106,7 +1106,6 @@ impl FileTreeView {
             .w_full()
             .on_mouse_up(MouseButton::Left, {
                 let path = path.clone();
-                let is_dir = is_dir;
                 cx.listener(move |view, _event, window, cx| {
                     // Focus the tree view when any entry is clicked
                     debug!("File tree entry clicked, focusing tree view");
@@ -1143,16 +1142,16 @@ impl FileTreeView {
                     .selected(is_selected)
                     .class("file-tree-entry")
                     .with_listener({
-                        let file_tree_tokens = file_tree_tokens;
+                        let ft_tokens = file_tree_tokens;
                         move |item| {
                             // Apply minimal custom styling - remove hover highlight for file tree rows
                             let mut item = item.w_full().pl(indentation).pr(px(8.0)).h(px(24.0));
                             if is_selected {
                                 // Keep selected highlight
-                                item = item.bg(file_tree_tokens.item_background_selected);
+                                item = item.bg(ft_tokens.item_background_selected);
                             } else {
                                 // Override any internal hover to keep background unchanged
-                                item = item.hover(|s| s.bg(file_tree_tokens.background));
+                                item = item.hover(|s| s.bg(ft_tokens.background));
                             }
                             item
                         }

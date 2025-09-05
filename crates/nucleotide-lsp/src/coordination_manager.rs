@@ -591,8 +591,8 @@ mod tests {
         let config = create_test_config(false, true, 5000);
         let manager = LspManager::new(config.clone());
 
-        assert_eq!(manager.config.project_lsp_startup, false);
-        assert_eq!(manager.config.enable_fallback, true);
+        assert!(!manager.config.project_lsp_startup);
+        assert!(manager.config.enable_fallback);
         assert_eq!(manager.config.startup_timeout_ms, 5000);
         assert_eq!(manager.startup_attempts.len(), 0);
     }
@@ -605,8 +605,8 @@ mod tests {
         let new_config = create_test_config(true, false, 3000);
         let _ = manager.update_config(new_config);
 
-        assert_eq!(manager.config.project_lsp_startup, true);
-        assert_eq!(manager.config.enable_fallback, false);
+        assert!(manager.config.project_lsp_startup);
+        assert!(!manager.config.enable_fallback);
         assert_eq!(manager.config.startup_timeout_ms, 3000);
     }
 

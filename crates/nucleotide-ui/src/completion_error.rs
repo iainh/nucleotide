@@ -399,8 +399,10 @@ impl CompletionErrorHandler {
             .filter(|ctx| ctx.timestamp >= cutoff)
             .collect();
 
-        let mut stats = ErrorStats::default();
-        stats.total_count = recent_errors.len();
+        let mut stats = ErrorStats {
+            total_count: recent_errors.len(),
+            ..ErrorStats::default()
+        };
 
         for error in recent_errors {
             match error.severity {

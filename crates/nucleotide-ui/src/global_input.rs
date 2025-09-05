@@ -21,8 +21,10 @@ pub struct GlobalInputDispatcher {
     /// Input context management
     pub contexts: Arc<RwLock<InputContextManager>>,
     /// Dismiss handlers for different targets
+    #[allow(clippy::type_complexity)]
     pub dismiss_handlers: Arc<RwLock<HashMap<DismissTarget, Arc<dyn Fn() + Send + Sync>>>>,
     /// Action handlers for named actions
+    #[allow(clippy::type_complexity)]
     pub action_handlers: Arc<RwLock<HashMap<String, Arc<dyn Fn() + Send + Sync>>>>,
     /// Focus indicator configuration
     pub focus_indicator_config: Arc<RwLock<FocusIndicatorConfig>>,

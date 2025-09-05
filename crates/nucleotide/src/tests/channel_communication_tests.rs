@@ -102,22 +102,20 @@ async fn test_successful_channel_communication() {
     // Spawn a task to process commands normally
     tokio::spawn(async move {
         while let Some(command) = command_rx.recv().await {
-            match command {
-                ProjectLspCommand::StartServer {
-                    response,
-                    server_name,
-                    ..
-                } => {
-                    // Simulate successful server startup
-                    let success_result = Ok(ServerStartResult {
-                        server_id: slotmap::KeyData::from_ffi(123).into(),
-                        server_name: server_name.clone(),
-                        language_id: "rust".to_string(),
-                    });
+            if let ProjectLspCommand::StartServer {
+                response,
+                server_name,
+                ..
+            } = command
+            {
+                // Simulate successful server startup
+                let success_result = Ok(ServerStartResult {
+                    server_id: slotmap::KeyData::from_ffi(123).into(),
+                    server_name: server_name.clone(),
+                    language_id: "rust".to_string(),
+                });
 
-                    let _ = response.send(success_result);
-                }
-                _ => {} // Handle other commands as needed
+                let _ = response.send(success_result);
             }
         }
     });

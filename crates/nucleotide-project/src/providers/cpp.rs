@@ -649,10 +649,10 @@ impl CppManifestProvider {
         let content = delegate.read_to_string(path).await?;
 
         // Extract project name from directory or common variables
-        if let Some(file_parent) = path.parent() {
-            if let Some(dir_name) = file_parent.file_name().and_then(|n| n.to_str()) {
-                metadata.name = Some(dir_name.to_string());
-            }
+        if let Some(file_parent) = path.parent()
+            && let Some(dir_name) = file_parent.file_name().and_then(|n| n.to_str())
+        {
+            metadata.name = Some(dir_name.to_string());
         }
 
         // Extract compiler information
@@ -932,12 +932,12 @@ impl CppManifestProvider {
     fn extract_cmake_minimum_required(&self, content: &str) -> Option<String> {
         for line in content.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with("cmake_minimum_required(") {
-                if let Some(version_start) = trimmed.find("VERSION") {
-                    let version_part = &trimmed[version_start + 7..]; // Skip "VERSION "
-                    if let Some(paren_pos) = version_part.find(')') {
-                        return Some(version_part[..paren_pos].trim().to_string());
-                    }
+            if trimmed.starts_with("cmake_minimum_required(")
+                && let Some(version_start) = trimmed.find("VERSION")
+            {
+                let version_part = &trimmed[version_start + 7..]; // Skip "VERSION "
+                if let Some(paren_pos) = version_part.find(')') {
+                    return Some(version_part[..paren_pos].trim().to_string());
                 }
             }
         }
@@ -973,13 +973,13 @@ impl CppManifestProvider {
 
         for line in content.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with("find_package(") {
-                if let Some(paren_end) = trimmed.find(')') {
-                    let package_content = &trimmed[13..paren_end]; // Skip "find_package("
-                    let parts: Vec<&str> = package_content.split_whitespace().collect();
-                    if !parts.is_empty() {
-                        dependencies.push(parts[0].to_string());
-                    }
+            if trimmed.starts_with("find_package(")
+                && let Some(paren_end) = trimmed.find(')')
+            {
+                let package_content = &trimmed[13..paren_end]; // Skip "find_package("
+                let parts: Vec<&str> = package_content.split_whitespace().collect();
+                if !parts.is_empty() {
+                    dependencies.push(parts[0].to_string());
                 }
             }
         }
@@ -1004,20 +1004,20 @@ impl CppManifestProvider {
 
     fn extract_makefile_cxx_standard(&self, content: &str) -> Option<String> {
         // Look for -std=c++XX in CXXFLAGS
-        if let Some(cxxflags) = self.extract_makefile_variable(content, "CXXFLAGS") {
-            if let Some(std_start) = cxxflags.find("-std=c++") {
-                let std_part = &cxxflags[std_start + 8..]; // Skip "-std=c++"
-                if let Some(end) = std_part.find(' ') {
-                    return Some(format!("C++{}", &std_part[..end]));
-                } else {
-                    // Take only the numeric part
-                    let numeric_part: String = std_part
-                        .chars()
-                        .take_while(|c| c.is_ascii_digit())
-                        .collect();
-                    if !numeric_part.is_empty() {
-                        return Some(format!("C++{}", numeric_part));
-                    }
+        if let Some(cxxflags) = self.extract_makefile_variable(content, "CXXFLAGS")
+            && let Some(std_start) = cxxflags.find("-std=c++")
+        {
+            let std_part = &cxxflags[std_start + 8..]; // Skip "-std=c++"
+            if let Some(end) = std_part.find(' ') {
+                return Some(format!("C++{}", &std_part[..end]));
+            } else {
+                // Take only the numeric part
+                let numeric_part: String = std_part
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                if !numeric_part.is_empty() {
+                    return Some(format!("C++{}", numeric_part));
                 }
             }
         }
@@ -1029,11 +1029,11 @@ impl CppManifestProvider {
             let trimmed = line.trim();
             if trimmed.starts_with("project(") {
                 // Basic Meson project parsing
-                if let Some(quote_start) = trimmed.find('\'') {
-                    if let Some(quote_end) = trimmed[quote_start + 1..].find('\'') {
-                        let name = &trimmed[quote_start + 1..quote_start + 1 + quote_end];
-                        return Some((name.to_string(), None)); // Version parsing would be more complex
-                    }
+                if let Some(quote_start) = trimmed.find('\'')
+                    && let Some(quote_end) = trimmed[quote_start + 1..].find('\'')
+                {
+                    let name = &trimmed[quote_start + 1..quote_start + 1 + quote_end];
+                    return Some((name.to_string(), None)); // Version parsing would be more complex
                 }
             }
         }
@@ -1047,11 +1047,11 @@ impl CppManifestProvider {
             let trimmed = line.trim();
             if trimmed.contains("dependency(") {
                 // Extract dependency name from dependency('name')
-                if let Some(quote_start) = trimmed.find('\'') {
-                    if let Some(quote_end) = trimmed[quote_start + 1..].find('\'') {
-                        let dep_name = &trimmed[quote_start + 1..quote_start + 1 + quote_end];
-                        dependencies.push(dep_name.to_string());
-                    }
+                if let Some(quote_start) = trimmed.find('\'')
+                    && let Some(quote_end) = trimmed[quote_start + 1..].find('\'')
+                {
+                    let dep_name = &trimmed[quote_start + 1..quote_start + 1 + quote_end];
+                    dependencies.push(dep_name.to_string());
                 }
             }
         }
@@ -1090,14 +1090,14 @@ impl CppManifestProvider {
             let trimmed = line.trim();
             if trimmed.contains("self.requires(") {
                 // Extract dependency from self.requires("package/version")
-                if let Some(quote_start) = trimmed.find('"') {
-                    if let Some(quote_end) = trimmed[quote_start + 1..].find('"') {
-                        let dep_spec = &trimmed[quote_start + 1..quote_start + 1 + quote_end];
-                        if let Some(slash_pos) = dep_spec.find('/') {
-                            dependencies.push(dep_spec[..slash_pos].to_string());
-                        } else {
-                            dependencies.push(dep_spec.to_string());
-                        }
+                if let Some(quote_start) = trimmed.find('"')
+                    && let Some(quote_end) = trimmed[quote_start + 1..].find('"')
+                {
+                    let dep_spec = &trimmed[quote_start + 1..quote_start + 1 + quote_end];
+                    if let Some(slash_pos) = dep_spec.find('/') {
+                        dependencies.push(dep_spec[..slash_pos].to_string());
+                    } else {
+                        dependencies.push(dep_spec.to_string());
                     }
                 }
             }

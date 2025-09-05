@@ -147,12 +147,12 @@ impl ManifestProvider for RustManifestProvider {
         }
 
         // Add workspace information
-        if let Some(workspace) = manifest.workspace {
-            if let Some(members) = workspace.members {
-                metadata
-                    .additional_info
-                    .insert("workspace_members".to_string(), members.join(","));
-            }
+        if let Some(workspace) = manifest.workspace
+            && let Some(members) = workspace.members
+        {
+            metadata
+                .additional_info
+                .insert("workspace_members".to_string(), members.join(","));
         }
 
         // Check for additional Cargo features

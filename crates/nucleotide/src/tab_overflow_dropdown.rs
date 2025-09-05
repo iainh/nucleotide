@@ -3,12 +3,13 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, CursorStyle, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce,
-    SharedString, Styled, Window, div, px,
+    App, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce, SharedString,
+    Styled, Window, div, px,
 };
 use helix_view::DocumentId;
 use nucleotide_ui::{
-    ListItem, ListItemSpacing, ListItemVariant, ThemedContext as UIThemedContext, VcsIcon,
+    Button, ButtonSize, ButtonVariant, IconPosition, ListItem, ListItemSpacing, ListItemVariant,
+    ThemedContext as UIThemedContext, VcsIcon,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -133,50 +134,32 @@ impl RenderOnce for TabOverflowButton {
             .bg(container_bg)
             .border_b_1()
             .border_color(border_color)
-            .child(
-                // Custom button styled to match tab bar aesthetic (no borders)
+            .child({
+                let label = format!("+{}", self.overflow_count);
+                let icon_path = if self.is_open {
+                    "icons/chevron-up.svg"
+                } else {
+                    "icons/chevron-down.svg"
+                };
+                // Wrap button to stop mousedown from bubbling to workspace, which would
+                // auto-close the dropdown before our click handler runs (causing re-open).
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(tokens.sizes.space_1)
-                    .px(tokens.sizes.space_3)
-                    .py(tokens.sizes.space_2)
-                    .h(tokens.sizes.button_height_sm)
-                    .cursor(CursorStyle::PointingHand)
-                    .rounded(tokens.sizes.radius_md)
-                    .bg(if self.is_open {
-                        tab_tokens.tab_active_background // Use active tab color when open
-                    } else {
-                        tab_tokens.tab_inactive_background // Use inactive tab color when closed
-                    })
-                    .text_color(if self.is_open {
-                        tab_tokens.tab_text_active // Active tab text color
-                    } else {
-                        tab_tokens.tab_text_inactive // Inactive tab text color
-                    })
-                    .hover(|style| {
-                        style
-                            .bg(tab_tokens.tab_hover_background)
-                            .text_color(tab_tokens.tab_text_inactive)
-                    })
-                    .on_mouse_up(MouseButton::Left, {
-                        let on_dropdown_toggle = self.on_dropdown_toggle.clone();
-                        move |_event, window, cx| {
-                            on_dropdown_toggle(window, cx);
-                            cx.stop_propagation();
-                        }
-                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
-                        div()
-                            .text_size(tokens.sizes.text_sm)
-                            .child(format!("+{}", self.overflow_count)),
+                        Button::new("tab-overflow-btn", label)
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Small)
+                            .icon(icon_path)
+                            .icon_position(IconPosition::End)
+                            .on_click({
+                                let on_dropdown_toggle = self.on_dropdown_toggle.clone();
+                                move |_ev, window, cx| {
+                                    on_dropdown_toggle(window, cx);
+                                    cx.stop_propagation();
+                                }
+                            }),
                     )
-                    .child(
-                        div()
-                            .text_size(tokens.sizes.text_xs)
-                            .child(if self.is_open { "▲" } else { "▼" }),
-                    ),
-            )
+            })
     }
 }
 

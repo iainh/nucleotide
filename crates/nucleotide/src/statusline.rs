@@ -1,8 +1,8 @@
 use crate::Core;
 use gpui::InteractiveElement;
 use gpui::{
-    Context, Entity, EventEmitter, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
-    Styled, Window, div, px,
+    Context, Entity, EventEmitter, IntoElement, MouseButton, ParentElement, Render, Styled, Window,
+    div, px,
 };
 use gpui::{Corner, anchored, point};
 use helix_view::{DocumentId, ViewId};
@@ -138,7 +138,8 @@ impl Render for StatusLineView {
                 view_id = ?self.view_id,
                 "STATUSLINE: Getting LSP indicator from LspState"
             );
-            let indicator = lsp_state.update(cx, |state, _| {
+
+            lsp_state.update(cx, |state, _| {
                 let server_count = state.servers.len();
                 let indicator = state.get_lsp_indicator();
                 nucleotide_logging::info!(
@@ -149,8 +150,7 @@ impl Render for StatusLineView {
                     "STATUSLINE: LspState has servers and indicator"
                 );
                 indicator
-            });
-            indicator
+            })
         } else {
             nucleotide_logging::warn!(
                 doc_id = ?self.doc_id,
@@ -311,32 +311,45 @@ impl Render for StatusLineView {
                 indicator = %indicator,
                 "STATUSLINE: Adding LSP indicator to status bar"
             );
+            use nucleotide_ui::{Button, ButtonSize, ButtonVariant};
             status_bar = status_bar
                 .child(
                     // Divider before LSP
                     div().w(px(1.)).h(px(16.)).bg(status_bar_tokens.border),
                 )
                 .child(
-                    // LSP indicator as a clickable button to open server list popup
+                    // LSP trigger: ghost button + adjacent indicator text
                     div()
-                        .child(indicator)
-                        .flex_shrink()
-                        .max_w(px(400.))
-                        .min_w(px(16.))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .px(tokens.sizes.space_3)
-                        .text_size(tokens.sizes.text_sm)
-                        .whitespace_nowrap()
-                        .cursor_pointer()
-                        // Capture any mouse down to robustly open the popup
-                        .on_any_mouse_down(cx.listener(
-                            |view: &mut StatusLineView, ev: &MouseDownEvent, _win, cx| {
-                                view.lsp_menu_open = true;
-                                view.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
-                                cx.notify();
-                            },
-                        )),
+                        .flex()
+                        .items_center()
+                        .gap(tokens.sizes.space_2)
+                        .child(
+                            Button::icon_only("lsp-status-trigger", "icons/chevron-up.svg")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::ExtraSmall)
+                                .on_click(cx.listener(
+                                    |view: &mut StatusLineView,
+                                     ev: &gpui::MouseUpEvent,
+                                     _win,
+                                     cx| {
+                                        view.lsp_menu_open = true;
+                                        view.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
+                                        cx.notify();
+                                    },
+                                )),
+                        )
+                        .child(
+                            div()
+                                .child(indicator)
+                                .flex_shrink()
+                                .max_w(px(400.))
+                                .min_w(px(16.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .px(tokens.sizes.space_3)
+                                .text_size(tokens.sizes.text_sm)
+                                .whitespace_nowrap(),
+                        ),
                 );
         } else {
             nucleotide_logging::debug!(

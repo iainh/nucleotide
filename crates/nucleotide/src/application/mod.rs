@@ -1234,7 +1234,7 @@ impl Application {
                 "Current editor status from Helix"
             );
 
-            let _zombie_tokens = lsp_state.update(cx, |state, cx| {
+            lsp_state.update(cx, |state, cx| {
                 // Log current state before clearing
                 let old_progress_count = state.progress.len();
                 debug!(
@@ -1315,16 +1315,12 @@ impl Application {
                                     .filter_map(|(token, status)| match status {
                                         helix_lsp::ProgressStatus::Started { title, progress } => {
                                             let (message, percentage) = match progress {
-                                                helix_lsp::lsp::WorkDoneProgress::Begin(begin) => (
-                                                    begin.message.clone(),
-                                                    begin.percentage.map(|p| p as u32),
-                                                ),
+                                                helix_lsp::lsp::WorkDoneProgress::Begin(begin) => {
+                                                    (begin.message.clone(), begin.percentage)
+                                                }
                                                 helix_lsp::lsp::WorkDoneProgress::Report(
                                                     report,
-                                                ) => (
-                                                    report.message.clone(),
-                                                    report.percentage.map(|p| p as u32),
-                                                ),
+                                                ) => (report.message.clone(), report.percentage),
                                                 helix_lsp::lsp::WorkDoneProgress::End(end) => {
                                                     (end.message.clone(), None)
                                                 }
@@ -2655,8 +2651,8 @@ impl Application {
                         // Handle LSP server lifecycle events with GPUI context
                         match &bridged_event {
                             event_bridge::BridgedEvent::DiagnosticsChanged { doc_id } => {
-                                if let Some(document) = self.editor.document(*doc_id) {
-                                    if let (Some(lsp_state), Some(path)) = (&self.lsp_state, document.path()) {
+                                if let Some(document) = self.editor.document(*doc_id)
+                                    && let (Some(lsp_state), Some(path)) = (&self.lsp_state, document.path()) {
                                         let diagnostics = document.diagnostics();
                                         let uri = helix_core::Uri::from(path.clone());
                                         let total = diagnostics.len();
@@ -2713,7 +2709,6 @@ impl Application {
                                             }
                                         }
                                     }
-                                }
                             }
                             event_bridge::BridgedEvent::LspServerStartupRequested {
                                 workspace_root,
@@ -2934,7 +2929,7 @@ impl Application {
                             // Re-send LSP configuration to all running language servers (ensures rust-analyzer checkOnSave is applied)
                             for client in self.editor.language_servers.iter_clients() {
                                 let cfg = client.config();
-                                if let Some(cfg) = cfg.clone() {
+                                if let Some(cfg) = cfg {
                                     info!(server = %client.name(), "Re-sending LSP didChangeConfiguration with current settings");
                                     client.did_change_configuration(cfg.clone());
                                 }
@@ -4685,21 +4680,19 @@ impl Application {
         if matches!(
             event,
             helix_view::handlers::completion::CompletionEvent::ManualTrigger { .. }
-        ) {
-            if let Some(doc) = self.editor.document(doc_id) {
-                let text = doc.text();
-                if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
-                    let cursor_chars = text.byte_to_char(cursor.min(text.len_bytes()));
-                    if let Some(prev_ch) = text.chars_at(cursor_chars).reversed().next() {
-                        if matches!(prev_ch, ':' | '.' | '\'' | '(') {
-                            nucleotide_logging::info!(
-                                prev_char = %prev_ch,
-                                "Upgrading ManualTrigger to TriggerChar based on context"
-                            );
-                            trigger_kind =
-                                helix_term::handlers::completion::TriggerKind::TriggerChar;
-                        }
-                    }
+        ) && let Some(doc) = self.editor.document(doc_id)
+        {
+            let text = doc.text();
+            if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
+                let cursor_chars = text.byte_to_char(cursor.min(text.len_bytes()));
+                if let Some(prev_ch) = text.chars_at(cursor_chars).reversed().next()
+                    && matches!(prev_ch, ':' | '.' | '\'' | '(')
+                {
+                    nucleotide_logging::info!(
+                        prev_char = %prev_ch,
+                        "Upgrading ManualTrigger to TriggerChar based on context"
+                    );
+                    trigger_kind = helix_term::handlers::completion::TriggerKind::TriggerChar;
                 }
             }
         }
@@ -4714,17 +4707,16 @@ impl Application {
         if matches!(
             event,
             helix_view::handlers::completion::CompletionEvent::ManualTrigger { .. }
-        ) {
-            if let Some(doc) = self.editor.document(doc_id) {
-                let text = doc.text();
-                if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
-                    let cursor_chars = text.byte_to_char(cursor.min(text.len_bytes()));
-                    if let Some(prev_ch) = text.chars_at(cursor_chars).reversed().next() {
-                        if helix_core::chars::char_is_word(prev_ch) || prev_ch == ':' {
-                            // Small, bounded delay to allow didChange to propagate
-                            std::thread::sleep(std::time::Duration::from_millis(30));
-                        }
-                    }
+        ) && let Some(doc) = self.editor.document(doc_id)
+        {
+            let text = doc.text();
+            if let Some(cursor) = self.get_cursor_position(doc_id, view_id) {
+                let cursor_chars = text.byte_to_char(cursor.min(text.len_bytes()));
+                if let Some(prev_ch) = text.chars_at(cursor_chars).reversed().next()
+                    && (helix_core::chars::char_is_word(prev_ch) || prev_ch == ':')
+                {
+                    // Small, bounded delay to allow didChange to propagate
+                    std::thread::sleep(std::time::Duration::from_millis(30));
                 }
             }
         }
@@ -4835,11 +4827,9 @@ fn detect_and_create_project_environment() -> ProjectEnvironment {
     // - Missing user-specific paths like ~/.cargo/bin
     // - Missing Nix system paths like /run/current-system/sw/bin
     let has_cargo_bin = path_components.iter().any(|&p| p.contains(".cargo/bin"));
-    let has_usr_local = path_components.iter().any(|&p| p == "/usr/local/bin");
+    let has_usr_local = path_components.contains(&"/usr/local/bin");
     let has_homebrew = path_components.iter().any(|&p| p.contains("homebrew"));
-    let has_nix_system = path_components
-        .iter()
-        .any(|&p| p == "/run/current-system/sw/bin");
+    let has_nix_system = path_components.contains(&"/run/current-system/sw/bin");
     let path_count = path_components.len();
 
     let likely_dock_launch =

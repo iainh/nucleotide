@@ -434,12 +434,12 @@ impl MarkdownRenderer {
         let mut code_lang;
 
         for line in lines {
-            if line.starts_with("```") {
+            if let Some(rest) = line.strip_prefix("```") {
                 if in_code_block {
                     html.push_str("</code></pre>\n");
                     in_code_block = false;
                 } else {
-                    code_lang = line[3..].trim().to_string();
+                    code_lang = rest.trim().to_string();
                     html.push_str(&format!("<pre><code class=\"language-{}\">", code_lang));
                     in_code_block = true;
                 }
@@ -452,14 +452,14 @@ impl MarkdownRenderer {
                 continue;
             }
 
-            if line.starts_with("# ") {
-                html.push_str(&format!("<h1>{}</h1>\n", html_escape(&line[2..])));
-            } else if line.starts_with("## ") {
-                html.push_str(&format!("<h2>{}</h2>\n", html_escape(&line[3..])));
-            } else if line.starts_with("### ") {
-                html.push_str(&format!("<h3>{}</h3>\n", html_escape(&line[4..])));
-            } else if line.starts_with("- ") {
-                html.push_str(&format!("<li>{}</li>\n", html_escape(&line[2..])));
+            if let Some(rest) = line.strip_prefix("# ") {
+                html.push_str(&format!("<h1>{}</h1>\n", html_escape(rest)));
+            } else if let Some(rest) = line.strip_prefix("## ") {
+                html.push_str(&format!("<h2>{}</h2>\n", html_escape(rest)));
+            } else if let Some(rest) = line.strip_prefix("### ") {
+                html.push_str(&format!("<h3>{}</h3>\n", html_escape(rest)));
+            } else if let Some(rest) = line.strip_prefix("- ") {
+                html.push_str(&format!("<li>{}</li>\n", html_escape(rest)));
             } else if line.trim().is_empty() {
                 html.push_str("<br>\n");
             } else {

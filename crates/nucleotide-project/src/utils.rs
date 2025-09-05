@@ -143,14 +143,13 @@ impl AncestorIterator {
 
         // Check filesystem boundary
         #[cfg(unix)]
-        if self.config.stop_at_fs_boundary {
-            if let Some(starting_device) = self.starting_device {
-                if let Ok(metadata) = std::fs::metadata(path) {
-                    use std::os::unix::fs::MetadataExt;
-                    if metadata.dev() != starting_device {
-                        return true;
-                    }
-                }
+        if self.config.stop_at_fs_boundary
+            && let Some(starting_device) = self.starting_device
+            && let Ok(metadata) = std::fs::metadata(path)
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.dev() != starting_device {
+                return true;
             }
         }
 

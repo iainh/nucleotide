@@ -60,18 +60,18 @@ pub fn setup_macos_dock_environment() {
 
     // 2. Rustup toolchain bin directories
     let rustup_toolchains = home_dir.join(".rustup").join("toolchains");
-    if rustup_toolchains.exists() {
-        if let Ok(entries) = std::fs::read_dir(&rustup_toolchains) {
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
-                    let toolchain_bin = entry.path().join("bin");
-                    if toolchain_bin.exists() {
-                        additional_paths.push(toolchain_bin.to_string_lossy().to_string());
-                        nucleotide_logging::debug!(
-                            path = %toolchain_bin.display(),
-                            "🔧 ENV_SETUP: Found rustup toolchain bin directory"
-                        );
-                    }
+    if rustup_toolchains.exists()
+        && let Ok(entries) = std::fs::read_dir(&rustup_toolchains)
+    {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                let toolchain_bin = entry.path().join("bin");
+                if toolchain_bin.exists() {
+                    additional_paths.push(toolchain_bin.to_string_lossy().to_string());
+                    nucleotide_logging::debug!(
+                        path = %toolchain_bin.display(),
+                        "🔧 ENV_SETUP: Found rustup toolchain bin directory"
+                    );
                 }
             }
         }

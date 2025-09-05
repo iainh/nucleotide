@@ -146,12 +146,12 @@ pub fn should_trigger_auto_completion(
 /// Check if the given character is a trigger character for the language server
 fn is_trigger_character(language_server: &helix_lsp::Client, character: char) -> bool {
     let capabilities = language_server.capabilities();
-    if let Some(completion_provider) = &capabilities.completion_provider {
-        if let Some(trigger_characters) = &completion_provider.trigger_characters {
-            return trigger_characters
-                .iter()
-                .any(|trigger| trigger.chars().any(|ch| ch == character));
-        }
+    if let Some(completion_provider) = &capabilities.completion_provider
+        && let Some(trigger_characters) = &completion_provider.trigger_characters
+    {
+        return trigger_characters
+            .iter()
+            .any(|trigger| trigger.chars().any(|ch| ch == character));
     }
     false
 }

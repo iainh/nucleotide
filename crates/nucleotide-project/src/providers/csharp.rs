@@ -549,12 +549,12 @@ impl CSharpManifestProvider {
         let global_json: GlobalJson = serde_json::from_str(&content)
             .map_err(|e| ProjectError::manifest_parse(path.to_path_buf(), e))?;
 
-        if let Some(sdk) = global_json.sdk {
-            if let Some(version) = sdk.version {
-                metadata
-                    .additional_info
-                    .insert("dotnet_sdk_version".to_string(), version);
-            }
+        if let Some(sdk) = global_json.sdk
+            && let Some(version) = sdk.version
+        {
+            metadata
+                .additional_info
+                .insert("dotnet_sdk_version".to_string(), version);
         }
 
         metadata
@@ -650,12 +650,12 @@ impl CSharpManifestProvider {
         let start_tag = format!("<{}>", element);
         let end_tag = format!("</{}>", element);
 
-        if let Some(start) = content.find(&start_tag) {
-            if let Some(end) = content[start..].find(&end_tag) {
-                let value_start = start + start_tag.len();
-                let value_end = start + end;
-                return Some(content[value_start..value_end].trim().to_string());
-            }
+        if let Some(start) = content.find(&start_tag)
+            && let Some(end) = content[start..].find(&end_tag)
+        {
+            let value_start = start + start_tag.len();
+            let value_end = start + end;
+            return Some(content[value_start..value_end].trim().to_string());
         }
 
         None
@@ -663,12 +663,12 @@ impl CSharpManifestProvider {
 
     fn extract_project_sdk(&self, content: &str) -> Option<String> {
         // Extract SDK from <Project Sdk="...">
-        if let Some(start) = content.find("<Project") {
-            if let Some(sdk_start) = content[start..].find("Sdk=\"") {
-                let sdk_pos = start + sdk_start + 5; // 5 = len("Sdk=\"")
-                if let Some(end) = content[sdk_pos..].find('"') {
-                    return Some(content[sdk_pos..sdk_pos + end].to_string());
-                }
+        if let Some(start) = content.find("<Project")
+            && let Some(sdk_start) = content[start..].find("Sdk=\"")
+        {
+            let sdk_pos = start + sdk_start + 5; // 5 = len("Sdk=\"")
+            if let Some(end) = content[sdk_pos..].find('"') {
+                return Some(content[sdk_pos..sdk_pos + end].to_string());
             }
         }
         None

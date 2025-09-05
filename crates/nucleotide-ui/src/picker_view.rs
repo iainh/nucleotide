@@ -1,6 +1,7 @@
 // ABOUTME: GPUI-native picker component for fuzzy searching and selection
 // ABOUTME: Uses proper GPUI uniform_list for scrollable content like Zed
 
+#![allow(clippy::type_complexity)]
 use crate::VcsIcon;
 use crate::common::{FocusableModal, ModalStyle, SearchInput};
 use gpui::prelude::FluentBuilder;
@@ -696,13 +697,12 @@ impl PickerView {
             //     }
             // }
             // Try provider to fetch buffer content
-            if let Some(provider) = &self.preview_text_provider_cb {
-                if let Some((text, _path)) = provider(item, cx) {
-                    self.preview_loading = false;
-                    self.preview_content = Some(text);
-                    cx.notify();
-                    return;
-                }
+            if let Some(provider) = &self.preview_text_provider_cb
+                && let Some((text, _path)) = provider(item, cx)
+            {
+                self.preview_loading = false;
+                self.preview_content = Some(text);
+                cx.notify();
             }
         }
         // Try standalone PathBuf (for file picker)
@@ -715,13 +715,13 @@ impl PickerView {
                 "Preview not available for item with type_id"
             );
             // Try provider as a last resort for non-file items
-            if let Some(provider) = &self.preview_text_provider_cb {
-                if let Some((text, _path)) = provider(item, cx) {
-                    self.preview_loading = false;
-                    self.preview_content = Some(text);
-                    cx.notify();
-                    return;
-                }
+            if let Some(provider) = &self.preview_text_provider_cb
+                && let Some((text, _path)) = provider(item, cx)
+            {
+                self.preview_loading = false;
+                self.preview_content = Some(text);
+                cx.notify();
+                return;
             }
             self.preview_content = Some("Preview not available".to_string());
             cx.notify();
@@ -816,13 +816,12 @@ impl PickerView {
                 }
 
                 // If we didn't manage to open via capability earlier, try legacy callback
-                if this.preview_doc_id.is_none() || this.preview_view_id.is_none() {
-                    if let Some(open_preview) = &this.open_preview_cb {
-                        if let Some((doc_id, view_id)) = open_preview(&path, cx) {
-                            this.preview_doc_id = Some(doc_id);
-                            this.preview_view_id = Some(view_id);
-                        }
-                    }
+                if (this.preview_doc_id.is_none() || this.preview_view_id.is_none())
+                    && let Some(open_preview) = &this.open_preview_cb
+                    && let Some((doc_id, view_id)) = open_preview(&path, cx)
+                {
+                    this.preview_doc_id = Some(doc_id);
+                    this.preview_view_id = Some(view_id);
                 }
 
                 // Always store the loaded preview text so the text renderer can use it

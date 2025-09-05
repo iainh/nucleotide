@@ -86,19 +86,19 @@ impl Render for DiagnosticsPanel {
         let filter_ref = &filter;
         lsp_state.update(cx, |state, _| {
             for (uri, infos) in state.diagnostics.iter() {
-                if let Some(only) = &filter_ref.only_uri {
-                    if uri != only {
-                        continue;
-                    }
+                if let Some(only) = &filter_ref.only_uri
+                    && uri != only
+                {
+                    continue;
                 }
                 for info in infos {
                     let sev_ok = filter_ref
                         .min_severity
-                        .map_or(true, |min| info.diagnostic.severity() >= min);
+                        .is_none_or(|min| info.diagnostic.severity() >= min);
                     if !sev_ok {
                         continue;
                     }
-                    let msg_ok = filter_ref.query.as_ref().map_or(true, |q| {
+                    let msg_ok = filter_ref.query.as_ref().is_none_or(|q| {
                         info.diagnostic
                             .message
                             .to_lowercase()
@@ -521,8 +521,8 @@ impl Render for DiagnosticsPanel {
                                 for info in infos {
                                     let sev_ok = filter
                                         .min_severity
-                                        .map_or(true, |min| info.diagnostic.severity() >= min);
-                                    let msg_ok = filter.query.as_ref().map_or(true, |q| {
+                                        .is_none_or(|min| info.diagnostic.severity() >= min);
+                                    let msg_ok = filter.query.as_ref().is_none_or(|q| {
                                         info.diagnostic
                                             .message
                                             .to_lowercase()
@@ -548,8 +548,8 @@ impl Render for DiagnosticsPanel {
                                 for info in infos {
                                     let sev_ok = filter
                                         .min_severity
-                                        .map_or(true, |min| info.diagnostic.severity() >= min);
-                                    let msg_ok = filter.query.as_ref().map_or(true, |q| {
+                                        .is_none_or(|min| info.diagnostic.severity() >= min);
+                                    let msg_ok = filter.query.as_ref().is_none_or(|q| {
                                         info.diagnostic
                                             .message
                                             .to_lowercase()

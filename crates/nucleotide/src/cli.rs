@@ -5,15 +5,14 @@ use helix_term::args::Args;
 fn get_git_commit_hash() -> Option<String> {
     // Try to get git commit hash at runtime
     if let Ok(output) = std::process::Command::new("git")
-        .args(&["rev-parse", "--short", "HEAD"])
+        .args(["rev-parse", "--short", "HEAD"])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let commit_hash = String::from_utf8_lossy(&output.stdout).to_string();
-            let commit_hash = commit_hash.trim().to_string();
-            if !commit_hash.is_empty() {
-                return Some(commit_hash);
-            }
+        let commit_hash = String::from_utf8_lossy(&output.stdout).to_string();
+        let commit_hash = commit_hash.trim().to_string();
+        if !commit_hash.is_empty() {
+            return Some(commit_hash);
         }
     }
     None

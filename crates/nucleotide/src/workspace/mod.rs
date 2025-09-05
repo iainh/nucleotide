@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use gpui::FontFeatures;
 use gpui::prelude::FluentBuilder;
-use gpui::svg;
 use gpui::{
     App, AppContext, BorrowAppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
@@ -475,17 +474,14 @@ impl Workspace {
                             .gap(tokens.sizes.space_2)
                             .justify_end()
                             .child({
-                                let btn = Button::new("cancel-delete", "Cancel")
+                                Button::new("cancel-delete", "Cancel")
                                     .variant(ButtonVariant::Secondary)
-                                    .size(ButtonSize::Small);
-                                div().child(btn).on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(|view: &mut Workspace, _ev, _w, cx| {
+                                    .size(ButtonSize::Small)
+                                    .on_click(cx.listener(|view: &mut Workspace, _ev, _w, cx| {
                                         view.delete_confirm_open = false;
                                         view.delete_confirm_path = None;
                                         cx.notify();
-                                    }),
-                                )
+                                    }))
                             })
                             .child({
                                 let btn_label =
@@ -495,15 +491,12 @@ impl Workspace {
                                             "Delete Permanently"
                                         }
                                     };
-                                let btn = Button::new("confirm-delete", btn_label)
+                                Button::new("confirm-delete", btn_label)
                                     .variant(ButtonVariant::Danger)
-                                    .size(ButtonSize::Small);
-                                div().child(btn).on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(|view: &mut Workspace, _ev, _w, cx| {
+                                    .size(ButtonSize::Small)
+                                    .on_click(cx.listener(|view: &mut Workspace, _ev, _w, cx| {
                                         view.perform_delete_confirm(cx);
-                                    }),
-                                )
+                                    }))
                             }),
                     ),
             );
@@ -811,10 +804,10 @@ impl Workspace {
                 Ok(c) => c,
                 Err(_) => return false,
             };
-            if let Some(stdin) = &mut child.stdin {
-                if stdin.write_all(text.as_bytes()).is_err() {
-                    return false;
-                }
+            if let Some(stdin) = &mut child.stdin
+                && stdin.write_all(text.as_bytes()).is_err()
+            {
+                return false;
             }
             let _ = child.wait();
             return true;
@@ -941,13 +934,9 @@ impl Workspace {
         } else if let Some(file_tree) = &self.file_tree {
             if file_tree.focus_handle(cx).is_focused(window) {
                 InputContext::FileTree
-            } else if self.view_manager.focused_view_id().is_some() {
-                InputContext::Normal // Editor context
             } else {
                 InputContext::Normal
             }
-        } else if self.view_manager.focused_view_id().is_some() {
-            InputContext::Normal // Editor context
         } else {
             InputContext::Normal
         };
@@ -1387,17 +1376,16 @@ impl Workspace {
         }
 
         // Trigger delete confirmation from keyboard when file tree has focus
-        if ev.keystroke.key.as_str() == "delete" {
-            if let Some(ref file_tree) = self.file_tree {
-                let is_tree_focused = file_tree.focus_handle(cx).is_focused(window);
-                if is_tree_focused {
-                    let selected = file_tree.read(cx).selected_path().cloned();
-                    if let Some(path) = selected {
-                        self.delete_confirm_open = true;
-                        self.delete_confirm_path = Some(path);
-                        cx.notify();
-                        return;
-                    }
+        if ev.keystroke.key.as_str() == "delete"
+            && let Some(ref file_tree) = self.file_tree
+        {
+            let is_tree_focused = file_tree.focus_handle(cx).is_focused(window);
+            if is_tree_focused {
+                let selected = file_tree.read(cx).selected_path().cloned();
+                if let Some(path) = selected {
+                    self.delete_confirm_open = true;
+                    self.delete_confirm_path = Some(path);
+                    cx.notify();
                 }
             }
         }
@@ -3639,23 +3627,22 @@ impl Workspace {
                         }
                     }
                     crate::types::AppEvent::Workspace(workspace_event) => {
-                        match workspace_event {
-                            crate::types::WorkspaceEvent::FileSelected { path, source } => {
-                                use nucleotide_events::v2::workspace::SelectionSource;
-                                match source {
-                                    SelectionSource::Click | SelectionSource::Command => {
-                                        if path.is_file() {
-                                            self.handle_open_file(path, cx);
-                                        } else if path.is_dir() {
-                                            self.handle_open_directory(path, cx);
-                                        }
-                                    }
-                                    _ => {
-                                        // Other selection sources
+                        if let crate::types::WorkspaceEvent::FileSelected { path, source } =
+                            workspace_event
+                        {
+                            use nucleotide_events::v2::workspace::SelectionSource;
+                            match source {
+                                SelectionSource::Click | SelectionSource::Command => {
+                                    if path.is_file() {
+                                        self.handle_open_file(path, cx);
+                                    } else if path.is_dir() {
+                                        self.handle_open_directory(path, cx);
                                     }
                                 }
+                                _ => {
+                                    // Other selection sources
+                                }
                             }
-                            _ => {}
                         }
                     }
                     crate::types::AppEvent::Ui(ui_event) => {
@@ -4195,37 +4182,37 @@ impl Workspace {
             };
             if let Some(lsp_state) = lsp_state_entity {
                 lsp_state.update(cx, |state, _| {
-                    if let Some(pref_id) = preferred_server_id {
-                        if let Some(server) = state.servers.get(&pref_id).cloned() {
-                            // Prefer progress for this server if any
-                            if let Some(p) = state
-                                .progress
-                                .values()
-                                .find(|p| p.server_id == pref_id)
-                                .cloned()
-                            {
-                                let indicator = state.get_spinner_frame().to_string();
-                                let mut s = format!("{} {}: ", indicator, server.name);
-                                if let Some(pct) = p.percentage {
-                                    s.push_str(&format!("{:>2}% ", pct));
-                                }
-                                s.push_str(&p.title);
-                                if let Some(msg) = &p.message {
-                                    s.push_str(" ⋅ ");
-                                    s.push_str(msg);
-                                }
-                                return Some(s);
+                    if let Some(pref_id) = preferred_server_id
+                        && let Some(server) = state.servers.get(&pref_id).cloned()
+                    {
+                        // Prefer progress for this server if any
+                        if let Some(p) = state
+                            .progress
+                            .values()
+                            .find(|p| p.server_id == pref_id)
+                            .cloned()
+                        {
+                            let indicator = state.get_spinner_frame().to_string();
+                            let mut s = format!("{} {}: ", indicator, server.name);
+                            if let Some(pct) = p.percentage {
+                                s.push_str(&format!("{:>2}% ", pct));
                             }
-
-                            // Otherwise show basic server indicator based on status
-                            let indicator = match server.status {
-                                ServerStatus::Starting | ServerStatus::Initializing => {
-                                    state.get_spinner_frame().to_string()
-                                }
-                                _ => "◉".to_string(),
-                            };
-                            return Some(format!("{} {}", indicator, server.name));
+                            s.push_str(&p.title);
+                            if let Some(msg) = &p.message {
+                                s.push_str(" ⋅ ");
+                                s.push_str(msg);
+                            }
+                            return Some(s);
                         }
+
+                        // Otherwise show basic server indicator based on status
+                        let indicator = match server.status {
+                            ServerStatus::Starting | ServerStatus::Initializing => {
+                                state.get_spinner_frame().to_string()
+                            }
+                            _ => "◉".to_string(),
+                        };
+                        return Some(format!("{} {}", indicator, server.name));
                     }
 
                     // Fallback to default indicator
@@ -4327,29 +4314,29 @@ impl Workspace {
                                 div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2(),
                             )
                             .child({
-                                let chevron_path = "icons/chevron-up.svg";
-
+                                use nucleotide_ui::{Button, ButtonSize, ButtonVariant};
                                 div()
                                     .flex()
                                     .items_center()
-                                    .cursor_pointer()
-                                    .on_any_mouse_down(cx.listener(
-                                        |this: &mut Workspace,
-                                         ev: &gpui::MouseDownEvent,
-                                         _win,
-                                         cx| {
-                                            this.lsp_menu_open = true;
-                                            this.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
-                                            cx.notify();
-                                        },
-                                    ))
+                                    .gap(space_3)
                                     .child(
-                                        svg()
-                                            .path(chevron_path)
-                                            .w(px(10.0))
-                                            .h(px(10.0))
-                                            .text_color(fg_color)
-                                            .mr(px(6.0)),
+                                        Button::icon_only(
+                                            "lsp-status-trigger",
+                                            "icons/chevron-up.svg",
+                                        )
+                                        .variant(ButtonVariant::Ghost)
+                                        .size(ButtonSize::ExtraSmall)
+                                        .on_click(cx.listener(
+                                            |this: &mut Workspace,
+                                             ev: &gpui::MouseUpEvent,
+                                             _w,
+                                             cx| {
+                                                this.lsp_menu_open = true;
+                                                this.lsp_menu_pos =
+                                                    (ev.position.x.0, ev.position.y.0);
+                                                cx.notify();
+                                            },
+                                        )),
                                     )
                                     .child(
                                         div()
@@ -5060,11 +5047,11 @@ impl Workspace {
             );
 
             // Configure prefix extractor based on current document's file extension
-            if let Some(path) = doc.path() {
-                if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
-                    let language = self.map_extension_to_language(extension);
-                    self.prefix_extractor.configure_for_language(&language);
-                }
+            if let Some(path) = doc.path()
+                && let Some(extension) = path.extension().and_then(|ext| ext.to_str())
+            {
+                let language = self.map_extension_to_language(extension);
+                self.prefix_extractor.configure_for_language(&language);
             }
 
             // Use the enhanced prefix extractor for language-aware completion
@@ -5594,7 +5581,7 @@ impl Workspace {
 
             // Create transaction to replace the partial word with completion text
             let mut replacement_start_pos = primary_cursor;
-            let transaction = Transaction::change_by_selection(text, &selection, |range| {
+            let transaction = Transaction::change_by_selection(text, selection, |range| {
                 // Find the start of the word being completed (go backward from cursor)
                 let cursor_pos = range.cursor(text.slice(..));
                 let mut start_pos = cursor_pos;
@@ -5710,7 +5697,7 @@ impl Workspace {
             );
 
             // Create transaction to replace the partial word with completion text
-            let transaction = Transaction::change_by_selection(text, &selection, |range| {
+            let transaction = Transaction::change_by_selection(text, selection, |range| {
                 // Find the start of the word being completed (go backward from cursor)
                 let cursor_pos = range.cursor(text.slice(..));
                 let mut start_pos = cursor_pos;
@@ -6083,20 +6070,20 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> (gpui::Pixels, gpui::Pixels) {
         // Try to get the focused DocumentView
-        if let Some(focused_view_id) = self.view_manager.focused_view_id() {
-            if let Some(doc_view) = self.view_manager.get_document_view(&focused_view_id) {
-                // Access the DocumentView to get real font metrics
-                return doc_view.read_with(cx, |doc_view, _cx| {
-                    // Get the actual line height from DocumentView
-                    let line_height = doc_view.get_line_height();
+        if let Some(focused_view_id) = self.view_manager.focused_view_id()
+            && let Some(doc_view) = self.view_manager.get_document_view(&focused_view_id)
+        {
+            // Access the DocumentView to get real font metrics
+            return doc_view.read_with(cx, |doc_view, _cx| {
+                // Get the actual line height from DocumentView
+                let line_height = doc_view.get_line_height();
 
-                    // Calculate character width from font style
-                    // This is approximate but much more accurate than hardcoded 8.0
-                    let char_width = px(line_height.0 * 0.6); // Typical monospace ratio
+                // Calculate character width from font style
+                // This is approximate but much more accurate than hardcoded 8.0
+                let char_width = px(line_height.0 * 0.6); // Typical monospace ratio
 
-                    (line_height, char_width)
-                });
-            }
+                (line_height, char_width)
+            });
         }
 
         // Fallback to reasonable defaults if no focused view
@@ -7356,7 +7343,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
             .collect();
 
         let offset_encoding = servers
-            .get(0)
+            .first()
             .map(|ls| ls.offset_encoding())
             .unwrap_or_default();
         let identifier = doc.identifier();
@@ -7594,6 +7581,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_project_detection_basic() {
         // Test that project detection function exists and doesn't panic with valid path
         let _current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -7616,6 +7604,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_lsp_manager_config_creation() {
         // Test that ProjectLspConfig can be created with defaults
         let config = nucleotide_lsp::ProjectLspConfig::default();

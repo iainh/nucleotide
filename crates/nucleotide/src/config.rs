@@ -213,15 +213,11 @@ pub struct GuiConfig {
 /// Delete behavior preference
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum DeleteBehavior {
+    #[default]
     Trash,
     Permanent,
-}
-
-impl Default for DeleteBehavior {
-    fn default() -> Self {
-        DeleteBehavior::Trash
-    }
 }
 
 /// File operations configuration

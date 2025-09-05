@@ -204,7 +204,6 @@ impl MemoryTracker {
 }
 
 /// Utility macros for performance measurement
-
 /// Time a block of code and record the result
 #[macro_export]
 macro_rules! timed {

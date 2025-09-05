@@ -417,9 +417,9 @@ impl ColorTheory {
         let b = Self::srgb_to_linear(b_srgb);
 
         // Linear sRGB -> LMS (OKLab M1)
-        let l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
-        let m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
-        let s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+        let l = 0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b;
+        let m = 0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b;
+        let s = 0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b;
 
         // Nonlinearity (cube root)
         let l_ = l.cbrt();
@@ -427,18 +427,18 @@ impl ColorTheory {
         let s_ = s.cbrt();
 
         // LMS' -> OKLab (OKLab M2)
-        let L = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_;
-        let a = 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_;
-        let b = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_;
+        let L = 0.210_454_26 * l_ + 0.793_617_8 * m_ - 0.004_072_047 * s_;
+        let a = 1.977_998_5 * l_ - 2.428_592_2 * m_ + 0.450_593_7 * s_;
+        let b = 0.025_904_037 * l_ + 0.782_771_77 * m_ - 0.808_675_77 * s_;
 
         Oklab { L, a, b }
     }
 
     pub fn oklab_to_hsla(lab: Oklab, alpha: f32) -> Hsla {
         // OKLab -> LMS'
-        let l_ = lab.L + 0.3963377774 * lab.a + 0.2158037573 * lab.b;
-        let m_ = lab.L - 0.1055613458 * lab.a - 0.0638541728 * lab.b;
-        let s_ = lab.L - 0.0894841775 * lab.a - 1.2914855480 * lab.b;
+        let l_ = lab.L + 0.396_337_78 * lab.a + 0.215_803_76 * lab.b;
+        let m_ = lab.L - 0.105_561_346 * lab.a - 0.063_854_17 * lab.b;
+        let s_ = lab.L - 0.089_484_18 * lab.a - 1.291_485_5 * lab.b;
 
         // Inverse nonlinearity
         let l = l_.powi(3);
@@ -446,9 +446,9 @@ impl ColorTheory {
         let s = s_.powi(3);
 
         // LMS -> linear sRGB
-        let r_lin = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
-        let g_lin = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
-        let b_lin = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+        let r_lin = 4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s;
+        let g_lin = -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s;
+        let b_lin = -0.0041960863 * l - 0.703_418_6 * m + 1.707_614_7 * s;
 
         // Linear -> gamma sRGB
         let r = Self::linear_to_srgb(r_lin).clamp(0.0, 1.0);
@@ -510,7 +510,7 @@ impl ColorTheory {
                 Self::srgb_to_linear(g),
                 Self::srgb_to_linear(b),
             );
-            if r >= 0.0 && r <= 1.0 && g >= 0.0 && g <= 1.0 && b >= 0.0 && b <= 1.0 {
+            if (0.0..=1.0).contains(&r) && (0.0..=1.0).contains(&g) && (0.0..=1.0).contains(&b) {
                 return lch;
             }
             lch.C *= 0.9; // iteratively reduce chroma

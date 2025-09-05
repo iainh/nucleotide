@@ -276,7 +276,6 @@ pub fn is_named_feature_enabled(feature_name: &str) -> bool {
 }
 
 /// Conditional compilation macros for feature flags
-
 /// Compile code only if a feature is enabled at compile time
 #[macro_export]
 macro_rules! feature_enabled {

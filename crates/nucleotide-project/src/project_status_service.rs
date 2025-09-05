@@ -37,10 +37,10 @@ impl ProjectStatusHandle {
         let now = std::time::Instant::now();
 
         // Debounce LSP updates to avoid excessive UI refreshes
-        if let Some(last_update) = service.last_lsp_update {
-            if now.duration_since(last_update) < service.debounce_duration {
-                return;
-            }
+        if let Some(last_update) = service.last_lsp_update
+            && now.duration_since(last_update) < service.debounce_duration
+        {
+            return;
         }
 
         debug!(
@@ -147,10 +147,10 @@ impl ProjectStatusService {
         let now = Instant::now();
 
         // Debounce LSP updates to avoid excessive UI refreshes
-        if let Some(last_update) = self.last_lsp_update {
-            if now.duration_since(last_update) < self.debounce_duration {
-                return;
-            }
+        if let Some(last_update) = self.last_lsp_update
+            && now.duration_since(last_update) < self.debounce_duration
+        {
+            return;
         }
 
         debug!(

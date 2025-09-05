@@ -470,10 +470,10 @@ impl CompletionView {
         // Future versions can add proper async debouncing with proper GPUI patterns
 
         // Simple debouncing: only filter if query has changed significantly
-        if let Some(ref current_query) = self.current_query {
-            if current_query == &query {
-                return; // No change, skip filtering
-            }
+        if let Some(ref current_query) = self.current_query
+            && current_query == &query
+        {
+            return; // No change, skip filtering
         }
 
         // Apply filtering immediately with debouncing logic
@@ -858,7 +858,7 @@ impl CompletionView {
                             let candidate = StringMatchCandidate::from(*item);
                             candidate.id == string_match.candidate_id
                         })
-                        .map(|item| format!("{}({})", item.text.to_string(), string_match.score))
+                        .map(|item| format!("{}({})", item.text, string_match.score))
                 })
                 .collect();
 

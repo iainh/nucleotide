@@ -2,6 +2,7 @@
 // ABOUTME: Tests various project structures, VCS detection, and edge cases for robust project detection
 
 #[cfg(test)]
+#[allow(clippy::map_clone)]
 mod tests {
     use crate::application::find_workspace_root_from;
 

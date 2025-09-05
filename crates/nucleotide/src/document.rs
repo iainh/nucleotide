@@ -2602,7 +2602,7 @@ impl Element for DocumentElement {
                                         line_end,
                                         fg_color,
                                         font: self.style.font(),
-                                        diag_overlays: diag_overlays,
+                                        diag_overlays,
                                     })
                                 } else {
                                     Vec::new()
@@ -2941,8 +2941,8 @@ impl Element for DocumentElement {
                             let _ = shaped.paint(point(gutter_origin.x, y), after_layout.line_height, window, cx);
 
                             // Paint a small diagnostic marker in the gutter if this line has diagnostics
-                            if let Some(sev) = diag_line_severity.get(&doc_line).copied() {
-                                if let Some(color) = Self::severity_color(cx.helix_theme(), sev) {
+                            if let Some(sev) = diag_line_severity.get(&doc_line).copied()
+                                && let Some(color) = Self::severity_color(cx.helix_theme(), sev) {
                                     use nucleotide_ui::tokens::utils;
                                     // Indicator size: 60% of line height
                                     let marker_size = (after_layout.line_height * 0.6).max(px(2.0));
@@ -3083,7 +3083,6 @@ impl Element for DocumentElement {
                                         }
                                     }
                                 }
-                            }
                         }
                     }
 
@@ -4307,7 +4306,6 @@ impl<'h, 'r, 't> SyntaxHighlighter<'h, 'r, 't> {
             // Disable syntax highlighting for this render cycle to avoid crashing the app
             self.inner = None;
             self.pos = usize::MAX;
-            return;
         }
     }
 }
@@ -4361,7 +4359,6 @@ impl<'t> OverlayHighlighter<'t> {
         } else {
             // Disable overlay highlights on panic
             self.pos = usize::MAX;
-            return;
         }
     }
 }

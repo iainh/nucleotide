@@ -625,15 +625,15 @@ impl EventHandlingProvider {
 
     /// Check if event data matches expected type
     fn check_data_type(&self, data: &CustomEventData, expected: EventDataType) -> bool {
-        match (data, expected) {
-            (CustomEventData::String(_), EventDataType::String) => true,
-            (CustomEventData::Number(_), EventDataType::Number) => true,
-            (CustomEventData::Boolean(_), EventDataType::Boolean) => true,
-            (CustomEventData::Object(_), EventDataType::Object) => true,
-            (CustomEventData::Array(_), EventDataType::Array) => true,
-            (_, EventDataType::Any) => true,
-            _ => false,
-        }
+        matches!(
+            (data, expected),
+            (CustomEventData::String(_), EventDataType::String)
+                | (CustomEventData::Number(_), EventDataType::Number)
+                | (CustomEventData::Boolean(_), EventDataType::Boolean)
+                | (CustomEventData::Object(_), EventDataType::Object)
+                | (CustomEventData::Array(_), EventDataType::Array)
+                | (_, EventDataType::Any)
+        )
     }
 
     /// Check rate limiting for an event type

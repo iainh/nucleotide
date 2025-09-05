@@ -780,9 +780,7 @@ impl EditorTokens {
         let cb = ColorTheory::contrast_ratio(helix_colors.selection, black);
         // Infer dark editor from gutter background
         let is_dark_editor = helix_colors.gutter_background.l < 0.5;
-        let base_text = if is_dark_editor && cw >= ContrastRatios::AA_NORMAL {
-            white
-        } else if cw >= cb {
+        let base_text = if (is_dark_editor && cw >= ContrastRatios::AA_NORMAL) || (cw >= cb) {
             white
         } else {
             black
@@ -880,19 +878,8 @@ impl EditorTokens {
                 let black = hsla(0.0, 0.0, 0.0, 1.0);
                 let cw = ColorTheory::contrast_ratio(selection_color, white);
                 let cb = ColorTheory::contrast_ratio(selection_color, black);
-                let base_text = if is_dark {
-                    if cw >= ContrastRatios::AA_NORMAL {
-                        white
-                    } else if cw >= cb {
-                        white
-                    } else {
-                        black
-                    }
-                } else if cw >= cb {
-                    white
-                } else {
-                    black
-                };
+                let prefer_white = (is_dark && cw >= ContrastRatios::AA_NORMAL) || (cw >= cb);
+                let base_text = if prefer_white { white } else { black };
                 ColorTheory::ensure_contrast(selection_color, base_text, ContrastRatios::AA_NORMAL)
             },
 
@@ -931,16 +918,8 @@ impl EditorTokens {
             } else {
                 base_colors.neutral_200
             },
-            line_number: if is_dark {
-                base_colors.neutral_500
-            } else {
-                base_colors.neutral_500
-            },
-            line_number_active: if is_dark {
-                base_colors.neutral_700
-            } else {
-                base_colors.neutral_700
-            },
+            line_number: base_colors.neutral_500,
+            line_number_active: base_colors.neutral_700,
 
             // VCS gutter indicators
             vcs_added: base_colors.success_500,
@@ -1039,7 +1018,7 @@ impl ChromeTokens {
             bufferline_inactive: utils::with_alpha(chrome_colors.tab_empty_background, 0.9),
 
             // Chrome text colors (computed for contrast)
-            text_on_chrome: text_on_chrome,
+            text_on_chrome,
             text_chrome_secondary: utils::with_alpha(text_on_chrome, 0.7),
             text_chrome_disabled: utils::with_alpha(text_on_chrome, 0.4),
         }

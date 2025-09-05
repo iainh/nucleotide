@@ -78,9 +78,7 @@ impl PickerPreviewExecutor {
         _path: &std::path::Path,
         cx: &mut gpui::Context<nucleotide_ui::picker_view::PickerView>,
     ) -> Option<(helix_view::DocumentId, helix_view::ViewId)> {
-        let Some(core) = self.core.upgrade() else {
-            return None;
-        };
+        let core = self.core.upgrade()?;
 
         let mut out: Option<(helix_view::DocumentId, helix_view::ViewId)> = None;
         core.update(cx, |core, picker_cx| {

@@ -318,7 +318,7 @@ impl OverlayView {
 
                 // Subscribe to dismiss events from completion view
                 cx.subscribe(
-                    &completion_view,
+                    completion_view,
                     |this, _completion_view, _event: &DismissEvent, cx| {
                         this.completion_view = None;
                         cx.emit(DismissEvent);
@@ -329,7 +329,7 @@ impl OverlayView {
 
                 // Subscribe to the new completion acceptance event
                 cx.subscribe(
-                    &completion_view,
+                    completion_view,
                     |_this, _completion_view, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
                         nucleotide_logging::info!(
                             item_index = event.item_index,
@@ -355,7 +355,7 @@ impl OverlayView {
                 self.completion_view = Some(completion_view.clone());
                 self.code_action_pairs = Some(pairs.clone());
                 // Dismiss subscription
-                cx.subscribe(&completion_view, |this, _cv, _ev: &DismissEvent, cx| {
+                cx.subscribe(completion_view, |this, _cv, _ev: &DismissEvent, cx| {
                     this.completion_view = None;
                     this.code_action_pairs = None;
                     cx.emit(DismissEvent);
@@ -366,53 +366,41 @@ impl OverlayView {
                 // Accept subscription maps selection index to code action application
                 let core_for_apply = self.core.clone();
                 cx.subscribe(
-                    &completion_view,
+                    completion_view,
                     move |this, _cv, event: &nucleotide_ui::CompleteViaHelixEvent, cx| {
                         if let Some(pairs) = this.code_action_pairs.clone() {
-                            if let Some((action, ls_id, offset)) = pairs.get(event.item_index) {
-                                if let Some(core) = core_for_apply.upgrade() {
-                                    core.update(cx, |core, _| {
-                                        if let Some(ls) = core.editor.language_server_by_id(*ls_id)
-                                        {
-                                            match action {
-                                                helix_lsp::lsp::CodeActionOrCommand::Command(
-                                                    cmd,
-                                                ) => {
+                            if let Some((action, ls_id, offset)) = pairs.get(event.item_index)
+                                && let Some(core) = core_for_apply.upgrade()
+                            {
+                                core.update(cx, |core, _| {
+                                    if let Some(ls) = core.editor.language_server_by_id(*ls_id) {
+                                        match action {
+                                            helix_lsp::lsp::CodeActionOrCommand::Command(cmd) => {
+                                                core.editor
+                                                    .execute_lsp_command(cmd.clone(), *ls_id);
+                                            }
+                                            helix_lsp::lsp::CodeActionOrCommand::CodeAction(ca) => {
+                                                let mut resolved = None;
+                                                if (ca.edit.is_none() || ca.command.is_none())
+                                                    && let Some(fut) = ls.resolve_code_action(ca)
+                                                    && let Ok(c) = helix_lsp::block_on(fut)
+                                                {
+                                                    resolved = Some(c);
+                                                }
+                                                let action_ref = resolved.as_ref().unwrap_or(ca);
+                                                if let Some(edit) = &action_ref.edit {
+                                                    let _ = core
+                                                        .editor
+                                                        .apply_workspace_edit(*offset, edit);
+                                                }
+                                                if let Some(cmd) = &action_ref.command {
                                                     core.editor
                                                         .execute_lsp_command(cmd.clone(), *ls_id);
                                                 }
-                                                helix_lsp::lsp::CodeActionOrCommand::CodeAction(
-                                                    ca,
-                                                ) => {
-                                                    let mut resolved = None;
-                                                    if ca.edit.is_none() || ca.command.is_none() {
-                                                        if let Some(fut) =
-                                                            ls.resolve_code_action(ca)
-                                                        {
-                                                            if let Ok(c) = helix_lsp::block_on(fut)
-                                                            {
-                                                                resolved = Some(c);
-                                                            }
-                                                        }
-                                                    }
-                                                    let action_ref =
-                                                        resolved.as_ref().unwrap_or(ca);
-                                                    if let Some(edit) = &action_ref.edit {
-                                                        let _ = core
-                                                            .editor
-                                                            .apply_workspace_edit(*offset, edit);
-                                                    }
-                                                    if let Some(cmd) = &action_ref.command {
-                                                        core.editor.execute_lsp_command(
-                                                            cmd.clone(),
-                                                            *ls_id,
-                                                        );
-                                                    }
-                                                }
                                             }
                                         }
-                                    });
-                                }
+                                    }
+                                });
                             }
                             this.completion_view = None;
                             this.code_action_pairs = None;
@@ -435,7 +423,7 @@ impl OverlayView {
                 self.diagnostics_panel = Some(panel.clone());
                 // Focus will be ensured by the diagnostics panel during render
                 // Subscribe to dismiss from panel via global dismiss event
-                cx.subscribe(&panel, |this, _panel, _ev: &DismissEvent, cx| {
+                cx.subscribe(panel, |this, _panel, _ev: &DismissEvent, cx| {
                     this.diagnostics_panel = None;
                     cx.emit(DismissEvent);
                     cx.notify();
@@ -445,7 +433,7 @@ impl OverlayView {
                 // Subscribe to diagnostics navigation events
                 let core_for_nav = self.core.clone();
                 cx.subscribe(
-                    &panel,
+                    panel,
                     move |_this,
                           _panel,
                           ev: &crate::diagnostics_panel::DiagnosticsJumpEvent,
@@ -600,11 +588,10 @@ impl OverlayView {
                                             let focus = cx.focus_handle();
                                             crate::document::DocumentView::new(core.clone(), view_id, default_style, &focus, false)
                                         });
-                                        if let Some(cap_arc) = &cap_for_open_reg {
-                                            if let Ok(mut cap) = cap_arc.write() {
+                                        if let Some(cap_arc) = &cap_for_open_reg
+                                            && let Ok(mut cap) = cap_arc.write() {
                                                 cap.register_preview_entity(doc_id, view_id, entity);
                                             }
-                                        }
                                     }
                                 }
                                 result
@@ -614,11 +601,10 @@ impl OverlayView {
                             let preview_exec_close = crate::picker_capability::PickerPreviewExecutor::new_from_weak(close_core.clone());
                             view = view.with_preview_close_fn(move |doc_id, view_id, picker_cx| {
                                 // Unregister entity before closing
-                                if let Some(cap_arc) = &cap_for_close {
-                                    if let Ok(mut cap) = cap_arc.write() {
+                                if let Some(cap_arc) = &cap_for_close
+                                    && let Ok(mut cap) = cap_arc.write() {
                                         cap.unregister_preview_entity(doc_id, view_id);
                                     }
-                                }
                                 preview_exec_close.close(doc_id, view_id, picker_cx);
                             });
 
@@ -697,8 +683,8 @@ impl OverlayView {
                                         .or_else(|| loader.language_for_shebang(slice))
                                         .or_else(|| loader.language_for_match(slice));
 
-                                    if let Some(lang) = lang_opt {
-                                        if let Ok(syntax) = helix_core::syntax::Syntax::new(slice, lang, loader) {
+                                    if let Some(lang) = lang_opt
+                                        && let Ok(syntax) = helix_core::syntax::Syntax::new(slice, lang, loader) {
                                             // Build highlighter for full range
                                             let mut hl = syntax.highlighter(
                                                 slice,
@@ -769,7 +755,6 @@ impl OverlayView {
                                             container = container.child(styled);
                                             used_loader = true;
                                         }
-                                    }
                                 }
 
                                 if !used_loader {
@@ -827,7 +812,7 @@ impl OverlayView {
                                                 // flush word with style if keyword/number
                                                 if !buf.is_empty() {
                                                     let word = buf.clone();
-                                                    if keywords.iter().any(|kw| *kw == word.as_str()) {
+                                                    if keywords.contains(&word.as_str()) {
                                                         let mut span = div().child(word);
                                                         if let Some(c) = kw_color { span = span.text_color(c); }
                                                         styled_row = styled_row.child(span);
@@ -847,7 +832,7 @@ impl OverlayView {
                                         }
                                         if !buf.is_empty() {
                                             let word = std::mem::take(&mut buf);
-                                            if keywords.iter().any(|kw| *kw == word.as_str()) {
+                                            if keywords.contains(&word.as_str()) {
                                                 let mut span = div().child(word);
                                                 if let Some(c) = kw_color { span = span.text_color(c); }
                                                 styled_row = styled_row.child(span);
@@ -889,8 +874,8 @@ impl OverlayView {
                                             return Some((content, path_opt.clone()));
                                         }
                                     }
-                                } else if let Some(doc_id) = item.data.downcast_ref::<helix_view::DocumentId>() {
-                                    if let Some(core) = text_core.upgrade() {
+                                } else if let Some(doc_id) = item.data.downcast_ref::<helix_view::DocumentId>()
+                                    && let Some(core) = text_core.upgrade() {
                                         let core_read = core.read(cx);
                                         if let Some(doc) = core_read.editor.documents.get(doc_id) {
                                             let content = String::from(doc.text().slice(..));
@@ -898,7 +883,6 @@ impl OverlayView {
                                             return Some((content, path_opt));
                                         }
                                     }
-                                }
                                 None
                             });
 
@@ -927,8 +911,7 @@ impl OverlayView {
                                         helix_core::diagnostic::LanguageServerId,
                                         helix_lsp::OffsetEncoding,
                                     )>()
-                                {
-                                    if let Some(core) = core_for_on_select.upgrade() {
+                                    && let Some(core) = core_for_on_select.upgrade() {
                                         core.update(picker_cx, |core, _cx| {
                                             if let Some(ls) = core.editor.language_server_by_id(*ls_id)
                                             {
@@ -947,18 +930,14 @@ impl OverlayView {
                                                         let mut resolved: Option<
                                                             helix_lsp::lsp::CodeAction,
                                                         > = None;
-                                                        if ca.edit.is_none() || ca.command.is_none()
-                                                        {
-                                                            if let Some(fut) =
+                                                        if (ca.edit.is_none() || ca.command.is_none())
+                                                            && let Some(fut) =
                                                                 ls.resolve_code_action(ca)
-                                                            {
-                                                                if let Ok(c) =
+                                                                && let Ok(c) =
                                                                     helix_lsp::block_on(fut)
                                                                 {
                                                                     resolved = Some(c);
                                                                 }
-                                                            }
-                                                        }
                                                         let action_ref =
                                                             resolved.as_ref().unwrap_or(ca);
                                                         if let Some(edit) = &action_ref.edit {
@@ -978,7 +957,6 @@ impl OverlayView {
                                             }
                                         });
                                     }
-                                }
                                 // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
                                 if let Some((doc_id, _path)) = selected_item.data.downcast_ref::<(
                                     helix_view::DocumentId,
@@ -1219,45 +1197,42 @@ impl OverlayView {
                 }
             };
 
-            match editor.documents.get(&doc_id) {
-                Some(document) => {
-                    let text = document.text();
+            if let Some(document) = editor.documents.get(&doc_id) {
+                let text = document.text();
 
-                    // Get primary cursor position
-                    let primary_selection = document.selection(focused_view_id).primary();
-                    let cursor_char_idx = primary_selection.cursor(text.slice(..));
+                // Get primary cursor position
+                let primary_selection = document.selection(focused_view_id).primary();
+                let cursor_char_idx = primary_selection.cursor(text.slice(..));
 
-                    // Convert character position to screen coordinates
-                    if let Some(cursor_pos) =
-                        view.screen_coords_at_pos(document, text.slice(..), cursor_char_idx)
+                // Convert character position to screen coordinates
+                if let Some(cursor_pos) =
+                    view.screen_coords_at_pos(document, text.slice(..), cursor_char_idx)
+                {
+                    let view_offset = document.view_offset(focused_view_id);
+
+                    // Check if cursor is visible in viewport
+                    let viewport_height = view.inner_height();
+                    if cursor_pos.row >= view_offset.vertical_offset
+                        && cursor_pos.row < view_offset.vertical_offset + viewport_height
                     {
-                        let view_offset = document.view_offset(focused_view_id);
+                        // Calculate relative position within viewport (0-based line in visible area)
+                        let relative_row =
+                            cursor_pos.row.saturating_sub(view_offset.vertical_offset);
 
-                        // Check if cursor is visible in viewport
-                        let viewport_height = view.inner_height();
-                        if cursor_pos.row >= view_offset.vertical_offset
-                            && cursor_pos.row < view_offset.vertical_offset + viewport_height
-                        {
-                            // Calculate relative position within viewport (0-based line in visible area)
-                            let relative_row =
-                                cursor_pos.row.saturating_sub(view_offset.vertical_offset);
+                        // Account for UI layout: file tree + gutter + character position
+                        let cursor_x = layout_info.file_tree_width
+                            + layout_info.gutter_width
+                            + px(cursor_pos.col as f32 * layout_info.char_width.0);
 
-                            // Account for UI layout: file tree + gutter + character position
-                            let cursor_x = layout_info.file_tree_width
-                                + layout_info.gutter_width
-                                + px(cursor_pos.col as f32 * layout_info.char_width.0);
+                        // Account for UI layout: title bar + tab bar + line position within document area
+                        let document_area_y =
+                            layout_info.title_bar_height + layout_info.tab_bar_height;
+                        let cursor_y =
+                            document_area_y + px(relative_row as f32 * layout_info.line_height.0);
 
-                            // Account for UI layout: title bar + tab bar + line position within document area
-                            let document_area_y =
-                                layout_info.title_bar_height + layout_info.tab_bar_height;
-                            let cursor_y = document_area_y
-                                + px(relative_row as f32 * layout_info.line_height.0);
-
-                            return (cursor_x, cursor_y + layout_info.line_height); // Position below cursor
-                        }
+                        return (cursor_x, cursor_y + layout_info.line_height); // Position below cursor
                     }
                 }
-                None => {}
             }
         }
 

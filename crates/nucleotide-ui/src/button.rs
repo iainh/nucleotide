@@ -3,7 +3,7 @@
 
 use crate::{
     ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
-    Styled as UIStyled, is_feature_enabled, should_enable_animations,
+    Styled as UIStyled,
     styling::ComputedStyle,
     tokens::{ButtonTokens, DesignTokens},
 };
@@ -598,9 +598,7 @@ impl RenderOnce for Button {
         let active_style =
             self.compute_style_from_tokens(&button_tokens, StyleState::Active, &theme.tokens);
 
-        // Check if animations should be enabled
-        let enable_animations = is_feature_enabled(cx, |features| features.enable_animations)
-            && should_enable_animations(theme, current_state);
+        // Animations may be enabled globally; hover/active visuals are always applied
 
         let mut button = div()
             .id(self.id)
@@ -635,8 +633,8 @@ impl RenderOnce for Button {
             })
             .opacity(computed_style.opacity);
 
-        // Apply interactive hover/active states if enabled and not disabled/loading
-        if current_state.is_interactive() && enable_animations {
+        // Apply interactive hover/active states when interactive; animations only affect transitions
+        if current_state.is_interactive() {
             button = button
                 .hover(|this| {
                     let mut hovered = this

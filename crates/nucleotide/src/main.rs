@@ -125,10 +125,8 @@ fn _early_runtime_init() {
         Err(_) => true,
     };
 
-    if needs_override {
-        if let Some(rt) = nucleotide::utils::detect_bundle_runtime() {
-            unsafe { std::env::set_var("HELIX_RUNTIME", &rt) };
-        }
+    if needs_override && let Some(rt) = nucleotide::utils::detect_bundle_runtime() {
+        unsafe { std::env::set_var("HELIX_RUNTIME", &rt) };
     }
 
     // Set RUST_LOG to info level for bundled app to show our debugging messages
@@ -150,11 +148,9 @@ fn setup_comprehensive_environment() {
 
     // Detect if this looks like a dock launch (minimal PATH)
     let has_cargo_bin = path_components.iter().any(|&p| p.contains(".cargo/bin"));
-    let has_usr_local = path_components.iter().any(|&p| p == "/usr/local/bin");
+    let has_usr_local = path_components.contains(&"/usr/local/bin");
     let has_homebrew = path_components.iter().any(|&p| p.contains("homebrew"));
-    let has_nix_system = path_components
-        .iter()
-        .any(|&p| p == "/run/current-system/sw/bin");
+    let has_nix_system = path_components.contains(&"/run/current-system/sw/bin");
     let path_count = path_components.len();
 
     let likely_dock_launch =
@@ -177,14 +173,14 @@ fn setup_comprehensive_environment() {
 
         // 2. Add rustup toolchain directories
         let rustup_toolchains = home_dir.join(".rustup").join("toolchains");
-        if rustup_toolchains.exists() {
-            if let Ok(entries) = std::fs::read_dir(&rustup_toolchains) {
-                for entry in entries.flatten() {
-                    if entry.file_type().map_or(false, |ft| ft.is_dir()) {
-                        let toolchain_bin = entry.path().join("bin");
-                        if toolchain_bin.exists() {
-                            additional_paths.push(toolchain_bin.to_string_lossy().to_string());
-                        }
+        if rustup_toolchains.exists()
+            && let Ok(entries) = std::fs::read_dir(&rustup_toolchains)
+        {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                    let toolchain_bin = entry.path().join("bin");
+                    if toolchain_bin.exists() {
+                        additional_paths.push(toolchain_bin.to_string_lossy().to_string());
                     }
                 }
             }
@@ -236,19 +232,18 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
     }
 
     // Priority 3: For file arguments, find the workspace root of the first file's parent
-    if let Some((first_file, _)) = args.files.first() {
-        if let Some(parent) = first_file.parent() {
-            if parent.exists() {
-                let workspace_root = nucleotide::application::find_workspace_root_from(parent);
-                info!(
-                    file = ?first_file,
-                    parent = ?parent,
-                    workspace_root = ?workspace_root,
-                    "Found workspace root from file parent"
-                );
-                return Ok(Some(workspace_root));
-            }
-        }
+    if let Some((first_file, _)) = args.files.first()
+        && let Some(parent) = first_file.parent()
+        && parent.exists()
+    {
+        let workspace_root = nucleotide::application::find_workspace_root_from(parent);
+        info!(
+            file = ?first_file,
+            parent = ?parent,
+            workspace_root = ?workspace_root,
+            "Found workspace root from file parent"
+        );
+        return Ok(Some(workspace_root));
     }
 
     // Priority 4: Try to find workspace root from current directory
@@ -279,10 +274,10 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
 fn main() -> Result<()> {
     // Set HELIX_RUNTIME for macOS bundles before any Helix code runs (backup)
     #[cfg(target_os = "macos")]
-    if std::env::var("HELIX_RUNTIME").is_err() {
-        if let Some(rt) = nucleotide::utils::detect_bundle_runtime() {
-            unsafe { std::env::set_var("HELIX_RUNTIME", &rt) };
-        }
+    if std::env::var("HELIX_RUNTIME").is_err()
+        && let Some(rt) = nucleotide::utils::detect_bundle_runtime()
+    {
+        unsafe { std::env::set_var("HELIX_RUNTIME", &rt) };
     }
 
     // Install panic handler to prevent data loss
@@ -392,10 +387,10 @@ fn main() -> Result<()> {
 }
 
 fn parse_file_url(url_str: &str) -> Option<PathBuf> {
-    if let Ok(url) = Url::parse(url_str) {
-        if url.scheme() == "file" {
-            return url.to_file_path().ok();
-        }
+    if let Ok(url) = Url::parse(url_str)
+        && url.scheme() == "file"
+    {
+        return url.to_file_path().ok();
     }
     None
 }
@@ -537,18 +532,18 @@ fn gui_main(
             for url in urls {
                 if let Some(file_path) = parse_file_url(&url) {
                     paths.push(file_path);
-                } else if let Ok(path) = PathBuf::from(&url).canonicalize() {
-                    if path.exists() {
-                        // Handle direct file paths (not URLs)
-                        paths.push(path);
-                    }
+                } else if let Ok(path) = PathBuf::from(&url).canonicalize()
+                    && path.exists()
+                {
+                    // Handle direct file paths (not URLs)
+                    paths.push(path);
                 }
             }
 
-            if !paths.is_empty() {
-                if let Err(e) = file_open_tx.send(paths) {
-                    error!(error = %e, "Failed to send file open request");
-                }
+            if !paths.is_empty()
+                && let Err(e) = file_open_tx.send(paths)
+            {
+                error!(error = %e, "Failed to send file open request");
             }
         }
     });
@@ -1069,17 +1064,14 @@ fn gui_main(
                                                         },
                                                         insert_text: {
                                                             // Priority order: text_edit.new_text -> insert_text -> label
-                                                            let final_text = if let Some(ref text_edit) = lsp_item.item.text_edit {
-                                                                let text = match text_edit {
+                                                            if let Some(ref text_edit) = lsp_item.item.text_edit {
+                                                                match text_edit {
                                                                     helix_lsp::lsp::CompletionTextEdit::Edit(edit) => edit.new_text.clone(),
                                                                     helix_lsp::lsp::CompletionTextEdit::InsertAndReplace(edit) => edit.new_text.clone(),
-                                                                };
-                                                                text
+                                                                }
                                                             } else {
-                                                                let text = lsp_item.item.insert_text.clone().unwrap_or_else(|| lsp_item.item.label.clone());
-                                                                text
-                                                            };
-                                                            final_text
+                                                                lsp_item.item.insert_text.clone().unwrap_or_else(|| lsp_item.item.label.clone())
+                                                            }
                                                         },
                                                         score: 1.0, // Default score for LSP items
                                                         signature_info: None,
@@ -1156,19 +1148,18 @@ fn gui_main(
                         for (index, path) in paths.iter().enumerate() {
                             if path.exists() {
                                 // For the first valid file, set its parent as the working directory
-                                if index == 0 && !should_change_dir {
-                                    if let Some(parent) = path.parent() {
+                                if index == 0 && !should_change_dir
+                                    && let Some(parent) = path.parent() {
                                         new_working_dir = Some(parent.to_path_buf());
                                         should_change_dir = true;
                                         info!(directory = ?parent, "Will change working directory");
                                     }
-                                }
                             }
                         }
 
                         // Change working directory if needed
-                        if should_change_dir {
-                            if let Some(dir) = new_working_dir.clone() {
+                        if should_change_dir
+                            && let Some(dir) = new_working_dir.clone() {
                                 if let Err(e) = helix_stdx::env::set_current_working_dir(&dir) {
                                     error!(
                                         directory = ?dir,
@@ -1199,7 +1190,6 @@ fn gui_main(
                                     }
                                 }
                             }
-                        }
 
                         // Now open all the files
                         for path in paths {

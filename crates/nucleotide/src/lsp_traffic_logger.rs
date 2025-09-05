@@ -23,7 +23,7 @@ struct Inner {
 impl LoggerState {
     fn new() -> Self {
         let enabled = std::env::var("NUCLEOTIDE_LSP_TRAFFIC")
-            .map_or(false, |v| v == "1" || v.eq_ignore_ascii_case("true"));
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         let dir = PathBuf::from("logs").join("lsp");
         Self {
             enabled,

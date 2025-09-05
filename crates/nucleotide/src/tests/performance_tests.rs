@@ -153,7 +153,7 @@ appearance_follows_theme = true
 
     fn benchmark<F>(name: &str, iterations: usize, mut operation: F) -> BenchmarkResult
     where
-        F: FnMut() -> (),
+        F: FnMut(),
     {
         let mut durations = Vec::with_capacity(iterations);
 
@@ -388,7 +388,7 @@ appearance_follows_theme = true
 
         // This test mainly ensures no obvious memory leaks or excessive allocation
         // In a real scenario, you might use a memory profiler
-        assert!(true, "Memory test completed without obvious issues");
+        // Sanity completion marker
     }
 
     #[test]

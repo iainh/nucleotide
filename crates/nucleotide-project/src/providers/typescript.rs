@@ -379,28 +379,28 @@ impl TypeScriptManifestProvider {
             serde_json::from_str(&content).with_path_context(path.to_path_buf())?;
 
         if let Some(compiler_options) = config.compiler_options {
-            if let Some(target) = compiler_options.get("target") {
-                if let Some(target_str) = target.as_str() {
-                    metadata
-                        .additional_info
-                        .insert("typescript_target".to_string(), target_str.to_string());
-                }
+            if let Some(target) = compiler_options.get("target")
+                && let Some(target_str) = target.as_str()
+            {
+                metadata
+                    .additional_info
+                    .insert("typescript_target".to_string(), target_str.to_string());
             }
 
-            if let Some(module) = compiler_options.get("module") {
-                if let Some(module_str) = module.as_str() {
-                    metadata
-                        .additional_info
-                        .insert("typescript_module".to_string(), module_str.to_string());
-                }
+            if let Some(module) = compiler_options.get("module")
+                && let Some(module_str) = module.as_str()
+            {
+                metadata
+                    .additional_info
+                    .insert("typescript_module".to_string(), module_str.to_string());
             }
 
-            if let Some(strict) = compiler_options.get("strict") {
-                if let Some(strict_bool) = strict.as_bool() {
-                    metadata
-                        .additional_info
-                        .insert("typescript_strict".to_string(), strict_bool.to_string());
-                }
+            if let Some(strict) = compiler_options.get("strict")
+                && let Some(strict_bool) = strict.as_bool()
+            {
+                metadata
+                    .additional_info
+                    .insert("typescript_strict".to_string(), strict_bool.to_string());
             }
         }
 

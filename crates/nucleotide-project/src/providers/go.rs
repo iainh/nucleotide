@@ -391,17 +391,19 @@ impl GoManifestProvider {
                 continue;
             }
 
-            if line.starts_with("module ") {
-                go_mod.module = line[7..].trim().to_string();
-            } else if line.starts_with("go ") {
-                go_mod.go_version = Some(line[3..].trim().to_string());
+            if let Some(rest) = line.strip_prefix("module ") {
+                go_mod.module = rest.trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("go ") {
+                go_mod.go_version = Some(rest.trim().to_string());
             } else if line == "require (" {
                 in_require_block = true;
             } else if line == ")" && in_require_block {
                 in_require_block = false;
-            } else if line.starts_with("require ") && !in_require_block {
+            } else if let Some(rest) = line.strip_prefix("require ")
+                && !in_require_block
+            {
                 // Single line require
-                if let Some((name, version)) = self.parse_require_line(&line[8..]) {
+                if let Some((name, version)) = self.parse_require_line(rest) {
                     go_mod.require.insert(name, version);
                 }
             } else if in_require_block {
@@ -427,8 +429,8 @@ impl GoManifestProvider {
     fn extract_go_version(&self, content: &str) -> Option<String> {
         for line in content.lines() {
             let line = line.trim();
-            if line.starts_with("go ") {
-                return Some(line[3..].trim().to_string());
+            if let Some(rest) = line.strip_prefix("go ") {
+                return Some(rest.trim().to_string());
             }
         }
         None
@@ -445,9 +447,11 @@ impl GoManifestProvider {
                 in_use_block = true;
             } else if line == ")" && in_use_block {
                 in_use_block = false;
-            } else if line.starts_with("use ") && !in_use_block {
+            } else if let Some(rest) = line.strip_prefix("use ")
+                && !in_use_block
+            {
                 // Single line use
-                let module = line[4..].trim().trim_matches('"').trim_matches('\'');
+                let module = rest.trim().trim_matches('"').trim_matches('\'');
                 modules.push(module.to_string());
             } else if in_use_block && !line.is_empty() {
                 // Multi-line use block

@@ -1,6 +1,8 @@
 // ABOUTME: Integration tests for ProjectLspManager and Helix LSP system coordination
 // ABOUTME: Verifies proactive server startup, fallback mechanisms, and error recovery
 
+#![allow(clippy::field_reassign_with_default, clippy::ptr_arg)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;

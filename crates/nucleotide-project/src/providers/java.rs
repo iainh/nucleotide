@@ -561,12 +561,12 @@ impl JavaManifestProvider {
         let start_tag = format!("<{}>", element);
         let end_tag = format!("</{}>", element);
 
-        if let Some(start) = content.find(&start_tag) {
-            if let Some(end) = content[start..].find(&end_tag) {
-                let value_start = start + start_tag.len();
-                let value_end = start + end;
-                return Some(content[value_start..value_end].trim().to_string());
-            }
+        if let Some(start) = content.find(&start_tag)
+            && let Some(end) = content[start..].find(&end_tag)
+        {
+            let value_start = start + start_tag.len();
+            let value_end = start + end;
+            return Some(content[value_start..value_end].trim().to_string());
         }
 
         None
@@ -591,10 +591,11 @@ impl JavaManifestProvider {
                 in_dependency = true;
             } else if in_dependencies && trimmed.contains("</dependency>") {
                 in_dependency = false;
-            } else if in_dependency && trimmed.contains("<artifactId>") {
-                if let Some(artifact_id) = self.extract_xml_element(trimmed, "artifactId") {
-                    dependencies.push(artifact_id);
-                }
+            } else if in_dependency
+                && trimmed.contains("<artifactId>")
+                && let Some(artifact_id) = self.extract_xml_element(trimmed, "artifactId")
+            {
+                dependencies.push(artifact_id);
             }
         }
 
@@ -636,20 +637,20 @@ impl JavaManifestProvider {
                                 }
                             }
                         }
-                    } else if let Some(quote_start) = trimmed.find('"') {
-                        if let Some(quote_end) = trimmed[quote_start + 1..].find('"') {
-                            let dep_string = &trimmed[quote_start + 1..quote_start + 1 + quote_end];
-                            // Extract group:artifact part
-                            if let Some(colon_pos) = dep_string.find(':') {
-                                if let Some(second_colon) = dep_string[colon_pos + 1..].find(':') {
-                                    let artifact =
-                                        &dep_string[colon_pos + 1..colon_pos + 1 + second_colon];
-                                    dependencies.push(artifact.to_string());
-                                } else {
-                                    // Just group:artifact without version
-                                    let artifact = &dep_string[colon_pos + 1..];
-                                    dependencies.push(artifact.to_string());
-                                }
+                    } else if let Some(quote_start) = trimmed.find('"')
+                        && let Some(quote_end) = trimmed[quote_start + 1..].find('"')
+                    {
+                        let dep_string = &trimmed[quote_start + 1..quote_start + 1 + quote_end];
+                        // Extract group:artifact part
+                        if let Some(colon_pos) = dep_string.find(':') {
+                            if let Some(second_colon) = dep_string[colon_pos + 1..].find(':') {
+                                let artifact =
+                                    &dep_string[colon_pos + 1..colon_pos + 1 + second_colon];
+                                dependencies.push(artifact.to_string());
+                            } else {
+                                // Just group:artifact without version
+                                let artifact = &dep_string[colon_pos + 1..];
+                                dependencies.push(artifact.to_string());
                             }
                         }
                     }

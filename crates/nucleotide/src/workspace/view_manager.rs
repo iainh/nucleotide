@@ -91,7 +91,6 @@ impl ViewManager {
     pub fn update_document_views(&mut self, cx: &mut Context<Workspace>) -> Option<SharedString> {
         let mut view_ids = HashSet::new();
         // Will be initialized from collected state below
-        let focused_file_name: Option<SharedString>;
 
         // Read editor state to get current views and collect view information
         let workspace = cx.entity();
@@ -144,7 +143,7 @@ impl ViewManager {
         // Important: core_read is dropped here
 
         // Update the focused file name and view ID
-        focused_file_name = focused_file_name_result;
+        let focused_file_name: Option<SharedString> = focused_file_name_result;
         if let Some(fv_id) = focused_view_id_result {
             self.focused_view_id = Some(fv_id);
         }

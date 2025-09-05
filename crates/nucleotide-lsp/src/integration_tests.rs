@@ -341,7 +341,7 @@ edition = "2021"
         let detection_time = start.elapsed();
 
         // 3. Wait for server startup event
-        let startup_event = collector
+        let _startup_event = collector
             .wait_for_event(
                 |event| matches!(event, ProjectLspEvent::ServerStartupRequested { .. }),
                 Duration::from_secs(1),
@@ -403,7 +403,7 @@ edition = "2021"
             .expect("Failed to detect project");
 
         // Wait for startup request event
-        let startup_event = collector
+        let _startup_event = collector
             .wait_for_event(
                 |event| {
                     matches!(event, ProjectLspEvent::ServerStartupRequested {
@@ -415,7 +415,7 @@ edition = "2021"
             .await;
 
         assert!(
-            startup_event.is_some(),
+            _startup_event.is_some(),
             "Server startup should be requested for Rust project"
         );
 
@@ -423,7 +423,7 @@ edition = "2021"
             workspace_root,
             server_name,
             language_id,
-        }) = startup_event
+        }) = _startup_event
         {
             assert_eq!(workspace_root, rust_project);
             assert_eq!(server_name, "rust-analyzer");

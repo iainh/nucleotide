@@ -16,6 +16,7 @@ use tokio::sync::broadcast;
 use crate::{ProjectLspError, ProjectLspManager};
 
 // Define a dyn-compatible trait for environment providers using boxed futures
+#[allow(clippy::type_complexity)]
 pub trait EnvironmentProvider: Send + Sync {
     /// Get environment variables for LSP servers in the given directory
     fn get_lsp_environment(
@@ -123,6 +124,8 @@ impl HelixLspBridge {
         server_name = %server_name,
         language_id = %language_id
     ))]
+    #[allow(clippy::ptr_arg)]
+    #[allow(clippy::ptr_arg)]
     pub async fn start_server(
         &self,
         editor: &mut Editor,
@@ -179,6 +182,7 @@ impl HelixLspBridge {
     }
 
     /// Find existing server for workspace and server name
+    #[allow(clippy::ptr_arg)]
     fn find_existing_server(
         &self,
         editor: &Editor,
@@ -198,6 +202,7 @@ impl HelixLspBridge {
     }
 
     /// Start server via Helix's registry system
+    #[allow(clippy::ptr_arg)]
     async fn start_server_via_registry(
         &self,
         editor: &mut Editor,
@@ -291,7 +296,7 @@ impl HelixLspBridge {
         // Controlled via env var NUCLEOTIDE_LSP_USE_PROXY=1.
         let mut shim_dir_to_cleanup: Option<std::path::PathBuf> = None;
         if std::env::var("NUCLEOTIDE_LSP_USE_PROXY")
-            .map_or(false, |v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         {
             // Best-effort: build a shim dir with an executable named `server_name` that execs our proxy.
             if let Ok(real_path) = which::which(server_name) {
@@ -586,6 +591,7 @@ pub trait EditorLspIntegration {
     fn detect_and_register_project(&mut self, workspace_root: PathBuf);
 
     /// Cleanup project when workspace closes
+    #[allow(clippy::ptr_arg)]
     fn cleanup_project(&mut self, workspace_root: &PathBuf);
 }
 
@@ -885,10 +891,10 @@ fn find_rs_file_shallow(root: &PathBuf, max_depth: usize) -> Option<PathBuf> {
                 return Some(path);
             } else if path.is_dir() {
                 // Skip common large/irrelevant directories
-                if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                    if matches!(name, "target" | ".git" | "node_modules" | ".cache") {
-                        continue;
-                    }
+                if let Some(name) = path.file_name().and_then(|s| s.to_str())
+                    && matches!(name, "target" | ".git" | "node_modules" | ".cache")
+                {
+                    continue;
                 }
                 if let Some(found) = walk(&path, depth + 1, max_depth) {
                     return Some(found);
@@ -914,24 +920,22 @@ fn find_active_rust_document(editor: &Editor, workspace_root: &PathBuf) -> Optio
     let focused = editor.tree.focus;
     if editor.tree.contains(focused) {
         let view = editor.tree.get(focused);
-        if let Some(doc) = editor.documents.get(&view.doc) {
-            if let Some(path) = doc.path() {
-                if is_candidate(&path) {
-                    return Some(path.to_path_buf());
-                }
-            }
+        if let Some(doc) = editor.documents.get(&view.doc)
+            && let Some(path) = doc.path()
+            && is_candidate(path)
+        {
+            return Some(path.to_path_buf());
         }
     }
 
     // 2) Fall back to any open view within the workspace
     for (view_ref, _) in editor.tree.views() {
         let view = editor.tree.get(view_ref.id);
-        if let Some(doc) = editor.documents.get(&view.doc) {
-            if let Some(path) = doc.path() {
-                if is_candidate(&path) {
-                    return Some(path.to_path_buf());
-                }
-            }
+        if let Some(doc) = editor.documents.get(&view.doc)
+            && let Some(path) = doc.path()
+            && is_candidate(path)
+        {
+            return Some(path.to_path_buf());
         }
     }
 

@@ -2,6 +2,7 @@
 // ABOUTME: Tests GUI configuration, Helix configuration merging, and edge cases for robust config handling
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default, clippy::assertions_on_constants)]
 mod tests {
     use crate::config::{
         Config, EditorGuiConfig, FileOpsConfig, GuiConfig, LspConfig, ThemeConfig, ThemeMode,

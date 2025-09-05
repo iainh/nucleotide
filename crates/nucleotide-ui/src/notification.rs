@@ -100,6 +100,12 @@ pub struct NotificationView {
     saved: Option<Result<DocumentSavedEvent, String>>,
 }
 
+impl Default for NotificationView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NotificationView {
     pub fn new() -> Self {
         Self {

@@ -2,6 +2,7 @@
 // ABOUTME: Tests complete project setup scenarios, error recovery, and real-world project structures
 
 #[cfg(test)]
+#[allow(clippy::assertions_on_constants)]
 mod tests {
     use crate::application::find_workspace_root_from;
     use crate::config::Config;

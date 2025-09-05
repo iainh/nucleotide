@@ -487,12 +487,11 @@ fn extract_setup_field(content: &str, field: &str) -> Option<String> {
     ];
 
     for pattern in &patterns {
-        if let Ok(re) = regex::Regex::new(pattern) {
-            if let Some(captures) = re.captures(content) {
-                if let Some(value) = captures.get(1) {
-                    return Some(value.as_str().trim().to_string());
-                }
-            }
+        if let Ok(re) = regex::Regex::new(pattern)
+            && let Some(captures) = re.captures(content)
+            && let Some(value) = captures.get(1)
+        {
+            return Some(value.as_str().trim().to_string());
         }
     }
 

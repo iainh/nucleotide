@@ -13,6 +13,12 @@ pub struct InfoBoxView {
     text: Option<SharedString>,
 }
 
+impl Default for InfoBoxView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InfoBoxView {
     pub fn new() -> Self {
         InfoBoxView {

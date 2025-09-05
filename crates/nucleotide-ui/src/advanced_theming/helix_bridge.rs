@@ -492,22 +492,14 @@ impl HelixThemeBridge {
         // Add UI section
         toml_content.push_str("[ui]\n");
         for (key, value) in &helix_data.ui {
-            if value.starts_with('#') {
-                toml_content.push_str(&format!("\"{}\" = \"{}\"\n", key, value));
-            } else {
-                toml_content.push_str(&format!("\"{}\" = \"{}\"\n", key, value));
-            }
+            toml_content.push_str(&format!("\"{}\" = \"{}\"\n", key, value));
         }
         toml_content.push('\n');
 
         // Add syntax section
         toml_content.push_str("[syntax]\n");
         for (key, value) in &helix_data.syntax {
-            if value.starts_with('#') {
-                toml_content.push_str(&format!("\"{}\" = \"{}\"\n", key, value));
-            } else {
-                toml_content.push_str(&format!("\"{}\" = \"{}\"\n", key, value));
-            }
+            toml_content.push_str(&format!("\"{}\" = \"{}\"\n", key, value));
         }
 
         Ok(toml_content)
