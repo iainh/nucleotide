@@ -543,6 +543,7 @@ impl Workspace {
         let (x, y) = self.context_menu_pos;
 
         let items = Self::context_menu_items();
+        let item_count = items.len();
 
         // Use anchored popup at the stored cursor position, relative to window
         let dd_tokens = tokens.dropdown_tokens();
@@ -557,7 +558,10 @@ impl Workspace {
             .rounded(tokens.sizes.radius_md)
             .shadow_lg()
             .min_w(px(200.0))
+            // Use equal padding on all sides so the selection has the same
+            // inset from the border horizontally as vertically
             .py(tokens.sizes.space_1)
+            .px(tokens.sizes.space_1)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             // Prevent hover/move from reaching the file tree beneath the menu
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
@@ -565,6 +569,10 @@ impl Workspace {
                 let hover_bg = dd_tokens.item_background_hover;
                 let text_default = dd_tokens.item_text;
                 let text_hover = dd_tokens.item_text_selected;
+                // Compute rounded corner radius for selected rows at the top/bottom of the menu
+                let inner_radius = tokens.sizes.radius_md - px(0.5); // Outer radius minus half border
+                let is_first = i == 0;
+                let is_last = i + 1 == item_count;
                 div()
                     .w_full()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -577,6 +585,13 @@ impl Workspace {
                     // Apply selection background on the full-width wrapper so it stretches edge to edge
                     .when(self.context_menu_index == i, |d| {
                         d.bg(dd_tokens.item_background_selected)
+                    })
+                    // Round selection corners to match the popup for first/last items
+                    .when(self.context_menu_index == i && is_first, |d| {
+                        d.rounded_tl(inner_radius).rounded_tr(inner_radius)
+                    })
+                    .when(self.context_menu_index == i && is_last, |d| {
+                        d.rounded_bl(inner_radius).rounded_br(inner_radius)
                     })
                     .on_mouse_up(MouseButton::Left, {
                         let handler_fn = handler;
@@ -1172,8 +1187,23 @@ impl Workspace {
         // Update input context based on current focus state
         self.update_input_context(window, cx);
 
-        // Leader key handling: SPACE as prefix in Normal context
+        // Determine current Helix editor mode for precise gating
+        let helix_mode = { self.core.read(cx).editor.mode() };
+
+        // If we left Normal mode while a leader sequence was active, cancel it
+        if self.leader_active && helix_mode != helix_view::document::Mode::Normal {
+            info!("Leader: cancelled due to leaving Normal mode");
+            self.leader_active = false;
+            self.leader_deadline = None;
+            self.key_hints.update(cx, |key_hints, cx| {
+                key_hints.set_info(None);
+                cx.notify();
+            });
+        }
+
+        // Leader key handling: SPACE as prefix only in Normal editor mode
         if self.input_coordinator.current_context() == InputContext::Normal
+            && helix_mode == helix_view::document::Mode::Normal
             && ev.keystroke.modifiers.number_of_modifiers() == 0
         {
             match ev.keystroke.key.as_str() {

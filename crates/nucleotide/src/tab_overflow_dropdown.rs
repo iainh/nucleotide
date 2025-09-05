@@ -207,22 +207,26 @@ impl RenderOnce for TabOverflowMenu {
             .flex()
             .flex_col()
             .py(tokens.sizes.space_2)
-            .children(
+            .px(tokens.sizes.space_2)
+            .children({
+                let item_count = self.overflow_documents.len();
                 self.overflow_documents
                     .iter()
-                    .map(|doc_info| {
+                    .enumerate()
+                    .map(|(i, doc_info)| {
                         let label = self.get_document_label(doc_info);
                         let is_active = self.active_doc_id == Some(doc_info.id);
+                        let is_first = i == 0;
+                        let is_last = i + 1 == item_count;
                         let doc_id = doc_info.id;
                         let on_tab_click = self.on_tab_click.clone();
 
                         // Modern ListItem component with wrapper for click handling (like file tree)
                         {
                             let item_id = SharedString::from(format!("overflow-tab-{}", doc_id));
-                            div()
+                            let wrapper = div()
                                 .on_mouse_down(MouseButton::Left, {
                                     move |_event, _window, cx| {
-                                        // Stop propagation immediately to prevent workspace click-away handler
                                         cx.stop_propagation();
                                     }
                                 })
@@ -230,69 +234,74 @@ impl RenderOnce for TabOverflowMenu {
                                     let on_tab_click = on_tab_click.clone();
                                     let on_close = self.on_close.clone();
                                     move |_event, window, cx| {
-                                        // Stop propagation first to prevent workspace handlers
                                         cx.stop_propagation();
                                         on_tab_click(doc_id, window, cx);
                                         on_close(window, cx);
                                     }
                                 })
-                                .child(
-                                    ListItem::new(item_id)
-                                        .variant(if is_active {
-                                            ListItemVariant::Primary // Automatically handles text_on_primary
+                                // Selection background and rounded corners on the wrapper
+                                .when(is_active, |d| d.bg(dd_tokens.item_background_selected))
+                                .when(is_active && is_first, |d| {
+                                    let r = tokens.sizes.radius_md - px(0.5);
+                                    d.rounded_tl(r).rounded_tr(r)
+                                })
+                                .when(is_active && is_last, |d| {
+                                    let r = tokens.sizes.radius_md - px(0.5);
+                                    d.rounded_bl(r).rounded_br(r)
+                                });
+
+                            wrapper.child(
+                                ListItem::new(item_id)
+                                    .variant(ListItemVariant::Ghost)
+                                    .spacing(ListItemSpacing::Compact)
+                                    .start_slot({
+                                        // VCS-aware file icon (matches tab/file-tree styling)
+                                        if let Some(ref path) = doc_info.path {
+                                            let icon = VcsIcon::from_path(path, false)
+                                                .size(16.0)
+                                                .text_color(theme.tokens.chrome.text_on_chrome)
+                                                .vcs_status(doc_info.git_status);
+                                            icon.render_with_theme(theme).into_any_element()
                                         } else {
-                                            ListItemVariant::Ghost // Automatically handles text_primary
-                                        })
-                                        .spacing(ListItemSpacing::Compact)
-                                        .selected(is_active)
-                                        .start_slot({
-                                            // VCS-aware file icon (matches tab/file-tree styling)
-                                            if let Some(ref path) = doc_info.path {
-                                                let icon = VcsIcon::from_path(path, false)
-                                                    .size(16.0)
-                                                    .text_color(theme.tokens.chrome.text_on_chrome)
-                                                    .vcs_status(doc_info.git_status);
-                                                icon.render_with_theme(theme).into_any_element()
-                                            } else {
-                                                let icon = VcsIcon::scratch()
-                                                    .size(16.0)
-                                                    .text_color(theme.tokens.chrome.text_on_chrome)
-                                                    .vcs_status(doc_info.git_status);
-                                                icon.render_with_theme(theme).into_any_element()
-                                            }
-                                        })
-                                        .end_slot(
-                                            // Modified indicator dot
-                                            if doc_info.is_modified {
-                                                div()
-                                                    .w(px(6.0))
-                                                    .h(px(6.0))
-                                                    .rounded(px(3.0))
-                                                    .bg(tokens.chrome.primary)
-                                                    .into_any_element()
-                                            } else {
-                                                div().into_any_element()
-                                            },
-                                        )
-                                        .child(
-                                            // File name with automatic styling based on variant
+                                            let icon = VcsIcon::scratch()
+                                                .size(16.0)
+                                                .text_color(theme.tokens.chrome.text_on_chrome)
+                                                .vcs_status(doc_info.git_status);
+                                            icon.render_with_theme(theme).into_any_element()
+                                        }
+                                    })
+                                    .end_slot(
+                                        // Modified indicator dot
+                                        if doc_info.is_modified {
                                             div()
-                                                .flex_1()
-                                                .min_w(px(0.0))
-                                                .text_size(tokens.sizes.text_sm)
-                                                .line_height(px(18.0))
-                                                .when(doc_info.is_modified, |name_div| {
-                                                    name_div.italic()
-                                                })
-                                                .when(is_active, |name_div| {
-                                                    name_div.font_weight(gpui::FontWeight::MEDIUM)
-                                                })
-                                                .child(label),
-                                        ),
-                                )
+                                                .w(px(6.0))
+                                                .h(px(6.0))
+                                                .rounded(px(3.0))
+                                                .bg(tokens.chrome.primary)
+                                                .into_any_element()
+                                        } else {
+                                            div().into_any_element()
+                                        },
+                                    )
+                                    .child(
+                                        // File name
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.0))
+                                            .text_size(tokens.sizes.text_sm)
+                                            .line_height(px(18.0))
+                                            .when(doc_info.is_modified, |name_div| {
+                                                name_div.italic()
+                                            })
+                                            .when(is_active, |name_div| {
+                                                name_div.text_color(dd_tokens.item_text_selected)
+                                            })
+                                            .child(label),
+                                    ),
+                            )
                         }
                     })
-                    .collect::<Vec<_>>(),
-            )
+                    .collect::<Vec<_>>()
+            })
     }
 }
