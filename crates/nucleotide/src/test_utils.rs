@@ -155,6 +155,16 @@ pub mod test_support {
                             doc_id: helix_view::DocumentId::default(),
                         }
                     }
+                    // Ignore UI picker-related bridged events in tests
+                    BridgedEvent::DiagnosticsPickerRequested { .. }
+                    | BridgedEvent::FilePickerRequested
+                    | BridgedEvent::BufferPickerRequested => TestUpdate::DocumentChanged {
+                        doc_id: helix_view::DocumentId::default(),
+                    },
+                    // Fallback for any future variants
+                    _ => TestUpdate::DocumentChanged {
+                        doc_id: helix_view::DocumentId::default(),
+                    },
                 };
 
                 let _ = update_tx.send(update);

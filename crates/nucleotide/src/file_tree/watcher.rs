@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
-use nucleotide_logging::{debug, info, warn};
+use nucleotide_logging::{debug, warn};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;

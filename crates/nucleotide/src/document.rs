@@ -2772,7 +2772,7 @@ impl Element for DocumentElement {
                         );
 
                         // Compute gutter width in pixels to reserve space for diagnostic markers
-                        let gutter_width_px = {
+                        let _gutter_width_px = {
                             let core = self.core.read(cx);
                             let editor = &core.editor;
                             let document = match editor.document(self.doc_id) { Some(d) => d, None => return };
@@ -3912,7 +3912,7 @@ impl Element for DocumentElement {
                     gutter_origin.y += px(1.);
 
                     // Build gutter lines and diagnostics map inside a limited borrow scope, then paint
-                    let (gutter_lines, diag_line_severity_nonwrap) = {
+                    let (gutter_lines, _diag_line_severity_nonwrap) = {
                         let core = self.core.read(cx);
                         let editor = &core.editor;
                         let view = match editor.tree.try_get(self.view_id) {

@@ -573,9 +573,9 @@ impl Workspace {
             // Prevent hover/move from reaching the file tree beneath the menu
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .children(items.into_iter().enumerate().map(|(i, (label, handler))| {
-                let hover_bg = dd_tokens.item_background_hover;
+                let _hover_bg = dd_tokens.item_background_hover;
                 let text_default = dd_tokens.item_text;
-                let text_hover = dd_tokens.item_text_selected;
+                let _text_hover = dd_tokens.item_text_selected;
                 // Compute rounded corner radius for selected rows at the top/bottom of the menu
                 let inner_radius = tokens.sizes.radius_md - px(0.5); // Outer radius minus half border
                 let is_first = i == 0;
@@ -7332,7 +7332,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
     info!("Opening code actions dropdown");
 
     // Snapshot needed editor state under read lock
-    let (doc_id, view_id, offset_encoding, identifier, range, diags, servers) = {
+    let (doc_id, _view_id, _offset_encoding, identifier, range, diags, servers) = {
         let core_r = core.read(cx);
         let editor = &core_r.editor;
         let view = editor.tree.get(editor.tree.focus);
@@ -7504,7 +7504,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
         // If none, exit with a notification
         if completion_items.is_empty() {
             if let Some(core) = core_weak.upgrade() {
-                core.update(cx, |_core, cx| {
+                let _ = core.update(cx, |_core, cx| {
                     cx.emit(crate::Update::EditorStatus(
                         nucleotide_types::EditorStatus {
                             status: "No code actions available".to_string(),
@@ -7527,7 +7527,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
                 .expect("create code actions completion view");
 
             // Emit completion-style code actions into overlay
-            core.update(cx, |_core, cx| {
+            let _ = core.update(cx, |_core, cx| {
                 cx.emit(crate::Update::CodeActions(completion_view, pairs));
             });
         }

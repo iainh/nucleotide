@@ -1,13 +1,12 @@
 // ABOUTME: Diagnostics list panel rendering diagnostics from LspState with simple filters
 
-use gpui::{prelude::FluentBuilder, *};
+use gpui::*;
 use helix_core::{Uri, diagnostic::Severity};
 use nucleotide_lsp::lsp_state::DiagnosticInfo;
 use nucleotide_ui::ThemedContext;
 use nucleotide_ui::common::FocusableModal;
-use nucleotide_ui::theme_manager::HelixThemedContext;
+// use nucleotide_ui::theme_manager::HelixThemedContext; // not used in this module
 use nucleotide_ui::tokens::utils; // for color utilities (darken/with_alpha)
-use nucleotide_ui::{ListItem, ListItemSpacing, ListItemVariant};
 use std::path::PathBuf;
 
 /// Simple filters for the diagnostics panel
@@ -123,7 +122,6 @@ impl Render for DiagnosticsPanel {
 
         // Sort by severity desc, then by uri, then by start position
         rows.sort_by(|a, b| {
-            use std::cmp::Ordering;
             let sa = a.1.diagnostic.severity();
             let sb = b.1.diagnostic.severity();
             sb.cmp(&sa) // higher severity first
@@ -395,8 +393,7 @@ impl Render for DiagnosticsPanel {
             // No chevron prefix; selection shown via tokens
             let prefix = " ";
 
-            let item_text = picker_tokens.item_text;
-            let item_text_secondary = picker_tokens.item_text_secondary;
+            // token references for row coloring (keep names to clarify intent)
             let row_text = if is_selected {
                 picker_tokens.item_text_selected
             } else {
@@ -412,7 +409,7 @@ impl Render for DiagnosticsPanel {
             } else {
                 picker_tokens.item_background
             };
-            let row_hover_bg = picker_tokens.item_background_hover;
+            let _row_hover_bg = picker_tokens.item_background_hover; // reserved for future hover styling
 
             let row = div()
                 .id(id.clone())

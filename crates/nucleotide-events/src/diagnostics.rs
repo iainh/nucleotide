@@ -42,7 +42,7 @@ mod tests {
 
     #[test]
     fn create_set_event() {
-        let uri = Uri::from_path("/tmp/test.rs");
+        let uri = Uri::from(std::path::PathBuf::from("/tmp/test.rs"));
         let provider = DiagnosticProvider::Lsp {
             server_id: LanguageServerId::default(),
             identifier: None,

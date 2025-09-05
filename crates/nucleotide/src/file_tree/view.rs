@@ -1091,7 +1091,7 @@ impl FileTreeView {
         // Get FileTreeTokens for hybrid color system
         let file_tree_tokens = theme.tokens.file_tree_tokens();
 
-        let enable_animations = nucleotide_ui::providers::use_provider::<
+        let _enable_animations = nucleotide_ui::providers::use_provider::<
             nucleotide_ui::providers::ConfigurationProvider,
         >()
         .map(|config| config.ui_config.animation_config.enable_animations)

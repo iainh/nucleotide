@@ -459,18 +459,18 @@ impl OverlayView {
                                 "DIAG: Diagnostics item selected - opening and jumping"
                             );
                             // Open the file, then move cursor after a short delay
-                            core.update(cx, |app, cx| {
+                            core.update(cx, |_app, cx| {
                                 cx.emit(crate::Update::OpenFile(path.clone()));
                             });
                             let core2 = core_for_nav.clone();
                             let path_for_lookup = path.clone();
-                            cx.spawn(async move |this, cx| {
+                            cx.spawn(async move |_this, cx| {
                                 // Small delay to allow file to open
                                 cx.background_executor()
                                     .timer(std::time::Duration::from_millis(20))
                                     .await;
                                 if let Some(core) = core2.upgrade() {
-                                    core.update(cx, |app, _cx| {
+                                    let _ = core.update(cx, |app, _cx| {
                                         // Find document by path
                                         if let Some(doc_id) =
                                             app.editor.documents.iter().find_map(|(id, doc)| {
