@@ -4274,24 +4274,41 @@ impl<'h, 'r, 't> SyntaxHighlighter<'h, 'r, 't> {
             return;
         };
 
-        let (event, highlights) = highlighter.advance();
-        let base = match event {
-            HighlightEvent::Refresh => self.text_style,
-            HighlightEvent::Push => self.style,
-        };
-
-        self.style = highlights.fold(base, |acc, highlight| {
-            let highlight_style = safe_highlight(self.theme, highlight);
-            let patched = acc.patch(highlight_style);
-            if patched != acc {
-                debug!(
-                    "Applying highlight: {:?} -> style: {:?}",
-                    highlight, patched.fg
-                );
+        // Guard against panics from upstream highlighter (tree-house). Process in-place.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (event, highlights) = highlighter.advance();
+            // Collect highlights to detach borrow from highlighter
+            let mut collected: Vec<syntax::Highlight> = Vec::new();
+            for h in highlights {
+                collected.push(h);
             }
-            patched
-        });
-        self.update_pos();
+            (event, collected)
+        }));
+
+        if let Ok((event, collected)) = result {
+            let base = match event {
+                HighlightEvent::Refresh => self.text_style,
+                HighlightEvent::Push => self.style,
+            };
+
+            self.style = collected.into_iter().fold(base, |acc, highlight| {
+                let highlight_style = safe_highlight(self.theme, highlight);
+                let patched = acc.patch(highlight_style);
+                if patched != acc {
+                    debug!(
+                        "Applying highlight: {:?} -> style: {:?}",
+                        highlight, patched.fg
+                    );
+                }
+                patched
+            });
+            self.update_pos();
+        } else {
+            // Disable syntax highlighting for this render cycle to avoid crashing the app
+            self.inner = None;
+            self.pos = usize::MAX;
+            return;
+        }
     }
 }
 
@@ -4320,17 +4337,32 @@ impl<'t> OverlayHighlighter<'t> {
     }
 
     fn advance(&mut self) {
-        let (event, highlights) = self.inner.advance();
-        let base = match event {
-            HighlightEvent::Refresh => helix_view::graphics::Style::default(),
-            HighlightEvent::Push => self.style,
-        };
+        // Guard against panics from upstream overlay highlighter. Process in-place.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (event, highlights) = self.inner.advance();
+            let mut collected: Vec<syntax::Highlight> = Vec::new();
+            for h in highlights {
+                collected.push(h);
+            }
+            (event, collected)
+        }));
 
-        self.style = highlights.fold(base, |acc, highlight| {
-            let highlight_style = safe_highlight(self.theme, highlight);
-            acc.patch(highlight_style)
-        });
-        self.update_pos();
+        if let Ok((event, collected)) = result {
+            let base = match event {
+                HighlightEvent::Refresh => helix_view::graphics::Style::default(),
+                HighlightEvent::Push => self.style,
+            };
+
+            self.style = collected.into_iter().fold(base, |acc, highlight| {
+                let highlight_style = safe_highlight(self.theme, highlight);
+                acc.patch(highlight_style)
+            });
+            self.update_pos();
+        } else {
+            // Disable overlay highlights on panic
+            self.pos = usize::MAX;
+            return;
+        }
     }
 }
 
