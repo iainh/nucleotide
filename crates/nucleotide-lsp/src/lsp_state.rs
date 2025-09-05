@@ -426,10 +426,12 @@ impl LspState {
         // Minimal format: "Server" or spinner only
         if short_server.len() <= max_len {
             Some(short_server)
-        } else if self.should_show_spinner() {
-            Some(self.get_spinner_frame().to_string())
-        } else {
+        } else if progress.token.as_str() == "idle" {
+            // For idle progress, always show a solid indicator even under width constraints
             Some("◉".to_string())
+        } else {
+            // Active progress: show spinner frame when we cannot fit any text
+            Some(self.get_spinner_frame().to_string())
         }
     }
 
