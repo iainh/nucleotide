@@ -7,7 +7,9 @@ use gpui::{
     SharedString, Styled, Window, div, px,
 };
 use helix_view::DocumentId;
-use nucleotide_ui::{ListItem, ListItemSpacing, ListItemVariant, ThemedContext as UIThemedContext};
+use nucleotide_ui::{
+    ListItem, ListItemSpacing, ListItemVariant, ThemedContext as UIThemedContext, VcsIcon,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -242,18 +244,22 @@ impl RenderOnce for TabOverflowMenu {
                                         })
                                         .spacing(ListItemSpacing::Compact)
                                         .selected(is_active)
-                                        .start_slot(
-                                            // File icon with automatic color adaptation
+                                        .start_slot({
+                                            // VCS-aware file icon (matches tab/file-tree styling)
                                             if let Some(ref path) = doc_info.path {
-                                                nucleotide_ui::FileIcon::from_path(path, false)
+                                                let icon = VcsIcon::from_path(path, false)
                                                     .size(16.0)
-                                                    .into_any_element()
+                                                    .text_color(theme.tokens.chrome.text_on_chrome)
+                                                    .vcs_status(doc_info.git_status);
+                                                icon.render_with_theme(theme).into_any_element()
                                             } else {
-                                                nucleotide_ui::FileIcon::scratch()
+                                                let icon = VcsIcon::scratch()
                                                     .size(16.0)
-                                                    .into_any_element()
-                                            },
-                                        )
+                                                    .text_color(theme.tokens.chrome.text_on_chrome)
+                                                    .vcs_status(doc_info.git_status);
+                                                icon.render_with_theme(theme).into_any_element()
+                                            }
+                                        })
                                         .end_slot(
                                             // Modified indicator dot
                                             if doc_info.is_modified {
