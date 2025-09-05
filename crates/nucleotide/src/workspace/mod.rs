@@ -6881,6 +6881,21 @@ impl Render for Workspace {
                                 let mut servers: Vec<_> = state.servers.values().cloned().collect();
                                 servers.sort_by(|a, b| a.name.cmp(&b.name));
 
+                                // If there are no servers, show muted empty message
+                                if servers.is_empty() {
+                                    rows.push(
+                                        div()
+                                            .w_full()
+                                            .px(ui_theme.tokens.sizes.space_3)
+                                            .py(ui_theme.tokens.sizes.space_2)
+                                            .text_size(ui_theme.tokens.sizes.text_sm)
+                                            .text_color(dd_tokens.item_text_secondary)
+                                            .child("no LSP servers")
+                                            .into_any_element(),
+                                    );
+                                    // No servers to display; end of list
+                                }
+
                                 for server in servers {
                                     let status_text = match server.status {
                                         ServerStatus::Starting => "Starting".to_string(),
@@ -6960,9 +6975,12 @@ impl Render for Workspace {
                             } else {
                                 vec![
                                     div()
-                                        .px(ui_theme.tokens.sizes.space_2)
+                                        .w_full()
+                                        .px(ui_theme.tokens.sizes.space_3)
                                         .py(ui_theme.tokens.sizes.space_2)
-                                        .child("No LSP state")
+                                        .text_size(ui_theme.tokens.sizes.text_sm)
+                                        .text_color(dd_tokens.item_text_secondary)
+                                        .child("no LSP servers")
                                         .into_any_element(),
                                 ]
                             }
