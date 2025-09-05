@@ -1211,10 +1211,11 @@ impl Workspace {
         // Leader key handling: SPACE as prefix only in Normal editor mode
         if self.input_coordinator.current_context() == InputContext::Normal
             && helix_mode == helix_view::document::Mode::Normal
-            && ev.keystroke.modifiers.number_of_modifiers() == 0
         {
             match ev.keystroke.key.as_str() {
-                "space" | " " if !self.leader_active => {
+                "space" | " "
+                    if !self.leader_active && ev.keystroke.modifiers.number_of_modifiers() == 0 =>
+                {
                     info!("Leader: SPACE pressed, activating leader mode");
                     // Activate leader, swallow the space
                     self.leader_active = true;
@@ -1227,6 +1228,8 @@ impl Workspace {
                                b   Buffer Picker\n\
                                t   Toggle File Tree\n\
                                a   Code Actions\n\
+                               d   Diagnostics (buffer)\n\
+                               D   Diagnostics (workspace)\n\
                                esc Cancel"
                             .into(),
                         width: 0,
@@ -1291,6 +1294,34 @@ impl Workspace {
                     });
                     self.show_file_tree = !self.show_file_tree;
                     cx.notify();
+                    return;
+                }
+                "d" if self.leader_active && !ev.keystroke.modifiers.shift => {
+                    info!("Leader: SPACE-d detected, showing Diagnostics (buffer)");
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    // Bridge to application to show diagnostics picker for current buffer
+                    event_bridge::send_bridged_event(
+                        event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace: false },
+                    );
+                    return;
+                }
+                "d" if self.leader_active && ev.keystroke.modifiers.shift => {
+                    info!("Leader: SPACE-D detected, showing Diagnostics (workspace)");
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    // Bridge to application to show workspace-wide diagnostics picker
+                    event_bridge::send_bridged_event(
+                        event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace: true },
+                    );
                     return;
                 }
                 "escape" if self.leader_active => {
