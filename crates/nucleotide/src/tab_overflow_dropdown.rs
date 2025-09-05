@@ -190,11 +190,12 @@ impl RenderOnce for TabOverflowMenu {
         let dd_tokens = tokens.dropdown_tokens();
         let dropdown_bg = dd_tokens.container_background;
 
-        // Positioned absolutely to appear right below the overflow button
+        // Positioned so the menu's top-right touches the overflow button's bottom-left
+        // Keep this aligned with the button height and reserved width (see tab bar calc ~60px)
         div()
             .absolute()
-            .top(px(34.0)) // Right below the tab bar with small gap
-            .right(px(20.0)) // Margin from right edge to prevent clipping
+            .top(tokens.sizes.button_height_md - px(32.0)) // move up by another 10px
+            .right(px(14.0)) // move right by another 10px
             .w(px(260.0)) // Fixed width for consistency
             .max_h(px(400.0)) // Maximum height for scrolling
             .bg(dropdown_bg)
