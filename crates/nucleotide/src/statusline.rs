@@ -1,7 +1,10 @@
 use crate::Core;
+use gpui::InteractiveElement;
 use gpui::{
-    Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled, Window, div, px,
+    Context, Entity, EventEmitter, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
+    Styled, Window, div, px,
 };
+use gpui::{Corner, anchored, point};
 use helix_view::{DocumentId, ViewId};
 use nucleotide_ui::ThemedContext;
 
@@ -12,6 +15,9 @@ pub struct StatusLineView {
     view_id: ViewId,
     focused: bool,
     lsp_state: Option<Entity<nucleotide_lsp::LspState>>,
+    // LSP menu popup state
+    lsp_menu_open: bool,
+    lsp_menu_pos: (f32, f32),
 }
 
 impl StatusLineView {
@@ -67,6 +73,8 @@ impl StatusLineView {
             view_id,
             focused,
             lsp_state,
+            lsp_menu_open: false,
+            lsp_menu_pos: (0.0, 0.0),
         }
     }
 
@@ -309,23 +317,176 @@ impl Render for StatusLineView {
                     div().w(px(1.)).h(px(16.)).bg(status_bar_tokens.border),
                 )
                 .child(
-                    // LSP indicator - dynamic width using design tokens
+                    // LSP indicator as a clickable button to open server list popup
                     div()
                         .child(indicator)
-                        .flex_shrink() // Allow shrinking when space is limited
-                        .max_w(px(400.)) // Max width prevents taking over the entire status bar
-                        .min_w(px(16.)) // Minimum for icon-only display
+                        .flex_shrink()
+                        .max_w(px(400.))
+                        .min_w(px(16.))
                         .overflow_hidden()
-                        .text_ellipsis() // Graceful text truncation
-                        .px(tokens.sizes.space_3) // Use design token spacing
-                        .text_size(tokens.sizes.text_sm) // Use design token text sizing
-                        .whitespace_nowrap(), // Prevent text wrapping
+                        .text_ellipsis()
+                        .px(tokens.sizes.space_3)
+                        .text_size(tokens.sizes.text_sm)
+                        .whitespace_nowrap()
+                        .cursor_pointer()
+                        // Capture any mouse down to robustly open the popup
+                        .on_any_mouse_down(cx.listener(
+                            |view: &mut StatusLineView, ev: &MouseDownEvent, _win, cx| {
+                                view.lsp_menu_open = true;
+                                view.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
+                                cx.notify();
+                            },
+                        )),
                 );
         } else {
             nucleotide_logging::debug!(
                 doc_id = ?self.doc_id,
                 view_id = ?self.view_id,
                 "STATUSLINE: No LSP indicator available for display"
+            );
+        }
+
+        // If LSP server menu is open, render popup overlay
+        if self.lsp_menu_open {
+            let dd_tokens = tokens.dropdown_tokens();
+            let (x, y) = self.lsp_menu_pos;
+
+            // Snapshot LSP state for rendering list
+            let server_rows: Vec<gpui::AnyElement> = if let Some(lsp_state) = &self.lsp_state {
+                let state = lsp_state.read(cx);
+                let mut rows: Vec<gpui::AnyElement> = Vec::new();
+
+                // For deterministic order, sort by server name
+                let mut servers: Vec<_> = state.servers.values().cloned().collect();
+                servers.sort_by(|a, b| a.name.cmp(&b.name));
+
+                for server in servers {
+                    let progress_items: Vec<_> = state
+                        .progress
+                        .values()
+                        .filter(|p| p.server_id == server.id)
+                        .cloned()
+                        .collect();
+
+                    // Status label
+                    let status_text = match server.status {
+                        nucleotide_lsp::ServerStatus::Starting => "Starting".to_string(),
+                        nucleotide_lsp::ServerStatus::Initializing => "Initializing".to_string(),
+                        nucleotide_lsp::ServerStatus::Running => "Running".to_string(),
+                        nucleotide_lsp::ServerStatus::Failed(ref e) => format!("Failed: {}", e),
+                        nucleotide_lsp::ServerStatus::Stopped => "Stopped".to_string(),
+                    };
+
+                    // Server header row
+                    rows.push(
+                        div()
+                            .w_full()
+                            .px(tokens.sizes.space_3)
+                            .py(tokens.sizes.space_2)
+                            .text_size(tokens.sizes.text_sm)
+                            .text_color(dd_tokens.item_text)
+                            .child(format!("{} — {}", server.name, status_text))
+                            .into_any_element(),
+                    );
+
+                    if progress_items.is_empty() {
+                        rows.push(
+                            div()
+                                .w_full()
+                                .px(tokens.sizes.space_6)
+                                .pb(tokens.sizes.space_2)
+                                .text_size(tokens.sizes.text_sm)
+                                .text_color(dd_tokens.item_text_secondary)
+                                .child("Idle")
+                                .into_any_element(),
+                        );
+                    } else {
+                        for p in progress_items {
+                            let mut line = String::new();
+                            if let Some(pct) = p.percentage {
+                                line.push_str(&format!("{pct}% "));
+                            }
+                            line.push_str(&p.title);
+                            if let Some(msg) = p.message {
+                                line.push_str(&format!(" ⋅ {}", msg));
+                            }
+
+                            rows.push(
+                                div()
+                                    .w_full()
+                                    .px(tokens.sizes.space_6)
+                                    .pb(tokens.sizes.space_1)
+                                    .text_size(tokens.sizes.text_sm)
+                                    .text_color(dd_tokens.item_text_secondary)
+                                    .child(line)
+                                    .into_any_element(),
+                            );
+                        }
+                    }
+
+                    // Separator between servers
+                    rows.push(
+                        div()
+                            .w_full()
+                            .h(px(1.0))
+                            .bg(dd_tokens.border)
+                            .opacity(0.5)
+                            .into_any_element(),
+                    );
+                }
+
+                // Remove trailing separator if any rows
+                if let Some(last) = rows.last() {
+                    let _ = last;
+                }
+                rows
+            } else {
+                vec![
+                    div()
+                        .px(tokens.sizes.space_2)
+                        .py(tokens.sizes.space_2)
+                        .child("No LSP state")
+                        .into_any_element(),
+                ]
+            };
+
+            // Background overlay to capture outside clicks
+            status_bar = status_bar.child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .top_0()
+                    .left_0()
+                    .occlude()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view: &mut StatusLineView, _ev, _win, cx| {
+                            view.lsp_menu_open = false;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        anchored()
+                            .position(point(px(x), px(y)))
+                            .anchor(Corner::BottomLeft)
+                            .offset(point(px(0.0), px(4.0)))
+                            .snap_to_window_with_margin(tokens.sizes.space_2)
+                            .child(
+                                div()
+                                    .min_w(px(260.0))
+                                    .max_w(px(480.0))
+                                    .bg(dd_tokens.container_background)
+                                    .border_1()
+                                    .border_color(dd_tokens.border)
+                                    .rounded(tokens.sizes.radius_md)
+                                    .shadow_md()
+                                    // Swallow clicks inside the popup so it doesn't close immediately
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .children(server_rows),
+                            ),
+                    ),
             );
         }
 

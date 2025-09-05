@@ -38,6 +38,7 @@ use nucleotide_ui::{
 };
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
+use nucleotide_lsp::ServerStatus;
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;
@@ -79,6 +80,9 @@ pub struct Workspace {
     context_menu_pos: (f32, f32),
     context_menu_path: Option<std::path::PathBuf>,
     context_menu_index: usize,
+    // LSP server list popup state
+    lsp_menu_open: bool,
+    lsp_menu_pos: (f32, f32),
     document_order: Vec<helix_view::DocumentId>, // Ordered list of documents in opening order
     input_coordinator: Arc<InputCoordinator>,    // Central input coordination system
     project_lsp_manager: Option<Arc<nucleotide_lsp::ProjectLspManager>>, // Project-level LSP management
@@ -339,6 +343,8 @@ impl Workspace {
             context_menu_pos: (0.0, 0.0),
             context_menu_path: None,
             context_menu_index: 0,
+            lsp_menu_open: false,
+            lsp_menu_pos: (0.0, 0.0),
             document_order: Vec::new(),
             input_coordinator,
             project_lsp_manager,
@@ -4149,6 +4155,7 @@ impl Workspace {
         };
 
         // Use consistent border and divider colors from hybrid system
+        // Status bar border color
         let border_color = status_bar_tokens.border;
         let divider_color = status_bar_tokens.border;
         div()
@@ -4246,7 +4253,18 @@ impl Workspace {
                                     .text_ellipsis() // Graceful text truncation
                                     .px(space_3) // Use design token spacing
                                     .text_size(text_sm) // Use design token text sizing
-                                    .whitespace_nowrap(), // Prevent text wrapping
+                                    .whitespace_nowrap() // Prevent text wrapping
+                                    .cursor_pointer()
+                                    .on_any_mouse_down(cx.listener(
+                                        |this: &mut Workspace,
+                                         ev: &gpui::MouseDownEvent,
+                                         _win,
+                                         cx| {
+                                            this.lsp_menu_open = true;
+                                            this.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
+                                            cx.notify();
+                                        },
+                                    )),
                             )
                     }), // .child({
                         //     // Project status indicator section - temporarily disabled
@@ -6748,7 +6766,149 @@ impl Render for Workspace {
                     .w_full()
                     .h_full()
                     .child(content_area) // Main content area (file tree + editor with tab bar)
-                    .child(self.render_unified_status_bar(cx)), // Unified bottom status bar
+                    .child(self.render_unified_status_bar(cx)) // Unified bottom status bar
+                    .when(self.lsp_menu_open, |container| {
+                        use gpui::{Corner, anchored, point};
+                        let ui_theme = cx.global::<nucleotide_ui::Theme>();
+                        let dd_tokens = ui_theme.tokens.dropdown_tokens();
+
+                        // Snapshot LSP state
+                        let server_rows: Vec<gpui::AnyElement> = {
+                            let lsp_state_entity = self.core.read(cx).lsp_state.clone();
+                            if let Some(lsp_state) = lsp_state_entity {
+                                let state = lsp_state.read(cx);
+                                let mut rows: Vec<gpui::AnyElement> = Vec::new();
+
+                                // Sort servers by name for a stable order
+                                let mut servers: Vec<_> = state.servers.values().cloned().collect();
+                                servers.sort_by(|a, b| a.name.cmp(&b.name));
+
+                                for server in servers {
+                                    let status_text = match server.status {
+                                        ServerStatus::Starting => "Starting".to_string(),
+                                        ServerStatus::Initializing => "Initializing".to_string(),
+                                        ServerStatus::Running => "Running".to_string(),
+                                        ServerStatus::Failed(ref e) => format!("Failed: {}", e),
+                                        ServerStatus::Stopped => "Stopped".to_string(),
+                                    };
+
+                                    // Header row with server name and status
+                                    rows.push(
+                                        div()
+                                            .w_full()
+                                            .px(ui_theme.tokens.sizes.space_3)
+                                            .py(ui_theme.tokens.sizes.space_2)
+                                            .text_size(ui_theme.tokens.sizes.text_sm)
+                                            .text_color(dd_tokens.item_text)
+                                            .child(format!("{} — {}", server.name, status_text))
+                                            .into_any_element(),
+                                    );
+
+                                    // Progress rows for this server, or Idle if none
+                                    let progress_items: Vec<_> = state
+                                        .progress
+                                        .values()
+                                        .filter(|p| p.server_id == server.id)
+                                        .cloned()
+                                        .collect();
+
+                                    if progress_items.is_empty() {
+                                        rows.push(
+                                            div()
+                                                .w_full()
+                                                .px(ui_theme.tokens.sizes.space_6)
+                                                .pb(ui_theme.tokens.sizes.space_2)
+                                                .text_size(ui_theme.tokens.sizes.text_sm)
+                                                .text_color(dd_tokens.item_text_secondary)
+                                                .child("Idle")
+                                                .into_any_element(),
+                                        );
+                                    } else {
+                                        for p in progress_items {
+                                            let mut line = String::new();
+                                            if let Some(pct) = p.percentage {
+                                                line.push_str(&format!("{pct}% "));
+                                            }
+                                            line.push_str(&p.title);
+                                            if let Some(msg) = p.message {
+                                                line.push_str(&format!(" ⋅ {}", msg));
+                                            }
+
+                                            rows.push(
+                                                div()
+                                                    .w_full()
+                                                    .px(ui_theme.tokens.sizes.space_6)
+                                                    .pb(ui_theme.tokens.sizes.space_1)
+                                                    .text_size(ui_theme.tokens.sizes.text_sm)
+                                                    .text_color(dd_tokens.item_text_secondary)
+                                                    .child(line)
+                                                    .into_any_element(),
+                                            );
+                                        }
+                                    }
+
+                                    // Separator between servers
+                                    rows.push(
+                                        div()
+                                            .w_full()
+                                            .h(px(1.0))
+                                            .bg(dd_tokens.border)
+                                            .opacity(0.5)
+                                            .into_any_element(),
+                                    );
+                                }
+
+                                rows
+                            } else {
+                                vec![
+                                    div()
+                                        .px(ui_theme.tokens.sizes.space_2)
+                                        .py(ui_theme.tokens.sizes.space_2)
+                                        .child("No LSP state")
+                                        .into_any_element(),
+                                ]
+                            }
+                        };
+
+                        let (x, y) = self.lsp_menu_pos;
+
+                        container.child(
+                            div()
+                                .absolute()
+                                .size_full()
+                                .top_0()
+                                .left_0()
+                                .occlude()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this: &mut Workspace, _ev, _win, cx| {
+                                        this.lsp_menu_open = false;
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(
+                                    anchored()
+                                        .position(point(px(x), px(y)))
+                                        .anchor(Corner::BottomLeft)
+                                        .offset(point(px(0.0), px(4.0)))
+                                        .snap_to_window_with_margin(ui_theme.tokens.sizes.space_2)
+                                        .child(
+                                            div()
+                                                .min_w(px(260.0))
+                                                .max_w(px(480.0))
+                                                .bg(dd_tokens.container_background)
+                                                .border_1()
+                                                .border_color(dd_tokens.border)
+                                                .rounded(ui_theme.tokens.sizes.radius_md)
+                                                .shadow_md()
+                                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                    cx.stop_propagation()
+                                                })
+                                                .children(server_rows),
+                                        ),
+                                ),
+                        )
+                    }),
             )
     }
 }
