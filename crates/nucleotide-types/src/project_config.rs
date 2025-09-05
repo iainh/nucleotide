@@ -298,18 +298,20 @@ mod tests {
     fn test_project_markers_config_defaults() {
         let config = ProjectMarkersConfig::default();
 
-        assert_eq!(config.enable_project_markers, false);
+        assert!(!config.enable_project_markers);
         assert_eq!(config.detection_timeout_ms, 1000);
-        assert_eq!(config.enable_builtin_fallback, true);
+        assert!(config.enable_builtin_fallback);
         assert!(config.markers.is_empty());
     }
 
     #[test]
     fn test_project_markers_config_validation() {
         // Valid config
-        let mut valid_config = ProjectMarkersConfig::default();
-        valid_config.enable_project_markers = true;
-        valid_config.detection_timeout_ms = 1000;
+        let mut valid_config = ProjectMarkersConfig {
+            enable_project_markers: true,
+            detection_timeout_ms: 1000,
+            ..ProjectMarkersConfig::default()
+        };
         valid_config.markers.insert(
             "rust".to_string(),
             ProjectMarker {
@@ -322,8 +324,10 @@ mod tests {
         assert!(valid_config.validate().is_ok());
 
         // Invalid - zero timeout
-        let mut invalid_config = ProjectMarkersConfig::default();
-        invalid_config.detection_timeout_ms = 0;
+        let invalid_config = ProjectMarkersConfig {
+            detection_timeout_ms: 0,
+            ..ProjectMarkersConfig::default()
+        };
         assert!(invalid_config.validate().is_err());
     }
 

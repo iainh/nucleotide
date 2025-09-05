@@ -1,7 +1,7 @@
 // ABOUTME: Workspace domain events for file operations and project management
 // ABOUTME: Immutable fact-based events following Domain-Driven Design principles
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Workspace domain events - covers file operations, project management, and layout operations
 /// Following event sourcing principles: all events are immutable facts about what has happened
@@ -242,7 +242,7 @@ impl From<usize> for TabId {
 }
 
 impl ProjectType {
-    pub fn from_path(path: &PathBuf) -> Self {
+    pub fn from_path(path: &Path) -> Self {
         // Check for common project files
         if path.join("Cargo.toml").exists() {
             return Self::Rust;

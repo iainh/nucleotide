@@ -20,7 +20,6 @@ pub enum BridgeEvent {
 
 /// Convert old BridgedEvent to new V2 domain events  
 /// Event conversion is handled in the Application layer to avoid circular dependencies.
-
 #[cfg(test)]
 mod tests {
     use super::*;

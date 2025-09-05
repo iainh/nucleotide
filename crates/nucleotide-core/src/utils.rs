@@ -63,7 +63,7 @@ pub fn setup_macos_dock_environment() {
     if rustup_toolchains.exists() {
         if let Ok(entries) = std::fs::read_dir(&rustup_toolchains) {
             for entry in entries.flatten() {
-                if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+                if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
                     let toolchain_bin = entry.path().join("bin");
                     if toolchain_bin.exists() {
                         additional_paths.push(toolchain_bin.to_string_lossy().to_string());
@@ -294,7 +294,6 @@ fn translate_character_key(key: &str, shift_pressed: bool) -> KeyCode {
 /// activated). Only KeymapResult::{NotFound, Cancelled} is returned
 /// otherwise.
 // removed unused handle_key_result to eliminate dead code warnings
-
 #[cfg(test)]
 mod tests {
     use super::*;

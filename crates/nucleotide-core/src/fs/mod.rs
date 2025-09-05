@@ -20,8 +20,8 @@ impl crate::EventHandler for FsOpHandler {
         use nucleotide_events::v2::workspace::FileOpIntent;
         use operations::*;
 
-        match event {
-            WorkspaceEvent::FileOpRequested { intent } => match intent {
+        if let WorkspaceEvent::FileOpRequested { intent } = event {
+            match intent {
                 FileOpIntent::NewFile { parent, name } => match create_file(parent, name) {
                     Ok(path) => self.bus.dispatch_workspace(WorkspaceEvent::FileCreated {
                         path,
@@ -106,8 +106,7 @@ impl crate::EventHandler for FsOpHandler {
                     // Platform-specific reveal left to UI layer
                     tracing::info!(path=%path.display(), "RevealInOs intent received");
                 }
-            },
-            _ => {}
+            }
         }
     }
 }

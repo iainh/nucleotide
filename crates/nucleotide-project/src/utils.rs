@@ -171,7 +171,7 @@ impl Iterator for AncestorIterator {
     type Item = PathBuf;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(current) = self.current.take() {
+        if let Some(current) = self.current.take() {
             // Check if we should stop here
             if self.should_stop(&current) {
                 return None;

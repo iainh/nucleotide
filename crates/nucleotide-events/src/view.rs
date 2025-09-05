@@ -113,6 +113,10 @@ impl Selection {
         self.ranges.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
     pub fn point(pos: usize) -> Self {
         let position = Position::new(pos, 0);
         let range = SelectionRange::new(position, position);

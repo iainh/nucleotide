@@ -69,13 +69,14 @@ pub fn rename_path(from: &Path, to_name: &str) -> Result<PathBuf, io::Error> {
             // if target differs only by case, use a two-step rename via a temp path.
             let from_name = from.file_name().and_then(|s| s.to_str());
             let to_name = to.file_name().and_then(|s| s.to_str());
-            if let (Some(f), Some(t)) = (from_name, to_name) {
-                if f.eq_ignore_ascii_case(t) && f != t {
-                    let tmp = parent.join(format!(".tmp_rename_{}_{}", std::process::id(), t));
-                    fs::rename(from, &tmp)?;
-                    fs::rename(&tmp, &to)?;
-                    return Ok(to);
-                }
+            if let (Some(f), Some(t)) = (from_name, to_name)
+                && f.eq_ignore_ascii_case(t)
+                && f != t
+            {
+                let tmp = parent.join(format!(".tmp_rename_{}_{}", std::process::id(), t));
+                fs::rename(from, &tmp)?;
+                fs::rename(&tmp, &to)?;
+                return Ok(to);
             }
             Err(e)
         }

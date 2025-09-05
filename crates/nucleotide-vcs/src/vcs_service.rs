@@ -623,14 +623,14 @@ impl VcsService {
         }
 
         // Rate limit: don't refresh more than once every 2 seconds
-        if let Some(last_check) = self.last_check {
-            if last_check.elapsed().as_secs() < 2 {
-                debug!(
-                    "VCS: Force refresh requested but rate limited (last check was {} seconds ago)",
-                    last_check.elapsed().as_secs()
-                );
-                return;
-            }
+        if let Some(last_check) = self.last_check
+            && last_check.elapsed().as_secs() < 2
+        {
+            debug!(
+                "VCS: Force refresh requested but rate limited (last check was {} seconds ago)",
+                last_check.elapsed().as_secs()
+            );
+            return;
         }
 
         debug!("VCS: Force refresh requested");
@@ -808,10 +808,10 @@ impl VcsService {
     /// Emit a VCS event and forward it to the event bus if available
     fn emit_vcs_event(&self, event: VcsEvent, cx: &mut Context<Self>) {
         // Forward to event bus if available
-        if let Some(ref event_bus) = self.event_bus {
-            if let Some(domain_event) = vcs_event_to_domain_event(&event) {
-                event_bus.dispatch_vcs(domain_event);
-            }
+        if let Some(ref event_bus) = self.event_bus
+            && let Some(domain_event) = vcs_event_to_domain_event(&event)
+        {
+            event_bus.dispatch_vcs(domain_event);
         }
 
         // Also emit the local event for subscribers

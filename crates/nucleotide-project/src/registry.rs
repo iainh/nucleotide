@@ -65,7 +65,7 @@ impl ManifestProviders {
         {
             let mut ordered = self.ordered_providers.write().unwrap();
             ordered.push(provider);
-            ordered.sort_by(|a, b| b.priority().cmp(&a.priority()));
+            ordered.sort_by_key(|p| std::cmp::Reverse(p.priority()));
         }
 
         nucleotide_logging::debug!("Provider registration completed successfully");

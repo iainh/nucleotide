@@ -35,7 +35,7 @@ pub fn builtin_providers() -> Vec<Box<dyn ManifestProvider>> {
 /// Get providers sorted by priority (highest first)
 pub fn builtin_providers_by_priority() -> Vec<Box<dyn ManifestProvider>> {
     let mut providers = builtin_providers();
-    providers.sort_by(|a, b| b.priority().cmp(&a.priority()));
+    providers.sort_by_key(|b| std::cmp::Reverse(b.priority()));
     providers
 }
 
