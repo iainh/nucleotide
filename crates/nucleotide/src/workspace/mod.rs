@@ -6667,7 +6667,33 @@ impl Render for Workspace {
                 view.handle_key(ev, window, cx);
             }));
 
-        // Add mouse event handlers
+        // Add resize cursor and listeners only while resizing to reduce event overhead
+        if self.is_resizing_file_tree {
+            workspace_div = workspace_div
+                .cursor(gpui::CursorStyle::ResizeLeftRight)
+                .on_mouse_move(
+                    cx.listener(|workspace, event: &MouseMoveEvent, _window, cx| {
+                        // Mouse events in GPUI are already in logical pixels, no scale correction needed
+                        let mouse_x = event.position.x.0;
+                        let delta = mouse_x - workspace.resize_start_x;
+                        let new_width = (workspace.resize_start_width + delta).clamp(150.0, 600.0);
+
+                        // Update width if changed
+                        if (workspace.file_tree_width - new_width).abs() > 0.1 {
+                            workspace.file_tree_width = new_width;
+                            cx.notify();
+                        }
+                    }),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|workspace, _event: &MouseUpEvent, _window, cx| {
+                        workspace.is_resizing_file_tree = false;
+                        cx.notify();
+                    }),
+                );
+        }
+        // Add mouse down handler for global UI interactions
         workspace_div = workspace_div.on_mouse_down(
             MouseButton::Left,
             cx.listener(|workspace, _event: &MouseDownEvent, _window, cx| {
@@ -6692,6 +6718,7 @@ impl Render for Workspace {
 
                 // Clicking elsewhere deactivates terminal input capture
                 workspace.terminal_active = false;
+
                 // Ensure workspace regains focus when clicked, so global shortcuts work
                 workspace.view_manager.set_needs_focus_restore(true);
                 cx.notify();
