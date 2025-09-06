@@ -97,3 +97,6 @@ test_scroll.txt
 *.app/
 reference/
 future/*.bak
+
+# Ignore local zed checkout used for inspection
+zed-src/
