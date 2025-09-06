@@ -675,7 +675,8 @@ impl DocumentElement {
         let syntax_highlighter = Self::doc_syntax_highlights(doc, anchor, height, theme, &loader);
 
         // Get default style
-        let default_style = theme.get("ui.text");
+        const THEME_KEY_UI_TEXT: &str = "ui.text";
+        let default_style = theme.get(THEME_KEY_UI_TEXT);
         let text_style = helix_view::graphics::Style {
             fg: default_style.fg,
             bg: default_style.bg,
@@ -2360,7 +2361,8 @@ impl Element for DocumentElement {
 
 
                 // Render rulers before text
-                let ruler_style = cx.theme_style("ui.virtual.ruler");
+                const THEME_KEY_VIRTUAL_RULER: &str = "ui.virtual.ruler";
+                let ruler_style = cx.theme_style(THEME_KEY_VIRTUAL_RULER);
                 let ruler_color = ruler_style.bg
                     .and_then(color_to_hsla)
                     .unwrap_or_else(|| {
@@ -2433,10 +2435,6 @@ impl Element for DocumentElement {
                                 helix_view::graphics::Style::default()
                             }
                         };
-
-                        let underline_color = text_style_at_cursor
-                            .underline_color
-                            .and_then(color_to_hsla);
 
                         let run = Self::make_cursor_text_run(
                             &self.style.font(),
@@ -3321,10 +3319,6 @@ impl Element for DocumentElement {
                                         } else {
                                             white()
                                         };
-
-                                        let underline_color = text_style_at_cursor
-                                            .underline_color
-                                            .and_then(color_to_hsla);
 
                                         let run = Self::make_cursor_text_run(
                                             &self.style.font(),

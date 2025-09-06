@@ -28,6 +28,24 @@ pub struct DiagnosticsPanel {
     selected_index: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavKey {
+    Up,
+    Down,
+    Enter,
+    Escape,
+}
+
+fn nav_key(event: &KeyDownEvent) -> Option<NavKey> {
+    match event.keystroke.key.as_str() {
+        "up" => Some(NavKey::Up),
+        "down" => Some(NavKey::Down),
+        "enter" => Some(NavKey::Enter),
+        "escape" => Some(NavKey::Escape),
+        _ => None,
+    }
+}
+
 impl DiagnosticsPanel {
     pub fn new(
         lsp_state: Entity<nucleotide_lsp::LspState>,
@@ -590,14 +608,14 @@ impl Render for DiagnosticsPanel {
             .flex_col()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                match event.keystroke.key.as_str() {
-                    "up" => {
+                match nav_key(event) {
+                    Some(NavKey::Up) => {
                         if this.selected_index > 0 {
                             this.selected_index -= 1;
                             cx.notify();
                         }
                     }
-                    "down" => {
+                    Some(NavKey::Down) => {
                         // Recompute row count to clamp
                         let count = this.count_filtered_rows(cx);
                         if count > 0 {
@@ -605,7 +623,7 @@ impl Render for DiagnosticsPanel {
                             cx.notify();
                         }
                     }
-                    "enter" => {
+                    Some(NavKey::Enter) => {
                         // Find selected row and emit jump
                         let rows = this.sorted_filtered_rows(cx);
                         if !rows.is_empty() {
@@ -625,10 +643,10 @@ impl Render for DiagnosticsPanel {
                             cx.emit(DismissEvent);
                         }
                     }
-                    "escape" => {
+                    Some(NavKey::Escape) => {
                         cx.emit(DismissEvent);
                     }
-                    _ => {}
+                    None => {}
                 }
             }))
             .child(header)
