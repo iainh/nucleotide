@@ -140,44 +140,12 @@ impl ApplicationCore {
             }
 
             event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
-                // Extract actual selection from the document
-                let view = editor.tree.get(*view_id);
-                let selection = if let Some(doc) = editor.document(view.doc) {
-                    doc.selection(view.id).clone()
-                } else {
-                    helix_core::Selection::point(0)
-                };
-                let was_movement = true; // Assume movement for now
-
-                // Convert helix selection to V2 event selection
-                let v2_selection = nucleotide_events::view::Selection {
-                    ranges: selection
-                        .ranges()
-                        .iter()
-                        .map(|range| nucleotide_events::view::SelectionRange {
-                            anchor: nucleotide_events::view::Position::new(
-                                range.anchor,
-                                range.anchor,
-                            ),
-                            head: nucleotide_events::view::Position::new(range.head, range.head),
-                        })
-                        .collect(),
-                    primary_index: selection.primary_index(),
-                };
-
-                let v2_event = nucleotide_events::v2::view::Event::SelectionChanged {
-                    view_id: *view_id,
-                    doc_id: *doc_id,
-                    selection: v2_selection,
-                    was_movement,
-                };
-
+                let v2_event = Self::build_v2_selection_changed(editor, *doc_id, *view_id);
                 debug!(
                     doc_id = ?doc_id,
                     view_id = ?view_id,
                     "Processing SelectionChanged through V2 ViewHandler"
                 );
-
                 self.view_handler.handle(v2_event).await?;
             }
 
@@ -490,6 +458,41 @@ impl ApplicationCore {
     /// Check if the core is initialized
     pub fn is_initialized(&self) -> bool {
         self.initialized
+    }
+}
+
+impl ApplicationCore {
+    /// Build a V2 selection changed event from the current editor state.
+    fn build_v2_selection_changed(
+        editor: &helix_view::Editor,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+    ) -> nucleotide_events::v2::view::Event {
+        let view = editor.tree.get(view_id);
+        let selection = if let Some(doc) = editor.document(view.doc) {
+            doc.selection(view.id).clone()
+        } else {
+            helix_core::Selection::point(0)
+        };
+
+        let v2_selection = nucleotide_events::view::Selection {
+            ranges: selection
+                .ranges()
+                .iter()
+                .map(|range| nucleotide_events::view::SelectionRange {
+                    anchor: nucleotide_events::view::Position::new(range.anchor, range.anchor),
+                    head: nucleotide_events::view::Position::new(range.head, range.head),
+                })
+                .collect(),
+            primary_index: selection.primary_index(),
+        };
+
+        nucleotide_events::v2::view::Event::SelectionChanged {
+            view_id,
+            doc_id,
+            selection: v2_selection,
+            was_movement: true,
+        }
     }
 }
 
