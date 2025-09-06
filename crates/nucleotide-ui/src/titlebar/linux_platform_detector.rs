@@ -211,25 +211,20 @@ fn detect_window_manager() -> WindowManager {
     }
 }
 
-fn detect_button_layout(de: DesktopEnvironment) -> WindowButtonLayout {
-    // Check GNOME/GTK button layout setting
-    if let Ok(layout) = env::var("GTK_THEME_BUTTON_LAYOUT") {
-        debug!("GTK button layout: {}", layout);
-        if layout.contains("close:") {
+fn detect_button_layout(_de: DesktopEnvironment) -> WindowButtonLayout {
+    // Project policy: always render controls on the right (minimize, maximize, close)
+    // Many Linux environments vary or allow user customization, but our custom
+    // titlebar uses a consistent right-side layout to avoid confusion and
+    // simplify spacing logic across DEs.
+    if let Ok(layout) = env::var("NUCL_LINUX_BUTTON_LAYOUT") {
+        // Optional override for development/testing: set to "left" or "right"
+        let layout = layout.to_lowercase();
+        if layout.contains("left") {
             return WindowButtonLayout::Left;
         }
     }
 
-    // Check gsettings for GNOME (would require spawning process, skip for now)
-    // TODO: Could implement gsettings check: gsettings get org.gnome.desktop.wm.preferences button-layout
-
-    match de {
-        DesktopEnvironment::Gnome => WindowButtonLayout::Left, // GNOME typically uses left
-        DesktopEnvironment::Kde | DesktopEnvironment::Xfce | DesktopEnvironment::Lxde => {
-            WindowButtonLayout::Right
-        } // Most others use right
-        _ => WindowButtonLayout::Right,                        // Default to right for tiling WMs
-    }
+    WindowButtonLayout::Right
 }
 
 fn detect_compositor_capability(wm: WindowManager) -> CompositorCapability {
@@ -333,14 +328,9 @@ mod tests {
 
     #[test]
     fn test_button_layout_detection() {
-        assert_eq!(
-            detect_button_layout(DesktopEnvironment::Gnome),
-            WindowButtonLayout::Left
-        );
-        assert_eq!(
-            detect_button_layout(DesktopEnvironment::Kde),
-            WindowButtonLayout::Right
-        );
+        // Policy: always right by default across DEs
+        assert_eq!(detect_button_layout(DesktopEnvironment::Gnome), WindowButtonLayout::Right);
+        assert_eq!(detect_button_layout(DesktopEnvironment::Kde), WindowButtonLayout::Right);
     }
 
     #[test]

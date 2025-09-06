@@ -197,12 +197,14 @@ impl LinuxTitlebar {
             .border_b_1()
             .border_color(self.style.border);
 
-        // Apply corner rounding for client decorations when not tiled
+        // Do not apply rounded corners on Linux.
+        // Many compositors already round the window and applying an additional
+        // clip here causes visible corner artifacts. Leaving the corners square
+        // avoids double-rounding and blends correctly with the window frame.
         titlebar = titlebar.map(|el| match decorations {
+            // Keep behavior identical for both decoration modes: no extra rounding.
             Decorations::Server => el,
-            Decorations::Client { tiling } => el
-                .when(!(tiling.top || tiling.right), gpui::Styled::rounded_tr_md)
-                .when(!(tiling.top || tiling.left), gpui::Styled::rounded_tl_md),
+            Decorations::Client { .. } => el,
         });
 
         // Apply padding based on button layout
@@ -257,17 +259,17 @@ impl LinuxTitlebar {
         // Add the title content to the titlebar
         titlebar = titlebar.child(title_content);
 
-        // Add window controls if not in fullscreen
-        if !window.is_fullscreen() {
-            let titlebar_tokens = TitleBarTokens {
-                background: self.style.background,
-                foreground: self.style.foreground,
-                border: self.style.border,
-                height: self.style.height,
-            };
+        // Always show window controls on Linux, even when maximized/fullscreen.
+        // We use fullscreen as a stand-in for maximize on some WMs; hiding the
+        // controls makes it impossible to restore the window.
+        let titlebar_tokens = TitleBarTokens {
+            background: self.style.background,
+            foreground: self.style.foreground,
+            border: self.style.border,
+            height: self.style.height,
+        };
 
-            titlebar = titlebar.child(LinuxWindowControls::new(titlebar_tokens));
-        }
+        titlebar = titlebar.child(LinuxWindowControls::new(titlebar_tokens));
 
         titlebar
     }

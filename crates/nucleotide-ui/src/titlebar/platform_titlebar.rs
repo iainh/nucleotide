@@ -157,11 +157,19 @@ impl Render for PlatformTitleBar {
                     this.pl_2()
                 }
             })
-            .map(|el| match decorations {
-                Decorations::Server => el,
-                Decorations::Client { tiling } => el
-                    .when(!(tiling.top || tiling.right), gpui::Styled::rounded_tr_md)
-                    .when(!(tiling.top || tiling.left), gpui::Styled::rounded_tl_md),
+            // Avoid rounded corners on Linux to prevent visible corner artifacts
+            .map(|el| {
+                if cfg!(target_os = "linux") {
+                    // No extra rounding on Linux
+                    return el;
+                }
+
+                match decorations {
+                    Decorations::Server => el,
+                    Decorations::Client { tiling } => el
+                        .when(!(tiling.top || tiling.right), gpui::Styled::rounded_tr_md)
+                        .when(!(tiling.top || tiling.left), gpui::Styled::rounded_tl_md),
+                }
             })
             .content_stretch()
             .child(
@@ -202,18 +210,15 @@ impl Render for PlatformTitleBar {
                         }),
                     ),
             )
-            .when(!window.is_fullscreen(), |title_bar| {
-                // Add platform-specific window controls
-                match self.platform_style {
-                    PlatformStyle::Mac => {
-                        // macOS uses native traffic lights, no custom controls needed
-                        title_bar
-                    }
-                    PlatformStyle::Linux | PlatformStyle::Windows => title_bar.child(
-                        WindowControls::new(self.platform_style)
-                            .with_titlebar_tokens(titlebar_tokens),
-                    ),
+            // Always add window controls on Linux/Windows. macOS uses native controls.
+            .map(|title_bar| match self.platform_style {
+                PlatformStyle::Mac => {
+                    // macOS uses native traffic lights, no custom controls needed
+                    title_bar
                 }
+                PlatformStyle::Linux | PlatformStyle::Windows => title_bar.child(
+                    WindowControls::new(self.platform_style).with_titlebar_tokens(titlebar_tokens),
+                ),
             })
     }
 }

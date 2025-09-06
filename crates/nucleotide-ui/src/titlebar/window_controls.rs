@@ -317,7 +317,7 @@ impl RenderOnce for WindowControls {
                     ))
                     .child(WindowControl::with_tokens(
                         "maximize-or-restore",
-                        if window.is_maximized() {
+                        if window.is_maximized() || window.is_fullscreen() {
                             WindowControlType::Restore
                         } else {
                             WindowControlType::Maximize
@@ -376,7 +376,7 @@ impl RenderOnce for WindowControls {
                     ))
                     .child(WindowControl::new(
                         "maximize-or-restore",
-                        if window.is_maximized() {
+                        if window.is_maximized() || window.is_fullscreen() {
                             WindowControlType::Restore
                         } else {
                             WindowControlType::Maximize

@@ -344,8 +344,9 @@ impl LinuxWindowControls {
     fn get_control_layout(&self, window: &Window) -> Vec<LinuxControlType> {
         let mut controls = Vec::new();
 
-        // Determine maximize/restore button
-        let maximize_button = if window.is_maximized() {
+        // Determine maximize/restore button. On some Linux setups we use
+        // fullscreen as a stand-in for maximize, so consider either state.
+        let maximize_button = if window.is_maximized() || window.is_fullscreen() {
             LinuxControlType::Restore
         } else {
             LinuxControlType::Maximize
