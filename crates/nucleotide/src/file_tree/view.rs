@@ -1173,49 +1173,10 @@ impl FileTreeView {
                     .child(self.render_icon_with_vcs_status(entry, is_selected, cx))
                     .child(self.render_filename_with_selection(entry, is_selected, cx)),
             )
-            .end_slot(self.build_file_tree_end_slot(entry, theme, cx))
             .into_any_element()
     }
 
-    /// Build an end-slot indicator (e.g., modified dot or VCS badge) for a file tree row.
-    fn build_file_tree_end_slot(
-        &self,
-        entry: &FileTreeEntry,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let tokens = &theme.tokens;
-        let dot_color = tokens.chrome.primary; // use primary chroma by default
-        let size = px(6.0);
-
-        // Prefer explicit git status if available via service; fallback to entry.git_status (if any)
-        let status = self
-            .get_vcs_status_for_entry(&entry.path, cx)
-            .or(entry.git_status);
-
-        // Modified/new/deleted statuses get a small dot; directories show nothing in end slot
-        let needs_dot = matches!(
-            status,
-            Some(VcsStatus::Added)
-                | Some(VcsStatus::Modified)
-                | Some(VcsStatus::Deleted)
-                | Some(VcsStatus::Renamed)
-                | Some(VcsStatus::Conflicted)
-                | Some(VcsStatus::Untracked)
-        ) && !entry.is_directory();
-
-        if needs_dot {
-            div()
-                .w(size)
-                .h(size)
-                .rounded(px(3.0))
-                .bg(dot_color)
-                .into_any_element()
-        } else {
-            // Keep spacing consistent when no indicator
-            div().w(px(0.0)).into_any_element()
-        }
-    }
+    // Removed end-slot indicator per design update
 
     /// Render the chevron for directories using design tokens
     fn render_chevron(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
