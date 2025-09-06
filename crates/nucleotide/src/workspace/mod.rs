@@ -125,8 +125,11 @@ pub struct Workspace {
     terminal_active: bool,
     // Cache last applied editor size to avoid redundant resizes each frame
     last_editor_size: Option<(u16, u16)>,
-    // Cache last applied editor size to avoid redundant resizes each frame
-    last_editor_size: Option<(u16, u16)>,
+    // Cached theme-derived colors to avoid per-frame recomputation
+    cached_bg_color: gpui::Hsla,
+    cached_text_color: gpui::Hsla,
+    cached_border_color: gpui::Hsla,
+    colors_dirty: bool,
 }
 
 // Pending file operation kinds awaiting user input (used with the prompt overlay)
@@ -644,7 +647,15 @@ impl Workspace {
             terminal_active: false,
             // Performance cache for editor sizing
             last_editor_size: None,
+            // Temporary defaults; recomputed below
+            cached_bg_color: black(),
+            cached_text_color: white(),
+            cached_border_color: white(),
+            colors_dirty: true,
         };
+
+        // Compute initial theme-derived colors once
+        workspace.recompute_theme_colors(cx);
 
         // Ensure an embedded terminal panel exists for the default layout
         // Ensure terminal id exists and spawn if needed
@@ -2205,6 +2216,9 @@ impl Workspace {
         });
         *nucleotide_ui::theme_manager::SystemAppearance::global_mut(cx) = system_appearance;
 
+        // Mark theme colors as dirty so they get recomputed on next render
+        self.colors_dirty = true;
+
         // Emit SystemAppearanceChanged event for event-driven handling
         let event_appearance = match system_appearance {
             SystemAppearance::Dark => crate::types::SystemAppearance::Dark,
@@ -2294,6 +2308,28 @@ impl Workspace {
         );
 
         window.set_background_appearance(appearance);
+    }
+
+    /// Recompute cached theme-derived colors
+    fn recompute_theme_colors(&mut self, cx: &mut Context<Self>) {
+        let default_style = cx.theme_style("ui.background");
+        let default_ui_text = cx.theme_style("ui.text");
+        let window_style = cx.theme_style("ui.window");
+
+        self.cached_bg_color = default_style
+            .bg
+            .and_then(utils::color_to_hsla)
+            .unwrap_or(black());
+        self.cached_text_color = default_ui_text
+            .fg
+            .and_then(utils::color_to_hsla)
+            .unwrap_or(white());
+        self.cached_border_color = window_style
+            .fg
+            .and_then(utils::color_to_hsla)
+            .unwrap_or(white());
+
+        self.colors_dirty = false;
     }
 
     /// Schedule window appearance update to be applied in the next render cycle
@@ -6449,24 +6485,12 @@ impl Render for Workspace {
             window.set_window_title(&window_title);
         }
 
-        let _editor = &self.core.read(cx).editor;
-
-        // Get theme colors using testing-aware theme access
-        let default_style = cx.theme_style("ui.background");
-        let default_ui_text = cx.theme_style("ui.text");
-        let bg_color = default_style
-            .bg
-            .and_then(utils::color_to_hsla)
-            .unwrap_or(black());
-        let _text_color = default_ui_text
-            .fg
-            .and_then(utils::color_to_hsla)
-            .unwrap_or(white());
-        let window_style = cx.theme_style("ui.window");
-        let _border_color = window_style
-            .fg
-            .and_then(utils::color_to_hsla)
-            .unwrap_or(white());
+        // Recompute theme-derived colors only when marked dirty
+        if self.colors_dirty {
+            self.recompute_theme_colors(cx);
+        }
+        let editor = &self.core.read(cx).editor;
+        let bg_color = self.cached_bg_color;
 
         let editor_rect = editor.tree.area();
         let current_size = (editor_rect.width, editor_rect.height);
