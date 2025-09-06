@@ -198,106 +198,26 @@ impl VcsIcon {
     /// Render this VcsIcon using a provided Theme (for contexts where the
     /// generic `VcsIconRenderer` trait cannot be used due to Context types).
     pub fn render_with_theme(self, theme: &Theme) -> gpui::Div {
-        // Extract components to avoid partial move issues
+        // Reuse the shared overlay renderer to avoid duplication
+        let cloned = self.clone();
+        let overlay = cloned.render_vcs_overlay(theme);
+
+        // Move fields after taking the overlay reference
         let VcsIcon {
             file_icon,
-            vcs_status,
             container_size,
+            ..
         } = self;
 
-        // Base container
-        let mut container = div()
+        div()
             .w(px(container_size))
             .h(px(container_size))
             .relative()
             .flex()
             .items_center()
             .justify_center()
-            .child(file_icon);
-
-        // Determine if we should show overlay
-        let should_show = match &vcs_status {
-            Some(VcsStatus::Clean) | None => false,
-            Some(_) => true,
-        };
-
-        if should_show {
-            use crate::tokens::utils;
-            let base_color = match &vcs_status {
-                Some(VcsStatus::Modified) => theme.tokens.editor.vcs_modified,
-                Some(VcsStatus::Added) => theme.tokens.editor.vcs_added,
-                Some(VcsStatus::Deleted) => theme.tokens.editor.vcs_deleted,
-                Some(VcsStatus::Untracked) => theme.tokens.chrome.text_chrome_secondary,
-                Some(VcsStatus::Renamed) => theme.tokens.chrome.primary,
-                Some(VcsStatus::Conflicted) => theme.tokens.editor.error,
-                _ => theme.tokens.chrome.text_chrome_secondary,
-            };
-
-            let indicator_size = (container_size * 0.5).max(6.0);
-            let border_color = utils::darken(base_color, 0.15);
-            let shadow_color = utils::with_alpha(hsla(0.0, 0.0, 0.0, 1.0), 0.35);
-            let highlight_core = utils::with_alpha(hsla(0.0, 0.0, 1.0, 1.0), 0.55);
-            let highlight_halo = utils::with_alpha(hsla(0.0, 0.0, 1.0, 1.0), 0.18);
-
-            // Masking container for the sphere and highlights (prevents highlight bleed)
-            let mut sphere_container = div()
-                .absolute()
-                .bottom(px(0.0))
-                .left(px(0.0))
-                .w(px(indicator_size))
-                .h(px(indicator_size))
-                .rounded_full()
-                .overflow_hidden()
-                .shadow(vec![gpui::BoxShadow {
-                    color: shadow_color,
-                    offset: gpui::point(px(1.0), px(1.5)),
-                    blur_radius: px(2.0),
-                    spread_radius: px(0.0),
-                }]);
-
-            // Base fill with slight transparency and nearly-opaque border
-            let base_fill = utils::with_alpha(base_color, 0.85);
-            let border_col = utils::with_alpha(border_color, 0.9);
-            sphere_container = sphere_container.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded_full()
-                    .bg(base_fill)
-                    .border_1()
-                    .border_color(border_col),
-            );
-
-            let offset = indicator_size * 0.14;
-            let halo_size = indicator_size * 0.52;
-            let core_size = indicator_size * 0.26;
-
-            sphere_container = sphere_container
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(offset))
-                        .left(px(offset))
-                        .w(px(halo_size))
-                        .h(px(halo_size))
-                        .rounded_full()
-                        .bg(highlight_halo),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(offset + (halo_size - core_size) * 0.25))
-                        .left(px(offset + (halo_size - core_size) * 0.25))
-                        .w(px(core_size))
-                        .h(px(core_size))
-                        .rounded_full()
-                        .bg(highlight_core),
-                );
-
-            container = container.child(sphere_container);
-        }
-
-        container
+            .child(file_icon)
+            .child(overlay)
     }
 }
 
