@@ -36,6 +36,7 @@ pub struct PlatformTitleBar {
     id: ElementId,
     platform_style: PlatformStyle,
     title: String,
+    inset_applied: bool,
 }
 
 impl PlatformTitleBar {
@@ -45,6 +46,7 @@ impl PlatformTitleBar {
             id: id.into(),
             platform_style,
             title: String::new(),
+            inset_applied: false,
         }
     }
 
@@ -98,6 +100,7 @@ impl Render for PlatformTitleBar {
 
         // Get titlebar tokens from theme provider
         let theme_provider = crate::providers::use_provider::<crate::providers::ThemeProvider>();
+        #[cfg(debug_assertions)]
         debug!(
             "TITLEBAR RENDER: Theme provider available: {}",
             theme_provider.is_some()
@@ -106,6 +109,7 @@ impl Render for PlatformTitleBar {
         let titlebar_tokens = if let Some(provider) = theme_provider {
             // Use OnSurface context for standard titlebar appearance
             let tokens = provider.titlebar_tokens(ColorContext::OnSurface);
+            #[cfg(debug_assertions)]
             debug!(
                 "TITLEBAR RENDER: Using theme provider tokens - bg={:?}, fg={:?}, border={:?}, height={:?}",
                 tokens.background, tokens.foreground, tokens.border, tokens.height
@@ -115,6 +119,7 @@ impl Render for PlatformTitleBar {
             // Fallback: use global theme for tokens
             let ui_theme = cx.global::<crate::Theme>();
             let tokens = TitleBarTokens::on_surface(&ui_theme.tokens);
+            #[cfg(debug_assertions)]
             debug!(
                 "TITLEBAR RENDER: Using fallback global theme tokens - bg={:?}, fg={:?}, border={:?}, height={:?}",
                 tokens.background, tokens.foreground, tokens.border, tokens.height
@@ -123,17 +128,22 @@ impl Render for PlatformTitleBar {
         };
 
         let height = titlebar_tokens.height;
+        #[cfg(debug_assertions)]
         debug!("TITLEBAR RENDER: Final titlebar height: {:?}", height);
 
         // macOS traffic light padding
         const MAC_TRAFFIC_LIGHT_PADDING: f32 = 71.0;
 
-        // Set window insets based on decoration type
-        match decorations {
-            Decorations::Client { .. } => window.set_client_inset(px(0.0)), // We'll handle shadows separately
-            Decorations::Server => window.set_client_inset(px(0.0)),
+        // Set window insets based on decoration type only once to avoid per-frame calls
+        if !self.inset_applied {
+            match decorations {
+                Decorations::Client { .. } => window.set_client_inset(px(0.0)), // We'll handle shadows separately
+                Decorations::Server => window.set_client_inset(px(0.0)),
+            }
+            self.inset_applied = true;
         }
 
+        #[cfg(debug_assertions)]
         debug!(
             "TITLEBAR RENDER: Applying styles - background={:?}, border={:?}",
             titlebar_tokens.background, titlebar_tokens.border
@@ -202,6 +212,7 @@ impl Render for PlatformTitleBar {
                     .child(
                         // Title text - centered and styled with computed colors
                         div().flex().items_center().gap_2().child({
+                            #[cfg(debug_assertions)]
                             debug!(
                                 "TITLEBAR RENDER: Applying text color to title: {:?}",
                                 titlebar_tokens.foreground

@@ -123,6 +123,10 @@ pub struct Workspace {
     terminal_focus_pending: bool,
     // Track whether terminal should capture keys (set on click in terminal area)
     terminal_active: bool,
+    // Cache last applied editor size to avoid redundant resizes each frame
+    last_editor_size: Option<(u16, u16)>,
+    // Cache last applied editor size to avoid redundant resizes each frame
+    last_editor_size: Option<(u16, u16)>,
 }
 
 // Pending file operation kinds awaiting user input (used with the prompt overlay)
@@ -638,6 +642,8 @@ impl Workspace {
             terminal_focus: cx.focus_handle(),
             terminal_focus_pending: false,
             terminal_active: false,
+            // Performance cache for editor sizing
+            last_editor_size: None,
         };
 
         // Ensure an embedded terminal panel exists for the default layout
@@ -6414,26 +6420,22 @@ impl Render for Workspace {
             self.terminal_focus_pending = false;
         }
         // Don't create views during render - just use existing ones
-        let mut focused_file_name = None;
-
+        // Fast-path: get currently focused view directly instead of scanning all views
         let editor = &self.core.read(cx).editor;
-
-        for (view, is_focused) in editor.tree.views() {
-            if is_focused {
-                // Verify the view still exists in the tree before accessing
-                if editor.tree.contains(view.id)
-                    && let Some(doc) = editor.document(view.doc)
-                {
-                    focused_file_name = doc.path().map(|p| {
+        let focused_file_name = (|| {
+            let view = editor.tree.get(editor.tree.focus);
+            if editor.tree.contains(view.id) {
+                if let Some(doc) = editor.document(view.doc) {
+                    return doc.path().map(|p| {
                         p.file_name()
                             .and_then(|name| name.to_str())
                             .map(std::string::ToString::to_string)
                             .unwrap_or_else(|| p.display().to_string())
                     });
                 }
-                break; // Only need the focused view
             }
-        }
+            None
+        })();
 
         // For native titlebar - we still set the window title
         let window_title = if let Some(ref path) = focused_file_name {
@@ -6466,36 +6468,12 @@ impl Render for Workspace {
             .and_then(utils::color_to_hsla)
             .unwrap_or(white());
 
-        // Compute Helix editor area in character cells from current window/layout
-        // Use focused DocumentView font metrics for accurate line/char sizes
-        let (line_height_px, char_width_px) = self.get_font_metrics_from_focused_view(cx);
-        let viewport_size = window.viewport_size();
-        let mut usable_width_px = viewport_size.width.0;
-        if self.show_file_tree {
-            usable_width_px -= self.file_tree_width;
-        }
-        // Reserve a small padding to avoid overflow due to rounding
-        let usable_width = (usable_width_px.max(1.0) - 2.0).max(1.0);
-        // Editor height accounts for titlebar + statusbar and terminal panel if visible (computed above)
-        let editor_height_px = {
-            let ui_theme = cx.global::<nucleotide_ui::Theme>();
-            let status_bar_h = ui_theme.tokens.sizes.titlebar_height.0;
-            let titlebar_h = ui_theme.tokens.sizes.titlebar_height.0;
-            let total_h = viewport_size.height.0 - status_bar_h - titlebar_h;
-            let mut h = total_h.max(0.0);
-            if self.terminal_panel_visible {
-                h = (h - self.basic_terminal_height).max(0.0);
-            }
-            h
-        };
-        let cols = ((usable_width) / char_width_px.0).floor().max(1.0) as u16;
-        let rows = (editor_height_px / line_height_px.0).floor().max(1.0) as u16;
-        let editor_rect = helix_view::graphics::Rect {
-            x: 0,
-            y: 0,
-            width: cols,
-            height: rows,
-        };
+        let editor_rect = editor.tree.area();
+        let current_size = (editor_rect.width, editor_rect.height);
+        let size_changed = self
+            .last_editor_size
+            .map(|(w, h)| w != current_size.0 || h != current_size.1)
+            .unwrap_or(true);
 
         // Create document root container using design tokens
         let mut docs_root = div()
@@ -6547,11 +6525,14 @@ impl Render for Workspace {
             // Focus is managed by DocumentView's focus state
         }
 
-        self.core.update(cx, |core, _cx| {
-            core.compositor.resize(editor_rect);
-            // Also resize the editor to match
-            core.editor.resize(editor_rect);
-        });
+        if size_changed {
+            self.core.update(cx, |core, _cx| {
+                core.compositor.resize(editor_rect);
+                // Also resize the editor to match
+                core.editor.resize(editor_rect);
+            });
+            self.last_editor_size = Some(current_size);
+        }
 
         if let Some(_view) = &focused_view {
             // Focus is managed by DocumentView's focus state

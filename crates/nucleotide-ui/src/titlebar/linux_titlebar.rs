@@ -93,12 +93,14 @@ pub struct LinuxTitlebar {
     title: String,
     platform_info: LinuxPlatformInfo,
     style: LinuxTitlebarStyle,
+    inset_applied: bool,
 }
 
 impl LinuxTitlebar {
     pub fn new(id: impl Into<ElementId>) -> Self {
         let platform_info = get_platform_info().clone();
 
+        #[cfg(debug_assertions)]
         info!(
             "Creating Linux titlebar for DE: {:?}, WM: {:?}, Layout: {:?}",
             platform_info.desktop_environment,
@@ -113,6 +115,7 @@ impl LinuxTitlebar {
             theme_provider.titlebar_tokens(ColorContext::OnSurface)
         } else {
             // Fallback to default tokens
+            #[cfg(debug_assertions)]
             warn!("No theme provider available, using default titlebar tokens");
             TitleBarTokens {
                 background: gpui::hsla(0.0, 0.0, 0.95, 1.0),
@@ -134,6 +137,7 @@ impl LinuxTitlebar {
             title: String::new(),
             platform_info,
             style,
+            inset_applied: false,
         }
     }
 
@@ -173,15 +177,19 @@ impl LinuxTitlebar {
     pub fn render_element(&mut self, window: &mut Window) -> gpui::Stateful<gpui::Div> {
         let decorations = window.window_decorations();
 
+        #[cfg(debug_assertions)]
         debug!(
             "Rendering Linux titlebar - DE: {:?}, decorations: {:?}, height: {:?}",
             self.platform_info.desktop_environment, decorations, self.style.height
         );
 
-        // Set window insets based on decoration type
-        match decorations {
-            Decorations::Client { .. } => window.set_client_inset(px(0.0)),
-            Decorations::Server => window.set_client_inset(px(0.0)),
+        // Set window insets only once to avoid redundant per-frame calls
+        if !self.inset_applied {
+            match decorations {
+                Decorations::Client { .. } => window.set_client_inset(px(0.0)),
+                Decorations::Server => window.set_client_inset(px(0.0)),
+            }
+            self.inset_applied = true;
         }
 
         // Create the main titlebar container
