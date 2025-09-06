@@ -79,6 +79,10 @@ pub struct Tab {
 }
 
 impl Tab {
+    #[inline]
+    fn element_id_for(doc_id: DocumentId) -> ElementId {
+        ElementId::from(SharedString::from(format!("tab-{}", doc_id)))
+    }
     pub fn new(
         doc_id: DocumentId,
         label: String,
@@ -89,7 +93,7 @@ impl Tab {
         on_click: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
         on_close: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
-        let id = ElementId::from(SharedString::from(format!("tab-{}", doc_id)));
+        let id = Self::element_id_for(doc_id);
         let variant = if is_active {
             TabVariant::Active
         } else if is_modified {
