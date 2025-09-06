@@ -273,41 +273,7 @@ impl Application {
             }
 
             event_bridge::BridgedEvent::SelectionChanged { doc_id, view_id } => {
-                // Extract actual selection from the document
-                let selection = if let Some(view) = self.editor.tree.try_get(*view_id) {
-                    if let Some(doc) = self.editor.document(view.doc) {
-                        doc.selection(view.id).clone()
-                    } else {
-                        helix_core::Selection::point(0)
-                    }
-                } else {
-                    helix_core::Selection::point(0)
-                };
-                let was_movement = true; // Assume movement for now
-
-                // Convert helix selection to V2 event selection
-                let v2_selection = nucleotide_events::view::Selection {
-                    ranges: selection
-                        .ranges()
-                        .iter()
-                        .map(|range| nucleotide_events::view::SelectionRange {
-                            anchor: nucleotide_events::view::Position::new(
-                                range.anchor,
-                                range.anchor,
-                            ),
-                            head: nucleotide_events::view::Position::new(range.head, range.head),
-                        })
-                        .collect(),
-                    primary_index: selection.primary_index(),
-                };
-
-                let v2_event = nucleotide_events::v2::view::Event::SelectionChanged {
-                    view_id: *view_id,
-                    doc_id: *doc_id,
-                    selection: v2_selection,
-                    was_movement,
-                };
-
+                let v2_event = self.build_v2_selection_changed(*doc_id, *view_id);
                 debug!(
                     doc_id = ?doc_id,
                     view_id = ?view_id,
@@ -1205,236 +1171,46 @@ impl Application {
     #[instrument(skip(self, cx))]
     pub fn sync_lsp_state(&self, cx: &mut gpui::App) {
         if let Some(lsp_state) = &self.lsp_state {
-            // Check for active language servers
-            let active_servers: Vec<(LanguageServerId, String)> = self
-                .editor
-                .language_servers
-                .iter_clients()
-                .map(|client| (client.id(), client.name().to_string()))
-                .collect();
-
+            let active_servers = self.active_servers();
             debug!(active_servers = ?active_servers, "Syncing LSP state");
 
-            // Check which servers are progressing
-            let progressing_servers: Vec<LanguageServerId> = active_servers
-                .iter()
-                .filter(|(id, _)| self.lsp_progress.is_progressing(*id))
-                .map(|(id, _)| *id)
-                .collect();
-
+            let progressing_servers = self.progressing_servers(&active_servers);
             debug!(
                 progressing_servers = ?progressing_servers,
                 "Servers currently progressing according to lsp_progress"
             );
 
-            // Get editor status for detailed logging
             let editor_status = self.editor.get_status();
-            debug!(
-                editor_status = ?editor_status,
-                "Current editor status from Helix"
-            );
+            debug!(editor_status = ?editor_status, "Current editor status from Helix");
+
+            let entries = self.compute_progress_entries(&active_servers, &progressing_servers);
 
             lsp_state.update(cx, |state, cx| {
-                // Log current state before clearing
                 let old_progress_count = state.progress.len();
                 debug!(
                     old_progress_count = old_progress_count,
                     "UI state before sync - clearing old progress"
                 );
-
-                // Clear old progress state
                 state.progress.clear();
 
-                // Update server info if we have new servers
+                // Register servers not yet known
                 for (id, name) in &active_servers {
                     if !state.servers.contains_key(id) {
-                        info!(
-                            server_id = ?id,
-                            server_name = %name,
-                            "Registering new LSP server"
-                        );
+                        info!(server_id = ?id, server_name = %name, "Registering new LSP server");
                         state.register_server(*id, name.clone(), None);
                         state.update_server_status(*id, ServerStatus::Running);
                     }
                 }
 
-                // Ensure servers without progress still show status (idle state)
-                for (server_id, server_name) in &active_servers {
-                    if !progressing_servers.contains(server_id) {
-                        // Server is active but not progressing - show idle status
-                        let progress = nucleotide_lsp::LspProgress {
-                            server_id: *server_id,
-                            token: "idle".to_string(),
-                            title: "Connected".to_string(),
-                            message: Some("Ready".to_string()),
-                            percentage: None,
-                        };
-
-                        let key = format!("{}-idle", server_id);
-                        state.progress.insert(key, progress);
-                        debug!(
-                            server_id = ?server_id,
-                            server_name = %server_name,
-                            "Added idle indicator for ready LSP server"
-                        );
-                    }
+                for (key, progress) in entries {
+                    state.progress.insert(key, progress);
                 }
 
-                // Use editor status for progressing servers to show real LSP messages
-                // The LSP manager calls editor.set_status() with progress messages
-                if !progressing_servers.is_empty() {
-                    debug!(
-                        progressing_count = progressing_servers.len(),
-                        "Processing progressing servers"
-                    );
-
-                    for server_id in &progressing_servers {
-                        // Find the server name from active_servers
-                        let _server_name = active_servers
-                            .iter()
-                            .find(|(id, _)| id == server_id)
-                            .map(|(_, name)| name.as_str())
-                            .unwrap_or("LSP Server");
-
-                        // Get the most recent progress information for this specific server
-                        // from the LspProgressMap instead of using global editor status
-                        let current_progress = self.lsp_progress.progress_map(*server_id);
-                        let active_token_count = current_progress.map(|p| p.len()).unwrap_or(0);
-
-                        // Get the most recent progress information using Zed's approach
-                        let message = if active_token_count > 0 {
-                            if let Some(progress_map) = current_progress {
-                                // Find the most recent progress (like Zed does)
-                                let pending_work: Vec<(
-                                    String,
-                                    Option<String>,
-                                    Option<u32>,
-                                    String,
-                                )> = progress_map
-                                    .iter()
-                                    .filter_map(|(token, status)| match status {
-                                        helix_lsp::ProgressStatus::Started { title, progress } => {
-                                            let (message, percentage) = match progress {
-                                                helix_lsp::lsp::WorkDoneProgress::Begin(begin) => {
-                                                    (begin.message.clone(), begin.percentage)
-                                                }
-                                                helix_lsp::lsp::WorkDoneProgress::Report(
-                                                    report,
-                                                ) => (report.message.clone(), report.percentage),
-                                                helix_lsp::lsp::WorkDoneProgress::End(end) => {
-                                                    (end.message.clone(), None)
-                                                }
-                                            };
-                                            let token_str = match token {
-                                                helix_lsp::lsp::NumberOrString::Number(n) => {
-                                                    n.to_string()
-                                                }
-                                                helix_lsp::lsp::NumberOrString::String(s) => {
-                                                    s.clone()
-                                                }
-                                            };
-                                            Some((title.clone(), message, percentage, token_str))
-                                        }
-                                        _ => None,
-                                    })
-                                    .collect();
-
-                                if let Some((title, message, percentage, token)) =
-                                    pending_work.first()
-                                {
-                                    let additional_work_count =
-                                        pending_work.len().saturating_sub(1);
-                                    let mut formatted_msg = self.format_lsp_progress_message(
-                                        Some(title.as_str()),
-                                        message.as_deref(),
-                                        *percentage,
-                                        token.as_str(),
-                                    );
-
-                                    if additional_work_count > 0 {
-                                        formatted_msg.push_str(&format!(
-                                            " + {} more",
-                                            additional_work_count
-                                        ));
-                                    }
-
-                                    formatted_msg
-                                } else {
-                                    // Fallback to editor status if no active progress
-                                    editor_status
-                                        .as_ref()
-                                        .filter(|(msg, _)| !msg.is_empty())
-                                        .map(|(msg, _)| msg.to_string())
-                                        .unwrap_or_else(|| "Ready".to_string())
-                                }
-                            } else {
-                                "Indexing".to_string()
-                            }
-                        } else {
-                            // No active tokens - check editor status or show ready
-                            editor_status
-                                .as_ref()
-                                .filter(|(msg, _)| !msg.is_empty())
-                                .map(|(msg, _)| msg.to_string())
-                                .unwrap_or_else(|| "Ready".to_string())
-                        };
-
-                        // Choose appropriate token and title based on whether we have meaningful progress
-                        let (token, title) = if message == "Ready" {
-                            ("idle".to_string(), "Connected".to_string())
-                        } else {
-                            ("activity".to_string(), "Processing".to_string())
-                        };
-
-                        let progress = nucleotide_lsp::LspProgress {
-                            server_id: *server_id,
-                            token,
-                            title,
-                            message: Some(message.clone()),
-                            percentage: None,
-                        };
-
-                        let key = if message == "Ready" {
-                            format!("{}-idle", server_id)
-                        } else {
-                            format!("{}-activity", server_id)
-                        };
-
-                        let _is_idle = progress.token == "idle";
-                        let _token_clone = progress.token.clone();
-                        let _title_clone = progress.title.clone();
-
-                        state.progress.insert(key, progress);
-                    }
-                } else {
-                    // No progressing servers - ensure we're not stuck with old progress
-                    debug!(
-                        active_servers_count = active_servers.len(),
-                        "No progressing servers - should show idle indicators only"
-                    );
-                }
-
-                // Log final state for debugging
                 debug!(
                     final_progress_count = state.progress.len(),
                     server_count = state.servers.len(),
                     "UI state after sync"
                 );
-
-                if !state.progress.is_empty() {
-                    for (key, progress) in &state.progress {
-                        debug!(
-                            progress_key = %key,
-                            server_id = ?progress.server_id,
-                            title = %progress.title,
-                            message = ?progress.message,
-                            token = %progress.token,
-                            "Final progress item in UI state"
-                        );
-                    }
-                }
-
-                // Notify GPUI that the model changed to trigger UI re-render
                 cx.notify();
             });
         }
@@ -2964,6 +2740,177 @@ impl Application {
     }
 
     // Removed unused handle_language_server_message - now handled via events
+}
+
+// Helper methods to improve function shape and centralize control flow
+impl Application {
+    /// Build a V2 selection changed event from the current editor state.
+    fn build_v2_selection_changed(
+        &self,
+        doc_id: helix_view::DocumentId,
+        view_id: helix_view::ViewId,
+    ) -> nucleotide_events::v2::view::Event {
+        let selection = if let Some(view) = self.editor.tree.try_get(view_id) {
+            if let Some(doc) = self.editor.document(view.doc) {
+                doc.selection(view.id).clone()
+            } else {
+                helix_core::Selection::point(0)
+            }
+        } else {
+            helix_core::Selection::point(0)
+        };
+
+        let v2_selection = nucleotide_events::view::Selection {
+            ranges: selection
+                .ranges()
+                .iter()
+                .map(|range| nucleotide_events::view::SelectionRange {
+                    anchor: nucleotide_events::view::Position::new(range.anchor, range.anchor),
+                    head: nucleotide_events::view::Position::new(range.head, range.head),
+                })
+                .collect(),
+            primary_index: selection.primary_index(),
+        };
+
+        nucleotide_events::v2::view::Event::SelectionChanged {
+            view_id,
+            doc_id,
+            selection: v2_selection,
+            was_movement: true,
+        }
+    }
+
+    /// Return active language servers and their names.
+    fn active_servers(&self) -> Vec<(helix_lsp::LanguageServerId, String)> {
+        self.editor
+            .language_servers
+            .iter_clients()
+            .map(|client| (client.id(), client.name().to_string()))
+            .collect()
+    }
+
+    /// Return the subset of active servers that are currently progressing.
+    fn progressing_servers(
+        &self,
+        active: &[(helix_lsp::LanguageServerId, String)],
+    ) -> Vec<helix_lsp::LanguageServerId> {
+        active
+            .iter()
+            .filter(|(id, _)| self.lsp_progress.is_progressing(*id))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Compute the progress entries (key, LspProgress) for UI from active/progressing servers.
+    fn compute_progress_entries(
+        &self,
+        active: &[(helix_lsp::LanguageServerId, String)],
+        progressing: &[helix_lsp::LanguageServerId],
+    ) -> Vec<(String, nucleotide_lsp::LspProgress)> {
+        use helix_lsp::lsp::NumberOrString;
+
+        let editor_status = self.editor.get_status();
+
+        let message_for_server = |server_id: helix_lsp::LanguageServerId| -> String {
+            let current_progress = self.lsp_progress.progress_map(server_id);
+            let active_token_count = current_progress.map(|p| p.len()).unwrap_or(0);
+
+            if active_token_count > 0 {
+                if let Some(progress_map) = current_progress {
+                    let pending_work: Vec<(String, Option<String>, Option<u32>, String)> =
+                        progress_map
+                            .iter()
+                            .filter_map(|(token, status)| match status {
+                                helix_lsp::ProgressStatus::Started { title, progress } => {
+                                    let (message, percentage) = match progress {
+                                        helix_lsp::lsp::WorkDoneProgress::Begin(begin) => {
+                                            (begin.message.clone(), begin.percentage)
+                                        }
+                                        helix_lsp::lsp::WorkDoneProgress::Report(report) => {
+                                            (report.message.clone(), report.percentage)
+                                        }
+                                        helix_lsp::lsp::WorkDoneProgress::End(end) => {
+                                            (end.message.clone(), None)
+                                        }
+                                    };
+                                    let token_str = match token {
+                                        NumberOrString::Number(n) => n.to_string(),
+                                        NumberOrString::String(s) => s.clone(),
+                                    };
+                                    Some((title.clone(), message, percentage, token_str))
+                                }
+                                _ => None,
+                            })
+                            .collect();
+
+                    if let Some((title, message, percentage, token)) = pending_work.first() {
+                        let additional_work_count = pending_work.len().saturating_sub(1);
+                        let mut formatted = self.format_lsp_progress_message(
+                            Some(title.as_str()),
+                            message.as_deref(),
+                            *percentage,
+                            token.as_str(),
+                        );
+                        if additional_work_count > 0 {
+                            formatted.push_str(&format!(" + {} more", additional_work_count));
+                        }
+                        formatted
+                    } else {
+                        editor_status
+                            .as_ref()
+                            .filter(|(msg, _)| !msg.is_empty())
+                            .map(|(msg, _)| msg.to_string())
+                            .unwrap_or_else(|| "Ready".to_string())
+                    }
+                } else {
+                    "Indexing".to_string()
+                }
+            } else {
+                editor_status
+                    .as_ref()
+                    .filter(|(msg, _)| !msg.is_empty())
+                    .map(|(msg, _)| msg.to_string())
+                    .unwrap_or_else(|| "Ready".to_string())
+            }
+        };
+
+        let mut out = Vec::with_capacity(active.len());
+        for (server_id, _name) in active {
+            if progressing.contains(server_id) {
+                let message = message_for_server(*server_id);
+                let (token, title) = if message == "Ready" {
+                    ("idle".to_string(), "Connected".to_string())
+                } else {
+                    ("activity".to_string(), "Processing".to_string())
+                };
+                let progress = nucleotide_lsp::LspProgress {
+                    server_id: *server_id,
+                    token: token.clone(),
+                    title,
+                    message: Some(message),
+                    percentage: None,
+                };
+                let key = if token == "idle" {
+                    format!("{}-idle", server_id)
+                } else {
+                    format!("{}-activity", server_id)
+                };
+                out.push((key, progress));
+            } else {
+                let progress = nucleotide_lsp::LspProgress {
+                    server_id: *server_id,
+                    token: "idle".to_string(),
+                    title: "Connected".to_string(),
+                    message: Some("Ready".to_string()),
+                    percentage: None,
+                };
+                let key = format!("{}-idle", server_id);
+                out.push((key, progress));
+            }
+        }
+
+        out
+    }
 }
 
 // Implement capability traits for Application
