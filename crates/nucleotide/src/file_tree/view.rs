@@ -1081,27 +1081,17 @@ impl FileTreeView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let is_selected = self.selected_path.as_ref() == Some(&entry.path);
-
-        // Use provider hooks to get theme and animation preferences
+        // Use provider hooks to get theme
         let theme =
             nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
                 .map(|provider| provider.current_theme().clone())
                 .unwrap_or_else(|| cx.global::<Theme>().clone());
 
-        // Get FileTreeTokens for hybrid color system
-        let file_tree_tokens = theme.tokens.file_tree_tokens();
-
-        let _enable_animations = nucleotide_ui::providers::use_provider::<
-            nucleotide_ui::providers::ConfigurationProvider,
-        >()
-        .map(|config| config.ui_config.animation_config.enable_animations)
-        .unwrap_or(true);
-
         let indentation = px(entry.depth as f32 * 16.0); // 16px per level
         let path = entry.path.clone();
         let is_dir = entry.is_directory();
 
-        // Use enhanced ListItem for styling and structure, leveraging nucleotide-ui improvements
+        // Wrapper adds click behavior; row content built via helper to centralize styling/layout
         div()
             .w_full()
             .on_mouse_up(MouseButton::Left, {
@@ -1134,51 +1124,56 @@ impl FileTreeView {
                     });
                 })
             })
-            .child(
-                ListItem::new(("file-tree-entry", entry.id.0))
-                    // Use Ghost variant for no borders/background, or Primary for selected
-                    .variant(ListItemVariant::Ghost)
-                    .spacing(ListItemSpacing::Compact)
-                    .selected(is_selected)
-                    .class("file-tree-entry")
-                    .with_listener({
-                        let ft_tokens = file_tree_tokens;
-                        move |item| {
-                            // Apply minimal custom styling - remove hover highlight for file tree rows
-                            let mut item = item.w_full().pl(indentation).pr(px(8.0)).h(px(24.0));
-                            if is_selected {
-                                // Keep selected highlight
-                                item = item.bg(ft_tokens.item_background_selected);
-                            } else {
-                                // Override any internal hover to keep background unchanged
-                                item = item.hover(|s| s.bg(ft_tokens.background));
-                            }
-                            item
-                        }
-                    })
-                    .start_slot(
-                        // Always reserve space for chevron to align icons
-                        div()
-                            .w_3()
-                            .h_3()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .when(entry.is_directory(), |div| {
-                                div.child(self.render_chevron(entry, cx))
-                            }),
-                    )
-                    .child(
-                        // Fix icon alignment by using flex container with items_center for better alignment
-                        div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .gap_1() // Small gap between icon and text
-                            .child(self.render_icon_with_vcs_status(entry, is_selected, cx))
-                            .child(self.render_filename_with_selection(entry, is_selected, cx)),
-                    ),
+            .child(self.build_file_tree_row(&theme, entry, is_selected, indentation, cx))
+    }
+
+    /// Centralized helper to build a file tree ListItem row with consistent styling and slots.
+    fn build_file_tree_row(
+        &self,
+        theme: &Theme,
+        entry: &FileTreeEntry,
+        is_selected: bool,
+        indentation: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let ft_tokens = theme.tokens.file_tree_tokens();
+        ListItem::new(("file-tree-entry", entry.id.0))
+            .variant(ListItemVariant::Ghost)
+            .spacing(ListItemSpacing::Compact)
+            .selected(is_selected)
+            .class("file-tree-entry")
+            .with_listener(move |item| {
+                let mut item = item.w_full().pl(indentation).pr(px(8.0)).h(px(24.0));
+                if is_selected {
+                    item = item.bg(ft_tokens.item_background_selected);
+                } else {
+                    item = item.hover(|s| s.bg(ft_tokens.background));
+                }
+                item
+            })
+            .start_slot(
+                // Reserve space for chevron to align icons
+                div()
+                    .w_3()
+                    .h_3()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(entry.is_directory(), |div| {
+                        div.child(self.render_chevron(entry, cx))
+                    }),
             )
+            .child(
+                // Icon + filename content
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(self.render_icon_with_vcs_status(entry, is_selected, cx))
+                    .child(self.render_filename_with_selection(entry, is_selected, cx)),
+            )
+            .into_any_element()
     }
 
     /// Render the chevron for directories using design tokens

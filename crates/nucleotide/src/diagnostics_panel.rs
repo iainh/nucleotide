@@ -55,6 +55,109 @@ impl DiagnosticsPanel {
         cx.notify();
     }
 
+    /// Build the header row aligned to the body columns.
+    fn build_header_row(
+        &self,
+        cx: &mut Context<Self>,
+        col_severity_w: f32,
+        col_source_w: f32,
+        col_code_w: f32,
+        col_prefix_w: f32,
+    ) -> gpui::AnyElement {
+        let picker_tokens = cx.theme().tokens.picker_tokens();
+        let color = picker_tokens.header_text;
+        div()
+            .flex()
+            .px_3()
+            .py_1()
+            .gap_4()
+            .child(div().w(px(col_prefix_w)).flex_shrink_0().child(" "))
+            .child(
+                div()
+                    .w(px(col_severity_w))
+                    .flex_shrink_0()
+                    .text_color(color)
+                    .text_left()
+                    .child("severity"),
+            )
+            .child(
+                div()
+                    .w(px(col_source_w))
+                    .flex_shrink_0()
+                    .text_color(color)
+                    .text_left()
+                    .child("source"),
+            )
+            .child(
+                div()
+                    .w(px(col_code_w))
+                    .flex_shrink_0()
+                    .text_color(color)
+                    .text_left()
+                    .child("code"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .text_color(color)
+                    .text_left()
+                    .child("message"),
+            )
+            .into_any_element()
+    }
+
+    /// Return filtered diagnostics as (Uri, DiagnosticInfo) pairs.
+    fn filtered_rows(&self, cx: &mut Context<Self>) -> Vec<(Uri, DiagnosticInfo)> {
+        let mut rows: Vec<(Uri, DiagnosticInfo)> = Vec::new();
+        let filter = self.filter.clone();
+        self.lsp_state.update(cx, |state, _| {
+            for (uri, infos) in state.diagnostics.iter() {
+                if let Some(only) = &filter.only_uri
+                    && uri != only
+                {
+                    continue;
+                }
+                for info in infos {
+                    let sev_ok = filter
+                        .min_severity
+                        .is_none_or(|min| info.diagnostic.severity() >= min);
+                    if !sev_ok {
+                        continue;
+                    }
+                    let msg_ok = filter.query.as_ref().is_none_or(|q| {
+                        info.diagnostic
+                            .message
+                            .to_lowercase()
+                            .contains(&q.to_lowercase())
+                    });
+                    if !msg_ok {
+                        continue;
+                    }
+                    rows.push((uri.clone(), info.clone()));
+                }
+            }
+        });
+        rows
+    }
+
+    /// Return filtered and sorted diagnostics.
+    fn sorted_filtered_rows(&self, cx: &mut Context<Self>) -> Vec<(Uri, DiagnosticInfo)> {
+        let mut rows = self.filtered_rows(cx);
+        rows.sort_by(|a, b| {
+            let sa = a.1.diagnostic.severity();
+            let sb = b.1.diagnostic.severity();
+            sb.cmp(&sa)
+                .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+                .then_with(|| a.1.diagnostic.range.start.cmp(&b.1.diagnostic.range.start))
+        });
+        rows
+    }
+
+    /// Count filtered rows (used for navigation bounds).
+    fn count_filtered_rows(&self, cx: &mut Context<Self>) -> usize {
+        self.filtered_rows(cx).len()
+    }
+
     /// Insert soft wrap opportunities into long strings (paths, messages).
     fn soft_wrap(s: &str) -> String {
         let mut out = String::with_capacity(s.len() + 16);
@@ -396,46 +499,8 @@ impl Render for DiagnosticsPanel {
         let picker_tokens = cx.theme().tokens.picker_tokens();
 
         // Header row (aligned with body columns)
-        let header = {
-            let color = picker_tokens.header_text;
-            div()
-                .flex()
-                .px_3()
-                .py_1()
-                .gap_4()
-                .child(div().w(gpui::px(COL_PREFIX_W)).flex_shrink_0().child(" "))
-                .child(
-                    div()
-                        .w(gpui::px(COL_SEVERITY_W))
-                        .flex_shrink_0()
-                        .text_color(color)
-                        .text_left()
-                        .child("severity"),
-                )
-                .child(
-                    div()
-                        .w(gpui::px(COL_SOURCE_W))
-                        .flex_shrink_0()
-                        .text_color(color)
-                        .text_left()
-                        .child("source"),
-                )
-                .child(
-                    div()
-                        .w(gpui::px(COL_CODE_W))
-                        .flex_shrink_0()
-                        .text_color(color)
-                        .text_left()
-                        .child("code"),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .text_color(color)
-                        .text_left()
-                        .child("message"),
-                )
-        };
+        let header =
+            self.build_header_row(cx, COL_SEVERITY_W, COL_SOURCE_W, COL_CODE_W, COL_PREFIX_W);
 
         // Snapshot server names to avoid borrowing cx/LspState inside row map closure
         let server_names: std::collections::HashMap<helix_lsp::LanguageServerId, String> = {
@@ -534,26 +599,7 @@ impl Render for DiagnosticsPanel {
                     }
                     "down" => {
                         // Recompute row count to clamp
-                        let mut count = 0usize;
-                        let filter = this.filter.clone();
-                        this.lsp_state.update(cx, |state, _| {
-                            for (_uri, infos) in state.diagnostics.iter() {
-                                for info in infos {
-                                    let sev_ok = filter
-                                        .min_severity
-                                        .is_none_or(|min| info.diagnostic.severity() >= min);
-                                    let msg_ok = filter.query.as_ref().is_none_or(|q| {
-                                        info.diagnostic
-                                            .message
-                                            .to_lowercase()
-                                            .contains(&q.to_lowercase())
-                                    });
-                                    if sev_ok && msg_ok {
-                                        count += 1;
-                                    }
-                                }
-                            }
-                        });
+                        let count = this.count_filtered_rows(cx);
                         if count > 0 {
                             this.selected_index = (this.selected_index + 1).min(count - 1);
                             cx.notify();
@@ -561,35 +607,7 @@ impl Render for DiagnosticsPanel {
                     }
                     "enter" => {
                         // Find selected row and emit jump
-                        let mut rows: Vec<(Uri, DiagnosticInfo)> = Vec::new();
-                        let filter = this.filter.clone();
-                        this.lsp_state.update(cx, |state, _| {
-                            for (uri, infos) in state.diagnostics.iter() {
-                                for info in infos {
-                                    let sev_ok = filter
-                                        .min_severity
-                                        .is_none_or(|min| info.diagnostic.severity() >= min);
-                                    let msg_ok = filter.query.as_ref().is_none_or(|q| {
-                                        info.diagnostic
-                                            .message
-                                            .to_lowercase()
-                                            .contains(&q.to_lowercase())
-                                    });
-                                    if sev_ok && msg_ok {
-                                        rows.push((uri.clone(), info.clone()));
-                                    }
-                                }
-                            }
-                        });
-                        rows.sort_by(|a, b| {
-                            let sa = a.1.diagnostic.severity();
-                            let sb = b.1.diagnostic.severity();
-                            sb.cmp(&sa)
-                                .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-                                .then_with(|| {
-                                    a.1.diagnostic.range.start.cmp(&b.1.diagnostic.range.start)
-                                })
-                        });
+                        let rows = this.sorted_filtered_rows(cx);
                         if !rows.is_empty() {
                             let idx = this.selected_index.min(rows.len() - 1);
                             let (uri, info) = rows[idx].clone();
