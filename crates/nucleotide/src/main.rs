@@ -658,7 +658,7 @@ fn gui_main(
                 family: editor_font_config.family,
                 size: editor_font_config.size,
                 weight: editor_font_config.weight,
-                line_height: 1.4, // Default line height
+                line_height: editor_font_config.line_height,
             });
 
             // Store UI font config for UI components

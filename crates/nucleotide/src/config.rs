@@ -303,10 +303,29 @@ impl Config {
 
     /// Get the editor font configuration
     pub fn editor_font(&self) -> FontConfig {
-        self.gui.editor.font.clone().unwrap_or_else(|| {
-            // Fall back to UI font if specified
-            self.gui.ui.font.clone().unwrap_or_default()
-        })
+        // Resolve the editor font, falling back to UI font if not set
+        if let Some(font) = self.gui.editor.font.clone() {
+            nucleotide_logging::info!(
+                source = "editor",
+                family = %font.family,
+                weight = ?font.weight,
+                size = font.size,
+                line_height = font.line_height,
+                "Resolved editor font"
+            );
+            font
+        } else {
+            let fallback = self.gui.ui.font.clone().unwrap_or_default();
+            nucleotide_logging::info!(
+                source = "ui_fallback",
+                family = %fallback.family,
+                weight = ?fallback.weight,
+                size = fallback.size,
+                line_height = fallback.line_height,
+                "Editor font not set; using UI font"
+            );
+            fallback
+        }
     }
 
     /// Get the UI font configuration

@@ -166,16 +166,24 @@ impl ViewManager {
                 // Create new view if it doesn't exist
                 let view_entity = cx.new(|cx| {
                     let doc_focus_handle = cx.focus_handle();
-                    // Create default text style
+
+                    // Build a text style from the configured editor font
+                    let editor_font = cx.global::<crate::types::EditorFontConfig>();
+                    let fixed_family = cx
+                        .global::<crate::types::FontSettings>()
+                        .fixed_font
+                        .family
+                        .clone();
+
                     let default_style = gpui::TextStyle {
                         color: gpui::white(),
-                        font_family: gpui::SharedString::from("Monaco"),
+                        font_family: gpui::SharedString::from(fixed_family),
                         font_fallbacks: Default::default(),
                         font_features: Default::default(),
-                        font_size: gpui::AbsoluteLength::Pixels(gpui::px(14.0)),
-                        font_weight: Default::default(),
-                        font_style: Default::default(),
-                        line_height: Default::default(),
+                        font_size: gpui::AbsoluteLength::Pixels(gpui::px(editor_font.size)),
+                        font_weight: gpui::FontWeight::from(editor_font.weight),
+                        font_style: gpui::FontStyle::Normal,
+                        line_height: gpui::phi(),
                         line_clamp: Default::default(),
                         background_color: None,
                         underline: Default::default(),
@@ -184,6 +192,7 @@ impl ViewManager {
                         text_align: Default::default(),
                         text_overflow: Default::default(),
                     };
+
                     DocumentView::new(
                         core.clone(),
                         view_id,
