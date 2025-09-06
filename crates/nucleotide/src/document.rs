@@ -692,6 +692,30 @@ impl DocumentElement {
 
         syntax_hl.style
     }
+
+    /// Create a TextRun for the cursor glyph that preserves the original text style
+    /// (bold/italic/underline/strikethrough) while allowing a custom foreground color
+    /// and default background for contrast.
+    fn make_cursor_text_run(
+        base_font: &gpui::Font,
+        text_len: usize,
+        text_style_at_cursor: &helix_view::graphics::Style,
+        text_color: gpui::Hsla,
+        default_bg: gpui::Hsla,
+    ) -> gpui::TextRun {
+        let underline_color = text_style_at_cursor
+            .underline_color
+            .and_then(nucleotide_ui::theme_utils::color_to_hsla);
+        nucleotide_ui::style_utils::create_styled_text_run(
+            text_len,
+            base_font,
+            text_style_at_cursor,
+            text_color,
+            None,
+            default_bg,
+            underline_color,
+        )
+    }
     /// Convert a byte index within a line to a grapheme index
     /// GPUI's shaped line works with UTF-8 byte indices
     /// but Helix works with grapheme cluster indices (visual units)
@@ -2414,14 +2438,12 @@ impl Element for DocumentElement {
                             .underline_color
                             .and_then(color_to_hsla);
 
-                        let run = nucleotide_ui::style_utils::create_styled_text_run(
-                            text_len,
+                        let run = Self::make_cursor_text_run(
                             &self.style.font(),
+                            text_len,
                             &text_style_at_cursor,
                             text_color,
-                            None,
                             bg_color,
-                            underline_color,
                         );
 
                         let shaped = window
@@ -3304,14 +3326,12 @@ impl Element for DocumentElement {
                                             .underline_color
                                             .and_then(color_to_hsla);
 
-                                        let run = nucleotide_ui::style_utils::create_styled_text_run(
-                                            text_len,
+                                        let run = Self::make_cursor_text_run(
                                             &self.style.font(),
+                                            text_len,
                                             &text_style_at_cursor,
                                             text_color,
-                                            None,
                                             bg_color,
-                                            underline_color,
                                         );
 
                                         let shaped = window.text_system().shape_line(
