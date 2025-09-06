@@ -129,7 +129,7 @@ impl HelixLspBridge {
     pub async fn start_server(
         &self,
         editor: &mut Editor,
-        workspace_root: &PathBuf,
+        workspace_root: &std::path::Path,
         server_name: &str,
         language_id: &str,
     ) -> Result<LanguageServerId, ProjectLspError> {
@@ -155,7 +155,7 @@ impl HelixLspBridge {
         let _ = self
             .project_event_tx
             .send(ProjectLspEvent::ServerStartupCompleted {
-                workspace_root: workspace_root.clone(),
+                workspace_root: workspace_root.to_path_buf(),
                 server_name: server_name.to_string(),
                 server_id,
                 status: ServerStartupResult::Success,
@@ -187,7 +187,7 @@ impl HelixLspBridge {
         &self,
         editor: &Editor,
         server_name: &str,
-        _workspace_root: &PathBuf,
+        _workspace_root: &std::path::Path,
     ) -> Option<LanguageServerId> {
         // Check all active language servers
         for client in editor.language_servers.iter_clients() {
@@ -207,7 +207,7 @@ impl HelixLspBridge {
         &self,
         editor: &mut Editor,
         language_id: &str,
-        workspace_root: &PathBuf,
+        workspace_root: &std::path::Path,
         server_name: &str,
     ) -> Result<LanguageServerId, ProjectLspError> {
         // Get the language configuration for this language
@@ -286,10 +286,10 @@ impl HelixLspBridge {
                 );
                 rust_roots
             } else {
-                vec![workspace_root.clone()]
+                vec![workspace_root.to_path_buf()]
             }
         } else {
-            vec![workspace_root.clone()]
+            vec![workspace_root.to_path_buf()]
         };
 
         // Optionally wrap the server launch through our stdio proxy by PATH shimming.
@@ -478,7 +478,7 @@ impl HelixLspBridge {
                         let _ =
                             self.project_event_tx
                                 .send(ProjectLspEvent::ServerStartupCompleted {
-                                    workspace_root: workspace_root.clone(),
+                                    workspace_root: workspace_root.to_path_buf(),
                                     server_name: server_name.to_string(),
                                     server_id: slotmap::KeyData::from_ffi(0).into(), // Invalid ID for failure
                                     status: ServerStartupResult::Failed {
@@ -644,7 +644,7 @@ impl MockHelixLspBridge {
     pub async fn start_server(
         &self,
         _editor: &mut Editor,
-        workspace_root: &PathBuf,
+        workspace_root: &std::path::Path,
         server_name: &str,
         language_id: &str,
     ) -> Result<LanguageServerId, ProjectLspError> {
@@ -657,7 +657,7 @@ impl MockHelixLspBridge {
             let _ = self
                 .project_event_tx
                 .send(ProjectLspEvent::ServerStartupCompleted {
-                    workspace_root: workspace_root.clone(),
+                    workspace_root: workspace_root.to_path_buf(),
                     server_name: server_name.to_string(),
                     server_id: slotmap::KeyData::from_ffi(0).into(),
                     status: ServerStartupResult::Failed {
@@ -676,7 +676,7 @@ impl MockHelixLspBridge {
         let _ = self
             .project_event_tx
             .send(ProjectLspEvent::ServerStartupCompleted {
-                workspace_root: workspace_root.clone(),
+                workspace_root: workspace_root.to_path_buf(),
                 server_name: server_name.to_string(),
                 server_id,
                 status: ServerStartupResult::Success,
@@ -760,7 +760,10 @@ impl MockHelixLspBridge {
 
 /// Find a representative file within the workspace that rust-analyzer can use
 /// to determine the proper workspace root and configuration
-fn find_representative_file(workspace_root: &PathBuf, language_id: &str) -> Option<PathBuf> {
+fn find_representative_file(
+    workspace_root: &std::path::Path,
+    language_id: &str,
+) -> Option<PathBuf> {
     // For Rust projects, try to find common files that rust-analyzer can use
     if language_id == "rust" {
         // First, try Cargo.toml (the project root marker)
@@ -797,7 +800,7 @@ fn find_representative_file(workspace_root: &PathBuf, language_id: &str) -> Opti
 /// - If the provided root has a Cargo.toml with a [workspace] table, use it.
 /// - Else, collect immediate and shallow nested directories that contain a Cargo.toml.
 /// - Limit breadth and depth to avoid costly scans in very large repos.
-fn find_rust_workspace_roots(workspace_root: &PathBuf) -> Vec<PathBuf> {
+fn find_rust_workspace_roots(workspace_root: &std::path::Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
     let cargo_toml = workspace_root.join("Cargo.toml");
@@ -805,11 +808,11 @@ fn find_rust_workspace_roots(workspace_root: &PathBuf) -> Vec<PathBuf> {
         cargo_toml.exists() && cargo_toml.is_file() && cargo_toml_has_workspace(&cargo_toml);
     if is_workspace {
         // Include the workspace root to serve as a workspaceFolder for RA
-        roots.push(workspace_root.clone());
+        roots.push(workspace_root.to_path_buf());
         // Fall through to also collect shallow member crates so we can choose better representative files
     } else if cargo_toml.exists() && cargo_toml.is_file() {
         // Single crate root
-        roots.push(workspace_root.clone());
+        roots.push(workspace_root.to_path_buf());
         return roots;
     }
 
@@ -859,7 +862,7 @@ fn find_rust_workspace_roots(workspace_root: &PathBuf) -> Vec<PathBuf> {
     roots
 }
 
-fn cargo_toml_has_workspace(path: &PathBuf) -> bool {
+fn cargo_toml_has_workspace(path: &std::path::Path) -> bool {
     if let Ok(contents) = std::fs::read_to_string(path) {
         // Cheap check to avoid pulling in a full TOML parser here
         contents.contains("[workspace]")
@@ -869,7 +872,7 @@ fn cargo_toml_has_workspace(path: &PathBuf) -> bool {
 }
 
 /// Find any .rs file within the directory up to a limited depth to use as a representative file.
-fn find_rs_file_shallow(root: &PathBuf, max_depth: usize) -> Option<PathBuf> {
+fn find_rs_file_shallow(root: &std::path::Path, max_depth: usize) -> Option<PathBuf> {
     // Prefer conventional entry points if present
     let lib_rs = root.join("src").join("lib.rs");
     if lib_rs.is_file() {
@@ -880,7 +883,7 @@ fn find_rs_file_shallow(root: &PathBuf, max_depth: usize) -> Option<PathBuf> {
         return Some(main_rs);
     }
 
-    fn walk(dir: &PathBuf, depth: usize, max_depth: usize) -> Option<PathBuf> {
+    fn walk(dir: &std::path::Path, depth: usize, max_depth: usize) -> Option<PathBuf> {
         if depth > max_depth {
             return None;
         }
@@ -906,7 +909,7 @@ fn find_rs_file_shallow(root: &PathBuf, max_depth: usize) -> Option<PathBuf> {
     walk(root, 0, max_depth)
 }
 /// Try to pick the currently active Rust document within the given workspace root
-fn find_active_rust_document(editor: &Editor, workspace_root: &PathBuf) -> Option<PathBuf> {
+fn find_active_rust_document(editor: &Editor, workspace_root: &std::path::Path) -> Option<PathBuf> {
     // Prefer the focused view if available, otherwise scan visible views
     // Fallback: first Rust document whose path is inside the workspace root
     // Note: We intentionally avoid borrowing the editor mutably here

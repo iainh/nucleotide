@@ -298,12 +298,15 @@ impl ProjectLspManager {
     }
 
     /// Get project information
-    pub async fn get_project_info(&self, workspace_root: &PathBuf) -> Option<ProjectInfo> {
+    pub async fn get_project_info(&self, workspace_root: &std::path::Path) -> Option<ProjectInfo> {
         self.projects.read().await.get(workspace_root).cloned()
     }
 
     /// Get managed servers for a workspace
-    pub async fn get_managed_servers(&self, workspace_root: &PathBuf) -> Vec<ManagedServer> {
+    pub async fn get_managed_servers(
+        &self,
+        workspace_root: &std::path::Path,
+    ) -> Vec<ManagedServer> {
         self.servers
             .read()
             .await
@@ -338,7 +341,7 @@ impl ProjectLspManager {
     ))]
     pub async fn start_server(
         &self,
-        workspace_root: &PathBuf,
+        workspace_root: &std::path::Path,
         server_name: &str,
         language_id: &str,
     ) -> Result<ManagedServer, ProjectLspError> {
@@ -360,7 +363,7 @@ impl ProjectLspManager {
             );
 
             let command = ProjectLspCommand::StartServer {
-                workspace_root: workspace_root.clone(),
+                workspace_root: workspace_root.to_path_buf(),
                 server_name: server_name.to_string(),
                 language_id: language_id.to_string(),
                 response: response_tx,
@@ -396,7 +399,7 @@ impl ProjectLspManager {
                             server_id,
                             server_name: server_name.to_string(),
                             language_id: language_id.to_string(),
-                            workspace_root: workspace_root.clone(),
+                            workspace_root: workspace_root.to_path_buf(),
                             started_at: Instant::now(),
                             last_health_check: None,
                             health_status: ServerHealthStatus::Healthy,
@@ -410,7 +413,7 @@ impl ProjectLspManager {
                         // Record managed server for this workspace
                         {
                             let mut map = self.servers.write().await;
-                            map.entry(workspace_root.clone())
+                            map.entry(workspace_root.to_path_buf())
                                 .or_default()
                                 .push(managed_server.clone());
                         }
@@ -487,7 +490,7 @@ impl ProjectDetector {
     #[instrument(skip(self), fields(workspace_root = %workspace_root.display()))]
     pub async fn analyze_project(
         &self,
-        workspace_root: &PathBuf,
+        workspace_root: &std::path::Path,
     ) -> Result<ProjectInfo, Box<dyn std::error::Error + Send + Sync>> {
         info!("Analyzing project structure");
 
@@ -495,7 +498,7 @@ impl ProjectDetector {
         let language_servers = self.get_language_servers_for_project(&project_type);
 
         Ok(ProjectInfo {
-            workspace_root: workspace_root.clone(),
+            workspace_root: workspace_root.to_path_buf(),
             project_type,
             language_servers,
             detected_at: Instant::now(),
@@ -505,7 +508,7 @@ impl ProjectDetector {
     /// Detect project type based on files and structure
     async fn detect_project_type(
         &self,
-        workspace_root: &PathBuf,
+        workspace_root: &std::path::Path,
     ) -> Result<ProjectType, Box<dyn std::error::Error + Send + Sync>> {
         // First try custom project markers if enabled
         if self.project_markers_config.enable_project_markers
@@ -525,7 +528,7 @@ impl ProjectDetector {
     /// Detect project type using custom markers configuration
     async fn detect_with_custom_markers(
         &self,
-        workspace_root: &PathBuf,
+        workspace_root: &std::path::Path,
     ) -> Result<Option<ProjectType>, Box<dyn std::error::Error + Send + Sync>> {
         info!(
             workspace_root = %workspace_root.display(),
@@ -610,7 +613,7 @@ impl ProjectDetector {
     /// Detect project type using builtin patterns (original logic)
     async fn detect_with_builtin_patterns(
         &self,
-        workspace_root: &PathBuf,
+        workspace_root: &std::path::Path,
     ) -> Result<ProjectType, Box<dyn std::error::Error + Send + Sync>> {
         debug!(workspace_root = %workspace_root.display(), "Using builtin project detection patterns");
 
@@ -657,7 +660,7 @@ impl ProjectDetector {
     /// Check for TypeScript files
     async fn has_typescript_files(
         &self,
-        workspace_root: &PathBuf,
+        workspace_root: &std::path::Path,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         // Simple implementation - in practice would scan directories
         Ok(workspace_root.join("src").exists()
@@ -678,7 +681,7 @@ impl ProjectDetector {
     /// Check for C++ files
     async fn has_cpp_files(
         &self,
-        workspace_root: &PathBuf,
+        workspace_root: &std::path::Path,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         // Simple implementation - in practice would scan directories
         Ok(workspace_root.join("src").exists())
