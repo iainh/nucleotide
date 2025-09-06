@@ -224,14 +224,10 @@ impl RenderOnce for WindowControl {
                 cx.stop_propagation();
                 match self.control_type {
                     WindowControlType::Minimize => {
-                        // Note: minimize is not available in GPUI yet
+                        window.minimize_window();
                     }
                     WindowControlType::Restore | WindowControlType::Maximize => {
-                        if std::env::var("NUCL_DISABLE_FULLSCREEN").ok().as_deref() == Some("1") {
-                            debug!("Fullscreen/maximize disabled via NUCL_DISABLE_FULLSCREEN=1");
-                        } else {
-                            window.toggle_fullscreen();
-                        }
+                        window.zoom_window();
                     }
                     WindowControlType::Close => {
                         cx.quit();
@@ -317,7 +313,7 @@ impl RenderOnce for WindowControls {
                     ))
                     .child(WindowControl::with_tokens(
                         "maximize-or-restore",
-                        if window.is_maximized() || window.is_fullscreen() {
+                        if window.is_maximized() {
                             WindowControlType::Restore
                         } else {
                             WindowControlType::Maximize
@@ -376,7 +372,7 @@ impl RenderOnce for WindowControls {
                     ))
                     .child(WindowControl::new(
                         "maximize-or-restore",
-                        if window.is_maximized() || window.is_fullscreen() {
+                        if window.is_maximized() {
                             WindowControlType::Restore
                         } else {
                             WindowControlType::Maximize

@@ -284,17 +284,13 @@ impl RenderOnce for LinuxWindowControl {
 
                 match self.control_type {
                     LinuxControlType::Minimize => {
-                        // GPUI doesn't support minimize yet, but we can emit an event
-                        debug!("Minimize button clicked (not implemented in GPUI)");
+                        debug!("Minimize button clicked -> minimizing window via GPUI");
+                        window.minimize_window();
                     }
                     LinuxControlType::Restore | LinuxControlType::Maximize => {
-                        // Guard against X11 re-entrancy panics by allowing opt-out
-                        if std::env::var("NUCL_DISABLE_FULLSCREEN").ok().as_deref() == Some("1") {
-                            debug!("Fullscreen/maximize disabled via NUCL_DISABLE_FULLSCREEN=1");
-                        } else {
-                            debug!("Toggling window fullscreen/maximize");
-                            window.toggle_fullscreen();
-                        }
+                        // Use native zoom/maximize behavior provided by GPUI
+                        debug!("Toggling window zoom (maximize/restore) via GPUI");
+                        window.zoom_window();
                     }
                     LinuxControlType::Close => {
                         debug!("Close button clicked");
@@ -344,9 +340,8 @@ impl LinuxWindowControls {
     fn get_control_layout(&self, window: &Window) -> Vec<LinuxControlType> {
         let mut controls = Vec::new();
 
-        // Determine maximize/restore button. On some Linux setups we use
-        // fullscreen as a stand-in for maximize, so consider either state.
-        let maximize_button = if window.is_maximized() || window.is_fullscreen() {
+        // Determine maximize/restore button from native maximize state.
+        let maximize_button = if window.is_maximized() {
             LinuxControlType::Restore
         } else {
             LinuxControlType::Maximize

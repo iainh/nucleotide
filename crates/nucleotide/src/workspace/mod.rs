@@ -6670,15 +6670,15 @@ impl Render for Workspace {
                 }),
             )
             .on_action(cx.listener(
-                move |_, _: &crate::actions::window::Minimize, _window, _cx| {
-                    // minimize not available in GPUI yet
+                move |_, _: &crate::actions::window::Minimize, window, _cx| {
+                    window.minimize_window();
                 },
             ))
-            .on_action(
-                cx.listener(move |_, _: &crate::actions::window::Zoom, _window, _cx| {
-                    // zoom not available in GPUI yet
-                }),
-            );
+            .on_action(cx.listener(
+                move |_, _: &crate::actions::window::Zoom, window, _cx| {
+                    window.zoom_window();
+                },
+            ));
 
         // Help and test actions
         let handle = self.handle.clone();
