@@ -12,6 +12,9 @@ use std::sync::Arc;
 use crate::tab::Tab;
 use crate::tab_overflow_dropdown::TabOverflowButton;
 
+// Keep overflow button width consistent across measurement and rendering
+const OVERFLOW_BUTTON_WIDTH: f32 = 60.0;
+
 /// Type alias for tab event handlers
 type TabEventHandler = Arc<dyn Fn(DocumentId, &mut Window, &mut App) + 'static>;
 /// Type alias for dropdown toggle handlers
@@ -140,7 +143,7 @@ impl TabBar {
     ) -> (Vec<DocumentInfo>, Vec<DocumentInfo>) {
         // Overflow button width calculation - refined based on actual rendering:
         // The "+X" button should be more accurately sized
-        const OVERFLOW_BUTTON_WIDTH: f32 = 60.0; // Reduced from 80px to better match actual size
+        // Width defined at module scope as OVERFLOW_BUTTON_WIDTH
 
         // No gap between tabs since we removed .gap() from the container
         const TAB_GAP: f32 = 0.0;
@@ -384,7 +387,7 @@ impl TabBar {
                 .items_center()
                 .flex_none()
                 .overflow_x_hidden()
-                .when(has_overflow, |d| d.pr(px(60.0)))
+                .when(has_overflow, |d| d.pr(px(OVERFLOW_BUTTON_WIDTH)))
                 .children(tabs);
 
             row = row.child(tabs_container).child(
