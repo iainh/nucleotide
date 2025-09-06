@@ -14,6 +14,8 @@ use crate::tab_overflow_dropdown::TabOverflowButton;
 
 // Keep overflow button width consistent across measurement and rendering
 const OVERFLOW_BUTTON_WIDTH: f32 = 60.0;
+// Shared label when no tabs are open
+const NO_OPEN_FILES: &str = "No open files";
 
 /// Type alias for tab event handlers
 type TabEventHandler = Arc<dyn Fn(DocumentId, &mut Window, &mut App) + 'static>;
@@ -407,7 +409,7 @@ impl TabBar {
                         .px(tokens.sizes.space_4)
                         .text_color(tab_bar_tokens.tab_text_inactive)
                         .text_size(tokens.sizes.text_sm)
-                        .child("No open files"),
+                        .child(NO_OPEN_FILES),
                 )
                 .border_b_1()
                 .border_color(inactive_border_color);
