@@ -1172,7 +1172,7 @@ impl CompletionView {
                 self.last_error = Some(context.clone());
                 if let Some(message) = &context.user_message {
                     // TODO: Show user notification
-                    eprintln!("Completion warning: {}", message);
+                    nucleotide_logging::warn!(message = %message, "Completion warning");
                 }
             }
             ErrorHandlingResult::Recover(action, context) => {
@@ -1216,7 +1216,7 @@ impl CompletionView {
                 description,
             } => {
                 // Switch to basic completion mode
-                eprintln!("Fallback activated: {}", description);
+                nucleotide_logging::info!(description = %description, "Fallback activated");
                 self.enter_fallback_mode();
             }
             RecoveryAction::ClearCache { cache_types: _ } => {
@@ -1236,7 +1236,7 @@ impl CompletionView {
                 action_text: _,
             } => {
                 // Show user notification
-                eprintln!("Completion system: {}", message);
+                nucleotide_logging::info!(message = %message, "Completion system notification");
             }
         }
     }
@@ -1412,11 +1412,11 @@ impl EventEmitter<CompleteViaHelixEvent> for CompletionView {}
 
 impl Render for CompletionView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        println!(
-            "🎨 COMPLETION_VIEW RENDER: Starting render, visible={}, items_count={}, filtered_count={}",
-            self.is_visible(),
-            self.all_items.len(),
-            self.filtered_entries.len()
+        nucleotide_logging::debug!(
+            visible = self.is_visible(),
+            all_items_count = self.all_items.len(),
+            filtered_count = self.filtered_entries.len(),
+            "🎨 COMPLETION_VIEW RENDER: Start"
         );
 
         nucleotide_logging::debug!(
@@ -1428,16 +1428,15 @@ impl Render for CompletionView {
         );
 
         if !self.is_visible() {
-            println!("🎨 COMPLETION_VIEW RENDER: Not visible, returning empty div");
+            nucleotide_logging::debug!(
+                "🎨 COMPLETION_VIEW RENDER: Not visible, returning empty div"
+            );
             return div().id("completion-hidden");
         }
 
         // Access theme - if not available, return empty
         let theme = match cx.try_global::<crate::Theme>() {
-            Some(theme) => {
-                println!("🎨 COMPLETION_VIEW RENDER: Theme found, proceeding with render");
-                theme
-            }
+            Some(theme) => theme,
             None => {
                 println!("🎨 COMPLETION_VIEW RENDER: No theme found, returning empty div");
                 return div().id("completion-no-theme");

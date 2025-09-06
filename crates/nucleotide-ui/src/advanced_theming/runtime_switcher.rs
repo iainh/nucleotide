@@ -477,7 +477,7 @@ impl RuntimeThemeSwitcher {
     pub fn get_current_state(&self) -> Result<ThemeSwitcherState, SwitchingError> {
         self.current_state
             .read()
-            .map(|state| state.clone())
+            .map(|s| s.clone())
             .map_err(|_| SwitchingError::LockError("Failed to read current state".into()))
     }
 
@@ -493,7 +493,7 @@ impl RuntimeThemeSwitcher {
     pub fn get_theme_history(&self) -> Result<ThemeHistory, SwitchingError> {
         self.theme_history
             .read()
-            .map(|history| history.clone())
+            .map(|h| h.clone())
             .map_err(|_| SwitchingError::LockError("Failed to read theme history".into()))
     }
 

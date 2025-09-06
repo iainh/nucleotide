@@ -313,7 +313,7 @@ impl VcsService {
     }
 
     /// Get diff hunks for a specific file
-    pub fn get_diff_hunks(&self, path: &Path) -> Option<&Vec<DiffHunkInfo>> {
+    pub fn get_diff_hunks(&self, path: &Path) -> Option<&[DiffHunkInfo]> {
         let abs_path = if path.is_absolute() {
             path.to_path_buf()
         } else if let Some(ref root) = self.root_path {
@@ -322,7 +322,7 @@ impl VcsService {
             return None;
         };
 
-        self.diff_hunks_cache.get(&abs_path)
+        self.diff_hunks_cache.get(&abs_path).map(|v| v.as_slice())
     }
 
     /// Create or update a diff handle for a file
@@ -925,7 +925,10 @@ impl VcsServiceHandle {
 
     /// Get diff hunks for a file
     pub fn get_diff_hunks(&self, path: &Path, cx: &App) -> Option<Vec<DiffHunkInfo>> {
-        self.service.read(cx).get_diff_hunks(path).cloned()
+        self.service
+            .read(cx)
+            .get_diff_hunks(path)
+            .map(|s| s.to_vec())
     }
 
     /// Update file diff hunks

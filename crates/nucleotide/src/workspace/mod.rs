@@ -3541,7 +3541,7 @@ impl Workspace {
             );
             match core.editor.open(path, action) {
                 Err(e) => {
-                    eprintln!("Failed to open file {path:?}: {e}");
+                    nucleotide_logging::error!(path = ?path, error = %e, "Failed to open file");
                 }
                 Ok(doc_id) => {
                     info!("Successfully opened file from picker: {path:?}, doc_id: {doc_id:?}");
@@ -6645,7 +6645,7 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_action(cx.listener(
             move |_workspace, _: &crate::actions::workspace::NewWindow, _window, _cx| {
                 // TODO: Implement new window
-                eprintln!("New window not yet implemented");
+                nucleotide_logging::warn!("New window not yet implemented");
             },
         ));
 

@@ -4206,7 +4206,10 @@ impl Cursor {
                     + gpui::Point::new(Pixels::ZERO, self.line_height - px(2.0)),
                 size: size(self.block_width, px(2.0)),
             },
-            CursorKind::Hidden => todo!(),
+            CursorKind::Hidden => Bounds {
+                origin: self.origin + origin,
+                size: size(px(0.0), px(0.0)),
+            },
         }
     }
 

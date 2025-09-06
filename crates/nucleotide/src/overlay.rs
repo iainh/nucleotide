@@ -51,7 +51,7 @@ impl OverlayView {
             && self.diagnostics_panel.is_none();
 
         if !empty && self.completion_view.is_some() {
-            println!("COMP: Overlay is NOT empty - has completion view");
+            nucleotide_logging::debug!("COMP: Overlay not empty - has completion view");
         }
 
         empty
@@ -1173,16 +1173,17 @@ impl OverlayView {
         if let (Some(cursor_pos), Some(cursor_size)) =
             (layout_info.cursor_position, layout_info.cursor_size)
         {
-            println!(
-                "DEBUG: Using exact cursor coordinates - pos={:?}, size={:?}",
-                cursor_pos, cursor_size
+            nucleotide_logging::debug!(
+                pos = ?cursor_pos,
+                size = ?cursor_size,
+                "Using exact cursor coordinates"
             );
             // cursor_pos is already the top-left of cursor, we want bottom-left for completion
             return (cursor_pos.x, cursor_pos.y + cursor_size.height);
         }
 
         // Fallback to calculated position if no exact coordinates available
-        println!("DEBUG: Using calculated cursor position (fallback)");
+        nucleotide_logging::debug!("Using calculated cursor position (fallback)");
         if let Some(core) = self.core.upgrade() {
             let core_read = core.read(cx);
             let editor = &core_read.editor;
@@ -1451,9 +1452,10 @@ impl Render for OverlayView {
 
             // Calculate proper completion position based on cursor location
             let (cursor_x, cursor_y) = self.calculate_completion_position(cx);
-            println!(
-                "DEBUG: Rendering completion popup at calculated position: x={:?}, y={:?}",
-                cursor_x, cursor_y
+            nucleotide_logging::debug!(
+                x = ?cursor_x,
+                y = ?cursor_y,
+                "Rendering completion popup at calculated position"
             );
 
             return div()

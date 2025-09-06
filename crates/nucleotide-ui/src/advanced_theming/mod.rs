@@ -396,7 +396,7 @@ impl AdvancedThemeManager {
     pub fn get_current_theme(&self) -> Result<Theme, ThemeError> {
         self.current_theme
             .read()
-            .map(|theme| theme.clone())
+            .map(|t| t.clone())
             .map_err(|_| ThemeError::LockError("Failed to acquire theme lock".into()))
     }
 

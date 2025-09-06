@@ -445,40 +445,39 @@ pub fn render_completion_list<F, T: 'static>(
 where
     F: Fn(usize, &CompletionItem, &StringMatch, bool) -> CompletionItemElement + 'static + Clone,
 {
-    println!(
-        "COMP: render_completion_list called with {} items, {} matches",
-        items.len(),
-        matches.len()
+    nucleotide_logging::debug!(
+        items = items.len(),
+        matches = matches.len(),
+        "COMP: render_completion_list called"
     );
 
     let theme = match cx.try_global::<crate::Theme>() {
-        Some(theme) => {
-            println!("COMP: render_completion_list got theme successfully");
-            theme
-        }
+        Some(theme) => theme,
         None => {
-            println!("COMP: render_completion_list - no theme found, returning empty div");
+            nucleotide_logging::debug!(
+                "COMP: render_completion_list - no theme found, returning empty div"
+            );
             return div().id("completion-list-no-theme");
         }
     };
     let tokens = &theme.tokens;
 
-    println!("COMP: About to create rendered_items vector");
+    nucleotide_logging::trace!("COMP: About to create rendered_items vector");
     // Create items vector with proper matching
     let rendered_items: Vec<AnyElement> = matches
         .iter()
         .enumerate()
         .filter_map(|(index, string_match)| {
-            println!(
-                "COMP: Processing match {} with candidate_id {}",
-                index, string_match.candidate_id
+            nucleotide_logging::trace!(
+                match_index = index,
+                candidate_id = string_match.candidate_id,
+                "COMP: Processing match"
             );
 
             // Use the candidate_id as the direct index into the items array
             let item = items.get(string_match.candidate_id)?;
-            println!("COMP: Got item: {}", item.text);
-
-            println!("COMP: About to create simple div for item: {}", item.text);
+            nucleotide_logging::trace!(item = %item.text, "COMP: Got item");
+            nucleotide_logging::trace!(item = %item.text, "COMP: About to create simple div");
 
             // Create a simple div element instead of using CompletionItemElement for now
             let element = div()
@@ -499,14 +498,14 @@ where
                         .child(item.text.clone()),
                 );
 
-            println!("COMP: Created simple div, converting to AnyElement");
+            nucleotide_logging::trace!("COMP: Created simple div, converting to AnyElement");
             Some(element.into_any_element())
         })
         .collect();
 
-    println!("COMP: Created {} rendered_items", rendered_items.len());
+    nucleotide_logging::debug!(count = rendered_items.len(), "COMP: Items rendered");
 
-    println!("COMP: About to create final div container");
+    nucleotide_logging::trace!("COMP: About to create final container");
     let result = div()
         .id("completion-list")
         .flex()
@@ -521,7 +520,7 @@ where
         .overflow_y_scroll()
         .children(rendered_items);
 
-    println!("COMP: render_completion_list returning successfully");
+    nucleotide_logging::trace!("COMP: render_completion_list returning");
     result
 }
 

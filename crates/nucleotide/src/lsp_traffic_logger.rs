@@ -38,10 +38,10 @@ impl LoggerState {
 fn ensure_dir(path: &Path) {
     if let Err(e) = fs::create_dir_all(path) {
         // Best-effort; if it fails, writing will also fail and be ignored.
-        eprintln!(
-            "nucleotide: failed to create LSP log dir {}: {}",
-            path.display(),
-            e
+        nucleotide_logging::warn!(
+            dir = %path.display(),
+            error = %e,
+            "Failed to create LSP log dir"
         );
     }
 }
@@ -74,10 +74,10 @@ fn open_file_if_needed(inner: &mut Inner, server_id: LanguageServerId, server_na
             inner.files.insert(server_id, file);
         }
         Err(e) => {
-            eprintln!(
-                "nucleotide: failed to open LSP traffic log {}: {}",
-                path.display(),
-                e
+            nucleotide_logging::warn!(
+                file = %path.display(),
+                error = %e,
+                "Failed to open LSP traffic log"
             );
         }
     }

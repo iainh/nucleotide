@@ -225,8 +225,8 @@ impl LspState {
     }
 
     /// Get diagnostics for a file
-    pub fn get_diagnostics(&self, uri: &Uri) -> Option<&Vec<DiagnosticInfo>> {
-        self.diagnostics.get(uri)
+    pub fn get_diagnostics(&self, uri: &Uri) -> Option<&[DiagnosticInfo]> {
+        self.diagnostics.get(uri).map(|v| v.as_slice())
     }
 
     /// Get all active progress operations
