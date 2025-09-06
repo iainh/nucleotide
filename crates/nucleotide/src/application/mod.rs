@@ -181,7 +181,37 @@ impl gpui::EventEmitter<InputEvent> for Input {}
 
 // Crank struct removed - replaced with event-driven LSP completion processing
 
+const LSP_TOKEN_IDLE: &str = "idle";
+const LSP_TOKEN_ACTIVITY: &str = "activity";
+const LSP_MSG_READY: &str = "Ready";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LspUiState {
+    Idle,
+    Activity(String),
+}
+
 impl Application {
+    fn lsp_title_for_state(state: &LspUiState) -> &'static str {
+        match state {
+            LspUiState::Idle => "Connected",
+            LspUiState::Activity(_) => "Processing",
+        }
+    }
+
+    fn lsp_token_for_state(state: &LspUiState) -> &'static str {
+        match state {
+            LspUiState::Idle => LSP_TOKEN_IDLE,
+            LspUiState::Activity(_) => LSP_TOKEN_ACTIVITY,
+        }
+    }
+
+    fn lsp_key_for_state(server_id: helix_lsp::LanguageServerId, state: &LspUiState) -> String {
+        match state {
+            LspUiState::Idle => format!("{}-{}", server_id, LSP_TOKEN_IDLE),
+            LspUiState::Activity(_) => format!("{}-{}", server_id, LSP_TOKEN_ACTIVITY),
+        }
+    }
     /// Dispatch a workspace event via the event aggregator if available
     pub fn dispatch_workspace_event(&self, event: nucleotide_events::v2::workspace::Event) {
         if let Some(aggregator) = &self.event_aggregator {
@@ -2876,37 +2906,29 @@ impl Application {
 
         let mut out = Vec::with_capacity(active.len());
         for (server_id, _name) in active {
-            if progressing.contains(server_id) {
-                let message = message_for_server(*server_id);
-                let (token, title) = if message == "Ready" {
-                    ("idle".to_string(), "Connected".to_string())
+            let (state, message) = if progressing.contains(server_id) {
+                let msg = message_for_server(*server_id);
+                if msg == LSP_MSG_READY {
+                    (LspUiState::Idle, msg)
                 } else {
-                    ("activity".to_string(), "Processing".to_string())
-                };
-                let progress = nucleotide_lsp::LspProgress {
-                    server_id: *server_id,
-                    token: token.clone(),
-                    title,
-                    message: Some(message),
-                    percentage: None,
-                };
-                let key = if token == "idle" {
-                    format!("{}-idle", server_id)
-                } else {
-                    format!("{}-activity", server_id)
-                };
-                out.push((key, progress));
+                    (LspUiState::Activity(msg.clone()), msg)
+                }
             } else {
-                let progress = nucleotide_lsp::LspProgress {
-                    server_id: *server_id,
-                    token: "idle".to_string(),
-                    title: "Connected".to_string(),
-                    message: Some("Ready".to_string()),
-                    percentage: None,
-                };
-                let key = format!("{}-idle", server_id);
-                out.push((key, progress));
-            }
+                (LspUiState::Idle, LSP_MSG_READY.to_string())
+            };
+
+            let token = Self::lsp_token_for_state(&state).to_string();
+            let title = Self::lsp_title_for_state(&state).to_string();
+            let key = Self::lsp_key_for_state(*server_id, &state);
+
+            let progress = nucleotide_lsp::LspProgress {
+                server_id: *server_id,
+                token,
+                title,
+                message: Some(message),
+                percentage: None,
+            };
+            out.push((key, progress));
         }
 
         out
