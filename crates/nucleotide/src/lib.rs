@@ -20,7 +20,6 @@ pub mod integration_test_phase2;
 pub mod lsp_traffic_logger;
 pub mod overlay;
 pub mod picker_capability;
-pub mod statusline;
 pub mod tab;
 pub mod tab_bar;
 pub mod tab_overflow_dropdown;
