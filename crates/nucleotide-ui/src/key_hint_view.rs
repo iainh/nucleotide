@@ -71,7 +71,7 @@ impl KeyHintView {
         }
     }
 
-    fn render_line(&self, line: &str, _cx: &mut Context<Self>) -> AnyElement {
+    fn render_line(&self, line: &str) -> AnyElement {
         // Don't trim the line yet - we need to preserve spacing
         let clean_line = line.replace(['\n', '\r'], " ");
 
@@ -176,7 +176,7 @@ impl Render for KeyHintView {
                 )
                 .children(
                     // Content lines
-                    info.text.lines().map(|line| self.render_line(line, cx)),
+                    info.text.lines().map(|line| self.render_line(line)),
                 )
         } else {
             div().w_0().h_0()

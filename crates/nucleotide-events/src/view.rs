@@ -133,7 +133,7 @@ impl SelectionRange {
         self.anchor == self.head
     }
 
-    pub fn cursor(&self, _rope_slice: helix_core::ropey::RopeSlice) -> usize {
+    pub fn cursor(&self) -> usize {
         // For simplicity, return the line number as cursor position
         // In a real implementation, this would convert line/column to absolute position
         self.head.line

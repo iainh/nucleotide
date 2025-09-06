@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 static FOCUS_MANAGER: OnceLock<std::sync::Mutex<FocusManager>> = OnceLock::new();
 
 /// Initialize the focus management system
-pub fn init_focus_management(_cx: &mut App) {
+pub fn init_focus_management() {
     FOCUS_MANAGER.get_or_init(|| std::sync::Mutex::new(FocusManager::new()));
 }
 

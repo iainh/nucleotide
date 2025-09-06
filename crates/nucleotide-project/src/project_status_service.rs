@@ -21,18 +21,18 @@ impl ProjectStatusHandle {
     }
 
     /// Get the current project root
-    pub fn project_root(&self, _cx: &gpui::App) -> Option<PathBuf> {
+    pub fn project_root(&self) -> Option<PathBuf> {
         self.inner.read().project_root.clone()
     }
 
     /// Update project root path and trigger re-detection
-    pub fn set_project_root(&self, path: Option<PathBuf>, _cx: &mut gpui::App) {
+    pub fn set_project_root(&self, path: Option<PathBuf>) {
         let mut service = self.inner.write();
         service.set_project_root(path);
     }
 
     /// Update LSP state and refresh project status
-    pub fn update_lsp_state(&self, lsp_state: &nucleotide_lsp::LspState, _cx: &mut gpui::App) {
+    pub fn update_lsp_state(&self, lsp_state: &nucleotide_lsp::LspState) {
         let mut service = self.inner.write();
         let now = std::time::Instant::now();
 
@@ -53,24 +53,24 @@ impl ProjectStatusHandle {
     }
 
     /// Force refresh of project detection
-    pub fn refresh_project_detection(&self, _cx: &mut gpui::App) {
+    pub fn refresh_project_detection(&self) {
         let mut service = self.inner.write();
         info!("Forcing refresh of project type detection");
         service.refresh_project_detection();
     }
 
     /// Get project info for UI components
-    pub fn get_project_info(&self, _cx: &gpui::App) -> crate::project_indicator::ProjectInfo {
+    pub fn get_project_info(&self) -> crate::project_indicator::ProjectInfo {
         self.inner.read().get_project_info().clone()
     }
 
     /// Get project types detected in the current project
-    pub fn get_project_types(&self, _cx: &gpui::App) -> Vec<crate::project_indicator::ProjectType> {
+    pub fn get_project_types(&self) -> Vec<crate::project_indicator::ProjectType> {
         self.inner.read().get_project_info().detected_types.clone()
     }
 
     /// Get LSP status for the current project
-    pub fn get_lsp_status(&self, _cx: &gpui::App) -> crate::project_indicator::ProjectLspStatus {
+    pub fn get_lsp_status(&self) -> crate::project_indicator::ProjectLspStatus {
         self.inner.read().get_project_info().lsp_status.clone()
     }
 }

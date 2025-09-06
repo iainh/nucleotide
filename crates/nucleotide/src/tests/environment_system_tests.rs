@@ -185,7 +185,7 @@ mod shell_specific_tests {
     #[tokio::test]
     async fn test_bash_shell_command() {
         // Test: bash should use -l flag for login shell
-        let cmd = shell_command_builder::build_shell_command("/bin/bash", Path::new("/test/dir"));
+        let cmd = shell_command_builder::build_shell_command("/bin/bash");
 
         // This will fail initially - no shell_command_builder module exists
         assert!(cmd.get_program() == "/bin/bash");
@@ -195,10 +195,7 @@ mod shell_specific_tests {
     #[tokio::test]
     async fn test_fish_shell_command() {
         // Test: fish should use -l and emit fish_prompt
-        let cmd = shell_command_builder::build_shell_command(
-            "/usr/local/bin/fish",
-            Path::new("/test/dir"),
-        );
+        let cmd = shell_command_builder::build_shell_command("/usr/local/bin/fish");
 
         // Should include both -l flag and fish_prompt emission
         assert!(cmd.get_program() == "/usr/local/bin/fish");
@@ -212,7 +209,7 @@ mod shell_specific_tests {
     #[tokio::test]
     async fn test_tcsh_shell_command() {
         // Test: tcsh should use arg0("-") instead of -l
-        let cmd = shell_command_builder::build_shell_command("/bin/tcsh", Path::new("/test/dir"));
+        let cmd = shell_command_builder::build_shell_command("/bin/tcsh");
 
         // tcsh uses special arg0 handling for login shell
         assert!(cmd.get_program() == "/bin/tcsh");
@@ -224,10 +221,7 @@ mod shell_specific_tests {
     #[tokio::test]
     async fn test_zsh_shell_command() {
         // Test: zsh should use standard -l flag
-        let cmd = shell_command_builder::build_shell_command(
-            "/usr/local/bin/zsh",
-            Path::new("/test/dir"),
-        );
+        let cmd = shell_command_builder::build_shell_command("/usr/local/bin/zsh");
 
         assert!(cmd.get_program() == "/usr/local/bin/zsh");
         let args: Vec<_> = cmd.get_args().filter_map(|s| s.to_str()).collect();

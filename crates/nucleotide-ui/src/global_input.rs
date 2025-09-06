@@ -454,7 +454,7 @@ impl GlobalInputDispatcher {
         }
 
         // 4. Handle focus group navigation
-        if let Some(result) = self.handle_focus_navigation(&key_string, event)
+        if let Some(result) = self.handle_focus_navigation(&key_string)
             && result != EventResult::NotHandled
         {
             return result;
@@ -529,7 +529,7 @@ impl GlobalInputDispatcher {
     }
 
     /// Handle focus group navigation
-    fn handle_focus_navigation(&self, key: &str, _event: &KeyDownEvent) -> Option<EventResult> {
+    fn handle_focus_navigation(&self, key: &str) -> Option<EventResult> {
         match key {
             "tab" => {
                 self.focus_next();

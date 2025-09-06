@@ -267,7 +267,7 @@ impl VcsService {
             self.refresh_status(cx);
 
             // Schedule periodic updates
-            self.schedule_next_check(cx);
+            self.schedule_next_check();
 
             // Broadcast that we started monitoring
             self.emit_vcs_event(VcsEvent::RepositoryStarted { root_path }, cx);
@@ -739,7 +739,7 @@ impl VcsService {
     }
 
     /// Schedule the next status check
-    fn schedule_next_check(&self, _cx: &mut Context<Self>) {
+    fn schedule_next_check(&self) {
         // For now, we'll only refresh on demand to avoid async complexity
         // TODO: Add periodic background refresh using a timer
         debug!("VCS: Status check scheduled (currently on-demand only)");

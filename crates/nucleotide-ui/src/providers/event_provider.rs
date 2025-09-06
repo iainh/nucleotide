@@ -451,7 +451,7 @@ impl EventHandlingProvider {
         }
 
         // Check rate limiting
-        if self.filter_config.rate_limiting.enabled && !self.check_rate_limit(&event.event_type) {
+        if self.filter_config.rate_limiting.enabled && !self.check_rate_limit() {
             nucleotide_logging::warn!(
                 event_type = %event.event_type,
                 "Event dropped due to rate limiting"
@@ -637,7 +637,7 @@ impl EventHandlingProvider {
     }
 
     /// Check rate limiting for an event type
-    fn check_rate_limit(&self, _event_type: &str) -> bool {
+    fn check_rate_limit(&self) -> bool {
         // Simplified rate limiting check
         // In a real implementation, you would track event counts per time window
         true

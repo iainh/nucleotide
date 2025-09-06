@@ -92,7 +92,7 @@ impl ViewHandler {
         debug!(
             view_id = ?view_id,
             doc_id = ?doc_id,
-            primary_cursor = ?selection.primary().cursor(helix_core::ropey::Rope::from("").slice(..)),
+            primary_cursor = ?selection.primary().cursor(),
             "View selection change processed successfully"
         );
 

@@ -110,7 +110,7 @@ impl ProviderContext {
     }
 
     /// Create a new provider scope
-    pub fn create_scope(&mut self, _element_id: Option<ElementId>) -> ProviderScopeId {
+    pub fn create_scope(&mut self) -> ProviderScopeId {
         let id = ProviderScopeId(self.provider_hierarchy.len());
         let scope = ProviderScope {
             providers: HashMap::new(),
@@ -262,7 +262,7 @@ where
         // Create or get the provider scope
         let mut new_scope_id = None;
         update_provider_context(|context| {
-            let scope_id = context.create_scope(Some(self.id.clone()));
+            let scope_id = context.create_scope();
             context.register_scoped_provider(scope_id, self.provider.clone());
             self.scope_id = Some(scope_id);
             new_scope_id = Some(scope_id);
@@ -624,7 +624,7 @@ mod tests {
         let mut context = ProviderContext::new();
         let element_id: ElementId = "test-element".into();
 
-        let scope_id = context.create_scope(Some(element_id.clone()));
+        let scope_id = context.create_scope();
         assert_eq!(scope_id.0, 0);
         assert_eq!(context.provider_hierarchy.len(), 1);
 
@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn test_scoped_provider_registration() {
         let mut context = ProviderContext::new();
-        let scope_id = context.create_scope(None);
+        let scope_id = context.create_scope();
 
         let provider = TestProvider {
             value: "scoped".to_string(),
@@ -654,7 +654,7 @@ mod tests {
         let mut context = ProviderContext::new();
 
         // Create parent scope with a provider
-        let parent_scope = context.create_scope(None);
+        let parent_scope = context.create_scope();
         let parent_provider = TestProvider {
             value: "parent".to_string(),
         };
@@ -662,7 +662,7 @@ mod tests {
 
         // Create child scope
         context.set_active_scope(Some(parent_scope));
-        let child_scope = context.create_scope(None);
+        let child_scope = context.create_scope();
         let child_provider = AnotherProvider { number: 42 };
         context.register_scoped_provider(child_scope, child_provider.clone());
 
@@ -689,7 +689,7 @@ mod tests {
         context.register_global_provider(global_provider.clone());
 
         // Create scope without the provider
-        let scope_id = context.create_scope(None);
+        let scope_id = context.create_scope();
         context.set_active_scope(Some(scope_id));
 
         // Should fall back to global provider
@@ -700,7 +700,7 @@ mod tests {
     #[test]
     fn test_scope_removal() {
         let mut context = ProviderContext::new();
-        let scope_id = context.create_scope(None);
+        let scope_id = context.create_scope();
 
         context.set_active_scope(Some(scope_id));
         assert_eq!(context.active_scope, Some(scope_id));
@@ -714,7 +714,7 @@ mod tests {
         let mut context = ProviderContext::new();
 
         // Create grandparent scope
-        let grandparent_scope = context.create_scope(None);
+        let grandparent_scope = context.create_scope();
         let grandparent_provider = TestProvider {
             value: "grandparent".to_string(),
         };
@@ -722,11 +722,11 @@ mod tests {
 
         // Create parent scope
         context.set_active_scope(Some(grandparent_scope));
-        let parent_scope = context.create_scope(None);
+        let parent_scope = context.create_scope();
 
         // Create child scope
         context.set_active_scope(Some(parent_scope));
-        let child_scope = context.create_scope(None);
+        let child_scope = context.create_scope();
         let child_provider = AnotherProvider { number: 99 };
         context.register_scoped_provider(child_scope, child_provider.clone());
 

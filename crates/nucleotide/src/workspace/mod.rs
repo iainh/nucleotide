@@ -403,7 +403,7 @@ impl Workspace {
 
         // Set initial project root in the project status service
         if let Some(ref root) = root_path {
-            _project_status_handle.set_project_root(Some(root.clone()), cx);
+            _project_status_handle.set_project_root(Some(root.clone()));
         }
 
         // Start VCS monitoring if we have a root path
@@ -1614,7 +1614,7 @@ impl Workspace {
 
         // Update project status service
         let project_status = nucleotide_project::project_status_service(cx);
-        project_status.set_project_root(Some(dir.clone()), cx);
+        project_status.set_project_root(Some(dir.clone()));
 
         // Start VCS monitoring for the new directory
         let vcs_handle = cx.global::<VcsServiceHandle>().service().clone();
@@ -1877,9 +1877,9 @@ impl Workspace {
         // Force refresh project detection in the project status service
         info!(project_root = %project_root.display(), "Updating project status service with project root");
         let project_status = nucleotide_project::project_status_service(cx);
-        project_status.set_project_root(Some(project_root.clone()), cx);
+        project_status.set_project_root(Some(project_root.clone()));
         info!("Project status service updated, refreshing project detection");
-        project_status.refresh_project_detection(cx);
+        project_status.refresh_project_detection();
         info!("Project detection refresh completed");
 
         // Coordinate with ProjectLspManager if available
@@ -1996,7 +1996,7 @@ impl Workspace {
 
             // Clone the LSP state and update project status outside the closure
             let lsp_state_clone = lsp_state_entity.read(cx).clone();
-            project_status.update_lsp_state(&lsp_state_clone, cx);
+            project_status.update_lsp_state(&lsp_state_clone);
 
             debug!("Updated project status from LSP state");
         }

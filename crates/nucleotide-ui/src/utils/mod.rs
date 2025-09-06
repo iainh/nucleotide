@@ -322,7 +322,7 @@ pub fn init_utils(cx: &mut App) {
     init_performance_monitoring(perf_config);
 
     // Initialize focus management
-    init_focus_management(cx);
+    init_focus_management();
 
     // Initialize feature flags if not already done
     init_feature_flags();

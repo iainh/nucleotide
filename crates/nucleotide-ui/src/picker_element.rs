@@ -35,8 +35,8 @@ impl<D: PickerDelegate> Picker<D> {
         }
     }
 
-    pub fn toggle_preview_pane(&mut self, _cx: &mut Context<Self>) {
-        if self.delegate.read(_cx).supports_preview() {
+    pub fn toggle_preview_pane(&mut self, cx: &mut Context<Self>) {
+        if self.delegate.read(cx).supports_preview() {
             self.show_preview = !self.show_preview;
         }
     }

@@ -50,14 +50,13 @@ mod focused_shell_env_tests {
 
     #[tokio::test]
     async fn test_shell_command_building() {
-        let bash_cmd = shell_command_builder::build_shell_command("/bin/bash", Path::new("/test"));
+        let bash_cmd = shell_command_builder::build_shell_command("/bin/bash");
         assert_eq!(bash_cmd.get_program(), "/bin/bash");
 
-        let fish_cmd =
-            shell_command_builder::build_shell_command("/usr/local/bin/fish", Path::new("/test"));
+        let fish_cmd = shell_command_builder::build_shell_command("/usr/local/bin/fish");
         assert_eq!(fish_cmd.get_program(), "/usr/local/bin/fish");
 
-        let tcsh_cmd = shell_command_builder::build_shell_command("/bin/tcsh", Path::new("/test"));
+        let tcsh_cmd = shell_command_builder::build_shell_command("/bin/tcsh");
         assert_eq!(tcsh_cmd.get_program(), "/bin/tcsh");
     }
 
