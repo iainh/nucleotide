@@ -329,86 +329,108 @@ impl RenderOnce for TabBar {
             tabs.push(tab);
         }
 
-        // Render the tab bar container
+        // Render the tab bar container using extracted helpers
         let has_tabs = !tabs.is_empty();
         let has_overflow = !overflow_documents.is_empty();
 
-        // Create a container that allows the dropdown to escape the tab bar bounds
-        div()
-            .relative() // Important: relative positioning for absolute child
+        let tab_row = self.render_tabs_row(
+            tabs,
+            has_tabs,
+            has_overflow,
+            tabbar_bg,
+            inactive_border_color,
+            tokens,
+            &tab_bar_tokens,
+        );
+
+        let mut root = div()
+            .relative()
             .w_full()
             .h(tokens.sizes.button_height_md)
-            .child(
-                // The actual tab bar using design tokens
+            .child(tab_row);
+
+        if has_overflow {
+            root = root.child(self.render_overflow_button(overflow_documents.len(), tabbar_bg));
+        }
+
+        root
+    }
+}
+
+// Helpers to improve function shape and centralize control flow
+impl TabBar {
+    fn render_tabs_row(
+        &self,
+        tabs: Vec<Tab>,
+        has_tabs: bool,
+        has_overflow: bool,
+        tabbar_bg: gpui::Hsla,
+        inactive_border_color: gpui::Hsla,
+        tokens: &nucleotide_ui::tokens::DesignTokens,
+        tab_bar_tokens: &nucleotide_ui::tokens::TabBarTokens,
+    ) -> gpui::AnyElement {
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .h(tokens.sizes.button_height_md)
+            .bg(tabbar_bg);
+
+        if has_tabs {
+            let tabs_container = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .flex_none()
+                .overflow_x_hidden()
+                .when(has_overflow, |d| d.pr(px(60.0)))
+                .children(tabs);
+
+            row = row.child(tabs_container).child(
                 div()
-                    .flex()
-                    .flex_row() // Explicitly set horizontal layout
-                    .items_center() // Vertically center tabs
-                    .w_full()
-                    .h(tokens.sizes.button_height_md) // Use consistent sizing
+                    .flex_1()
+                    .h_full()
                     .bg(tabbar_bg)
-                    .when(has_tabs, |this| {
-                        this.child(
-                            // Container for visible tabs - sizes to content
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .flex_none() // Only take space needed for tabs
-                                .overflow_x_hidden() // Ensure tabs don't extend beyond container
-                                .when(has_overflow, |div| {
-                                    // Reserve space for overflow button - must match OVERFLOW_BUTTON_WIDTH in calculation
-                                    div.pr(px(60.0)) // Padding right to prevent overlap - reduced to match refined calculation
-                                })
-                                .children(tabs),
-                        )
-                        .child(
-                            // Unused tabbar area with bottom border matching inactive tabs
-                            div()
-                                .flex_1() // Take remaining space after tabs
-                                .h_full()
-                                .bg(tabbar_bg)
-                                .border_b_1()
-                                .border_color(inactive_border_color),
-                        )
-                    })
-                    .when(!has_tabs, |this| {
-                        // Show placeholder when no tabs with border matching inactive tabs
-                        this.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .px(tokens.sizes.space_4)
-                                .text_color(tab_bar_tokens.tab_text_inactive)
-                                .text_size(tokens.sizes.text_sm)
-                                .child("No open files"),
-                        )
-                        .border_b_1()
-                        .border_color(inactive_border_color)
-                    })
-                    .overflow_x_hidden(), // Always hide overflow at tab bar level
+                    .border_b_1()
+                    .border_color(inactive_border_color),
+            );
+        } else {
+            row = row
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .px(tokens.sizes.space_4)
+                        .text_color(tab_bar_tokens.tab_text_inactive)
+                        .text_size(tokens.sizes.text_sm)
+                        .child("No open files"),
+                )
+                .border_b_1()
+                .border_color(inactive_border_color);
+        }
+
+        row.overflow_x_hidden().into_any_element()
+    }
+
+    fn render_overflow_button(
+        &self,
+        overflow_count: usize,
+        background: gpui::Hsla,
+    ) -> gpui::AnyElement {
+        let btn = if let Some(ref on_toggle) = self.on_overflow_toggle {
+            let on_toggle = on_toggle.clone();
+            TabOverflowButton::new(
+                overflow_count,
+                move |window, cx| on_toggle(window, cx),
+                self.is_overflow_open,
             )
-            .when(has_overflow, |this| {
-                // Add overflow button as a sibling, not child of tab-bar
-                this.child(if let Some(ref on_toggle) = self.on_overflow_toggle {
-                    TabOverflowButton::new(
-                        overflow_documents.len(),
-                        {
-                            let on_toggle = on_toggle.clone();
-                            move |window, cx| on_toggle(window, cx)
-                        },
-                        self.is_overflow_open,
-                    )
-                    .with_background(tabbar_bg)
-                } else {
-                    // Fallback without toggle functionality
-                    TabOverflowButton::new(
-                        overflow_documents.len(),
-                        |_window, _cx| {}, // No-op
-                        self.is_overflow_open,
-                    )
-                    .with_background(tabbar_bg)
-                })
-            })
+            .with_background(background)
+        } else {
+            TabOverflowButton::new(overflow_count, |_w, _c| {}, self.is_overflow_open)
+                .with_background(background)
+        };
+
+        btn.into_any_element()
     }
 }
