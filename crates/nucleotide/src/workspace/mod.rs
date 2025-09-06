@@ -4492,7 +4492,7 @@ impl Workspace {
                                     cx.notify();
                                 });
                             })
-                    }),
+                    })
             )
             .child(
                 // Terminal toggle button to the right of file tree button
@@ -6675,6 +6675,7 @@ impl Render for Workspace {
             .flex_col() // Vertical layout to include titlebar
             .w_full()
             .h_full()
+            .relative() // Anchor for absolute-positioned resize hitboxes
             .focusable();
 
         // Always add global key handling - the workspace should always capture key events
@@ -7360,6 +7361,154 @@ impl Render for Workspace {
                             .child(content_area),
                     )
                     .child(self.render_unified_status_bar(cx)) // Unified bottom status bar pinned at bottom
+            )
+            // Add Linux client-side resize hitboxes so the window can be resized
+            .map(|root| {
+                #[cfg(target_os = "linux")]
+                {
+                    use gpui::{CursorStyle, ResizeEdge};
+
+                    // Only add when using client-side decorations and not fullscreen
+                    let decorations = window.window_decorations();
+                    if matches!(decorations, gpui::Decorations::Client { .. }) && !window.is_fullscreen() {
+                        let grip: f32 = 6.0; // thickness of resize handle
+                        let corner: f32 = 12.0; // size of corner diagonal resize area
+
+                        // Edges
+                        let top = div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(grip))
+                            .cursor(CursorStyle::ResizeUp)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                |_, window, cx| {
+                                    window.start_window_resize(ResizeEdge::Top);
+                                    cx.stop_propagation();
+                                },
+                            );
+
+                        let bottom = div()
+                            .absolute()
+                            .bottom_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(grip))
+                            .cursor(CursorStyle::ResizeDown)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                |_, window, cx| {
+                                    window.start_window_resize(ResizeEdge::Bottom);
+                                    cx.stop_propagation();
+                                },
+                            );
+
+                        let left = div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(px(grip))
+                            .cursor(CursorStyle::ResizeLeft)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                |_, window, cx| {
+                                    window.start_window_resize(ResizeEdge::Left);
+                                    cx.stop_propagation();
+                                },
+                            );
+
+                        let right = div()
+                            .absolute()
+                            .right_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(px(grip))
+                            .cursor(CursorStyle::ResizeRight)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                |_, window, cx| {
+                                    window.start_window_resize(ResizeEdge::Right);
+                                    cx.stop_propagation();
+                                },
+                            );
+
+                        // Corners for diagonal resize
+                        let tl = div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w(px(corner))
+                            .h(px(corner))
+                            .cursor(CursorStyle::ResizeUpLeftDownRight)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                |_, window, cx| {
+                                    window.start_window_resize(ResizeEdge::TopLeft);
+                                    cx.stop_propagation();
+                                },
+                            );
+
+                        let tr = div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .w(px(corner))
+                            .h(px(corner))
+                            .cursor(CursorStyle::ResizeUpRightDownLeft)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                |_, window, cx| {
+                                    window.start_window_resize(ResizeEdge::TopRight);
+                                    cx.stop_propagation();
+                                },
+                            );
+
+                        let bl = div()
+                            .absolute()
+                            .bottom_0()
+                            .left_0()
+                            .w(px(corner))
+                            .h(px(corner))
+                            .cursor(CursorStyle::ResizeUpRightDownLeft)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                |_, window, cx| {
+                                    window.start_window_resize(ResizeEdge::BottomLeft);
+                                    cx.stop_propagation();
+                                },
+                            );
+
+                        let br = div()
+                            .absolute()
+                            .bottom_0()
+                            .right_0()
+                            .w(px(corner))
+                            .h(px(corner))
+                            .cursor(CursorStyle::ResizeUpLeftDownRight)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                |_, window, cx| {
+                                    window.start_window_resize(ResizeEdge::BottomRight);
+                                    cx.stop_propagation();
+                                },
+                            );
+
+                        return root
+                            .child(top)
+                            .child(bottom)
+                            .child(left)
+                            .child(right)
+                            .child(tl)
+                            .child(tr)
+                            .child(bl)
+                            .child(br);
+                    }
+                }
+                root
+            })
                     .when(self.lsp_menu_open, |container| {
                         use gpui::{Corner, anchored, point};
                         let ui_theme = cx.global::<nucleotide_ui::Theme>();
@@ -7519,8 +7668,7 @@ impl Render for Workspace {
                                         ),
                                 ),
                         )
-                    }),
-            )
+                    })
     }
 }
 
