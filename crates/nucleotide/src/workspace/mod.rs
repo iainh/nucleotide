@@ -253,6 +253,58 @@ impl Workspace {
             .mx_2()
             .into_any_element()
     }
+
+    /// Build the main content row for the unified status bar.
+    fn statusbar_main_content(
+        &self,
+        mode_name: &'static str,
+        file_name: String,
+        position_text: String,
+        lsp_indicator: Option<String>,
+        divider_color: gpui::Hsla,
+        status_bar_tokens: &nucleotide_ui::tokens::StatusBarTokens,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        use nucleotide_ui::{Button, ButtonSize, ButtonVariant, IconPosition};
+        let mut row = gpui::div()
+            .flex()
+            .flex_1()
+            .flex_row()
+            .items_center()
+            .child(
+                // Mode indicator
+                gpui::div()
+                    .child(mode_name)
+                    .min_w(gpui::px(50.0))
+                    .text_color(status_bar_tokens.text_primary),
+            )
+            .child(self.statusbar_divider(divider_color))
+            .child(
+                // File name grows
+                gpui::div().flex_1().overflow_hidden().child(file_name),
+            )
+            .child(self.statusbar_divider(divider_color))
+            .child(gpui::div().child(position_text).min_w(gpui::px(80.0)));
+
+        if let Some(indicator) = lsp_indicator {
+            row = row.child(self.statusbar_divider(divider_color)).child(
+                Button::new("lsp-status-trigger", indicator)
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::ExtraSmall)
+                    .icon("icons/chevron-up.svg")
+                    .icon_position(IconPosition::End)
+                    .on_click(cx.listener(
+                        |this: &mut Workspace, ev: &gpui::MouseUpEvent, _w, cx| {
+                            this.lsp_menu_open = true;
+                            this.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
+                            cx.notify();
+                        },
+                    )),
+            );
+        }
+
+        row.into_any_element()
+    }
     fn context_menu_items() -> Vec<(&'static str, fn(&mut Workspace, &mut Context<Workspace>))> {
         vec![
             ("New File", Workspace::cm_action_new_file),
@@ -4236,9 +4288,7 @@ impl Workspace {
         let bg_color = status_bar_tokens.background_active; // Always use active for unified bar
         let fg_color = status_bar_tokens.text_primary;
 
-        // Extract design token values before any mutable borrows
-        let space_3 = ui_theme.tokens.sizes.space_3;
-        let text_sm = ui_theme.tokens.sizes.text_sm;
+        // Extract design token values before any mutable borrows (none needed here)
 
         // Get UI font configuration
         let ui_font_config = cx.global::<crate::types::UiFontConfig>();
@@ -4307,64 +4357,30 @@ impl Workspace {
             })
             .child(
                 // Main status content - fills remaining space
-                div()
-                    .flex()
-                    .flex_1()
-                    .flex_row()
-                    .items_center()
-                    .child({
-                        // Mode indicator using standard text color
-                        div()
-                            .child(mode_name)
-                            .min_w(px(50.))
-                            .text_color(status_bar_tokens.text_primary)
-                    })
-                    .child(self.statusbar_divider(divider_color))
-                    .child(
-                        // File name - takes up available space
-                        div().flex_1().overflow_hidden().child(file_name),
-                    )
-                    .child(self.statusbar_divider(divider_color))
-                    .child(
-                        // Position
-                        div().child(position_text).min_w(px(80.)),
-                    )
-                    .when_some(lsp_indicator, |status_bar, indicator| {
-                        status_bar
-                            .child(self.statusbar_divider(divider_color))
-                            .child({
-                                use nucleotide_ui::{
-                                    Button, ButtonSize, ButtonVariant, IconPosition,
-                                };
-                                Button::new("lsp-status-trigger", indicator.clone())
-                                    .variant(ButtonVariant::Ghost)
-                                    .size(ButtonSize::ExtraSmall)
-                                    .icon("icons/chevron-up.svg")
-                                    .icon_position(IconPosition::End)
-                                    .on_click(cx.listener(
-                                        |this: &mut Workspace, ev: &gpui::MouseUpEvent, _w, cx| {
-                                            this.lsp_menu_open = true;
-                                            this.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
-                                            cx.notify();
-                                        },
-                                    ))
-                            })
-                    }), // .child({
-                        //     // Project status indicator section - temporarily disabled
-                        //     // let project_status_handle = nucleotide_project::project_status_service(cx);
-                        //     // let project_info = project_status_handle.project_info(cx);
-                        //
-                        //     div()
-                        //         .flex()
-                        //         .flex_row()
-                        //         .items_center()
-                        //         .gap(ui_theme.tokens.sizes.space_2)
-                        //         .child(
-                        //             // Divider before project status
-                        //             div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2()
-                        //         )
-                        // }),
-            )
+                self.statusbar_main_content(
+                    mode_name,
+                    file_name,
+                    position_text,
+                    lsp_indicator,
+                    divider_color,
+                    &status_bar_tokens,
+                    cx,
+                ),
+            ) // .child({
+        //     // Project status indicator section - temporarily disabled
+        //     // let project_status_handle = nucleotide_project::project_status_service(cx);
+        //     // let project_info = project_status_handle.project_info(cx);
+        //
+        //     div()
+        //         .flex()
+        //         .flex_row()
+        //         .items_center()
+        //         .gap(ui_theme.tokens.sizes.space_2)
+        //         .child(
+        //             // Divider before project status
+        //             div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2()
+        //         )
+        // }),
     }
 
     fn handle_file_tree_event(&mut self, event: &FileTreeEvent, cx: &mut Context<Self>) {
