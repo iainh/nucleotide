@@ -113,6 +113,146 @@ enum PendingFileOp {
 impl EventEmitter<crate::Update> for Workspace {}
 
 impl Workspace {
+    /// Compute document and LSP context for the status bar without triggering borrow conflicts.
+    fn statusbar_doc_info(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> (
+        &'static str,                        // mode
+        String,                              // file name display
+        String,                              // position text
+        bool,                                // has LSP state
+        Option<helix_lsp::LanguageServerId>, // preferred server for current doc
+    ) {
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+
+        let mut mode_name = "NOR";
+        let mut file_name = "[no file]".to_string();
+        let mut position_text = "1:1".to_string();
+
+        // Get info from focused view if available
+        if let Some(view_id) = self.view_manager.focused_view_id()
+            && let Some((view, doc)) = editor
+                .tree
+                .try_get(view_id)
+                .and_then(|v| editor.document(v.doc).map(|d| (v, d)))
+        {
+            mode_name = match editor.mode() {
+                helix_view::document::Mode::Normal => "NOR",
+                helix_view::document::Mode::Insert => "INS",
+                helix_view::document::Mode::Select => "SEL",
+            };
+
+            file_name = doc
+                .path()
+                .map(|p| {
+                    let path_str = p.to_string_lossy().to_string();
+                    if path_str.len() > 50 {
+                        if let Some(file_name) = p.file_name() {
+                            format!(".../{}", file_name.to_string_lossy())
+                        } else {
+                            "...".to_string()
+                        }
+                    } else {
+                        path_str
+                    }
+                })
+                .unwrap_or_else(|| "[scratch]".to_string());
+
+            let position = helix_core::coords_at_pos(
+                doc.text().slice(..),
+                doc.selection(view.id)
+                    .primary()
+                    .cursor(doc.text().slice(..)),
+            );
+            position_text = format!("{}:{}", position.row + 1, position.col + 1);
+        }
+
+        // Determine preferred LSP server for the current document
+        let preferred_server_id = if let Some(view_id) = self.view_manager.focused_view_id()
+            && let Some(view) = editor.tree.try_get(view_id)
+            && let Some(doc) = editor.document(view.doc)
+        {
+            doc.language_servers().next().map(|ls| ls.id())
+        } else {
+            None
+        };
+
+        let has_lsp_state = core.lsp_state.is_some();
+        (
+            mode_name,
+            file_name,
+            position_text,
+            has_lsp_state,
+            preferred_server_id,
+        )
+    }
+
+    /// Build the LSP indicator string for the preferred server if available.
+    fn compute_statusbar_lsp_indicator(
+        &self,
+        cx: &mut Context<Self>,
+        has_lsp_state: bool,
+        preferred_server_id: Option<helix_lsp::LanguageServerId>,
+    ) -> Option<String> {
+        if !has_lsp_state {
+            return None;
+        }
+
+        let lsp_state_entity = {
+            let core = self.core.read(cx);
+            core.lsp_state.clone()
+        }?;
+
+        lsp_state_entity.update(cx, |state, _| {
+            if let Some(pref_id) = preferred_server_id
+                && let Some(server) = state.servers.get(&pref_id).cloned()
+            {
+                // Prefer progress for this server if any
+                if let Some(p) = state
+                    .progress
+                    .values()
+                    .find(|p| p.server_id == pref_id)
+                    .cloned()
+                {
+                    let indicator = state.get_spinner_frame().to_string();
+                    let mut s = format!("{} {}: ", indicator, server.name);
+                    if let Some(pct) = p.percentage {
+                        s.push_str(&format!("{:>2}% ", pct));
+                    }
+                    s.push_str(&p.title);
+                    if let Some(msg) = &p.message {
+                        s.push_str(" ⋅ ");
+                        s.push_str(msg);
+                    }
+                    return Some(s);
+                }
+
+                // Otherwise show basic server indicator based on status
+                let indicator = match server.status {
+                    ServerStatus::Starting | ServerStatus::Initializing => {
+                        state.get_spinner_frame().to_string()
+                    }
+                    _ => "◉".to_string(),
+                };
+                return Some(format!("{} {}", indicator, server.name));
+            }
+
+            // Fallback to default indicator
+            state.get_lsp_indicator()
+        })
+    }
+
+    /// Standard divider element for the status bar.
+    fn statusbar_divider(&self, color: gpui::Hsla) -> gpui::AnyElement {
+        gpui::div()
+            .w(gpui::px(1.0))
+            .h(gpui::px(18.0))
+            .bg(color)
+            .mx_2()
+            .into_any_element()
+    }
     fn context_menu_items() -> Vec<(&'static str, fn(&mut Workspace, &mut Context<Workspace>))> {
         vec![
             ("New File", Workspace::cm_action_new_file),
@@ -4106,124 +4246,12 @@ impl Workspace {
         let font_size = gpui::px(ui_font_config.size);
 
         // Get current document info first (without LSP indicator to avoid borrow conflicts)
-        let (mode_name, file_name, position_text, has_lsp_state, preferred_server_id) = {
-            let core = self.core.read(cx);
-            let editor = &core.editor;
-
-            let mut mode_name = "NOR";
-            let mut file_name = "[no file]".to_string();
-            let mut position_text = "1:1".to_string();
-
-            // Get info from focused view if available
-            if let Some(view_id) = self.view_manager.focused_view_id()
-                && let Some((view, doc)) = editor
-                    .tree
-                    .try_get(view_id)
-                    .and_then(|v| editor.document(v.doc).map(|d| (v, d)))
-            {
-                mode_name = match editor.mode() {
-                    helix_view::document::Mode::Normal => "NOR",
-                    helix_view::document::Mode::Insert => "INS",
-                    helix_view::document::Mode::Select => "SEL",
-                };
-
-                file_name = doc
-                    .path()
-                    .map(|p| {
-                        let path_str = p.to_string_lossy().to_string();
-                        // Truncate long paths
-                        if path_str.len() > 50 {
-                            if let Some(file_name) = p.file_name() {
-                                format!(".../{}", file_name.to_string_lossy())
-                            } else {
-                                "...".to_string()
-                            }
-                        } else {
-                            path_str
-                        }
-                    })
-                    .unwrap_or_else(|| "[scratch]".to_string());
-
-                let position = helix_core::coords_at_pos(
-                    doc.text().slice(..),
-                    doc.selection(view.id)
-                        .primary()
-                        .cursor(doc.text().slice(..)),
-                );
-                position_text = format!("{}:{}", position.row + 1, position.col + 1);
-            }
-
-            // Determine preferred LSP server for the current document
-            let preferred_server_id = if let Some(view_id) = self.view_manager.focused_view_id()
-                && let Some(view) = editor.tree.try_get(view_id)
-                && let Some(doc) = editor.document(view.doc)
-            {
-                doc.language_servers().next().map(|ls| ls.id())
-            } else {
-                None
-            };
-
-            let has_lsp_state = core.lsp_state.is_some();
-            (
-                mode_name,
-                file_name,
-                position_text,
-                has_lsp_state,
-                preferred_server_id,
-            )
-        };
+        let (mode_name, file_name, position_text, has_lsp_state, preferred_server_id) =
+            self.statusbar_doc_info(cx);
 
         // Get LSP indicator separately to avoid borrowing conflicts
-        let lsp_indicator = if has_lsp_state {
-            // Clone the lsp_state entity to avoid borrowing conflicts
-            let lsp_state_entity = {
-                let core = self.core.read(cx);
-                core.lsp_state.clone()
-            };
-            if let Some(lsp_state) = lsp_state_entity {
-                lsp_state.update(cx, |state, _| {
-                    if let Some(pref_id) = preferred_server_id
-                        && let Some(server) = state.servers.get(&pref_id).cloned()
-                    {
-                        // Prefer progress for this server if any
-                        if let Some(p) = state
-                            .progress
-                            .values()
-                            .find(|p| p.server_id == pref_id)
-                            .cloned()
-                        {
-                            let indicator = state.get_spinner_frame().to_string();
-                            let mut s = format!("{} {}: ", indicator, server.name);
-                            if let Some(pct) = p.percentage {
-                                s.push_str(&format!("{:>2}% ", pct));
-                            }
-                            s.push_str(&p.title);
-                            if let Some(msg) = &p.message {
-                                s.push_str(" ⋅ ");
-                                s.push_str(msg);
-                            }
-                            return Some(s);
-                        }
-
-                        // Otherwise show basic server indicator based on status
-                        let indicator = match server.status {
-                            ServerStatus::Starting | ServerStatus::Initializing => {
-                                state.get_spinner_frame().to_string()
-                            }
-                            _ => "◉".to_string(),
-                        };
-                        return Some(format!("{} {}", indicator, server.name));
-                    }
-
-                    // Fallback to default indicator
-                    state.get_lsp_indicator()
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let lsp_indicator =
+            self.compute_statusbar_lsp_indicator(cx, has_lsp_state, preferred_server_id);
 
         // Use consistent border and divider colors from hybrid system
         // Status bar border color
@@ -4291,28 +4319,19 @@ impl Workspace {
                             .min_w(px(50.))
                             .text_color(status_bar_tokens.text_primary)
                     })
-                    .child(
-                        // Divider
-                        div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2(),
-                    )
+                    .child(self.statusbar_divider(divider_color))
                     .child(
                         // File name - takes up available space
                         div().flex_1().overflow_hidden().child(file_name),
                     )
-                    .child(
-                        // Divider
-                        div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2(),
-                    )
+                    .child(self.statusbar_divider(divider_color))
                     .child(
                         // Position
                         div().child(position_text).min_w(px(80.)),
                     )
                     .when_some(lsp_indicator, |status_bar, indicator| {
                         status_bar
-                            .child(
-                                // Divider before LSP
-                                div().w(px(1.)).h(px(18.)).bg(divider_color).mx_2(),
-                            )
+                            .child(self.statusbar_divider(divider_color))
                             .child({
                                 use nucleotide_ui::{
                                     Button, ButtonSize, ButtonVariant, IconPosition,
