@@ -316,7 +316,7 @@ macro_rules! time_event {
 }
 
 /// Utility function to initialize all utils systems
-pub fn init_utils(cx: &mut App) {
+pub fn init_utils(_cx: &mut App) {
     // Initialize performance monitoring
     let perf_config = PerformanceConfig::default();
     init_performance_monitoring(perf_config);

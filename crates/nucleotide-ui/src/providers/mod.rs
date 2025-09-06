@@ -209,6 +209,7 @@ pub struct ProviderContainer<T>
 where
     T: Provider + Clone,
 {
+    #[allow(dead_code)]
     id: ElementId,
     provider: T,
     scope_id: Option<ProviderScopeId>,

@@ -1,7 +1,7 @@
 // ABOUTME: Focus management utilities for nucleotide-ui components
 // ABOUTME: Provides focus tracking, focus groups, and accessibility helpers
 
-use gpui::{App, ElementId, SharedString};
+use gpui::{ElementId, SharedString};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
