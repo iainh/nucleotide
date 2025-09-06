@@ -54,6 +54,259 @@ impl DiagnosticsPanel {
         self.filter = filter;
         cx.notify();
     }
+
+    /// Insert soft wrap opportunities into long strings (paths, messages).
+    fn soft_wrap(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 16);
+        for ch in s.chars() {
+            out.push(ch);
+            match ch {
+                '/' | '-' | '_' | '.' | ':' => out.push('\u{200B}'),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Render a severity icon sized to a standard cell.
+    fn render_severity_icon(
+        sev: Severity,
+        color: Hsla,
+        width: f32,
+        height: f32,
+    ) -> gpui::AnyElement {
+        gpui::canvas(
+            |_bounds, _window, _cx| (),
+            move |bounds, _state, window: &mut Window, _cx: &mut App| {
+                let marker_size = bounds.size.height * 0.70;
+                let marker_x = bounds.origin.x + (bounds.size.width - marker_size) * 0.5;
+                let marker_y = bounds.origin.y + (bounds.size.height - marker_size) * 0.5;
+
+                let base_fill = color;
+                let border_col = utils::with_alpha(utils::darken(color, 0.15), 0.9);
+
+                match sev {
+                    Severity::Error => {
+                        let marker_bounds = Bounds {
+                            origin: point(marker_x, marker_y),
+                            size: size(marker_size, marker_size),
+                        };
+                        window.paint_quad(gpui::quad(
+                            marker_bounds,
+                            px(1.0),
+                            base_fill,
+                            px(1.0),
+                            border_col,
+                            gpui::BorderStyle::default(),
+                        ));
+                        let h_size = marker_size * 0.22;
+                        let h_bounds = Bounds {
+                            origin: point(
+                                marker_x + marker_size * 0.18,
+                                marker_y + marker_size * 0.18,
+                            ),
+                            size: size(h_size, h_size),
+                        };
+                        let h_color = utils::with_alpha(gpui::white(), 0.18);
+                        window.paint_quad(gpui::quad(
+                            h_bounds,
+                            h_size * 0.5,
+                            h_color,
+                            0.0,
+                            gpui::transparent_black(),
+                            gpui::BorderStyle::default(),
+                        ));
+                    }
+                    Severity::Warning => {
+                        let top = point(marker_x + marker_size * 0.5, marker_y);
+                        let bl = point(marker_x, marker_y + marker_size);
+                        let br = point(marker_x + marker_size, marker_y + marker_size);
+                        let mut pb = gpui::PathBuilder::fill();
+                        pb.move_to(top);
+                        pb.line_to(bl);
+                        pb.line_to(br);
+                        pb.close();
+                        if let Ok(path) = pb.build() {
+                            window.paint_path(path, base_fill);
+                        }
+                        let h_size = marker_size * 0.20;
+                        let h_bounds = Bounds {
+                            origin: point(
+                                marker_x + marker_size * 0.22,
+                                marker_y + marker_size * 0.18,
+                            ),
+                            size: size(h_size, h_size),
+                        };
+                        let h_color = utils::with_alpha(gpui::white(), 0.14);
+                        window.paint_quad(gpui::quad(
+                            h_bounds,
+                            h_size * 0.5,
+                            h_color,
+                            0.0,
+                            gpui::transparent_black(),
+                            gpui::BorderStyle::default(),
+                        ));
+                    }
+                    Severity::Info | Severity::Hint => {
+                        let marker_bounds = Bounds {
+                            origin: point(marker_x, marker_y),
+                            size: size(marker_size, marker_size),
+                        };
+                        let radius = marker_size * 0.5;
+                        window.paint_quad(gpui::quad(
+                            marker_bounds,
+                            radius,
+                            base_fill,
+                            px(1.0),
+                            border_col,
+                            gpui::BorderStyle::default(),
+                        ));
+                        let offset = marker_size * 0.14;
+                        let halo_size = marker_size * 0.52;
+                        let core_size = marker_size * 0.26;
+                        let halo_bounds = Bounds {
+                            origin: point(marker_x + offset, marker_y + offset),
+                            size: size(halo_size, halo_size),
+                        };
+                        let core_bounds = Bounds {
+                            origin: point(
+                                marker_x + offset + (halo_size - core_size) * 0.25,
+                                marker_y + offset + (halo_size - core_size) * 0.25,
+                            ),
+                            size: size(core_size, core_size),
+                        };
+                        let highlight_halo = utils::with_alpha(gpui::white(), 0.14);
+                        let highlight_core = utils::with_alpha(gpui::white(), 0.45);
+                        window.paint_quad(gpui::quad(
+                            halo_bounds,
+                            halo_size * 0.5,
+                            highlight_halo,
+                            0.0,
+                            gpui::transparent_black(),
+                            gpui::BorderStyle::default(),
+                        ));
+                        window.paint_quad(gpui::quad(
+                            core_bounds,
+                            core_size * 0.5,
+                            highlight_core,
+                            0.0,
+                            gpui::transparent_black(),
+                            gpui::BorderStyle::default(),
+                        ));
+                    }
+                }
+            },
+        )
+        .w(px(width))
+        .h(px(height))
+        .flex_shrink_0()
+        .into_any_element()
+    }
+
+    /// Build a single diagnostics row element.
+    fn build_row(
+        &mut self,
+        cx: &mut Context<Self>,
+        idx: usize,
+        uri: &Uri,
+        info: &DiagnosticInfo,
+        source: &str,
+        code: &str,
+        picker_tokens: &nucleotide_ui::tokens::PickerTokens,
+        sev_color: Hsla,
+        col_prefix_w: f32,
+        col_severity_w: f32,
+        col_source_w: f32,
+        col_code_w: f32,
+    ) -> gpui::AnyElement {
+        let path_display = uri
+            .as_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| uri.to_string());
+        let primary = info.diagnostic.message.clone();
+
+        let is_selected = idx == self.selected_index;
+        let row_text = if is_selected {
+            picker_tokens.item_text_selected
+        } else {
+            picker_tokens.item_text
+        };
+        let row_text_secondary = if is_selected {
+            picker_tokens.item_text_selected
+        } else {
+            picker_tokens.item_text_secondary
+        };
+        let row_bg = if is_selected {
+            picker_tokens.item_background_selected
+        } else {
+            picker_tokens.item_background
+        };
+
+        let content = div()
+            .flex()
+            .items_start()
+            .px_3()
+            .py_1()
+            .gap_4()
+            .bg(row_bg)
+            .text_color(row_text)
+            .child(div().w(px(col_prefix_w)).flex_shrink_0().child(" "))
+            .child(Self::render_severity_icon(
+                info.diagnostic.severity(),
+                sev_color,
+                col_severity_w,
+                18.0,
+            ))
+            .child(
+                div()
+                    .w(px(col_source_w))
+                    .flex_shrink_0()
+                    .text_color(row_text_secondary)
+                    .child(source.to_string()),
+            )
+            .child(
+                div()
+                    .w(px(col_code_w))
+                    .flex_shrink_0()
+                    .text_color(row_text_secondary)
+                    .child(code.to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex_grow()
+                    .whitespace_normal()
+                    .child(Self::soft_wrap(&primary)),
+            );
+
+        let path_for_event = uri
+            .as_path()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(path_display));
+        let offset = info.diagnostic.range.start;
+        let idx_here = idx;
+
+        div()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this: &mut DiagnosticsPanel, _e, window, cx| {
+                    nucleotide_logging::info!(
+                        path = %path_for_event.display(),
+                        offset = offset,
+                        "DIAG: DiagnosticsPanel item clicked"
+                    );
+                    this.selected_index = idx_here;
+                    window.disable_focus();
+                    cx.emit(DiagnosticsJumpEvent {
+                        path: path_for_event.clone(),
+                        offset,
+                    });
+                    cx.emit(DismissEvent);
+                }),
+            )
+            .child(content)
+            .into_any_element()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -135,18 +388,7 @@ impl Render for DiagnosticsPanel {
         const COL_SOURCE_W: f32 = 120.0;
         const COL_CODE_W: f32 = 70.0;
 
-        // Insert soft wrap points into long tokens like file paths so text can wrap
-        fn soft_wrap_message(s: &str) -> String {
-            let mut out = String::with_capacity(s.len() + 16);
-            for ch in s.chars() {
-                out.push(ch);
-                match ch {
-                    '/' | '-' | '_' | '.' | ':' => out.push('\u{200B}'), // zero-width space
-                    _ => {}
-                }
-            }
-            out
-        }
+        // (soft_wrap helper moved into DiagnosticsPanel)
 
         // Emit jump-to event on click if an event provider is present
         let _emit = nucleotide_ui::providers::use_emit_event();
@@ -206,7 +448,7 @@ impl Render for DiagnosticsPanel {
             m
         };
 
-        let mut idx_counter = 0usize;
+        // Build body rows using a helper to centralize layout
         // Helper: resolve diagnostic color same as Document renderer (prefer underline color)
         let severity_hsla = |sev: Severity| -> Hsla {
             let key = match sev {
@@ -222,264 +464,42 @@ impl Render for DiagnosticsPanel {
                 .and_then(nucleotide_ui::theme_utils::color_to_hsla)
                 .unwrap_or(picker_tokens.item_text)
         };
-        // Helper: draw the same gutter-style severity marker inside bounds
-        let severity_icon = |sev: Severity, color: Hsla| {
-            gpui::canvas(
-                |_bounds, _window, _cx| (),
-                move |bounds, _state, window: &mut Window, _cx: &mut App| {
-                    // Compute square area centered inside the provided bounds
-                    let height = bounds.size.height;
-                    let width = bounds.size.width;
-                    let marker_size = height * 0.70;
-                    let marker_x = bounds.origin.x + (width - marker_size) * 0.5;
-                    let marker_y = bounds.origin.y + (height - marker_size) * 0.5;
+        // (severity icon rendering moved into DiagnosticsPanel::render_severity_icon)
+        let list: Vec<gpui::AnyElement> = rows
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (uri, info))| {
+                // precompute strings used in row builder
+                let source = info
+                    .diagnostic
+                    .source
+                    .clone()
+                    .or_else(|| server_names.get(&info.server_id).cloned())
+                    .unwrap_or_else(|| "lsp".to_string());
+                let code = match &info.diagnostic.code {
+                    Some(helix_core::diagnostic::NumberOrString::Number(n)) => n.to_string(),
+                    Some(helix_core::diagnostic::NumberOrString::String(s)) => s.clone(),
+                    None => String::new(),
+                };
 
-                    // Use solid color (no extra alpha) so it matches gutter over any background
-                    let base_fill = color;
-                    let border_col = utils::with_alpha(utils::darken(color, 0.15), 0.9);
-
-                    match sev {
-                        Severity::Error => {
-                            // Slightly rounded square with border and glossy dot
-                            let marker_bounds = Bounds {
-                                origin: point(marker_x, marker_y),
-                                size: size(marker_size, marker_size),
-                            };
-                            window.paint_quad(gpui::quad(
-                                marker_bounds,
-                                px(1.0),
-                                base_fill,
-                                px(1.0),
-                                border_col,
-                                gpui::BorderStyle::default(),
-                            ));
-
-                            // Small top-left highlight
-                            let h_size = marker_size * 0.22;
-                            let h_bounds = Bounds {
-                                origin: point(
-                                    marker_x + marker_size * 0.18,
-                                    marker_y + marker_size * 0.18,
-                                ),
-                                size: size(h_size, h_size),
-                            };
-                            let h_color = utils::with_alpha(gpui::white(), 0.18);
-                            window.paint_quad(gpui::quad(
-                                h_bounds,
-                                h_size * 0.5,
-                                h_color,
-                                0.0,
-                                gpui::transparent_black(),
-                                gpui::BorderStyle::default(),
-                            ));
-                        }
-                        Severity::Warning => {
-                            // Upright triangle
-                            let top = point(marker_x + marker_size * 0.5, marker_y);
-                            let bl = point(marker_x, marker_y + marker_size);
-                            let br = point(marker_x + marker_size, marker_y + marker_size);
-                            let mut pb = gpui::PathBuilder::fill();
-                            pb.move_to(top);
-                            pb.line_to(bl);
-                            pb.line_to(br);
-                            pb.close();
-                            if let Ok(path) = pb.build() {
-                                window.paint_path(path, base_fill);
-                            }
-
-                            // Small internal highlight
-                            let h_size = marker_size * 0.20;
-                            let h_bounds = Bounds {
-                                origin: point(
-                                    marker_x + marker_size * 0.22,
-                                    marker_y + marker_size * 0.18,
-                                ),
-                                size: size(h_size, h_size),
-                            };
-                            let h_color = utils::with_alpha(gpui::white(), 0.14);
-                            window.paint_quad(gpui::quad(
-                                h_bounds,
-                                h_size * 0.5,
-                                h_color,
-                                0.0,
-                                gpui::transparent_black(),
-                                gpui::BorderStyle::default(),
-                            ));
-                        }
-                        Severity::Info | Severity::Hint => {
-                            // Circle with subtle highlight
-                            let marker_bounds = Bounds {
-                                origin: point(marker_x, marker_y),
-                                size: size(marker_size, marker_size),
-                            };
-                            let radius = marker_size * 0.5;
-                            window.paint_quad(gpui::quad(
-                                marker_bounds,
-                                radius,
-                                base_fill,
-                                px(1.0),
-                                border_col,
-                                gpui::BorderStyle::default(),
-                            ));
-
-                            // Highlights
-                            let offset = marker_size * 0.14;
-                            let halo_size = marker_size * 0.52;
-                            let core_size = marker_size * 0.26;
-                            let halo_bounds = Bounds {
-                                origin: point(marker_x + offset, marker_y + offset),
-                                size: size(halo_size, halo_size),
-                            };
-                            let core_bounds = Bounds {
-                                origin: point(
-                                    marker_x + offset + (halo_size - core_size) * 0.25,
-                                    marker_y + offset + (halo_size - core_size) * 0.25,
-                                ),
-                                size: size(core_size, core_size),
-                            };
-                            let highlight_halo = utils::with_alpha(gpui::white(), 0.14);
-                            let highlight_core = utils::with_alpha(gpui::white(), 0.45);
-                            window.paint_quad(gpui::quad(
-                                halo_bounds,
-                                halo_size * 0.5,
-                                highlight_halo,
-                                0.0,
-                                gpui::transparent_black(),
-                                gpui::BorderStyle::default(),
-                            ));
-                            window.paint_quad(gpui::quad(
-                                core_bounds,
-                                core_size * 0.5,
-                                highlight_core,
-                                0.0,
-                                gpui::transparent_black(),
-                                gpui::BorderStyle::default(),
-                            ));
-                        }
-                    }
-                },
-            )
-            .w(gpui::px(COL_SEVERITY_W))
-            .h(gpui::px(18.0))
-            .flex_shrink_0()
-        };
-        let list = rows.into_iter().map(|(uri, info)| {
-            let path_display = uri
-                .as_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| uri.to_string());
-            let primary = info.diagnostic.message.clone();
-            let source = info
-                .diagnostic
-                .source
-                .clone()
-                .or_else(|| server_names.get(&info.server_id).cloned())
-                .unwrap_or_else(|| "lsp".to_string());
-            let code = match &info.diagnostic.code {
-                Some(helix_core::diagnostic::NumberOrString::Number(n)) => n.to_string(),
-                Some(helix_core::diagnostic::NumberOrString::String(s)) => s.clone(),
-                None => String::new(),
-            };
-
-            let id = SharedString::from(format!(
-                "diag-{}-{}",
-                path_display, info.diagnostic.range.start
-            ));
-
-            // Colors for severity icon (match gutter: prefer underline color fallback to fg)
-            let sev_color = severity_hsla(info.diagnostic.severity());
-
-            let is_selected = idx_counter == self.selected_index;
-            // No chevron prefix; selection shown via tokens
-            let prefix = " ";
-
-            // token references for row coloring (keep names to clarify intent)
-            let row_text = if is_selected {
-                picker_tokens.item_text_selected
-            } else {
-                picker_tokens.item_text
-            };
-            let row_text_secondary = if is_selected {
-                picker_tokens.item_text_selected
-            } else {
-                picker_tokens.item_text_secondary
-            };
-            let row_bg = if is_selected {
-                picker_tokens.item_background_selected
-            } else {
-                picker_tokens.item_background
-            };
-            let _row_hover_bg = picker_tokens.item_background_hover; // reserved for future hover styling
-
-            let row = div()
-                .id(id.clone())
-                .flex()
-                .items_start()
-                .px_3()
-                .py_1()
-                .gap_4()
-                .bg(row_bg)
-                .text_color(row_text)
-                .child(
-                    div()
-                        .w(gpui::px(COL_PREFIX_W))
-                        .flex_shrink_0()
-                        .child(prefix),
+                // Colors for severity icon (match gutter: prefer underline color fallback to fg)
+                let sev_color = severity_hsla(info.diagnostic.severity());
+                self.build_row(
+                    cx,
+                    idx,
+                    &uri,
+                    &info,
+                    &source,
+                    &code,
+                    &picker_tokens,
+                    sev_color,
+                    COL_PREFIX_W,
+                    COL_SEVERITY_W,
+                    COL_SOURCE_W,
+                    COL_CODE_W,
                 )
-                .child(severity_icon(info.diagnostic.severity(), sev_color))
-                .child(
-                    div()
-                        .w(gpui::px(COL_SOURCE_W))
-                        .flex_shrink_0()
-                        .text_color(row_text_secondary)
-                        .child(source.clone()),
-                )
-                .child(
-                    div()
-                        .w(gpui::px(COL_CODE_W))
-                        .flex_shrink_0()
-                        .text_color(row_text_secondary)
-                        .child(code.clone()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .flex_grow()
-                        .whitespace_normal()
-                        .child(soft_wrap_message(&primary)),
-                );
-
-            // Emit navigation event on click via GPUI event
-            let path_for_event = uri
-                .as_path()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from(path_display.clone()));
-            let offset = info.diagnostic.range.start;
-            let idx_here = idx_counter;
-            let row = div()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this: &mut DiagnosticsPanel, _e, window, cx| {
-                        nucleotide_logging::info!(
-                            path = %path_for_event.display(),
-                            offset = offset,
-                            "DIAG: DiagnosticsPanel item clicked"
-                        );
-                        this.selected_index = idx_here;
-                        // Drop focus immediately so the editor can regain it after dismissal
-                        window.disable_focus();
-                        cx.emit(DiagnosticsJumpEvent {
-                            path: path_for_event.clone(),
-                            offset,
-                        });
-                        // Also dismiss panel after emitting
-                        cx.emit(DismissEvent);
-                    }),
-                )
-                .child(row);
-            idx_counter += 1;
-            row
-        });
+            })
+            .collect();
 
         // Container styling using design tokens (match picker style and font)
         let modal_tokens = &cx.theme().tokens;
