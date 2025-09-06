@@ -2389,21 +2389,52 @@ impl Element for DocumentElement {
                 let _tab_width = document.tab_width() as u16;
 
                 // Shape cursor text before dropping core borrow and keep its length
-                let (cursor_text_shaped, cursor_text_len) = cursor_text.map(|(char_str, text_color)| {
-                    let text_len = char_str.len();
-                    let run = TextRun {
-                        len: text_len,
-                        font: self.style.font(),
-                        color: text_color,
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    };
+                let (cursor_text_shaped, cursor_text_len) = cursor_text
+                    .map(|(char_str, text_color)| {
+                        let text_len = char_str.len();
+                        // Derive the original text style at the cursor to preserve italics/bold/underline
+                        let text_style_at_cursor = {
+                            let core = self.core.read(cx);
+                            let editor = &core.editor;
+                            if let Some(doc) = editor.document(self.doc_id) {
+                                let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                                Self::get_text_style_at_position(
+                                    doc,
+                                    self.view_id,
+                                    theme,
+                                    &editor.syn_loader,
+                                    cursor_char_idx,
+                                )
+                            } else {
+                                helix_view::graphics::Style::default()
+                            }
+                        };
 
-                    let shaped = window.text_system()
-                        .shape_line(char_str, self.style.font_size.to_pixels(px(16.0)), &[run], None);
-                    (Some(shaped), text_len)
-                }).unwrap_or((None, 0));
+                        let underline_color = text_style_at_cursor
+                            .underline_color
+                            .and_then(color_to_hsla);
+
+                        let run = nucleotide_ui::style_utils::create_styled_text_run(
+                            text_len,
+                            &self.style.font(),
+                            &text_style_at_cursor,
+                            text_color,
+                            None,
+                            bg_color,
+                            underline_color,
+                        );
+
+                        let shaped = window
+                            .text_system()
+                            .shape_line(
+                                char_str,
+                                self.style.font_size.to_pixels(px(16.0)),
+                                &[run],
+                                None,
+                            );
+                        (Some(shaped), text_len)
+                    })
+                    .unwrap_or((None, 0));
 
                 // Drop the core borrow before the loop
                 // core goes out of scope here
@@ -3257,35 +3288,41 @@ impl Element for DocumentElement {
                                 };
 
                                 // Shape cursor text if available and calculate its width
-                                let (cursor_text_shaped, cursor_text_len) = cursor_text.map(|char_str| {
-                                    let text_len = char_str.len();
+                                let (cursor_text_shaped, cursor_text_len) = cursor_text
+                                    .map(|char_str| {
+                                        let text_len = char_str.len();
+                                        // For block cursor, text should contrast with cursor background
+                                        let text_color = if has_reversed {
+                                            bg_color
+                                        } else if let Some(fg) = cursor_style.fg {
+                                            color_to_hsla(fg).unwrap_or(white())
+                                        } else {
+                                            white()
+                                        };
 
-                                    // For block cursor, text should contrast with cursor background
-                                    let text_color = if has_reversed {
-                                        // For reversed cursor: text should use the document background for contrast
-                                        // since the cursor is now using the text's foreground color
-                                        bg_color
-                                    } else if let Some(fg) = cursor_style.fg {
-                                        // Normal cursor with explicit foreground
-                                        color_to_hsla(fg).unwrap_or(white())
-                                    } else {
-                                        // No cursor.fg defined, use white as default text color
-                                        white()
-                                    };
+                                        let underline_color = text_style_at_cursor
+                                            .underline_color
+                                            .and_then(color_to_hsla);
 
-                                    let run = TextRun {
-                                        len: text_len,
-                                        font: self.style.font(),
-                                        color: text_color,
-                                        background_color: None,
-                                        underline: None,
-                                        strikethrough: None,
-                                    };
+                                        let run = nucleotide_ui::style_utils::create_styled_text_run(
+                                            text_len,
+                                            &self.style.font(),
+                                            &text_style_at_cursor,
+                                            text_color,
+                                            None,
+                                            bg_color,
+                                            underline_color,
+                                        );
 
-                                    let shaped = window.text_system()
-                                        .shape_line(char_str, self.style.font_size.to_pixels(px(16.0)), &[run], None);
-                                    (Some(shaped), text_len)
-                                }).unwrap_or((None, 0));
+                                        let shaped = window.text_system().shape_line(
+                                            char_str,
+                                            self.style.font_size.to_pixels(px(16.0)),
+                                            &[run],
+                                            None,
+                                        );
+                                        (Some(shaped), text_len)
+                                    })
+                                    .unwrap_or((None, 0));
 
                                 // Calculate cursor width based on the actual character width
                                 let cursor_width = if let Some(ref shaped_text) = cursor_text_shaped {
