@@ -605,8 +605,10 @@ mod tests {
     #[test]
     #[ignore = "Test assertion failed - disabled until fixed"]
     fn test_custom_trigger_characters() {
-        let mut config = KeyboardConfig::default();
-        config.trigger_characters = vec!['@', '#', '$'];
+        let mut config = KeyboardConfig {
+            trigger_characters: vec!['@', '#', '$'],
+            ..Default::default()
+        };
 
         let mut detector = TriggerDetector::new(config);
 

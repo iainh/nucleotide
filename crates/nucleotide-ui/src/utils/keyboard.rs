@@ -147,7 +147,7 @@ impl KeyboardShortcut {
     }
 
     /// Get a human-readable string representation
-    pub fn to_string(&self) -> String {
+    pub fn display_string(&self) -> String {
         let mut parts = Vec::new();
 
         if self.modifiers.platform {
@@ -173,6 +173,12 @@ impl KeyboardShortcut {
 
         parts.push(&self.key);
         parts.join("+")
+    }
+}
+
+impl std::fmt::Display for KeyboardShortcut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_string())
     }
 }
 

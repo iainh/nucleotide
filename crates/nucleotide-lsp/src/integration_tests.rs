@@ -610,7 +610,7 @@ edition = "2021"
             .await
             .expect("Failed to create ts project 1");
 
-        let project_paths = vec![rust_project1, rust_project2, ts_project1];
+        let project_paths = [rust_project1, rust_project2, ts_project1];
 
         let (manager, collector) = setup_test_manager().await;
         manager.start().await.expect("Failed to start manager");
@@ -763,7 +763,7 @@ edition = "2021"
             .expect("Failed to detect valid project");
 
         // Wait for startup request
-        let startup_event = collector
+        let _startup_event = collector
             .wait_for_event(
                 |event| matches!(event, ProjectLspEvent::ServerStartupRequested { .. }),
                 Duration::from_secs(1),

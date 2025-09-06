@@ -320,6 +320,12 @@ pub mod mock_lsp_servers {
         server_count_by_type: Arc<RwLock<HashMap<String, usize>>>,
     }
 
+    impl Default for MockServerRegistry {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl MockServerRegistry {
         pub fn new() -> Self {
             Self {

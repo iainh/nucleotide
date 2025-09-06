@@ -1913,10 +1913,8 @@ mod tests {
             match (&self.initial_query, &self.initial_position) {
                 (Some(initial_query), Some(initial_pos)) => {
                     // Always refilter if position changed
-                    if let Some(new_pos) = new_position {
-                        if new_pos != initial_pos {
-                            return true;
-                        }
+                    if let Some(new_pos) = new_position && new_pos != initial_pos {
+                        return true;
                     }
 
                     // If query is not an extension, refilter

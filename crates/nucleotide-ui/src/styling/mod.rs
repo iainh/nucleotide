@@ -177,12 +177,13 @@ impl<'a> StyleContext<'a> {
 
     /// Compute the base style for this context
     pub fn compute_base_style(&self) -> ComputedStyle {
-        let mut style = ComputedStyle::default();
-
-        // Apply base colors from tokens
-        style.background = self.tokens.colors.surface;
-        style.foreground = self.tokens.colors.text_primary;
-        style.border_color = self.tokens.colors.border_default;
+        // Initialize with base colors from tokens in a single literal
+        let mut style = ComputedStyle {
+            background: self.tokens.colors.surface,
+            foreground: self.tokens.colors.text_primary,
+            border_color: self.tokens.colors.border_default,
+            ..Default::default()
+        };
 
         // Apply size-based properties
         match self.size {

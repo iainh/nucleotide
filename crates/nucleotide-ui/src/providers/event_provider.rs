@@ -1032,30 +1032,18 @@ mod tests {
         {
             let custom_events = provider.custom_events.read().unwrap();
             // Check that events are in separate priority queues
-            assert!(
-                custom_events
-                    .event_queues
-                    .get(&EventPriority::Critical)
-                    .is_some()
-            );
-            assert!(
-                custom_events
-                    .event_queues
-                    .get(&EventPriority::High)
-                    .is_some()
-            );
-            assert!(
-                custom_events
-                    .event_queues
-                    .get(&EventPriority::Normal)
-                    .is_some()
-            );
-            assert!(
-                custom_events
-                    .event_queues
-                    .get(&EventPriority::Low)
-                    .is_some()
-            );
+            assert!(custom_events
+                .event_queues
+                .contains_key(&EventPriority::Critical));
+            assert!(custom_events
+                .event_queues
+                .contains_key(&EventPriority::High));
+            assert!(custom_events
+                .event_queues
+                .contains_key(&EventPriority::Normal));
+            assert!(custom_events
+                .event_queues
+                .contains_key(&EventPriority::Low));
         }
     }
 

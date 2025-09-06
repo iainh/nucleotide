@@ -3,10 +3,10 @@
 
 use gpui::{
     App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce,
-    StatefulInteractiveElement, Styled, Window, WindowControlArea, div, hsla, svg,
+    StatefulInteractiveElement, Styled, Window, div, hsla, svg,
 };
 
-use crate::styling::{ColorTheory, StyleSize, StyleState, StyleVariant, compute_component_style};
+use crate::styling::ColorTheory;
 use crate::titlebar::linux_platform_detector::{
     DesktopEnvironment, LinuxPlatformInfo, WindowButtonLayout, WindowManager, get_platform_info,
 };
@@ -21,8 +21,6 @@ pub enum LinuxControlType {
     Close,
     // Linux-specific controls
     Shade, // Roll up window (XFCE, some WMs)
-    Pin,   // Keep on top (various WMs)
-    Menu,  // Window menu (right-click alternative)
 }
 
 impl LinuxControlType {
@@ -33,23 +31,10 @@ impl LinuxControlType {
             LinuxControlType::Maximize => "icons/window-maximize.svg",
             LinuxControlType::Close => "icons/close.svg",
             LinuxControlType::Shade => "icons/chevron-up.svg",
-            LinuxControlType::Pin => "icons/pin.svg",
-            LinuxControlType::Menu => "icons/menu.svg",
         }
     }
 
-    /// Get the accessibility label for screen readers
-    pub fn accessibility_label(&self) -> &'static str {
-        match self {
-            LinuxControlType::Minimize => "Minimize window",
-            LinuxControlType::Restore => "Restore window",
-            LinuxControlType::Maximize => "Maximize window",
-            LinuxControlType::Close => "Close window",
-            LinuxControlType::Shade => "Shade window",
-            LinuxControlType::Pin => "Keep window on top",
-            LinuxControlType::Menu => "Window menu",
-        }
-    }
+    // Accessibility labels can be added when integrating screen reader support
 }
 
 #[derive(Debug, Clone)]
@@ -209,15 +194,8 @@ impl LinuxWindowControl {
                         WindowManager::Openbox | WindowManager::Fluxbox
                     )
             }
-            LinuxControlType::Pin => {
-                // Pin is supported by most traditional window managers
-                !matches!(
-                    platform_info.window_manager,
-                    WindowManager::I3 | WindowManager::Sway | WindowManager::Bspwm
-                )
-            }
-            LinuxControlType::Menu => true, // Menu is always available
-        };
+            
+            };
 
         debug!(
             "Created Linux window control {:?} - enabled: {}",
@@ -300,14 +278,7 @@ impl RenderOnce for LinuxWindowControl {
                         debug!("Shade button clicked (custom implementation needed)");
                         // TODO: Implement window shading
                     }
-                    LinuxControlType::Pin => {
-                        debug!("Pin button clicked (custom implementation needed)");
-                        // TODO: Implement always-on-top
-                    }
-                    LinuxControlType::Menu => {
-                        debug!("Menu button clicked (custom implementation needed)");
-                        // TODO: Show window context menu
-                    }
+                    
                 }
             })
     }
@@ -426,8 +397,7 @@ impl RenderOnce for LinuxWindowControls {
                 LinuxControlType::Restore => "linux-restore",
                 LinuxControlType::Close => "linux-close",
                 LinuxControlType::Shade => "linux-shade",
-                LinuxControlType::Pin => "linux-pin",
-                LinuxControlType::Menu => "linux-menu",
+                
             };
 
             container = container.child(LinuxWindowControl::new(

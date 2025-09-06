@@ -41,6 +41,7 @@ impl StyleCombiner {
     }
 
     /// Add a style layer with override strategy (default)
+    #[allow(clippy::should_implement_trait)]
     pub fn add(self, style: ComputedStyle) -> Self {
         self.add_layer(style, MergeStrategy::Override)
     }

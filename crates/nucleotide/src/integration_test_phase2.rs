@@ -44,14 +44,12 @@ async fn test_command_routing_integration() {
                         "Project LSP manager not initialized".to_string(),
                     ));
                     let _ = response.send(result);
-                    return; // Exit after first command for test
                 }
                 other => {
                     println!(
                         "✓ Command processor received command: {:?}",
                         std::mem::discriminant(&other)
                     );
-                    return;
                 }
             }
         }
@@ -145,15 +143,7 @@ async fn test_event_driven_command_pattern_end_to_end() {
                 .take()
                 .expect("Command receiver should be available");
 
-            if let Some(command) = command_rx.recv().await {
-                match command {
-                    ProjectLspCommand::StartServer {
-                        workspace_root: _,
-                        server_name,
-                        language_id,
-                        response,
-                        span,
-                    } => {
+            if let Some(ProjectLspCommand::StartServer { workspace_root: _, server_name, language_id, response, span }) = command_rx.recv().await {
                         let _guard = span.enter();
                         println!("✓ Processing StartServer command through mock Application");
 
@@ -168,16 +158,7 @@ async fn test_event_driven_command_pattern_end_to_end() {
                         });
 
                         let _ = response.send(result);
-                        return; // Exit after first command for test
                     }
-                    other => {
-                        println!(
-                            "✓ Command processor received command: {:?}",
-                            std::mem::discriminant(&other)
-                        );
-                        return;
-                    }
-                }
             }
         })
     };
@@ -253,15 +234,7 @@ async fn test_event_driven_command_pattern_failure() {
                 .take()
                 .expect("Command receiver should be available");
 
-            if let Some(command) = command_rx.recv().await {
-                match command {
-                    ProjectLspCommand::StartServer {
-                        workspace_root: _,
-                        server_name: _,
-                        language_id: _,
-                        response,
-                        span,
-                    } => {
+            if let Some(ProjectLspCommand::StartServer { workspace_root: _, server_name: _, language_id: _, response, span }) = command_rx.recv().await {
                         let _guard = span.enter();
                         println!("✓ Processing failing StartServer command");
 
@@ -271,10 +244,7 @@ async fn test_event_driven_command_pattern_failure() {
                         ));
 
                         let _ = response.send(result);
-                        return;
                     }
-                    _ => {}
-                }
             }
         })
     };

@@ -611,6 +611,7 @@ pub struct SizeTokens {
 }
 
 impl SizeTokens {
+    #[allow(clippy::should_implement_trait)]
     pub fn default() -> Self {
         Self {
             // Spacing scale

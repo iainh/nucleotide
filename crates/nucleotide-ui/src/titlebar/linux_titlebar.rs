@@ -3,8 +3,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Context, Decorations, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Pixels, Render, Styled, Window, WindowControlArea, div, px,
+    Decorations, ElementId, InteractiveElement, MouseButton, ParentElement, Pixels, Styled,
+    Window, WindowControlArea, div, px,
 };
 
 use crate::titlebar::linux_platform_detector::{
@@ -30,7 +30,6 @@ pub struct LinuxTitlebarStyle {
 pub enum TitleAlignment {
     Left,
     Center,
-    Right,
 }
 
 impl LinuxTitlebarStyle {
@@ -223,7 +222,6 @@ impl LinuxTitlebar {
             .map(|el| match self.style.title_alignment {
                 TitleAlignment::Left => el.justify_start(),
                 TitleAlignment::Center => el.justify_center(),
-                TitleAlignment::Right => el.justify_end(),
             })
             .child(
                 div().flex().items_center().gap_2().child(

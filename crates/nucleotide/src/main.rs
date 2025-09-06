@@ -580,6 +580,7 @@ fn gui_main(
 
             // Set up theme manager with Helix theme
             let helix_theme = app.editor.theme.clone();
+            #[allow(unused_mut)]
             let mut theme_manager = crate::ThemeManager::new(helix_theme);
 
             // Detect initial system appearance

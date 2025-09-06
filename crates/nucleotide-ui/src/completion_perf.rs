@@ -391,12 +391,14 @@ mod tests {
 
     #[test]
     fn test_completion_metrics_ratios() {
-        let mut metrics = CompletionMetrics::default();
-        metrics.total_filters = 100;
-        metrics.cache_hits = 70;
-        metrics.cache_misses = 30;
-        metrics.optimized_queries = 40;
-        metrics.cancelled_operations = 10;
+        let metrics = CompletionMetrics {
+            total_filters: 100,
+            cache_hits: 70,
+            cache_misses: 30,
+            optimized_queries: 40,
+            cancelled_operations: 10,
+            ..Default::default()
+        };
 
         assert_eq!(metrics.cache_hit_ratio(), 70.0);
         assert_eq!(metrics.optimization_ratio(), 40.0);

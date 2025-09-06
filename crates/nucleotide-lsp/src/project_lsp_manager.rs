@@ -299,7 +299,11 @@ impl ProjectLspManager {
 
     /// Get project information
     pub async fn get_project_info(&self, workspace_root: &std::path::Path) -> Option<ProjectInfo> {
-        self.projects.read().await.get(workspace_root).cloned()
+        self.projects
+            .read()
+            .await
+            .get(workspace_root)
+            .cloned()
     }
 
     /// Get managed servers for a workspace
@@ -694,7 +698,7 @@ impl ProjectDetector {
 
         // If no custom servers or fallback enabled, add builtin servers
         if servers.is_empty() || self.project_markers_config.enable_builtin_fallback {
-            servers.extend(self.get_builtin_language_servers(project_type));
+            servers.extend(Self::get_builtin_language_servers(project_type));
         }
 
         // Deduplicate and sort
@@ -726,7 +730,7 @@ impl ProjectDetector {
     }
 
     /// Get builtin language servers for a project type
-    fn get_builtin_language_servers(&self, project_type: &ProjectType) -> Vec<String> {
+    fn get_builtin_language_servers(project_type: &ProjectType) -> Vec<String> {
         match project_type {
             ProjectType::Rust => vec!["rust-analyzer".to_string()],
             ProjectType::TypeScript => vec!["typescript-language-server".to_string()],
@@ -738,7 +742,7 @@ impl ProjectDetector {
             ProjectType::Mixed(types) => {
                 let mut servers = Vec::new();
                 for project_type in types {
-                    servers.extend(self.get_builtin_language_servers(project_type));
+                    servers.extend(Self::get_builtin_language_servers(project_type));
                 }
                 servers.sort();
                 servers.dedup();

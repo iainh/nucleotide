@@ -229,11 +229,7 @@ edition = "2021"
         manager.start().await.expect("Manager should start");
 
         // Create projects
-        let project_types = vec![
-            ProjectType::Rust,
-            ProjectType::TypeScript,
-            ProjectType::JavaScript,
-        ];
+        let project_types = [ProjectType::Rust, ProjectType::TypeScript, ProjectType::JavaScript];
 
         let mut detection_tasks = Vec::new();
 
@@ -333,7 +329,7 @@ edition = "2021"
         manager.start().await.expect("Manager should start");
 
         // Create some test projects
-        let project_types = vec![ProjectType::Rust, ProjectType::TypeScript];
+        let project_types = [ProjectType::Rust, ProjectType::TypeScript];
         let mut projects = Vec::new();
 
         for (i, project_type) in project_types.iter().enumerate() {
@@ -414,7 +410,7 @@ edition = "2021"
         manager.start().await.expect("Manager should start");
 
         // Create servers with various startup delays
-        let startup_delays = vec![
+        let startup_delays = [
             Duration::from_millis(10),  // Fast startup
             Duration::from_millis(100), // Slow startup (should timeout)
             Duration::from_millis(200), // Very slow startup (should timeout)
