@@ -228,7 +228,7 @@ impl RenderOnce for Tab {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         // Use ThemedContext trait for consistent theme access
         let theme = cx.theme();
-        let tokens = &theme.tokens;
+        let tokens = theme.tokens; // DesignTokens is Copy
 
         // Use provider hooks to get configuration for animations
         let enable_animations = nucleotide_ui::providers::use_provider::<
@@ -281,7 +281,6 @@ impl RenderOnce for Tab {
         };
 
         // Extract values we need before moving self
-        let git_status = self.git_status;
         let height = match self.size {
             TabSize::Small => tokens.sizes.button_height_sm,
             TabSize::Medium => tokens.sizes.button_height_md,
@@ -291,7 +290,26 @@ impl RenderOnce for Tab {
         let padding_right = tokens.sizes.space_1;
         let min_width = px(120.0); // TODO: Consider making this a design token
 
-        // Build the tab using design tokens
+        // Build the tab container using design tokens and delegate inner content
+        let on_close_handler = self.on_close; // move out before borrowing cx mutably again
+        let label_clone = self.label.clone();
+        let file_path = self.file_path.clone();
+        let is_active = self.is_active;
+        let is_modified = self.is_modified;
+        let disabled = self.disabled;
+        let git_status = self.git_status;
+        let content_row = Tab::build_content_row(
+            label_clone,
+            file_path,
+            is_active,
+            is_modified,
+            disabled,
+            git_status,
+            text_color,
+            tokens,
+            on_close_handler,
+            cx,
+        );
         div()
             .id(self.id.clone())
             .flex()
@@ -329,67 +347,103 @@ impl RenderOnce for Tab {
             // .when_some(self.tooltip.as_ref(), |tab, tooltip| {
             //     tab.tooltip(...)
             // })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(tokens.sizes.space_2) // Slightly more space between icon and text
-                    .child(
-                        // File icon with VCS overlay
-                        div()
-                            .relative() // Needed for absolute positioning of the overlay
-                            .size(tokens.sizes.text_lg) // Use text_lg (16px) for icon container
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child({
-                                // Create VcsIcon with appropriate file type and VCS status
-                                let vcs_icon = if let Some(ref path) = self.file_path {
-                                    VcsIcon::from_path(path, false)
-                                        .size(tokens.sizes.text_lg.into()) // Convert Pixels to f32
-                                        .text_color(text_color)
-                                } else {
-                                    VcsIcon::scratch()
-                                        .size(tokens.sizes.text_lg.into()) // Convert Pixels to f32
-                                        .text_color(text_color)
-                                };
+            .child(content_row)
+    }
+}
 
-                                // Add VCS status if available and render with theme-aware colors
-                                let theme = cx.global::<nucleotide_ui::Theme>();
-                                vcs_icon.vcs_status(git_status).render_with_theme(theme)
-                            }),
-                    )
-                    .child(
-                        // Tab label
-                        div()
-                            .text_color(text_color)
-                            .text_size(tokens.sizes.text_md)
-                            .when(self.is_active, |this| {
-                                // Active tab labels are slightly bolder/more prominent
-                                this.font_weight(gpui::FontWeight::MEDIUM)
-                            })
-                            .when(self.is_modified, |this| {
-                                // Modified files show with underline
-                                this.underline()
-                            })
-                            .child(self.label.clone()),
-                    )
-                    .child(
-                        // Close button
-                        div().ml(tokens.sizes.space_1).child(
-                            Button::icon_only("tab-close", "icons/close.svg")
-                                .variant(ButtonVariant::Ghost)
-                                .size(ButtonSize::Small)
-                                .disabled(self.disabled)
-                                .on_click({
-                                    let on_close = self.on_close;
-                                    move |event, window, cx| {
-                                        on_close(event, window, cx);
-                                        cx.stop_propagation();
-                                    }
-                                }),
-                        ),
-                    ),
+// Internal layout helpers to centralize tab content composition
+impl Tab {
+    fn build_icon(
+        file_path: Option<std::path::PathBuf>,
+        git_status: Option<VcsStatus>,
+        text_color: gpui::Hsla,
+        tokens: nucleotide_ui::tokens::DesignTokens,
+        cx: &mut App,
+    ) -> gpui::AnyElement {
+        let icon = if let Some(ref path) = file_path {
+            VcsIcon::from_path(path, false)
+                .size(tokens.sizes.text_lg.into())
+                .text_color(text_color)
+        } else {
+            VcsIcon::scratch()
+                .size(tokens.sizes.text_lg.into())
+                .text_color(text_color)
+        };
+        let theme = cx.global::<nucleotide_ui::Theme>();
+        div()
+            .relative()
+            .size(tokens.sizes.text_lg)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(icon.vcs_status(git_status).render_with_theme(theme))
+            .into_any_element()
+    }
+
+    fn build_label(
+        label_text: String,
+        is_active: bool,
+        is_modified: bool,
+        text_color: gpui::Hsla,
+        tokens: nucleotide_ui::tokens::DesignTokens,
+    ) -> gpui::AnyElement {
+        let mut el = div().text_color(text_color).text_size(tokens.sizes.text_md);
+        if is_active {
+            el = el.font_weight(gpui::FontWeight::MEDIUM);
+        }
+        if is_modified {
+            el = el.underline();
+        }
+        el.child(label_text).into_any_element()
+    }
+
+    fn build_close_button(
+        disabled: bool,
+        tokens: nucleotide_ui::tokens::DesignTokens,
+        on_close: MouseEventHandler,
+    ) -> gpui::AnyElement {
+        div()
+            .ml(tokens.sizes.space_1)
+            .child(
+                Button::icon_only("tab-close", "icons/close.svg")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Small)
+                    .disabled(disabled)
+                    .on_click(move |event, window, cx| {
+                        on_close(event, window, cx);
+                        cx.stop_propagation();
+                    }),
             )
+            .into_any_element()
+    }
+
+    fn build_content_row(
+        label: String,
+        file_path: Option<std::path::PathBuf>,
+        is_active: bool,
+        is_modified: bool,
+        disabled: bool,
+        git_status: Option<VcsStatus>,
+        text_color: gpui::Hsla,
+        tokens: nucleotide_ui::tokens::DesignTokens,
+        on_close: MouseEventHandler,
+        cx: &mut App,
+    ) -> gpui::AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(tokens.sizes.space_2)
+            .child(Tab::build_icon(
+                file_path, git_status, text_color, tokens, cx,
+            ))
+            .child(Tab::build_label(
+                label,
+                is_active,
+                is_modified,
+                text_color,
+                tokens,
+            ))
+            .child(Tab::build_close_button(disabled, tokens, on_close))
+            .into_any_element()
     }
 }
