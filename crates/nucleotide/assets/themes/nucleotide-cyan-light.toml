@@ -1,0 +1,136 @@
+# Nucleotide Cyan Light Theme - A light theme inspired by OlyaB Cyan Theme
+# Author: Nucleotide contributors
+# License: MPL-2.0
+# Compatibility: This theme was created for Nucleotide but is fully compatible with Helix
+#
+# Based on the IntelliJ Cyan light scheme palette
+# Source: https://github.com/OlyaB/CyanTheme/blob/master/resources/themes/cyanScheme.xml
+# Features WCAG‑aware contrast and mapping to Helix scopes
+
+attribute = "cyan"
+keyword = "navy"
+"keyword.directive" = "link" # preprocessor / directives
+namespace = "link"
+punctuation = "mid"
+"punctuation.delimiter" = "mid"
+operator = "navy"
+special = "purple"
+"variable.other.member" = "ink"
+variable = "ink"
+"variable.parameter" = { fg = "ink" }
+"variable.builtin" = "purple"
+type = "ink"
+"type.builtin" = "ink"
+constructor = "cyan"
+function = "ink"
+"function.macro" = "cyan"
+"function.builtin" = "ink"
+tag = "navy"
+comment = "muted"
+constant = "purple"
+"constant.builtin" = "purple"
+string = "green"
+"constant.numeric" = "cyan"
+"constant.character.escape" = "navy"
+# used for lifetimes
+label = "navy"
+tabstop = { modifiers = ["italic"], bg = "panel" }
+
+"markup.heading" = "link"
+"markup.bold" = { modifiers = ["bold"] }
+"markup.italic" = { modifiers = ["italic"] }
+"markup.strikethrough" = { modifiers = ["crossed_out"] }
+"markup.link.url" = { fg = "link", modifiers = ["underlined"] }
+"markup.link.text" = "navy"
+"markup.raw" = "navy"
+
+"diff.plus" = "#1eb070"
+"diff.minus" = "#cf5b56"
+"diff.delta" = "#185b9e"
+
+"ui.background" = { bg = "paper" }
+"ui.background.separator" = { fg = "line" }
+"ui.linenr" = { fg = "gutter_fg" }
+"ui.linenr.selected" = { fg = "link" }
+"ui.statusline" = { fg = "ink", bg = "paper" }
+"ui.statusline.inactive" = { fg = "muted", bg = "paper" }
+"ui.popup" = { bg = "panel" }
+"ui.window" = { fg = "line" }
+"ui.help" = { bg = "#185b9e", fg = "#ffffff" }
+"ui.text" = { fg = "ink" }
+"ui.text.focus" = { fg = "ink" }
+"ui.text.inactive" = "muted"
+"ui.text.directory" = { fg = "link" }
+"ui.virtual" = { fg = "gutter_fg" }
+"ui.virtual.ruler" = { bg = "panel" }
+"ui.virtual.jump-label" = { fg = "#d90019", modifiers = ["bold"] }
+
+"ui.virtual.indent-guide" = { fg = "gutter_fg" }
+
+"ui.selection" = { bg = "selection" }
+"ui.selection.primary" = { bg = "selection" }
+"ui.cursor.select" = { bg = "selected_tearline" }
+"ui.cursor.insert" = { bg = "ink" }
+"ui.cursor.primary.select" = { bg = "selected_tearline" }
+"ui.cursor.primary.insert" = { bg = "ink" }
+"ui.cursor.match" = { fg = "#ffffff", bg = "#185b9e" }
+"ui.cursor" = { modifiers = ["reversed"] }
+"ui.cursorline.primary" = { bg = "caret_row" }
+"ui.highlight" = { bg = "caret_row" }
+"ui.highlight.frameline" = { bg = "folded_bg" }
+"ui.debug" = { fg = "#185b9e" }
+"ui.debug.breakpoint" = { fg = "#cf5b56" }
+"ui.menu" = { fg = "ink", bg = "panel" }
+"ui.menu.selected" = { fg = "paper", bg = "link" }
+"ui.menu.scroll" = { fg = "ink", bg = "gutter_fg" }
+
+"diagnostic.hint" = { underline = { color = "muted", style = "curl" } }
+"diagnostic.info" = { underline = { color = "cyan", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "selected_tearline", style = "curl" } }
+"diagnostic.error" = { underline = { color = "error", style = "curl" } }
+"diagnostic.unnecessary" = { modifiers = ["dim"] }
+"diagnostic.deprecated" = { modifiers = ["crossed_out"] }
+
+warning = "selected_tearline"
+error = "error"
+info = "cyan"
+hint = "muted"
+
+[palette]
+# Light Cyan palette derived from OlyaB Cyan light scheme
+
+# Backgrounds and surfaces
+paper = "#f2f3f7"          # TEXT background / gutter background
+console = "#f3f3f3"        # Console background
+docs = "#f5f6fa"           # Documentation popup background
+panel = "#f0f0f0"          # Injected language / popups
+caret_row = "#e4eaed"      # Caret row background
+selection = "#b8dde0"      # Selection background
+folded_bg = "#d8f0e2"      # Folded text background
+folded_border = "#a7d1c2"  # Folded text border
+line = "#bec5cd"           # Teardrop/tears line
+selected_tearline = "#9b9ea3"
+
+# Text and subtle UI
+ink = "#262626"            # Primary text
+muted = "#808080"          # Comments / inactive
+mid = "#666666"            # Subtle punctuation
+gutter_fg = "#b3b3b3"      # Line numbers
+
+# Accents from scheme
+link = "#185b9e"           # Hyperlinks and headings
+cyan = "#0073e6"           # Numbers / attributes
+navy = "#000080"           # Keywords / escapes
+purple = "#660e7a"         # Constants / members
+green = "#008000"          # Strings
+green_dark = "#00733b"     # Alternate string tone
+
+# Search / diagnostics helpers
+search_bg = "#b8e6c7"
+search_stripe = "#1eb070"
+todo = "#1717e6"
+error = "#d90019"
+error_stripe = "#cf5b56"
+
+# Misc
+white = "#ffffff"

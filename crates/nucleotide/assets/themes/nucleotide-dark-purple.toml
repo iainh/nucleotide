@@ -1,0 +1,129 @@
+# Nucleotide Dark Purple Theme - A dark theme inspired by OlyaB Dark Purple
+# Author: Nucleotide contributors
+# License: MPL-2.0
+# Compatibility: This theme was created for Nucleotide but is fully compatible with Helix
+#
+# Based on IntelliJ Dark Purple scheme
+# Source: https://github.com/OlyaB/DarkPurpleTheme/blob/master/resources/themes/darkPurpleScheme.xml
+
+attribute = "lavender"
+keyword = "orange"
+"keyword.directive" = "orange"
+namespace = "lavender"
+punctuation = "muted_mid"
+"punctuation.delimiter" = "muted_mid"
+operator = "ink"
+special = "gold"
+"variable.other.member" = "white"
+variable = "ink"
+"variable.parameter" = { fg = "ink" }
+"variable.builtin" = "lavender"
+type = "white"
+"type.builtin" = "white"
+constructor = "lavender"
+function = "white"
+"function.macro" = "lavender"
+"function.builtin" = "white"
+tag = "orange"
+comment = "comment"
+constant = "lavender"
+"constant.builtin" = "lavender"
+string = "spring"
+"constant.numeric" = "cyan"
+"constant.character.escape" = "orange"
+label = "cyan"
+tabstop = { modifiers = ["italic"], bg = "panel" }
+
+"markup.heading" = "link"
+"markup.bold" = { modifiers = ["bold"] }
+"markup.italic" = { modifiers = ["italic"] }
+"markup.strikethrough" = { modifiers = ["crossed_out"] }
+"markup.link.url" = { fg = "link", modifiers = ["underlined"] }
+"markup.link.text" = "orange"
+"markup.raw" = "orange"
+
+"diff.plus" = "#42a651"
+"diff.minus" = "#f23f6c"
+"diff.delta" = "#3399ff"
+
+"ui.background" = { bg = "base" }
+"ui.background.separator" = { fg = "separator" }
+"ui.linenr" = { fg = "gutter_fg" }
+"ui.linenr.selected" = { fg = "link" }
+"ui.statusline" = { fg = "ink", bg = "base" }
+"ui.statusline.inactive" = { fg = "muted_mid", bg = "base" }
+"ui.popup" = { bg = "panel" }
+"ui.window" = { fg = "separator" }
+"ui.help" = { bg = "#4a2d59", fg = "#ffffff" }
+"ui.text" = { fg = "ink" }
+"ui.text.focus" = { fg = "white" }
+"ui.text.inactive" = "comment"
+"ui.text.directory" = { fg = "link" }
+"ui.virtual" = { fg = "gutter_fg" }
+"ui.virtual.ruler" = { bg = "panel" }
+"ui.virtual.jump-label" = { fg = "#ff0d25", modifiers = ["bold"] }
+"ui.virtual.indent-guide" = { fg = "indent" }
+
+"ui.selection" = { bg = "selection" }
+"ui.selection.primary" = { bg = "selection" }
+"ui.cursor.select" = { bg = "matched" }
+"ui.cursor.insert" = { bg = "white" }
+"ui.cursor.primary.select" = { bg = "matched" }
+"ui.cursor.primary.insert" = { bg = "white" }
+"ui.cursor.match" = { fg = "base", bg = "matched" }
+"ui.cursor" = { modifiers = ["reversed"] }
+"ui.cursorline.primary" = { bg = "caret_row" }
+"ui.highlight" = { bg = "caret_row" }
+"ui.highlight.frameline" = { bg = "folded_bg" }
+"ui.debug" = { fg = "link" }
+"ui.debug.breakpoint" = { fg = "#f23f6c" }
+"ui.menu" = { fg = "ink", bg = "panel" }
+"ui.menu.selected" = { fg = "base", bg = "link" }
+"ui.menu.scroll" = { fg = "ink", bg = "gutter_fg" }
+
+"diagnostic.hint" = { underline = { color = "muted_mid", style = "curl" } }
+"diagnostic.info" = { underline = { color = "gold", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "warn", style = "curl" } }
+"diagnostic.error" = { underline = { color = "error", style = "curl" } }
+"diagnostic.unnecessary" = { modifiers = ["dim"] }
+"diagnostic.deprecated" = { modifiers = ["crossed_out"] }
+
+warning = "warn"
+error = "error"
+info = "gold"
+hint = "muted_mid"
+
+[palette]
+# Dark Purple palette derived from OlyaB Dark Purple scheme
+
+# Backgrounds and surfaces
+base = "#1d1d26"          # Main editor background
+gutter_bg = "#20202b"     # Gutter background
+caret_row = "#242433"     # Caret row background
+panel = "#2c2c3b"         # Popups / documentation
+separator = "#403a52"     # Tearline / separators
+separator_selected = "#786f94"
+indent = "#393747"
+indent_selected = "#424052"
+folded_bg = "#313866"
+selection = "#362f45"
+matched = "#4e4766"       # Matched brace highlight
+
+# Text
+white = "#ffffff"
+ink = "#c9c9d1"
+comment = "#676773"
+muted_mid = "#a29fa6"
+gutter_fg = "#575566"
+
+# Accents
+lavender = "#93a6f5"      # constants / members / params
+cyan = "#4dacf0"          # numbers / labels
+link = "#50afde"          # hyperlinks / headings
+orange = "#e0957b"        # keywords / tags / punctuation
+gold = "#c7a65d"          # function decl / xml tags
+spring = "#54b33e"        # strings
+magenta = "#e084e0"
+red = "#f23f6c"
+error = "#dd3962"
+warn = "#bf8915"
