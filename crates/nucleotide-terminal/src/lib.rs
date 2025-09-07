@@ -17,6 +17,8 @@ pub mod frame {
         pub rows: Vec<Vec<Cell>>, // row-major
         pub cols: u16,
         pub rows_len: u16,
+        pub cursor_row: u16,
+        pub cursor_col: u16,
     }
 
     #[cfg(feature = "emulator")]
@@ -24,6 +26,8 @@ pub mod frame {
     pub struct GridDiff {
         pub lines: Vec<ChangedLine>,
         pub scrolled: Option<i32>,
+        pub cursor_row: u16,
+        pub cursor_col: u16,
     }
 
     #[cfg(feature = "emulator")]
@@ -248,6 +252,8 @@ mod emulator {
         rows: u16,
         cursor_col: u16,
         cursor_row: u16,
+        last_cursor_col: u16,
+        last_cursor_row: u16,
         // Current attributes
         cur_fg: u32,
         cur_bg: u32,
@@ -275,6 +281,8 @@ mod emulator {
                 rows,
                 cursor_col: 0,
                 cursor_row: 0,
+                last_cursor_col: 0,
+                last_cursor_row: 0,
                 cur_fg: 0xffffff,
                 cur_bg: 0x000000,
                 cur_bold: false,
@@ -399,28 +407,40 @@ mod emulator {
             match self.last_grid.take() {
                 None => {
                     self.last_grid = Some(current.clone());
+                    self.last_cursor_row = self.cursor_row;
+                    self.last_cursor_col = self.cursor_col;
                     Some(FramePayload::Full(GridSnapshot {
                         rows: current,
                         cols,
                         rows_len: rows,
+                        cursor_row: self.cursor_row,
+                        cursor_col: self.cursor_col,
                     }))
                 }
                 Some(prev) => {
-                    let (diff, changed) = build_diff(&prev, &current);
+                    let (mut diff, changed) = build_diff(&prev, &current);
+                    diff.cursor_row = self.cursor_row;
+                    diff.cursor_col = self.cursor_col;
                     let total = (rows as usize) * (cols as usize);
                     let coverage = if total == 0 {
                         0.0
                     } else {
                         (changed as f32) / (total as f32)
                     };
+                    let cursor_changed = self.last_cursor_row != self.cursor_row
+                        || self.last_cursor_col != self.cursor_col;
                     self.last_grid = Some(current.clone());
+                    self.last_cursor_row = self.cursor_row;
+                    self.last_cursor_col = self.cursor_col;
                     if coverage > self.threshold {
                         Some(FramePayload::Full(GridSnapshot {
                             rows: current,
                             cols,
                             rows_len: rows,
+                            cursor_row: self.cursor_row,
+                            cursor_col: self.cursor_col,
                         }))
-                    } else if changed > 0 {
+                    } else if changed > 0 || cursor_changed {
                         Some(FramePayload::Diff(diff))
                     } else {
                         None
@@ -682,6 +702,8 @@ mod emulator {
             GridDiff {
                 lines,
                 scrolled: None,
+                cursor_row: 0,
+                cursor_col: 0,
             },
             changed_cells,
         )
