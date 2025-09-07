@@ -272,9 +272,6 @@ mod emulator {
         // vte parser + scroll tracking
         parser: Parser,
         scrolled_delta: i32,
-        // legacy fields retained for unused legacy CSI helpers
-        esc_active: bool,
-        esc_buf: Vec<u8>,
     }
 
     impl Emulator {
@@ -303,8 +300,6 @@ mod emulator {
                 threshold: 0.45,
                 parser: Parser::new(),
                 scrolled_delta: 0,
-                esc_active: false,
-                esc_buf: Vec::with_capacity(32),
             }
         }
 
@@ -372,135 +367,6 @@ mod emulator {
     }
 
     impl Emulator {
-        fn is_csi_final(b: u8) -> bool {
-            (0x40..=0x7E).contains(&b)
-        }
-
-        fn handle_csi(&mut self) {
-            if self.esc_buf.first().copied() != Some(b'[') {
-                return;
-            }
-            let (final_b, rest) = match self.esc_buf.split_last() {
-                Some((f, r)) => (*f, r),
-                None => return,
-            };
-            // strip '[' prefix
-            let params = if rest.len() > 1 { &rest[1..] } else { &[][..] };
-            let s = std::str::from_utf8(params).unwrap_or("");
-            let parts: Vec<&str> = if s.is_empty() {
-                Vec::new()
-            } else {
-                s.split(';').collect()
-            };
-
-            match final_b as char {
-                'H' | 'f' => {
-                    let row = parts
-                        .get(0)
-                        .and_then(|x| x.parse::<u16>().ok())
-                        .unwrap_or(1);
-                    let col = parts
-                        .get(1)
-                        .and_then(|x| x.parse::<u16>().ok())
-                        .unwrap_or(1);
-                    self.cursor_row = row.saturating_sub(1).min(self.rows.saturating_sub(1));
-                    self.cursor_col = col.saturating_sub(1).min(self.cols.saturating_sub(1));
-                }
-                'A' => {
-                    let n = parts
-                        .get(0)
-                        .and_then(|x| x.parse::<u16>().ok())
-                        .unwrap_or(1);
-                    self.cursor_row = self.cursor_row.saturating_sub(n);
-                }
-                'B' => {
-                    let n = parts
-                        .get(0)
-                        .and_then(|x| x.parse::<u16>().ok())
-                        .unwrap_or(1);
-                    self.cursor_row = (self.cursor_row + n).min(self.rows.saturating_sub(1));
-                }
-                'C' => {
-                    let n = parts
-                        .get(0)
-                        .and_then(|x| x.parse::<u16>().ok())
-                        .unwrap_or(1);
-                    self.cursor_col = (self.cursor_col + n).min(self.cols.saturating_sub(1));
-                }
-                'D' => {
-                    let n = parts
-                        .get(0)
-                        .and_then(|x| x.parse::<u16>().ok())
-                        .unwrap_or(1);
-                    self.cursor_col = self.cursor_col.saturating_sub(n);
-                }
-                'G' => {
-                    let col = parts
-                        .get(0)
-                        .and_then(|x| x.parse::<u16>().ok())
-                        .unwrap_or(1);
-                    self.cursor_col = col.saturating_sub(1).min(self.cols.saturating_sub(1));
-                }
-                'K' => {
-                    let mode = parts
-                        .get(0)
-                        .and_then(|x| x.parse::<u16>().ok())
-                        .unwrap_or(0);
-                    let r = self.cursor_row as usize;
-                    match mode {
-                        0 => {
-                            for c in self.cursor_col as usize..self.cols as usize {
-                                self.grid[r][c] = blank_cell();
-                            }
-                        }
-                        1 => {
-                            for c in 0..=self.cursor_col as usize {
-                                self.grid[r][c] = blank_cell();
-                            }
-                        }
-                        2 => {
-                            for c in 0..self.cols as usize {
-                                self.grid[r][c] = blank_cell();
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                'J' => {
-                    let mode = parts
-                        .get(0)
-                        .and_then(|x| x.parse::<u16>().ok())
-                        .unwrap_or(0);
-                    if mode == 2 {
-                        for r in 0..self.rows as usize {
-                            for c in 0..self.cols as usize {
-                                self.grid[r][c] = blank_cell();
-                            }
-                        }
-                        self.cursor_row = 0;
-                        self.cursor_col = 0;
-                    }
-                }
-                'm' => {
-                    // Avoid holding an immutable borrow of `parts` while mutably borrowing `self`
-                    let mut codes: Vec<u16> = Vec::new();
-                    if parts.is_empty() {
-                        codes.push(0);
-                    } else {
-                        for p in parts {
-                            if let Ok(code) = p.parse::<u16>() {
-                                codes.push(code);
-                            }
-                        }
-                    }
-                    for code in codes {
-                        self.apply_sgr(code);
-                    }
-                }
-                _ => {}
-            }
-        }
-
         fn apply_sgr(&mut self, code: u16) {
             match code {
                 0 => {
