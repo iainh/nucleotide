@@ -29,6 +29,12 @@ pub struct OverlayView {
     terminal_panel: Option<Entity<nucleotide_terminal_panel::TerminalPanel>>,
     // Dedicated focus handle for the terminal panel area
     terminal_focus: Option<FocusHandle>,
+    // Resizable terminal panel height (pixels)
+    terminal_height_px: f32,
+    // Resize interaction state
+    terminal_resizing: bool,
+    resize_start_mouse_y: gpui::Pixels,
+    resize_start_height: f32,
     // Track last dispatched terminal size to avoid redundant resize events
     last_terminal_size: Option<(nucleotide_events::v2::terminal::TerminalId, u16, u16)>,
     focus: FocusHandle,
@@ -46,6 +52,10 @@ impl OverlayView {
             diagnostics_panel: None,
             terminal_panel: None,
             terminal_focus: None,
+            terminal_height_px: 220.0,
+            terminal_resizing: false,
+            resize_start_mouse_y: px(0.0),
+            resize_start_height: 220.0,
             last_terminal_size: None,
             focus: focus.clone(),
             core: core.downgrade(),
@@ -1667,8 +1677,8 @@ impl Render for OverlayView {
                         .max(1.0);
                     // Approximate line height for terminal rows
                     let line_h = (editor_font.size * 1.35).max(1.0);
-                    // Panel height is fixed here to 220.0px; keep in sync with layout below
-                    let panel_height = 220.0f32;
+                    // Use resizable panel height
+                    let panel_height = self.terminal_height_px;
                     // Constrain to editor content width by subtracting file tree width
                     let usable_width = (window_width - layout.file_tree_width.0).max(1.0);
                     let cols = (usable_width / char_w).floor().max(1.0) as u16;
@@ -1697,6 +1707,12 @@ impl Render for OverlayView {
                             }
                         });
                     }
+                }
+
+                // Update the panel entity with the current height before borrowing cx immutably
+                if let Some(panel) = &self.terminal_panel {
+                    let h = self.terminal_height_px;
+                    panel.update(cx, |p, _| p.height_px = h);
                 }
 
                 // Theme after potential mutable cx borrow above
@@ -1740,21 +1756,79 @@ impl Render for OverlayView {
                             }
                         },
                     ))
-                    .child(
+                    .child({
+                        // Resizable panel shell
+                        let panel_height = px(self.terminal_height_px);
+                        let resize_handle_height = tokens.sizes.space_1; // thin bar
+                        let handle_bg = tokens.chrome.border_muted;
+                        let handle = div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top_0()
+                            .h(resize_handle_height)
+                            .bg(handle_bg)
+                            .cursor_row_resize()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(
+                                    |this: &mut OverlayView,
+                                     ev: &gpui::MouseDownEvent,
+                                     window,
+                                     _cx| {
+                                        this.terminal_resizing = true;
+                                        this.resize_start_mouse_y = ev.position.y;
+                                        this.resize_start_height = this.terminal_height_px;
+                                        window.refresh();
+                                    },
+                                ),
+                            );
+
                         div()
                             .absolute()
                             .left_0()
                             .right_0()
                             .bottom_0()
-                            .h(px(220.0))
+                            .h(panel_height)
                             .bg(tokens.chrome.surface)
                             .border_t_1()
                             .border_color(tokens.chrome.border_muted)
-                            .occlude() // Only the panel region occludes and captures input
+                            .occlude()
                             .track_focus(&panel_focus)
-                            .on_mouse_down(MouseButton::Left, |_, _, _| {})
-                            .child(terminal_panel.clone()),
-                    )
+                            .on_mouse_move(cx.listener(
+                                |this: &mut OverlayView,
+                                 event: &gpui::MouseMoveEvent,
+                                 window,
+                                 cx| {
+                                    if this.terminal_resizing && event.dragging() {
+                                        let dy = this.resize_start_mouse_y.0 - event.position.y.0;
+                                        let new_height =
+                                            (this.resize_start_height + dy).clamp(80.0, 800.0);
+                                        if (new_height - this.terminal_height_px).abs() >= 1.0 {
+                                            this.terminal_height_px = new_height;
+                                            cx.notify();
+                                            window.refresh();
+                                        }
+                                    }
+                                },
+                            ))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(
+                                    |this: &mut OverlayView,
+                                     _ev: &gpui::MouseUpEvent,
+                                     window,
+                                     _cx| {
+                                        if this.terminal_resizing {
+                                            this.terminal_resizing = false;
+                                            window.refresh();
+                                        }
+                                    },
+                                ),
+                            )
+                            .child(handle)
+                            .child(terminal_panel.clone())
+                    })
                     .into_any_element();
             }
         }
