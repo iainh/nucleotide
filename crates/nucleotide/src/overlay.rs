@@ -1648,11 +1648,30 @@ impl Render for OverlayView {
                 if let Some(core) = self.core.upgrade() {
                     let layout = self.get_workspace_layout_info(cx);
                     let window_width = _window.bounds().size.width.0;
+                    // Use editor monospace metrics for terminal sizing
+                    let editor_font = cx.global::<nucleotide_types::EditorFontConfig>();
+                    let font = gpui::Font {
+                        family: editor_font.family.clone().into(),
+                        features: gpui::FontFeatures::default(),
+                        weight: editor_font.weight.into(),
+                        style: gpui::FontStyle::Normal,
+                        fallbacks: None,
+                    };
+                    let font_id = cx.text_system().resolve_font(&font);
+                    let font_size = gpui::px(editor_font.size);
+                    let char_w = cx
+                        .text_system()
+                        .advance(font_id, font_size, 'm')
+                        .map(|a| a.width.0)
+                        .unwrap_or(editor_font.size * 0.6)
+                        .max(1.0);
+                    // Approximate line height for terminal rows
+                    let line_h = (editor_font.size * 1.35).max(1.0);
                     // Panel height is fixed here to 220.0px; keep in sync with layout below
                     let panel_height = 220.0f32;
-                    let char_w = layout.char_width.0.max(1.0);
-                    let line_h = layout.line_height.0.max(1.0);
-                    let cols = (window_width / char_w).floor().max(1.0) as u16;
+                    // Constrain to editor content width by subtracting file tree width
+                    let usable_width = (window_width - layout.file_tree_width.0).max(1.0);
+                    let cols = (usable_width / char_w).floor().max(1.0) as u16;
                     let rows = (panel_height / line_h).floor().max(1.0) as u16;
 
                     let active_id = terminal_panel.read(cx).active;

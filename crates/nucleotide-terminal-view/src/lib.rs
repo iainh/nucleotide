@@ -278,6 +278,8 @@ impl Render for TerminalRowView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let tokens = &theme.tokens;
+        let editor_font = cx.global::<nucleotide_types::EditorFontConfig>();
+        let line_height_px = gpui::px(editor_font.size * 1.35);
 
         // Helper to convert emulator RGB u32 to gpui color
         #[inline]
@@ -295,7 +297,12 @@ impl Render for TerminalRowView {
             (row, guard.cursor_row as usize, guard.cursor_col as usize)
         };
 
-        let mut line = div().flex().flex_row();
+        let mut line = div()
+            .flex()
+            .flex_row()
+            .whitespace_nowrap()
+            .line_height(line_height_px)
+            .text_size(gpui::px(editor_font.size));
         // Accumulate runs
         let mut cur_fg = 0xffffffff; // sentinel to force first run
         let mut cur_bg = 0xffffffff;
