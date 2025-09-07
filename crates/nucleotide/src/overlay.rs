@@ -1641,7 +1641,11 @@ impl Render for OverlayView {
                 .occlude()
                 .track_focus(&self.focus)
                 .on_key_down(cx.listener(
-                    |this: &mut OverlayView, event: &gpui::KeyDownEvent, _window, cx| {
+                    |this: &mut OverlayView, event: &gpui::KeyDownEvent, window, cx| {
+                        // Only handle input when the terminal overlay is focused
+                        if !this.focus.is_focused(window) {
+                            return;
+                        }
                         // Forward key input to terminal as bytes
                         if let Some(core) = this.core.upgrade() {
                             let maybe_id = this.terminal_panel.as_ref().map(|p| p.read(cx).active);
