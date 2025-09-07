@@ -203,7 +203,7 @@ impl Render for PlatformTitleBar {
                                 titlebar_tokens.foreground
                             );
                             div()
-                                .text_size(px(14.0)) // Standard titlebar font size
+                                .text_size(cx.global::<crate::Theme>().tokens.sizes.text_md) // Themed titlebar font size
                                 .font_weight(gpui::FontWeight::MEDIUM) // Slightly bold for titlebar
                                 .text_color(titlebar_tokens.foreground)
                                 .child(self.title.clone())

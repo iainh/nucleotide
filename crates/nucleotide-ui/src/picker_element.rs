@@ -240,7 +240,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
                         this.child(
                             div()
                                 .ml_2()
-                                .text_size(px(12.))
+                                .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
                                 .text_color(prompt_color)
                                 .child(if show_preview {
                                     "⌘P: Hide Preview"

@@ -631,7 +631,7 @@ impl Workspace {
             .top_0()
             .left_0()
             .occlude()
-            .bg(gpui::hsla(0.0, 0.0, 0.0, 0.35))
+            .bg(tokens.chrome.surface_overlay)
             .on_mouse_down(MouseButton::Left, |_, _, _| {});
 
         // Dialog content

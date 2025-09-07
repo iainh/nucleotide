@@ -88,6 +88,7 @@ impl RenderOnce for PickerElement {
                     let theme = cx.global::<crate::Theme>();
                     let picker_tokens = theme.tokens.picker_tokens();
 
+                    let tokens = &cx.global::<crate::Theme>().tokens;
                     div()
                         .track_focus(&self.focus)
                         .flex()
@@ -105,7 +106,7 @@ impl RenderOnce for PickerElement {
                             spread_radius: px(0.0), // No spread for clean shadows
                         }])
                         .font(font)
-                        .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size))
+                        .text_size(tokens.sizes.text_md)
                         .child(
                             // Title bar - uses chrome header colors
                             div()
@@ -155,7 +156,7 @@ impl RenderOnce for PickerElement {
                                         .when_some(item.sublabel.as_ref(), |this, sublabel| {
                                             this.child(
                                                 div()
-                                                    .text_size(px(12.))
+                                                    .text_size(tokens.sizes.text_sm)
                                                     .text_color(picker_tokens.item_text_secondary)
                                                     .child(sublabel.clone())
                                             )
@@ -172,7 +173,7 @@ impl RenderOnce for PickerElement {
                                 .py_1()
                                 .border_t_1()
                                 .border_color(picker_tokens.separator)
-                                .text_size(px(11.))
+                                .text_size(tokens.sizes.text_xs)
                                 .text_color(picker_tokens.item_text_secondary)
                                 .child(format!(
                                     "Native GPUI Picker [{}/{}] - ↑↓ to navigate, Enter to select, Esc to cancel",

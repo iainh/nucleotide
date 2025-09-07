@@ -257,7 +257,6 @@ impl ModalFooter {
             .py_1()
             .border_t_1()
             .border_color(style.border)
-            .text_size(px(11.))
             .text_color(style.prompt_text)
     }
 }

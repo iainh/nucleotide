@@ -209,12 +209,18 @@ impl PickerDelegate for FilePickerDelegate {
             list_item = list_item.start_slot(div().child(icon.clone()));
         }
 
+        let tokens = &_cx.global::<crate::Theme>().tokens;
         list_item = list_item.child(
             div()
                 .flex()
                 .flex_col()
                 .overflow_hidden()
-                .child(div().text_ellipsis().child(item.label.clone()))
+                .child(
+                    div()
+                        .text_ellipsis()
+                        .text_size(tokens.sizes.text_md)
+                        .child(item.label.clone()),
+                )
                 .when_some(item.sublabel.as_ref(), |this, sublabel| {
                     let sublabel_color = self
                         .theme_colors
@@ -224,7 +230,7 @@ impl PickerDelegate for FilePickerDelegate {
 
                     this.child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(tokens.sizes.text_sm)
                             .text_color(sublabel_color)
                             .text_ellipsis()
                             .child(sublabel.clone()),
@@ -255,16 +261,17 @@ impl PickerDelegate for FilePickerDelegate {
             .into();
 
         // Simple preview - in real implementation would load file content
+        let tokens = &cx.global::<crate::Theme>().tokens;
         Some(
             div()
                 .flex()
                 .flex_col()
                 .p_4()
                 .font(font)
-                .text_size(px(12.))
+                .text_size(tokens.sizes.text_sm)
                 .child(
                     div()
-                        .text_size(px(14.))
+                        .text_size(tokens.sizes.text_md)
                         .font_weight(FontWeight::BOLD)
                         .mb_2()
                         .child("Preview"),

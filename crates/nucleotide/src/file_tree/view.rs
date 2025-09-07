@@ -1266,7 +1266,7 @@ impl FileTreeView {
         // Use computed chrome text colors for consistency with chrome background
         let mut node = div()
             .flex_1()
-            .text_size(px(14.0)) // Use consistent text size
+            .text_size(cx.global::<nucleotide_ui::Theme>().tokens.sizes.text_md) // Themed text size
             .child(filename);
 
         if is_selected {

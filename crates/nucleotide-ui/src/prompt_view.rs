@@ -644,7 +644,12 @@ impl Render for PromptView {
                                                 |this, desc| {
                                                     this.child(
                                                         div()
-                                                            .text_size(px(12.))
+                                                            .text_size(
+                                                                cx.global::<crate::Theme>()
+                                                                    .tokens
+                                                                    .sizes
+                                                                    .text_sm,
+                                                            )
                                                             .text_color(if is_selected {
                                                                 self.style.modal_style.selected_text
                                                             } else {

@@ -1067,7 +1067,7 @@ impl PickerView {
                     .child(
                         // File count display
                         div()
-                            .text_size(px(12.))
+                                    .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
                             .text_color(self.style.modal_style.prompt_text)
                             .child(if self.filtered_indices.is_empty() {
                                 "0/0".to_string()
@@ -1101,8 +1101,13 @@ impl PickerView {
                             .border_b_1()
                             .border_color(self.style.modal_style.border)
                             .text_color(self.style.modal_style.prompt_text)
-                            .font_family("monospace")
-                            .text_size(px(12.))
+                                .font_family({
+                                    cx.global::<nucleotide_types::FontSettings>()
+                                        .var_font
+                                        .family
+                                        .clone()
+                                })
+                            .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
                             .child(
                                 div()
                                     .flex()
@@ -1214,7 +1219,12 @@ impl PickerView {
                                                                         .flex()
                                                                         .items_center()
                                                                         .gap_2()
-                                                                        .font_family("monospace")
+                                                                        .font_family({
+                                                                            cx.global::<nucleotide_types::FontSettings>()
+                                                                                .var_font
+                                                                                .family
+                                                                                .clone()
+                                                                        })
                                                                         .child(
                                                                             // ID column
                                                                             div()
@@ -1275,7 +1285,12 @@ impl PickerView {
                                                                                     .items_center()
                                                                                     .overflow_hidden()
                                                                                     .text_ellipsis()
-                                                                                    .font_family("monospace")
+                                                                                    .font_family({
+                                                                                        cx.global::<nucleotide_types::FontSettings>()
+                                                                                            .var_font
+                                                                                            .family
+                                                                                            .clone()
+                                                                                    })
                                                                                     .child(item.label.clone())
                                                                             )
                                                                     }
@@ -1288,7 +1303,7 @@ impl PickerView {
                                                                         div()
                                                                             .overflow_hidden()
                                                                             .text_ellipsis()
-                                                                            .text_size(px(12.))
+                                    .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
                                                                             .text_color(
                                                                                 picker
                                                                                     .style
@@ -1341,9 +1356,14 @@ impl PickerView {
                                                         div()
                                                             .px_3()
                                                             .py_2()
-                                                            .text_size(px(12.))
+                                                            .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
                                                             .text_color(self.style.modal_style.text)
-                                                            .font_family("monospace")
+                                .font_family({
+                                    cx.global::<nucleotide_types::FontSettings>()
+                                        .fixed_font
+                                        .family
+                                        .clone()
+                                })
                                                             .child("Preview available (no renderer)")
                                                             .into_any_element()
                                                     }
@@ -1353,9 +1373,14 @@ impl PickerView {
                                                     div()
                                                         .px_3()
                                                         .py_2()
-                                                        .text_size(px(12.))
+                                                        .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
                                                         .text_color(self.style.modal_style.text)
-                                                        .font_family("monospace")
+                                                                                    .font_family({
+                                                                                        cx.global::<nucleotide_types::FontSettings>()
+                                                                                            .fixed_font
+                                                                                            .family
+                                                                                            .clone()
+                                                                                    })
                                                         .child("Preview available (no renderer)")
                                                         .into_any_element()
                                                 }
@@ -1369,9 +1394,14 @@ impl PickerView {
                                                 div()
                                                     .px_3()
                                                     .py_2()
-                                                    .text_size(px(12.))
+                                                    .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
                                                     .text_color(self.style.modal_style.text)
-                                                    .font_family("monospace")
+                                                    .font_family({
+                                                        cx.global::<nucleotide_types::FontSettings>()
+                                                            .fixed_font
+                                                            .family
+                                                            .clone()
+                                                    })
                                                     .child(match &self.preview_content {
                                                         Some(content) => content.clone(),
                                                         None => "Select a file to preview".to_string(),

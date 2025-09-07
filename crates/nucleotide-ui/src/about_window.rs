@@ -92,7 +92,7 @@ impl Render for AboutWindow {
         div()
             .absolute()
             .inset_0()
-            .bg(gpui::rgba(0x00000080)) // Semi-transparent backdrop
+            .bg(tokens.chrome.surface_overlay) // Themed semi-transparent backdrop
             .flex()
             .items_center()
             .justify_center()
@@ -135,7 +135,7 @@ impl Render for AboutWindow {
                     .child(
                         div()
                             .mx_auto()
-                            .text_size(px(24.0))
+                            .text_size(tokens.sizes.text_xl)
                             .font_weight(FontWeight::BOLD)
                             .text_color(tokens.chrome.text_on_chrome)
                             .child(self.app_name.clone()),
@@ -144,7 +144,7 @@ impl Render for AboutWindow {
                     .child(
                         div()
                             .mx_auto()
-                            .text_size(px(14.0))
+                            .text_size(tokens.sizes.text_md)
                             .text_color(tokens.chrome.text_chrome_secondary)
                             .child(format!("Version {}", self.version)),
                     )
@@ -153,7 +153,7 @@ impl Render for AboutWindow {
                         this.child(
                             div()
                                 .mx_auto()
-                                .text_size(px(12.0))
+                                .text_size(tokens.sizes.text_sm)
                                 .text_color(tokens.chrome.text_chrome_secondary)
                                 .child(format!("Commit {}", commit)),
                         )
@@ -162,7 +162,7 @@ impl Render for AboutWindow {
                     .child(
                         div()
                             .mx_auto()
-                            .text_size(px(14.0))
+                            .text_size(tokens.sizes.text_md)
                             .text_color(tokens.chrome.text_chrome_secondary)
                             .child(self.author.clone()),
                     )
@@ -178,7 +178,7 @@ impl Render for AboutWindow {
                     .child(
                         div()
                             .mx_auto()
-                            .text_size(px(12.0))
+                            .text_size(tokens.sizes.text_sm)
                             .text_color(tokens.chrome.text_chrome_secondary)
                             .text_center()
                             .child("A native GUI implementation of the Helix modal text editor"),
@@ -187,7 +187,7 @@ impl Render for AboutWindow {
                     .child(
                         div()
                             .mx_auto()
-                            .text_size(px(11.0))
+                            .text_size(tokens.sizes.text_xs)
                             .text_color(tokens.chrome.text_chrome_secondary)
                             .text_center()
                             .child("Built with GPUI and Rust"),

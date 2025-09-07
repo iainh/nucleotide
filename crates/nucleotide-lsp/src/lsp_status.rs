@@ -51,12 +51,11 @@ impl Render for LspStatus {
             return div().size_0();
         }
 
-        // Render the status
+        // Render the status (color comes from surrounding status bar style)
         div()
             .flex()
             .flex_row()
             .gap(px(6.))
-            .text_color(hsla(0.5, 0.5, 0.5, 0.7))
             .children(status_parts.into_iter().map(|part| div().child(part)))
     }
 }
@@ -169,7 +168,7 @@ impl Element for LspStatusElement {
             let run = TextRun {
                 len: text.len(),
                 font: self.style.font(),
-                color: hsla(0.5, 0.5, 0.5, 0.7),
+                color: self.style.color,
                 background_color: None,
                 strikethrough: None,
                 underline: None,

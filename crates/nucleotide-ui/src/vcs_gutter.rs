@@ -69,13 +69,7 @@ impl VcsGutter {
             .w(px(4.0)) // Indicator width
             .h(height)
             .bg(color)
-            .child(
-                div()
-                    .size_full()
-                    .text_color(color)
-                    .text_size(px(12.0))
-                    .child(symbol),
-            )
+            .child(div().size_full().text_color(color).child(symbol))
     }
 
     /// Get the diff indicator for a specific line (0-indexed)
@@ -132,13 +126,11 @@ pub struct VcsLineIndicator {
 impl VcsLineIndicator {
     /// Render this indicator as a gutter element
     pub fn render(&self, line_height: Pixels) -> impl IntoElement {
-        div().w(px(4.0)).h(line_height).bg(self.color).child(
-            div()
-                .size_full()
-                .text_color(self.color)
-                .text_size(px(12.0))
-                .child(self.symbol),
-        )
+        div()
+            .w(px(4.0))
+            .h(line_height)
+            .bg(self.color)
+            .child(div().size_full().text_color(self.color).child(self.symbol))
     }
 
     /// Create a VCS line indicator component

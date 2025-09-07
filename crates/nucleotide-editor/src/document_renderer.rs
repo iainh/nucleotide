@@ -57,15 +57,11 @@ impl<S: EditorState> DocumentRenderer<S> {
                     .w(px(50.0))
                     .pr(px(10.0))
                     .text_right()
-                    .text_color(rgb(0x6c7086))
                     .child(format!("{line_number}")),
             )
             .child(
                 // Line content
-                div()
-                    .flex_1()
-                    .text_color(rgb(0xcdd6f4))
-                    .child(content.to_string()),
+                div().flex_1().child(content.to_string()),
             )
     }
 
@@ -76,7 +72,6 @@ impl<S: EditorState> DocumentRenderer<S> {
             .flex()
             .items_center()
             .justify_center()
-            .text_color(rgb(0x6c7086))
             .child("[Empty Document]")
     }
 

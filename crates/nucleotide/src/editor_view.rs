@@ -134,9 +134,11 @@ impl<S: EditorState> EventHandler for EditorView<S> {
 /// GPUI view implementation
 impl<S: EditorState + 'static> Render for EditorView<S> {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = _cx.global::<crate::Theme>();
+        let tokens = &theme.tokens;
         div()
             .size_full()
-            .bg(rgb(0x1e1e2e))
+            .bg(tokens.colors.background)
             .child(if self.has_document() {
                 div()
                     .size_full()

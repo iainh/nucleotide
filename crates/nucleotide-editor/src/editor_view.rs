@@ -135,20 +135,17 @@ impl<S: EditorState> EventHandler for EditorView<S> {
 /// GPUI view implementation
 impl<S: EditorState + 'static> Render for EditorView<S> {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .bg(rgb(0x1e1e2e))
-            .child(if self.has_document() {
-                div()
-                    .size_full()
-                    .child("Document content would be rendered here")
-            } else {
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child("No document open")
-            })
+        div().size_full().child(if self.has_document() {
+            div()
+                .size_full()
+                .child("Document content would be rendered here")
+        } else {
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child("No document open")
+        })
     }
 }
