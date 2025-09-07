@@ -27,6 +27,8 @@ pub struct OverlayView {
     >,
     diagnostics_panel: Option<Entity<crate::DiagnosticsPanel>>,
     terminal_panel: Option<Entity<nucleotide_terminal_panel::TerminalPanel>>,
+    // Dedicated focus handle for the terminal panel area
+    terminal_focus: Option<FocusHandle>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
 }
@@ -41,6 +43,7 @@ impl OverlayView {
             code_action_pairs: None,
             diagnostics_panel: None,
             terminal_panel: None,
+            terminal_focus: None,
             focus: focus.clone(),
             core: core.downgrade(),
         }
@@ -1632,58 +1635,68 @@ impl Render for OverlayView {
             let theme = cx.theme();
             let tokens = &theme.tokens;
 
-            return div()
-                .key_context("OverlayTerminalPanel")
-                .absolute()
-                .size_full()
-                .bottom_0()
-                .left_0()
-                .occlude()
-                .track_focus(&self.focus)
-                .on_key_down(cx.listener(
-                    |this: &mut OverlayView, event: &gpui::KeyDownEvent, window, cx| {
-                        // Only handle input when the terminal overlay is focused
-                        if !this.focus.is_focused(window) {
-                            return;
-                        }
-                        // Forward key input to terminal as bytes
-                        if let Some(core) = this.core.upgrade() {
-                            let maybe_id = this.terminal_panel.as_ref().map(|p| p.read(cx).active);
-                            if let Some(id) = maybe_id {
-                                let bytes = translate_key_to_bytes(event);
-                                if !bytes.is_empty() {
-                                    core.update(cx, |app, _| {
-                                        if let Some(bus) = &app.event_aggregator {
-                                            bus.dispatch_terminal(
-                                                nucleotide_events::v2::terminal::Event::Input {
-                                                    id,
-                                                    bytes,
-                                                },
-                                            );
-                                        }
-                                    });
-                                    // We've handled this keystroke for the terminal; don't let it reach the editor
-                                    cx.stop_propagation();
+            {
+                // Ensure we have a persistent focus handle for the terminal panel area
+                if self.terminal_focus.is_none() {
+                    self.terminal_focus = Some(cx.focus_handle());
+                }
+                let panel_focus = self.terminal_focus.as_ref().unwrap().clone();
+                let panel_focus_for_keys = panel_focus.clone();
+
+                return div()
+                    .key_context("OverlayTerminalPanel")
+                    .absolute()
+                    .size_full()
+                    .bottom_0()
+                    .left_0()
+                    // Do NOT occlude the entire window; allow clicks to reach the editor
+                    .on_key_down(cx.listener(
+                        move |this: &mut OverlayView, event: &gpui::KeyDownEvent, window, cx| {
+                            // Only handle input when the terminal panel is focused
+                            if !panel_focus_for_keys.is_focused(window) {
+                                return;
+                            }
+                            // Forward key input to terminal as bytes
+                            if let Some(core) = this.core.upgrade() {
+                                let maybe_id =
+                                    this.terminal_panel.as_ref().map(|p| p.read(cx).active);
+                                if let Some(id) = maybe_id {
+                                    let bytes = translate_key_to_bytes(event);
+                                    if !bytes.is_empty() {
+                                        core.update(cx, |app, _| {
+                                            if let Some(bus) = &app.event_aggregator {
+                                                bus.dispatch_terminal(
+                                                    nucleotide_events::v2::terminal::Event::Input {
+                                                        id,
+                                                        bytes,
+                                                    },
+                                                );
+                                            }
+                                        });
+                                        // We've handled this keystroke for the terminal; don't let it reach the editor
+                                        cx.stop_propagation();
+                                    }
                                 }
                             }
-                        }
-                    },
-                ))
-                .on_mouse_down(MouseButton::Left, |_, _, _| {})
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .h(px(220.0))
-                        .bg(tokens.chrome.surface)
-                        .border_t_1()
-                        .border_color(tokens.chrome.border_muted)
-                        .on_mouse_down(MouseButton::Left, |_, _, _| {})
-                        .child(terminal_panel.clone()),
-                )
-                .into_any_element();
+                        },
+                    ))
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(220.0))
+                            .bg(tokens.chrome.surface)
+                            .border_t_1()
+                            .border_color(tokens.chrome.border_muted)
+                            .occlude() // Only the panel region occludes and captures input
+                            .track_focus(&panel_focus)
+                            .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                            .child(terminal_panel.clone()),
+                    )
+                    .into_any_element();
+            }
         }
 
         // Legacy prompt fallback
