@@ -12,6 +12,7 @@ use nucleotide_ui::picker_view::{PickerItem, PickerView};
 use nucleotide_ui::prompt::{Prompt, PromptElement};
 use nucleotide_ui::prompt_view::PromptView;
 use nucleotide_ui::theme_manager::HelixThemedContext; // bring dispatch_* trait methods into scope
+use std::sync::{Arc, Mutex};
 
 pub struct OverlayView {
     prompt: Option<Prompt>,
@@ -35,10 +36,20 @@ pub struct OverlayView {
     terminal_resizing: bool,
     resize_start_mouse_y: gpui::Pixels,
     resize_start_height: f32,
+    // Shared state for window-level resize listeners
+    resize_state: Arc<Mutex<ResizeStateInner>>,
     // Track last dispatched terminal size to avoid redundant resize events
     last_terminal_size: Option<(nucleotide_events::v2::terminal::TerminalId, u16, u16)>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
+}
+
+#[derive(Debug)]
+struct ResizeStateInner {
+    resizing: bool,
+    start_mouse_y: f32,
+    start_height: f32,
+    height: f32,
 }
 
 impl OverlayView {
@@ -56,6 +67,12 @@ impl OverlayView {
             terminal_resizing: false,
             resize_start_mouse_y: px(0.0),
             resize_start_height: 220.0,
+            resize_state: Arc::new(Mutex::new(ResizeStateInner {
+                resizing: false,
+                start_mouse_y: 0.0,
+                start_height: 220.0,
+                height: 220.0,
+            })),
             last_terminal_size: None,
             focus: focus.clone(),
             core: core.downgrade(),
@@ -1653,6 +1670,13 @@ impl Render for OverlayView {
                 let panel_focus = self.terminal_focus.as_ref().unwrap().clone();
                 let panel_focus_for_keys = panel_focus.clone();
 
+                // Sync from window-level resize state
+                if let Ok(st) = self.resize_state.lock() {
+                    if (st.height - self.terminal_height_px).abs() >= 0.5 {
+                        self.terminal_height_px = st.height;
+                    }
+                }
+
                 // Dynamically compute terminal cols/rows from current window bounds and font metrics
                 // to keep the PTY/emulator sized to the visible area.
                 if let Some(core) = self.core.upgrade() {
@@ -1779,10 +1803,48 @@ impl Render for OverlayView {
                                         this.terminal_resizing = true;
                                         this.resize_start_mouse_y = ev.position.y;
                                         this.resize_start_height = this.terminal_height_px;
+                                        if let Ok(mut st) = this.resize_state.lock() {
+                                            st.resizing = true;
+                                            st.start_mouse_y = ev.position.y.0;
+                                            st.start_height = this.terminal_height_px;
+                                            st.height = this.terminal_height_px;
+                                        }
                                         window.refresh();
                                     },
                                 ),
                             );
+
+                        // Window-level listeners for resize drag
+                        let resize_state = Arc::clone(&self.resize_state);
+                        _window.on_mouse_event({
+                            move |event: &gpui::MouseMoveEvent, phase, window, _| {
+                                if phase.capture() {
+                                    if let Ok(mut st) = resize_state.lock() {
+                                        if st.resizing && event.dragging() {
+                                            let dy = st.start_mouse_y - event.position.y.0;
+                                            let new_height =
+                                                (st.start_height + dy).clamp(80.0, 800.0);
+                                            if (new_height - st.height).abs() >= 1.0 {
+                                                st.height = new_height;
+                                                window.refresh();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        });
+
+                        let resize_state = Arc::clone(&self.resize_state);
+                        _window.on_mouse_event({
+                            move |_: &gpui::MouseUpEvent, _phase, window, _| {
+                                if let Ok(mut st) = resize_state.lock() {
+                                    if st.resizing {
+                                        st.resizing = false;
+                                        window.refresh();
+                                    }
+                                }
+                            }
+                        });
 
                         div()
                             .absolute()
