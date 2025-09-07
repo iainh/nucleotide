@@ -173,16 +173,12 @@ impl CompletionItemElement {
 
         div().flex().flex_row().children(elements)
     }
-}
 
-impl IntoElement for CompletionItemElement {
-    type Element = AnyElement;
-
-    fn into_element(self) -> Self::Element {
-        // Use a default theme since IntoElement doesn't provide context access
-        // In practice, the theme should be passed in constructor for proper styling
-        let default_theme = crate::Theme::default();
-        let tokens = &default_theme.tokens;
+    /// Build the element using the provided theme instead of a default.
+    /// This avoids mismatched contrast when the app is using a light theme
+    /// but `IntoElement` falls back to a dark default.
+    pub fn into_element_with_theme(self, theme: &crate::Theme) -> AnyElement {
+        let tokens = &theme.tokens;
 
         let display_text = self.item.display_text.as_ref().unwrap_or(&self.item.text);
 
@@ -204,11 +200,9 @@ impl IntoElement for CompletionItemElement {
         // Icon section - using Lucide SVG icons with design tokens
         let with_icon = if self.show_icon && self.item.kind.is_some() {
             let icon_tokens = tokens.chrome.completion_icon_tokens(&tokens.editor);
-            // Use icon_tokens directly instead of reconstructing theme to avoid theme switching issues
             let kind = self.item.kind.as_ref().unwrap();
             let svg = crate::completion_icons::get_completion_icon_svg(kind);
-            let icon_color =
-                crate::completion_icons::get_completion_icon_color(kind, &default_theme);
+            let icon_color = crate::completion_icons::get_completion_icon_color(kind, theme);
 
             base_container.child(
                 div()
@@ -292,7 +286,7 @@ impl IntoElement for CompletionItemElement {
                                 .child(self.render_highlighted_text(
                                     display_text,
                                     &self.string_match.positions,
-                                    &default_theme,
+                                    theme,
                                 )),
                         )
                         // Show signature info (parameters) directly after function name
@@ -360,6 +354,17 @@ impl IntoElement for CompletionItemElement {
 
         // Ensure the final element fills the full width
         with_score.w_full().into_any_element()
+    }
+}
+
+impl IntoElement for CompletionItemElement {
+    type Element = AnyElement;
+
+    fn into_element(self) -> Self::Element {
+        // Fallback to the default theme for legacy call sites
+        // Prefer calling `into_element_with_theme` to ensure correct contrast.
+        let default_theme = crate::Theme::default();
+        self.into_element_with_theme(&default_theme)
     }
 }
 

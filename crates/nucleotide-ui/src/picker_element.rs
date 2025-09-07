@@ -286,21 +286,28 @@ impl<D: PickerDelegate> Render for Picker<D> {
                                             .map(|ix| {
                                                 let is_selected = ix == selected_index;
 
-                                                // Wrap delegate item with token-based styling for consistency
+                                                // Wrap delegate item with token-based styling for consistency.
+                                                // Ensure foreground contrasts against the popup surface.
                                                 let (bg, fg, hover_bg) = if let Some(provider) =
                                                     crate::providers::use_theme_provider()
                                                 {
                                                     let dt = provider.current_theme().tokens;
+                                                    let contrasted = crate::styling::ColorTheory::ensure_contrast(
+                                                        dt.chrome.popup_background,
+                                                        dt.chrome.text_on_chrome,
+                                                        crate::styling::color_theory::ContrastRatios::AA_NORMAL,
+                                                    );
                                                     if is_selected {
+                                                        let dd = dt.dropdown_tokens();
                                                         (
-                                                            dt.editor.selection_primary,
-                                                            dt.editor.text_on_primary,
-                                                            dt.editor.selection_primary,
+                                                            dd.item_background_selected,
+                                                            dd.item_text_selected,
+                                                            dd.item_background_selected,
                                                         )
                                                     } else {
                                                         (
                                                             crate::styling::ColorTheory::transparent(),
-                                                            dt.chrome.text_on_chrome,
+                                                            contrasted,
                                                             crate::styling::ColorTheory::with_alpha(
                                                                 dt.chrome.surface_hover,
                                                                 0.3,
@@ -309,16 +316,22 @@ impl<D: PickerDelegate> Render for Picker<D> {
                                                     }
                                                 } else {
                                                     let dt = crate::DesignTokens::dark();
+                                                    let contrasted = crate::styling::ColorTheory::ensure_contrast(
+                                                        dt.chrome.popup_background,
+                                                        dt.chrome.text_on_chrome,
+                                                        crate::styling::color_theory::ContrastRatios::AA_NORMAL,
+                                                    );
                                                     if is_selected {
+                                                        let dd = dt.dropdown_tokens();
                                                         (
-                                                            dt.editor.selection_primary,
-                                                            dt.editor.text_on_primary,
-                                                            dt.editor.selection_primary,
+                                                            dd.item_background_selected,
+                                                            dd.item_text_selected,
+                                                            dd.item_background_selected,
                                                         )
                                                     } else {
                                                         (
                                                             crate::styling::ColorTheory::transparent(),
-                                                            dt.chrome.text_on_chrome,
+                                                            contrasted,
                                                             crate::styling::ColorTheory::with_alpha(
                                                                 dt.chrome.surface_hover,
                                                                 0.3,

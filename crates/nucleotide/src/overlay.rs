@@ -1142,11 +1142,11 @@ impl OverlayView {
         let selected_background = ui_menu_selected
             .bg
             .and_then(color_to_hsla)
-            .unwrap_or(tokens.picker_tokens().item_background_selected);
+            .unwrap_or(tokens.dropdown_tokens().item_background_selected);
         let selected_text = ui_menu_selected
             .fg
             .and_then(color_to_hsla)
-            .unwrap_or(tokens.picker_tokens().item_text_selected);
+            .unwrap_or(tokens.dropdown_tokens().item_text_selected);
         let border = ui_popup
             .fg
             .and_then(color_to_hsla)

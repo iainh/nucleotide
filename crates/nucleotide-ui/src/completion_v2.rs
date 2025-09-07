@@ -1784,7 +1784,10 @@ impl Render for CompletionView {
                                                 div()
                                                     .id(("completion-item-wrapper", index))
                                                     .w_full()
-                                                    .child(completion_element)
+                                                    .child(
+                                                        completion_element
+                                                            .into_element_with_theme(&theme),
+                                                    )
                                             })
                                             .collect::<Vec<_>>()
                                     }),

@@ -232,12 +232,18 @@ impl PickerStyle {
         if let Some(provider) = crate::providers::use_theme_provider() {
             let ui = provider.current_theme();
             let dt = ui.tokens;
+            let dd = dt.dropdown_tokens();
             let modal_style = ModalStyle {
                 background: dt.chrome.popup_background,
-                text: dt.chrome.text_on_chrome,
+                text: crate::styling::ColorTheory::ensure_contrast(
+                    dt.chrome.popup_background,
+                    dt.chrome.text_on_chrome,
+                    crate::styling::color_theory::ContrastRatios::AA_NORMAL,
+                ),
                 border: dt.chrome.popup_border,
-                selected_background: dt.editor.selection_primary,
-                selected_text: dt.editor.text_on_primary,
+                // Align selection with dropdown menus
+                selected_background: dd.item_background_selected,
+                selected_text: dd.item_text_selected,
                 prompt_text: dt.chrome.text_chrome_secondary,
             };
             return Self {

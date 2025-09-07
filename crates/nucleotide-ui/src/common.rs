@@ -60,12 +60,18 @@ impl Default for ModalStyle {
     fn default() -> Self {
         // Use design tokens for better theme consistency
         let tokens = crate::DesignTokens::dark();
+        let dd = tokens.dropdown_tokens();
         Self {
             background: tokens.chrome.popup_background,
-            text: tokens.chrome.text_on_chrome,
+            text: crate::styling::ColorTheory::ensure_contrast(
+                tokens.chrome.popup_background,
+                tokens.chrome.text_on_chrome,
+                crate::styling::color_theory::ContrastRatios::AA_NORMAL,
+            ),
             border: tokens.chrome.popup_border,
-            selected_background: tokens.editor.selection_primary,
-            selected_text: tokens.editor.text_on_primary,
+            // Align picker selection with dropdown menus
+            selected_background: dd.item_background_selected,
+            selected_text: dd.item_text_selected,
             prompt_text: tokens.chrome.text_chrome_secondary,
         }
     }
@@ -78,12 +84,18 @@ impl ModalStyle {
         if let Some(provider) = crate::providers::use_theme_provider() {
             let theme = provider.current_theme();
             let dt = theme.tokens;
+            let dd = dt.dropdown_tokens();
             return Self {
                 background: dt.chrome.popup_background,
-                text: dt.chrome.text_on_chrome,
+                text: crate::styling::ColorTheory::ensure_contrast(
+                    dt.chrome.popup_background,
+                    dt.chrome.text_on_chrome,
+                    crate::styling::color_theory::ContrastRatios::AA_NORMAL,
+                ),
                 border: dt.chrome.popup_border,
-                selected_background: dt.editor.selection_primary,
-                selected_text: dt.editor.text_on_primary,
+                // Align selection with dropdowns
+                selected_background: dd.item_background_selected,
+                selected_text: dd.item_text_selected,
                 prompt_text: dt.chrome.text_chrome_secondary,
             };
         }

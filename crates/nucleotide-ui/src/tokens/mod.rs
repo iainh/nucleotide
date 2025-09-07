@@ -937,7 +937,7 @@ impl EditorTokens {
 impl ChromeTokens {
     /// Create chrome tokens from surface color using color theory
     pub fn from_surface_color(surface_color: Hsla, is_dark: bool) -> Self {
-        use crate::styling::color_theory::ColorTheory;
+        use crate::styling::color_theory::{ColorTheory, ContrastRatios};
 
         // Compute chrome colors using color theory
         let chrome_colors = ColorTheory::derive_chrome_colors(surface_color);
@@ -947,14 +947,16 @@ impl ChromeTokens {
             BaseColors::light()
         };
 
-        // Compute contrasting text colors for chrome backgrounds
-        let text_on_chrome = if surface_color.l > 0.5 {
-            // Light surface, use dark text
-            utils::darken(surface_color, 0.7)
+        // Compute contrasting text color for chrome backgrounds using WCAG-aware logic
+        let base_dark = hsla(0.0, 0.0, 0.1, 1.0);
+        let base_light = hsla(0.0, 0.0, 0.9, 1.0);
+        let base = if surface_color.l > 0.5 {
+            base_dark
         } else {
-            // Dark surface, use light text
-            utils::lighten(surface_color, 0.7)
+            base_light
         };
+        let text_on_chrome =
+            ColorTheory::ensure_contrast(surface_color, base, ContrastRatios::AA_NORMAL);
 
         Self {
             // Computed chrome backgrounds from color theory
@@ -1580,7 +1582,7 @@ pub struct ButtonTokens {
 impl ButtonTokens {
     /// Create button tokens using hybrid color approach
     pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
-        use crate::styling::color_theory::ColorTheory;
+        use crate::styling::color_theory::{ColorTheory, ContrastRatios};
 
         // Primary buttons use chrome colors for UI consistency
         let primary_bg = chrome.surface_hover; // Interactive chrome surface
@@ -1735,14 +1737,28 @@ impl PickerTokens {
         // Items use transparent backgrounds with Helix selection colors
         let item_bg = ColorTheory::transparent();
         let item_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
-        let item_bg_selected = editor.selection_primary; // Use Helix selection
-        let item_text = chrome.text_on_chrome;
-        let item_text_secondary = chrome.text_chrome_secondary;
-        let item_text_selected = editor.text_on_primary;
+        // Use UI menu selection color for consistency across chrome
+        let item_bg_selected = chrome.menu_selected;
+        // Ensure item text contrasts against the container background (popup surface)
+        let item_text = ColorTheory::ensure_contrast(
+            container_bg,
+            chrome.text_on_chrome,
+            ContrastRatios::AA_NORMAL,
+        );
+        let item_text_secondary = ColorTheory::with_alpha(item_text, 0.7);
+        let item_text_selected = ColorTheory::ensure_contrast(
+            item_bg_selected,
+            chrome.text_on_chrome,
+            ContrastRatios::AA_NORMAL,
+        );
 
         // Input fields use chrome backgrounds with Helix focus
         let input_bg = chrome.surface_hover;
-        let input_text = chrome.text_on_chrome;
+        let input_text = ColorTheory::ensure_contrast(
+            input_bg,
+            chrome.text_on_chrome,
+            ContrastRatios::AA_NORMAL,
+        );
         let input_border = chrome.border_muted;
         let input_border_focus = editor.focus_ring; // Use Helix focus color
         let input_placeholder = chrome.text_chrome_secondary;
