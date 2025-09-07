@@ -1,7 +1,7 @@
 // ABOUTME: Main editor view component that renders documents using capability traits
 // ABOUTME: Avoids circular deps by depending on EditorState trait not concrete Application
 
-use gpui::{Context, IntoElement, ParentElement, Pixels, Render, Styled, Window, div, px, rgb};
+use gpui::{Context, IntoElement, ParentElement, Pixels, Render, Styled, Window, div, px};
 use helix_view::{DocumentId, ViewId};
 use nucleotide_core::{DocumentEvent, EditorState, EventHandler};
 use nucleotide_logging::debug;

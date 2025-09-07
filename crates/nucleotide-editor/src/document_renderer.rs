@@ -1,7 +1,7 @@
 // ABOUTME: Document rendering logic that converts Helix document state to GPUI elements
 // ABOUTME: Depends on capability traits rather than concrete types to avoid circular deps
 
-use gpui::{Div, IntoElement, ParentElement, Pixels, Styled, div, px, rgb};
+use gpui::{Div, IntoElement, ParentElement, Pixels, Styled, div, px};
 use helix_core::Rope;
 use helix_view::DocumentId;
 use nucleotide_core::EditorState;

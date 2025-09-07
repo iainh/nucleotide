@@ -937,7 +937,7 @@ impl EditorTokens {
 impl ChromeTokens {
     /// Create chrome tokens from surface color using color theory
     pub fn from_surface_color(surface_color: Hsla, is_dark: bool) -> Self {
-        use crate::styling::color_theory::{ColorTheory, ContrastRatios};
+        use crate::styling::color_theory::ColorTheory;
 
         // Compute chrome colors using color theory
         let chrome_colors = ColorTheory::derive_chrome_colors(surface_color);
@@ -1582,7 +1582,7 @@ pub struct ButtonTokens {
 impl ButtonTokens {
     /// Create button tokens using hybrid color approach
     pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
-        use crate::styling::color_theory::{ColorTheory, ContrastRatios};
+        use crate::styling::color_theory::ColorTheory;
 
         // Primary buttons use chrome colors for UI consistency
         let primary_bg = chrome.surface_hover; // Interactive chrome surface

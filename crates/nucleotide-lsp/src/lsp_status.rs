@@ -5,7 +5,7 @@ use crate::lsp_state::LspState;
 use gpui::{
     App, Bounds, Context, Element, ElementId, Entity, GlobalElementId, InspectorElementId,
     IntoElement, LayoutId, ParentElement, Pixels, Render, SharedString, Style, Styled, TextRun,
-    TextStyle, Window, div, hsla, px,
+    TextStyle, Window, div, px,
 };
 use nucleotide_logging::error;
 
