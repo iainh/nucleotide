@@ -29,6 +29,8 @@ pub struct OverlayView {
     terminal_panel: Option<Entity<nucleotide_terminal_panel::TerminalPanel>>,
     // Dedicated focus handle for the terminal panel area
     terminal_focus: Option<FocusHandle>,
+    // Track last dispatched terminal size to avoid redundant resize events
+    last_terminal_size: Option<(nucleotide_events::v2::terminal::TerminalId, u16, u16)>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
 }
@@ -44,6 +46,7 @@ impl OverlayView {
             diagnostics_panel: None,
             terminal_panel: None,
             terminal_focus: None,
+            last_terminal_size: None,
             focus: focus.clone(),
             core: core.downgrade(),
         }
@@ -1632,9 +1635,6 @@ impl Render for OverlayView {
 
         // Terminal panel - docked at bottom
         if let Some(terminal_panel) = &self.terminal_panel {
-            let theme = cx.theme();
-            let tokens = &theme.tokens;
-
             {
                 // Ensure we have a persistent focus handle for the terminal panel area
                 if self.terminal_focus.is_none() {
@@ -1642,6 +1642,47 @@ impl Render for OverlayView {
                 }
                 let panel_focus = self.terminal_focus.as_ref().unwrap().clone();
                 let panel_focus_for_keys = panel_focus.clone();
+
+                // Dynamically compute terminal cols/rows from current window bounds and font metrics
+                // to keep the PTY/emulator sized to the visible area.
+                if let Some(core) = self.core.upgrade() {
+                    let layout = self.get_workspace_layout_info(cx);
+                    let window_width = _window.bounds().size.width.0;
+                    // Panel height is fixed here to 220.0px; keep in sync with layout below
+                    let panel_height = 220.0f32;
+                    let char_w = layout.char_width.0.max(1.0);
+                    let line_h = layout.line_height.0.max(1.0);
+                    let cols = (window_width / char_w).floor().max(1.0) as u16;
+                    let rows = (panel_height / line_h).floor().max(1.0) as u16;
+
+                    let active_id = terminal_panel.read(cx).active;
+                    let changed = match self.last_terminal_size {
+                        Some((id, last_c, last_r))
+                            if id == active_id && last_c == cols && last_r == rows =>
+                        {
+                            false
+                        }
+                        _ => true,
+                    };
+                    if changed {
+                        self.last_terminal_size = Some((active_id, cols, rows));
+                        core.update(cx, |app, _| {
+                            if let Some(bus) = &app.event_aggregator {
+                                bus.dispatch_terminal(
+                                    nucleotide_events::v2::terminal::Event::Resized {
+                                        id: active_id,
+                                        cols,
+                                        rows,
+                                    },
+                                );
+                            }
+                        });
+                    }
+                }
+
+                // Theme after potential mutable cx borrow above
+                let theme = cx.theme();
+                let tokens = &theme.tokens;
 
                 return div()
                     .key_context("OverlayTerminalPanel")
