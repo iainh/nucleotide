@@ -251,9 +251,20 @@ mod emulator {
         rows: u16,
         cursor_col: u16,
         cursor_row: u16,
+        // Current attributes
+        cur_fg: u32,
+        cur_bg: u32,
+        cur_bold: bool,
+        cur_italic: bool,
+        cur_underline: bool,
+        cur_inverse: bool,
+        // Grid + diff cache
         grid: Grid,
         last_grid: Option<Grid>,
         threshold: f32,
+        // CSI parsing state
+        esc_active: bool,
+        esc_buf: Vec<u8>,
     }
 
     impl Emulator {
@@ -267,14 +278,39 @@ mod emulator {
                 rows,
                 cursor_col: 0,
                 cursor_row: 0,
+                cur_fg: 0xffffff,
+                cur_bg: 0x000000,
+                cur_bold: false,
+                cur_italic: false,
+                cur_underline: false,
+                cur_inverse: false,
                 grid,
                 last_grid: None,
                 threshold: 0.45,
+                esc_active: false,
+                esc_buf: Vec::with_capacity(32),
             }
         }
 
         pub fn feed_bytes(&mut self, bytes: &[u8]) {
             for &b in bytes {
+                // ESC handling
+                if self.esc_active {
+                    self.esc_buf.push(b);
+                    if Self::is_csi_final(b) {
+                        self.handle_csi();
+                        self.esc_active = false;
+                        self.esc_buf.clear();
+                    }
+                    continue;
+                }
+                if b == 0x1B {
+                    // ESC
+                    self.esc_active = true;
+                    self.esc_buf.clear();
+                    continue;
+                }
+
                 match b {
                     b'\n' => {
                         self.cursor_col = 0;
@@ -298,10 +334,18 @@ mod emulator {
                     b if b.is_ascii_graphic() || b == b' ' => {
                         let (r, c) = (self.cursor_row as usize, self.cursor_col as usize);
                         if r < self.grid.len() && c < self.grid[r].len() {
-                            self.grid[r][c] = Cell {
-                                ch: b as char,
-                                ..blank_cell()
-                            };
+                            let mut cell = blank_cell();
+                            cell.ch = b as char;
+                            cell.fg = self.cur_fg;
+                            cell.bg = self.cur_bg;
+                            cell.bold = self.cur_bold;
+                            cell.italic = self.cur_italic;
+                            cell.underline = self.cur_underline;
+                            cell.inverse = self.cur_inverse;
+                            if cell.inverse {
+                                std::mem::swap(&mut cell.fg, &mut cell.bg);
+                            }
+                            self.grid[r][c] = cell;
                         }
                         if self.cursor_col + 1 >= self.cols {
                             self.cursor_col = 0;
@@ -358,6 +402,195 @@ mod emulator {
         }
     }
 
+    impl Emulator {
+        fn is_csi_final(b: u8) -> bool {
+            (0x40..=0x7E).contains(&b)
+        }
+
+        fn handle_csi(&mut self) {
+            if self.esc_buf.first().copied() != Some(b'[') {
+                return;
+            }
+            let (final_b, rest) = match self.esc_buf.split_last() {
+                Some((f, r)) => (*f, r),
+                None => return,
+            };
+            // strip '[' prefix
+            let params = if rest.len() > 1 { &rest[1..] } else { &[][..] };
+            let s = std::str::from_utf8(params).unwrap_or("");
+            let parts: Vec<&str> = if s.is_empty() {
+                Vec::new()
+            } else {
+                s.split(';').collect()
+            };
+
+            match final_b as char {
+                'H' | 'f' => {
+                    let row = parts
+                        .get(0)
+                        .and_then(|x| x.parse::<u16>().ok())
+                        .unwrap_or(1);
+                    let col = parts
+                        .get(1)
+                        .and_then(|x| x.parse::<u16>().ok())
+                        .unwrap_or(1);
+                    self.cursor_row = row.saturating_sub(1).min(self.rows.saturating_sub(1));
+                    self.cursor_col = col.saturating_sub(1).min(self.cols.saturating_sub(1));
+                }
+                'A' => {
+                    let n = parts
+                        .get(0)
+                        .and_then(|x| x.parse::<u16>().ok())
+                        .unwrap_or(1);
+                    self.cursor_row = self.cursor_row.saturating_sub(n);
+                }
+                'B' => {
+                    let n = parts
+                        .get(0)
+                        .and_then(|x| x.parse::<u16>().ok())
+                        .unwrap_or(1);
+                    self.cursor_row = (self.cursor_row + n).min(self.rows.saturating_sub(1));
+                }
+                'C' => {
+                    let n = parts
+                        .get(0)
+                        .and_then(|x| x.parse::<u16>().ok())
+                        .unwrap_or(1);
+                    self.cursor_col = (self.cursor_col + n).min(self.cols.saturating_sub(1));
+                }
+                'D' => {
+                    let n = parts
+                        .get(0)
+                        .and_then(|x| x.parse::<u16>().ok())
+                        .unwrap_or(1);
+                    self.cursor_col = self.cursor_col.saturating_sub(n);
+                }
+                'G' => {
+                    let col = parts
+                        .get(0)
+                        .and_then(|x| x.parse::<u16>().ok())
+                        .unwrap_or(1);
+                    self.cursor_col = col.saturating_sub(1).min(self.cols.saturating_sub(1));
+                }
+                'K' => {
+                    let mode = parts
+                        .get(0)
+                        .and_then(|x| x.parse::<u16>().ok())
+                        .unwrap_or(0);
+                    let r = self.cursor_row as usize;
+                    match mode {
+                        0 => {
+                            for c in self.cursor_col as usize..self.cols as usize {
+                                self.grid[r][c] = blank_cell();
+                            }
+                        }
+                        1 => {
+                            for c in 0..=self.cursor_col as usize {
+                                self.grid[r][c] = blank_cell();
+                            }
+                        }
+                        2 => {
+                            for c in 0..self.cols as usize {
+                                self.grid[r][c] = blank_cell();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                'J' => {
+                    let mode = parts
+                        .get(0)
+                        .and_then(|x| x.parse::<u16>().ok())
+                        .unwrap_or(0);
+                    if mode == 2 {
+                        for r in 0..self.rows as usize {
+                            for c in 0..self.cols as usize {
+                                self.grid[r][c] = blank_cell();
+                            }
+                        }
+                        self.cursor_row = 0;
+                        self.cursor_col = 0;
+                    }
+                }
+                'm' => {
+                    // Avoid holding an immutable borrow of `parts` while mutably borrowing `self`
+                    let mut codes: Vec<u16> = Vec::new();
+                    if parts.is_empty() {
+                        codes.push(0);
+                    } else {
+                        for p in parts {
+                            if let Ok(code) = p.parse::<u16>() {
+                                codes.push(code);
+                            }
+                        }
+                    }
+                    for code in codes {
+                        self.apply_sgr(code);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn apply_sgr(&mut self, code: u16) {
+            match code {
+                0 => {
+                    self.cur_fg = 0xffffff;
+                    self.cur_bg = 0x000000;
+                    self.cur_bold = false;
+                    self.cur_italic = false;
+                    self.cur_underline = false;
+                    self.cur_inverse = false;
+                }
+                1 => self.cur_bold = true,
+                3 => self.cur_italic = true,
+                4 => self.cur_underline = true,
+                7 => self.cur_inverse = true,
+                21 | 22 => self.cur_bold = false,
+                23 => self.cur_italic = false,
+                24 => self.cur_underline = false,
+                27 => self.cur_inverse = false,
+                30..=37 => {
+                    self.cur_fg = ansi_8_color(code - 30);
+                }
+                40..=47 => {
+                    self.cur_bg = ansi_8_color(code - 40);
+                }
+                90..=97 => {
+                    self.cur_fg = ansi_bright_8_color(code - 90);
+                }
+                100..=107 => {
+                    self.cur_bg = ansi_bright_8_color(code - 100);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn ansi_8_color(idx: u16) -> u32 {
+        match idx {
+            0 => 0x000000,
+            1 => 0xcc0000,
+            2 => 0x00a600,
+            3 => 0x999900,
+            4 => 0x0000cc,
+            5 => 0xcc00cc,
+            6 => 0x00a6b2,
+            _ => 0xcccccc,
+        }
+    }
+    fn ansi_bright_8_color(idx: u16) -> u32 {
+        match idx {
+            0 => 0x4d4d4d,
+            1 => 0xff0000,
+            2 => 0x00ff00,
+            3 => 0xffff00,
+            4 => 0x0000ff,
+            5 => 0xff00ff,
+            6 => 0x00ffff,
+            _ => 0xffffff,
+        }
+    }
     fn blank_cell() -> Cell {
         Cell {
             ch: ' ',
