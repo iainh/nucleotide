@@ -53,9 +53,17 @@ impl TerminalRuntimeHandler {
         // Register globally so UI panels can fetch by TerminalId
         register_view_model(id, view.clone());
 
-        // Spawn a blocking thread to consume frames and update the view model
+        // Spawn a blocking thread to consume frames, coalescing bursts to the latest
         let handle = std::thread::spawn(move || {
-            while let Some(frame) = futures_executor::block_on(rx.recv()) {
+            loop {
+                // Wait for at least one frame
+                let Some(mut frame) = futures_executor::block_on(rx.recv()) else {
+                    break;
+                };
+                // Drain any queued frames to coalesce updates
+                while let Ok(next) = rx.try_recv() {
+                    frame = next;
+                }
                 let mut guard = view_clone.lock().unwrap();
                 guard.apply_frame(frame);
             }

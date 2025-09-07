@@ -135,13 +135,13 @@ pub mod session {
                         Emulator::new(cfg.cols.unwrap_or(80), cfg.rows.unwrap_or(24));
                     let mut buf = vec![0u8; 8192];
                     let mut last_emit = Instant::now();
-                    let window = Duration::from_millis(12);
+                    let window = Duration::from_millis(16); // ~60 FPS cap
                     loop {
                         match reader.read(&mut buf) {
                             Ok(0) => {
                                 // EOF: try to flush any pending changes
                                 if let Some(frame) = emulator.take_frame() {
-                                    let _ = tx.blocking_send(frame);
+                                    let _ = tx.try_send(frame);
                                 }
                                 break;
                             }
@@ -149,7 +149,7 @@ pub mod session {
                                 emulator.feed_bytes(&buf[..n]);
                                 if last_emit.elapsed() >= window {
                                     if let Some(frame) = emulator.take_frame() {
-                                        if tx.blocking_send(frame).is_err() {
+                                        if tx.try_send(frame).is_err() {
                                             break;
                                         }
                                     }
@@ -170,10 +170,7 @@ pub mod session {
                         match reader.read(&mut buf) {
                             Ok(0) => break, // EOF
                             Ok(n) => {
-                                if tx
-                                    .blocking_send(FramePayload::Raw(buf[..n].to_vec()))
-                                    .is_err()
-                                {
+                                if tx.try_send(FramePayload::Raw(buf[..n].to_vec())).is_err() {
                                     break;
                                 }
                             }
