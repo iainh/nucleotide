@@ -15,6 +15,7 @@ default-run = "nucl"
 
 [features]
 default = ["git"]
+terminal-emulator = ["nucleotide-terminal/emulator", "nucleotide-terminal-view/emulator"]
 unicode-lines = ["helix-core/unicode-lines"]
 integration = ["helix-event/integration_test"]
 git = ["helix-vcs/git"]
@@ -35,6 +36,9 @@ nucleotide-editor.workspace = true
 nucleotide-project.workspace = true
 nucleotide-env.workspace = true
 nucleotide-vcs.workspace = true
+nucleotide-terminal = { path = "../nucleotide-terminal" }
+nucleotide-terminal-view = { path = "../nucleotide-terminal-view" }
+nucleotide-terminal-panel = { path = "../nucleotide-terminal-panel" }
 
 # External dependencies
 gpui.workspace = true
@@ -56,6 +60,7 @@ ctor.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 futures-util.workspace = true
+futures-executor = "0.3"
 unicode-segmentation.workspace = true
 
 tracing.workspace = true

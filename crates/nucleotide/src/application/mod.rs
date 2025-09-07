@@ -6,6 +6,8 @@ pub mod completion_handler;
 pub mod document_handler;
 pub mod editor_handler;
 pub mod lsp_handler;
+#[cfg(feature = "terminal-emulator")]
+pub mod terminal_handler;
 pub mod view_handler;
 pub mod workspace_handler;
 
@@ -14,6 +16,8 @@ pub use completion_handler::CompletionHandler;
 pub use document_handler::DocumentHandler;
 pub use editor_handler::EditorHandler;
 pub use lsp_handler::LspHandler;
+#[cfg(feature = "terminal-emulator")]
+pub use terminal_handler::TerminalRuntimeHandler;
 pub use view_handler::ViewHandler;
 pub use workspace_handler::WorkspaceHandler;
 
@@ -2933,6 +2937,8 @@ impl Application {
 
         out
     }
+
+    // Note: Terminal panel is managed by Workspace via its overlay; no app-level show method.
 }
 
 // Implement capability traits for Application
@@ -5158,6 +5164,12 @@ pub fn init_editor(
         // Register FS operation handler
         let fs_handler = nucleotide_core::fs::FsOpHandler::new(handle.clone());
         handle.register_handler(fs_handler);
+        // Register Terminal runtime handler (behind feature)
+        #[cfg(feature = "terminal-emulator")]
+        {
+            let terminal_handler = crate::application::TerminalRuntimeHandler::new();
+            handle.register_handler(terminal_handler);
+        }
         handle
     };
 

@@ -1,0 +1,22 @@
+[package]
+name = "nucleotide-terminal-view"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "GPUI rendering primitives for terminal grid in Nucleotide (Layer 4)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
+
+[dependencies]
+nucleotide-events.workspace = true
+nucleotide-terminal = { path = "../nucleotide-terminal", optional = true }
+gpui.workspace = true
+once_cell.workspace = true
+
+[features]
+default = []
+emulator = ["nucleotide-terminal/emulator", "dep:nucleotide-terminal"]

@@ -49,6 +49,8 @@ use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
 use crate::utils;
 use crate::{Core, Input, InputEvent};
+use nucleotide_core::EventBus;
+use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_vcs::VcsServiceHandle;
 
 // (focus logging removed for commit; keep code minimal)
@@ -100,6 +102,10 @@ pub struct Workspace {
     // Leader key state (e.g., SPACE as prefix)
     leader_active: bool,
     leader_deadline: Option<std::time::Instant>,
+    // Terminal panel state
+    terminal_panel_visible: bool,
+    terminal_id: Option<TerminalId>,
+    next_terminal_id: u64,
 }
 
 // Pending file operation kinds awaiting user input (used with the prompt overlay)
@@ -113,6 +119,54 @@ enum PendingFileOp {
 impl EventEmitter<crate::Update> for Workspace {}
 
 impl Workspace {
+    fn toggle_terminal_panel(&mut self, cx: &mut Context<Self>) {
+        if self.terminal_panel_visible {
+            self.overlay
+                .update(cx, |overlay, cx| overlay.hide_terminal_panel(cx));
+            self.terminal_panel_visible = false;
+            cx.notify();
+            return;
+        }
+
+        // Ensure we have a terminal session id; spawn if needed
+        let terminal_id = if let Some(id) = self.terminal_id {
+            id
+        } else {
+            let id = TerminalId(self.next_terminal_id);
+            self.next_terminal_id += 1;
+            self.terminal_id = Some(id);
+            // Dispatch spawn event via application's event aggregator
+            let cwd = self.current_project_root.clone();
+            let shell = None;
+            let env = Vec::<(String, String)>::new();
+            self.core.update(cx, |app, _cx| {
+                if let Some(bus) = &app.event_aggregator {
+                    bus.dispatch_terminal(TerminalEvent::SpawnRequested {
+                        id,
+                        cwd,
+                        shell,
+                        env,
+                    });
+                } else {
+                    nucleotide_logging::warn!(
+                        "No event aggregator available; terminal spawn not dispatched"
+                    );
+                }
+            });
+            id
+        };
+
+        // Show panel via overlay
+        let panel = cx.new(|cx| {
+            let mut p = nucleotide_terminal_panel::TerminalPanel::new(terminal_id, 220.0);
+            p.initialize(cx);
+            p
+        });
+        self.overlay
+            .update(cx, |overlay, cx| overlay.show_terminal_panel(panel, cx));
+        self.terminal_panel_visible = true;
+        cx.notify();
+    }
     /// Compute document and LSP context for the status bar without triggering borrow conflicts.
     fn statusbar_doc_info(
         &self,
@@ -550,6 +604,9 @@ impl Workspace {
             delete_confirm_path: None,
             leader_active: false,
             leader_deadline: None,
+            terminal_panel_visible: false,
+            terminal_id: None,
+            next_terminal_id: 1,
         };
 
         // Set initial focus restore state
@@ -3692,7 +3749,8 @@ impl Workspace {
             crate::Update::Prompt(_)
             | crate::Update::Picker(_)
             | crate::Update::DirectoryPicker(_)
-            | crate::Update::DiagnosticsPanel(_) => {
+            | crate::Update::DiagnosticsPanel(_)
+            | crate::Update::TerminalPanel(_) => {
                 self.handle_overlay_update(cx);
             }
             crate::Update::Completion(_completion_view) => {
@@ -3817,6 +3875,9 @@ impl Workspace {
                             }
                             _ => {}
                         }
+                    }
+                    crate::types::AppEvent::Terminal(_term_event) => {
+                        // Terminal events currently handled by TerminalRuntimeHandler and overlay
                     }
                     crate::types::AppEvent::Workspace(workspace_event) => {
                         if let crate::types::WorkspaceEvent::FileSelected { path, source } =
@@ -4336,6 +4397,26 @@ impl Workspace {
                                     info!("Status bar file tree toggle clicked");
                                     workspace.show_file_tree = !workspace.show_file_tree;
                                     cx.notify();
+                                });
+                            })
+                    }),
+            )
+            .child(
+                // Terminal toggle button to the right of file tree button
+                div()
+                    .w(px(32.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child({
+                        let workspace_entity = cx.entity().clone();
+                        Button::icon_only("terminal-toggle", "icons/terminal.svg")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Small)
+                            .on_click(move |_event, _window, app_cx| {
+                                workspace_entity.update(app_cx, |workspace, cx| {
+                                    info!("Status bar terminal toggle clicked");
+                                    workspace.toggle_terminal_panel(cx);
                                 });
                             })
                     }),

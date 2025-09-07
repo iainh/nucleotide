@@ -25,6 +25,7 @@ pub struct OverlayView {
         )>,
     >,
     diagnostics_panel: Option<Entity<crate::DiagnosticsPanel>>,
+    terminal_panel: Option<Entity<nucleotide_terminal_panel::TerminalPanel>>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
 }
@@ -38,6 +39,7 @@ impl OverlayView {
             completion_view: None,
             code_action_pairs: None,
             diagnostics_panel: None,
+            terminal_panel: None,
             focus: focus.clone(),
             core: core.downgrade(),
         }
@@ -48,7 +50,8 @@ impl OverlayView {
             && self.native_picker_view.is_none()
             && self.native_prompt_view.is_none()
             && self.completion_view.is_none()
-            && self.diagnostics_panel.is_none();
+            && self.diagnostics_panel.is_none()
+            && self.terminal_panel.is_none();
 
         if !empty && self.completion_view.is_some() {
             nucleotide_logging::debug!("COMP: Overlay not empty - has completion view");
@@ -166,6 +169,20 @@ impl OverlayView {
         self.native_prompt_view = None;
         self.completion_view = None;
 
+        cx.notify();
+    }
+
+    pub fn show_terminal_panel(
+        &mut self,
+        panel: Entity<nucleotide_terminal_panel::TerminalPanel>,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_panel = Some(panel);
+        cx.notify();
+    }
+
+    pub fn hide_terminal_panel(&mut self, cx: &mut Context<Self>) {
+        self.terminal_panel = None;
         cx.notify();
     }
 
@@ -487,6 +504,11 @@ impl OverlayView {
                     },
                 )
                 .detach();
+                cx.notify();
+            }
+            crate::Update::TerminalPanel(panel) => {
+                nucleotide_logging::info!("TERMINAL: Showing Terminal panel overlay");
+                self.terminal_panel = Some(panel.clone());
                 cx.notify();
             }
             crate::Update::Picker(picker) => {
@@ -1475,6 +1497,35 @@ impl Render for OverlayView {
                         .offset(point(px(0.0), px(2.0))) // Small offset below cursor
                         .snap_to_window_with_margin(px(8.0))
                         .child(completion_view.clone()),
+                )
+                .into_any_element();
+        }
+
+        // Terminal panel - docked at bottom
+        if let Some(terminal_panel) = &self.terminal_panel {
+            let theme = cx.theme();
+            let tokens = &theme.tokens;
+
+            return div()
+                .key_context("OverlayTerminalPanel")
+                .absolute()
+                .size_full()
+                .bottom_0()
+                .left_0()
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .h(px(220.0))
+                        .bg(tokens.chrome.surface)
+                        .border_t_1()
+                        .border_color(tokens.chrome.border_muted)
+                        .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                        .child(terminal_panel.clone()),
                 )
                 .into_any_element();
         }

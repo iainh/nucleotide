@@ -14,6 +14,9 @@ members = [
     "crates/nucleotide-test-lsp",
     "crates/nucleotide-lsp-proxy",
     "crates/nucleotide",
+    "crates/nucleotide-terminal",
+    "crates/nucleotide-terminal-view",
+    "crates/nucleotide-terminal-panel",
 ]
 resolver = "2"
 

@@ -14,6 +14,7 @@ pub mod editor;
 pub mod handler;
 pub mod integration;
 pub mod lsp;
+pub mod terminal;
 pub mod ui;
 pub mod vcs;
 pub mod view;
@@ -29,6 +30,7 @@ pub mod v2 {
     pub use crate::handler;
     pub use crate::integration;
     pub use crate::lsp;
+    pub use crate::terminal;
     pub use crate::ui;
     pub use crate::vcs;
     pub use crate::view;

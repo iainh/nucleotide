@@ -107,6 +107,7 @@ pub enum Update {
     ShowFilePicker,
     ShowBufferPicker,
     DiagnosticsPanel(gpui::Entity<crate::DiagnosticsPanel>),
+    TerminalPanel(gpui::Entity<nucleotide_terminal_panel::TerminalPanel>),
 }
 
 impl std::fmt::Debug for Update {
@@ -159,6 +160,7 @@ impl std::fmt::Debug for Update {
             Update::ShowFilePicker => write!(f, "ShowFilePicker"),
             Update::ShowBufferPicker => write!(f, "ShowBufferPicker"),
             Update::DiagnosticsPanel(_) => write!(f, "DiagnosticsPanel(...)"),
+            Update::TerminalPanel(_) => write!(f, "TerminalPanel(...)"),
         }
     }
 }

@@ -6,8 +6,8 @@ use nucleotide_events::{
     integration::Event as IntegrationEvent,
     v2::{
         diagnostics::Event as DiagnosticsEvent, document::Event as DocumentEvent,
-        editor::Event as EditorEvent, lsp::Event as LspEvent, ui::Event as UiEvent,
-        vcs::Event as VcsEvent, workspace::Event as WorkspaceEvent,
+        editor::Event as EditorEvent, lsp::Event as LspEvent, terminal::Event as TerminalEvent,
+        ui::Event as UiEvent, vcs::Event as VcsEvent, workspace::Event as WorkspaceEvent,
     },
 };
 use std::sync::{Arc, Mutex};
@@ -20,6 +20,7 @@ pub enum AppEvent {
     Ui(UiEvent),
     Workspace(WorkspaceEvent),
     Lsp(LspEvent),
+    Terminal(TerminalEvent),
     Vcs(VcsEvent),
     Diagnostics(DiagnosticsEvent),
     Integration(IntegrationEvent),
@@ -67,6 +68,7 @@ impl EventAggregator {
                     AppEvent::Ui(e) => handler.handle_ui(e),
                     AppEvent::Workspace(e) => handler.handle_workspace(e),
                     AppEvent::Lsp(e) => handler.handle_lsp(e),
+                    AppEvent::Terminal(e) => handler.handle_terminal(e),
                     AppEvent::Vcs(e) => handler.handle_vcs(e),
                     AppEvent::Integration(e) => handler.handle_integration(e),
                     AppEvent::Diagnostics(e) => handler.handle_diagnostics(e),
@@ -110,6 +112,10 @@ impl EventBus for EventAggregator {
 
     fn dispatch_lsp(&self, event: LspEvent) {
         self.queue_event(AppEvent::Lsp(event));
+    }
+
+    fn dispatch_terminal(&self, event: TerminalEvent) {
+        self.queue_event(AppEvent::Terminal(event));
     }
 
     fn dispatch_vcs(&self, event: VcsEvent) {
@@ -184,6 +190,10 @@ impl EventBus for EventAggregatorHandle {
 
     fn dispatch_lsp(&self, event: LspEvent) {
         self.inner.dispatch_lsp(event);
+    }
+
+    fn dispatch_terminal(&self, event: TerminalEvent) {
+        self.inner.dispatch_terminal(event);
     }
 
     fn dispatch_vcs(&self, event: VcsEvent) {

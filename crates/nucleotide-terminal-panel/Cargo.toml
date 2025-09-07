@@ -1,0 +1,18 @@
+[package]
+name = "nucleotide-terminal-panel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Terminal panel, tabs, and actions wiring for Nucleotide (Layer 5)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
+
+[dependencies]
+nucleotide-events.workspace = true
+gpui.workspace = true
+nucleotide-terminal-view = { path = "../nucleotide-terminal-view" }
+nucleotide-ui.workspace = true

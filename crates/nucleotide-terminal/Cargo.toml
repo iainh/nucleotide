@@ -1,0 +1,23 @@
+[package]
+name = "nucleotide-terminal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Terminal session and PTY management for Nucleotide (Layer 3)"
+categories = ["text-editors", "gui"]
+rust-version = "1.88"
+
+[dependencies]
+nucleotide-events.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+portable-pty = "0.8"
+alacritty_terminal = { version = "0.25", optional = true }
+
+[features]
+default = []
+emulator = [] # lightweight grid emulator without external backend
