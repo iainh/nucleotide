@@ -47,7 +47,8 @@ impl Render for TerminalPanel {
         let border = tokens.chrome.border_muted;
 
         let mut container = div()
-            .size_full()
+            .w_full()
+            .h(gpui::px(self.height_px))
             .bg(bg)
             .border_t_1()
             .border_color(border)
@@ -55,7 +56,7 @@ impl Render for TerminalPanel {
             .flex_col();
 
         if let Some(view) = &self.view_entity {
-            container = container.child(div().flex_grow().child(view.clone()));
+            container = container.child(div().size_full().overflow_hidden().child(view.clone()));
         } else {
             container = container.child(
                 div()
