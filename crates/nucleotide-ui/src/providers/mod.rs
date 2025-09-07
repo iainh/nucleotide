@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn test_provider_scope_creation() {
         let mut context = ProviderContext::new();
-        let element_id: ElementId = "test-element".into();
+        let _element_id: ElementId = "test-element".into();
 
         let scope_id = context.create_scope();
         assert_eq!(scope_id.0, 0);

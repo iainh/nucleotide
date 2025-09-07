@@ -1522,7 +1522,7 @@ mod tests {
 
     #[test]
     fn test_key_string_conversion() {
-        let dispatcher = GlobalInputDispatcher::new();
+        let _dispatcher = GlobalInputDispatcher::new();
 
         // This would require creating a mock KeyDownEvent, which is complex
         // In a real test, you'd create appropriate test events and verify the conversion

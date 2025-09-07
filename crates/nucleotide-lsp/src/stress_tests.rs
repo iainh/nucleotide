@@ -229,7 +229,11 @@ edition = "2021"
         manager.start().await.expect("Manager should start");
 
         // Create projects
-        let project_types = [ProjectType::Rust, ProjectType::TypeScript, ProjectType::JavaScript];
+        let project_types = [
+            ProjectType::Rust,
+            ProjectType::TypeScript,
+            ProjectType::JavaScript,
+        ];
 
         let mut detection_tasks = Vec::new();
 

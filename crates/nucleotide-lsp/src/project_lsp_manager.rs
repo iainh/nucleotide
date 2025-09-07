@@ -299,11 +299,7 @@ impl ProjectLspManager {
 
     /// Get project information
     pub async fn get_project_info(&self, workspace_root: &std::path::Path) -> Option<ProjectInfo> {
-        self.projects
-            .read()
-            .await
-            .get(workspace_root)
-            .cloned()
+        self.projects.read().await.get(workspace_root).cloned()
     }
 
     /// Get managed servers for a workspace

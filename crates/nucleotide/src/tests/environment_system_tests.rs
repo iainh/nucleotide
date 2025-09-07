@@ -179,7 +179,6 @@ mod directory_shell_tests {
 /// These tests verify proper shell detection and command construction
 #[cfg(test)]
 mod shell_specific_tests {
-    use super::*;
     use nucleotide_env::shell_command_builder;
 
     #[tokio::test]

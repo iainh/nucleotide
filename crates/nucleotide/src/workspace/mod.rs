@@ -6674,11 +6674,11 @@ impl Render for Workspace {
                     window.minimize_window();
                 },
             ))
-            .on_action(cx.listener(
-                move |_, _: &crate::actions::window::Zoom, window, _cx| {
+            .on_action(
+                cx.listener(move |_, _: &crate::actions::window::Zoom, window, _cx| {
                     window.zoom_window();
-                },
-            ));
+                }),
+            );
 
         // Help and test actions
         let handle = self.handle.clone();
@@ -7639,13 +7639,13 @@ mod tests {
 
     // Helper struct for testing workspace functionality
     struct TestWorkspace {
-        current_project_root: Option<PathBuf>,
+        _current_project_root: Option<PathBuf>,
     }
 
     impl TestWorkspace {
         fn new() -> Self {
             Self {
-                current_project_root: None,
+                _current_project_root: None,
             }
         }
 

@@ -3,8 +3,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Decorations, ElementId, InteractiveElement, MouseButton, ParentElement, Pixels, Styled,
-    Window, WindowControlArea, div, px,
+    Decorations, ElementId, InteractiveElement, MouseButton, ParentElement, Pixels, Styled, Window,
+    WindowControlArea, div, px,
 };
 
 use crate::titlebar::linux_platform_detector::{

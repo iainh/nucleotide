@@ -1913,7 +1913,9 @@ mod tests {
             match (&self.initial_query, &self.initial_position) {
                 (Some(initial_query), Some(initial_pos)) => {
                     // Always refilter if position changed
-                    if let Some(new_pos) = new_position && new_pos != initial_pos {
+                    if let Some(new_pos) = new_position
+                        && new_pos != initial_pos
+                    {
                         return true;
                     }
 

@@ -95,8 +95,7 @@ impl LinuxPlatformInfo {
         let compositor_capability = detect_compositor_capability(window_manager);
         debug!("Compositor capability: {:?}", compositor_capability);
 
-        let (supports_minimize, supports_maximize) =
-            detect_window_capabilities(window_manager);
+        let (supports_minimize, supports_maximize) = detect_window_capabilities(window_manager);
         debug!(
             "Window capabilities - minimize: {}, maximize: {}",
             supports_minimize, supports_maximize
@@ -307,8 +306,14 @@ mod tests {
     #[test]
     fn test_button_layout_detection() {
         // Policy: always right by default across DEs
-        assert_eq!(detect_button_layout(DesktopEnvironment::Gnome), WindowButtonLayout::Right);
-        assert_eq!(detect_button_layout(DesktopEnvironment::Kde), WindowButtonLayout::Right);
+        assert_eq!(
+            detect_button_layout(DesktopEnvironment::Gnome),
+            WindowButtonLayout::Right
+        );
+        assert_eq!(
+            detect_button_layout(DesktopEnvironment::Kde),
+            WindowButtonLayout::Right
+        );
     }
 
     #[test]

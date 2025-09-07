@@ -940,15 +940,15 @@ mod tests {
     fn test_mix_oklch_monotonic_lightness() {
         let c1 = hsla(220.0 / 360.0, 0.8, 0.3, 1.0);
         let c2 = hsla(220.0 / 360.0, 0.8, 0.8, 1.0);
-        let mut last_L = None;
+        let mut last_l = None;
         for i in 0..=10 {
             let t = i as f32 / 10.0;
             let m = ColorTheory::mix_oklch(c1, c2, t);
             let lch = ColorTheory::hsla_to_oklch(m);
-            if let Some(prev) = last_L {
+            if let Some(prev) = last_l {
                 assert!(lch.L >= prev - 1e-5);
             }
-            last_L = Some(lch.L);
+            last_l = Some(lch.L);
         }
     }
 }

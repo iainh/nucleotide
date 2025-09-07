@@ -194,8 +194,7 @@ impl LinuxWindowControl {
                         WindowManager::Openbox | WindowManager::Fluxbox
                     )
             }
-            
-            };
+        };
 
         debug!(
             "Created Linux window control {:?} - enabled: {}",
@@ -278,7 +277,6 @@ impl RenderOnce for LinuxWindowControl {
                         debug!("Shade button clicked (custom implementation needed)");
                         // TODO: Implement window shading
                     }
-                    
                 }
             })
     }
@@ -397,7 +395,6 @@ impl RenderOnce for LinuxWindowControls {
                 LinuxControlType::Restore => "linux-restore",
                 LinuxControlType::Close => "linux-close",
                 LinuxControlType::Shade => "linux-shade",
-                
             };
 
             container = container.child(LinuxWindowControl::new(

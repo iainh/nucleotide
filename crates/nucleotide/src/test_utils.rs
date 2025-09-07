@@ -168,10 +168,7 @@ pub mod test_support {
                     | BridgedEvent::BufferPickerRequested => TestUpdate::DocumentChanged {
                         doc_id: helix_view::DocumentId::default(),
                     },
-                    // Fallback for any future variants
-                    _ => TestUpdate::DocumentChanged {
-                        doc_id: helix_view::DocumentId::default(),
-                    },
+                    // No fallback arm; all current variants handled above
                 };
 
                 let _ = update_tx.send(update);

@@ -143,22 +143,28 @@ async fn test_event_driven_command_pattern_end_to_end() {
                 .take()
                 .expect("Command receiver should be available");
 
-            if let Some(ProjectLspCommand::StartServer { workspace_root: _, server_name, language_id, response, span }) = command_rx.recv().await {
-                        let _guard = span.enter();
-                        println!("✓ Processing StartServer command through mock Application");
+            if let Some(ProjectLspCommand::StartServer {
+                workspace_root: _,
+                server_name,
+                language_id,
+                response,
+                span,
+            }) = command_rx.recv().await
+            {
+                let _guard = span.enter();
+                println!("✓ Processing StartServer command through mock Application");
 
-                        // Simulate successful server startup (simplified test)
-                        // In a real implementation, this would use actual HelixLspBridge
-                        use nucleotide_events::ServerStartResult;
-                        let mock_server_id = helix_lsp::LanguageServerId::default();
-                        let result = Ok(ServerStartResult {
-                            server_id: mock_server_id,
-                            server_name: server_name.clone(),
-                            language_id: language_id.clone(),
-                        });
+                // Simulate successful server startup (simplified test)
+                // In a real implementation, this would use actual HelixLspBridge
+                use nucleotide_events::ServerStartResult;
+                let mock_server_id = helix_lsp::LanguageServerId::default();
+                let result = Ok(ServerStartResult {
+                    server_id: mock_server_id,
+                    server_name: server_name.clone(),
+                    language_id: language_id.clone(),
+                });
 
-                        let _ = response.send(result);
-                    }
+                let _ = response.send(result);
             }
         })
     };
@@ -234,17 +240,23 @@ async fn test_event_driven_command_pattern_failure() {
                 .take()
                 .expect("Command receiver should be available");
 
-            if let Some(ProjectLspCommand::StartServer { workspace_root: _, server_name: _, language_id: _, response, span }) = command_rx.recv().await {
-                        let _guard = span.enter();
-                        println!("✓ Processing failing StartServer command");
+            if let Some(ProjectLspCommand::StartServer {
+                workspace_root: _,
+                server_name: _,
+                language_id: _,
+                response,
+                span,
+            }) = command_rx.recv().await
+            {
+                let _guard = span.enter();
+                println!("✓ Processing failing StartServer command");
 
-                        // Simulate failing result (simplified test)
-                        let result = Err(nucleotide_events::ProjectLspCommandError::ServerStartup(
-                            "Mock failure for testing".to_string(),
-                        ));
+                // Simulate failing result (simplified test)
+                let result = Err(nucleotide_events::ProjectLspCommandError::ServerStartup(
+                    "Mock failure for testing".to_string(),
+                ));
 
-                        let _ = response.send(result);
-                    }
+                let _ = response.send(result);
             }
         })
     };
