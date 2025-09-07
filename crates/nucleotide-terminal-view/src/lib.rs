@@ -2,9 +2,12 @@
 
 use nucleotide_events::v2::terminal::TerminalId;
 
-use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div};
+#[cfg(feature = "emulator")]
+use gpui::FontWeight;
+use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, rgb};
 #[cfg(feature = "emulator")]
 use nucleotide_terminal::frame::{Cell, FramePayload, GridDiff, GridSnapshot};
+use nucleotide_ui::ThemedContext;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -121,28 +124,136 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = {
+        let theme = _cx.theme();
+        let tokens = &theme.tokens;
+        let default_bg = tokens.colors.background;
+        let default_fg = tokens.colors.text_primary;
+
+        // Base container styling: editor-like background, foreground, and monospace font
+        let mut container = div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .overflow_hidden()
+            .bg(default_bg)
+            .text_color(default_fg)
+            .font_family("JetBrains Mono")
+            .text_size(tokens.sizes.text_md);
+
+        // Helper to convert emulator RGB u32 to gpui color
+        #[inline]
+        fn color_from_u32(c: u32) -> gpui::Hsla {
+            rgb(c).into()
+        }
+
+        // Render
+        {
             let guard = self.model.lock().unwrap();
+
             #[cfg(feature = "emulator")]
             {
-                // Render grid rows into strings (ignoring per-cell color/style for now)
-                let mut lines: Vec<String> = Vec::with_capacity(guard.grid.len());
+                // Render each row by grouping runs of same style
                 for row in &guard.grid {
-                    let s: String = row.iter().map(|c| c.ch).collect();
-                    lines.push(s);
+                    let mut line = div().flex().flex_row();
+
+                    // Accumulate runs
+                    let mut cur_fg = 0xffffffff; // sentinel to force first run
+                    let mut cur_bg = 0xffffffff;
+                    let mut cur_bold = false;
+                    let mut cur_italic = false;
+                    let mut cur_underline = false;
+                    let mut buf = String::new();
+
+                    let mut flush_run = |mut line_in: gpui::Div,
+                                         text: &mut String,
+                                         fg: u32,
+                                         bg: u32,
+                                         bold: bool,
+                                         italic: bool,
+                                         underline: bool| {
+                        if text.is_empty() {
+                            return line_in;
+                        }
+                        // Map emulator defaults (fg=0xffffff, bg=0x000000) to theme defaults
+                        let mapped_fg = if fg == 0xffffff {
+                            None
+                        } else {
+                            Some(color_from_u32(fg))
+                        };
+                        let mapped_bg = if bg == 0x000000 {
+                            None
+                        } else {
+                            Some(color_from_u32(bg))
+                        };
+
+                        let mut run = div().child(std::mem::take(text));
+                        if let Some(c) = mapped_fg {
+                            run = run.text_color(c);
+                        }
+                        if let Some(c) = mapped_bg {
+                            run = run.bg(c);
+                        }
+                        if bold {
+                            run = run.font_weight(FontWeight::BOLD);
+                        }
+                        if italic {
+                            run = run.italic();
+                        }
+                        if underline {
+                            run = run.underline();
+                        }
+                        line_in.child(run)
+                    };
+
+                    for cell in row {
+                        let (fg, bg, bold, italic, underline) =
+                            (cell.fg, cell.bg, cell.bold, cell.italic, cell.underline);
+                        if fg != cur_fg
+                            || bg != cur_bg
+                            || bold != cur_bold
+                            || italic != cur_italic
+                            || underline != cur_underline
+                        {
+                            // flush previous run
+                            line = flush_run(
+                                line,
+                                &mut buf,
+                                cur_fg,
+                                cur_bg,
+                                cur_bold,
+                                cur_italic,
+                                cur_underline,
+                            );
+                            cur_fg = fg;
+                            cur_bg = bg;
+                            cur_bold = bold;
+                            cur_italic = italic;
+                            cur_underline = underline;
+                        }
+                        buf.push(cell.ch);
+                    }
+                    // flush last
+                    line = flush_run(
+                        line,
+                        &mut buf,
+                        cur_fg,
+                        cur_bg,
+                        cur_bold,
+                        cur_italic,
+                        cur_underline,
+                    );
+
+                    container = container.child(line);
                 }
-                lines
             }
+
             #[cfg(not(feature = "emulator"))]
             {
-                vec![String::from("Terminal emulator disabled")] // placeholder
+                // No emulator: show a placeholder with correct styling
+                container = container.child(div().child("Terminal emulator disabled"));
             }
-        };
-
-        let mut container = div().flex().flex_col().size_full().overflow_hidden();
-        for line in snapshot {
-            container = container.child(div().text_size(gpui::px(12.0)).child(line));
         }
+
         container
     }
 }
