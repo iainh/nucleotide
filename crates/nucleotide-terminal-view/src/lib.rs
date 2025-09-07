@@ -129,7 +129,7 @@ impl Render for TerminalView {
         let default_bg = tokens.colors.background;
         let default_fg = tokens.colors.text_primary;
 
-        // Base container styling: editor-like background, foreground, and monospace font
+        // Base container styling: editor-like background, foreground, and configured monospace font
         let mut container = div()
             .flex()
             .flex_col()
@@ -137,8 +137,14 @@ impl Render for TerminalView {
             .overflow_hidden()
             .bg(default_bg)
             .text_color(default_fg)
-            .font_family("JetBrains Mono")
             .text_size(tokens.sizes.text_md);
+
+        // Apply editor font configuration (family/size/weight) to match the editor
+        let editor_font = _cx.global::<nucleotide_types::EditorFontConfig>();
+        container = container
+            .font_family(editor_font.family.clone())
+            .text_size(gpui::px(editor_font.size))
+            .font_weight(editor_font.weight.into());
 
         // Helper to convert emulator RGB u32 to gpui color
         #[inline]

@@ -4925,6 +4925,7 @@ dependencies = [
  "gpui",
  "nucleotide-events",
  "nucleotide-terminal",
+ "nucleotide-types",
  "nucleotide-ui",
  "once_cell",
 ]

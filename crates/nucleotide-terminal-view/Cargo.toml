@@ -17,6 +17,7 @@ nucleotide-terminal = { path = "../nucleotide-terminal", optional = true }
 gpui.workspace = true
 once_cell.workspace = true
 nucleotide-ui.workspace = true
+nucleotide-types = { path = "../nucleotide-types", features = ["gpui-bridge"] }
 
 [features]
 default = []
