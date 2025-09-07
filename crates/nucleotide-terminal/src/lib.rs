@@ -244,6 +244,8 @@ pub mod session {
 #[cfg(feature = "emulator")]
 mod emulator {
     use crate::frame::{Cell, ChangedLine, ChangedRange, FramePayload, GridDiff, GridSnapshot};
+    use unicode_width::UnicodeWidthChar;
+    use vte::{Params, Parser, Perform};
 
     type Grid = Vec<Vec<Cell>>;
 
@@ -254,6 +256,8 @@ mod emulator {
         cursor_row: u16,
         last_cursor_col: u16,
         last_cursor_row: u16,
+        scroll_top: u16,
+        scroll_bottom: u16,
         // Current attributes
         cur_fg: u32,
         cur_bg: u32,
@@ -265,7 +269,10 @@ mod emulator {
         grid: Grid,
         last_grid: Option<Grid>,
         threshold: f32,
-        // CSI parsing state
+        // vte parser + scroll tracking
+        parser: Parser,
+        scrolled_delta: i32,
+        // legacy fields retained for unused legacy CSI helpers
         esc_active: bool,
         esc_buf: Vec<u8>,
     }
@@ -283,6 +290,8 @@ mod emulator {
                 cursor_row: 0,
                 last_cursor_col: 0,
                 last_cursor_row: 0,
+                scroll_top: 0,
+                scroll_bottom: rows.saturating_sub(1),
                 cur_fg: 0xffffff,
                 cur_bg: 0x000000,
                 cur_bold: false,
@@ -292,112 +301,20 @@ mod emulator {
                 grid,
                 last_grid: None,
                 threshold: 0.45,
+                parser: Parser::new(),
+                scrolled_delta: 0,
                 esc_active: false,
                 esc_buf: Vec::with_capacity(32),
             }
         }
 
         pub fn feed_bytes(&mut self, bytes: &[u8]) {
+            // Temporarily take the parser to appease the borrow checker
+            let mut parser = std::mem::take(&mut self.parser);
             for &b in bytes {
-                // ESC handling (CSI and OSC)
-                if self.esc_active {
-                    // First byte after ESC identifies CSI '[' or OSC ']'
-                    if self.esc_buf.is_empty() {
-                        self.esc_buf.push(b);
-                        continue;
-                    }
-                    // CSI path: ESC [ ... final
-                    if self.esc_buf[0] == b'[' {
-                        self.esc_buf.push(b);
-                        if Self::is_csi_final(b) {
-                            self.handle_csi();
-                            self.esc_active = false;
-                            self.esc_buf.clear();
-                        }
-                        continue;
-                    }
-                    // OSC path: ESC ] ... (BEL or ESC \)
-                    if self.esc_buf[0] == b']' {
-                        // Accumulate until BEL or ESC \
-                        if b == 0x07 {
-                            // BEL terminator
-                            self.esc_active = false;
-                            self.esc_buf.clear();
-                            continue;
-                        }
-                        // Detect ESC \
-                        if let Some(&prev) = self.esc_buf.last() {
-                            if prev == 0x1B && b == b'\\' {
-                                self.esc_active = false;
-                                self.esc_buf.clear();
-                                continue;
-                            }
-                        }
-                        self.esc_buf.push(b);
-                        continue;
-                    }
-                    // Unknown ESC sequence: cancel safely
-                    self.esc_active = false;
-                    self.esc_buf.clear();
-                }
-                if b == 0x1B {
-                    // ESC
-                    self.esc_active = true;
-                    self.esc_buf.clear();
-                    continue;
-                }
-
-                match b {
-                    b'\n' => {
-                        self.cursor_col = 0;
-                        if self.cursor_row + 1 >= self.rows {
-                            self.grid.remove(0);
-                            self.grid.push(vec![blank_cell(); self.cols as usize]);
-                        } else {
-                            self.cursor_row += 1;
-                        }
-                    }
-                    b'\r' => self.cursor_col = 0,
-                    0x08 => {
-                        if self.cursor_col > 0 {
-                            self.cursor_col -= 1;
-                            let (r, c) = (self.cursor_row as usize, self.cursor_col as usize);
-                            if r < self.grid.len() && c < self.grid[r].len() {
-                                self.grid[r][c] = blank_cell();
-                            }
-                        }
-                    }
-                    b if b.is_ascii_graphic() || b == b' ' => {
-                        let (r, c) = (self.cursor_row as usize, self.cursor_col as usize);
-                        if r < self.grid.len() && c < self.grid[r].len() {
-                            let mut cell = blank_cell();
-                            cell.ch = b as char;
-                            cell.fg = self.cur_fg;
-                            cell.bg = self.cur_bg;
-                            cell.bold = self.cur_bold;
-                            cell.italic = self.cur_italic;
-                            cell.underline = self.cur_underline;
-                            cell.inverse = self.cur_inverse;
-                            if cell.inverse {
-                                std::mem::swap(&mut cell.fg, &mut cell.bg);
-                            }
-                            self.grid[r][c] = cell;
-                        }
-                        if self.cursor_col + 1 >= self.cols {
-                            self.cursor_col = 0;
-                            if self.cursor_row + 1 >= self.rows {
-                                self.grid.remove(0);
-                                self.grid.push(vec![blank_cell(); self.cols as usize]);
-                            } else {
-                                self.cursor_row += 1;
-                            }
-                        } else {
-                            self.cursor_col += 1;
-                        }
-                    }
-                    _ => {}
-                }
+                parser.advance(self, b);
             }
+            self.parser = parser;
         }
 
         pub fn take_frame(&mut self) -> Option<FramePayload> {
@@ -419,6 +336,10 @@ mod emulator {
                 }
                 Some(prev) => {
                     let (mut diff, changed) = build_diff(&prev, &current);
+                    if self.scrolled_delta != 0 {
+                        diff.scrolled = Some(self.scrolled_delta);
+                        self.scrolled_delta = 0;
+                    }
                     diff.cursor_row = self.cursor_row;
                     diff.cursor_col = self.cursor_col;
                     let total = (rows as usize) * (cols as usize);
@@ -707,5 +628,302 @@ mod emulator {
             },
             changed_cells,
         )
+    }
+
+    // vte-based performer implementation
+    impl Emulator {
+        fn clamp_cursor(&mut self) {
+            if self.cursor_row >= self.rows {
+                self.cursor_row = self.rows.saturating_sub(1);
+            }
+            if self.cursor_col >= self.cols {
+                self.cursor_col = self.cols.saturating_sub(1);
+            }
+        }
+        fn set_cell(&mut self, r: u16, c: u16, ch: char) {
+            let r_us = r as usize;
+            let c_us = c as usize;
+            if r_us < self.grid.len() && c_us < self.grid[r_us].len() {
+                let mut cell = self.grid[r_us][c_us];
+                cell.ch = ch;
+                cell.fg = self.cur_fg;
+                cell.bg = self.cur_bg;
+                cell.bold = self.cur_bold;
+                cell.italic = self.cur_italic;
+                cell.underline = self.cur_underline;
+                cell.inverse = self.cur_inverse;
+                if cell.inverse {
+                    std::mem::swap(&mut cell.fg, &mut cell.bg);
+                }
+                self.grid[r_us][c_us] = cell;
+            }
+        }
+        fn index(&mut self) {
+            if self.cursor_row >= self.scroll_bottom {
+                let top = self.scroll_top as usize;
+                let bottom = self.scroll_bottom as usize;
+                let region_len = bottom - top + 1;
+                for i in 0..(region_len - 1) {
+                    self.grid[top + i] = self.grid[top + i + 1].clone();
+                }
+                self.grid[bottom] = vec![blank_cell(); self.cols as usize];
+                self.scrolled_delta += 1;
+            } else {
+                self.cursor_row = (self.cursor_row + 1).min(self.rows.saturating_sub(1));
+            }
+        }
+        fn reverse_index(&mut self) {
+            if self.cursor_row <= self.scroll_top {
+                let top = self.scroll_top as usize;
+                let bottom = self.scroll_bottom as usize;
+                for i in (1..(bottom - top + 1)).rev() {
+                    self.grid[top + i] = self.grid[top + i - 1].clone();
+                }
+                self.grid[top] = vec![blank_cell(); self.cols as usize];
+                self.scrolled_delta -= 1;
+            } else {
+                self.cursor_row = self.cursor_row.saturating_sub(1);
+            }
+        }
+        fn erase_in_display(&mut self, mode: u16) {
+            match mode {
+                0 => {
+                    let r = self.cursor_row as usize;
+                    let c = self.cursor_col as usize;
+                    for col in c..self.cols as usize {
+                        self.grid[r][col] = blank_cell();
+                    }
+                    for row in (r + 1)..self.rows as usize {
+                        self.grid[row].fill(blank_cell());
+                    }
+                }
+                1 => {
+                    for row in 0..=self.cursor_row as usize {
+                        if row < self.grid.len() {
+                            let end = if row == self.cursor_row as usize {
+                                self.cursor_col as usize
+                            } else {
+                                self.cols as usize
+                            };
+                            for col in 0..end {
+                                self.grid[row][col] = blank_cell();
+                            }
+                        }
+                    }
+                }
+                2 => {
+                    for row in 0..self.rows as usize {
+                        self.grid[row].fill(blank_cell());
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn erase_in_line(&mut self, mode: u16) {
+            let r = self.cursor_row as usize;
+            match mode {
+                0 => {
+                    for col in self.cursor_col as usize..self.cols as usize {
+                        self.grid[r][col] = blank_cell();
+                    }
+                }
+                1 => {
+                    for col in 0..=self.cursor_col as usize {
+                        self.grid[r][col] = blank_cell();
+                    }
+                }
+                2 => self.grid[r].fill(blank_cell()),
+                _ => {}
+            }
+        }
+        fn move_to(&mut self, row1: u16, col1: u16) {
+            self.cursor_row = row1.saturating_sub(1).min(self.rows.saturating_sub(1));
+            self.cursor_col = col1.saturating_sub(1).min(self.cols.saturating_sub(1));
+            self.clamp_cursor();
+        }
+        fn apply_sgr_params(&mut self, params: &[u16]) {
+            let mut it = params.iter().copied().peekable();
+            while let Some(p) = it.next() {
+                match p {
+                    0
+                    | 1
+                    | 3
+                    | 4
+                    | 7
+                    | 21
+                    | 22
+                    | 23
+                    | 24
+                    | 27
+                    | 30..=37
+                    | 40..=47
+                    | 90..=97
+                    | 100..=107 => {
+                        self.apply_sgr(p);
+                    }
+                    38 | 48 => {
+                        let is_fg = p == 38;
+                        match it.peek().copied() {
+                            Some(2) => {
+                                it.next();
+                                let r = it.next().unwrap_or(0);
+                                let g = it.next().unwrap_or(0);
+                                let b = it.next().unwrap_or(0);
+                                let rgb = ((r as u32 & 0xff) << 16)
+                                    | ((g as u32 & 0xff) << 8)
+                                    | (b as u32 & 0xff);
+                                if is_fg {
+                                    self.cur_fg = rgb;
+                                } else {
+                                    self.cur_bg = rgb;
+                                }
+                            }
+                            Some(5) => {
+                                it.next();
+                                let idx = it.next().unwrap_or(0);
+                                // 256-color approximation
+                                let c = if idx < 16 {
+                                    ansi_bright_8_color(idx)
+                                } else if (16..=231).contains(&idx) {
+                                    let i = idx as u32 - 16;
+                                    let r = (i / 36) % 6;
+                                    let g = (i / 6) % 6;
+                                    let b = i % 6;
+                                    let comp = |v: u32| if v == 0 { 0 } else { 55 + 40 * v } as u32;
+                                    (comp(r) << 16) | (comp(g) << 8) | comp(b)
+                                } else {
+                                    let gray = 8 + 10 * (idx as u32 - 232);
+                                    (gray << 16) | (gray << 8) | gray
+                                };
+                                if is_fg {
+                                    self.cur_fg = c;
+                                } else {
+                                    self.cur_bg = c;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    impl Perform for Emulator {
+        fn print(&mut self, c: char) {
+            let w = UnicodeWidthChar::width(c).unwrap_or(1) as u16;
+            self.set_cell(self.cursor_row, self.cursor_col, c);
+            if w == 2 && self.cursor_col + 1 < self.cols {
+                self.set_cell(self.cursor_row, self.cursor_col + 1, ' ');
+                self.cursor_col = (self.cursor_col + 2).min(self.cols.saturating_sub(1));
+            } else if self.cursor_col + 1 >= self.cols {
+                self.cursor_col = 0;
+                self.index();
+            } else {
+                self.cursor_col += 1;
+            }
+        }
+
+        fn execute(&mut self, byte: u8) {
+            match byte {
+                b'\n' => {
+                    self.cursor_col = 0;
+                    self.index();
+                }
+                b'\r' => {
+                    self.cursor_col = 0;
+                }
+                0x08 => {
+                    if self.cursor_col > 0 {
+                        self.cursor_col -= 1;
+                        self.set_cell(self.cursor_row, self.cursor_col, ' ');
+                    }
+                }
+                b'\t' => {
+                    let next = ((self.cursor_col / 8) + 1) * 8;
+                    self.cursor_col = next.min(self.cols.saturating_sub(1));
+                }
+                _ => {}
+            }
+        }
+
+        fn csi_dispatch(
+            &mut self,
+            params: &Params,
+            _intermediates: &[u8],
+            _ignore: bool,
+            action: char,
+        ) {
+            let num = |i: usize, default: u16| -> u16 {
+                params
+                    .iter()
+                    .nth(i)
+                    .and_then(|p| p.iter().next().copied())
+                    .unwrap_or(default)
+            };
+            match action {
+                'H' | 'f' => {
+                    let row = num(0, 1);
+                    let col = num(1, 1);
+                    self.move_to(row, col);
+                }
+                'A' => {
+                    let n = num(0, 1);
+                    self.cursor_row = self.cursor_row.saturating_sub(n);
+                }
+                'B' => {
+                    let n = num(0, 1);
+                    self.cursor_row = (self.cursor_row + n).min(self.rows.saturating_sub(1));
+                }
+                'C' => {
+                    let n = num(0, 1);
+                    self.cursor_col = (self.cursor_col + n).min(self.cols.saturating_sub(1));
+                }
+                'D' => {
+                    let n = num(0, 1);
+                    self.cursor_col = self.cursor_col.saturating_sub(n);
+                }
+                'G' => {
+                    let col = num(0, 1);
+                    self.cursor_col = col.saturating_sub(1).min(self.cols.saturating_sub(1));
+                }
+                'J' => {
+                    let m = num(0, 0);
+                    self.erase_in_display(m);
+                }
+                'K' => {
+                    let m = num(0, 0);
+                    self.erase_in_line(m);
+                }
+                'm' => {
+                    let flat: Vec<u16> = params.iter().flat_map(|p| p.iter().copied()).collect();
+                    let vals = if flat.is_empty() { vec![0u16] } else { flat };
+                    self.apply_sgr_params(&vals);
+                }
+                'r' => {
+                    let top = num(0, 1).saturating_sub(1).min(self.rows.saturating_sub(1));
+                    let bot = num(1, self.rows)
+                        .saturating_sub(1)
+                        .min(self.rows.saturating_sub(1));
+                    self.scroll_top = top;
+                    self.scroll_bottom = bot.max(top);
+                    self.move_to(1, 1);
+                }
+                _ => {}
+            }
+        }
+
+        fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
+            match byte {
+                b'M' => self.reverse_index(), // RI
+                b'D' => self.index(),         // IND
+                _ => {}
+            }
+        }
+        fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
+        fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
+        fn put(&mut self, _byte: u8) {}
+        fn unhook(&mut self) {}
     }
 }

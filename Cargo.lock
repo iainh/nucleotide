@@ -4906,6 +4906,8 @@ dependencies = [
  "nucleotide-events",
  "portable-pty",
  "tokio",
+ "unicode-width 0.1.12",
+ "vte",
 ]
 
 [[package]]
@@ -8185,6 +8187,7 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a0b683b20ef64071ff03745b14391751f6beab06a54347885459b77a3f2caa5"
 dependencies = [
+ "arrayvec",
  "bitflags 2.9.3",
  "cursor-icon",
  "log",

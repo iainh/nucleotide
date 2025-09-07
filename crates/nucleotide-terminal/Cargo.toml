@@ -17,7 +17,9 @@ tokio.workspace = true
 anyhow.workspace = true
 portable-pty = "0.8"
 alacritty_terminal = { version = "0.25", optional = true }
+vte = { version = "0.13", optional = true }
+unicode-width = { version = "0.1", optional = true }
 
 [features]
 default = []
-emulator = [] # lightweight grid emulator without external backend
+emulator = ["vte", "unicode-width"] # vte-based emulator
