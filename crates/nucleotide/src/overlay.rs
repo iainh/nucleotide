@@ -4,13 +4,14 @@ use gpui::{
     div, px,
 };
 use helix_stdx::rope::RopeSliceExt;
+use nucleotide_core::EventBus;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::completion_v2::CompletionView;
 use nucleotide_ui::picker::Picker;
 use nucleotide_ui::picker_view::{PickerItem, PickerView};
 use nucleotide_ui::prompt::{Prompt, PromptElement};
 use nucleotide_ui::prompt_view::PromptView;
-use nucleotide_ui::theme_manager::HelixThemedContext;
+use nucleotide_ui::theme_manager::HelixThemedContext; // bring dispatch_* trait methods into scope
 
 pub struct OverlayView {
     prompt: Option<Prompt>,
@@ -1302,6 +1303,131 @@ impl OverlayView {
     }
 }
 
+// Translate a GPUI key event to terminal bytes suitable for PTY input.
+// Handles printable text, control keys, arrows/navigation and a subset of function keys.
+fn translate_key_to_bytes(event: &gpui::KeyDownEvent) -> Vec<u8> {
+    use gpui::Modifiers;
+
+    let ks = &event.keystroke;
+    let mods: &Modifiers = &ks.modifiers;
+
+    // Helper: map ctrl+key to control character
+    fn ctrl_byte_for(key: &str) -> Option<u8> {
+        if key.len() == 1 {
+            let ch = key.as_bytes()[0].to_ascii_uppercase();
+            if (b'A'..=b'Z').contains(&ch) {
+                return Some(ch - b'@'); // Ctrl-A => 0x01 ... Ctrl-Z => 0x1A
+            }
+            if ch == b' ' {
+                return Some(0x00); // Ctrl-Space => NUL
+            }
+        }
+        match key {
+            "@" => Some(0x00),
+            "[" => Some(0x1B), // ESC
+            "\\" => Some(0x1C),
+            "]" => Some(0x1D),
+            "^" => Some(0x1E),
+            "_" => Some(0x1F),
+            "space" => Some(0x00),
+            _ => None,
+        }
+    }
+
+    // If platform/cmd is held, treat as app shortcut; don't send to PTY
+    if mods.platform {
+        return Vec::new();
+    }
+
+    // If there is a typed character from IME and no control/platform/alt (except shift), send it
+    if let Some(s) = &ks.key_char {
+        // If Alt is held, prefix ESC to emulate Meta behavior
+        if mods.alt && !mods.control {
+            let mut out = vec![0x1B];
+            out.extend_from_slice(s.as_bytes());
+            return out;
+        }
+        return s.as_bytes().to_vec();
+    }
+
+    // Control-modified keys
+    if mods.control {
+        if let Some(b) = ctrl_byte_for(ks.key.as_str()) {
+            // Support Alt as ESC prefix on control sequences that are printable/control bytes
+            if mods.alt {
+                return vec![0x1B, b];
+            }
+            return vec![b];
+        }
+    }
+
+    // Named non-printable keys and navigation
+    let seq: Option<&[u8]> = match ks.key.as_str() {
+        // Basics
+        "enter" => Some(b"\r"),
+        "tab" => Some(b"\t"),
+        "backspace" => Some(&[0x7F]),
+        "escape" => Some(&[0x1B]),
+
+        // Arrows
+        "up" => Some(b"\x1b[A"),
+        "down" => Some(b"\x1b[B"),
+        "right" => Some(b"\x1b[C"),
+        "left" => Some(b"\x1b[D"),
+
+        // Navigation
+        "home" => Some(b"\x1b[H"),
+        "end" => Some(b"\x1b[F"),
+        "insert" => Some(b"\x1b[2~"),
+        "delete" => Some(b"\x1b[3~"),
+        "pageup" => Some(b"\x1b[5~"),
+        "pagedown" => Some(b"\x1b[6~"),
+
+        // Function keys (xterm common mappings)
+        "f1" => Some(b"\x1bOP"),
+        "f2" => Some(b"\x1bOQ"),
+        "f3" => Some(b"\x1bOR"),
+        "f4" => Some(b"\x1bOS"),
+        "f5" => Some(b"\x1b[15~"),
+        "f6" => Some(b"\x1b[17~"),
+        "f7" => Some(b"\x1b[18~"),
+        "f8" => Some(b"\x1b[19~"),
+        "f9" => Some(b"\x1b[20~"),
+        "f10" => Some(b"\x1b[21~"),
+        "f11" => Some(b"\x1b[23~"),
+        "f12" => Some(b"\x1b[24~"),
+
+        _ => None,
+    };
+    if let Some(s) = seq {
+        if mods.alt {
+            // Prefix ESC to denote Meta for navigation keys
+            let mut out = Vec::with_capacity(1 + s.len());
+            out.push(0x1B);
+            out.extend_from_slice(s);
+            return out;
+        }
+        return s.to_vec();
+    }
+
+    // If key looks printable but key_char wasn't provided (e.g., synthetic), synthesize from key
+    if ks.key.len() == 1 {
+        let mut ch = ks.key.as_bytes()[0] as char;
+        if mods.shift {
+            ch = ch.to_ascii_uppercase();
+        }
+        let mut out = Vec::new();
+        if mods.alt {
+            out.push(0x1B);
+        }
+        out.extend_from_slice(ch.to_string().as_bytes());
+        return out;
+    }
+
+    // Unhandled -> no bytes
+    Vec::new()
+}
+
 /// Layout information for positioning UI elements relative to workspace
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WorkspaceLayoutInfo {
@@ -1513,6 +1639,32 @@ impl Render for OverlayView {
                 .bottom_0()
                 .left_0()
                 .occlude()
+                .track_focus(&self.focus)
+                .on_key_down(cx.listener(
+                    |this: &mut OverlayView, event: &gpui::KeyDownEvent, _window, cx| {
+                        // Forward key input to terminal as bytes
+                        if let Some(core) = this.core.upgrade() {
+                            let maybe_id = this.terminal_panel.as_ref().map(|p| p.read(cx).active);
+                            if let Some(id) = maybe_id {
+                                let bytes = translate_key_to_bytes(event);
+                                if !bytes.is_empty() {
+                                    core.update(cx, |app, _| {
+                                        if let Some(bus) = &app.event_aggregator {
+                                            bus.dispatch_terminal(
+                                                nucleotide_events::v2::terminal::Event::Input {
+                                                    id,
+                                                    bytes,
+                                                },
+                                            );
+                                        }
+                                    });
+                                    // We've handled this keystroke for the terminal; don't let it reach the editor
+                                    cx.stop_propagation();
+                                }
+                            }
+                        }
+                    },
+                ))
                 .on_mouse_down(MouseButton::Left, |_, _, _| {})
                 .child(
                     div()

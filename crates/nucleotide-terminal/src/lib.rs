@@ -294,15 +294,46 @@ mod emulator {
 
         pub fn feed_bytes(&mut self, bytes: &[u8]) {
             for &b in bytes {
-                // ESC handling
+                // ESC handling (CSI and OSC)
                 if self.esc_active {
-                    self.esc_buf.push(b);
-                    if Self::is_csi_final(b) {
-                        self.handle_csi();
-                        self.esc_active = false;
-                        self.esc_buf.clear();
+                    // First byte after ESC identifies CSI '[' or OSC ']'
+                    if self.esc_buf.is_empty() {
+                        self.esc_buf.push(b);
+                        continue;
                     }
-                    continue;
+                    // CSI path: ESC [ ... final
+                    if self.esc_buf[0] == b'[' {
+                        self.esc_buf.push(b);
+                        if Self::is_csi_final(b) {
+                            self.handle_csi();
+                            self.esc_active = false;
+                            self.esc_buf.clear();
+                        }
+                        continue;
+                    }
+                    // OSC path: ESC ] ... (BEL or ESC \)
+                    if self.esc_buf[0] == b']' {
+                        // Accumulate until BEL or ESC \
+                        if b == 0x07 {
+                            // BEL terminator
+                            self.esc_active = false;
+                            self.esc_buf.clear();
+                            continue;
+                        }
+                        // Detect ESC \
+                        if let Some(&prev) = self.esc_buf.last() {
+                            if prev == 0x1B && b == b'\\' {
+                                self.esc_active = false;
+                                self.esc_buf.clear();
+                                continue;
+                            }
+                        }
+                        self.esc_buf.push(b);
+                        continue;
+                    }
+                    // Unknown ESC sequence: cancel safely
+                    self.esc_active = false;
+                    self.esc_buf.clear();
                 }
                 if b == 0x1B {
                     // ESC
