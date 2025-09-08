@@ -1143,7 +1143,13 @@ impl FileTreeView {
             .selected(is_selected)
             .class("file-tree-entry")
             .with_listener(move |item| {
-                let mut item = item.w_full().pl(indentation).pr(px(8.0)).h(px(24.0));
+                // Ensure measured height matches visual height (align to Zed ~30px rows)
+                let mut item = item
+                    .w_full()
+                    .pl(indentation)
+                    .pr(px(8.0))
+                    .py(px(0.0))
+                    .h(px(30.0));
                 if is_selected {
                     item = item.bg(ft_tokens.item_background_selected);
                 } else {
@@ -1300,6 +1306,8 @@ impl Render for FileTreeView {
         let theme = cx.theme().clone();
         let entries = self.tree.visible_entries();
 
+        // (debug logging removed)
+
         // Use FileTreeTokens from hybrid color system for chrome background
         let file_tree_tokens = theme.tokens.file_tree_tokens();
         let bg_color = file_tree_tokens.background;
@@ -1310,6 +1318,7 @@ impl Render for FileTreeView {
             .key_context("FileTree")
             .w_full()
             .h_full()
+            .min_h(px(0.0))
             .bg(bg_color) // Use semantic background color from design tokens
             .border_r_1()
             .border_color(theme.tokens.chrome.border_muted)
@@ -1350,38 +1359,42 @@ impl Render for FileTreeView {
                 },
             ))
             .child(
-                // Virtualized list + custom vertical scrollbar (Zed-style)
-                div()
-                    .flex()
-                    .flex_row() // Ensure list and scrollbar sit side-by-side
-                    .w_full()
-                    .h_full()
-                    .overflow_hidden()
-                    .child({
-                        let list = uniform_list("file-tree-list", entries.len(), {
-                            let entries = entries.clone();
-                            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                                let mut items = Vec::with_capacity(range.end - range.start);
-                                for index in range {
-                                    if let Some(entry) = entries.get(index) {
-                                        items.push(this.render_entry(entry, cx));
-                                    }
-                                }
-                                items
+                // Zed-style: wrap the list row in a flex_1 container with min_h(0)
+                div().flex_1().min_h(px(0.0)).child(
+                    div()
+                        .flex()
+                        .flex_row() // list and scrollbar side-by-side
+                        .w_full()
+                        .h_full()
+                        .min_h(px(0.0))
+                        .child({
+                            let list = uniform_list("file-tree-list", entries.len(), {
+                                let entries = entries.clone();
+                                cx.processor(
+                                    move |this, range: std::ops::Range<usize>, _window, cx| {
+                                        let mut items = Vec::with_capacity(range.end - range.start);
+                                        for index in range {
+                                            if let Some(entry) = entries.get(index) {
+                                                items.push(this.render_entry(entry, cx));
+                                            }
+                                        }
+                                        items
+                                    },
+                                )
                             })
+                            .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
+                            .with_horizontal_sizing_behavior(
+                                gpui::ListHorizontalSizingBehavior::FitList,
+                            )
+                            .track_scroll(self.scroll_handle.clone())
+                            .h_full();
+                            div().flex_1().h_full().min_h(px(0.0)).child(list)
                         })
-                        .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
-                        .with_horizontal_sizing_behavior(
-                            gpui::ListHorizontalSizingBehavior::FitList,
-                        )
-                        .track_scroll(self.scroll_handle.clone())
-                        .h_full();
-                        div().flex_1().h_full().child(list)
-                    })
-                    .when_some(
-                        Scrollbar::vertical(self.scrollbar_state.clone()),
-                        gpui::ParentElement::child,
-                    ),
+                        .when_some(
+                            Scrollbar::vertical(self.scrollbar_state.clone()),
+                            gpui::ParentElement::child,
+                        ),
+                ),
             )
     }
 }

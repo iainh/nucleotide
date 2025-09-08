@@ -6768,14 +6768,26 @@ impl Render for Workspace {
             self.file_tree_width
         );
 
+        // Compute maximum content height so the content never pushes the status bar off-screen
+        let ui_theme = cx.global::<nucleotide_ui::Theme>();
+        let status_bar_height = ui_theme.tokens.sizes.titlebar_height; // status bar height equals titlebar token height
+        let titlebar_height = ui_theme.tokens.sizes.titlebar_height;
+        let viewport_h = window.viewport_size().height;
+        let available_h = (viewport_h.0 - status_bar_height.0 - titlebar_height.0).max(0.0);
+        let content_max_h = px(available_h);
+        // (debug logging removed)
+
         let content_area = if self.show_file_tree {
-            let ui_theme = cx.global::<nucleotide_ui::Theme>();
             let panel_bg = ui_theme.tokens.chrome.surface;
             let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
             let border_color = status_bar_tokens.border;
 
             let left_content = if let Some(file_tree) = &self.file_tree {
-                div().bg(panel_bg).child(file_tree.clone())
+                div()
+                    .bg(panel_bg)
+                    .h_full()
+                    .min_h(px(0.0))
+                    .child(file_tree.clone())
             } else {
                 let prompt_bg = panel_bg;
                 let workspace_entity = cx.entity().clone();
@@ -6802,41 +6814,53 @@ impl Render for Workspace {
                     }))
             };
 
-            // Wrap left content with a right border for separation
+            // Wrap left content with a right border and ensure it can scroll vertically
             let left = div()
+                .id("file-tree-left-wrapper")
                 .w_full()
-                .h_full()
+                .h(content_max_h)
+                .min_h(px(0.0))
                 .border_r_1()
                 .border_color(border_color)
+                // Let FileTreeView manage its own scrolling (uniform_list + custom scrollbar)
                 .child(left_content);
 
-            let right = main_content;
+            let right = div()
+                .h_full()
+                .min_h(px(0.0))
+                .overflow_hidden()
+                .child(main_content);
 
             let entity = cx.entity().clone();
-            nucleotide_ui::sidebar_split(
-                self.file_tree_width,
-                150.0,
-                600.0,
-                4.0,
-                240.0, // default snap width on double-click
-                move |new_w, app_cx| {
-                    entity.update(app_cx, |workspace, cx| {
-                        if (workspace.file_tree_width - new_w).abs() > 0.1 {
-                            workspace.file_tree_width = new_w;
-                            cx.notify();
-                        }
-                    });
-                },
-                left,
-                right,
-            )
-            .into_any_element()
+            div()
+                .h(content_max_h)
+                .min_h(px(0.0))
+                .child(nucleotide_ui::sidebar_split(
+                    self.file_tree_width,
+                    150.0,
+                    600.0,
+                    4.0,
+                    240.0, // default snap width on double-click
+                    move |new_w, app_cx| {
+                        entity.update(app_cx, |workspace, cx| {
+                            if (workspace.file_tree_width - new_w).abs() > 0.1 {
+                                workspace.file_tree_width = new_w;
+                                cx.notify();
+                            }
+                        });
+                    },
+                    left,
+                    right,
+                ))
+                .into_any_element()
         } else {
             // File tree not shown - main content takes full width
             div()
                 .relative()
                 .w_full()
                 .flex_1()
+                .min_h(px(0.0))
+                .h(content_max_h)
                 .child(main_content)
                 .into_any_element()
         };

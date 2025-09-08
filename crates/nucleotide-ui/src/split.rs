@@ -104,15 +104,22 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
     // Visuals
     let _handle_visual_bg: Option<Hsla> = None; // keep neutral; borders used in caller’s theme
 
-    // Left pane (ensure child fills container)
-    // Left pane (temporary debug background)
+    // Left pane: fixed width, vertically scrollable if content exceeds available height
     root = root.child(
         div()
             .w(px(width_px))
             .h_full()
             .flex_shrink_0()
             .min_h(px(0.0))
-            .child(div().w_full().h_full().min_h(px(0.0)).child(left)),
+            .child(
+                div()
+                    .id("sidebar-left")
+                    .w_full()
+                    .h_full()
+                    .min_h(px(0.0))
+                    // Do not set overflow here; let inner views (e.g., uniform_list) manage scrolling
+                    .child(left),
+            ),
     );
 
     // Handle (drawn as a thin separator with a wider hitbox)
@@ -148,8 +155,15 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
         handle
     });
 
-    // Right pane fills remaining space (temporary debug background)
-    root.child(div().flex_1().h_full().min_h(px(0.0)).child(right))
+    // Right pane fills remaining space; do not allow it to overflow its box
+    root.child(
+        div()
+            .flex_1()
+            .h_full()
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .child(right),
+    )
 }
 
 /// A bottom-docked panel with a draggable top edge.
