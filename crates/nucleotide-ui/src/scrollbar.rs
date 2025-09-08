@@ -186,8 +186,10 @@ impl Scrollbar {
     }
 
     fn new(state: ScrollbarState, axis: Axis) -> Option<Self> {
-        // Only create scrollbar if content doesn't fit in viewport
-        let thumb = state.thumb_range(axis)?;
+        // Always create the scrollbar element so it can react once
+        // layout information is available. Paint will short‑circuit
+        // if scrolling isn't required.
+        let thumb = state.thumb_range(axis).unwrap_or(0.0..1.0);
         Some(Self { thumb, state, axis })
     }
 }
@@ -262,46 +264,42 @@ impl Element for Scrollbar {
     ) {
         const EXTRA_PADDING: Pixels = px(2.0); // Padding for scrollbar track
 
+        // If content fits entirely in the viewport, don't paint the scrollbar.
+        let maybe_thumb = self.state.thumb_range(self.axis);
+        if maybe_thumb.is_none() {
+            // No scrolling required; skip painting and event wiring.
+            return;
+        }
         // Recalculate thumb position every paint to reflect current scroll state
-        self.thumb = self.state.thumb_range(self.axis).unwrap_or(0.0..1.0);
+        self.thumb = maybe_thumb.unwrap();
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let axis = self.axis;
             let thumb_state = self.state.thumb_state.get();
 
-            // Use adaptive theme colors and adjust the thumb only on hover/drag
-            let thumb_bg = {
-                if let Some(theme) = cx.try_global::<crate::Theme>() {
-                    let surface = theme.tokens.chrome.surface;
-                    let base = crate::styling::ColorTheory::adjust_oklab_lightness(
-                        surface,
-                        if theme.is_dark() { 0.25 } else { -0.25 },
-                    );
-                    let (bg, alpha) = match thumb_state {
-                        ThumbState::Dragging(_) => (
-                            crate::styling::ColorTheory::adjust_oklab_lightness(
-                                base,
-                                if theme.is_dark() { 0.10 } else { -0.10 },
-                            ),
-                            0.7,
-                        ),
-                        ThumbState::Hover => (
-                            crate::styling::ColorTheory::adjust_oklab_lightness(
-                                base,
-                                if theme.is_dark() { 0.06 } else { -0.06 },
-                            ),
-                            0.6,
-                        ),
-                        ThumbState::Inactive => (base, 0.5),
-                    };
-                    crate::styling::ColorTheory::with_alpha(bg, alpha)
-                } else {
-                    // Fallback
-                    hsla(0.0, 0.0, 0.5, 0.5)
-                }
+            // Use chrome tokens to ensure visibility in file tree/editor contexts
+            let (thumb_bg, gutter_bg) = if let Some(theme) = cx.try_global::<crate::Theme>() {
+                let chrome = &theme.tokens.chrome;
+                // Base the thumb on readable text-on-chrome color for contrast
+                let base_thumb = chrome.text_on_chrome;
+                let thumb = match thumb_state {
+                    ThumbState::Dragging(_) => {
+                        crate::styling::ColorTheory::with_alpha(base_thumb, 0.75)
+                    }
+                    ThumbState::Hover => crate::styling::ColorTheory::with_alpha(base_thumb, 0.65),
+                    ThumbState::Inactive => {
+                        crate::styling::ColorTheory::with_alpha(base_thumb, 0.55)
+                    }
+                };
+                // Track uses the separator color so it’s visible but subtle
+                let track = crate::styling::ColorTheory::with_alpha(chrome.separator_color, 0.35);
+                (thumb, track)
+            } else {
+                (
+                    hsla(0.0, 0.0, 0.8, 0.6), // thumb
+                    hsla(0.0, 0.0, 0.5, 0.2), // gutter
+                )
             };
-
-            // No gutter highlight; only the thumb lightens on hover/drag
 
             let padded_bounds = Bounds::from_corners(
                 bounds
@@ -311,6 +309,16 @@ impl Element for Scrollbar {
                     .bottom_right()
                     .apply_along(axis, |track_end| track_end - EXTRA_PADDING),
             );
+
+            // Paint gutter behind the thumb
+            window.paint_quad(quad(
+                padded_bounds,
+                Corners::all(px(6.0)),
+                gutter_bg,
+                Edges::default(),
+                hsla(0.0, 0.0, 0.0, 0.0),
+                BorderStyle::default(),
+            ));
 
             let thumb_offset = self.thumb.start * padded_bounds.size.along(axis);
             let thumb_end = self.thumb.end * padded_bounds.size.along(axis);

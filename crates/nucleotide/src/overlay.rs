@@ -1733,6 +1733,17 @@ impl Render for OverlayView {
                     }
                 }
 
+                // Constrain terminal height to avoid covering the entire editor
+                let window_h = _window.bounds().size.height.0;
+                let max_h = (window_h * 0.6).max(120.0);
+                let clamped_h = self.terminal_height_px.clamp(80.0, max_h);
+                if (clamped_h - self.terminal_height_px).abs() > 0.5 {
+                    self.terminal_height_px = clamped_h;
+                    if let Ok(mut st) = self.resize_state.lock() {
+                        st.height = clamped_h;
+                    }
+                }
+
                 // Update the panel entity with the current height before borrowing cx immutably
                 if let Some(panel) = &self.terminal_panel {
                     let h = self.terminal_height_px;
@@ -1741,7 +1752,7 @@ impl Render for OverlayView {
 
                 // Theme after potential mutable cx borrow above
                 let theme = cx.theme();
-                let tokens = &theme.tokens;
+                let _tokens = &theme.tokens;
 
                 return div()
                     .key_context("OverlayTerminalPanel")
@@ -1752,11 +1763,9 @@ impl Render for OverlayView {
                     // Do NOT occlude the entire window; allow clicks to reach the editor
                     .on_key_down(cx.listener(
                         move |this: &mut OverlayView, event: &gpui::KeyDownEvent, window, cx| {
-                            // Only handle input when the terminal panel is focused
                             if !panel_focus_for_keys.is_focused(window) {
                                 return;
                             }
-                            // Forward key input to terminal as bytes
                             if let Some(core) = this.core.upgrade() {
                                 let maybe_id =
                                     this.terminal_panel.as_ref().map(|p| p.read(cx).active);
@@ -1773,7 +1782,6 @@ impl Render for OverlayView {
                                                 );
                                             }
                                         });
-                                        // We've handled this keystroke for the terminal; don't let it reach the editor
                                         cx.stop_propagation();
                                     }
                                 }
@@ -1781,115 +1789,33 @@ impl Render for OverlayView {
                         },
                     ))
                     .child({
-                        // Resizable panel shell
-                        let panel_height = px(self.terminal_height_px);
-                        let resize_handle_height = tokens.sizes.space_1; // thin bar
-                        let handle_bg = tokens.chrome.border_muted;
-                        let handle = div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top_0()
-                            .h(resize_handle_height)
-                            .bg(handle_bg)
-                            .cursor_row_resize()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(
-                                    |this: &mut OverlayView,
-                                     ev: &gpui::MouseDownEvent,
-                                     window,
-                                     _cx| {
-                                        this.terminal_resizing = true;
-                                        this.resize_start_mouse_y = ev.position.y;
-                                        this.resize_start_height = this.terminal_height_px;
-                                        if let Ok(mut st) = this.resize_state.lock() {
-                                            st.resizing = true;
-                                            st.start_mouse_y = ev.position.y.0;
-                                            st.start_height = this.terminal_height_px;
-                                            st.height = this.terminal_height_px;
-                                        }
-                                        window.refresh();
-                                    },
-                                ),
-                            );
-
-                        // Window-level listeners for resize drag
-                        let resize_state = Arc::clone(&self.resize_state);
-                        _window.on_mouse_event({
-                            move |event: &gpui::MouseMoveEvent, phase, window, _| {
-                                if phase.capture() {
-                                    if let Ok(mut st) = resize_state.lock() {
-                                        if st.resizing && event.dragging() {
-                                            let dy = st.start_mouse_y - event.position.y.0;
-                                            let new_height =
-                                                (st.start_height + dy).clamp(80.0, 800.0);
-                                            if (new_height - st.height).abs() >= 1.0 {
-                                                st.height = new_height;
-                                                window.refresh();
-                                            }
-                                        }
+                        // Use shared bottom panel split
+                        let on_change_height = {
+                            let entity = cx.entity().clone();
+                            move |new_h: f32, app_cx: &mut gpui::App| {
+                                entity.update(app_cx, |this: &mut OverlayView, cx| {
+                                    this.terminal_height_px = new_h;
+                                    if let Ok(mut st) = this.resize_state.lock() {
+                                        st.height = new_h;
+                                        st.resizing = true;
                                     }
-                                }
+                                    cx.notify();
+                                });
                             }
-                        });
+                        };
 
-                        let resize_state = Arc::clone(&self.resize_state);
-                        _window.on_mouse_event({
-                            move |_: &gpui::MouseUpEvent, _phase, window, _| {
-                                if let Ok(mut st) = resize_state.lock() {
-                                    if st.resizing {
-                                        st.resizing = false;
-                                        window.refresh();
-                                    }
-                                }
-                            }
-                        });
-
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .h(panel_height)
-                            .bg(tokens.chrome.surface)
-                            .border_t_1()
-                            .border_color(tokens.chrome.border_muted)
-                            .occlude()
-                            .track_focus(&panel_focus)
-                            .on_mouse_move(cx.listener(
-                                |this: &mut OverlayView,
-                                 event: &gpui::MouseMoveEvent,
-                                 window,
-                                 cx| {
-                                    if this.terminal_resizing && event.dragging() {
-                                        let dy = this.resize_start_mouse_y.0 - event.position.y.0;
-                                        let new_height =
-                                            (this.resize_start_height + dy).clamp(80.0, 800.0);
-                                        if (new_height - this.terminal_height_px).abs() >= 1.0 {
-                                            this.terminal_height_px = new_height;
-                                            cx.notify();
-                                            window.refresh();
-                                        }
-                                    }
-                                },
-                            ))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(
-                                    |this: &mut OverlayView,
-                                     _ev: &gpui::MouseUpEvent,
-                                     window,
-                                     _cx| {
-                                        if this.terminal_resizing {
-                                            this.terminal_resizing = false;
-                                            window.refresh();
-                                        }
-                                    },
-                                ),
-                            )
-                            .child(handle)
-                            .child(terminal_panel.clone())
+                        nucleotide_ui::bottom_panel_split(
+                            self.terminal_height_px,
+                            80.0,
+                            (window_h * 0.6).max(120.0),
+                            4.0,
+                            220.0,
+                            on_change_height,
+                            div()
+                                .occlude()
+                                .track_focus(&panel_focus)
+                                .child(terminal_panel.clone()),
+                        )
                     })
                     .into_any_element();
             }

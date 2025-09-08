@@ -62,7 +62,9 @@ impl PlatformTitleBar {
                 "TITLEBAR HEIGHT: Using theme provider tokens, height={:?}",
                 tokens.height
             );
-            return (1.75 * window.rem_size()).max(tokens.height);
+            // Respect the tokenized height exactly to keep
+            // titlebar and status bar visually aligned.
+            return tokens.height;
         }
 
         debug!("TITLEBAR HEIGHT: No theme provider, using fallback heights");
@@ -70,7 +72,7 @@ impl PlatformTitleBar {
         return px(32.0);
 
         #[cfg(not(target_os = "windows"))]
-        return (1.75 * window.rem_size()).max(px(34.0));
+        return px(34.0);
     }
 }
 
@@ -145,6 +147,8 @@ impl Render for PlatformTitleBar {
             .window_control_area(WindowControlArea::Drag)
             .w_full()
             .h(height)
+            .min_h(height)
+            .flex_shrink_0() // prevent vertical compression when layout is tight
             .bg(titlebar_tokens.background)
             .border_b_1()
             .border_color(titlebar_tokens.border)

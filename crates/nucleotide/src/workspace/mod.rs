@@ -4344,6 +4344,7 @@ impl Workspace {
         // Use hybrid color system with StatusBarTokens
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
         let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
+        let status_bar_height = ui_theme.tokens.sizes.titlebar_height; // capture before mutable borrows
 
         // Use the hybrid chrome background colors for consistent visual hierarchy
         let bg_color = status_bar_tokens.background_active; // Always use active for unified bar
@@ -4369,7 +4370,10 @@ impl Workspace {
         let border_color = status_bar_tokens.border;
         let divider_color = status_bar_tokens.border;
         div()
-            .h(px(28.0))
+            // Use tokenized height to match titlebar sizing
+            .h(status_bar_height)
+            .min_h(status_bar_height)
+            .flex_shrink_0() // never compress the status bar vertically
             .w_full()
             .bg(bg_color)
             .border_t_1()
@@ -6474,65 +6478,34 @@ impl Render for Workspace {
                 view.handle_key(ev, window, cx);
             }));
 
-        // Add resize cursor when needed
-        if self.is_resizing_file_tree {
-            workspace_div = workspace_div.cursor(gpui::CursorStyle::ResizeLeftRight);
-        }
-
         // Add mouse event handlers
-        workspace_div = workspace_div
-            .on_mouse_move(
-                cx.listener(|workspace, event: &MouseMoveEvent, _window, cx| {
-                    if workspace.is_resizing_file_tree {
-                        // Mouse events in GPUI are already in logical pixels, no scale correction needed
-                        let mouse_x = event.position.x.0;
-                        let delta = mouse_x - workspace.resize_start_x;
-                        let new_width = (workspace.resize_start_width + delta).clamp(150.0, 600.0);
-
-                        // Update width if changed
-                        if (workspace.file_tree_width - new_width).abs() > 0.1 {
-                            workspace.file_tree_width = new_width;
-                            cx.notify();
-                        }
-                    }
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|workspace, _event: &MouseUpEvent, _window, cx| {
-                    if workspace.is_resizing_file_tree {
-                        workspace.is_resizing_file_tree = false;
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|workspace, _event: &MouseDownEvent, _window, cx| {
-                    // Close tab overflow dropdown when clicking elsewhere
-                    if workspace.tab_overflow_dropdown_open {
-                        workspace.tab_overflow_dropdown_open = false;
-                        cx.notify();
-                    }
-
-                    // Close context menu when clicking elsewhere
-                    if workspace.context_menu_open {
-                        workspace.context_menu_open = false;
-                        cx.notify();
-                    }
-
-                    // Clicking outside the delete confirm modal closes it
-                    if workspace.delete_confirm_open {
-                        workspace.delete_confirm_open = false;
-                        workspace.delete_confirm_path = None;
-                        cx.notify();
-                    }
-
-                    // Ensure workspace regains focus when clicked, so global shortcuts work
-                    workspace.view_manager.set_needs_focus_restore(true);
+        workspace_div = workspace_div.on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|workspace, _event: &MouseDownEvent, _window, cx| {
+                // Close tab overflow dropdown when clicking elsewhere
+                if workspace.tab_overflow_dropdown_open {
+                    workspace.tab_overflow_dropdown_open = false;
                     cx.notify();
-                }),
-            );
+                }
+
+                // Close context menu when clicking elsewhere
+                if workspace.context_menu_open {
+                    workspace.context_menu_open = false;
+                    cx.notify();
+                }
+
+                // Clicking outside the delete confirm modal closes it
+                if workspace.delete_confirm_open {
+                    workspace.delete_confirm_open = false;
+                    workspace.delete_confirm_path = None;
+                    cx.notify();
+                }
+
+                // Ensure workspace regains focus when clicked, so global shortcuts work
+                workspace.view_manager.set_needs_focus_restore(true);
+                cx.notify();
+            }),
+        );
 
         // Add action handlers
         workspace_div = workspace_div.on_action(cx.listener(
@@ -6787,101 +6760,38 @@ impl Render for Workspace {
         ));
 
         // Create content area that will hold file tree and main content
-        // Using relative positioning for better control over resize behavior
-        let mut content_area = div().relative().w_full().flex_1();
+        // Now using a centralized sidebar split from nucleotide-ui
+        nucleotide_logging::info!(
+            "[SPLIT_DBG] workspace: show_file_tree={} has_tree={} width={}",
+            self.show_file_tree,
+            self.file_tree.is_some(),
+            self.file_tree_width
+        );
 
-        // Add file tree panel if needed, or show "Open a project" message
-        if self.show_file_tree {
-            let file_tree_left_offset = 0.0;
-            let resize_handle_width = 4.0;
-            let main_content_offset = self.file_tree_width + resize_handle_width;
+        let content_area = if self.show_file_tree {
+            let ui_theme = cx.global::<nucleotide_ui::Theme>();
+            let panel_bg = ui_theme.tokens.chrome.surface;
+            let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
+            let border_color = status_bar_tokens.border;
 
-            if let Some(file_tree) = &self.file_tree {
-                // Create file tree panel with absolute positioning
-                let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
-                let panel_bg = ui_theme.tokens.chrome.surface;
-                let _panel_border_color = status_bar_tokens.border;
-                let file_tree_panel = div()
-                    .absolute()
-                    .left(px(file_tree_left_offset))
-                    .top_0()
-                    .bottom_0()
-                    .w(px(self.file_tree_width))
-                    .child(file_tree.clone());
-
-                // Create resize handle as border line
-                let border_color = status_bar_tokens.border;
-                let resize_handle = div()
-                    .absolute()
-                    .left(px(self.file_tree_width))
-                    .top_0()
-                    .bottom_0()
-                    .w(px(4.0)) // 4px wide drag handle
-                    .bg(panel_bg) // Match file tree background
-                    .border_0() // Reset all borders
-                    .border_r_1() // Only right border
-                    .border_color(border_color)
-                    .hover(|style| style.border_color(ui_theme.tokens.chrome.text_chrome_secondary))
-                    .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    .id("file-tree-resize-handle")
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|workspace, event: &MouseDownEvent, _window, cx| {
-                            workspace.is_resizing_file_tree = true;
-                            workspace.resize_start_x = event.position.x.0;
-                            workspace.resize_start_width = workspace.file_tree_width;
-                            cx.stop_propagation();
-                            cx.notify();
-                        }),
-                    );
-
-                content_area = content_area
-                    .child(file_tree_panel)
-                    .child(resize_handle)
-                    .child(
-                        // Main content with absolute positioning
-                        div()
-                            .absolute()
-                            .left(px(main_content_offset))
-                            .right_0()
-                            .top_0()
-                            .bottom_0()
-                            .child(main_content),
-                    );
+            let left_content = if let Some(file_tree) = &self.file_tree {
+                div().bg(panel_bg).child(file_tree.clone())
             } else {
-                // No project directory set - show placeholder message
-                let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                let resize_handle_width = 4.0;
-                let main_content_offset = self.file_tree_width + resize_handle_width;
-
-                // Use the same background color as the actual file tree for consistency
-                let prompt_bg = ui_theme.tokens.chrome.surface;
-                let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
-                let _border_color = status_bar_tokens.border;
-
-                let placeholder_panel = div()
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .bottom_0()
-                    .w(px(self.file_tree_width))
+                let prompt_bg = panel_bg;
+                let workspace_entity = cx.entity().clone();
+                div()
                     .bg(prompt_bg)
                     .flex()
                     .flex_col()
                     .child(div().w_full().p(px(12.0)).child({
-                        let workspace_entity = cx.entity().clone();
                         Button::new("open-directory-btn", "Open Directory")
                             .variant(ButtonVariant::Secondary)
                             .size(ButtonSize::Medium)
                             .icon("icons/folder.svg")
                             .on_click(move |_event, _window, app_cx| {
-                                // Create and show directory picker
                                 let directory_picker = crate::picker::Picker::native_directory(
                                     "Select Project Directory",
-                                    |_path| {
-                                        // Callback handled through events
-                                    },
+                                    |_path| {},
                                 );
                                 workspace_entity.update(app_cx, |workspace, cx| {
                                     workspace.core.update(cx, |_core, cx| {
@@ -6889,52 +6799,47 @@ impl Render for Workspace {
                                     });
                                 });
                             })
-                    }));
+                    }))
+            };
 
-                // Add resize handle as border line
-                let border_color = status_bar_tokens.border;
-                let resize_handle = div()
-                    .absolute()
-                    .left(px(self.file_tree_width))
-                    .top_0()
-                    .bottom_0()
-                    .w(px(4.0)) // 4px wide drag handle
-                    .bg(prompt_bg) // Match placeholder panel background
-                    .border_0() // Reset all borders
-                    .border_r_1() // Only right border
-                    .border_color(border_color)
-                    .hover(|style| style.border_color(ui_theme.tokens.chrome.text_chrome_secondary))
-                    .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    .id("file-tree-resize-handle-placeholder")
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|workspace, event: &MouseDownEvent, _window, cx| {
-                            workspace.is_resizing_file_tree = true;
-                            workspace.resize_start_x = event.position.x.0;
-                            workspace.resize_start_width = workspace.file_tree_width;
-                            cx.stop_propagation();
+            // Wrap left content with a right border for separation
+            let left = div()
+                .w_full()
+                .h_full()
+                .border_r_1()
+                .border_color(border_color)
+                .child(left_content);
+
+            let right = main_content;
+
+            let entity = cx.entity().clone();
+            nucleotide_ui::sidebar_split(
+                self.file_tree_width,
+                150.0,
+                600.0,
+                4.0,
+                240.0, // default snap width on double-click
+                move |new_w, app_cx| {
+                    entity.update(app_cx, |workspace, cx| {
+                        if (workspace.file_tree_width - new_w).abs() > 0.1 {
+                            workspace.file_tree_width = new_w;
                             cx.notify();
-                        }),
-                    );
-
-                content_area = content_area
-                    .child(placeholder_panel)
-                    .child(resize_handle)
-                    .child(
-                        // Main content with absolute positioning
-                        div()
-                            .absolute()
-                            .left(px(main_content_offset))
-                            .right_0()
-                            .top_0()
-                            .bottom_0()
-                            .child(main_content),
-                    );
-            }
+                        }
+                    });
+                },
+                left,
+                right,
+            )
+            .into_any_element()
         } else {
             // File tree not shown - main content takes full width
-            content_area = content_area.child(main_content);
-        }
+            div()
+                .relative()
+                .w_full()
+                .flex_1()
+                .child(main_content)
+                .into_any_element()
+        };
 
         // Build final workspace with unified bottom status bar
         workspace_div
@@ -6945,8 +6850,18 @@ impl Render for Workspace {
                     .flex_col()
                     .w_full()
                     .h_full()
-                    .child(content_area) // Main content area (file tree + editor with tab bar)
-                    .child(self.render_unified_status_bar(cx)) // Unified bottom status bar
+                    // Ensure content can shrink and never hide the status bar
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .w_full()
+                            .min_h(px(0.0)) // allow vertical shrink in flex column
+                            .overflow_hidden()
+                            .child(content_area),
+                    )
+                    .child(self.render_unified_status_bar(cx)) // Unified bottom status bar pinned at bottom
                     .when(self.lsp_menu_open, |container| {
                         use gpui::{Corner, anchored, point};
                         let ui_theme = cx.global::<nucleotide_ui::Theme>();

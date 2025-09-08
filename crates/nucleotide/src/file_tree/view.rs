@@ -1180,7 +1180,7 @@ impl FileTreeView {
 
     /// Render the chevron for directories using design tokens
     fn render_chevron(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+        let theme = cx.theme().clone();
         let file_tree_tokens = theme.tokens.file_tree_tokens();
 
         chevron_icon(if entry.is_expanded { "down" } else { "right" })
@@ -1297,7 +1297,7 @@ impl Focusable for FileTreeView {
 impl Render for FileTreeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Use nucleotide-ui theme access for consistent styling
-        let theme = cx.theme();
+        let theme = cx.theme().clone();
         let entries = self.tree.visible_entries();
 
         // Use FileTreeTokens from hybrid color system for chrome background
@@ -1311,9 +1311,12 @@ impl Render for FileTreeView {
             .w_full()
             .h_full()
             .bg(bg_color) // Use semantic background color from design tokens
+            .border_r_1()
+            .border_color(theme.tokens.chrome.border_muted)
             .flex()
             .flex_col()
             .track_focus(&self.focus_handle)
+            // Header removed; render list below
             .on_click(cx.listener(|view, _event, window, _cx| {
                 // Focus the tree view when clicked anywhere on it
                 debug!("File tree container clicked, focusing");
@@ -1347,29 +1350,34 @@ impl Render for FileTreeView {
                 },
             ))
             .child(
+                // Virtualized list + custom vertical scrollbar (Zed-style)
                 div()
                     .flex()
-                    .flex_1()
+                    .flex_row() // Ensure list and scrollbar sit side-by-side
                     .w_full()
-                    .child(
-                        // File list using uniform_list for performance
-                        uniform_list("file-tree-list", entries.len(), {
-                            let entries = entries.clone(); // Clone once outside the processor
+                    .h_full()
+                    .overflow_hidden()
+                    .child({
+                        let list = uniform_list("file-tree-list", entries.len(), {
+                            let entries = entries.clone();
                             cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
                                 let mut items = Vec::with_capacity(range.end - range.start);
-
                                 for index in range {
                                     if let Some(entry) = entries.get(index) {
                                         items.push(this.render_entry(entry, cx));
                                     }
                                 }
-
                                 items
                             })
                         })
+                        .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
+                        .with_horizontal_sizing_behavior(
+                            gpui::ListHorizontalSizingBehavior::FitList,
+                        )
                         .track_scroll(self.scroll_handle.clone())
-                        .flex_1(),
-                    )
+                        .h_full();
+                        div().flex_1().h_full().child(list)
+                    })
                     .when_some(
                         Scrollbar::vertical(self.scrollbar_state.clone()),
                         gpui::ParentElement::child,

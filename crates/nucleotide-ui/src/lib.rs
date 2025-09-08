@@ -35,6 +35,7 @@ pub mod prompt;
 pub mod prompt_view;
 pub mod providers;
 pub mod scrollbar;
+pub mod split;
 pub mod style_utils;
 pub mod styling;
 pub mod text_utils;
@@ -122,6 +123,7 @@ pub use providers::{
     ProviderContainer, ProviderHooks, ThemeProvider, UIConfiguration, provider_tree, use_provider,
     use_provider_or_default,
 };
+pub use split::{bottom_panel_split, sidebar_split, two_pane_split};
 pub use styling::{
     AnimationConfig, AnimationDuration, AnimationPreset, AnimationProperty, AnimationType,
     BoxShadow, Breakpoint, ColorTheory, ComputedStyle, ConditionalStyle, ContextualColors,
