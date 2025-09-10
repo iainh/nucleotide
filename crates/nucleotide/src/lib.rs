@@ -23,6 +23,7 @@ pub mod picker_capability;
 pub mod tab;
 pub mod tab_bar;
 pub mod tab_overflow_dropdown;
+pub mod terminal_input;
 #[cfg(test)]
 pub mod test_utils;
 #[cfg(test)]
