@@ -9,7 +9,6 @@ use gpui::{
     App, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Styled, Window, div, px,
 };
-use nucleotide_logging::info;
 
 #[inline]
 fn clamp_primary(start: f32, delta: f32, min_px: f32, max_px: f32) -> f32 {
@@ -61,15 +60,7 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
     let width_px = width_px.clamp(min_px, max_px);
     let on_change = Rc::new(on_change);
 
-    info!(
-        prefix = "[SPLIT_DBG]",
-        width = width_px,
-        min = min_px,
-        max = max_px,
-        handle_px = handle_px,
-        default = default_px,
-        "sidebar_split: init"
-    );
+    // debug logging removed
 
     // The container captures move/up to provide robust dragging beyond the handle bounds
     let mut root = div()

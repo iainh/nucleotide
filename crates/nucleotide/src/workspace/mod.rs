@@ -6941,12 +6941,7 @@ impl Render for Workspace {
 
         // Create content area that will hold file tree and main content
         // Now using a centralized sidebar split from nucleotide-ui
-        nucleotide_logging::info!(
-            "[SPLIT_DBG] workspace: show_file_tree={} has_tree={} width={}",
-            self.show_file_tree,
-            self.file_tree.is_some(),
-            self.file_tree_width
-        );
+        // split debug logs removed
 
         // Compute maximum content height so the content never pushes the status bar off-screen
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
