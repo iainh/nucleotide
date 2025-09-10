@@ -51,6 +51,7 @@ use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
+use nucleotide_events::v2::workspace::{Event as WorkspaceEvent, LayoutType, PanelConfiguration};
 use nucleotide_vcs::VcsServiceHandle;
 
 // (focus logging removed for commit; keep code minimal)
@@ -106,6 +107,22 @@ pub struct Workspace {
     terminal_panel_visible: bool,
     terminal_id: Option<TerminalId>,
     next_terminal_id: u64,
+    // Debug: color major panes when enabled via env
+    debug_colors_enabled: bool,
+    // Height of the bottom (terminal) pane in basic layout mode
+    basic_terminal_height: f32,
+    // Drag state for basic layout terminal resizer
+    basic_term_resizing: bool,
+    basic_term_start_mouse_y: f32,
+    basic_term_start_height: f32,
+    // Embedded terminal panel entity for basic layout
+    embedded_terminal_panel: Option<gpui::Entity<nucleotide_terminal_panel::TerminalPanel>>,
+    // Focus handle for embedded terminal to capture keyboard input
+    terminal_focus: gpui::FocusHandle,
+    // Request to focus terminal on next render (when toggled on via button)
+    terminal_focus_pending: bool,
+    // Track whether terminal should capture keys (set on click in terminal area)
+    terminal_active: bool,
 }
 
 // Pending file operation kinds awaiting user input (used with the prompt overlay)
@@ -120,22 +137,20 @@ impl EventEmitter<crate::Update> for Workspace {}
 
 impl Workspace {
     fn toggle_terminal_panel(&mut self, cx: &mut Context<Self>) {
+        // Basic layout: toggle visibility of embedded bottom panel
         if self.terminal_panel_visible {
-            self.overlay
-                .update(cx, |overlay, cx| overlay.hide_terminal_panel(cx));
             self.terminal_panel_visible = false;
             cx.notify();
             return;
         }
 
-        // Ensure we have a terminal session id; spawn if needed
+        // Ensure terminal exists and embedded panel entity is available
         let terminal_id = if let Some(id) = self.terminal_id {
             id
         } else {
             let id = TerminalId(self.next_terminal_id);
             self.next_terminal_id += 1;
             self.terminal_id = Some(id);
-            // Dispatch spawn event via application's event aggregator
             let cwd = self.current_project_root.clone();
             let shell = None;
             let env = Vec::<(String, String)>::new();
@@ -147,24 +162,25 @@ impl Workspace {
                         shell,
                         env,
                     });
-                } else {
-                    nucleotide_logging::warn!(
-                        "No event aggregator available; terminal spawn not dispatched"
-                    );
                 }
             });
             id
         };
 
-        // Show panel via overlay
-        let panel = cx.new(|cx| {
-            let mut p = nucleotide_terminal_panel::TerminalPanel::new(terminal_id, 220.0);
-            p.initialize(cx);
-            p
-        });
-        self.overlay
-            .update(cx, |overlay, cx| overlay.show_terminal_panel(panel, cx));
+        if self.embedded_terminal_panel.is_none() {
+            let height = self.basic_terminal_height;
+            let entity = cx.new(|cx| {
+                let mut p = nucleotide_terminal_panel::TerminalPanel::new(terminal_id, height);
+                p.initialize(cx);
+                p
+            });
+            self.embedded_terminal_panel = Some(entity);
+        }
+
         self.terminal_panel_visible = true;
+        // Ask render to focus the terminal on the next frame
+        self.terminal_focus_pending = true;
+        self.terminal_active = true;
         cx.notify();
     }
     /// Compute document and LSP context for the status bar without triggering borrow conflicts.
@@ -607,7 +623,58 @@ impl Workspace {
             terminal_panel_visible: false,
             terminal_id: None,
             next_terminal_id: 1,
+            debug_colors_enabled: matches!(
+                std::env::var("NUCL_DEBUG_COLORS")
+                    .map(|v| v.to_ascii_lowercase())
+                    .as_deref(),
+                Ok("1") | Ok("true") | Ok("yes") | Ok("on")
+            ),
+            // Basic layout is now the default
+            basic_terminal_height: 220.0,
+            basic_term_resizing: false,
+            basic_term_start_mouse_y: 0.0,
+            basic_term_start_height: 0.0,
+            embedded_terminal_panel: None,
+            terminal_focus: cx.focus_handle(),
+            terminal_focus_pending: false,
+            terminal_active: false,
         };
+
+        // Ensure an embedded terminal panel exists for the default layout
+        // Ensure terminal id exists and spawn if needed
+        let terminal_id = if let Some(id) = workspace.terminal_id {
+            id
+        } else {
+            let id = TerminalId(workspace.next_terminal_id);
+            workspace.next_terminal_id += 1;
+            workspace.terminal_id = Some(id);
+            let cwd = workspace.current_project_root.clone();
+            let shell = None;
+            let env = Vec::<(String, String)>::new();
+            workspace.core.update(cx, |app, _cx| {
+                if let Some(bus) = &app.event_aggregator {
+                    bus.dispatch_terminal(TerminalEvent::SpawnRequested {
+                        id,
+                        cwd,
+                        shell,
+                        env,
+                    });
+                } else {
+                    nucleotide_logging::warn!("No event aggregator; terminal spawn not dispatched");
+                }
+            });
+            id
+        };
+
+        if workspace.embedded_terminal_panel.is_none() {
+            let height = workspace.basic_terminal_height;
+            let entity = cx.new(|cx| {
+                let mut p = nucleotide_terminal_panel::TerminalPanel::new(terminal_id, height);
+                p.initialize(cx);
+                p
+            });
+            workspace.embedded_terminal_panel = Some(entity);
+        }
 
         // Set initial focus restore state
         workspace.view_manager.set_needs_focus_restore(true);
@@ -1220,6 +1287,28 @@ impl Workspace {
 
     /// Simplified key handler that delegates to the InputCoordinator
     fn handle_key(&mut self, ev: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
+        // If embedded terminal is focused, route all keys to it and stop here
+        if self.terminal_panel_visible
+            && (self.terminal_active || self.terminal_focus.is_focused(window))
+        {
+            if let Some(panel) = &self.embedded_terminal_panel {
+                let id = panel.read(cx).active;
+                let bytes = crate::overlay::translate_key_to_bytes(ev);
+                if !bytes.is_empty() {
+                    self.core.update(cx, |app, _| {
+                        if let Some(bus) = &app.event_aggregator {
+                            bus.dispatch_terminal(nucleotide_events::v2::terminal::Event::Input {
+                                id,
+                                bytes,
+                            });
+                        }
+                    });
+                }
+            }
+            // Prevent further handling by editor/others
+            cx.stop_propagation();
+            return;
+        }
         debug!(
             key = %ev.keystroke.key,
             modifiers = ?ev.keystroke.modifiers,
@@ -6239,7 +6328,15 @@ impl Render for Workspace {
                 .map(|ft| ft.focus_handle(cx).is_focused(window))
                 .unwrap_or(false);
 
-            if !ws_focused && !overlay_focused && !doc_focused && !file_tree_focused {
+            // Consider embedded terminal focus as a valid target
+            let terminal_focused = self.terminal_focus.is_focused(window);
+
+            if !ws_focused
+                && !overlay_focused
+                && !doc_focused
+                && !file_tree_focused
+                && !terminal_focused
+            {
                 // First, nudge caret into the document view if we have one.
                 if let Some(fh) = doc_focus_handle {
                     window.focus(&fh);
@@ -6310,6 +6407,12 @@ impl Render for Workspace {
             window.focus(&self.focus_handle);
             self.view_manager.set_needs_focus_restore(false);
         }
+
+        // If terminal was toggled on via button, focus it now
+        if self.terminal_panel_visible && self.terminal_focus_pending {
+            window.focus(&self.terminal_focus);
+            self.terminal_focus_pending = false;
+        }
         // Don't create views during render - just use existing ones
         let mut focused_file_name = None;
 
@@ -6372,20 +6475,37 @@ impl Render for Workspace {
             .w_full()
             .h_full()
             // Background color inherited // Use semantic background color
-            ; // No gap needed for documents
+            .when(self.debug_colors_enabled, |d| {
+                // Editor docs area border (green)
+                d.border_1().border_color(gpui::hsla(0.33, 0.85, 0.50, 1.0))
+            }); // No gap needed for documents
 
-        // Only render the focused view, not all views
-        if let Some(focused_view_id) = self.view_manager.focused_view_id()
-            && let Some(doc_view) = self.view_manager.get_document_view(&focused_view_id)
-        {
-            // Create document element container with semantic styling
-            // Note: Removed right border since resize handle now serves as the border
+        // Render an editor view even if focus is not currently on the editor
+        let maybe_view_entity = if let Some(focused_view_id) = self.view_manager.focused_view_id() {
+            self.view_manager
+                .get_document_view(&focused_view_id)
+                .cloned()
+        } else {
+            // Fallback to Helix's tree focus or any existing view entity
+            let core_read = self.core.read(cx);
+            let helix_focus = core_read.editor.tree.focus;
+            drop(core_read);
+            self.view_manager
+                .get_document_view(&helix_focus)
+                .cloned()
+                .or_else(|| self.view_manager.document_views().values().next().cloned())
+        };
+
+        if let Some(doc_view) = maybe_view_entity {
             let doc_element = div()
                 .id("document-container")
                 .flex()
                 .size_full()
-                // Background color inherited
-                .child(doc_view.clone());
+                .when(self.debug_colors_enabled, |d| {
+                    // Individual document container (teal)
+                    d.border_1().border_color(gpui::hsla(0.55, 0.75, 0.55, 1.0))
+                })
+                .child(doc_view);
             docs_root = docs_root.child(doc_element);
         }
 
@@ -6419,7 +6539,17 @@ impl Render for Workspace {
             .h_full()
             // Background color inherited
             // No gap needed between tab bar and content
-            .child(self.render_tab_bar(window, cx)) // Tab bar at the top of editor area
+            .child({
+                // Tab bar at the top of editor area, consistently wrapped in a Div
+                let debug = self.debug_colors_enabled;
+                let tab = self.render_tab_bar(window, cx);
+                div()
+                    .when(debug, |d| {
+                        // Tab bar wrapper (blue)
+                        d.border_1().border_color(gpui::hsla(0.60, 0.80, 0.60, 1.0))
+                    })
+                    .child(tab)
+            })
             .child(
                 // Editor content container
                 div()
@@ -6428,13 +6558,34 @@ impl Render for Workspace {
                     .flex_col()
                     .w_full()
                     .flex_1() // Take remaining height after tab bar
-                    // Background color inherited
+                    // Debug: container styling; label appended later to ensure on top
+                    .when(self.debug_colors_enabled, |d| {
+                        d.relative()
+                            // Yellow translucent fill for full editor area visibility
+                            .bg(gpui::hsla(0.14, 1.0, 0.55, 0.10))
+                            .border_l_2()
+                            .border_color(gpui::hsla(0.58, 0.95, 0.55, 0.9))
+                            // Editor content area outline (yellow for debug)
+                            .border_1()
+                            .border_color(gpui::hsla(0.14, 1.0, 0.65, 1.0))
+                    })
                     .when_some(Some(docs_root), gpui::ParentElement::child)
                     .child(self.notifications.clone())
                     .when(!self.overlay.read(cx).is_empty(), |this| {
                         debug!("COMP: Workspace rendering overlay because it's not empty");
                         let view = &self.overlay;
-                        this.child(view.clone())
+                        // Overlay wrapper (magenta)
+                        if self.debug_colors_enabled {
+                            this.child(
+                                div()
+                                    .id("overlay-debug-wrapper")
+                                    .border_1()
+                                    .border_color(gpui::hsla(0.83, 0.80, 0.65, 1.0))
+                                    .child(view.clone()),
+                            )
+                        } else {
+                            this.child(view.clone())
+                        }
                     })
                     .child(self.about_window.clone())
                     .when(
@@ -6453,6 +6604,33 @@ impl Render for Workspace {
                     .when(self.delete_confirm_open, |this| {
                         // Render delete confirmation modal overlay
                         this.child(self.render_delete_confirm_modal(window, cx))
+                    })
+                    // Debug overlay tint on top of editor content; render via deferred to ensure top draw order
+                    .when(self.debug_colors_enabled, |this| {
+                        this.child(
+                            gpui::deferred(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .size_full()
+                                    .bg(gpui::hsla(0.14, 1.0, 0.55, 0.12)),
+                            )
+                            .with_priority(100),
+                        )
+                    })
+                    .when(self.debug_colors_enabled, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .px(px(6.0))
+                                .py(px(2.0))
+                                .bg(gpui::hsla(0.58, 0.95, 0.55, 0.85))
+                                .text_color(gpui::black())
+                                .child("EDITOR"),
+                        )
                     }),
             );
 
@@ -6501,6 +6679,8 @@ impl Render for Workspace {
                     cx.notify();
                 }
 
+                // Clicking elsewhere deactivates terminal input capture
+                workspace.terminal_active = false;
                 // Ensure workspace regains focus when clicked, so global shortcuts work
                 workspace.view_manager.set_needs_focus_restore(true);
                 cx.notify();
@@ -6777,93 +6957,348 @@ impl Render for Workspace {
         let content_max_h = px(available_h);
         // (debug logging removed)
 
-        let content_area = if self.show_file_tree {
-            let panel_bg = ui_theme.tokens.chrome.surface;
+        // New default layout
+        let content_area = {
+            // Basic layout mode: render simple colored, resizable panes
+            let ui_theme = cx.global::<nucleotide_ui::Theme>();
             let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
             let border_color = status_bar_tokens.border;
 
-            let left_content = if let Some(file_tree) = &self.file_tree {
-                div()
-                    .bg(panel_bg)
-                    .h_full()
-                    .min_h(px(0.0))
-                    .child(file_tree.clone())
-            } else {
-                let prompt_bg = panel_bg;
-                let workspace_entity = cx.entity().clone();
-                div()
-                    .bg(prompt_bg)
-                    .flex()
-                    .flex_col()
-                    .child(div().w_full().p(px(12.0)).child({
-                        Button::new("open-directory-btn", "Open Directory")
-                            .variant(ButtonVariant::Secondary)
-                            .size(ButtonSize::Medium)
-                            .icon("icons/folder.svg")
-                            .on_click(move |_event, _window, app_cx| {
-                                let directory_picker = crate::picker::Picker::native_directory(
-                                    "Select Project Directory",
-                                    |_path| {},
-                                );
-                                workspace_entity.update(app_cx, |workspace, cx| {
-                                    workspace.core.update(cx, |_core, cx| {
-                                        cx.emit(crate::Update::DirectoryPicker(directory_picker));
-                                    });
-                                });
-                            })
-                    }))
-            };
+            // Clamp terminal height to available space
+            let min_term = 80.0f32;
+            let max_term = (available_h - 80.0).max(min_term);
+            if self.basic_terminal_height > max_term {
+                self.basic_terminal_height = max_term;
+            }
+            let mut editor_h = available_h;
+            if self.terminal_panel_visible {
+                editor_h = (available_h - self.basic_terminal_height).max(0.0);
+            }
 
-            // Wrap left content with a right border and ensure it can scroll vertically
+            // Left placeholder: File tree (yellow)
             let left = div()
-                .id("file-tree-left-wrapper")
-                .w_full()
-                .h(content_max_h)
+                .relative()
+                .size_full()
                 .min_h(px(0.0))
-                .border_r_1()
-                .border_color(border_color)
-                // Let FileTreeView manage its own scrolling (uniform_list + custom scrollbar)
-                .child(left_content);
+                // Ensure solid fill regardless of nested sizing by using an absolute overlay
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .bg(gpui::hsla(0.14, 1.0, 0.6, 1.0)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .bg(gpui::hsla(0.14, 1.0, 0.3, 1.0))
+                        .text_color(gpui::black())
+                        .child("FILE TREE"),
+                );
 
-            let right = div()
-                .h_full()
-                .min_h(px(0.0))
-                .overflow_hidden()
-                .child(main_content);
-
-            let entity = cx.entity().clone();
-            div()
-                .h(content_max_h)
-                .min_h(px(0.0))
-                .child(nucleotide_ui::sidebar_split(
-                    self.file_tree_width,
-                    150.0,
-                    600.0,
-                    4.0,
-                    240.0, // default snap width on double-click
-                    move |new_w, app_cx| {
-                        entity.update(app_cx, |workspace, cx| {
-                            if (workspace.file_tree_width - new_w).abs() > 0.1 {
-                                workspace.file_tree_width = new_w;
+            // Right: actual editor views + bottom terminal panel using shared split
+            let right = {
+                let on_change_height = {
+                    let entity = cx.entity().clone();
+                    move |new_h: f32, app_cx: &mut gpui::App| {
+                        entity.update(app_cx, |this: &mut Workspace, cx| {
+                            if (this.basic_terminal_height - new_h).abs() > 0.5 {
+                                this.basic_terminal_height = new_h;
+                                if let Some(panel) = &this.embedded_terminal_panel {
+                                    panel.update(cx, |p, _| p.height_px = new_h);
+                                }
                                 cx.notify();
                             }
                         });
-                    },
-                    left,
-                    right,
-                ))
-                .into_any_element()
-        } else {
-            // File tree not shown - main content takes full width
-            div()
-                .relative()
-                .w_full()
-                .flex_1()
-                .min_h(px(0.0))
-                .h(content_max_h)
-                .child(main_content)
-                .into_any_element()
+                    }
+                };
+
+                let panel_max = (available_h * 0.85).max(120.0);
+
+                // Container with editor area + bottom panel
+                let mut root = div().relative().w_full().h(content_max_h).min_h(px(0.0));
+
+                // Editor area above the bottom panel: use existing editor content (tabs, overlays)
+                root = root.child(
+                    div()
+                        .w_full()
+                        .h(px(editor_h))
+                        .min_h(px(0.0))
+                        .overflow_hidden()
+                        .child(main_content),
+                );
+
+                if self.terminal_panel_visible {
+                    // Bottom terminal panel using shared split helper inside an absolute wrapper
+                    // Absolute wrapper to own interactions and sizing
+                    root = root
+                        // Transparent key-capture overlay sized to terminal area only
+                        .child({
+                            let h = self.basic_terminal_height;
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .h(px(h))
+                                .track_focus(&self.terminal_focus)
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseDownEvent, window, cx| {
+                                    window.focus(&this.terminal_focus);
+                                    this.terminal_active = true;
+                                    cx.notify();
+                                    cx.stop_propagation();
+                                }))
+                                .on_key_down(cx.listener(|this: &mut Workspace, event: &gpui::KeyDownEvent, window, cx| {
+                                    if !this.terminal_focus.is_focused(window) {
+                                        return;
+                                    }
+                                    if let Some(panel) = &this.embedded_terminal_panel {
+                                        let id = panel.read(cx).active;
+                                        let bytes = crate::overlay::translate_key_to_bytes(event);
+                                        if !bytes.is_empty() {
+                                            this.core.update(cx, |app, _| {
+                                                if let Some(bus) = &app.event_aggregator {
+                                                    bus.dispatch_terminal(nucleotide_events::v2::terminal::Event::Input { id, bytes });
+                                                }
+                                            });
+                                            cx.stop_propagation();
+                                        }
+                                    }
+                                }))
+                        })
+                        .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            // Track resize drags at the wrapper level for reliability
+                            .on_mouse_move(cx.listener(move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
+                                if this.basic_term_resizing && ev.dragging() {
+                                    let dy = ev.position.y.0 - this.basic_term_start_mouse_y;
+                                    let min_h = 80.0f32;
+                                    let max_h = (available_h - 80.0).max(min_h);
+                                    let new_h = (this.basic_term_start_height - dy).clamp(min_h, max_h);
+                                    if (this.basic_terminal_height - new_h).abs() > 0.5 {
+                                        this.basic_terminal_height = new_h;
+                                        cx.notify();
+                                        window.refresh();
+                                    }
+                                }
+                            }))
+                            .on_mouse_up(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, _cx| {
+                                if this.basic_term_resizing {
+                                    this.basic_term_resizing = false;
+                                    window.refresh();
+                                }
+                            }))
+                            .child(nucleotide_ui::bottom_panel_split(
+                                self.basic_terminal_height,
+                                80.0,
+                                panel_max,
+                                0.0, // disable internal handle; we'll overlay our own
+                                220.0,
+                                on_change_height,
+                                {
+                                    let mut c = div().relative().size_full();
+                                    if let Some(panel) = &self.embedded_terminal_panel {
+                                        c = c.child(div().size_full().overflow_hidden().child(panel.clone()));
+                                    } else {
+                                        c = c.child(div().flex().items_center().justify_center().child("starting terminal..."));
+                                    }
+                                    c
+                                },
+                            ))
+                            // Overlay our own visible handle positioned at top of the panel
+                            .child({
+                                let handle_h = 6.0f32;
+                                let sep_color = gpui::hsla(0.0, 0.0, 0.55, 0.6);
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .bottom(px(self.basic_terminal_height))
+                                    .h(px(handle_h))
+                                    .bg(sep_color)
+                                    .cursor(gpui::CursorStyle::ResizeRow)
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
+                                        if ev.click_count >= 2 {
+                                            let min_h = 80.0f32;
+                                            let max_h = (available_h - 80.0).max(min_h);
+                                            this.basic_terminal_height = 220.0f32.clamp(min_h, max_h);
+                                            cx.notify();
+                                            window.refresh();
+                                            cx.stop_propagation();
+                                            return;
+                                        }
+                                        this.basic_term_resizing = true;
+                                        this.basic_term_start_mouse_y = ev.position.y.0;
+                                        this.basic_term_start_height = this.basic_terminal_height;
+                                        this.terminal_active = true;
+                                        window.refresh();
+                                        cx.stop_propagation();
+                                    }))
+                            }),
+                    );
+                }
+
+                root
+            };
+
+            let entity = cx.entity().clone();
+            // Clamp left pane so right side always has at least 200px
+            let viewport_w = window.viewport_size().width.0;
+            let max_left = (viewport_w - 200.0).max(150.0);
+            if self.file_tree_width > max_left {
+                self.file_tree_width = max_left;
+            }
+
+            if self.show_file_tree {
+                let handle_visual_w = 4.0f32;
+                let handle_hit_w = 12.0f32;
+                let min_left = 150.0f32;
+                let viewport_w = window.viewport_size().width.0;
+                let max_left = (viewport_w - 200.0).max(min_left);
+
+                let overlay_bg_w = (self.file_tree_width).clamp(0.0, max_left);
+
+                // Root container handling drag to resize
+                div()
+                    .relative()
+                    .h(content_max_h)
+                    .min_h(px(0.0))
+                    .on_mouse_move(cx.listener(
+                        move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
+                            if this.is_resizing_file_tree && ev.dragging() {
+                                let dx = ev.position.x.0 - this.resize_start_x;
+                                let mut new_w = this.resize_start_width + dx;
+                                // Clamp to viewport and min/max
+                                let viewport_w = window.viewport_size().width.0;
+                                let max_allowed = (viewport_w - 200.0).max(min_left);
+                                if new_w < min_left {
+                                    new_w = min_left;
+                                }
+                                if new_w > max_allowed {
+                                    new_w = max_allowed;
+                                }
+                                if (this.file_tree_width - new_w).abs() > 0.5 {
+                                    this.file_tree_width = new_w;
+                                    cx.notify();
+                                    window.refresh();
+                                }
+                            }
+                        },
+                    ))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, _cx| {
+                            if this.is_resizing_file_tree {
+                                this.is_resizing_file_tree = false;
+                                window.refresh();
+                            }
+                        }),
+                    )
+                    // Left file tree content
+                    .child({
+                        let mut container = div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w(px(overlay_bg_w))
+                            .h(content_max_h)
+                            .min_h(px(0.0));
+                        if let Some(file_tree) = &self.file_tree {
+                            container = container.child(
+                                div().size_full().overflow_hidden().child(file_tree.clone()),
+                            );
+                        } else {
+                            container = container.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child("Open a directory to view files"),
+                            );
+                        }
+                        container
+                    })
+                    // Vertical handle at the boundary
+                    .child({
+                        let sep_color = gpui::hsla(0.0, 0.0, 0.55, 0.6);
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left(px(self.file_tree_width))
+                            .w(px(handle_hit_w))
+                            .h(content_max_h)
+                            .cursor(gpui::CursorStyle::ResizeLeftRight)
+                            .child(
+                                div()
+                                    .w(px(handle_visual_w))
+                                    .h_full()
+                                    .bg(sep_color)
+                                    .hover(|d| d.bg(gpui::hsla(0.0, 0.0, 0.55, 0.9))),
+                            )
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(
+                                    move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
+                                        if ev.click_count >= 2 {
+                                            let viewport_w = window.viewport_size().width.0;
+                                            let max_allowed = (viewport_w - 200.0).max(min_left);
+                                            let snap = 240.0f32.clamp(min_left, max_allowed);
+                                            if (this.file_tree_width - snap).abs() > 0.5 {
+                                                this.file_tree_width = snap;
+                                                cx.notify();
+                                            }
+                                            window.refresh();
+                                            cx.stop_propagation();
+                                            return;
+                                        }
+                                        this.is_resizing_file_tree = true;
+                                        this.resize_start_x = ev.position.x.0;
+                                        this.resize_start_width = this.file_tree_width;
+                                        window.refresh();
+                                        cx.stop_propagation();
+                                    },
+                                ),
+                            )
+                    })
+                    // Right content area positioned after the handle
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left(px(self.file_tree_width + handle_visual_w))
+                            .right_0()
+                            .h(content_max_h)
+                            .min_h(px(0.0))
+                            .child(right),
+                    )
+                    .into_any_element()
+            } else {
+                // File tree not shown - render right full width
+                div()
+                    .relative()
+                    .w_full()
+                    .h(content_max_h)
+                    .min_h(px(0.0))
+                    .child(right)
+                    .into_any_element()
+            }
         };
+
+        // If terminal was toggled on via button, focus it now (after elements are built)
+        if self.terminal_panel_visible && self.terminal_focus_pending {
+            window.focus(&self.terminal_focus);
+            self.terminal_focus_pending = false;
+        }
 
         // Build final workspace with unified bottom status bar
         workspace_div
@@ -6882,7 +7317,6 @@ impl Render for Workspace {
                             .flex_1()
                             .w_full()
                             .min_h(px(0.0)) // allow vertical shrink in flex column
-                            .overflow_hidden()
                             .child(content_area),
                     )
                     .child(self.render_unified_status_bar(cx)) // Unified bottom status bar pinned at bottom

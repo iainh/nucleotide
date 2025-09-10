@@ -1338,7 +1338,7 @@ impl OverlayView {
 
 // Translate a GPUI key event to terminal bytes suitable for PTY input.
 // Handles printable text, control keys, arrows/navigation and a subset of function keys.
-fn translate_key_to_bytes(event: &gpui::KeyDownEvent) -> Vec<u8> {
+pub(crate) fn translate_key_to_bytes(event: &gpui::KeyDownEvent) -> Vec<u8> {
     use gpui::Modifiers;
 
     let ks = &event.keystroke;
@@ -1811,10 +1811,39 @@ impl Render for OverlayView {
                             4.0,
                             220.0,
                             on_change_height,
-                            div()
-                                .occlude()
-                                .track_focus(&panel_focus)
-                                .child(terminal_panel.clone()),
+                            {
+                                let debug = matches!(
+                                    std::env::var("NUCL_DEBUG_COLORS")
+                                        .map(|v| v.to_ascii_lowercase())
+                                        .as_deref(),
+                                    Ok("1") | Ok("true") | Ok("yes") | Ok("on")
+                                );
+                                let mut c = div().track_focus(&panel_focus);
+                                if debug {
+                                    c = c
+                                        .relative()
+                                        .bg(gpui::hsla(0.35, 0.8, 0.6, 0.18)) // light green tint
+                                        .border_t_2()
+                                        .border_color(gpui::hsla(0.35, 0.95, 0.55, 0.9));
+                                }
+                                // First, terminal content
+                                c = c.child(terminal_panel.clone());
+                                // Then the debug label so it stays on top
+                                if debug {
+                                    c = c.child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .left_0()
+                                            .px(px(6.0))
+                                            .py(px(2.0))
+                                            .bg(gpui::hsla(0.35, 0.95, 0.55, 0.85))
+                                            .text_color(gpui::black())
+                                            .child("TERMINAL"),
+                                    );
+                                }
+                                c
+                            },
                         )
                     })
                     .into_any_element();

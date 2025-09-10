@@ -85,7 +85,10 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
                     let start_x = drag.start_mouse.get().0;
                     let dx = ev.position.x.0 - start_x;
                     let start_w = drag.start_primary.get();
-                    let new_w = clamp_primary(start_w, dx, min_px, max_px);
+                    // Ensure a minimum width for right pane (200px) so editor never collapses
+                    let viewport_w = window.viewport_size().width.0;
+                    let max_allowed = (viewport_w - 200.0).max(min_px);
+                    let new_w = clamp_primary(start_w, dx, min_px, max_allowed.min(max_px));
                     on_change(new_w, cx);
                     window.refresh();
                 }
@@ -122,24 +125,41 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             ),
     );
 
-    // Handle (drawn as a thin separator with a wider hitbox)
-    let handle_width = handle_px.max(2.0);
+    // Handle: wider hitbox for easy grabbing, with a thin visible separator centered inside
+    let handle_visual_w = handle_px.max(2.0);
+    let handle_hit_w = (handle_visual_w + 6.0).min(12.0); // 6px padding each side, cap at 12px
 
     root = root.child({
+        // Separator color (neutral gray)
+        let sep_color = gpui::hsla(0.0, 0.0, 0.55, 0.6);
+
+        let pad = ((handle_hit_w - handle_visual_w) * 0.5).max(0.0);
+
         let mut handle = div()
-            .w(px(handle_width))
+            .id("sidebar-resize-handle")
+            .w(px(handle_hit_w))
             .h_full()
             .flex_shrink_0()
             .cursor(gpui::CursorStyle::ResizeLeftRight)
-            .id("sidebar-resize-handle");
+            .pl(px(pad))
+            .pr(px(pad))
+            // Visible thin separator centered in the hitbox
+            .child(
+                div()
+                    .w(px(handle_visual_w))
+                    .h_full()
+                    .bg(sep_color)
+                    .hover(|d| d.bg(gpui::hsla(0.0, 0.0, 0.55, 0.9))),
+            );
 
         handle = handle.on_mouse_down(MouseButton::Left, {
             let drag = drag.clone();
             let on_change = on_change.clone();
             move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
                 if ev.click_count >= 2 {
-                    // Double-click: snap to default
-                    on_change(default_px.clamp(min_px, max_px), cx);
+                    let viewport_w = window.viewport_size().width.0;
+                    let max_allowed = (viewport_w - 200.0).max(min_px);
+                    on_change(default_px.clamp(min_px, max_allowed.min(max_px)), cx);
                     window.refresh();
                     cx.stop_propagation();
                     return;

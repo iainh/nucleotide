@@ -14,7 +14,7 @@ include = ["src/**/*", "README.md"]
 default-run = "nucl"
 
 [features]
-default = ["git"]
+default = ["git", "terminal-emulator"]
 terminal-emulator = ["nucleotide-terminal/emulator", "nucleotide-terminal-view/emulator"]
 unicode-lines = ["helix-core/unicode-lines"]
 integration = ["helix-event/integration_test"]
