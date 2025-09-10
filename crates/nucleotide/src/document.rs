@@ -3264,6 +3264,7 @@ impl Element for DocumentElement {
                         if let Some(cursor_line) = cursor_visual_line
                             && cursor_line >= view_offset.vertical_offset &&
                                cursor_line < view_offset.vertical_offset + viewport_height {
+                                // Do not auto-scroll here; rely on Helix ensure_cursor_in_view.
                                 // Calculate cursor position - FIXED: Use text_bounds coordinate system to match mouse clicks
                                 // Get text bounds (excluding gutter) to match mouse coordinate system
                                 // Use existing gutter_width from outer scope instead of calling view.gutter_offset(document)

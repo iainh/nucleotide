@@ -6466,7 +6466,36 @@ impl Render for Workspace {
             .and_then(utils::color_to_hsla)
             .unwrap_or(white());
 
-        let editor_rect = editor.tree.area();
+        // Compute Helix editor area in character cells from current window/layout
+        // Use focused DocumentView font metrics for accurate line/char sizes
+        let (line_height_px, char_width_px) = self.get_font_metrics_from_focused_view(cx);
+        let viewport_size = window.viewport_size();
+        let mut usable_width_px = viewport_size.width.0;
+        if self.show_file_tree {
+            usable_width_px -= self.file_tree_width;
+        }
+        // Reserve a small padding to avoid overflow due to rounding
+        let usable_width = (usable_width_px.max(1.0) - 2.0).max(1.0);
+        // Editor height accounts for titlebar + statusbar and terminal panel if visible (computed above)
+        let editor_height_px = {
+            let ui_theme = cx.global::<nucleotide_ui::Theme>();
+            let status_bar_h = ui_theme.tokens.sizes.titlebar_height.0;
+            let titlebar_h = ui_theme.tokens.sizes.titlebar_height.0;
+            let total_h = viewport_size.height.0 - status_bar_h - titlebar_h;
+            let mut h = total_h.max(0.0);
+            if self.terminal_panel_visible {
+                h = (h - self.basic_terminal_height).max(0.0);
+            }
+            h
+        };
+        let cols = ((usable_width) / char_width_px.0).floor().max(1.0) as u16;
+        let rows = (editor_height_px / line_height_px.0).floor().max(1.0) as u16;
+        let editor_rect = helix_view::graphics::Rect {
+            x: 0,
+            y: 0,
+            width: cols,
+            height: rows,
+        };
 
         // Create document root container using design tokens
         let mut docs_root = div()
