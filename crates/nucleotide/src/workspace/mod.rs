@@ -7242,12 +7242,28 @@ impl Render for Workspace {
                                 div().size_full().overflow_hidden().child(file_tree.clone()),
                             );
                         } else {
+                            // No directory open: show a centered button to open a directory
+                            let core = self.core.clone();
+                            let handle = self.handle.clone();
+                            use nucleotide_ui::button::Button;
+                            let open_btn =
+                                Button::new("open-dir-btn", "Open a directory to view files")
+                                    .on_click(cx.listener(
+                                        move |_: &mut Workspace,
+                                              _ev: &gpui::MouseUpEvent,
+                                              _window,
+                                              cx| {
+                                            open_directory(core.clone(), handle.clone(), cx);
+                                        },
+                                    ));
+
                             container = container.child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child("Open a directory to view files"),
+                                    .size_full()
+                                    .child(open_btn),
                             );
                         }
                         container
