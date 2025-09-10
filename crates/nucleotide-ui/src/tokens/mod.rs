@@ -1552,15 +1552,19 @@ pub struct ButtonTokens {
     // Semantic variants (preserve Helix editor colors for familiarity)
     pub danger_background: Hsla,
     pub danger_background_hover: Hsla,
+    pub danger_background_active: Hsla,
     pub danger_text: Hsla,
     pub success_background: Hsla,
     pub success_background_hover: Hsla,
+    pub success_background_active: Hsla,
     pub success_text: Hsla,
     pub warning_background: Hsla,
     pub warning_background_hover: Hsla,
+    pub warning_background_active: Hsla,
     pub warning_text: Hsla,
     pub info_background: Hsla,
     pub info_background_hover: Hsla,
+    pub info_background_active: Hsla,
     pub info_text: Hsla,
 
     // Disabled states
@@ -1591,34 +1595,44 @@ impl ButtonTokens {
         let primary_text = chrome.text_on_chrome;
         let primary_border = chrome.border_strong;
 
-        // Secondary buttons are more subtle chrome variations
+        // Secondary buttons are subtle; lighten on hover, darken on active
         let secondary_bg = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
-        let secondary_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.5);
-        let secondary_bg_active = ColorTheory::with_alpha(chrome.surface_hover, 0.7);
+        let secondary_bg_hover = ColorTheory::adjust_oklab_lightness(secondary_bg, 0.1);
+        let secondary_bg_active = ColorTheory::adjust_oklab_lightness(secondary_bg, -0.1);
         let secondary_text = chrome.text_on_chrome;
         let secondary_border = chrome.border_muted;
 
-        // Ghost buttons are transparent until hovered
+        // Ghost buttons are transparent until hovered; lighten on hover, darken on active
         let ghost_bg = ColorTheory::transparent();
-        let ghost_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.2);
-        let ghost_bg_active = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
+        let ghost_bg_hover = ColorTheory::with_alpha(
+            ColorTheory::adjust_oklab_lightness(chrome.surface_hover, 0.1),
+            0.2,
+        );
+        let ghost_bg_active = ColorTheory::with_alpha(
+            ColorTheory::adjust_oklab_lightness(chrome.surface_hover, -0.1),
+            0.3,
+        );
         let ghost_text = chrome.text_on_chrome;
 
         // Semantic buttons use Helix editor colors for familiarity
         let danger_bg = editor.error;
         let danger_bg_hover = ColorTheory::adjust_oklab_lightness(danger_bg, 0.1);
+        let danger_bg_active = ColorTheory::adjust_oklab_lightness(danger_bg, -0.1);
         let danger_text = ColorTheory::ensure_contrast(danger_bg, editor.text_on_primary, 4.5);
 
         let success_bg = editor.success;
         let success_bg_hover = ColorTheory::adjust_oklab_lightness(success_bg, 0.1);
+        let success_bg_active = ColorTheory::adjust_oklab_lightness(success_bg, -0.1);
         let success_text = ColorTheory::ensure_contrast(success_bg, editor.text_on_primary, 4.5);
 
         let warning_bg = editor.warning;
         let warning_bg_hover = ColorTheory::adjust_oklab_lightness(warning_bg, 0.1);
+        let warning_bg_active = ColorTheory::adjust_oklab_lightness(warning_bg, -0.1);
         let warning_text = ColorTheory::ensure_contrast(warning_bg, editor.text_on_primary, 4.5);
 
         let info_bg = editor.info;
         let info_bg_hover = ColorTheory::adjust_oklab_lightness(info_bg, 0.1);
+        let info_bg_active = ColorTheory::adjust_oklab_lightness(info_bg, -0.1);
         let info_text = ColorTheory::ensure_contrast(info_bg, editor.text_on_primary, 4.5);
 
         // Disabled states are muted versions
@@ -1656,15 +1670,19 @@ impl ButtonTokens {
 
             danger_background: danger_bg,
             danger_background_hover: danger_bg_hover,
+            danger_background_active: danger_bg_active,
             danger_text,
             success_background: success_bg,
             success_background_hover: success_bg_hover,
+            success_background_active: success_bg_active,
             success_text,
             warning_background: warning_bg,
             warning_background_hover: warning_bg_hover,
+            warning_background_active: warning_bg_active,
             warning_text,
             info_background: info_bg,
             info_background_hover: info_bg_hover,
+            info_background_active: info_bg_active,
             info_text,
 
             disabled_background: disabled_bg,

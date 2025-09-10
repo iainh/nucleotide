@@ -335,12 +335,12 @@ impl Button {
                 tokens.danger_background,
             ),
             (ButtonVariant::Danger, StyleState::Hover) => (
-                tokens.danger_background,
+                tokens.danger_background_hover,
                 tokens.danger_text,
                 tokens.danger_background,
             ),
             (ButtonVariant::Danger, StyleState::Active) => (
-                tokens.danger_background,
+                tokens.danger_background_active,
                 tokens.danger_text,
                 tokens.danger_background,
             ),
@@ -351,12 +351,12 @@ impl Button {
                 tokens.success_background,
             ),
             (ButtonVariant::Success, StyleState::Hover) => (
-                tokens.success_background,
+                tokens.success_background_hover,
                 tokens.success_text,
                 tokens.success_background,
             ),
             (ButtonVariant::Success, StyleState::Active) => (
-                tokens.success_background,
+                tokens.success_background_active,
                 tokens.success_text,
                 tokens.success_background,
             ),
@@ -367,29 +367,29 @@ impl Button {
                 tokens.warning_background,
             ),
             (ButtonVariant::Warning, StyleState::Hover) => (
-                tokens.warning_background,
+                tokens.warning_background_hover,
                 tokens.warning_text,
                 tokens.warning_background,
             ),
             (ButtonVariant::Warning, StyleState::Active) => (
-                tokens.warning_background,
+                tokens.warning_background_active,
                 tokens.warning_text,
                 tokens.warning_background,
             ),
 
             (ButtonVariant::Info, StyleState::Default) => (
-                tokens.primary_background,
-                tokens.primary_text,
+                tokens.info_background,
+                tokens.info_text,
                 tokens.primary_border,
             ),
             (ButtonVariant::Info, StyleState::Hover) => (
-                tokens.primary_background_hover,
-                tokens.primary_text,
+                tokens.info_background_hover,
+                tokens.info_text,
                 tokens.primary_border,
             ),
             (ButtonVariant::Info, StyleState::Active) => (
-                tokens.primary_background_active,
-                tokens.primary_text,
+                tokens.info_background_active,
+                tokens.info_text,
                 tokens.primary_border,
             ),
 
@@ -439,8 +439,8 @@ impl Button {
                         tokens.warning_background,
                     ),
                     ButtonVariant::Info => (
-                        tokens.primary_background,
-                        tokens.primary_text,
+                        tokens.info_background,
+                        tokens.info_text,
                         tokens.primary_border,
                     ),
                 };
@@ -640,7 +640,13 @@ impl RenderOnce for Button {
                     let mut hovered = this
                         .bg(hover_style.background)
                         .text_color(hover_style.foreground)
-                        .border_color(hover_style.border_color);
+                        .border_color(hover_style.border_color)
+                        .text_size(computed_style.font_size)
+                        .font_weight(match computed_style.font_weight {
+                            400 => FontWeight::NORMAL,
+                            700 => FontWeight::BOLD,
+                            _ => FontWeight::MEDIUM,
+                        });
 
                     if let Some(shadow) = &hover_style.shadow {
                         hovered = hovered.shadow(vec![gpui::BoxShadow {
@@ -657,7 +663,13 @@ impl RenderOnce for Button {
                     let mut activated = this
                         .bg(active_style.background)
                         .text_color(active_style.foreground)
-                        .border_color(active_style.border_color);
+                        .border_color(active_style.border_color)
+                        .text_size(computed_style.font_size)
+                        .font_weight(match computed_style.font_weight {
+                            400 => FontWeight::NORMAL,
+                            700 => FontWeight::BOLD,
+                            _ => FontWeight::MEDIUM,
+                        });
 
                     if let Some(shadow) = &active_style.shadow {
                         activated = activated.shadow(vec![gpui::BoxShadow {
