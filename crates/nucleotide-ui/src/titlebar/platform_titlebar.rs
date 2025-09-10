@@ -52,7 +52,7 @@ impl PlatformTitleBar {
         self.title = title;
     }
 
-    pub fn height(window: &Window) -> Pixels {
+    pub fn height(_window: &Window) -> Pixels {
         // Use theme provider for consistent height with token system
         if let Some(theme_provider) =
             crate::providers::use_provider::<crate::providers::ThemeProvider>()

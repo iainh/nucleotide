@@ -3,11 +3,10 @@
 
 use nucleotide_core as core;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
-use nucleotide_logging::{error, info, instrument, warn};
+use nucleotide_logging::{error, info};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use nucleotide_terminal::frame::FramePayload;
 use nucleotide_terminal::session::{TerminalSession, TerminalSessionCfg};
 use nucleotide_terminal_view::{TerminalViewModel, register_view_model};
 

@@ -311,13 +311,13 @@ impl Render for TerminalRowView {
         let mut cur_underline = false;
         let mut buf = String::new();
 
-        let mut flush_run = |mut line_in: gpui::Div,
-                             text: &mut String,
-                             fg: u32,
-                             bg: u32,
-                             bold: bool,
-                             italic: bool,
-                             underline: bool| {
+        let flush_run = |line_in: gpui::Div,
+                         text: &mut String,
+                         fg: u32,
+                         bg: u32,
+                         bold: bool,
+                         italic: bool,
+                         underline: bool| {
             if text.is_empty() {
                 return line_in;
             }

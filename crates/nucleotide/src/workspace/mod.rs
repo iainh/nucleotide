@@ -51,7 +51,7 @@ use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
-use nucleotide_events::v2::workspace::{Event as WorkspaceEvent, LayoutType, PanelConfiguration};
+// (no direct Workspace v2 items used here)
 use nucleotide_vcs::VcsServiceHandle;
 
 // (focus logging removed for commit; keep code minimal)
@@ -6447,7 +6447,7 @@ impl Render for Workspace {
             window.set_window_title(&window_title);
         }
 
-        let editor = &self.core.read(cx).editor;
+        let _editor = &self.core.read(cx).editor;
 
         // Get theme colors using testing-aware theme access
         let default_style = cx.theme_style("ui.background");
@@ -6518,7 +6518,7 @@ impl Render for Workspace {
             // Fallback to Helix's tree focus or any existing view entity
             let core_read = self.core.read(cx);
             let helix_focus = core_read.editor.tree.focus;
-            drop(core_read);
+            let _ = core_read;
             self.view_manager
                 .get_document_view(&helix_focus)
                 .cloned()
@@ -6986,7 +6986,7 @@ impl Render for Workspace {
             // Basic layout mode: render simple colored, resizable panes
             let ui_theme = cx.global::<nucleotide_ui::Theme>();
             let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
-            let border_color = status_bar_tokens.border;
+            let _border_color = status_bar_tokens.border;
 
             // Clamp terminal height to available space
             let min_term = 80.0f32;
@@ -7000,7 +7000,7 @@ impl Render for Workspace {
             }
 
             // Left placeholder: File tree (yellow)
-            let left = div()
+            let _left = div()
                 .relative()
                 .size_full()
                 .min_h(px(0.0))
@@ -7028,9 +7028,9 @@ impl Render for Workspace {
             // Right: actual editor views + bottom terminal panel using shared split
             let right = {
                 let on_change_height = {
-                    let entity = cx.entity().clone();
+                    let _entity = cx.entity().clone();
                     move |new_h: f32, app_cx: &mut gpui::App| {
-                        entity.update(app_cx, |this: &mut Workspace, cx| {
+                        _entity.update(app_cx, |this: &mut Workspace, cx| {
                             if (this.basic_terminal_height - new_h).abs() > 0.5 {
                                 this.basic_terminal_height = new_h;
                                 if let Some(panel) = &this.embedded_terminal_panel {
@@ -7175,7 +7175,7 @@ impl Render for Workspace {
                 root
             };
 
-            let entity = cx.entity().clone();
+            let _entity = cx.entity().clone();
             // Clamp left pane so right side always has at least 200px
             let viewport_w = window.viewport_size().width.0;
             let max_left = (viewport_w - 200.0).max(150.0);

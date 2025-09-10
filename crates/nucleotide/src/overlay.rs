@@ -33,9 +33,9 @@ pub struct OverlayView {
     // Resizable terminal panel height (pixels)
     terminal_height_px: f32,
     // Resize interaction state
-    terminal_resizing: bool,
-    resize_start_mouse_y: gpui::Pixels,
-    resize_start_height: f32,
+    _terminal_resizing: bool,
+    _resize_start_mouse_y: gpui::Pixels,
+    _resize_start_height: f32,
     // Shared state for window-level resize listeners
     resize_state: Arc<Mutex<ResizeStateInner>>,
     // Track last dispatched terminal size to avoid redundant resize events
@@ -47,8 +47,8 @@ pub struct OverlayView {
 #[derive(Debug)]
 struct ResizeStateInner {
     resizing: bool,
-    start_mouse_y: f32,
-    start_height: f32,
+    _start_mouse_y: f32,
+    _start_height: f32,
     height: f32,
 }
 
@@ -64,13 +64,13 @@ impl OverlayView {
             terminal_panel: None,
             terminal_focus: None,
             terminal_height_px: 220.0,
-            terminal_resizing: false,
-            resize_start_mouse_y: px(0.0),
-            resize_start_height: 220.0,
+            _terminal_resizing: false,
+            _resize_start_mouse_y: px(0.0),
+            _resize_start_height: 220.0,
             resize_state: Arc::new(Mutex::new(ResizeStateInner {
                 resizing: false,
-                start_mouse_y: 0.0,
-                start_height: 220.0,
+                _start_mouse_y: 0.0,
+                _start_height: 220.0,
                 height: 220.0,
             })),
             last_terminal_size: None,
