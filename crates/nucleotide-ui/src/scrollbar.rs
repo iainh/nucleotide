@@ -291,13 +291,13 @@ impl Element for Scrollbar {
                         crate::styling::ColorTheory::with_alpha(base_thumb, 0.55)
                     }
                 };
-                // Track uses the separator color so it’s visible but subtle
-                let track = crate::styling::ColorTheory::with_alpha(chrome.separator_color, 0.35);
+                // Make the scrollbar track (gutter) transparent
+                let track = crate::styling::ColorTheory::with_alpha(chrome.separator_color, 0.0);
                 (thumb, track)
             } else {
                 (
                     hsla(0.0, 0.0, 0.8, 0.6), // thumb
-                    hsla(0.0, 0.0, 0.5, 0.2), // gutter
+                    hsla(0.0, 0.0, 0.0, 0.0), // gutter transparent when theme unavailable
                 )
             };
 
