@@ -16,9 +16,13 @@ pub struct TerminalRuntimeHandler {
 }
 
 struct SessionEntry {
-    session: TerminalSession,
+    // Protect session so we can use it from background IO workers without blocking the UI thread
+    session: Arc<Mutex<TerminalSession>>,
     #[allow(dead_code)]
     rx_task: std::thread::JoinHandle<()>,
+    // Background input writer to avoid blocking on each key press
+    input_tx: std::sync::mpsc::Sender<Vec<u8>>,
+    input_task: std::thread::JoinHandle<()>,
     view: Arc<Mutex<TerminalViewModel>>,
 }
 
@@ -68,11 +72,28 @@ impl TerminalRuntimeHandler {
             }
         });
 
+        // Wrap session for cross-thread access and create a non-blocking input queue
+        let session_arc = Arc::new(Mutex::new(session));
+        let (tx, rx_input) = std::sync::mpsc::channel::<Vec<u8>>();
+        let session_for_input = session_arc.clone();
+        let input_task = std::thread::spawn(move || {
+            while let Ok(bytes) = rx_input.recv() {
+                // Best-effort write; ignore errors to keep loop alive until channel closes
+                let _ = futures_executor::block_on(async {
+                    if let Ok(mut guard) = session_for_input.lock() {
+                        let _ = guard.write(&bytes).await;
+                    }
+                });
+            }
+        });
+
         self.sessions.insert(
             id,
             SessionEntry {
-                session,
+                session: session_arc,
                 rx_task: handle,
+                input_tx: tx,
+                input_task,
                 view,
             },
         );
@@ -101,12 +122,15 @@ impl core::EventHandler for TerminalRuntimeHandler {
             }
             TerminalEvent::Resized { id, cols, rows } => {
                 if let Some(entry) = self.sessions.get(id) {
-                    let _ = futures_executor::block_on(entry.session.resize(*cols, *rows));
+                    if let Ok(session) = entry.session.lock() {
+                        let _ = futures_executor::block_on(session.resize(*cols, *rows));
+                    }
                 }
             }
             TerminalEvent::Input { id, bytes } => {
                 if let Some(entry) = self.sessions.get(id) {
-                    let _ = futures_executor::block_on(entry.session.write(bytes));
+                    // Send bytes to background writer; drop if receiver is gone
+                    let _ = entry.input_tx.send(bytes.clone());
                 }
             }
             TerminalEvent::Output { .. } => {
@@ -114,9 +138,14 @@ impl core::EventHandler for TerminalRuntimeHandler {
             }
             TerminalEvent::Exited { id, .. } => {
                 if let Some(mut entry) = self.sessions.remove(id) {
-                    let _ = futures_executor::block_on(entry.session.kill());
-                    // Best-effort: join the rx task
+                    // Close input channel to stop input task
+                    drop(entry.input_tx);
+                    // Best-effort: kill session and join workers
+                    if let Ok(mut session) = entry.session.lock() {
+                        let _ = futures_executor::block_on(session.kill());
+                    }
                     let _ = entry.rx_task.join();
+                    let _ = entry.input_task.join();
                 }
             }
             TerminalEvent::FocusChanged { .. } => {}

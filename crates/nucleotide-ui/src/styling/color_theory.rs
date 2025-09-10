@@ -683,7 +683,7 @@ impl ColorTheory {
         // Validate contrast ratios for accessibility
         Self::validate_chrome_colors(&chrome_colors, surface_color);
 
-        nucleotide_logging::info!(
+        nucleotide_logging::debug!(
             titlebar_bg = ?chrome_colors.titlebar_background,
             file_tree_bg = ?chrome_colors.file_tree_background,
             separator = ?chrome_colors.separator_color,

@@ -1403,7 +1403,7 @@ impl Focusable for OverlayView {
         // Delegate focus to the active native component, but not completion views
         // Completion views should not steal focus - let the editor maintain focus
         if let Some(picker_view) = &self.native_picker_view {
-            nucleotide_logging::info!("DIAG: Render overlay branch: picker");
+            nucleotide_logging::debug!("DIAG: Render overlay branch: picker");
             picker_view.focus_handle(cx)
         } else if let Some(prompt_view) = &self.native_prompt_view {
             prompt_view.focus_handle(cx)
@@ -1769,7 +1769,7 @@ impl Render for OverlayView {
         }
 
         // Empty overlay using design tokens
-        nucleotide_logging::info!("DIAG: Render overlay branch: none");
+        nucleotide_logging::debug!("DIAG: Render overlay branch: none");
         div().size_0().into_any_element()
     }
 }
