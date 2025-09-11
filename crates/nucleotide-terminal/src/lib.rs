@@ -698,8 +698,8 @@ pub mod engine {
     }
 }
 
-// Legacy VTE emulator (disabled by default)
-#[cfg(feature = "vte-legacy")]
+// Legacy VTE emulator (removed)
+/*
 mod emulator {
     use crate::frame::{Cell, ChangedLine, ChangedRange, FramePayload, GridDiff, GridSnapshot};
     use unicode_width::UnicodeWidthChar;
@@ -1251,3 +1251,4 @@ mod emulator {
         fn unhook(&mut self) {}
     }
 }
+*/
