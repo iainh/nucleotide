@@ -42,6 +42,10 @@ pub struct OverlayView {
     last_terminal_size: Option<(nucleotide_events::v2::terminal::TerminalId, u16, u16)>,
     focus: FocusHandle,
     core: gpui::WeakEntity<crate::Core>,
+    // Cached terminal font metrics to avoid per-frame font measurement
+    cached_font_key: Option<(String, f32, nucleotide_types::FontWeight)>, // (family, size, weight)
+    cached_char_width: Option<f32>,
+    cached_line_height: Option<f32>,
 }
 
 #[derive(Debug)]
@@ -76,6 +80,9 @@ impl OverlayView {
             last_terminal_size: None,
             focus: focus.clone(),
             core: core.downgrade(),
+            cached_font_key: None,
+            cached_char_width: None,
+            cached_line_height: None,
         }
     }
 
@@ -1363,6 +1370,56 @@ pub struct WorkspaceLayoutInfo {
 impl gpui::Global for WorkspaceLayoutInfo {}
 
 impl OverlayView {
+    #[inline]
+    fn terminal_metrics(&mut self, cx: &mut Context<Self>) -> (f32, f32) {
+        // Build a cache key from the current editor font settings
+        let editor_font = cx.global::<nucleotide_types::EditorFontConfig>();
+        let font_key = (
+            editor_font.family.clone(),
+            editor_font.size,
+            editor_font.weight,
+        );
+
+        let need_recalc = match &self.cached_font_key {
+            Some(k) => k != &font_key,
+            None => true,
+        };
+
+        if need_recalc {
+            // Resolve font and measure advance for 'm'
+            let font = gpui::Font {
+                family: editor_font.family.clone().into(),
+                features: gpui::FontFeatures::default(),
+                weight: editor_font.weight.into(),
+                style: gpui::FontStyle::Normal,
+                fallbacks: None,
+            };
+            let font_id = cx.text_system().resolve_font(&font);
+            let font_size = gpui::px(editor_font.size);
+            let char_w = cx
+                .text_system()
+                .advance(font_id, font_size, 'm')
+                .map(|a| a.width.0)
+                .unwrap_or(editor_font.size * 0.6)
+                .max(1.0);
+            // Prefer configured line_height when available
+            let line_h = if editor_font.line_height > 0.0 {
+                editor_font.line_height
+            } else {
+                (editor_font.size * 1.35).max(1.0)
+            };
+
+            self.cached_font_key = Some(font_key);
+            self.cached_char_width = Some(char_w);
+            self.cached_line_height = Some(line_h);
+        }
+
+        (
+            self.cached_char_width.unwrap_or(8.0),
+            self.cached_line_height
+                .unwrap_or((editor_font.size * 1.35).max(1.0)),
+        )
+    }
     /// Create PickerView using ThemedContext with design token fallbacks
     fn create_picker_view_with_context(cx: &mut gpui::Context<PickerView>) -> PickerView {
         use nucleotide_ui::theme_utils::color_to_hsla;
@@ -1545,7 +1602,7 @@ impl Render for OverlayView {
         }
 
         // Terminal panel - docked at bottom
-        if let Some(terminal_panel) = &self.terminal_panel {
+        if self.terminal_panel.is_some() {
             {
                 // Ensure we have a persistent focus handle for the terminal panel area
                 if self.terminal_focus.is_none() {
@@ -1566,33 +1623,21 @@ impl Render for OverlayView {
                 if let Some(core) = self.core.upgrade() {
                     let layout = self.get_workspace_layout_info(cx);
                     let window_width = _window.bounds().size.width.0;
-                    // Use editor monospace metrics for terminal sizing
-                    let editor_font = cx.global::<nucleotide_types::EditorFontConfig>();
-                    let font = gpui::Font {
-                        family: editor_font.family.clone().into(),
-                        features: gpui::FontFeatures::default(),
-                        weight: editor_font.weight.into(),
-                        style: gpui::FontStyle::Normal,
-                        fallbacks: None,
-                    };
-                    let font_id = cx.text_system().resolve_font(&font);
-                    let font_size = gpui::px(editor_font.size);
-                    let char_w = cx
-                        .text_system()
-                        .advance(font_id, font_size, 'm')
-                        .map(|a| a.width.0)
-                        .unwrap_or(editor_font.size * 0.6)
-                        .max(1.0);
-                    // Approximate line height for terminal rows
-                    let line_h = (editor_font.size * 1.35).max(1.0);
+                    // Use cached terminal metrics (font family/size/weight)
+                    let (char_w, line_h) = self.terminal_metrics(cx);
                     // Use resizable panel height
                     let panel_height = self.terminal_height_px;
                     // Constrain to editor content width by subtracting file tree width
                     let usable_width = (window_width - layout.file_tree_width.0).max(1.0);
                     let cols = (usable_width / char_w).floor().max(1.0) as u16;
                     let rows = (panel_height / line_h).floor().max(1.0) as u16;
-
-                    let active_id = terminal_panel.read(cx).active;
+                    // Read the active terminal id after metrics calculation to avoid borrow conflicts
+                    let active_id = if let Some(panel) = &self.terminal_panel {
+                        panel.read(cx).active
+                    } else {
+                        // If panel disappeared mid-render, skip sizing
+                        return div().into_any_element();
+                    };
                     let changed = match self.last_terminal_size {
                         Some((id, last_c, last_r))
                             if id == active_id && last_c == cols && last_r == rows =>
@@ -1711,7 +1756,9 @@ impl Render for OverlayView {
                                         .border_color(gpui::hsla(0.35, 0.95, 0.55, 0.9));
                                 }
                                 // First, terminal content
-                                c = c.child(terminal_panel.clone());
+                                if let Some(panel) = &self.terminal_panel {
+                                    c = c.child(panel.clone());
+                                }
                                 // Then the debug label so it stays on top
                                 if debug {
                                     c = c.child(
