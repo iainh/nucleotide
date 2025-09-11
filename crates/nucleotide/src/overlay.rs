@@ -1650,11 +1650,21 @@ impl Render for OverlayView {
                         self.last_terminal_size = Some((active_id, cols, rows));
                         core.update(cx, |app, _| {
                             if let Some(bus) = &app.event_aggregator {
+                                // Dispatch both legacy and metrics-aware resize events
                                 bus.dispatch_terminal(
                                     nucleotide_events::v2::terminal::Event::Resized {
                                         id: active_id,
                                         cols,
                                         rows,
+                                    },
+                                );
+                                bus.dispatch_terminal(
+                                    nucleotide_events::v2::terminal::Event::ResizedWithMetrics {
+                                        id: active_id,
+                                        cols,
+                                        rows,
+                                        cell_width: char_w as f32,
+                                        cell_height: line_h as f32,
                                     },
                                 );
                             }

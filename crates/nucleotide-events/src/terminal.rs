@@ -25,6 +25,16 @@ pub enum Event {
         rows: u16,
     },
 
+    /// Terminal viewport resized with explicit cell metrics (recommended)
+    /// Allows the emulator to construct an accurate SizeInfo in pixels.
+    ResizedWithMetrics {
+        id: TerminalId,
+        cols: u16,
+        rows: u16,
+        cell_width: f32,
+        cell_height: f32,
+    },
+
     /// Input bytes sent to the terminal (raw)
     Input { id: TerminalId, bytes: Vec<u8> },
 

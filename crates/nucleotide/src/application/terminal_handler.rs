@@ -7,6 +7,8 @@ use nucleotide_logging::{error, info};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "terminal-emulator")]
+use nucleotide_terminal::session::ControlMsg;
 use nucleotide_terminal::session::{TerminalSession, TerminalSessionCfg};
 use nucleotide_terminal_view::{TerminalViewModel, register_view_model};
 
@@ -123,6 +125,27 @@ impl core::EventHandler for TerminalRuntimeHandler {
             TerminalEvent::Resized { id, cols, rows } => {
                 if let Some(entry) = self.sessions.get(id) {
                     if let Ok(session) = entry.session.lock() {
+                        let _ = futures_executor::block_on(session.resize(*cols, *rows));
+                    }
+                }
+            }
+            TerminalEvent::ResizedWithMetrics {
+                id,
+                cols,
+                rows,
+                cell_width,
+                cell_height,
+            } => {
+                if let Some(entry) = self.sessions.get(id) {
+                    if let Ok(session) = entry.session.lock() {
+                        // Push control message to engine
+                        let _ = session.control_sender().send(ControlMsg::Resize {
+                            cols: *cols,
+                            rows: *rows,
+                            cell_width: *cell_width,
+                            cell_height: *cell_height,
+                        });
+                        // Also resize PTY to maintain app expectations
                         let _ = futures_executor::block_on(session.resize(*cols, *rows));
                     }
                 }

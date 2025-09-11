@@ -67,6 +67,17 @@ pub mod session {
 
     use crate::frame::FramePayload;
 
+    /// Control messages for the emulator engine (only when emulator feature is enabled)
+    #[cfg(feature = "emulator")]
+    pub enum ControlMsg {
+        Resize {
+            cols: u16,
+            rows: u16,
+            cell_width: f32,
+            cell_height: f32,
+        },
+    }
+
     #[derive(Debug, Clone, Default)]
     pub struct TerminalSessionCfg {
         pub cwd: Option<PathBuf>,
@@ -81,6 +92,8 @@ pub mod session {
         master: Box<dyn portable_pty::MasterPty + Send>,
         child: Box<dyn portable_pty::Child + Send>,
         writer: Arc<Mutex<Box<dyn Write + Send>>>,
+        #[cfg(feature = "emulator")]
+        control_tx: std::sync::mpsc::Sender<ControlMsg>,
     }
 
     impl std::fmt::Debug for TerminalSession {
@@ -129,16 +142,38 @@ pub mod session {
             // Create output channel and blocking read loop
             let (tx, rx) = mpsc::channel::<FramePayload>(1024);
 
+            // Control channel for emulator (resize with metrics)
+            #[cfg(feature = "emulator")]
+            let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlMsg>();
+
             #[cfg(feature = "emulator")]
             {
                 use crate::engine::AlacrittyEngine as Engine;
                 use std::time::{Duration, Instant};
                 tokio::task::spawn_blocking(move || {
                     let mut engine = Engine::new(cfg.cols.unwrap_or(80), cfg.rows.unwrap_or(24));
+                    // Fallback cell metrics until provided by control channel
+                    let mut _cell_width = 8.0f32;
+                    let mut _cell_height = 16.0f32;
                     let mut buf = vec![0u8; 8192];
                     let mut last_emit = Instant::now();
                     let window = Duration::from_millis(16); // ~60 FPS cap
                     loop {
+                        // Handle any pending control messages
+                        while let Ok(msg) = control_rx.try_recv() {
+                            match msg {
+                                ControlMsg::Resize {
+                                    cols,
+                                    rows,
+                                    cell_width,
+                                    cell_height,
+                                } => {
+                                    _cell_width = cell_width;
+                                    _cell_height = cell_height;
+                                    engine.resize(cols, rows);
+                                }
+                            }
+                        }
                         match reader.read(&mut buf) {
                             Ok(0) => {
                                 if let Some(frame) = engine.take_frame() {
@@ -186,6 +221,8 @@ pub mod session {
                 master: pair.master,
                 child,
                 writer,
+                #[cfg(feature = "emulator")]
+                control_tx,
             };
 
             Ok((session, rx))
@@ -207,6 +244,12 @@ pub mod session {
             self.master
                 .resize(size)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        }
+
+        /// Get a clone of the control channel sender (emulator feature only)
+        #[cfg(feature = "emulator")]
+        pub fn control_sender(&self) -> std::sync::mpsc::Sender<ControlMsg> {
+            self.control_tx.clone()
         }
 
         pub async fn kill(&mut self) -> Result<()> {
