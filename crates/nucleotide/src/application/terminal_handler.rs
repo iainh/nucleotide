@@ -82,7 +82,7 @@ impl TerminalRuntimeHandler {
             while let Ok(bytes) = rx_input.recv() {
                 // Best-effort write; ignore errors to keep loop alive until channel closes
                 let _ = futures_executor::block_on(async {
-                    if let Ok(mut guard) = session_for_input.lock() {
+                    if let Ok(guard) = session_for_input.lock() {
                         let _ = guard.write(&bytes).await;
                     }
                 });
@@ -160,7 +160,7 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 // Output is produced by session read loop; nothing to do
             }
             TerminalEvent::Exited { id, .. } => {
-                if let Some(mut entry) = self.sessions.remove(id) {
+                if let Some(entry) = self.sessions.remove(id) {
                     // Close input channel to stop input task
                     drop(entry.input_tx);
                     // Best-effort: kill session and join workers

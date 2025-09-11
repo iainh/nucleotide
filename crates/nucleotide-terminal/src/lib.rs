@@ -152,9 +152,6 @@ pub mod session {
                 use std::time::{Duration, Instant};
                 tokio::task::spawn_blocking(move || {
                     let mut engine = Engine::new(cfg.cols.unwrap_or(80), cfg.rows.unwrap_or(24));
-                    // Fallback cell metrics until provided by control channel
-                    let mut cell_width = 8.0f32;
-                    let mut cell_height = 16.0f32;
                     let mut buf = vec![0u8; 8192];
                     let mut last_emit = Instant::now();
                     let window = Duration::from_millis(16); // ~60 FPS cap
@@ -168,9 +165,7 @@ pub mod session {
                                     cell_width: cw,
                                     cell_height: ch,
                                 } => {
-                                    cell_width = cw;
-                                    cell_height = ch;
-                                    engine.resize_with_metrics(cols, rows, cell_width, cell_height);
+                                    engine.resize_with_metrics(cols, rows, cw, ch);
                                 }
                             }
                         }

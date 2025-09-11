@@ -4534,7 +4534,7 @@ impl Workspace {
                                     cx.notify();
                                 });
                             })
-                    })
+                    }),
             )
             .child(
                 // Terminal toggle button to the right of file tree button
@@ -7392,7 +7392,7 @@ impl Render for Workspace {
                             .min_h(px(0.0)) // allow vertical shrink in flex column
                             .child(content_area),
                     )
-                    .child(self.render_unified_status_bar(cx)) // Unified bottom status bar pinned at bottom
+                    .child(self.render_unified_status_bar(cx)), // Unified bottom status bar pinned at bottom
             )
             // Add Linux client-side resize hitboxes so the window can be resized
             .map(|root| {
@@ -7402,7 +7402,9 @@ impl Render for Workspace {
 
                     // Only add when using client-side decorations and not fullscreen
                     let decorations = window.window_decorations();
-                    if matches!(decorations, gpui::Decorations::Client { .. }) && !window.is_fullscreen() {
+                    if matches!(decorations, gpui::Decorations::Client { .. })
+                        && !window.is_fullscreen()
+                    {
                         let grip: f32 = 6.0; // thickness of resize handle
                         let corner: f32 = 12.0; // size of corner diagonal resize area
 
@@ -7414,13 +7416,10 @@ impl Render for Workspace {
                             .right_0()
                             .h(px(grip))
                             .cursor(CursorStyle::ResizeUp)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                |_, window, cx| {
-                                    window.start_window_resize(ResizeEdge::Top);
-                                    cx.stop_propagation();
-                                },
-                            );
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.start_window_resize(ResizeEdge::Top);
+                                cx.stop_propagation();
+                            });
 
                         let bottom = div()
                             .absolute()
@@ -7429,13 +7428,10 @@ impl Render for Workspace {
                             .right_0()
                             .h(px(grip))
                             .cursor(CursorStyle::ResizeDown)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                |_, window, cx| {
-                                    window.start_window_resize(ResizeEdge::Bottom);
-                                    cx.stop_propagation();
-                                },
-                            );
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.start_window_resize(ResizeEdge::Bottom);
+                                cx.stop_propagation();
+                            });
 
                         let left = div()
                             .absolute()
@@ -7444,13 +7440,10 @@ impl Render for Workspace {
                             .bottom_0()
                             .w(px(grip))
                             .cursor(CursorStyle::ResizeLeft)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                |_, window, cx| {
-                                    window.start_window_resize(ResizeEdge::Left);
-                                    cx.stop_propagation();
-                                },
-                            );
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.start_window_resize(ResizeEdge::Left);
+                                cx.stop_propagation();
+                            });
 
                         let right = div()
                             .absolute()
@@ -7459,13 +7452,10 @@ impl Render for Workspace {
                             .bottom_0()
                             .w(px(grip))
                             .cursor(CursorStyle::ResizeRight)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                |_, window, cx| {
-                                    window.start_window_resize(ResizeEdge::Right);
-                                    cx.stop_propagation();
-                                },
-                            );
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.start_window_resize(ResizeEdge::Right);
+                                cx.stop_propagation();
+                            });
 
                         // Corners for diagonal resize
                         let tl = div()
@@ -7475,13 +7465,10 @@ impl Render for Workspace {
                             .w(px(corner))
                             .h(px(corner))
                             .cursor(CursorStyle::ResizeUpLeftDownRight)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                |_, window, cx| {
-                                    window.start_window_resize(ResizeEdge::TopLeft);
-                                    cx.stop_propagation();
-                                },
-                            );
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.start_window_resize(ResizeEdge::TopLeft);
+                                cx.stop_propagation();
+                            });
 
                         let tr = div()
                             .absolute()
@@ -7490,13 +7477,10 @@ impl Render for Workspace {
                             .w(px(corner))
                             .h(px(corner))
                             .cursor(CursorStyle::ResizeUpRightDownLeft)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                |_, window, cx| {
-                                    window.start_window_resize(ResizeEdge::TopRight);
-                                    cx.stop_propagation();
-                                },
-                            );
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.start_window_resize(ResizeEdge::TopRight);
+                                cx.stop_propagation();
+                            });
 
                         let bl = div()
                             .absolute()
@@ -7505,13 +7489,10 @@ impl Render for Workspace {
                             .w(px(corner))
                             .h(px(corner))
                             .cursor(CursorStyle::ResizeUpRightDownLeft)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                |_, window, cx| {
-                                    window.start_window_resize(ResizeEdge::BottomLeft);
-                                    cx.stop_propagation();
-                                },
-                            );
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.start_window_resize(ResizeEdge::BottomLeft);
+                                cx.stop_propagation();
+                            });
 
                         let br = div()
                             .absolute()
@@ -7520,13 +7501,10 @@ impl Render for Workspace {
                             .w(px(corner))
                             .h(px(corner))
                             .cursor(CursorStyle::ResizeUpLeftDownRight)
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                |_, window, cx| {
-                                    window.start_window_resize(ResizeEdge::BottomRight);
-                                    cx.stop_propagation();
-                                },
-                            );
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.start_window_resize(ResizeEdge::BottomRight);
+                                cx.stop_propagation();
+                            });
 
                         return root
                             .child(top)
@@ -7541,166 +7519,166 @@ impl Render for Workspace {
                 }
                 root
             })
-                    .when(self.lsp_menu_open, |container| {
-                        use gpui::{Corner, anchored, point};
-                        let ui_theme = cx.global::<nucleotide_ui::Theme>();
-                        let dd_tokens = ui_theme.tokens.dropdown_tokens();
+            .when(self.lsp_menu_open, |container| {
+                use gpui::{Corner, anchored, point};
+                let ui_theme = cx.global::<nucleotide_ui::Theme>();
+                let dd_tokens = ui_theme.tokens.dropdown_tokens();
 
-                        // Snapshot LSP state
-                        let server_rows: Vec<gpui::AnyElement> = {
-                            let lsp_state_entity = self.core.read(cx).lsp_state.clone();
-                            if let Some(lsp_state) = lsp_state_entity {
-                                let state = lsp_state.read(cx);
-                                let mut rows: Vec<gpui::AnyElement> = Vec::new();
+                // Snapshot LSP state
+                let server_rows: Vec<gpui::AnyElement> = {
+                    let lsp_state_entity = self.core.read(cx).lsp_state.clone();
+                    if let Some(lsp_state) = lsp_state_entity {
+                        let state = lsp_state.read(cx);
+                        let mut rows: Vec<gpui::AnyElement> = Vec::new();
 
-                                // Sort servers by name for a stable order
-                                let mut servers: Vec<_> = state.servers.values().cloned().collect();
-                                servers.sort_by(|a, b| a.name.cmp(&b.name));
+                        // Sort servers by name for a stable order
+                        let mut servers: Vec<_> = state.servers.values().cloned().collect();
+                        servers.sort_by(|a, b| a.name.cmp(&b.name));
 
-                                // If there are no servers, show muted empty message
-                                if servers.is_empty() {
-                                    rows.push(
-                                        div()
-                                            .w_full()
-                                            .px(ui_theme.tokens.sizes.space_3)
-                                            .py(ui_theme.tokens.sizes.space_2)
-                                            .text_size(ui_theme.tokens.sizes.text_sm)
-                                            .text_color(dd_tokens.item_text_secondary)
-                                            .child("no LSP servers")
-                                            .into_any_element(),
-                                    );
-                                    // No servers to display; end of list
-                                }
+                        // If there are no servers, show muted empty message
+                        if servers.is_empty() {
+                            rows.push(
+                                div()
+                                    .w_full()
+                                    .px(ui_theme.tokens.sizes.space_3)
+                                    .py(ui_theme.tokens.sizes.space_2)
+                                    .text_size(ui_theme.tokens.sizes.text_sm)
+                                    .text_color(dd_tokens.item_text_secondary)
+                                    .child("no LSP servers")
+                                    .into_any_element(),
+                            );
+                            // No servers to display; end of list
+                        }
 
-                                for server in servers {
-                                    let status_text = match server.status {
-                                        ServerStatus::Starting => "Starting".to_string(),
-                                        ServerStatus::Initializing => "Initializing".to_string(),
-                                        ServerStatus::Running => "Running".to_string(),
-                                        ServerStatus::Failed(ref e) => format!("Failed: {}", e),
-                                        ServerStatus::Stopped => "Stopped".to_string(),
-                                    };
+                        for server in servers {
+                            let status_text = match server.status {
+                                ServerStatus::Starting => "Starting".to_string(),
+                                ServerStatus::Initializing => "Initializing".to_string(),
+                                ServerStatus::Running => "Running".to_string(),
+                                ServerStatus::Failed(ref e) => format!("Failed: {}", e),
+                                ServerStatus::Stopped => "Stopped".to_string(),
+                            };
 
-                                    // Header row with server name and status
-                                    rows.push(
-                                        div()
-                                            .w_full()
-                                            .px(ui_theme.tokens.sizes.space_3)
-                                            .py(ui_theme.tokens.sizes.space_2)
-                                            .text_size(ui_theme.tokens.sizes.text_sm)
-                                            .text_color(dd_tokens.item_text)
-                                            .child(format!("{} — {}", server.name, status_text))
-                                            .into_any_element(),
-                                    );
+                            // Header row with server name and status
+                            rows.push(
+                                div()
+                                    .w_full()
+                                    .px(ui_theme.tokens.sizes.space_3)
+                                    .py(ui_theme.tokens.sizes.space_2)
+                                    .text_size(ui_theme.tokens.sizes.text_sm)
+                                    .text_color(dd_tokens.item_text)
+                                    .child(format!("{} — {}", server.name, status_text))
+                                    .into_any_element(),
+                            );
 
-                                    // Progress rows for this server, or Idle if none
-                                    let progress_items: Vec<_> = state
-                                        .progress
-                                        .values()
-                                        .filter(|p| p.server_id == server.id)
-                                        .cloned()
-                                        .collect();
+                            // Progress rows for this server, or Idle if none
+                            let progress_items: Vec<_> = state
+                                .progress
+                                .values()
+                                .filter(|p| p.server_id == server.id)
+                                .cloned()
+                                .collect();
 
-                                    if progress_items.is_empty() {
-                                        rows.push(
-                                            div()
-                                                .w_full()
-                                                .px(ui_theme.tokens.sizes.space_6)
-                                                .pb(ui_theme.tokens.sizes.space_2)
-                                                .text_size(ui_theme.tokens.sizes.text_sm)
-                                                .text_color(dd_tokens.item_text_secondary)
-                                                .child("Idle")
-                                                .into_any_element(),
-                                        );
-                                    } else {
-                                        for p in progress_items {
-                                            let mut line = String::new();
-                                            if let Some(pct) = p.percentage {
-                                                line.push_str(&format!("{pct}% "));
-                                            }
-                                            line.push_str(&p.title);
-                                            if let Some(msg) = p.message {
-                                                line.push_str(&format!(" ⋅ {}", msg));
-                                            }
-
-                                            rows.push(
-                                                div()
-                                                    .w_full()
-                                                    .px(ui_theme.tokens.sizes.space_6)
-                                                    .pb(ui_theme.tokens.sizes.space_1)
-                                                    .text_size(ui_theme.tokens.sizes.text_sm)
-                                                    .text_color(dd_tokens.item_text_secondary)
-                                                    .child(line)
-                                                    .into_any_element(),
-                                            );
-                                        }
-                                    }
-
-                                    // Separator between servers
-                                    rows.push(
-                                        div()
-                                            .w_full()
-                                            .h(px(1.0))
-                                            .bg(dd_tokens.border)
-                                            .opacity(0.5)
-                                            .into_any_element(),
-                                    );
-                                }
-
-                                rows
-                            } else {
-                                vec![
+                            if progress_items.is_empty() {
+                                rows.push(
                                     div()
                                         .w_full()
-                                        .px(ui_theme.tokens.sizes.space_3)
-                                        .py(ui_theme.tokens.sizes.space_2)
+                                        .px(ui_theme.tokens.sizes.space_6)
+                                        .pb(ui_theme.tokens.sizes.space_2)
                                         .text_size(ui_theme.tokens.sizes.text_sm)
                                         .text_color(dd_tokens.item_text_secondary)
-                                        .child("no LSP servers")
+                                        .child("Idle")
                                         .into_any_element(),
-                                ]
+                                );
+                            } else {
+                                for p in progress_items {
+                                    let mut line = String::new();
+                                    if let Some(pct) = p.percentage {
+                                        line.push_str(&format!("{pct}% "));
+                                    }
+                                    line.push_str(&p.title);
+                                    if let Some(msg) = p.message {
+                                        line.push_str(&format!(" ⋅ {}", msg));
+                                    }
+
+                                    rows.push(
+                                        div()
+                                            .w_full()
+                                            .px(ui_theme.tokens.sizes.space_6)
+                                            .pb(ui_theme.tokens.sizes.space_1)
+                                            .text_size(ui_theme.tokens.sizes.text_sm)
+                                            .text_color(dd_tokens.item_text_secondary)
+                                            .child(line)
+                                            .into_any_element(),
+                                    );
+                                }
                             }
-                        };
 
-                        let (x, y) = self.lsp_menu_pos;
+                            // Separator between servers
+                            rows.push(
+                                div()
+                                    .w_full()
+                                    .h(px(1.0))
+                                    .bg(dd_tokens.border)
+                                    .opacity(0.5)
+                                    .into_any_element(),
+                            );
+                        }
 
-                        container.child(
+                        rows
+                    } else {
+                        vec![
                             div()
-                                .absolute()
-                                .size_full()
-                                .top_0()
-                                .left_0()
-                                .occlude()
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this: &mut Workspace, _ev, _win, cx| {
-                                        this.lsp_menu_open = false;
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(
-                                    anchored()
-                                        .position(point(px(x), px(y)))
-                                        .anchor(Corner::BottomLeft)
-                                        .offset(point(px(0.0), px(4.0)))
-                                        .snap_to_window_with_margin(ui_theme.tokens.sizes.space_2)
-                                        .child(
-                                            div()
-                                                .min_w(px(260.0))
-                                                .max_w(px(480.0))
-                                                .bg(dd_tokens.container_background)
-                                                .border_1()
-                                                .border_color(dd_tokens.border)
-                                                .rounded(ui_theme.tokens.sizes.radius_md)
-                                                .shadow_md()
-                                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                                    cx.stop_propagation()
-                                                })
-                                                .children(server_rows),
-                                        ),
-                                ),
+                                .w_full()
+                                .px(ui_theme.tokens.sizes.space_3)
+                                .py(ui_theme.tokens.sizes.space_2)
+                                .text_size(ui_theme.tokens.sizes.text_sm)
+                                .text_color(dd_tokens.item_text_secondary)
+                                .child("no LSP servers")
+                                .into_any_element(),
+                        ]
+                    }
+                };
+
+                let (x, y) = self.lsp_menu_pos;
+
+                container.child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .top_0()
+                        .left_0()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this: &mut Workspace, _ev, _win, cx| {
+                                this.lsp_menu_open = false;
+                                cx.notify();
+                            }),
                         )
-                    })
+                        .child(
+                            anchored()
+                                .position(point(px(x), px(y)))
+                                .anchor(Corner::BottomLeft)
+                                .offset(point(px(0.0), px(4.0)))
+                                .snap_to_window_with_margin(ui_theme.tokens.sizes.space_2)
+                                .child(
+                                    div()
+                                        .min_w(px(260.0))
+                                        .max_w(px(480.0))
+                                        .bg(dd_tokens.container_background)
+                                        .border_1()
+                                        .border_color(dd_tokens.border)
+                                        .rounded(ui_theme.tokens.sizes.radius_md)
+                                        .shadow_md()
+                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                            cx.stop_propagation()
+                                        })
+                                        .children(server_rows),
+                                ),
+                        ),
+                )
+            })
     }
 }
 
