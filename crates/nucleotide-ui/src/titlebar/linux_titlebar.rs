@@ -234,7 +234,7 @@ impl LinuxTitlebar {
             .child(
                 div().flex().items_center().gap_2().child(
                     div()
-                        .text_size(cx.global::<crate::Theme>().tokens.sizes.text_md)
+                        .text_size(crate::providers::use_theme().tokens.sizes.text_md)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(self.style.foreground)
                         .child(self.title.clone()),
