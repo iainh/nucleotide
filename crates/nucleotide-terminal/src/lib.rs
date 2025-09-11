@@ -131,28 +131,25 @@ pub mod session {
 
             #[cfg(feature = "emulator")]
             {
-                use crate::emulator::Emulator;
+                use crate::engine::AlacrittyEngine as Engine;
                 use std::time::{Duration, Instant};
-                // Spawn a blocking loop that feeds the emulator and coalesces frames
                 tokio::task::spawn_blocking(move || {
-                    let mut emulator =
-                        Emulator::new(cfg.cols.unwrap_or(80), cfg.rows.unwrap_or(24));
+                    let mut engine = Engine::new(cfg.cols.unwrap_or(80), cfg.rows.unwrap_or(24));
                     let mut buf = vec![0u8; 8192];
                     let mut last_emit = Instant::now();
                     let window = Duration::from_millis(16); // ~60 FPS cap
                     loop {
                         match reader.read(&mut buf) {
                             Ok(0) => {
-                                // EOF: try to flush any pending changes
-                                if let Some(frame) = emulator.take_frame() {
+                                if let Some(frame) = engine.take_frame() {
                                     let _ = tx.try_send(frame);
                                 }
                                 break;
                             }
                             Ok(n) => {
-                                emulator.feed_bytes(&buf[..n]);
+                                engine.feed_bytes(&buf[..n]);
                                 if last_emit.elapsed() >= window {
-                                    if let Some(frame) = emulator.take_frame() {
+                                    if let Some(frame) = engine.take_frame() {
                                         if tx.try_send(frame).is_err() {
                                             break;
                                         }
@@ -241,7 +238,78 @@ pub mod session {
     }
 }
 
+// Alacritty-based terminal engine scaffold (emulator feature)
 #[cfg(feature = "emulator")]
+pub mod engine {
+    use crate::frame::{Cell, FramePayload, GridSnapshot};
+
+    /// Placeholder engine producing full snapshots; next iteration will integrate alacritty_terminal
+    pub struct AlacrittyEngine {
+        cols: u16,
+        rows: u16,
+        grid: Vec<Vec<Cell>>,
+    }
+
+    impl AlacrittyEngine {
+        pub fn new(cols: u16, rows: u16) -> Self {
+            let mut grid = Vec::with_capacity(rows as usize);
+            for _ in 0..rows {
+                grid.push(vec![
+                    Cell {
+                        ch: ' ',
+                        fg: 0xffffff,
+                        bg: 0x000000,
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                        inverse: false
+                    };
+                    cols as usize
+                ]);
+            }
+            Self { cols, rows, grid }
+        }
+
+        pub fn feed_bytes(&mut self, _bytes: &[u8]) {
+            // TODO: Use alacritty_terminal::ansi::Processor to update internal state
+        }
+
+        pub fn take_frame(&mut self) -> Option<FramePayload> {
+            Some(FramePayload::Full(GridSnapshot {
+                rows: self.grid.clone(),
+                cols: self.cols,
+                rows_len: self.rows,
+                cursor_row: 0,
+                cursor_col: 0,
+            }))
+        }
+
+        pub fn resize(&mut self, cols: u16, rows: u16) {
+            if cols != self.cols || rows != self.rows {
+                self.cols = cols;
+                self.rows = rows;
+                self.grid.clear();
+                for _ in 0..rows {
+                    self.grid.push(vec![
+                        Cell {
+                            ch: ' ',
+                            fg: 0xffffff,
+                            bg: 0x000000,
+                            bold: false,
+                            italic: false,
+                            underline: false,
+                            inverse: false
+                        };
+                        cols as usize
+                    ]);
+                }
+            }
+        }
+    }
+}
+
+// Legacy VTE emulator (disabled by default)
+#[cfg(feature = "vte-legacy")]
 mod emulator {
     use crate::frame::{Cell, ChangedLine, ChangedRange, FramePayload, GridDiff, GridSnapshot};
     use unicode_width::UnicodeWidthChar;
