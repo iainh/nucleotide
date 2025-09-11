@@ -153,8 +153,8 @@ pub mod session {
                 tokio::task::spawn_blocking(move || {
                     let mut engine = Engine::new(cfg.cols.unwrap_or(80), cfg.rows.unwrap_or(24));
                     // Fallback cell metrics until provided by control channel
-                    let mut _cell_width = 8.0f32;
-                    let mut _cell_height = 16.0f32;
+                    let mut cell_width = 8.0f32;
+                    let mut cell_height = 16.0f32;
                     let mut buf = vec![0u8; 8192];
                     let mut last_emit = Instant::now();
                     let window = Duration::from_millis(16); // ~60 FPS cap
@@ -165,12 +165,12 @@ pub mod session {
                                 ControlMsg::Resize {
                                     cols,
                                     rows,
-                                    cell_width,
-                                    cell_height,
+                                    cell_width: cw,
+                                    cell_height: ch,
                                 } => {
-                                    _cell_width = cell_width;
-                                    _cell_height = cell_height;
-                                    engine.resize(cols, rows);
+                                    cell_width = cw;
+                                    cell_height = ch;
+                                    engine.resize_with_metrics(cols, rows, cell_width, cell_height);
                                 }
                             }
                         }
@@ -285,16 +285,28 @@ pub mod session {
 #[cfg(feature = "emulator")]
 pub mod engine {
     use crate::frame::{Cell, FramePayload, GridSnapshot};
+    use alacritty_terminal::event::{Event as TermEvent, EventListener};
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::term::{self, RenderableContent, Term};
+    use alacritty_terminal::vte::ansi::{
+        self, Color as VteColor, NamedColor as VteNamedColor, Rgb as VteRgb,
+    };
 
     /// Placeholder engine producing full snapshots; next iteration will integrate alacritty_terminal
     pub struct AlacrittyEngine {
         cols: u16,
         rows: u16,
+        cell_width: f32,
+        cell_height: f32,
         grid: Vec<Vec<Cell>>,
+        term: Option<Term<NoopListener>>,
+        parser: ansi::Processor,
     }
 
     impl AlacrittyEngine {
         pub fn new(cols: u16, rows: u16) -> Self {
+            let cell_width = 8.0f32;
+            let cell_height = 16.0f32;
             let mut grid = Vec::with_capacity(rows as usize);
             for _ in 0..rows {
                 grid.push(vec![
@@ -310,21 +322,88 @@ pub mod engine {
                     cols as usize
                 ]);
             }
-            Self { cols, rows, grid }
+            let mut engine = Self {
+                cols,
+                rows,
+                cell_width,
+                cell_height,
+                grid,
+                term: None,
+                parser: ansi::Processor::new(),
+            };
+            engine.rebuild_term();
+            engine
         }
 
-        pub fn feed_bytes(&mut self, _bytes: &[u8]) {
-            // TODO: Use alacritty_terminal::ansi::Processor to update internal state
+        pub fn feed_bytes(&mut self, bytes: &[u8]) {
+            if self.term.is_none() {
+                self.rebuild_term();
+            }
+            if let Some(term) = &mut self.term {
+                for &b in bytes {
+                    self.parser.advance(term, b);
+                }
+            }
         }
 
         pub fn take_frame(&mut self) -> Option<FramePayload> {
-            Some(FramePayload::Full(GridSnapshot {
-                rows: self.grid.clone(),
-                cols: self.cols,
-                rows_len: self.rows,
-                cursor_row: 0,
-                cursor_col: 0,
-            }))
+            if self.term.is_none() {
+                self.rebuild_term();
+            }
+            if let Some(term) = &mut self.term {
+                // Renderable content for current viewport
+                let content: RenderableContent<'_> = term.renderable_content();
+                // Prepare grid buffer
+                if self.grid.len() as u16 != self.rows
+                    || self.grid.get(0).map(|r| r.len()).unwrap_or(0) as u16 != self.cols
+                {
+                    self.grid = vec![
+                        vec![
+                            Cell {
+                                ch: ' ',
+                                fg: 0xffffff,
+                                bg: 0x000000,
+                                bold: false,
+                                italic: false,
+                                underline: false,
+                                inverse: false
+                            };
+                            self.cols as usize
+                        ];
+                        self.rows as usize
+                    ];
+                }
+                for indexed in content.display_iter {
+                    let pos = indexed.point;
+                    let cell = indexed.cell;
+                    let row = pos.line.0 as usize;
+                    let col = pos.column.0 as usize;
+                    if row < self.grid.len() && col < self.grid[row].len() {
+                        let ch = cell.c;
+                        let fg = Self::color_to_rgb_u32(cell.fg);
+                        let bg = Self::color_to_rgb_u32(cell.bg);
+                        self.grid[row][col] = Cell {
+                            ch,
+                            fg,
+                            bg,
+                            bold: cell.flags.contains(term::cell::Flags::BOLD),
+                            italic: cell.flags.contains(term::cell::Flags::ITALIC),
+                            underline: cell.flags.contains(term::cell::Flags::UNDERLINE),
+                            inverse: cell.flags.contains(term::cell::Flags::INVERSE),
+                        };
+                    }
+                }
+
+                let cursor = content.cursor.point;
+                return Some(FramePayload::Full(GridSnapshot {
+                    rows: self.grid.clone(),
+                    cols: self.cols,
+                    rows_len: self.rows,
+                    cursor_row: cursor.line.0.max(0) as u16,
+                    cursor_col: (cursor.column.0 as u16),
+                }));
+            }
+            None
         }
 
         pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -348,6 +427,274 @@ pub mod engine {
                 }
             }
         }
+
+        pub fn resize_with_metrics(
+            &mut self,
+            cols: u16,
+            rows: u16,
+            cell_width: f32,
+            cell_height: f32,
+        ) {
+            self.cell_width = cell_width;
+            self.cell_height = cell_height;
+            self.resize(cols, rows);
+            self.rebuild_term();
+        }
+
+        fn rebuild_term(&mut self) {
+            let config = term::Config::default();
+            let listener = NoopListener;
+            let dims = SimpleSize {
+                cols: self.cols as usize,
+                rows: self.rows as usize,
+            };
+            let term = Term::new(config, &dims, listener);
+            self.term = Some(term);
+        }
+
+        #[inline]
+        fn ansi_named_color_to_rgb(nc: VteNamedColor) -> VteRgb {
+            // Basic 16-color palette mapping using common defaults
+            match nc {
+                VteNamedColor::Background => VteRgb {
+                    r: 0x00,
+                    g: 0x00,
+                    b: 0x00,
+                },
+                VteNamedColor::Foreground => VteRgb {
+                    r: 0xff,
+                    g: 0xff,
+                    b: 0xff,
+                },
+                VteNamedColor::Black => VteRgb {
+                    r: 0x00,
+                    g: 0x00,
+                    b: 0x00,
+                },
+                VteNamedColor::Red => VteRgb {
+                    r: 0xcc,
+                    g: 0x00,
+                    b: 0x00,
+                },
+                VteNamedColor::Green => VteRgb {
+                    r: 0x00,
+                    g: 0xa6,
+                    b: 0x00,
+                },
+                VteNamedColor::Yellow => VteRgb {
+                    r: 0x99,
+                    g: 0x99,
+                    b: 0x00,
+                },
+                VteNamedColor::Blue => VteRgb {
+                    r: 0x00,
+                    g: 0x00,
+                    b: 0xcc,
+                },
+                VteNamedColor::Magenta => VteRgb {
+                    r: 0xcc,
+                    g: 0x00,
+                    b: 0xcc,
+                },
+                VteNamedColor::Cyan => VteRgb {
+                    r: 0x00,
+                    g: 0xa6,
+                    b: 0xb2,
+                },
+                VteNamedColor::White => VteRgb {
+                    r: 0xcc,
+                    g: 0xcc,
+                    b: 0xcc,
+                },
+                VteNamedColor::BrightBlack => VteRgb {
+                    r: 0x4d,
+                    g: 0x4d,
+                    b: 0x4d,
+                },
+                VteNamedColor::BrightRed => VteRgb {
+                    r: 0xff,
+                    g: 0x00,
+                    b: 0x00,
+                },
+                VteNamedColor::BrightGreen => VteRgb {
+                    r: 0x00,
+                    g: 0xff,
+                    b: 0x00,
+                },
+                VteNamedColor::BrightYellow => VteRgb {
+                    r: 0xff,
+                    g: 0xff,
+                    b: 0x00,
+                },
+                VteNamedColor::BrightBlue => VteRgb {
+                    r: 0x00,
+                    g: 0x00,
+                    b: 0xff,
+                },
+                VteNamedColor::BrightMagenta => VteRgb {
+                    r: 0xff,
+                    g: 0x00,
+                    b: 0xff,
+                },
+                VteNamedColor::BrightCyan => VteRgb {
+                    r: 0x00,
+                    g: 0xff,
+                    b: 0xff,
+                },
+                VteNamedColor::BrightWhite => VteRgb {
+                    r: 0xff,
+                    g: 0xff,
+                    b: 0xff,
+                },
+                _ => VteRgb {
+                    r: 0xff,
+                    g: 0xff,
+                    b: 0xff,
+                },
+            }
+        }
+
+        #[inline]
+        fn xterm_256_to_rgb(idx: u8) -> VteRgb {
+            if idx < 16 {
+                // Map to bright 8 defaults above
+                return match idx {
+                    0 => VteRgb {
+                        r: 0x00,
+                        g: 0x00,
+                        b: 0x00,
+                    },
+                    1 => VteRgb {
+                        r: 0xcc,
+                        g: 0x00,
+                        b: 0x00,
+                    },
+                    2 => VteRgb {
+                        r: 0x00,
+                        g: 0xa6,
+                        b: 0x00,
+                    },
+                    3 => VteRgb {
+                        r: 0x99,
+                        g: 0x99,
+                        b: 0x00,
+                    },
+                    4 => VteRgb {
+                        r: 0x00,
+                        g: 0x00,
+                        b: 0xcc,
+                    },
+                    5 => VteRgb {
+                        r: 0xcc,
+                        g: 0x00,
+                        b: 0xcc,
+                    },
+                    6 => VteRgb {
+                        r: 0x00,
+                        g: 0xa6,
+                        b: 0xb2,
+                    },
+                    7 => VteRgb {
+                        r: 0xcc,
+                        g: 0xcc,
+                        b: 0xcc,
+                    },
+                    8 => VteRgb {
+                        r: 0x4d,
+                        g: 0x4d,
+                        b: 0x4d,
+                    },
+                    9 => VteRgb {
+                        r: 0xff,
+                        g: 0x00,
+                        b: 0x00,
+                    },
+                    10 => VteRgb {
+                        r: 0x00,
+                        g: 0xff,
+                        b: 0x00,
+                    },
+                    11 => VteRgb {
+                        r: 0xff,
+                        g: 0xff,
+                        b: 0x00,
+                    },
+                    12 => VteRgb {
+                        r: 0x00,
+                        g: 0x00,
+                        b: 0xff,
+                    },
+                    13 => VteRgb {
+                        r: 0xff,
+                        g: 0x00,
+                        b: 0xff,
+                    },
+                    14 => VteRgb {
+                        r: 0x00,
+                        g: 0xff,
+                        b: 0xff,
+                    },
+                    _ => VteRgb {
+                        r: 0xff,
+                        g: 0xff,
+                        b: 0xff,
+                    },
+                };
+            }
+            if (16..=231).contains(&idx) {
+                let i = (idx - 16) as u32;
+                let r = (i / 36) % 6;
+                let g = (i / 6) % 6;
+                let b = i % 6;
+                let comp = |v: u32| if v == 0 { 0 } else { 55 + 40 * v } as u8;
+                return VteRgb {
+                    r: comp(r),
+                    g: comp(g),
+                    b: comp(b),
+                };
+            }
+            let gray = 8 + 10 * (idx as u32 - 232);
+            VteRgb {
+                r: gray as u8,
+                g: gray as u8,
+                b: gray as u8,
+            }
+        }
+
+        #[inline]
+        fn color_to_rgb_u32(color: VteColor) -> u32 {
+            let rgb = match color {
+                VteColor::Spec(rgb) => rgb,
+                VteColor::Named(nc) => Self::ansi_named_color_to_rgb(nc),
+                VteColor::Indexed(idx) => Self::xterm_256_to_rgb(idx),
+            };
+            ((rgb.r as u32) << 16) | ((rgb.g as u32) << 8) | (rgb.b as u32)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct SimpleSize {
+        cols: usize,
+        rows: usize,
+    }
+
+    impl Dimensions for SimpleSize {
+        fn total_lines(&self) -> usize {
+            self.rows
+        }
+        fn screen_lines(&self) -> usize {
+            self.rows
+        }
+        fn columns(&self) -> usize {
+            self.cols
+        }
+    }
+
+    #[derive(Clone, Copy, Default)]
+    pub struct NoopListener;
+
+    impl EventListener for NoopListener {
+        fn send_event(&self, _event: TermEvent) {}
     }
 }
 
