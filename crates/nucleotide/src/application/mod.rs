@@ -196,6 +196,11 @@ enum LspUiState {
 }
 
 impl Application {
+    /// Check if rust-analyzer is already running for the current project
+    fn is_rust_analyzer_running(&self) -> bool {
+        // For simplicity, assume rust-analyzer is not running and let the start method handle duplicates
+        false
+    }
     fn lsp_title_for_state(state: &LspUiState) -> &'static str {
         match state {
             LspUiState::Idle => "Connected",
@@ -215,6 +220,186 @@ impl Application {
             LspUiState::Idle => format!("{}-{}", server_id, LSP_TOKEN_IDLE),
             LspUiState::Activity(_) => format!("{}-{}", server_id, LSP_TOKEN_ACTIVITY),
         }
+    }
+    /// Process pending LSP commands synchronously by draining the channel
+    fn process_pending_lsp_commands_sync(&mut self, handle: &tokio::runtime::Handle) {
+        let _guard = handle.enter();
+
+        debug!("🔧 SYNC: Starting synchronous LSP command processing");
+
+        // Increment sync cycle counter
+        let cycle_count = self
+            .sync_cycle_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+
+        // Initialize project LSP system at cycle 1
+        if cycle_count == 1
+            && !self
+                .project_lsp_system_initialized
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            info!("🚀 INIT: Initializing LSP system at cycle 1");
+            if let Err(e) = handle.block_on(self.initialize_project_lsp_system()) {
+                error!(error = %e, "Failed to initialize project LSP system");
+            }
+        }
+
+        // DIRECT APPROACH: Check if we need to start rust-analyzer for current project
+        // Wait for 10 cycles to let the system fully initialize
+        if self.config.gui.lsp.project_lsp_startup {
+            debug!(
+                project_directory = ?self.project_directory,
+                cycle_count = cycle_count,
+                "🔧 SYNC: Checking project directory for direct LSP startup"
+            );
+            if let Some(ref project_dir) = self.project_directory {
+                let has_cargo_toml = project_dir.join("Cargo.toml").exists();
+                let rust_analyzer_running = self.is_rust_analyzer_running();
+
+                // Only try LSP startup after system has had time to initialize (cycle 10+)
+                // and if no servers are currently running
+                let any_servers_running = self.editor.language_servers.iter_clients().count() > 0;
+                if cycle_count >= 10 && !any_servers_running {
+                    info!(
+                        has_cargo_toml = has_cargo_toml,
+                        rust_analyzer_running = rust_analyzer_running,
+                        cycle_count = cycle_count,
+                        "🔧 SYNC: Project checks for direct LSP startup"
+                    );
+                    // Check if HelixLspBridge is initialized before attempting to start server
+                    let bridge_initialized = handle.block_on(async {
+                        let bridge_guard = self.helix_lsp_bridge.read().await;
+                        bridge_guard.is_some()
+                    });
+
+                    info!(
+                        bridge_initialized = bridge_initialized,
+                        has_cargo_toml = has_cargo_toml,
+                        "🔧 SYNC: Bridge initialization check for project LSP startup"
+                    );
+
+                    if bridge_initialized {
+                        // Use generic project detection logic
+                        info!(
+                            project_root = %project_dir.display(),
+                            "🔧 SYNC: Starting LSP servers for detected project types"
+                        );
+
+                        let project_path = project_dir.clone();
+                        let detected_servers =
+                            handle.block_on(self.detect_and_start_project_servers(&project_path));
+
+                        if !detected_servers.is_empty() {
+                            info!(
+                                server_count = detected_servers.len(),
+                                "🚀 SYNC: Successfully started LSP servers using bridge approach"
+                            );
+                        } else {
+                            info!("🔧 SYNC: No project types detected - no LSP servers started");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Process all available commands in the channel
+        let mut commands_processed = 0;
+        loop {
+            let command = {
+                let mut rx_guard = handle.block_on(self.project_lsp_command_rx.write());
+                if let Some(ref mut rx) = rx_guard.as_mut() {
+                    match rx.try_recv() {
+                        Ok(command) => Some(command),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => None,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            info!("LSP command channel disconnected");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            };
+
+            match command {
+                Some(lsp_command) => {
+                    commands_processed += 1;
+                    info!(
+                        command_type = ?std::mem::discriminant(&lsp_command),
+                        command_number = commands_processed,
+                        "🔧 SYNC: Processing LSP command synchronously"
+                    );
+                    // Process the command using the direct method
+                    match &lsp_command {
+                        nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                            server_name,
+                            workspace_root,
+                        } => {
+                            let language_id = match server_name.as_str() {
+                                "rust-analyzer" => "rust",
+                                "pyright" | "pylsp" => "python",
+                                "typescript-language-server" => "typescript",
+                                "clangd" => "c",
+                                "gopls" => "go",
+                                _ => "unknown",
+                            };
+
+                            info!(
+                                server_name = %server_name,
+                                workspace_root = %workspace_root.display(),
+                                language_id = %language_id,
+                                "🚀 SYNC: Starting LSP server directly from sync processor"
+                            );
+
+                            let result = handle.block_on(self.start_lsp_server_direct(
+                                workspace_root,
+                                server_name,
+                                language_id,
+                            ));
+
+                            match result {
+                                Ok(server_result) => {
+                                    info!(
+                                        server_id = ?server_result.server_id,
+                                        server_name = %server_result.server_name,
+                                        "🚀 SYNC: LSP server started successfully"
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        error = %e,
+                                        server_name = %server_name,
+                                        "🚀 SYNC: Failed to start LSP server"
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
+                            // Process other commands using the async handler
+                            handle.block_on(self.handle_lsp_command(lsp_command));
+                        }
+                    }
+
+                    info!(
+                        command_number = commands_processed,
+                        "🔧 SYNC: LSP command processing completed"
+                    );
+                }
+                None => {
+                    debug!(
+                        commands_processed = commands_processed,
+                        "🔧 SYNC: No more commands available, exiting loop"
+                    );
+                    break; // No more commands available
+                }
+            }
+        }
+
+        debug!(
+            total_commands_processed = commands_processed,
+            "🔧 SYNC: Completed synchronous LSP command processing"
+        );
     }
     /// Dispatch a workspace event via the event aggregator if available
     pub fn dispatch_workspace_event(&self, event: nucleotide_events::v2::workspace::Event) {
@@ -2175,187 +2360,6 @@ impl Application {
 
         // NOTE: step() should run in its own background task, not block the UI thread
         // The missing piece is to start step() as a background task during initialization
-    }
-
-    /// Process pending LSP commands synchronously by draining the channel
-    fn process_pending_lsp_commands_sync(&mut self, handle: &tokio::runtime::Handle) {
-        let _guard = handle.enter();
-
-        debug!("🔧 SYNC: Starting synchronous LSP command processing");
-
-        // Increment sync cycle counter
-        let cycle_count = self
-            .sync_cycle_counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-
-        // Initialize project LSP system at cycle 1
-        if cycle_count == 1
-            && !self
-                .project_lsp_system_initialized
-                .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            info!("🚀 INIT: Initializing LSP system at cycle 1");
-            if let Err(e) = handle.block_on(self.initialize_project_lsp_system()) {
-                error!(error = %e, "Failed to initialize project LSP system");
-            }
-        }
-
-        // DIRECT APPROACH: Check if we need to start rust-analyzer for current project
-        // Wait for 10 cycles to let the system fully initialize
-        if self.config.gui.lsp.project_lsp_startup {
-            debug!(
-                project_directory = ?self.project_directory,
-                cycle_count = cycle_count,
-                "🔧 SYNC: Checking project directory for direct LSP startup"
-            );
-            if let Some(ref project_dir) = self.project_directory {
-                let has_cargo_toml = project_dir.join("Cargo.toml").exists();
-                let rust_analyzer_running = self.is_rust_analyzer_running();
-
-                // Only try LSP startup after system has had time to initialize (cycle 10+)
-                // and if no servers are currently running
-                let any_servers_running = self.editor.language_servers.iter_clients().count() > 0;
-                if cycle_count >= 10 && !any_servers_running {
-                    info!(
-                        has_cargo_toml = has_cargo_toml,
-                        rust_analyzer_running = rust_analyzer_running,
-                        cycle_count = cycle_count,
-                        "🔧 SYNC: Project checks for direct LSP startup"
-                    );
-                    // Check if HelixLspBridge is initialized before attempting to start server
-                    let bridge_initialized = handle.block_on(async {
-                        let bridge_guard = self.helix_lsp_bridge.read().await;
-                        bridge_guard.is_some()
-                    });
-
-                    info!(
-                        bridge_initialized = bridge_initialized,
-                        has_cargo_toml = has_cargo_toml,
-                        "🔧 SYNC: Bridge initialization check for project LSP startup"
-                    );
-
-                    if bridge_initialized {
-                        // Use generic project detection logic
-                        info!(
-                            project_root = %project_dir.display(),
-                            "🔧 SYNC: Starting LSP servers for detected project types"
-                        );
-
-                        let project_path = project_dir.clone();
-                        let detected_servers =
-                            handle.block_on(self.detect_and_start_project_servers(&project_path));
-
-                        if !detected_servers.is_empty() {
-                            info!(
-                                server_count = detected_servers.len(),
-                                "🚀 SYNC: Successfully started LSP servers using bridge approach"
-                            );
-                        } else {
-                            info!("🔧 SYNC: No project types detected - no LSP servers started");
-                        }
-                    }
-                }
-            }
-        }
-
-        // Process all available commands in the channel
-        let mut commands_processed = 0;
-        loop {
-            let command = {
-                let mut rx_guard = handle.block_on(self.project_lsp_command_rx.write());
-                if let Some(ref mut rx) = rx_guard.as_mut() {
-                    match rx.try_recv() {
-                        Ok(command) => Some(command),
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => None,
-                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                            info!("LSP command channel disconnected");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            };
-
-            match command {
-                Some(lsp_command) => {
-                    commands_processed += 1;
-                    info!(
-                        command_type = ?std::mem::discriminant(&lsp_command),
-                        command_number = commands_processed,
-                        "🔧 SYNC: Processing LSP command synchronously"
-                    );
-                    // Process the command using the direct method
-                    match &lsp_command {
-                        nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
-                            server_name,
-                            workspace_root,
-                        } => {
-                            let language_id = match server_name.as_str() {
-                                "rust-analyzer" => "rust",
-                                "pyright" | "pylsp" => "python",
-                                "typescript-language-server" => "typescript",
-                                "clangd" => "c",
-                                "gopls" => "go",
-                                _ => "unknown",
-                            };
-
-                            info!(
-                                server_name = %server_name,
-                                workspace_root = %workspace_root.display(),
-                                language_id = %language_id,
-                                "🚀 SYNC: Starting LSP server directly from sync processor"
-                            );
-
-                            let result = handle.block_on(self.start_lsp_server_direct(
-                                workspace_root,
-                                server_name,
-                                language_id,
-                            ));
-
-                            match result {
-                                Ok(server_result) => {
-                                    info!(
-                                        server_id = ?server_result.server_id,
-                                        server_name = %server_result.server_name,
-                                        "🚀 SYNC: LSP server started successfully"
-                                    );
-                                }
-                                Err(e) => {
-                                    error!(
-                                        error = %e,
-                                        server_name = %server_name,
-                                        "🚀 SYNC: Failed to start LSP server"
-                                    );
-                                }
-                            }
-                        }
-                        _ => {
-                            // Process other commands using the async handler
-                            handle.block_on(self.handle_lsp_command(lsp_command));
-                        }
-                    }
-
-                    info!(
-                        command_number = commands_processed,
-                        "🔧 SYNC: LSP command processing completed"
-                    );
-                }
-                None => {
-                    debug!(
-                        commands_processed = commands_processed,
-                        "🔧 SYNC: No more commands available, exiting loop"
-                    );
-                    break; // No more commands available
-                }
-            }
-        }
-
-        debug!(
-            total_commands_processed = commands_processed,
-            "🔧 SYNC: Completed synchronous LSP command processing"
-        );
     }
 
     pub async fn step(&mut self, cx: &mut gpui::Context<'_, crate::Core>) {
@@ -5210,12 +5214,6 @@ pub fn init_editor(
 }
 
 impl Application {
-    /// Check if rust-analyzer is already running for the current project
-    fn is_rust_analyzer_running(&self) -> bool {
-        // For simplicity, assume rust-analyzer is not running and let the start method handle duplicates
-        false
-    }
-
     /// Comprehensive callback analysis for shotgun PoC
     /// Returns true if the callback was a completion callback and was handled
     fn intercept_completion_callback(
