@@ -95,13 +95,13 @@ pub fn focused_element<E: IntoElement>(
 }
 
 /// Keyboard focus ring styles for high contrast accessibility
-pub fn high_contrast_focus_ring() -> FocusIndicatorStyles {
+pub fn high_contrast_focus_ring(tokens: &crate::DesignTokens) -> FocusIndicatorStyles {
     FocusIndicatorStyles {
-        border_color: Some(gpui::hsla(220.0 / 360.0, 1.0, 0.5, 1.0)), // Bright blue
+        border_color: Some(tokens.editor.focus_ring),
         border_width: Some(gpui::px(3.0)),
         background_color: None,
         background_opacity: None,
-        outline_color: Some(gpui::hsla(0.0, 0.0, 1.0, 1.0)), // White outline
+        outline_color: Some(tokens.chrome.text_on_chrome),
         outline_width: Some(gpui::px(1.0)),
         outline_offset: Some(gpui::px(2.0)),
         animation_duration: std::time::Duration::from_millis(0),
@@ -109,11 +109,14 @@ pub fn high_contrast_focus_ring() -> FocusIndicatorStyles {
 }
 
 /// Subtle focus ring styles for regular use
-pub fn subtle_focus_ring() -> FocusIndicatorStyles {
+pub fn subtle_focus_ring(tokens: &crate::DesignTokens) -> FocusIndicatorStyles {
     FocusIndicatorStyles {
-        border_color: Some(gpui::hsla(220.0 / 360.0, 0.8, 0.6, 0.8)), // Soft blue
+        border_color: Some(tokens.editor.focus_ring),
         border_width: Some(gpui::px(2.0)),
-        background_color: Some(gpui::hsla(220.0 / 360.0, 0.3, 0.9, 0.1)), // Very light blue background
+        background_color: Some(crate::styling::ColorTheory::with_alpha(
+            tokens.chrome.surface_elevated,
+            0.1,
+        )),
         background_opacity: Some(0.1),
         outline_color: None,
         outline_width: None,
@@ -148,7 +151,8 @@ mod tests {
 
     #[test]
     fn test_high_contrast_focus_ring() {
-        let styles = high_contrast_focus_ring();
+        let theme = crate::Theme::dark();
+        let styles = high_contrast_focus_ring(&theme.tokens);
         assert!(styles.has_any_indicators());
         assert!(styles.border_color.is_some());
         assert!(styles.outline_color.is_some());
@@ -157,7 +161,8 @@ mod tests {
 
     #[test]
     fn test_subtle_focus_ring() {
-        let styles = subtle_focus_ring();
+        let theme = crate::Theme::dark();
+        let styles = subtle_focus_ring(&theme.tokens);
         assert!(styles.has_any_indicators());
         assert!(styles.border_color.is_some());
         assert!(styles.background_color.is_some());

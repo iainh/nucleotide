@@ -716,7 +716,7 @@ impl OverlayView {
                                     .get("ui.text")
                                     .fg
                                     .and_then(nucleotide_ui::theme_utils::color_to_hsla)
-                                    .unwrap_or(gpui::white());
+                                    .unwrap_or(cx.theme().tokens.chrome.text_on_chrome);
 
                                 // Use the editor font and size for preview
                                 let editor_font = cx.global::<nucleotide_types::FontSettings>().var_font.clone();
@@ -760,7 +760,7 @@ impl OverlayView {
                                                 .get("ui.text")
                                                 .fg
                                                 .and_then(nucleotide_ui::theme_utils::color_to_hsla)
-                                                .unwrap_or(gpui::white());
+                                                .unwrap_or(cx.theme().tokens.chrome.text_on_chrome);
 
                                             // Build a single StyledText with highlight ranges
                                             use nucleotide_ui::text_utils::TextWithStyle;

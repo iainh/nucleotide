@@ -6203,7 +6203,7 @@ impl Workspace {
             let is_focused = self.view_manager.focused_view_id() == Some(view_id);
             let editor_font = cx.global::<crate::types::EditorFontConfig>();
             let style = TextStyle {
-                color: gpui::black(),
+                color: cx.theme().tokens.chrome.text_on_chrome,
                 font_family: cx
                     .global::<crate::types::FontSettings>()
                     .fixed_font
@@ -6499,7 +6499,8 @@ impl Render for Workspace {
             // Background color inherited // Use semantic background color
             .when(self.debug_colors_enabled, |d| {
                 // Editor docs area border (green)
-                d.border_1().border_color(gpui::hsla(0.33, 0.85, 0.50, 1.0))
+                d.border_1()
+                    .border_color(cx.theme().tokens.chrome.border_strong)
             }); // No gap needed for documents
 
         // Render an editor view even if focus is not currently on the editor
@@ -6525,7 +6526,8 @@ impl Render for Workspace {
                 .size_full()
                 .when(self.debug_colors_enabled, |d| {
                     // Individual document container (teal)
-                    d.border_1().border_color(gpui::hsla(0.55, 0.75, 0.55, 1.0))
+                    d.border_1()
+                        .border_color(cx.theme().tokens.chrome.border_default)
                 })
                 .child(doc_view);
             docs_root = docs_root.child(doc_element);
@@ -6579,13 +6581,14 @@ impl Render for Workspace {
                     // Debug: container styling; label appended later to ensure on top
                     .when(self.debug_colors_enabled, |d| {
                         d.relative()
-                            // Yellow translucent fill for full editor area visibility
-                            .bg(gpui::hsla(0.14, 1.0, 0.55, 0.10))
+                            .bg(crate::nucleotide_ui::styling::ColorTheory::with_alpha(
+                                cx.theme().tokens.chrome.surface,
+                                0.10,
+                            ))
                             .border_l_2()
-                            .border_color(gpui::hsla(0.58, 0.95, 0.55, 0.9))
-                            // Editor content area outline (yellow for debug)
+                            .border_color(cx.theme().tokens.chrome.border_strong)
                             .border_1()
-                            .border_color(gpui::hsla(0.14, 1.0, 0.65, 1.0))
+                            .border_color(cx.theme().tokens.chrome.border_default)
                     })
                     .when_some(Some(docs_root), gpui::ParentElement::child)
                     .child(self.notifications.clone())
@@ -6598,7 +6601,7 @@ impl Render for Workspace {
                                 div()
                                     .id("overlay-debug-wrapper")
                                     .border_1()
-                                    .border_color(gpui::hsla(0.83, 0.80, 0.65, 1.0))
+                                    .border_color(cx.theme().tokens.chrome.border_strong)
                                     .child(view.clone()),
                             )
                         } else {
@@ -6626,14 +6629,12 @@ impl Render for Workspace {
                     // Debug overlay tint on top of editor content; render via deferred to ensure top draw order
                     .when(self.debug_colors_enabled, |this| {
                         this.child(
-                            gpui::deferred(
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .left_0()
-                                    .size_full()
-                                    .bg(gpui::hsla(0.14, 1.0, 0.55, 0.12)),
-                            )
+                            gpui::deferred(div().absolute().top_0().left_0().size_full().bg(
+                                crate::nucleotide_ui::styling::ColorTheory::with_alpha(
+                                    cx.theme().tokens.chrome.surface_overlay,
+                                    1.0,
+                                ),
+                            ))
                             .with_priority(100),
                         )
                     })
@@ -6645,8 +6646,8 @@ impl Render for Workspace {
                                 .left_0()
                                 .px(px(6.0))
                                 .py(px(2.0))
-                                .bg(gpui::hsla(0.58, 0.95, 0.55, 0.85))
-                                .text_color(gpui::black())
+                                .bg(cx.theme().tokens.chrome.primary)
+                                .text_color(cx.theme().tokens.chrome.text_on_chrome)
                                 .child("EDITOR"),
                         )
                     }),

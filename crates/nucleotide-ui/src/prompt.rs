@@ -93,15 +93,19 @@ impl RenderOnce for PromptElement {
                     let bg = ui_bg
                         .bg
                         .and_then(crate::theme_utils::color_to_hsla)
-                        .unwrap_or(hsla(0.0, 0.0, 0.1, 1.0));
+                        .unwrap_or_else(|| cx.global::<crate::Theme>().tokens.chrome.surface);
                     let text = ui_text
                         .fg
                         .and_then(crate::theme_utils::color_to_hsla)
-                        .unwrap_or(hsla(0.0, 0.0, 0.9, 1.0));
+                        .unwrap_or_else(|| {
+                            cx.global::<crate::Theme>().tokens.chrome.text_on_chrome
+                        });
                     let border = ui_window
                         .fg
                         .and_then(crate::theme_utils::color_to_hsla)
-                        .unwrap_or(hsla(0.0, 0.0, 0.3, 1.0));
+                        .unwrap_or_else(|| {
+                            cx.global::<crate::Theme>().tokens.chrome.border_default
+                        });
 
                     (bg, text, border)
                 } else {
@@ -109,8 +113,12 @@ impl RenderOnce for PromptElement {
                     let bg = text_with_style
                         .style(0)
                         .and_then(|style| style.background_color)
-                        .unwrap_or(hsla(0.0, 0.0, 0.1, 1.0));
-                    (bg, hsla(0.0, 0.0, 0.9, 1.0), hsla(0.0, 0.0, 0.3, 1.0))
+                        .unwrap_or_else(|| cx.global::<crate::Theme>().tokens.chrome.surface);
+                    (
+                        bg,
+                        cx.global::<crate::Theme>().tokens.chrome.text_on_chrome,
+                        cx.global::<crate::Theme>().tokens.chrome.border_default,
+                    )
                 };
 
                 let default_style = TextStyle {

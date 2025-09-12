@@ -133,9 +133,10 @@ impl VcsIcon {
         let indicator_size = (self.container_size * 0.5).max(6.0); // 50% of container size, min 6px
 
         let border_color = utils::darken(base_color, 0.15);
-        let shadow_color = utils::with_alpha(hsla(0.0, 0.0, 0.0, 1.0), 0.35);
-        let highlight_core = utils::with_alpha(hsla(0.0, 0.0, 1.0, 1.0), 0.45);
-        let highlight_halo = utils::with_alpha(hsla(0.0, 0.0, 1.0, 1.0), 0.14);
+        let tokens = &theme.tokens;
+        let shadow_color = utils::with_alpha(tokens.chrome.separator_color, 0.35);
+        let highlight_core = utils::with_alpha(tokens.chrome.text_on_chrome, 0.45);
+        let highlight_halo = utils::with_alpha(tokens.chrome.text_on_chrome, 0.14);
 
         // Masking container for the sphere and highlights (prevents highlight bleed)
         let mut container = div()

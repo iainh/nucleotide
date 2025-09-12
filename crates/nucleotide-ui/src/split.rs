@@ -121,8 +121,8 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
     let handle_hit_w = (handle_visual_w + 6.0).min(12.0); // 6px padding each side, cap at 12px
 
     root = root.child({
-        // Separator color (neutral gray)
-        let sep_color = gpui::hsla(0.0, 0.0, 0.55, 0.6);
+        // Separator color uses theme tokens
+        let sep_color = cx.theme().tokens.chrome.separator_color;
 
         let pad = ((handle_hit_w - handle_visual_w) * 0.5).max(0.0);
 
@@ -140,7 +140,12 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
                     .w(px(handle_visual_w))
                     .h_full()
                     .bg(sep_color)
-                    .hover(|d| d.bg(gpui::hsla(0.0, 0.0, 0.55, 0.9))),
+                    .hover(|d| {
+                        d.bg(crate::styling::ColorTheory::adjust_oklab_lightness(
+                            sep_color,
+                            if cx.theme().is_dark() { 0.1 } else { -0.1 },
+                        ))
+                    }),
             );
 
         handle = handle.on_mouse_down(MouseButton::Left, {

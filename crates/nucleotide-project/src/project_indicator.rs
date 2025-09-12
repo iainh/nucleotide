@@ -411,7 +411,7 @@ pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
                 name: "rust".to_string(),
                 display_name: "Rust".to_string(),
                 icon: "🦀".to_string(),
-                color: Some(gpui::hsla(0.0, 0.8, 0.6, 1.0)), // Orange-ish
+                color: None,
                 confidence: 0.95,
             },
         ),
@@ -422,7 +422,7 @@ pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
                 name: "nodejs".to_string(),
                 display_name: "Node.js".to_string(),
                 icon: "📦".to_string(),
-                color: Some(gpui::hsla(0.25, 0.8, 0.6, 1.0)), // Green-ish
+                color: None,
                 confidence: 0.9,
             },
         ),
@@ -433,7 +433,7 @@ pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
                 name: "python".to_string(),
                 display_name: "Python".to_string(),
                 icon: "🐍".to_string(),
-                color: Some(gpui::hsla(0.6, 0.8, 0.6, 1.0)), // Blue-ish
+                color: None,
                 confidence: 0.8,
             },
         ),
@@ -443,7 +443,7 @@ pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
                 name: "python".to_string(),
                 display_name: "Python".to_string(),
                 icon: "🐍".to_string(),
-                color: Some(gpui::hsla(0.6, 0.8, 0.6, 1.0)),
+                color: None,
                 confidence: 0.9,
             },
         ),
@@ -454,7 +454,7 @@ pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
                 name: "go".to_string(),
                 display_name: "Go".to_string(),
                 icon: "🐹".to_string(),
-                color: Some(gpui::hsla(0.5, 0.8, 0.6, 1.0)), // Cyan-ish
+                color: None,
                 confidence: 0.95,
             },
         ),
@@ -465,7 +465,7 @@ pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
                 name: "java".to_string(),
                 display_name: "Java (Maven)".to_string(),
                 icon: "☕".to_string(),
-                color: Some(gpui::hsla(0.1, 0.8, 0.6, 1.0)), // Red-ish
+                color: None,
                 confidence: 0.9,
             },
         ),
@@ -475,7 +475,7 @@ pub fn detect_project_types_for_path(path: &Path) -> Vec<ProjectType> {
                 name: "java".to_string(),
                 display_name: "Java (Gradle)".to_string(),
                 icon: "☕".to_string(),
-                color: Some(gpui::hsla(0.1, 0.8, 0.6, 1.0)),
+                color: None,
                 confidence: 0.9,
             },
         ),

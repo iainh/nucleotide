@@ -3266,7 +3266,10 @@ impl Element for DocumentElement {
                                                 origin: point(marker_x + marker_size * 0.18, marker_y + marker_size * 0.18),
                                                 size: size(h_size, h_size),
                                             };
-                                            let h_color = utils::with_alpha(gpui::white(), 0.18);
+                                            let h_color = utils::with_alpha(
+                                                cx.theme().tokens.chrome.text_on_chrome,
+                                                0.18,
+                                            );
                                             window.paint_quad(gpui::quad(
                                                 h_bounds,
                                                 h_size * 0.5,
@@ -3296,7 +3299,10 @@ impl Element for DocumentElement {
                                                 origin: point(marker_x + marker_size * 0.22, marker_y + marker_size * 0.18),
                                                 size: size(h_size, h_size),
                                             };
-                                            let h_color = utils::with_alpha(gpui::white(), 0.14);
+                                            let h_color = utils::with_alpha(
+                                                cx.theme().tokens.chrome.text_on_chrome,
+                                                0.14,
+                                            );
                                             window.paint_quad(gpui::quad(
                                                 h_bounds,
                                                 h_size * 0.5,
@@ -3337,8 +3343,14 @@ impl Element for DocumentElement {
                                                 ),
                                                 size: size(core_size, core_size),
                                             };
-                                            let highlight_halo = utils::with_alpha(gpui::white(), 0.14);
-                                            let highlight_core = utils::with_alpha(gpui::white(), 0.45);
+                                            let highlight_halo = utils::with_alpha(
+                                                cx.theme().tokens.chrome.text_on_chrome,
+                                                0.14,
+                                            );
+                                            let highlight_core = utils::with_alpha(
+                                                cx.theme().tokens.chrome.text_on_chrome,
+                                                0.45,
+                                            );
                                             window.paint_quad(gpui::quad(
                                                 halo_bounds,
                                                 halo_size * 0.5,

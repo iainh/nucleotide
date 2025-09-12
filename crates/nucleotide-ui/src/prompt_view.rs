@@ -90,7 +90,7 @@ impl PromptStyle {
             completion_background: ui_menu
                 .bg
                 .and_then(color_to_hsla)
-                .unwrap_or(hsla(0.0, 0.0, 0.15, 1.0)),
+                .unwrap_or_else(|| crate::ProviderHooks::theme().tokens.chrome.menu_background),
         }
     }
 }
