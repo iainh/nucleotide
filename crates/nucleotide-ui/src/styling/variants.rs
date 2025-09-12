@@ -164,68 +164,10 @@ pub struct VariantColors {
 }
 
 impl VariantColors {
-    /// Get variant colors for a specific variant and theme (legacy system)
+    /// Get variant colors for a specific variant and theme (legacy shim -> hybrid)
     pub fn for_variant(variant: StyleVariant, theme: &Theme) -> Self {
-        let tokens = &theme.tokens;
-
-        match variant {
-            StyleVariant::Primary => Self {
-                background: tokens.colors.primary,
-                foreground: tokens.colors.text_on_primary,
-                border: tokens.colors.primary,
-                hover_background: tokens.colors.primary_hover,
-                active_background: tokens.colors.primary_active,
-            },
-            StyleVariant::Secondary => Self {
-                background: tokens.colors.surface,
-                foreground: tokens.colors.text_primary,
-                border: tokens.colors.border_default,
-                hover_background: tokens.colors.surface_hover,
-                active_background: tokens.colors.surface_active,
-            },
-            StyleVariant::Ghost => Self {
-                background: Hsla::transparent_black(),
-                foreground: tokens.colors.text_primary,
-                border: Hsla::transparent_black(),
-                hover_background: tokens.colors.surface_hover,
-                active_background: tokens.colors.surface_active,
-            },
-            StyleVariant::Danger => Self {
-                background: tokens.colors.error,
-                foreground: tokens.colors.text_on_primary,
-                border: tokens.colors.error,
-                hover_background: tokens.colors.primary_hover, // Use similar color
-                active_background: tokens.colors.primary_active,
-            },
-            StyleVariant::Success => Self {
-                background: tokens.colors.success,
-                foreground: tokens.colors.text_on_primary,
-                border: tokens.colors.success,
-                hover_background: tokens.colors.primary_hover,
-                active_background: tokens.colors.primary_active,
-            },
-            StyleVariant::Warning => Self {
-                background: tokens.colors.warning,
-                foreground: tokens.colors.text_on_primary,
-                border: tokens.colors.warning,
-                hover_background: tokens.colors.primary_hover,
-                active_background: tokens.colors.primary_active,
-            },
-            StyleVariant::Info => Self {
-                background: tokens.colors.info,
-                foreground: tokens.colors.text_on_primary,
-                border: tokens.colors.info,
-                hover_background: tokens.colors.primary_hover,
-                active_background: tokens.colors.primary_active,
-            },
-            StyleVariant::Accent => Self {
-                background: tokens.colors.primary, // Use primary as accent
-                foreground: tokens.colors.text_on_primary,
-                border: tokens.colors.primary,
-                hover_background: tokens.colors.primary_hover,
-                active_background: tokens.colors.primary_active,
-            },
-        }
+        // Delegate to hybrid button tokens to remove reliance on deprecated tokens.colors
+        Self::for_variant_hybrid(variant, theme)
     }
 
     /// Get variant colors using hybrid color system (new system)

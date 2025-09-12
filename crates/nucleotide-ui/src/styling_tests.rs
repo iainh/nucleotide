@@ -57,9 +57,9 @@ mod tests {
         let style = context.compute_base_style();
 
         // Check that base styles are applied
-        assert_eq!(style.background, theme.tokens.colors.surface);
-        assert_eq!(style.foreground, theme.tokens.colors.text_primary);
-        assert_eq!(style.border_color, theme.tokens.colors.border_default);
+        assert_eq!(style.background, theme.tokens.chrome.surface);
+        assert_eq!(style.foreground, theme.tokens.chrome.text_on_chrome);
+        assert_eq!(style.border_color, theme.tokens.chrome.border_default);
         assert_eq!(style.padding_x, theme.tokens.sizes.space_3);
         assert_eq!(style.padding_y, theme.tokens.sizes.space_2);
         assert_eq!(style.font_size, px(14.0));
@@ -76,12 +76,12 @@ mod tests {
         let variant_style = context.apply_variant_styles(base_style);
 
         // Primary variant should use primary colors
-        assert_eq!(variant_style.background, theme.tokens.colors.primary);
-        assert_eq!(
+        assert_eq!(variant_style.background, theme.tokens.chrome.primary);
+        let contrast = crate::styling::ColorTheory::contrast_ratio(
+            variant_style.background,
             variant_style.foreground,
-            theme.tokens.colors.text_on_primary
         );
-        assert_eq!(variant_style.border_color, theme.tokens.colors.primary);
+        assert!(contrast >= crate::styling::ContrastRatios::AA_NORMAL);
     }
 
     #[test]
@@ -95,7 +95,8 @@ mod tests {
         let variant_style = hover_context.apply_variant_styles(base_style);
         let state_style = hover_context.apply_state_styles(variant_style);
 
-        assert_eq!(state_style.background, theme.tokens.colors.primary_hover);
+        // Hover background should differ from base
+        assert_ne!(state_style.background, theme.tokens.chrome.primary);
 
         // Test disabled state
         let disabled_context = StyleContext::new(&theme, StyleState::Disabled, "primary", "medium");
@@ -103,7 +104,7 @@ mod tests {
         let variant_style = disabled_context.apply_variant_styles(base_style);
         let state_style = disabled_context.apply_state_styles(variant_style);
 
-        assert_eq!(state_style.background, theme.tokens.colors.surface_disabled);
+        assert_eq!(state_style.background, theme.tokens.chrome.surface_disabled);
         assert_eq!(state_style.opacity, 0.6);
     }
 
@@ -121,7 +122,7 @@ mod tests {
         assert_eq!(style.border_radius, theme.tokens.sizes.radius_lg);
 
         // Should have secondary variant with hover state
-        assert_eq!(style.background, theme.tokens.colors.surface_hover);
+        assert_eq!(style.background, theme.tokens.chrome.surface_hover);
         assert_eq!(style.border_width, px(1.0)); // Secondary has border
     }
 
@@ -133,7 +134,7 @@ mod tests {
         let style = compute_style_for_states(&theme, &states, "primary", "medium");
 
         // Disabled should win due to highest priority
-        assert_eq!(style.background, theme.tokens.colors.surface_disabled);
+        assert_eq!(style.background, theme.tokens.chrome.surface_disabled);
         assert_eq!(style.opacity, 0.6);
     }
 

@@ -179,9 +179,9 @@ impl<'a> StyleContext<'a> {
     pub fn compute_base_style(&self) -> ComputedStyle {
         // Initialize with base colors from tokens in a single literal
         let mut style = ComputedStyle {
-            background: self.tokens.colors.surface,
-            foreground: self.tokens.colors.text_primary,
-            border_color: self.tokens.colors.border_default,
+            background: self.tokens.chrome.surface,
+            foreground: self.tokens.chrome.text_on_chrome,
+            border_color: self.tokens.chrome.border_default,
             ..Default::default()
         };
 
@@ -379,12 +379,12 @@ impl<'a> StyleContext<'a> {
     fn create_hover_color(&self, background: Hsla) -> Hsla {
         // For ghost variant, use secondary selection color for better list selection UX
         if self.variant == "ghost" {
-            return self.tokens.colors.selection_secondary;
+            return self.tokens.editor.selection_secondary;
         }
 
         // For transparent backgrounds, use surface hover
         if background.a < 0.1 {
-            return self.tokens.colors.surface_hover;
+            return self.tokens.chrome.surface_hover;
         }
 
         let luminance = ColorTheory::relative_luminance(background);
@@ -414,7 +414,7 @@ impl<'a> StyleContext<'a> {
 
         // For transparent backgrounds, use surface active
         if background.a < 0.1 {
-            return self.tokens.colors.surface_active;
+            return self.tokens.chrome.surface_active;
         }
 
         let luminance = ColorTheory::relative_luminance(background);

@@ -115,463 +115,6 @@ impl BaseColors {
     }
 }
 
-/// Semantic color tokens - meaningful names for UI elements
-#[derive(Debug, Clone, Copy)]
-pub struct SemanticColors {
-    // Surface colors
-    pub background: Hsla,
-    pub surface: Hsla,
-    pub surface_elevated: Hsla,
-    pub surface_overlay: Hsla,
-
-    // Interactive states
-    pub surface_hover: Hsla,
-    pub surface_active: Hsla,
-    pub surface_selected: Hsla,
-    pub surface_disabled: Hsla,
-
-    // Text colors
-    pub text_primary: Hsla,
-    pub text_secondary: Hsla,
-    pub text_tertiary: Hsla,
-    pub text_disabled: Hsla,
-    pub text_on_primary: Hsla,
-
-    // Border colors
-    pub border_default: Hsla,
-    pub border_muted: Hsla,
-    pub border_strong: Hsla,
-    pub border_focus: Hsla,
-
-    // Brand colors
-    pub primary: Hsla,
-    pub primary_hover: Hsla,
-    pub primary_active: Hsla,
-
-    // Semantic feedback
-    pub success: Hsla,
-    pub warning: Hsla,
-    pub error: Hsla,
-    pub info: Hsla,
-
-    // Cursor and selection system
-    pub cursor_normal: Hsla,
-    pub cursor_insert: Hsla,
-    pub cursor_select: Hsla,
-    pub cursor_match: Hsla,
-    pub selection_primary: Hsla,
-    pub selection_secondary: Hsla,
-
-    // Enhanced diagnostic system
-    pub diagnostic_error: Hsla,
-    pub diagnostic_warning: Hsla,
-    pub diagnostic_info: Hsla,
-    pub diagnostic_hint: Hsla,
-    pub diagnostic_error_bg: Hsla,
-    pub diagnostic_warning_bg: Hsla,
-    pub diagnostic_info_bg: Hsla,
-    pub diagnostic_hint_bg: Hsla,
-
-    // Gutter and line number system
-    pub gutter_background: Hsla,
-    pub gutter_selected: Hsla,
-    pub line_number: Hsla,
-    pub line_number_active: Hsla,
-
-    // VCS gutter indicators
-    pub vcs_added: Hsla,
-    pub vcs_modified: Hsla,
-    pub vcs_deleted: Hsla,
-
-    // Enhanced status and buffer system
-    pub statusline_active: Hsla,
-    pub statusline_inactive: Hsla,
-    pub bufferline_background: Hsla,
-    pub bufferline_active: Hsla,
-    pub bufferline_inactive: Hsla,
-
-    // Enhanced popup and menu system
-    pub popup_background: Hsla,
-    pub popup_border: Hsla,
-    pub menu_background: Hsla,
-    pub menu_selected: Hsla,
-    pub menu_separator: Hsla,
-
-    // Separator and UI enhancement system
-    pub separator_horizontal: Hsla,
-    pub separator_vertical: Hsla,
-    pub separator_subtle: Hsla,
-    pub focus_ring: Hsla,
-    pub focus_ring_error: Hsla,
-    pub focus_ring_warning: Hsla,
-}
-
-impl SemanticColors {
-    /// Create semantic colors from base colors for light theme
-    pub fn from_base_light(base: &BaseColors) -> Self {
-        Self {
-            // Surface colors
-            background: base.neutral_50,
-            surface: base.neutral_100,
-            surface_elevated: base.neutral_200,
-            surface_overlay: hsla(0.0, 0.0, 1.0, 0.95),
-
-            // Interactive states
-            surface_hover: base.neutral_200,
-            surface_active: base.neutral_300,
-            surface_selected: base.primary_100,
-            surface_disabled: base.neutral_100,
-
-            // Text colors
-            text_primary: base.neutral_900,
-            text_secondary: base.neutral_700,
-            text_tertiary: base.neutral_500,
-            text_disabled: base.neutral_400,
-            text_on_primary: base.neutral_50,
-
-            // Border colors
-            border_default: base.neutral_300,
-            border_muted: base.neutral_200,
-            border_strong: base.neutral_400,
-            border_focus: base.primary_500,
-
-            // Brand colors
-            primary: base.primary_500,
-            primary_hover: base.primary_600,
-            primary_active: base.primary_700,
-
-            // Semantic feedback
-            success: base.success_500,
-            warning: base.warning_500,
-            error: base.error_500,
-            info: base.info_500,
-
-            // Cursor and selection system
-            cursor_normal: base.primary_500,
-            cursor_insert: base.success_500,
-            cursor_select: base.warning_500,
-            cursor_match: base.info_500,
-            selection_primary: base.primary_100,
-            selection_secondary: base.neutral_100,
-
-            // Enhanced diagnostic system
-            diagnostic_error: base.error_500,
-            diagnostic_warning: base.warning_500,
-            diagnostic_info: base.info_500,
-            diagnostic_hint: base.neutral_600,
-            diagnostic_error_bg: utils::with_alpha(base.error_500, 0.1),
-            diagnostic_warning_bg: utils::with_alpha(base.warning_500, 0.1),
-            diagnostic_info_bg: utils::with_alpha(base.info_500, 0.1),
-            diagnostic_hint_bg: utils::with_alpha(base.neutral_600, 0.1),
-
-            // Gutter and line number system
-            gutter_background: base.neutral_50,
-            gutter_selected: base.neutral_100,
-            line_number: base.neutral_500,
-            line_number_active: base.neutral_700,
-
-            // VCS gutter indicators
-            vcs_added: base.success_500,
-            vcs_modified: hsla(210.0 / 360.0, 0.7, 0.5, 1.0), // Blue for modifications
-            vcs_deleted: base.error_500,
-
-            // Enhanced status and buffer system
-            statusline_active: base.neutral_100,     // surface
-            statusline_inactive: base.neutral_200,   // more distinct from active
-            bufferline_background: base.neutral_300, // distinct tab bar background (91% lightness)
-            bufferline_active: base.neutral_50, // background (active tab matches editor - 98% lightness)
-            bufferline_inactive: base.neutral_400, // inactive tabs (78% lightness - high contrast with active)
-
-            // Enhanced popup and menu system
-            popup_background: base.neutral_200, // surface_elevated
-            popup_border: base.neutral_300,     // border_default
-            menu_background: base.neutral_200,  // surface_elevated
-            menu_selected: base.primary_100,    // surface_selected
-            menu_separator: base.neutral_200,   // border_muted
-
-            // Separator and UI enhancement system
-            separator_horizontal: base.neutral_200, // border_muted
-            separator_vertical: base.neutral_200,   // border_muted
-            separator_subtle: utils::with_alpha(base.neutral_200, 0.5), // border_muted + alpha
-            focus_ring: base.primary_500,
-            focus_ring_error: base.error_500,
-            focus_ring_warning: base.warning_500,
-        }
-    }
-
-    /// Create semantic colors from base colors for dark theme
-    pub fn from_base_dark(base: &BaseColors) -> Self {
-        Self {
-            // Surface colors
-            background: base.neutral_50,
-            surface: base.neutral_100,
-            surface_elevated: base.neutral_200,
-            surface_overlay: hsla(0.0, 0.0, 0.0, 0.95),
-
-            // Interactive states
-            surface_hover: base.neutral_200,
-            surface_active: base.neutral_300,
-            surface_selected: base.primary_200,
-            surface_disabled: base.neutral_100,
-
-            // Text colors
-            text_primary: base.neutral_900,
-            text_secondary: base.neutral_700,
-            text_tertiary: base.neutral_500,
-            text_disabled: base.neutral_400,
-            text_on_primary: base.neutral_50,
-
-            // Border colors
-            border_default: base.neutral_300,
-            border_muted: base.neutral_200,
-            border_strong: base.neutral_400,
-            border_focus: base.primary_500,
-
-            // Brand colors
-            primary: base.primary_500,
-            primary_hover: base.primary_400,
-            primary_active: base.primary_300,
-
-            // Semantic feedback
-            success: base.success_500,
-            warning: base.warning_500,
-            error: base.error_500,
-            info: base.info_500,
-
-            // Cursor and selection system
-            cursor_normal: base.primary_500,
-            cursor_insert: base.success_500,
-            cursor_select: base.warning_500,
-            cursor_match: base.info_500,
-            selection_primary: base.primary_200,
-            selection_secondary: base.neutral_200,
-
-            // Enhanced diagnostic system
-            diagnostic_error: base.error_500,
-            diagnostic_warning: base.warning_500,
-            diagnostic_info: base.info_500,
-            diagnostic_hint: base.neutral_600,
-            diagnostic_error_bg: utils::with_alpha(base.error_500, 0.1),
-            diagnostic_warning_bg: utils::with_alpha(base.warning_500, 0.1),
-            diagnostic_info_bg: utils::with_alpha(base.info_500, 0.1),
-            diagnostic_hint_bg: utils::with_alpha(base.neutral_600, 0.1),
-
-            // Gutter and line number system
-            gutter_background: base.neutral_50,
-            gutter_selected: base.neutral_100,
-            line_number: base.neutral_500,
-            line_number_active: base.neutral_700,
-
-            // VCS gutter indicators
-            vcs_added: base.success_500,
-            vcs_modified: hsla(210.0 / 360.0, 0.7, 0.6, 1.0), // Brighter blue for dark theme
-            vcs_deleted: base.error_500,
-
-            // Enhanced status and buffer system
-            statusline_active: base.neutral_100,     // surface
-            statusline_inactive: base.neutral_200,   // more distinct from active
-            bufferline_background: base.neutral_300, // distinct tab bar background (16% lightness)
-            bufferline_active: base.neutral_50, // background (active tab matches editor - 5% lightness)
-            bufferline_inactive: base.neutral_400, // inactive tabs (24% lightness - high contrast with active)
-
-            // Enhanced popup and menu system
-            popup_background: base.neutral_200, // surface_elevated
-            popup_border: base.neutral_300,     // border_default
-            menu_background: base.neutral_200,  // surface_elevated
-            menu_selected: base.primary_200,    // surface_selected
-            menu_separator: base.neutral_200,   // border_muted
-
-            // Separator and UI enhancement system
-            separator_horizontal: base.neutral_200, // border_muted
-            separator_vertical: base.neutral_200,   // border_muted
-            separator_subtle: utils::with_alpha(base.neutral_200, 0.5), // border_muted + alpha
-            focus_ring: base.primary_500,
-            focus_ring_error: base.error_500,
-            focus_ring_warning: base.warning_500,
-        }
-    }
-
-    /// Create semantic colors from base colors for light theme with Helix-derived selection color
-    pub fn from_base_light_with_selection(base: &BaseColors, selection_color: Hsla) -> Self {
-        let mut colors = Self::from_base_light(base);
-
-        // Override selection colors with Helix theme's selection color
-        colors.selection_primary = selection_color;
-        // Create a lighter variant for secondary selection (hover)
-        colors.selection_secondary = utils::with_alpha(selection_color, 0.3);
-
-        colors
-    }
-
-    /// Create semantic colors from base colors for dark theme with Helix-derived selection color
-    pub fn from_base_dark_with_selection(base: &BaseColors, selection_color: Hsla) -> Self {
-        let mut colors = Self::from_base_dark(base);
-
-        // Override selection colors with Helix theme's selection color
-        colors.selection_primary = selection_color;
-        // Create a lighter variant for secondary selection (hover)
-        colors.selection_secondary = utils::with_alpha(selection_color, 0.3);
-
-        colors
-    }
-
-    /// Create semantic colors from base colors for light theme with comprehensive Helix-derived colors
-    pub fn from_base_light_with_helix_colors(
-        base: &BaseColors,
-        helix_colors: crate::theme_manager::HelixThemeColors,
-    ) -> Self {
-        let mut colors = Self::from_base_light(base);
-
-        // Override colors with Helix theme's extracted colors
-        colors.selection_primary = helix_colors.selection;
-        colors.selection_secondary = utils::with_alpha(helix_colors.selection, 0.3);
-
-        // Cursor colors
-        colors.cursor_normal = helix_colors.cursor_normal;
-        colors.cursor_insert = helix_colors.cursor_insert;
-        colors.cursor_select = helix_colors.cursor_select;
-        colors.cursor_match = helix_colors.cursor_match;
-
-        // Semantic feedback colors
-        colors.error = helix_colors.error;
-        colors.warning = helix_colors.warning;
-        colors.success = helix_colors.success;
-        colors.diagnostic_error = helix_colors.error;
-        colors.diagnostic_warning = helix_colors.warning;
-        colors.diagnostic_info = helix_colors.success;
-
-        // UI component colors
-        colors.statusline_active = helix_colors.statusline;
-        colors.statusline_inactive = helix_colors.statusline_inactive;
-        colors.popup_background = helix_colors.popup;
-
-        // Buffer and tab system
-        colors.bufferline_background = helix_colors.bufferline_background;
-        colors.bufferline_active = helix_colors.bufferline_active;
-        colors.bufferline_inactive = helix_colors.bufferline_inactive;
-
-        // Gutter and line number system
-        colors.gutter_background = helix_colors.gutter_background;
-        colors.gutter_selected = helix_colors.gutter_selected;
-        colors.line_number = helix_colors.line_number;
-        colors.line_number_active = helix_colors.line_number_active;
-
-        // Menu and popup system
-        colors.menu_background = helix_colors.menu_background;
-        colors.menu_selected = helix_colors.menu_selected;
-        colors.menu_separator = helix_colors.menu_separator;
-
-        // Separator and focus system
-        colors.separator_horizontal = helix_colors.separator;
-        colors.separator_vertical = helix_colors.separator;
-        colors.separator_subtle = utils::with_alpha(helix_colors.separator, 0.5);
-        colors.focus_ring = helix_colors.focus;
-        colors.focus_ring_error = helix_colors.error;
-        colors.focus_ring_warning = helix_colors.warning;
-
-        // Ensure selection text has adequate contrast
-        {
-            use crate::ContrastRatios;
-            let white = hsla(0.0, 0.0, 1.0, 1.0);
-            let black = hsla(0.0, 0.0, 0.0, 1.0);
-            let cw = ColorTheory::contrast_ratio(colors.selection_primary, white);
-            let cb = ColorTheory::contrast_ratio(colors.selection_primary, black);
-            let base_text = if cw >= cb { white } else { black };
-            colors.text_on_primary = ColorTheory::ensure_contrast(
-                colors.selection_primary,
-                base_text,
-                ContrastRatios::AA_NORMAL,
-            );
-        }
-
-        // Also update primary brand color to match selection for consistency
-        colors.primary = helix_colors.selection;
-        colors.primary_hover = utils::lighten(helix_colors.selection, 0.1);
-        colors.primary_active = utils::darken(helix_colors.selection, 0.1);
-        colors.border_focus = helix_colors.selection;
-
-        colors
-    }
-
-    /// Create semantic colors from base colors for dark theme with comprehensive Helix-derived colors
-    pub fn from_base_dark_with_helix_colors(
-        base: &BaseColors,
-        helix_colors: crate::theme_manager::HelixThemeColors,
-    ) -> Self {
-        let mut colors = Self::from_base_dark(base);
-
-        // Override colors with Helix theme's extracted colors
-        colors.selection_primary = helix_colors.selection;
-        colors.selection_secondary = utils::with_alpha(helix_colors.selection, 0.3);
-
-        // Cursor colors
-        colors.cursor_normal = helix_colors.cursor_normal;
-        colors.cursor_insert = helix_colors.cursor_insert;
-        colors.cursor_select = helix_colors.cursor_select;
-        colors.cursor_match = helix_colors.cursor_match;
-
-        // Semantic feedback colors
-        colors.error = helix_colors.error;
-        colors.warning = helix_colors.warning;
-        colors.success = helix_colors.success;
-        colors.diagnostic_error = helix_colors.error;
-        colors.diagnostic_warning = helix_colors.warning;
-        colors.diagnostic_info = helix_colors.success;
-
-        // UI component colors
-        colors.statusline_active = helix_colors.statusline;
-        colors.statusline_inactive = helix_colors.statusline_inactive;
-        colors.popup_background = helix_colors.popup;
-
-        // Buffer and tab system
-        colors.bufferline_background = helix_colors.bufferline_background;
-        colors.bufferline_active = helix_colors.bufferline_active;
-        colors.bufferline_inactive = helix_colors.bufferline_inactive;
-
-        // Gutter and line number system
-        colors.gutter_background = helix_colors.gutter_background;
-        colors.gutter_selected = helix_colors.gutter_selected;
-        colors.line_number = helix_colors.line_number;
-        colors.line_number_active = helix_colors.line_number_active;
-
-        // Menu and popup system
-        colors.menu_background = helix_colors.menu_background;
-        colors.menu_selected = helix_colors.menu_selected;
-        colors.menu_separator = helix_colors.menu_separator;
-
-        // Separator and focus system
-        colors.separator_horizontal = helix_colors.separator;
-        colors.separator_vertical = helix_colors.separator;
-        colors.separator_subtle = utils::with_alpha(helix_colors.separator, 0.5);
-        colors.focus_ring = helix_colors.focus;
-        colors.focus_ring_error = helix_colors.error;
-        colors.focus_ring_warning = helix_colors.warning;
-
-        // Ensure selection text has adequate contrast
-        {
-            use crate::ContrastRatios;
-            let white = hsla(0.0, 0.0, 1.0, 1.0);
-            let black = hsla(0.0, 0.0, 0.0, 1.0);
-            let cw = ColorTheory::contrast_ratio(colors.selection_primary, white);
-            let cb = ColorTheory::contrast_ratio(colors.selection_primary, black);
-            let base_text = if cw >= cb { white } else { black };
-            colors.text_on_primary = ColorTheory::ensure_contrast(
-                colors.selection_primary,
-                base_text,
-                ContrastRatios::AA_NORMAL,
-            );
-        }
-
-        // Also update primary brand color to match selection for consistency
-        colors.primary = helix_colors.selection;
-        colors.primary_hover = utils::lighten(helix_colors.selection, 0.1);
-        colors.primary_active = utils::darken(helix_colors.selection, 0.1);
-        colors.border_focus = helix_colors.selection;
-
-        colors
-    }
-}
-
 /// Size and spacing tokens
 #[derive(Debug, Clone, Copy)]
 pub struct SizeTokens {
@@ -654,6 +197,8 @@ impl SizeTokens {
 /// Editor-specific tokens derived from Helix theme
 #[derive(Debug, Clone, Copy)]
 pub struct EditorTokens {
+    // Editor background (Helix ui.background)
+    pub background: Hsla,
     // Selection and cursor system
     pub selection_primary: Hsla,
     pub selection_secondary: Hsla,
@@ -756,7 +301,6 @@ pub struct ChromeTokens {
 pub struct DesignTokens {
     pub editor: EditorTokens,
     pub chrome: ChromeTokens,
-    pub colors: SemanticColors, // Keep for backwards compatibility
     pub sizes: SizeTokens,
 }
 
@@ -793,6 +337,8 @@ impl EditorTokens {
         );
 
         Self {
+            // Editor background defaults to gutter background; may be overridden by factory
+            background: helix_colors.gutter_background,
             // Selection and cursor system
             selection_primary: helix_colors.selection,
             selection_secondary: utils::with_alpha(helix_colors.selection, 0.3),
@@ -856,6 +402,11 @@ impl EditorTokens {
         let selection_color = base_colors.primary_200;
 
         Self {
+            background: if is_dark {
+                base_colors.neutral_50
+            } else {
+                base_colors.neutral_50
+            },
             selection_primary: selection_color,
             selection_secondary: utils::with_alpha(selection_color, 0.3),
             cursor_normal: base_colors.primary_500,
@@ -939,8 +490,12 @@ impl ChromeTokens {
     pub fn from_surface_color(surface_color: Hsla, is_dark: bool) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
-        // Compute chrome colors using color theory
-        let chrome_colors = ColorTheory::derive_chrome_colors(surface_color);
+        // Desaturate the surface to avoid tinting the entire chrome UI
+        // Keep the original lightness so elevation/hover math remains consistent
+        let neutral_surface = hsla(surface_color.h, 0.0, surface_color.l, 1.0);
+
+        // Compute chrome colors using color theory from a neutral surface
+        let chrome_colors = ColorTheory::derive_chrome_colors(neutral_surface);
         let base_colors = if is_dark {
             BaseColors::dark()
         } else {
@@ -950,13 +505,13 @@ impl ChromeTokens {
         // Compute contrasting text color for chrome backgrounds using WCAG-aware logic
         let base_dark = hsla(0.0, 0.0, 0.1, 1.0);
         let base_light = hsla(0.0, 0.0, 0.9, 1.0);
-        let base = if surface_color.l > 0.5 {
+        let base = if neutral_surface.l > 0.5 {
             base_dark
         } else {
             base_light
         };
         let text_on_chrome =
-            ColorTheory::ensure_contrast(surface_color, base, ContrastRatios::AA_NORMAL);
+            ColorTheory::ensure_contrast(neutral_surface, base, ContrastRatios::AA_NORMAL);
 
         Self {
             // Computed chrome backgrounds from color theory
@@ -967,29 +522,29 @@ impl ChromeTokens {
             separator_color: chrome_colors.separator_color,
 
             // Surface system based on computed surface
-            surface: surface_color,
+            surface: neutral_surface,
             surface_elevated: if is_dark {
-                ColorTheory::adjust_oklab_lightness(surface_color, 0.05)
+                ColorTheory::adjust_oklab_lightness(neutral_surface, 0.05)
             } else {
-                ColorTheory::adjust_oklab_lightness(surface_color, -0.05)
+                ColorTheory::adjust_oklab_lightness(neutral_surface, -0.05)
             },
             surface_overlay: if is_dark {
-                hsla(surface_color.h, surface_color.s, 0.0, 0.95)
+                hsla(neutral_surface.h, neutral_surface.s, 0.0, 0.95)
             } else {
-                hsla(surface_color.h, surface_color.s, 1.0, 0.95)
+                hsla(neutral_surface.h, neutral_surface.s, 1.0, 0.95)
             },
             surface_hover: if is_dark {
-                ColorTheory::adjust_oklab_lightness(surface_color, 0.03)
+                ColorTheory::adjust_oklab_lightness(neutral_surface, 0.03)
             } else {
-                ColorTheory::adjust_oklab_lightness(surface_color, -0.03)
+                ColorTheory::adjust_oklab_lightness(neutral_surface, -0.03)
             },
             surface_active: if is_dark {
-                ColorTheory::adjust_oklab_lightness(surface_color, 0.08)
+                ColorTheory::adjust_oklab_lightness(neutral_surface, 0.08)
             } else {
-                ColorTheory::adjust_oklab_lightness(surface_color, -0.08)
+                ColorTheory::adjust_oklab_lightness(neutral_surface, -0.08)
             },
             surface_selected: utils::with_alpha(base_colors.primary_500, 0.2),
-            surface_disabled: utils::with_alpha(surface_color, 0.6),
+            surface_disabled: utils::with_alpha(neutral_surface, 0.6),
 
             // Border system for chrome elements
             border_default: chrome_colors.separator_color,
@@ -1047,76 +602,42 @@ impl ChromeTokens {
 impl DesignTokens {
     /// Create design tokens for light theme
     pub fn light() -> Self {
-        let base_colors = BaseColors::light();
-        let mut dt = Self {
+        Self {
             editor: EditorTokens::fallback(false),
             chrome: ChromeTokens::fallback(false),
-            colors: SemanticColors::from_base_light(&base_colors),
             sizes: SizeTokens::default(),
-        };
-        dt.synchronize_semantic_view();
-        dt
+        }
     }
 
     /// Create design tokens for dark theme
     pub fn dark() -> Self {
-        let base_colors = BaseColors::dark();
-        let mut dt = Self {
+        Self {
             editor: EditorTokens::fallback(true),
             chrome: ChromeTokens::fallback(true),
-            colors: SemanticColors::from_base_dark(&base_colors),
-            sizes: SizeTokens::default(),
-        };
-        dt.synchronize_semantic_view();
-        dt
-    }
-
-    /// Create design tokens for light theme with Helix-derived selection color
-    pub fn light_with_selection(selection_color: Hsla) -> Self {
-        let base_colors = BaseColors::light();
-        Self {
-            editor: EditorTokens::fallback(false),
-            chrome: ChromeTokens::fallback(false),
-            colors: SemanticColors::from_base_light_with_selection(&base_colors, selection_color),
             sizes: SizeTokens::default(),
         }
     }
 
-    /// Create design tokens for dark theme with Helix-derived selection color  
-    pub fn dark_with_selection(selection_color: Hsla) -> Self {
-        let base_colors = BaseColors::dark();
-        Self {
-            editor: EditorTokens::fallback(true),
-            chrome: ChromeTokens::fallback(true),
-            colors: SemanticColors::from_base_dark_with_selection(&base_colors, selection_color),
-            sizes: SizeTokens::default(),
-        }
+    /// Deprecated: selection color handled via Helix bridge; return base light tokens
+    pub fn light_with_selection(_selection_color: Hsla) -> Self {
+        Self::light()
+    }
+
+    /// Deprecated: selection color handled via Helix bridge; return base dark tokens
+    pub fn dark_with_selection(_selection_color: Hsla) -> Self {
+        Self::dark()
     }
 
     /// Create design tokens for light theme with comprehensive Helix-derived colors
-    pub fn light_with_helix_colors(helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
-        let base_colors = BaseColors::light();
-        let mut dt = Self {
-            editor: EditorTokens::from_helix_colors(helix_colors),
-            chrome: ChromeTokens::fallback(false), // Temporary fallback, will use surface color later
-            colors: SemanticColors::from_base_light_with_helix_colors(&base_colors, helix_colors),
-            sizes: SizeTokens::default(),
-        };
-        dt.synchronize_semantic_view();
-        dt
+    pub fn light_with_helix_colors(_helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
+        // Deprecated API path; keep a minimal implementation for tests that may still call this.
+        Self::light()
     }
 
     /// Create design tokens for dark theme with comprehensive Helix-derived colors
-    pub fn dark_with_helix_colors(helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
-        let base_colors = BaseColors::dark();
-        let mut dt = Self {
-            editor: EditorTokens::from_helix_colors(helix_colors),
-            chrome: ChromeTokens::fallback(true), // Temporary fallback, will use surface color later
-            colors: SemanticColors::from_base_dark_with_helix_colors(&base_colors, helix_colors),
-            sizes: SizeTokens::default(),
-        };
-        dt.synchronize_semantic_view();
-        dt
+    pub fn dark_with_helix_colors(_helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
+        // Deprecated API path; keep a minimal implementation for tests that may still call this.
+        Self::dark()
     }
 
     /// Create design tokens from Helix theme and surface color (hybrid approach)
@@ -1124,6 +645,7 @@ impl DesignTokens {
     pub fn from_helix_and_surface(
         helix_colors: crate::theme_manager::HelixThemeColors,
         surface_color: Hsla,
+        editor_background: Hsla,
         is_dark_theme: bool,
     ) -> Self {
         let base_colors = if is_dark_theme {
@@ -1133,77 +655,17 @@ impl DesignTokens {
         };
 
         // Create editor tokens from Helix colors
-        let editor = EditorTokens::from_helix_colors(helix_colors);
+        let mut editor = EditorTokens::from_helix_colors(helix_colors);
+        editor.background = editor_background;
 
         // Create chrome tokens from surface color using color theory
         let chrome = ChromeTokens::from_surface_color(surface_color, is_dark_theme);
 
-        // Create semantic colors for backwards compatibility
-        let colors = if is_dark_theme {
-            SemanticColors::from_base_dark_with_helix_colors(&base_colors, helix_colors)
-        } else {
-            SemanticColors::from_base_light_with_helix_colors(&base_colors, helix_colors)
-        };
-
-        let mut dt = Self {
+        Self {
             editor,
             chrome,
-            colors, // Keep for backwards compatibility
             sizes: SizeTokens::default(),
-        };
-        dt.synchronize_semantic_view();
-        dt
-    }
-
-    /// Synchronize legacy `colors` view from chrome/editor tokens so existing code paths
-    /// referencing `tokens.colors.*` see the new design-token values.
-    pub fn synchronize_semantic_view(&mut self) {
-        let c = &self.chrome;
-        let e = &self.editor;
-        let colors = &mut self.colors;
-
-        // Surfaces
-        colors.background = c.surface;
-        colors.surface = c.surface;
-        colors.surface_elevated = c.surface_elevated;
-        colors.surface_overlay = c.surface_overlay;
-        colors.surface_hover = c.surface_hover;
-        colors.surface_active = c.surface_active;
-        colors.surface_selected = c.surface_selected;
-        colors.surface_disabled = c.surface_disabled;
-
-        // Text
-        colors.text_primary = c.text_on_chrome;
-        colors.text_secondary = c.text_chrome_secondary;
-        colors.text_disabled = c.text_chrome_disabled;
-        colors.text_on_primary = e.text_on_primary;
-
-        // Borders
-        colors.border_default = c.border_default;
-        colors.border_muted = c.border_muted;
-        colors.border_strong = c.border_strong;
-        colors.border_focus = c.border_focus;
-
-        // Brand
-        colors.primary = c.primary;
-        colors.primary_hover = c.primary_hover;
-        colors.primary_active = c.primary_active;
-
-        // Selection
-        colors.selection_primary = e.selection_primary;
-        colors.selection_secondary = e.selection_secondary;
-
-        // Menus / popups
-        colors.popup_background = c.popup_background;
-        colors.popup_border = c.popup_border;
-        colors.menu_background = c.menu_background;
-        colors.menu_selected = c.menu_selected;
-        colors.menu_separator = c.menu_separator;
-
-        // Separators
-        colors.separator_horizontal = c.separator_color;
-        colors.separator_vertical = c.separator_color;
-        colors.separator_subtle = utils::with_alpha(c.separator_color, 0.5);
+        }
     }
 }
 
@@ -1259,7 +721,7 @@ pub struct TitleBarTokens {
 
 impl TitleBarTokens {
     pub fn on_surface(dt: &DesignTokens) -> Self {
-        let bg = dt.colors.surface;
+        let bg = dt.chrome.surface;
         let fg = crate::styling::ColorTheory::best_text_color(bg, dt);
         let border = crate::styling::ColorTheory::subtle_border_color(bg, dt);
         let height = dt.sizes.titlebar_height;
@@ -1278,7 +740,7 @@ impl TitleBarTokens {
     }
 
     pub fn on_primary(dt: &DesignTokens) -> Self {
-        let bg = dt.colors.primary;
+        let bg = dt.chrome.primary;
         let fg = crate::styling::ColorTheory::best_text_color(bg, dt);
         let border = crate::styling::ColorTheory::subtle_border_color(bg, dt);
         let height = dt.sizes.titlebar_height;
@@ -1297,7 +759,7 @@ impl TitleBarTokens {
     }
 
     pub fn floating(dt: &DesignTokens) -> Self {
-        let bg = dt.colors.surface_elevated;
+        let bg = dt.chrome.surface_elevated;
         let fg = crate::styling::ColorTheory::best_text_color(bg, dt);
         let border = crate::styling::ColorTheory::subtle_border_color(bg, dt);
         let height = dt.sizes.titlebar_height;
@@ -1316,7 +778,7 @@ impl TitleBarTokens {
     }
 
     pub fn overlay(dt: &DesignTokens) -> Self {
-        let bg = dt.colors.surface_overlay;
+        let bg = dt.chrome.surface_overlay;
         let fg = crate::styling::ColorTheory::best_text_color(bg, dt);
         let border = crate::styling::ColorTheory::subtle_border_color(bg, dt);
         let height = dt.sizes.titlebar_height;

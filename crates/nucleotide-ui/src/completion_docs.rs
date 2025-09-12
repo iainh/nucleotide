@@ -543,9 +543,9 @@ impl Render for DocumentationPanel {
             .flex_col()
             .w(px(self.width))
             .h_full()
-            .bg(tokens.colors.surface_elevated)
+            .bg(tokens.chrome.surface_elevated)
             .border_l_1()
-            .border_color(tokens.colors.border_default)
+            .border_color(tokens.chrome.border_default)
             .child(
                 // Header
                 div()
@@ -554,12 +554,12 @@ impl Render for DocumentationPanel {
                     .px_3()
                     .py_2()
                     .border_b_1()
-                    .border_color(tokens.colors.border_muted)
+                    .border_color(tokens.chrome.border_muted)
                     .child(
                         div()
                             .text_sm()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(tokens.colors.text_primary)
+                            .text_color(tokens.chrome.text_on_chrome)
                             .child("Documentation"),
                     ),
             )
@@ -592,7 +592,7 @@ impl DocumentationPanel {
                     div().flex().items_center().justify_center().h_20().child(
                         div()
                             .text_sm()
-                            .text_color(tokens.colors.text_secondary)
+                            .text_color(tokens.chrome.text_chrome_secondary)
                             .child("Loading documentation..."),
                     )
                 }
@@ -600,7 +600,7 @@ impl DocumentationPanel {
                     div().flex().items_center().justify_center().h_20().child(
                         div()
                             .text_sm()
-                            .text_color(tokens.colors.error)
+                            .text_color(tokens.editor.error)
                             .child(format!("Failed to load: {}", error)),
                     )
                 }
@@ -609,7 +609,7 @@ impl DocumentationPanel {
                         div().flex().items_center().justify_center().h_20().child(
                             div()
                                 .text_sm()
-                                .text_color(tokens.colors.text_tertiary)
+                                .text_color(tokens.chrome.text_chrome_secondary)
                                 .child("No documentation available"),
                         )
                     } else {
@@ -617,7 +617,7 @@ impl DocumentationPanel {
                         let _html = self.renderer.render(&content.markdown);
                         div()
                             .text_sm()
-                            .text_color(tokens.colors.text_primary)
+                            .text_color(tokens.chrome.text_on_chrome)
                             .line_height(relative(1.5))
                             .child(
                                 // For now, render as plain text
@@ -630,7 +630,7 @@ impl DocumentationPanel {
                     div().flex().items_center().justify_center().h_20().child(
                         div()
                             .text_sm()
-                            .text_color(tokens.colors.text_tertiary)
+                            .text_color(tokens.chrome.text_chrome_secondary)
                             .child("Select an item to view documentation"),
                     )
                 }
@@ -638,7 +638,7 @@ impl DocumentationPanel {
             None => div().flex().items_center().justify_center().h_20().child(
                 div()
                     .text_sm()
-                    .text_color(tokens.colors.text_tertiary)
+                    .text_color(tokens.chrome.text_chrome_secondary)
                     .child("No item selected"),
             ),
         }

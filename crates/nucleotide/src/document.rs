@@ -25,6 +25,7 @@ use helix_view::{
     Document, DocumentId, Editor, Theme, View, ViewId, graphics::CursorKind, view::ViewPosition,
 };
 use nucleotide_logging::{debug, error};
+use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
@@ -1356,6 +1357,33 @@ impl DocumentElement {
         // Get the theme from context
         let theme = params.cx.helix_theme();
 
+        // Helper to convert HSLA to Helix Color
+        let hsla_to_helix = |c: gpui::Hsla| -> Option<helix_view::graphics::Color> {
+            // Basic HSLA->RGB conversion (matches usage in ThemeManager bridge)
+            let c_chroma = (1.0 - (2.0 * c.l - 1.0).abs()) * c.s;
+            let x = c_chroma * (1.0 - (((c.h * 360.0) / 60.0) % 2.0 - 1.0).abs());
+            let (r1, g1, b1) = if c.h * 360.0 < 60.0 {
+                (c_chroma, x, 0.0)
+            } else if c.h * 360.0 < 120.0 {
+                (x, c_chroma, 0.0)
+            } else if c.h * 360.0 < 180.0 {
+                (0.0, c_chroma, x)
+            } else if c.h * 360.0 < 240.0 {
+                (0.0, x, c_chroma)
+            } else if c.h * 360.0 < 300.0 {
+                (x, 0.0, c_chroma)
+            } else {
+                (c_chroma, 0.0, x)
+            };
+            let m = c.l - c_chroma / 2.0;
+            let (r, g, b) = (r1 + m, g1 + m, b1 + m);
+            Some(helix_view::graphics::Color::Rgb(
+                (r * 255.0) as u8,
+                (g * 255.0) as u8,
+                (b * 255.0) as u8,
+            ))
+        };
+
         // Get syntax highlighter for the entire document view
         let text = params.doc.text().slice(..);
         let anchor = params.doc.view_offset(params.view.id).anchor;
@@ -1375,10 +1403,10 @@ impl DocumentElement {
             params.is_view_focused,
         );
 
-        let default_style = params.cx.theme_style("ui.text");
+        let tokens = params.cx.theme().tokens;
         let text_style = helix_view::graphics::Style {
-            fg: default_style.fg,
-            bg: default_style.bg,
+            fg: hsla_to_helix(tokens.editor.text_primary),
+            bg: hsla_to_helix(tokens.editor.background),
             ..Default::default()
         };
 
@@ -1430,12 +1458,7 @@ impl DocumentElement {
             let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
             // Get default background color from theme for reversed modifier
-            let default_bg = params
-                .cx
-                .theme_style("ui.background")
-                .bg
-                .and_then(color_to_hsla)
-                .unwrap_or(black());
+            let default_bg = tokens.editor.background;
 
             let run = create_styled_text_run(
                 byte_len,
@@ -1988,6 +2011,13 @@ impl Element for DocumentElement {
 
         // TODO: Update shared cell_width for mouse handlers (requires structural change to pass between prepaint/paint)
 
+        // Fill editor background from design tokens
+        {
+            let tokens = cx.theme().tokens;
+            let bgc = tokens.editor.background;
+            let _ = gpui::fill(bounds, bgc);
+        }
+
         // Sync scroll position back to Helix only if scrollbar changed it
         // This prevents overriding Helix's auto-scroll behavior
         if self.scroll_manager.scrollbar_changed.get() {
@@ -2362,10 +2392,8 @@ impl Element for DocumentElement {
                 } else {
                     None
                 };
-                let default_style = cx.theme_style("ui.background");
-                let bg_color = default_style.bg
-                    .and_then(color_to_hsla)
-                    .unwrap_or(black());
+                let tokens = cx.theme().tokens;
+                let bg_color = tokens.editor.background;
                 // Get mode-specific cursor theme like terminal version
                 let mode = editor.mode();
                 let base_cursor_style = cx.theme_style("ui.cursor");
@@ -2403,12 +2431,7 @@ impl Element for DocumentElement {
                     }
                 };
                 let _bg = fill(bounds, bg_color);
-                let fg_color = color_to_hsla(
-                    default_style
-                        .fg
-                        .unwrap_or(helix_view::graphics::Color::White),
-                )
-                .unwrap_or(white());
+                let fg_color = tokens.editor.text_primary;
 
                 let document = match editor.document(self.doc_id) {
                     Some(doc) => doc,
@@ -2567,8 +2590,8 @@ impl Element for DocumentElement {
                 let ruler_color = ruler_style.bg
                     .and_then(color_to_hsla)
                     .unwrap_or_else(|| {
-                        // Use UI theme's border color instead of hardcoded gray
-                        cx.ui_theme().border
+                        // Use UI theme's border color from tokens
+                        cx.ui_theme().tokens.chrome.border_default
                     });
 
                 // Get rulers configuration - try language-specific first, then fall back to editor config
@@ -3159,8 +3182,8 @@ impl Element for DocumentElement {
                             let y = gutter_origin.y + y_pos;
 
                             // Choose color based on whether this line contains a cursor (same logic as regular gutter)
-                            // Use UI theme's text_muted color instead of hardcoded gray
-                            let default_gutter_color = cx.ui_theme().text_muted;
+                            // Use UI theme tokens for gutter fallback color
+                            let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
                             let selected = cursors.contains(&doc_line);
 
                             let gutter_color = gutter_style.fg.and_then(crate::utils::color_to_hsla).unwrap_or(default_gutter_color);

@@ -510,15 +510,15 @@ impl AdvancedThemeManager {
         // Apply color overrides
         for (key, color) in &overrides.colors {
             match key.as_str() {
-                "primary" => new_theme.tokens.colors.primary = *color,
-                "secondary" => new_theme.tokens.colors.text_secondary = *color,
-                "background" => new_theme.tokens.colors.background = *color,
-                "surface" => new_theme.tokens.colors.surface = *color,
-                "text_primary" => new_theme.tokens.colors.text_primary = *color,
-                "text_secondary" => new_theme.tokens.colors.text_secondary = *color,
-                "error" => new_theme.tokens.colors.error = *color,
-                "warning" => new_theme.tokens.colors.warning = *color,
-                "success" => new_theme.tokens.colors.success = *color,
+                "primary" => new_theme.tokens.chrome.primary = *color,
+                "secondary" => new_theme.tokens.chrome.text_chrome_secondary = *color,
+                "background" => new_theme.tokens.editor.background = *color,
+                "surface" => new_theme.tokens.chrome.surface = *color,
+                "text_primary" => new_theme.tokens.chrome.text_on_chrome = *color,
+                "text_secondary" => new_theme.tokens.chrome.text_chrome_secondary = *color,
+                "error" => new_theme.tokens.editor.error = *color,
+                "warning" => new_theme.tokens.editor.warning = *color,
+                "success" => new_theme.tokens.editor.success = *color,
                 _ => {
                     nucleotide_logging::debug!(
                         color_key = key,
@@ -756,7 +756,7 @@ mod tests {
 
         let inherited_theme = result.unwrap();
         assert_eq!(
-            inherited_theme.tokens.colors.primary,
+            inherited_theme.tokens.chrome.primary,
             Hsla {
                 h: 200.0,
                 s: 0.8,

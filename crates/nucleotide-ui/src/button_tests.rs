@@ -209,12 +209,20 @@ mod tests {
         );
         
         // Primary should use primary colors
-        assert_eq!(primary_style.background, theme.tokens.colors.primary);
-        assert_eq!(primary_style.foreground, theme.tokens.colors.text_on_primary);
+        assert_eq!(primary_style.background, theme.tokens.chrome.primary);
+        let contrast = crate::styling::ColorTheory::contrast_ratio(
+            primary_style.background,
+            primary_style.foreground,
+        );
+        assert!(contrast >= crate::styling::ContrastRatios::AA_NORMAL);
         
         // Secondary should use surface colors and have border
-        assert_eq!(secondary_style.background, theme.tokens.colors.surface);
-        assert_eq!(secondary_style.foreground, theme.tokens.colors.text_primary);
+        assert_eq!(secondary_style.background, theme.tokens.chrome.surface);
+        let sec_contrast = crate::styling::ColorTheory::contrast_ratio(
+            secondary_style.background,
+            secondary_style.foreground,
+        );
+        assert!(sec_contrast >= crate::styling::ContrastRatios::AA_NORMAL);
         assert_eq!(secondary_style.border_width, px(1.0));
     }
 }

@@ -170,8 +170,8 @@ fn render(&self, cx: &mut Context<Self>) -> impl IntoElement {
     let tokens = cx.tokens();
     
     div()
-        .bg(tokens.colors.surface)
-        .text_color(tokens.colors.text_primary)
+        .bg(tokens.chrome.surface)
+        .text_color(tokens.chrome.text_on_chrome)
         .p(tokens.sizes.space_3)
 }
 ```

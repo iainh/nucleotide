@@ -29,9 +29,9 @@ let tokens = DesignTokens::dark();
 let theme = Theme::from_tokens(tokens);
 
 // Access colors semantically
-let background = theme.tokens.colors.background;
-let primary_text = theme.tokens.colors.text_primary;
-let button_color = theme.tokens.colors.primary;
+let background = theme.tokens.editor.background;
+let primary_text = theme.tokens.editor.text_primary;
+let button_color = theme.tokens.chrome.primary;
 
 // Use spacing tokens
 let padding = theme.tokens.sizes.space_3; // 8px
@@ -43,12 +43,12 @@ let button_height = theme.tokens.sizes.button_height_md; // 36px
 ```rust
 // In your component render method
 div()
-    .bg(theme.tokens.colors.surface)
-    .text_color(theme.tokens.colors.text_primary)
+    .bg(theme.tokens.chrome.surface)
+    .text_color(theme.tokens.chrome.text_on_chrome)
     .p(theme.tokens.sizes.space_3)
     .rounded_px(theme.tokens.sizes.radius_md)
     .border_1()
-    .border_color(theme.tokens.colors.border_default)
+    .border_color(theme.tokens.chrome.border_default)
 ```
 
 ### Color Utilities
@@ -56,7 +56,7 @@ div()
 ```rust
 use nucleotide_ui::tokens::{lighten, darken, with_alpha, mix};
 
-let base_color = theme.tokens.colors.primary;
+let base_color = theme.tokens.chrome.primary;
 
 // Create variations
 let lighter = lighten(base_color, 0.1);
@@ -71,7 +71,7 @@ let mixed = mix(color1, color2, 0.5); // 50% blend
 
 ```rust
 // Get appropriate surface colors for different elevations
-let base_surface = theme.surface_at_elevation(0);      // Background
+let base_surface = theme.surface_at_elevation(0);      // Background (editor)
 let card_surface = theme.surface_at_elevation(1);      // Surface
 let modal_surface = theme.surface_at_elevation(2);     // Elevated surface
 let tooltip_surface = theme.surface_at_elevation(3);   // Higher elevation
@@ -88,8 +88,8 @@ let tooltip_surface = theme.surface_at_elevation(3);   // Higher elevation
 
 ### After (Design Tokens)
 ```rust
-.bg(theme.tokens.colors.surface)
-.text_color(theme.tokens.colors.text_primary)
+.bg(theme.tokens.chrome.surface)
+.text_color(theme.tokens.chrome.text_on_chrome)
 .p(theme.tokens.sizes.space_3)
 ```
 
@@ -99,9 +99,9 @@ Existing code continues to work unchanged:
 ```rust
 // These still work exactly as before
 let theme = Theme::dark();
-.bg(theme.background)
-.text_color(theme.text)
-.border_color(theme.border)
+.bg(theme.tokens.editor.background)
+.text_color(theme.tokens.chrome.text_on_chrome)
+.border_color(theme.tokens.chrome.border_default)
 ```
 
 ## Color System
@@ -124,8 +124,8 @@ let light_tokens = DesignTokens::light();
 let dark_tokens = DesignTokens::dark();
 
 // Same semantic meaning, different values
-light_tokens.colors.text_primary; // Dark text for light background
-dark_tokens.colors.text_primary;  // Light text for dark background
+light_tokens.editor.text_primary; // Dark text for light background
+dark_tokens.editor.text_primary;  // Light text for dark background
 ```
 
 ## Size System
@@ -153,7 +153,7 @@ dark_tokens.colors.text_primary;  // Light text for dark background
 ### 1. Use Semantic Names
 ```rust
 // ✅ Good - semantic meaning
-.text_color(theme.tokens.colors.text_primary)
+.text_color(theme.tokens.chrome.text_on_chrome)
 
 // ❌ Avoid - raw values
 .text_color(hsla(0.0, 0.0, 0.9, 1.0))
@@ -173,7 +173,7 @@ dark_tokens.colors.text_primary;  // Light text for dark background
 ### 3. Leverage Color Utilities
 ```rust
 // ✅ Good - systematic color variations
-let hover_color = lighten(theme.tokens.colors.primary, 0.1);
+let hover_color = lighten(theme.tokens.chrome.primary, 0.1);
 
 // ❌ Avoid - manual color calculation
 let hover_color = hsla(primary.h, primary.s, primary.l + 0.1, primary.a);

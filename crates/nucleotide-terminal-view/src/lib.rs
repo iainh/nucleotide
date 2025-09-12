@@ -188,8 +188,8 @@ impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let theme = _cx.theme();
         let tokens = &theme.tokens;
-        let default_bg = tokens.colors.background;
-        let default_fg = tokens.colors.text_primary;
+        let default_bg = tokens.editor.background;
+        let default_fg = tokens.editor.text_primary;
 
         // Base container styling: editor-like background, foreground, and configured monospace font
         let mut container = div()
@@ -391,8 +391,8 @@ impl Render for TerminalRowView {
                 );
                 // Render the cursor cell as a block using theme tokens
                 let mut run = div().child(cell.ch.to_string());
-                run = run.bg(tokens.colors.cursor_normal);
-                run = run.text_color(tokens.colors.text_on_primary);
+                run = run.bg(tokens.editor.cursor_normal);
+                run = run.text_color(tokens.editor.text_on_primary);
                 // Make cursor more prominent
                 run = run.font_weight(FontWeight::BOLD);
                 line = line.child(run);

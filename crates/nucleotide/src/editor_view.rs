@@ -135,10 +135,15 @@ impl<S: EditorState> EventHandler for EditorView<S> {
 impl<S: EditorState + 'static> Render for EditorView<S> {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let theme = _cx.global::<crate::Theme>();
+        nucleotide_logging::info!(
+            editor_bg = ?theme.tokens.editor.background,
+            text_primary = ?theme.tokens.editor.text_primary,
+            "EditorView: tokens background/text"
+        );
         let tokens = &theme.tokens;
         div()
             .size_full()
-            .bg(tokens.colors.background)
+            .bg(tokens.editor.background)
             .child(if self.has_document() {
                 div()
                     .size_full()

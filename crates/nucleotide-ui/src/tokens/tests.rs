@@ -181,8 +181,10 @@ mod component_token_tests {
             focus: hsla(220.0 / 360.0, 0.7, 0.6, 1.0),
         };
 
-        let surface_color = hsla(0.0, 0.0, 0.05, 1.0); // Dark surface
-        let tokens = DesignTokens::from_helix_and_surface(helix_colors, surface_color, true);
+        let surface_color = hsla(0.0, 0.0, 0.05, 1.0); // Dark surface (chrome)
+        let editor_bg = helix_colors.gutter_background; // Use gutter background for editor content
+        let tokens =
+            DesignTokens::from_helix_and_surface(helix_colors, surface_color, editor_bg, true);
 
         // Test that all component token generators work
         let titlebar = tokens.titlebar_tokens();
@@ -384,7 +386,7 @@ mod component_token_tests {
         let button_tokens = tokens.button_tokens();
 
         // Test that primary buttons use chrome colors
-        assert_ne!(button_tokens.primary_background, tokens.colors.background);
+        assert_ne!(button_tokens.primary_background, tokens.editor.background);
 
         // Test that semantic buttons use Helix editor colors
         assert_eq!(button_tokens.danger_background, tokens.editor.error);

@@ -79,13 +79,20 @@ impl Default for ThemeTransitionConfig {
     }
 }
 
+/// Typed color override keys for safer updates
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ColorKey {
+    Primary,
+    TextSecondary,
+}
+
 impl ThemeProvider {
     /// Create a new theme provider with a default theme
     pub fn new(default_theme: Theme) -> Self {
         use nucleotide_logging::debug;
         debug!(
             "TITLEBAR THEME_PROVIDER: Creating new ThemeProvider with surface={:?}, background={:?}",
-            default_theme.tokens.colors.surface, default_theme.tokens.colors.background
+            default_theme.tokens.chrome.surface, default_theme.tokens.editor.background
         );
 
         let mut available_themes = HashMap::new();
@@ -133,8 +140,8 @@ impl ThemeProvider {
             nucleotide_logging::debug!(
                 "TITLEBAR THEME_PROVIDER: Switched to theme '{}' with surface={:?}, background={:?}",
                 theme_name,
-                self.current_theme.tokens.colors.surface,
-                self.current_theme.tokens.colors.background
+                self.current_theme.tokens.chrome.surface,
+                self.current_theme.tokens.editor.background
             );
 
             true
@@ -211,6 +218,21 @@ impl ThemeProvider {
         self.current_theme = self.apply_overrides(self.current_theme.clone());
     }
 
+    /// Override a color using a typed key (preferred)
+    pub fn override_color_key(&mut self, key: ColorKey, color: gpui::Hsla) {
+        match key {
+            ColorKey::Primary => {
+                // Update chrome primary and its hover/active variants
+                self.current_theme.tokens.chrome.primary = color;
+                self.current_theme.tokens.chrome.primary_hover = crate::tokens::lighten(color, 0.1);
+                self.current_theme.tokens.chrome.primary_active = crate::tokens::darken(color, 0.1);
+            }
+            ColorKey::TextSecondary => {
+                self.current_theme.tokens.chrome.text_chrome_secondary = color;
+            }
+        }
+    }
+
     /// Set typography overrides
     pub fn set_typography_overrides(&mut self, overrides: TypographyOverrides) {
         self.theme_overrides.typography_overrides = overrides;
@@ -238,16 +260,19 @@ impl ThemeProvider {
         // Apply color overrides
         for (key, color) in &self.theme_overrides.color_overrides {
             match key.as_str() {
-                "primary" => theme.tokens.colors.primary = *color,
-                // "secondary" field doesn't exist in SemanticColors - skipping
-                "surface" => theme.tokens.colors.surface = *color,
-                "background" => theme.tokens.colors.background = *color,
-                "text_primary" => theme.tokens.colors.text_primary = *color,
-                "text_secondary" => theme.tokens.colors.text_secondary = *color,
-                "border_default" => theme.tokens.colors.border_default = *color,
-                "error" => theme.tokens.colors.error = *color,
-                "warning" => theme.tokens.colors.warning = *color,
-                "success" => theme.tokens.colors.success = *color,
+                "primary" => {
+                    theme.tokens.chrome.primary = *color;
+                    theme.tokens.chrome.primary_hover = crate::tokens::lighten(*color, 0.1);
+                    theme.tokens.chrome.primary_active = crate::tokens::darken(*color, 0.1);
+                }
+                "surface" => theme.tokens.chrome.surface = *color,
+                "background" => theme.tokens.editor.background = *color,
+                "text_primary" => theme.tokens.chrome.text_on_chrome = *color,
+                "text_secondary" => theme.tokens.chrome.text_chrome_secondary = *color,
+                "border_default" => theme.tokens.chrome.border_default = *color,
+                "error" => theme.tokens.editor.error = *color,
+                "warning" => theme.tokens.editor.warning = *color,
+                "success" => theme.tokens.editor.success = *color,
                 _ => {
                     nucleotide_logging::debug!(color_key = key, "Unknown color key in override");
                 }
@@ -318,7 +343,7 @@ impl ThemeProvider {
         use nucleotide_logging::debug;
         debug!(
             "TITLEBAR THEME_PROVIDER: Updating current theme with surface={:?}, background={:?}",
-            new_theme.tokens.colors.surface, new_theme.tokens.colors.background
+            new_theme.tokens.chrome.surface, new_theme.tokens.editor.background
         );
 
         // Update the current theme
@@ -346,7 +371,7 @@ impl ThemeProvider {
 
         debug!(
             "TITLEBAR THEME_PROVIDER: Current theme surface color: {:?}, background: {:?}",
-            self.current_theme.tokens.colors.surface, self.current_theme.tokens.colors.background
+            self.current_theme.tokens.chrome.surface, self.current_theme.tokens.editor.background
         );
 
         let tokens = match ctx {
@@ -486,13 +511,13 @@ impl ThemeConfigurations {
 
         // Add high contrast variants
         let mut high_contrast_light = Theme::light();
-        high_contrast_light.tokens.colors.text_primary = gpui::Hsla {
+        high_contrast_light.tokens.chrome.text_on_chrome = gpui::Hsla {
             h: 0.0,
             s: 0.0,
             l: 0.0,
             a: 1.0,
         };
-        high_contrast_light.tokens.colors.background = gpui::Hsla {
+        high_contrast_light.tokens.editor.background = gpui::Hsla {
             h: 0.0,
             s: 0.0,
             l: 1.0,
@@ -500,13 +525,13 @@ impl ThemeConfigurations {
         };
 
         let mut high_contrast_dark = Theme::dark();
-        high_contrast_dark.tokens.colors.text_primary = gpui::Hsla {
+        high_contrast_dark.tokens.chrome.text_on_chrome = gpui::Hsla {
             h: 0.0,
             s: 0.0,
             l: 1.0,
             a: 1.0,
         };
-        high_contrast_dark.tokens.colors.background = gpui::Hsla {
+        high_contrast_dark.tokens.editor.background = gpui::Hsla {
             h: 0.0,
             s: 0.0,
             l: 0.0,
@@ -526,8 +551,8 @@ impl ThemeConfigurations {
     ) -> ThemeProvider {
         let mut provider = Self::light_dark();
 
-        provider.override_color("primary", primary_color);
-        provider.override_color("text_secondary", secondary_color);
+        provider.override_color_key(ColorKey::Primary, primary_color);
+        provider.override_color_key(ColorKey::TextSecondary, secondary_color);
 
         provider
     }
@@ -592,11 +617,11 @@ mod tests {
 
         provider.override_color("primary", custom_color);
 
-        assert_eq!(provider.current_theme().tokens.colors.primary, custom_color);
+        assert_eq!(provider.current_theme().tokens.chrome.primary, custom_color);
 
         provider.clear_overrides();
         // After clearing overrides, should revert to original theme
-        assert_ne!(provider.current_theme().tokens.colors.primary, custom_color);
+        assert_ne!(provider.current_theme().tokens.chrome.primary, custom_color);
     }
 
     #[test]
@@ -688,12 +713,16 @@ mod tests {
         let brand_provider = ThemeConfigurations::with_brand_colors(brand_color, secondary_color);
 
         assert_eq!(
-            brand_provider.current_theme().tokens.colors.primary,
+            brand_provider.current_theme().tokens.chrome.primary,
             brand_color
         );
         // Note: "secondary" maps to text_secondary since there's no dedicated secondary color field
         assert_eq!(
-            brand_provider.current_theme().tokens.colors.text_secondary,
+            brand_provider
+                .current_theme()
+                .tokens
+                .chrome
+                .text_chrome_secondary,
             secondary_color
         );
     }
@@ -703,7 +732,7 @@ mod tests {
         let provider = ThemeProvider::new(Theme::light());
 
         let derived = provider.derive_theme("custom", |theme| {
-            theme.tokens.colors.primary = gpui::Hsla {
+            theme.tokens.chrome.primary = gpui::Hsla {
                 h: 300.0,
                 s: 0.8,
                 l: 0.6,
@@ -713,13 +742,13 @@ mod tests {
 
         // Original theme should be unchanged
         assert_ne!(
-            provider.current_theme().tokens.colors.primary,
-            derived.tokens.colors.primary
+            provider.current_theme().tokens.chrome.primary,
+            derived.tokens.chrome.primary
         );
 
         // Derived theme should have the modification
         assert_eq!(
-            derived.tokens.colors.primary,
+            derived.tokens.chrome.primary,
             gpui::Hsla {
                 h: 300.0,
                 s: 0.8,

@@ -37,7 +37,6 @@ impl nucleotide_core::capabilities::PickerCapability for HelixPickerCapability {
                 .px_3()
                 .py_2()
                 .text_size(px(12.))
-                .text_color(gpui::white())
                 .font_family("monospace")
                 .child("Preview view not available")
                 .into_any_element()

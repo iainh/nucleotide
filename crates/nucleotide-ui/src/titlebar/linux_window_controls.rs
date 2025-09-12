@@ -128,7 +128,7 @@ impl LinuxControlStyle {
 
     /// Create close button style with danger coloring
     pub fn close_style(base_style: &Self, theme_tokens: &crate::DesignTokens) -> Self {
-        let error_color = theme_tokens.colors.error;
+        let error_color = theme_tokens.editor.error;
         let error_text = ColorTheory::best_text_color(error_color, theme_tokens);
 
         debug!(

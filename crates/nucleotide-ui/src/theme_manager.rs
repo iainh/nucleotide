@@ -173,244 +173,244 @@ impl ThemeManager {
 
         match key {
             "ui.background" => Style {
-                bg: to_helix_color(ui_theme.background),
+                bg: to_helix_color(ui_theme.tokens.editor.background),
                 ..Default::default()
             },
             "ui.text" => Style {
-                fg: to_helix_color(ui_theme.text),
+                fg: to_helix_color(ui_theme.tokens.editor.text_primary),
                 ..Default::default()
             },
             "ui.cursor" | "ui.cursor.primary" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.cursor_normal),
-                fg: to_helix_color(ui_theme.background),
+                bg: to_helix_color(ui_theme.tokens.editor.cursor_normal),
+                fg: to_helix_color(ui_theme.tokens.editor.background),
                 ..Default::default()
             },
             "ui.selection" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.selection_primary),
+                bg: to_helix_color(ui_theme.tokens.editor.selection_primary),
                 ..Default::default()
             },
             "ui.statusline" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.statusline_active),
-                fg: to_helix_color(ui_theme.text),
+                bg: to_helix_color(ui_theme.tokens.chrome.statusline_active),
+                fg: to_helix_color(ui_theme.tokens.chrome.text_on_chrome),
                 ..Default::default()
             },
             "ui.window" => Style {
-                fg: to_helix_color(ui_theme.border),
+                fg: to_helix_color(ui_theme.tokens.chrome.border_default),
                 ..Default::default()
             },
             "ui.menu" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.menu_background),
-                fg: to_helix_color(ui_theme.text),
+                bg: to_helix_color(ui_theme.tokens.chrome.menu_background),
+                fg: to_helix_color(ui_theme.tokens.chrome.text_on_chrome),
                 ..Default::default()
             },
             "ui.popup" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.popup_background),
-                fg: to_helix_color(ui_theme.tokens.colors.popup_border), // fg is used for borders in popups
+                bg: to_helix_color(ui_theme.tokens.chrome.popup_background),
+                fg: to_helix_color(ui_theme.tokens.chrome.popup_border), // fg is used for borders in popups
                 ..Default::default()
             },
             "ui.menu.selected" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.menu_selected),
-                fg: to_helix_color(ui_theme.text),
+                bg: to_helix_color(ui_theme.tokens.chrome.menu_selected),
+                fg: to_helix_color(ui_theme.tokens.chrome.text_on_chrome),
                 ..Default::default()
             },
             "ui.background.separator" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.separator_horizontal),
+                bg: to_helix_color(ui_theme.tokens.chrome.separator_color),
                 ..Default::default()
             },
             "ui.cursor.primary.insert" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.cursor_insert),
-                fg: to_helix_color(ui_theme.background),
+                bg: to_helix_color(ui_theme.tokens.editor.cursor_insert),
+                fg: to_helix_color(ui_theme.tokens.editor.background),
                 ..Default::default()
             },
             "ui.cursor.primary.select" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.cursor_select),
-                fg: to_helix_color(ui_theme.background),
+                bg: to_helix_color(ui_theme.tokens.editor.cursor_select),
+                fg: to_helix_color(ui_theme.tokens.editor.background),
                 ..Default::default()
             },
             "ui.cursor.primary.normal" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.cursor_normal),
-                fg: to_helix_color(ui_theme.background),
+                bg: to_helix_color(ui_theme.tokens.editor.cursor_normal),
+                fg: to_helix_color(ui_theme.tokens.editor.background),
                 ..Default::default()
             },
             "ui.cursorline.primary" => Style {
-                bg: to_helix_color(ui_theme.surface_hover),
+                bg: to_helix_color(ui_theme.tokens.chrome.surface_hover),
                 ..Default::default()
             },
             "ui.virtual.ruler" => Style {
-                bg: to_helix_color(ui_theme.border),
+                bg: to_helix_color(ui_theme.tokens.chrome.border_default),
                 ..Default::default()
             },
             "ui.virtual.wrap" => Style {
-                fg: to_helix_color(ui_theme.text_muted),
+                fg: to_helix_color(ui_theme.tokens.chrome.text_chrome_secondary),
                 ..Default::default()
             },
             "ui.gutter" => Style {
-                fg: to_helix_color(ui_theme.tokens.colors.line_number),
-                bg: to_helix_color(ui_theme.tokens.colors.gutter_background),
+                fg: to_helix_color(ui_theme.tokens.editor.line_number),
+                bg: to_helix_color(ui_theme.tokens.editor.gutter_background),
                 ..Default::default()
             },
             "ui.gutter.selected" => Style {
-                fg: to_helix_color(ui_theme.tokens.colors.line_number_active),
-                bg: to_helix_color(ui_theme.tokens.colors.gutter_selected),
+                fg: to_helix_color(ui_theme.tokens.editor.line_number_active),
+                bg: to_helix_color(ui_theme.tokens.editor.gutter_selected),
                 ..Default::default()
             },
             "ui.gutter.virtual" => Style {
-                fg: to_helix_color(ui_theme.text_disabled),
-                bg: to_helix_color(ui_theme.background),
+                fg: to_helix_color(ui_theme.tokens.chrome.text_chrome_disabled),
+                bg: to_helix_color(ui_theme.tokens.editor.background),
                 ..Default::default()
             },
             "ui.gutter.selected.virtual" => Style {
-                fg: to_helix_color(ui_theme.text_muted),
-                bg: to_helix_color(ui_theme.surface_hover),
+                fg: to_helix_color(ui_theme.tokens.chrome.text_chrome_secondary),
+                bg: to_helix_color(ui_theme.tokens.chrome.surface_hover),
                 ..Default::default()
             },
             "error" => Style {
-                fg: to_helix_color(ui_theme.error),
+                fg: to_helix_color(ui_theme.tokens.editor.error),
                 ..Default::default()
             },
             "warning" => Style {
-                fg: to_helix_color(ui_theme.warning),
+                fg: to_helix_color(ui_theme.tokens.editor.warning),
                 ..Default::default()
             },
             "info" => Style {
-                fg: to_helix_color(ui_theme.success),
+                fg: to_helix_color(ui_theme.tokens.editor.success),
                 ..Default::default()
             },
             "hint" => Style {
-                fg: to_helix_color(ui_theme.tokens.colors.diagnostic_hint),
+                fg: to_helix_color(ui_theme.tokens.editor.diagnostic_hint),
                 ..Default::default()
             },
             // Enhanced cursor and selection mappings
             "ui.cursor.normal" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.cursor_normal),
-                fg: to_helix_color(ui_theme.background),
+                bg: to_helix_color(ui_theme.tokens.editor.cursor_normal),
+                fg: to_helix_color(ui_theme.tokens.editor.background),
                 ..Default::default()
             },
             "ui.cursor.insert" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.cursor_insert),
-                fg: to_helix_color(ui_theme.background),
+                bg: to_helix_color(ui_theme.tokens.editor.cursor_insert),
+                fg: to_helix_color(ui_theme.tokens.editor.background),
                 ..Default::default()
             },
             "ui.cursor.select" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.cursor_select),
-                fg: to_helix_color(ui_theme.background),
+                bg: to_helix_color(ui_theme.tokens.editor.cursor_select),
+                fg: to_helix_color(ui_theme.tokens.editor.background),
                 ..Default::default()
             },
             "ui.cursor.match" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.cursor_match),
-                fg: to_helix_color(ui_theme.background),
+                bg: to_helix_color(ui_theme.tokens.editor.cursor_match),
+                fg: to_helix_color(ui_theme.tokens.editor.background),
                 ..Default::default()
             },
             "ui.highlight" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.selection_secondary),
+                bg: to_helix_color(ui_theme.tokens.editor.selection_secondary),
                 ..Default::default()
             },
             // Enhanced gutter mappings
             "ui.linenr" => Style {
-                fg: to_helix_color(ui_theme.tokens.colors.line_number),
-                bg: to_helix_color(ui_theme.tokens.colors.gutter_background),
+                fg: to_helix_color(ui_theme.tokens.editor.line_number),
+                bg: to_helix_color(ui_theme.tokens.editor.gutter_background),
                 ..Default::default()
             },
             "ui.linenr.selected" => Style {
-                fg: to_helix_color(ui_theme.tokens.colors.line_number_active),
-                bg: to_helix_color(ui_theme.tokens.colors.gutter_selected),
+                fg: to_helix_color(ui_theme.tokens.editor.line_number_active),
+                bg: to_helix_color(ui_theme.tokens.editor.gutter_selected),
                 ..Default::default()
             },
             // Enhanced status and buffer mappings
             "ui.statusline.inactive" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.statusline_inactive),
-                fg: to_helix_color(ui_theme.text_muted),
+                bg: to_helix_color(ui_theme.tokens.chrome.statusline_inactive),
+                fg: to_helix_color(ui_theme.tokens.chrome.text_chrome_secondary),
                 ..Default::default()
             },
             "ui.bufferline" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.bufferline_background),
-                fg: to_helix_color(ui_theme.text),
+                bg: to_helix_color(ui_theme.tokens.chrome.bufferline_background),
+                fg: to_helix_color(ui_theme.tokens.chrome.text_on_chrome),
                 ..Default::default()
             },
             "ui.bufferline.active" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.bufferline_active),
-                fg: to_helix_color(ui_theme.text),
+                bg: to_helix_color(ui_theme.tokens.chrome.bufferline_active),
+                fg: to_helix_color(ui_theme.tokens.chrome.text_on_chrome),
                 ..Default::default()
             },
             // Enhanced diagnostic mappings
             "diagnostic.error" => Style {
-                fg: to_helix_color(ui_theme.tokens.colors.diagnostic_error),
+                fg: to_helix_color(ui_theme.tokens.editor.diagnostic_error),
                 ..Default::default()
             },
             "diagnostic.warning" => Style {
-                fg: to_helix_color(ui_theme.tokens.colors.diagnostic_warning),
+                fg: to_helix_color(ui_theme.tokens.editor.diagnostic_warning),
                 ..Default::default()
             },
             "diagnostic.info" => Style {
-                fg: to_helix_color(ui_theme.tokens.colors.diagnostic_info),
+                fg: to_helix_color(ui_theme.tokens.editor.diagnostic_info),
                 ..Default::default()
             },
             "diagnostic.hint" => Style {
-                fg: to_helix_color(ui_theme.tokens.colors.diagnostic_hint),
+                fg: to_helix_color(ui_theme.tokens.editor.diagnostic_hint),
                 ..Default::default()
             },
             // Diagnostic background mappings (for error/warning underlines and highlights)
             "diagnostic.error.bg" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.diagnostic_error_bg),
+                bg: to_helix_color(ui_theme.tokens.editor.diagnostic_error_bg),
                 ..Default::default()
             },
             "diagnostic.warning.bg" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.diagnostic_warning_bg),
+                bg: to_helix_color(ui_theme.tokens.editor.diagnostic_warning_bg),
                 ..Default::default()
             },
             "diagnostic.info.bg" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.diagnostic_info_bg),
+                bg: to_helix_color(ui_theme.tokens.editor.diagnostic_info_bg),
                 ..Default::default()
             },
             "diagnostic.hint.bg" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.diagnostic_hint_bg),
+                bg: to_helix_color(ui_theme.tokens.editor.diagnostic_hint_bg),
                 ..Default::default()
             },
             // Enhanced popup and menu mappings
             "ui.menu.scroll" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.menu_background),
-                fg: to_helix_color(ui_theme.text_muted),
+                bg: to_helix_color(ui_theme.tokens.chrome.menu_background),
+                fg: to_helix_color(ui_theme.tokens.chrome.text_chrome_secondary),
                 ..Default::default()
             },
             // Focus ring mappings
             "ui.cursor.primary.focus" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.focus_ring),
+                bg: to_helix_color(ui_theme.tokens.editor.focus_ring),
                 ..Default::default()
             },
             // Additional separator mappings
             "ui.background.separator.vertical" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.separator_vertical),
+                bg: to_helix_color(ui_theme.tokens.chrome.separator_color),
                 ..Default::default()
             },
             // Additional buffer line mappings
             "ui.bufferline.inactive" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.bufferline_inactive),
-                fg: to_helix_color(ui_theme.text_muted),
+                bg: to_helix_color(ui_theme.tokens.chrome.bufferline_inactive),
+                fg: to_helix_color(ui_theme.tokens.chrome.text_chrome_secondary),
                 ..Default::default()
             },
             // Menu separator mapping
             "ui.menu.separator" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.menu_separator),
+                bg: to_helix_color(ui_theme.tokens.chrome.menu_separator),
                 ..Default::default()
             },
             // Enhanced focus ring variants for accessibility
             "ui.focus" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.focus_ring),
+                bg: to_helix_color(ui_theme.tokens.editor.focus_ring),
                 ..Default::default()
             },
             "ui.focus.error" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.focus_ring_error),
+                bg: to_helix_color(ui_theme.tokens.editor.focus_ring_error),
                 ..Default::default()
             },
             "ui.focus.warning" => Style {
-                bg: to_helix_color(ui_theme.tokens.colors.focus_ring_warning),
+                bg: to_helix_color(ui_theme.tokens.editor.focus_ring_warning),
                 ..Default::default()
             },
             _ => {
                 nucleotide_logging::debug!(key = key, "Using fallback style for unknown theme key");
                 Style {
-                    fg: to_helix_color(ui_theme.text),
-                    bg: to_helix_color(ui_theme.background),
+                    fg: to_helix_color(ui_theme.tokens.chrome.text_on_chrome),
+                    bg: to_helix_color(ui_theme.tokens.editor.background),
                     ..Default::default()
                 }
             }
@@ -439,7 +439,7 @@ impl ThemeManager {
     pub fn is_dark_theme(&self) -> bool {
         // HSLA uses lightness directly, so we can check that
         // A theme is considered dark if its background lightness is below 0.5
-        let bg = self.ui_theme.background;
+        let bg = self.ui_theme.tokens.editor.background;
         bg.l < 0.5
     }
 
@@ -475,6 +475,13 @@ impl ThemeManager {
             if let Some(helix_color) = style.bg
                 && let Some(hsla_color) = color_to_hsla(helix_color)
             {
+                nucleotide_logging::info!(
+                    tried_keys = ?extraction_attempts.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+                    chosen_key = *theme_key,
+                    description = description,
+                    chosen_color = ?hsla_color,
+                    "ThemeManager: surface color extraction choice"
+                );
                 nucleotide_logging::info!(
                     theme_key = theme_key,
                     description = description,
@@ -905,43 +912,20 @@ impl ThemeManager {
         let is_dark_theme = background.l < 0.5;
         let mut tokens = crate::DesignTokens::from_helix_and_surface(
             theme_colors,
-            background, // Use ui.background as the surface color for chrome computation
+            surface,    // computed chrome surface
+            background, // editor background (ui.background)
             is_dark_theme,
         );
 
         nucleotide_logging::info!(
-            surface_color = ?background,
+            surface_color = ?surface,
             is_dark = is_dark_theme,
             "Creating hybrid design tokens with computed chrome colors"
         );
 
-        // Inject the computed Helix-derived surface colors into the token system
-        // This ensures TitleBarTokens and other components get the correct theme colors
-        tokens.colors.background = background; // ui.background
-        tokens.colors.surface = surface; // computed surface
-        tokens.colors.surface_elevated = derived_surface; // +/- elevation
-        tokens.colors.surface_hover = derived_hover;
-        tokens.colors.surface_active = derived_active;
+        // No legacy semantic mirror; tokens are the single source of truth
 
-        UITheme {
-            background,
-            surface,
-            surface_background: derived_surface,
-            surface_hover: derived_hover,
-            surface_active: derived_active,
-            border,
-            border_focused: accent,
-            text,
-            text_muted: hsla(text.h, text.s, text.l * 0.7, text.a),
-            text_disabled: hsla(text.h, text.s, text.l * 0.5, text.a),
-            accent,
-            accent_hover: crate::styling::ColorTheory::adjust_oklab_lightness(accent, 0.1),
-            accent_active: crate::styling::ColorTheory::adjust_oklab_lightness(accent, -0.1),
-            error,
-            warning,
-            success,
-            tokens,
-        }
+        UITheme { tokens }
     }
 }
 

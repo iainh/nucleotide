@@ -2312,22 +2312,18 @@ impl Workspace {
 
     /// Recompute cached theme-derived colors
     fn recompute_theme_colors(&mut self, cx: &mut Context<Self>) {
-        let default_style = cx.theme_style("ui.background");
-        let default_ui_text = cx.theme_style("ui.text");
-        let window_style = cx.theme_style("ui.window");
+        let tokens = cx.theme().tokens;
 
-        self.cached_bg_color = default_style
-            .bg
-            .and_then(utils::color_to_hsla)
-            .unwrap_or(black());
-        self.cached_text_color = default_ui_text
-            .fg
-            .and_then(utils::color_to_hsla)
-            .unwrap_or(white());
-        self.cached_border_color = window_style
-            .fg
-            .and_then(utils::color_to_hsla)
-            .unwrap_or(white());
+        self.cached_bg_color = tokens.editor.background;
+        self.cached_text_color = tokens.chrome.text_on_chrome;
+        self.cached_border_color = tokens.chrome.border_default;
+
+        info!(
+            cached_bg_color = ?self.cached_bg_color,
+            cached_text_color = ?self.cached_text_color,
+            cached_border_color = ?self.cached_border_color,
+            "Workspace: recomputed cached token colors"
+        );
 
         self.colors_dirty = false;
     }

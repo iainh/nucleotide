@@ -113,8 +113,8 @@ mod tests {
         let theme = Theme::dark();
         let styles = component.apply_theme_styling(&theme);
 
-        assert_eq!(styles.background, theme.tokens.colors.surface);
-        assert_eq!(styles.text_color, theme.tokens.colors.text_primary);
+        assert_eq!(styles.background, theme.tokens.chrome.surface);
+        assert_eq!(styles.text_color, theme.tokens.chrome.text_on_chrome);
     }
 
     #[test]
@@ -154,28 +154,28 @@ mod tests {
         let base_styles = ComponentStyles::from_theme(&theme, &variant, &size);
 
         // Test base styles
-        assert_eq!(base_styles.background, theme.tokens.colors.surface);
-        assert_eq!(base_styles.text_color, theme.tokens.colors.text_primary);
-        assert_eq!(base_styles.border_color, theme.tokens.colors.border_default);
+        assert_eq!(base_styles.background, theme.tokens.chrome.surface);
+        assert_eq!(base_styles.text_color, theme.tokens.chrome.text_on_chrome);
+        assert_eq!(base_styles.border_color, theme.tokens.chrome.border_default);
         assert_eq!(base_styles.padding, theme.tokens.sizes.space_3);
         assert_eq!(base_styles.border_radius, theme.tokens.sizes.radius_md);
 
         // Test state variants
         let hover_styles = base_styles.hover_state(&theme);
-        assert_eq!(hover_styles.background, theme.tokens.colors.surface_hover);
+        assert_eq!(hover_styles.background, theme.tokens.chrome.surface_hover);
         assert_eq!(hover_styles.text_color, base_styles.text_color);
 
         let active_styles = base_styles.active_state(&theme);
-        assert_eq!(active_styles.background, theme.tokens.colors.surface_active);
+        assert_eq!(active_styles.background, theme.tokens.chrome.surface_active);
 
         let disabled_styles = base_styles.disabled_state(&theme);
         assert_eq!(
             disabled_styles.background,
-            theme.tokens.colors.surface_disabled
+            theme.tokens.chrome.surface_disabled
         );
         assert_eq!(
             disabled_styles.text_color,
-            theme.tokens.colors.text_disabled
+            theme.tokens.chrome.text_chrome_disabled
         );
     }
 

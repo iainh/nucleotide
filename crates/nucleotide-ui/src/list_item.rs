@@ -835,17 +835,28 @@ mod tests {
         );
 
         // Primary should use primary colors
-        assert_eq!(primary_style.background, theme.tokens.colors.primary);
-        assert_eq!(
+        assert_eq!(primary_style.background, theme.tokens.chrome.primary);
+        let contrast = crate::styling::ColorTheory::contrast_ratio(
+            primary_style.background,
             primary_style.foreground,
-            theme.tokens.colors.text_on_primary
+        );
+        assert!(
+            contrast >= crate::styling::ContrastRatios::AA_NORMAL,
+            "Foreground lacks sufficient contrast on primary background"
         );
 
         // Selected secondary should use selected styling
-        assert_eq!(secondary_style.background, theme.tokens.colors.primary);
         assert_eq!(
+            secondary_style.background,
+            theme.tokens.editor.selection_primary
+        );
+        let sec_contrast = crate::styling::ColorTheory::contrast_ratio(
+            secondary_style.background,
             secondary_style.foreground,
-            theme.tokens.colors.text_on_primary
+        );
+        assert!(
+            sec_contrast >= crate::styling::ContrastRatios::AA_NORMAL,
+            "Foreground lacks sufficient contrast on selected background"
         );
 
         // Large size falls back to medium due to "lg" vs "large" mismatch in style system

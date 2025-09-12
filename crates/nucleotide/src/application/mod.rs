@@ -4971,6 +4971,20 @@ pub fn init_editor(
             .unwrap_or_else(|| theme_loader.default_theme(true_color))
     };
 
+    // Log theme's ui.background and ui.window raw styles to verify inputs
+    {
+        let ui_bg = theme.get("ui.background");
+        let ui_window = theme.get("ui.window");
+        let ui_menu = theme.get("ui.menu");
+        info!(
+            helix_theme_name = %theme.name(),
+            ui_background_bg = ?ui_bg.bg,
+            ui_window_bg = ?ui_window.bg,
+            ui_menu_bg = ?ui_menu.bg,
+            "Theme load: Helix theme background candidates"
+        );
+    }
+
     let syn_loader = Arc::new(ArcSwap::from_pointee(lang_loader));
 
     // CRITICAL: Enable true_color support for GUI mode before creating the editor

@@ -127,7 +127,9 @@ impl VcsIcon {
         }
         use crate::tokens::utils;
 
-        let base_color = self.get_vcs_status_color(theme).unwrap_or(theme.text_muted);
+        let base_color = self
+            .get_vcs_status_color(theme)
+            .unwrap_or(theme.tokens.chrome.text_chrome_secondary);
         let indicator_size = (self.container_size * 0.5).max(6.0); // 50% of container size, min 6px
 
         let border_color = utils::darken(base_color, 0.15);

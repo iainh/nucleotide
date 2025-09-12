@@ -595,22 +595,14 @@ fn gui_main(
                 }
             }
 
-            let ui_theme = theme_manager.ui_theme().clone();
+            // Derive and install the UI theme from the ThemeManager (Helix → tokens bridge)
+            let ui_theme_derived = theme_manager.ui_theme().clone();
             let is_dark_theme = theme_manager.is_dark_theme(); // Store before moving
             cx.set_global(theme_manager);
-            cx.set_global(ui_theme);
+            cx.set_global(ui_theme_derived.clone());
 
-            // Initialize the design token system based on the current theme
-            use nucleotide_ui::Theme as EnhancedTheme;
-            let enhanced_theme = if is_dark_theme {
-                EnhancedTheme::dark()
-            } else {
-                EnhancedTheme::light()
-            };
-            cx.set_global(enhanced_theme);
-
-            // Set up the enhanced provider system
-            let ui_theme = cx.global::<nucleotide_ui::Theme>();
+            // Set up the enhanced provider system using the derived theme
+            let ui_theme = ui_theme_derived;
 
             // Create theme provider from existing theme manager
             let theme_provider = nucleotide_ui::providers::ThemeProvider::new(ui_theme.clone());

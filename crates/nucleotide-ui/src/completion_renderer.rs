@@ -138,7 +138,7 @@ impl CompletionItemElement {
                 if !before.is_empty() {
                     elements.push(
                         div()
-                            .text_color(tokens.colors.text_primary)
+                            .text_color(tokens.chrome.text_on_chrome)
                             .child(before)
                             .into_any_element(),
                     );
@@ -149,7 +149,7 @@ impl CompletionItemElement {
             let highlighted_char = chars[pos];
             elements.push(
                 div()
-                    .text_color(tokens.colors.primary)
+                    .text_color(tokens.chrome.primary)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(highlighted_char.to_string())
                     .into_any_element(),
@@ -164,7 +164,7 @@ impl CompletionItemElement {
             if !remaining.is_empty() {
                 elements.push(
                     div()
-                        .text_color(tokens.colors.text_primary)
+                        .text_color(tokens.chrome.text_on_chrome)
                         .child(remaining)
                         .into_any_element(),
                 );
@@ -191,10 +191,10 @@ impl CompletionItemElement {
             .py(px(3.0)) // This is 6px total (3px top + 3px bottom)
             .gap_2()
             .when(self.is_selected, |div| {
-                div.bg(tokens.colors.selection_primary)
+                div.bg(tokens.editor.selection_primary)
             })
             .when(!self.is_selected, |div| {
-                div.hover(|style| style.bg(tokens.colors.selection_secondary))
+                div.hover(|style| style.bg(tokens.editor.selection_secondary))
             });
 
         // Icon section - using Lucide SVG icons with design tokens
@@ -282,7 +282,7 @@ impl CompletionItemElement {
                             div()
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::NORMAL)
-                                .text_color(tokens.colors.text_primary)
+                                .text_color(tokens.chrome.text_on_chrome)
                                 .child(self.render_highlighted_text(
                                     display_text,
                                     &self.string_match.positions,
@@ -295,7 +295,7 @@ impl CompletionItemElement {
                             div_el.child(
                                 div()
                                     .text_sm()
-                                    .text_color(tokens.colors.text_secondary)
+                                    .text_color(tokens.chrome.text_chrome_secondary)
                                     .font_weight(gpui::FontWeight::NORMAL)
                                     .child(signature),
                             )
@@ -306,7 +306,7 @@ impl CompletionItemElement {
                             div_el.child(
                                 div()
                                     .text_sm()
-                                    .text_color(tokens.colors.text_tertiary)
+                                    .text_color(tokens.chrome.text_chrome_secondary)
                                     .font_weight(gpui::FontWeight::LIGHT)
                                     .child(format!("→ {}", type_info)),
                             )
@@ -326,7 +326,7 @@ impl CompletionItemElement {
                         div_el.child(
                             div()
                                 .text_xs()
-                                .text_color(tokens.colors.text_tertiary)
+                                .text_color(tokens.chrome.text_chrome_secondary)
                                 .w_full()
                                 .max_w_full()
                                 .overflow_hidden()
@@ -344,7 +344,7 @@ impl CompletionItemElement {
             div()
                 .ml_auto()
                 .text_xs()
-                .text_color(tokens.colors.text_tertiary)
+                .text_color(tokens.chrome.text_chrome_secondary)
                 .px_1()
                 .child(format!("{}", self.string_match.score)),
         );
@@ -494,12 +494,12 @@ where
                 .py_1()
                 .gap_2()
                 .when(index == selected_index, |div| {
-                    div.bg(tokens.colors.selection_primary)
+                    div.bg(tokens.editor.selection_primary)
                 })
                 .child(
                     div()
                         .text_sm()
-                        .text_color(tokens.colors.text_primary)
+                        .text_color(tokens.chrome.text_on_chrome)
                         .child(item.text.clone()),
                 );
 
@@ -515,9 +515,9 @@ where
         .id("completion-list")
         .flex()
         .flex_col()
-        .bg(tokens.colors.popup_background)
+        .bg(tokens.chrome.popup_background)
         .border_1()
-        .border_color(tokens.colors.popup_border)
+        .border_color(tokens.chrome.popup_border)
         .rounded_md()
         .shadow_lg()
         .max_h(px(list_state.max_height))
@@ -545,7 +545,7 @@ mod tests {
         assert!(icon.tooltip.is_some());
         assert_eq!(icon.tooltip.unwrap(), "Function");
         // SVG icon should have the correct color for functions
-        assert_eq!(icon.color, theme.tokens.colors.info);
+        assert_eq!(icon.color, theme.tokens.editor.info);
     }
 
     #[test]

@@ -455,70 +455,70 @@ impl ThemeAnimator {
         for property in properties {
             match property {
                 AnimatedProperty::BackgroundColor => {
-                    result.tokens.colors.background = self.interpolate_color(
-                        from.tokens.colors.background,
-                        to.tokens.colors.background,
+                    result.tokens.editor.background = self.interpolate_color(
+                        from.tokens.editor.background,
+                        to.tokens.editor.background,
                         progress,
                     );
                 }
                 AnimatedProperty::TextColor => {
-                    result.tokens.colors.text_primary = self.interpolate_color(
-                        from.tokens.colors.text_primary,
-                        to.tokens.colors.text_primary,
+                    result.tokens.chrome.text_on_chrome = self.interpolate_color(
+                        from.tokens.chrome.text_on_chrome,
+                        to.tokens.chrome.text_on_chrome,
                         progress,
                     );
-                    result.tokens.colors.text_secondary = self.interpolate_color(
-                        from.tokens.colors.text_secondary,
-                        to.tokens.colors.text_secondary,
+                    result.tokens.chrome.text_chrome_secondary = self.interpolate_color(
+                        from.tokens.chrome.text_chrome_secondary,
+                        to.tokens.chrome.text_chrome_secondary,
                         progress,
                     );
                 }
                 AnimatedProperty::BorderColor => {
-                    result.tokens.colors.border_default = self.interpolate_color(
-                        from.tokens.colors.border_default,
-                        to.tokens.colors.border_default,
+                    result.tokens.chrome.border_default = self.interpolate_color(
+                        from.tokens.chrome.border_default,
+                        to.tokens.chrome.border_default,
                         progress,
                     );
                 }
                 AnimatedProperty::PrimaryColor => {
-                    result.tokens.colors.primary = self.interpolate_color(
-                        from.tokens.colors.primary,
-                        to.tokens.colors.primary,
+                    result.tokens.chrome.primary = self.interpolate_color(
+                        from.tokens.chrome.primary,
+                        to.tokens.chrome.primary,
                         progress,
                     );
                 }
                 AnimatedProperty::SecondaryColor => {
-                    result.tokens.colors.text_secondary = self.interpolate_color(
-                        from.tokens.colors.text_secondary,
-                        to.tokens.colors.text_secondary,
+                    result.tokens.chrome.text_chrome_secondary = self.interpolate_color(
+                        from.tokens.chrome.text_chrome_secondary,
+                        to.tokens.chrome.text_chrome_secondary,
                         progress,
                     );
                 }
                 AnimatedProperty::SurfaceColor => {
-                    result.tokens.colors.surface = self.interpolate_color(
-                        from.tokens.colors.surface,
-                        to.tokens.colors.surface,
+                    result.tokens.chrome.surface = self.interpolate_color(
+                        from.tokens.chrome.surface,
+                        to.tokens.chrome.surface,
                         progress,
                     );
                 }
                 AnimatedProperty::ErrorColor => {
-                    result.tokens.colors.error = self.interpolate_color(
-                        from.tokens.colors.error,
-                        to.tokens.colors.error,
+                    result.tokens.editor.error = self.interpolate_color(
+                        from.tokens.editor.error,
+                        to.tokens.editor.error,
                         progress,
                     );
                 }
                 AnimatedProperty::WarningColor => {
-                    result.tokens.colors.warning = self.interpolate_color(
-                        from.tokens.colors.warning,
-                        to.tokens.colors.warning,
+                    result.tokens.editor.warning = self.interpolate_color(
+                        from.tokens.editor.warning,
+                        to.tokens.editor.warning,
                         progress,
                     );
                 }
                 AnimatedProperty::SuccessColor => {
-                    result.tokens.colors.success = self.interpolate_color(
-                        from.tokens.colors.success,
-                        to.tokens.colors.success,
+                    result.tokens.editor.success = self.interpolate_color(
+                        from.tokens.editor.success,
+                        to.tokens.editor.success,
                         progress,
                     );
                 }

@@ -311,7 +311,7 @@ impl ColorTheory {
         let border = if variant == "ghost" {
             hsla(0.0, 0.0, 0.0, 0.0) // Transparent border for ghost
         } else {
-            tokens.colors.border_default
+            tokens.chrome.border_default
         };
 
         ContextualColors {
@@ -342,7 +342,7 @@ impl ColorTheory {
         ContextualColors {
             background,
             foreground: Self::best_text_color(background, tokens),
-            border: tokens.colors.border_default,
+            border: tokens.chrome.border_default,
         }
     }
 
@@ -379,7 +379,7 @@ impl ColorTheory {
     /// Adjust color for primary context
     fn adjust_for_primary_context(primary: Hsla, tokens: &DesignTokens) -> Hsla {
         // Create a variant that works well on primary background
-        Self::mix(primary, tokens.colors.surface, 0.15)
+        Self::mix(primary, tokens.chrome.surface, 0.15)
     }
 
     /// Create a lighter variant (perceptual OKLab L increase)

@@ -175,8 +175,9 @@ impl ViewManager {
                         .family
                         .clone();
 
+                    let ui_theme = cx.global::<nucleotide_ui::Theme>();
                     let default_style = gpui::TextStyle {
-                        color: gpui::white(),
+                        color: ui_theme.tokens.editor.text_primary,
                         font_family: gpui::SharedString::from(fixed_family),
                         font_fallbacks: Default::default(),
                         font_features: Default::default(),

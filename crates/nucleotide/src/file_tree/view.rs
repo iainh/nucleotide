@@ -1203,7 +1203,7 @@ impl FileTreeView {
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>();
         let selected_text = theme.tokens.editor.text_on_primary;
-        let normal_text = theme.text;
+        let normal_text = theme.tokens.chrome.text_on_chrome;
         let icon_color = if is_selected {
             selected_text
         } else {
@@ -1226,7 +1226,7 @@ impl FileTreeView {
                     .text_color(if *target_exists {
                         icon_color
                     } else {
-                        theme.error
+                        theme.tokens.editor.error
                     })
             }
         };

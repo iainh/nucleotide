@@ -191,7 +191,6 @@ mod tests {
         DesignTokens {
             editor: EditorTokens::fallback(false),
             chrome: ChromeTokens::fallback(false),
-            colors: crate::tokens::SemanticColors::from_base_light(&BaseColors::light()),
             sizes: crate::tokens::SizeTokens::default(),
         }
     }

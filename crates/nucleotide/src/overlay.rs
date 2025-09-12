@@ -1168,15 +1168,9 @@ impl OverlayView {
         let theme = cx.theme();
         let tokens = &theme.tokens;
 
-        // Get ui.menu style with fallback to dropdown tokens
-        let ui_menu = cx.theme_style("ui.menu");
-
         nucleotide_ui::prompt_view::PromptStyle {
             modal_style,
-            completion_background: ui_menu
-                .bg
-                .and_then(color_to_hsla)
-                .unwrap_or(tokens.dropdown_tokens().container_background),
+            completion_background: tokens.dropdown_tokens().container_background,
         }
     }
 
@@ -1188,32 +1182,12 @@ impl OverlayView {
         let theme = cx.theme();
         let tokens = &theme.tokens;
 
-        // Get theme styles for specific overrides
-        let ui_popup = cx.theme_style("ui.popup");
-        let ui_text = cx.theme_style("ui.text");
-        let ui_menu_selected = cx.theme_style("ui.menu.selected");
-
-        // Use component/chrome tokens as fallbacks - guaranteed to exist
-        let background = ui_popup
-            .bg
-            .and_then(color_to_hsla)
-            .unwrap_or(tokens.picker_tokens().container_background);
-        let text = ui_text
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or(tokens.chrome.text_on_chrome);
-        let selected_background = ui_menu_selected
-            .bg
-            .and_then(color_to_hsla)
-            .unwrap_or(tokens.dropdown_tokens().item_background_selected);
-        let selected_text = ui_menu_selected
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or(tokens.dropdown_tokens().item_text_selected);
-        let border = ui_popup
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or(tokens.picker_tokens().border);
+        // Use component/chrome tokens directly
+        let background = tokens.picker_tokens().container_background;
+        let text = tokens.chrome.text_on_chrome;
+        let selected_background = tokens.dropdown_tokens().item_background_selected;
+        let selected_text = tokens.dropdown_tokens().item_text_selected;
+        let border = tokens.picker_tokens().border;
         let prompt_text = text;
 
         nucleotide_ui::common::ModalStyle {
@@ -1431,19 +1405,9 @@ impl OverlayView {
         let theme = cx.theme();
         let tokens = &theme.tokens;
 
-        // Get theme styles for specific overrides
-        let ui_background_separator = cx.theme_style("ui.background.separator");
-        let ui_cursor = cx.theme_style("ui.cursor");
-
-        // Use chrome/editor tokens as fallbacks - guaranteed to exist
-        let preview_background = ui_background_separator
-            .bg
-            .and_then(color_to_hsla)
-            .unwrap_or(tokens.chrome.surface);
-        let cursor = ui_cursor
-            .bg
-            .and_then(color_to_hsla)
-            .unwrap_or(tokens.editor.cursor_normal);
+        // Use chrome/editor tokens directly
+        let preview_background = tokens.chrome.surface;
+        let cursor = tokens.editor.cursor_normal;
 
         let picker_style = nucleotide_ui::picker_view::PickerStyle {
             modal_style,
@@ -1759,11 +1723,12 @@ impl Render for OverlayView {
                                 );
                                 let mut c = div().track_focus(&panel_focus);
                                 if debug {
+                                    let theme = cx.global::<nucleotide_ui::Theme>();
                                     c = c
                                         .relative()
-                                        .bg(gpui::hsla(0.35, 0.8, 0.6, 0.18)) // light green tint
+                                        .bg(theme.tokens.chrome.surface_elevated)
                                         .border_t_2()
-                                        .border_color(gpui::hsla(0.35, 0.95, 0.55, 0.9));
+                                        .border_color(theme.tokens.chrome.border_default);
                                 }
                                 // First, terminal content
                                 if let Some(panel) = &self.terminal_panel {
@@ -1771,6 +1736,7 @@ impl Render for OverlayView {
                                 }
                                 // Then the debug label so it stays on top
                                 if debug {
+                                    let theme = cx.global::<nucleotide_ui::Theme>();
                                     c = c.child(
                                         div()
                                             .absolute()
@@ -1778,8 +1744,8 @@ impl Render for OverlayView {
                                             .left_0()
                                             .px(px(6.0))
                                             .py(px(2.0))
-                                            .bg(gpui::hsla(0.35, 0.95, 0.55, 0.85))
-                                            .text_color(gpui::black())
+                                            .bg(theme.tokens.chrome.primary)
+                                            .text_color(theme.tokens.chrome.text_on_chrome)
                                             .child("TERMINAL"),
                                     );
                                 }

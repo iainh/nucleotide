@@ -572,7 +572,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            theme.tokens.colors.primary,
+            theme.tokens.chrome.primary,
             Hsla {
                 h: 200.0,
                 s: 0.8,
@@ -606,7 +606,7 @@ mod tests {
 
         assert!(!theme.is_dark());
         assert_eq!(
-            theme.tokens.colors.primary,
+            theme.tokens.chrome.primary,
             Hsla {
                 h: 220.0,
                 s: 0.9,
@@ -615,7 +615,7 @@ mod tests {
             }
         );
         assert_eq!(
-            theme.tokens.colors.text_secondary,
+            theme.tokens.chrome.text_chrome_secondary,
             Hsla {
                 h: 180.0,
                 s: 0.7,
@@ -639,7 +639,7 @@ mod tests {
 
         assert!(!material.is_dark());
         assert_eq!(
-            material.tokens.colors.primary,
+            material.tokens.chrome.primary,
             Hsla {
                 h: 200.0,
                 s: 0.8,
@@ -651,7 +651,7 @@ mod tests {
         let high_contrast = ThemeTemplates::high_contrast().build().unwrap();
 
         assert_eq!(
-            high_contrast.tokens.colors.background,
+            high_contrast.tokens.editor.background,
             Hsla {
                 h: 0.0,
                 s: 0.0,
@@ -660,7 +660,7 @@ mod tests {
             }
         );
         assert_eq!(
-            high_contrast.tokens.colors.text_primary,
+            high_contrast.tokens.chrome.text_on_chrome,
             Hsla {
                 h: 0.0,
                 s: 0.0,

@@ -399,43 +399,43 @@ impl HelixThemeBridge {
         // Convert colors to hex strings
         palette.insert(
             "primary".to_string(),
-            self.hsla_to_hex(theme.tokens.colors.primary),
+            self.hsla_to_hex(theme.tokens.chrome.primary),
         );
         palette.insert(
             "secondary".to_string(),
-            self.hsla_to_hex(theme.tokens.colors.text_secondary),
+            self.hsla_to_hex(theme.tokens.chrome.text_chrome_secondary),
         );
         palette.insert(
             "background".to_string(),
-            self.hsla_to_hex(theme.tokens.colors.background),
+            self.hsla_to_hex(theme.tokens.editor.background),
         );
         palette.insert(
             "surface".to_string(),
-            self.hsla_to_hex(theme.tokens.colors.surface),
+            self.hsla_to_hex(theme.tokens.chrome.surface),
         );
         palette.insert(
             "text_primary".to_string(),
-            self.hsla_to_hex(theme.tokens.colors.text_primary),
+            self.hsla_to_hex(theme.tokens.chrome.text_on_chrome),
         );
         palette.insert(
             "text_secondary".to_string(),
-            self.hsla_to_hex(theme.tokens.colors.text_secondary),
+            self.hsla_to_hex(theme.tokens.chrome.text_chrome_secondary),
         );
         palette.insert(
             "border_default".to_string(),
-            self.hsla_to_hex(theme.tokens.colors.border_default),
+            self.hsla_to_hex(theme.tokens.chrome.border_default),
         );
         palette.insert(
             "error".to_string(),
-            self.hsla_to_hex(theme.tokens.colors.error),
+            self.hsla_to_hex(theme.tokens.editor.error),
         );
         palette.insert(
             "warning".to_string(),
-            self.hsla_to_hex(theme.tokens.colors.warning),
+            self.hsla_to_hex(theme.tokens.editor.warning),
         );
         palette.insert(
             "success".to_string(),
-            self.hsla_to_hex(theme.tokens.colors.success),
+            self.hsla_to_hex(theme.tokens.editor.success),
         );
 
         // Map UI colors using reverse mappings
@@ -794,16 +794,16 @@ impl HelixThemeBridge {
     /// Apply color to theme based on nucleotide key
     fn apply_color_to_theme(&self, theme: &mut Theme, key: &str, color: Hsla) {
         match key {
-            "primary" => theme.tokens.colors.primary = color,
-            "secondary" => theme.tokens.colors.text_secondary = color,
-            "background" => theme.tokens.colors.background = color,
-            "surface" => theme.tokens.colors.surface = color,
-            "text_primary" => theme.tokens.colors.text_primary = color,
-            "text_secondary" => theme.tokens.colors.text_secondary = color,
-            "border_default" => theme.tokens.colors.border_default = color,
-            "error" => theme.tokens.colors.error = color,
-            "warning" => theme.tokens.colors.warning = color,
-            "success" => theme.tokens.colors.success = color,
+            "primary" => theme.tokens.chrome.primary = color,
+            "secondary" => theme.tokens.chrome.text_chrome_secondary = color,
+            "background" => theme.tokens.editor.background = color,
+            "surface" => theme.tokens.chrome.surface = color,
+            "text_primary" => theme.tokens.chrome.text_on_chrome = color,
+            "text_secondary" => theme.tokens.chrome.text_chrome_secondary = color,
+            "border_default" => theme.tokens.chrome.border_default = color,
+            "error" => theme.tokens.editor.error = color,
+            "warning" => theme.tokens.editor.warning = color,
+            "success" => theme.tokens.editor.success = color,
             _ => {
                 nucleotide_logging::debug!(
                     color_key = key,
@@ -816,16 +816,16 @@ impl HelixThemeBridge {
     /// Check if a color is missing from theme
     fn is_color_missing(&self, theme: &Theme, key: &str) -> bool {
         match key {
-            "primary" => theme.tokens.colors.primary.a == 0.0,
-            "secondary" => theme.tokens.colors.text_secondary.a == 0.0,
-            "background" => theme.tokens.colors.background.a == 0.0,
-            "surface" => theme.tokens.colors.surface.a == 0.0,
-            "text_primary" => theme.tokens.colors.text_primary.a == 0.0,
-            "text_secondary" => theme.tokens.colors.text_secondary.a == 0.0,
-            "border_default" => theme.tokens.colors.border_default.a == 0.0,
-            "error" => theme.tokens.colors.error.a == 0.0,
-            "warning" => theme.tokens.colors.warning.a == 0.0,
-            "success" => theme.tokens.colors.success.a == 0.0,
+            "primary" => theme.tokens.chrome.primary.a == 0.0,
+            "secondary" => theme.tokens.chrome.text_chrome_secondary.a == 0.0,
+            "background" => theme.tokens.editor.background.a == 0.0,
+            "surface" => theme.tokens.chrome.surface.a == 0.0,
+            "text_primary" => theme.tokens.chrome.text_on_chrome.a == 0.0,
+            "text_secondary" => theme.tokens.chrome.text_chrome_secondary.a == 0.0,
+            "border_default" => theme.tokens.chrome.border_default.a == 0.0,
+            "error" => theme.tokens.editor.error.a == 0.0,
+            "warning" => theme.tokens.editor.warning.a == 0.0,
+            "success" => theme.tokens.editor.success.a == 0.0,
             _ => false,
         }
     }

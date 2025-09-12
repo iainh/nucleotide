@@ -383,8 +383,8 @@ impl ThemeValidator {
         // Check contrast ratios
         if self.rules.color_rules.check_contrast {
             let text_bg_contrast = self.calculate_contrast_ratio(
-                theme.tokens.colors.text_primary,
-                theme.tokens.colors.background,
+                theme.tokens.chrome.text_on_chrome,
+                theme.tokens.editor.background,
             );
 
             if text_bg_contrast < self.rules.color_rules.min_contrast_ratio {
@@ -470,8 +470,8 @@ impl ThemeValidator {
         // Check focus indicators
         if self.rules.accessibility_rules.check_focus_indicators {
             let focus_contrast = self.calculate_contrast_ratio(
-                theme.tokens.colors.primary, // Assuming primary is used for focus
-                theme.tokens.colors.background,
+                theme.tokens.chrome.primary,
+                theme.tokens.editor.background,
             );
 
             if focus_contrast < 3.0 {
@@ -501,8 +501,8 @@ impl ThemeValidator {
         // Check color harmony
         if self.rules.consistency_rules.check_color_harmony {
             let primary_secondary_difference = self.calculate_color_difference(
-                theme.tokens.colors.primary,
-                theme.tokens.colors.text_secondary,
+                theme.tokens.chrome.primary,
+                theme.tokens.chrome.text_chrome_secondary,
             );
 
             if primary_secondary_difference < 100.0 {
@@ -530,8 +530,8 @@ impl ThemeValidator {
     fn validate_color_blindness_support(&self, theme: &Theme, issues: &mut Vec<ValidationIssue>) {
         // Check if important distinctions rely only on color
         let error_text_difference = self.calculate_luminance_difference(
-            theme.tokens.colors.error,
-            theme.tokens.colors.text_primary,
+            theme.tokens.editor.error,
+            theme.tokens.editor.text_primary,
         );
 
         if error_text_difference < 0.3 {
@@ -552,16 +552,16 @@ impl ThemeValidator {
     /// Get color by name from theme
     fn get_color_by_name(&self, theme: &Theme, name: &str) -> Option<Hsla> {
         match name {
-            "primary" => Some(theme.tokens.colors.primary),
-            "secondary" => Some(theme.tokens.colors.text_secondary),
-            "background" => Some(theme.tokens.colors.background),
-            "surface" => Some(theme.tokens.colors.surface),
-            "text_primary" => Some(theme.tokens.colors.text_primary),
-            "text_secondary" => Some(theme.tokens.colors.text_secondary),
-            "border_default" => Some(theme.tokens.colors.border_default),
-            "error" => Some(theme.tokens.colors.error),
-            "warning" => Some(theme.tokens.colors.warning),
-            "success" => Some(theme.tokens.colors.success),
+            "primary" => Some(theme.tokens.chrome.primary),
+            "secondary" => Some(theme.tokens.chrome.text_chrome_secondary),
+            "background" => Some(theme.tokens.editor.background),
+            "surface" => Some(theme.tokens.chrome.surface),
+            "text_primary" => Some(theme.tokens.chrome.text_on_chrome),
+            "text_secondary" => Some(theme.tokens.chrome.text_chrome_secondary),
+            "border_default" => Some(theme.tokens.chrome.border_default),
+            "error" => Some(theme.tokens.editor.error),
+            "warning" => Some(theme.tokens.editor.warning),
+            "success" => Some(theme.tokens.editor.success),
             _ => None,
         }
     }

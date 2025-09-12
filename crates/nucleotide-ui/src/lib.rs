@@ -57,9 +57,6 @@ mod initialization_tests;
 #[cfg(test)]
 mod styling_tests;
 
-#[cfg(test)]
-mod theme_mapping_test;
-
 pub use about_window::AboutWindow;
 pub use advanced_theming::{
     AdvancedThemeManager, AnimationStep, HelixThemeBridge, HelixThemeDiscovery,
@@ -135,7 +132,7 @@ pub use styling::{
 };
 pub use tokens::{
     ChromeTokens, ColorContext, CompletionIconTokens, DesignTokens, EditorTokens, FileTreeTokens,
-    SemanticColors, SizeTokens, StatusBarTokens, TabBarTokens, TitleBarTokens,
+    SizeTokens, StatusBarTokens, TabBarTokens, TitleBarTokens,
 };
 pub use traits::{
     Component, ComponentBuilder, ComponentFactory, ComponentState, ComponentStyles, Composable,
@@ -172,29 +169,9 @@ pub trait Themed {
     fn theme(&self, cx: &App) -> &Theme;
 }
 
-/// Application theme following Zed's pattern
-/// Enhanced with design token integration while maintaining backward compatibility
+/// Application theme built on DesignTokens only
 #[derive(Clone, Debug)]
 pub struct Theme {
-    // Legacy fields for backward compatibility
-    pub background: Hsla,
-    pub surface: Hsla,
-    pub surface_background: Hsla,
-    pub surface_hover: Hsla,
-    pub surface_active: Hsla,
-    pub border: Hsla,
-    pub border_focused: Hsla,
-    pub text: Hsla,
-    pub text_muted: Hsla,
-    pub text_disabled: Hsla,
-    pub accent: Hsla,
-    pub accent_hover: Hsla,
-    pub accent_active: Hsla,
-    pub error: Hsla,
-    pub warning: Hsla,
-    pub success: Hsla,
-
-    // Design token integration
     pub tokens: DesignTokens,
 }
 
@@ -206,81 +183,20 @@ impl Default for Theme {
 
 impl Theme {
     pub fn dark() -> Self {
-        let tokens = DesignTokens::dark();
         Self {
-            // Legacy fields mapped from design tokens
-            background: tokens.colors.background,
-            surface: tokens.colors.surface,
-            surface_background: tokens.colors.surface_elevated,
-            surface_hover: tokens.colors.surface_hover,
-            surface_active: tokens.colors.surface_active,
-            border: tokens.colors.border_default,
-            border_focused: tokens.colors.border_focus,
-            text: tokens.colors.text_primary,
-            text_muted: tokens.colors.text_secondary,
-            text_disabled: tokens.colors.text_disabled,
-            accent: tokens.colors.primary,
-            accent_hover: tokens.colors.primary_hover,
-            accent_active: tokens.colors.primary_active,
-            error: tokens.colors.error,
-            warning: tokens.colors.warning,
-            success: tokens.colors.success,
-
-            // Design tokens
-            tokens,
+            tokens: DesignTokens::dark(),
         }
     }
 
     pub fn light() -> Self {
-        let tokens = DesignTokens::light();
         Self {
-            // Legacy fields mapped from design tokens
-            background: tokens.colors.background,
-            surface: tokens.colors.surface,
-            surface_background: tokens.colors.surface_elevated,
-            surface_hover: tokens.colors.surface_hover,
-            surface_active: tokens.colors.surface_active,
-            border: tokens.colors.border_default,
-            border_focused: tokens.colors.border_focus,
-            text: tokens.colors.text_primary,
-            text_muted: tokens.colors.text_secondary,
-            text_disabled: tokens.colors.text_disabled,
-            accent: tokens.colors.primary,
-            accent_hover: tokens.colors.primary_hover,
-            accent_active: tokens.colors.primary_active,
-            error: tokens.colors.error,
-            warning: tokens.colors.warning,
-            success: tokens.colors.success,
-
-            // Design tokens
-            tokens,
+            tokens: DesignTokens::light(),
         }
     }
 
     /// Create a theme from design tokens (new API)
     pub fn from_tokens(tokens: DesignTokens) -> Self {
-        Self {
-            // Legacy fields mapped from design tokens
-            background: tokens.colors.background,
-            surface: tokens.colors.surface,
-            surface_background: tokens.colors.surface_elevated,
-            surface_hover: tokens.colors.surface_hover,
-            surface_active: tokens.colors.surface_active,
-            border: tokens.colors.border_default,
-            border_focused: tokens.colors.border_focus,
-            text: tokens.colors.text_primary,
-            text_muted: tokens.colors.text_secondary,
-            text_disabled: tokens.colors.text_disabled,
-            accent: tokens.colors.primary,
-            accent_hover: tokens.colors.primary_hover,
-            accent_active: tokens.colors.primary_active,
-            error: tokens.colors.error,
-            warning: tokens.colors.warning,
-            success: tokens.colors.success,
-
-            // Design tokens
-            tokens,
-        }
+        Self { tokens }
     }
 
     /// Access design tokens directly
@@ -290,18 +206,17 @@ impl Theme {
 
     /// Check if this is a dark theme based on background lightness
     pub fn is_dark(&self) -> bool {
-        self.background.l < 0.5
+        self.tokens.editor.background.l < 0.5
     }
 
     /// Get a surface color with the specified elevation
     pub fn surface_at_elevation(&self, elevation: u8) -> Hsla {
         match elevation {
-            0 => self.tokens.colors.background,
-            1 => self.tokens.colors.surface,
-            2 => self.tokens.colors.surface_elevated,
+            0 => self.tokens.editor.background,
+            1 => self.tokens.chrome.surface,
+            2 => self.tokens.chrome.surface_elevated,
             _ => {
-                // For higher elevations, add more lightness/darkness
-                let base = self.tokens.colors.surface_elevated;
+                let base = self.tokens.chrome.surface_elevated;
                 let adjustment = (elevation as f32 - 2.0) * 0.02;
                 if self.is_dark() {
                     tokens::lighten(base, adjustment)

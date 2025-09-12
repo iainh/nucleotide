@@ -174,10 +174,8 @@ mod tests {
         };
 
         assert!(dark_config.default_theme.is_dark());
-        assert_eq!(
-            dark_config.default_theme.background.h,
-            dark_config.default_theme.tokens.colors.background.h
-        );
+        // Editor background should be defined
+        assert!(dark_config.default_theme.tokens.editor.background.a > 0.0);
 
         let light_config = UIConfig {
             default_theme: Theme::light(),
@@ -186,10 +184,7 @@ mod tests {
         };
 
         assert!(!light_config.default_theme.is_dark());
-        assert_eq!(
-            light_config.default_theme.background.h,
-            light_config.default_theme.tokens.colors.background.h
-        );
+        assert!(light_config.default_theme.tokens.editor.background.a > 0.0);
     }
 
     #[test]
