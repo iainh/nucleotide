@@ -6492,12 +6492,7 @@ impl Render for Workspace {
         let editor = &self.core.read(cx).editor;
         let bg_color = self.cached_bg_color;
 
-        let editor_rect = editor.tree.area();
-        let current_size = (editor_rect.width, editor_rect.height);
-        let size_changed = self
-            .last_editor_size
-            .map(|(w, h)| w != current_size.0 || h != current_size.1)
-            .unwrap_or(true);
+        // We'll compute the desired editor size from GPUI layout further below
 
         // Create document root container using design tokens
         let mut docs_root = div()
@@ -6549,14 +6544,7 @@ impl Render for Workspace {
             // Focus is managed by DocumentView's focus state
         }
 
-        if size_changed {
-            self.core.update(cx, |core, _cx| {
-                core.compositor.resize(editor_rect);
-                // Also resize the editor to match
-                core.editor.resize(editor_rect);
-            });
-            self.last_editor_size = Some(current_size);
-        }
+        // Editor resize handled after layout computation below
 
         if let Some(_view) = &focused_view {
             // Focus is managed by DocumentView's focus state
@@ -7089,6 +7077,46 @@ impl Render for Workspace {
                         .overflow_hidden()
                         .child(main_content),
                 );
+
+                // Compute desired Helix editor area in character cells (cols/rows)
+                // Helix expects compositor/editor sizes in cells, not pixels.
+                let viewport_w_px = window.viewport_size().width.0;
+                let file_tree_w_px = if self.show_file_tree {
+                    self.file_tree_width
+                } else {
+                    0.0
+                };
+                let editor_w_px = (viewport_w_px - file_tree_w_px).max(0.0);
+                let editor_h_px = editor_h.max(0.0);
+
+                // Get font metrics from the focused DocumentView (fallback to defaults)
+                let (line_h_px, char_w_px) = self.get_font_metrics_from_focused_view(cx);
+                let rows = (editor_h_px / line_h_px.0).floor().max(1.0) as u16;
+                let cols = (editor_w_px / char_w_px.0).floor().max(1.0) as u16;
+                let desired_size = (cols, rows);
+
+                // Resize Helix compositor/editor if size changed
+                let prev = self.last_editor_size;
+                if self
+                    .last_editor_size
+                    .map(|(w, h)| w != desired_size.0 || h != desired_size.1)
+                    .unwrap_or(true)
+                {
+                    self.core.update(cx, |core, _| {
+                        let rect = helix_view::graphics::Rect {
+                            x: 0,
+                            y: 0,
+                            width: desired_size.0,
+                            height: desired_size.1,
+                        };
+                        core.compositor.resize(rect);
+                        core.editor.resize(rect);
+                    });
+                    self.last_editor_size = Some(desired_size);
+
+                    // Debug: validate Helix visible size equals our computed size
+                    // Removed extra logging; sizes are now aligned by cells
+                }
 
                 if self.terminal_panel_visible {
                     // Bottom terminal panel using shared split helper inside an absolute wrapper
