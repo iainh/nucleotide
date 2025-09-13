@@ -564,17 +564,7 @@ impl ThemeManager {
             }
         };
 
-        let compute_border_from_bg = |bg: Hsla| -> Hsla {
-            // Create subtle border color from background based on actual background brightness
-            // Use the background's lightness value to determine contrast direction
-            if bg.l > 0.5 {
-                // Background is light, make border darker with reduced saturation
-                hsla(bg.h, bg.s * 0.3, (bg.l - 0.15).max(0.0), 0.8)
-            } else {
-                // Background is dark, make border lighter with reduced saturation
-                hsla(bg.h, bg.s * 0.3, (bg.l + 0.15).min(1.0), 0.8)
-            }
-        };
+        // Border computation uses token system; no standalone helper needed.
 
         let compute_hover_from_bg = |bg: Hsla| -> Hsla {
             // Perceptual hover using OKLab L

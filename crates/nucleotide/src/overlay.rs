@@ -1165,8 +1165,6 @@ impl OverlayView {
 
     /// Create PromptStyle using ThemedContext for consistent theme access
     fn create_prompt_style_from_context(cx: &App) -> nucleotide_ui::prompt_view::PromptStyle {
-        use nucleotide_ui::theme_utils::color_to_hsla;
-
         // Get modal style using ThemedContext
         let modal_style = Self::create_modal_style_from_context(cx);
 
@@ -1182,8 +1180,6 @@ impl OverlayView {
 
     /// Create ModalStyle using ThemedContext with design token fallbacks
     fn create_modal_style_from_context(cx: &App) -> nucleotide_ui::common::ModalStyle {
-        use nucleotide_ui::theme_utils::color_to_hsla;
-
         // Use ThemedContext for consistent theme access
         let theme = cx.theme();
         let tokens = &theme.tokens;
@@ -1402,8 +1398,6 @@ impl OverlayView {
     }
     /// Create PickerView using ThemedContext with design token fallbacks
     fn create_picker_view_with_context(cx: &mut gpui::Context<PickerView>) -> PickerView {
-        use nucleotide_ui::theme_utils::color_to_hsla;
-
         // Get modal style using ThemedContext
         let modal_style = Self::create_modal_style_from_context(cx);
 

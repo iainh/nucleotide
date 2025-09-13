@@ -30,7 +30,6 @@ use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use nucleotide_lsp::HelixLspBridge;
 use nucleotide_ui::ThemedContext as UIThemedContext;
-use nucleotide_ui::theme_manager::HelixThemedContext;
 
 // ViewManager already imported above via pub use
 use nucleotide_ui::{
