@@ -490,12 +490,19 @@ impl ChromeTokens {
     pub fn from_surface_color(surface_color: Hsla, is_dark: bool) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
-        // Desaturate the surface to avoid tinting the entire chrome UI
-        // Keep the original lightness so elevation/hover math remains consistent
-        let neutral_surface = hsla(surface_color.h, 0.0, surface_color.l, 1.0);
+        // Partially desaturate (not full grey) so chrome keeps a hint of theme hue
+        // This avoids the washed-out grey look while keeping UI neutral enough.
+        let target_s = (surface_color.s * 0.8).min(0.8); // cap to 0.8 per request
+        // Subtly separate chrome surface from editor background via OKLab lightness shift
+        let mut base_surface = if is_dark {
+            ColorTheory::adjust_oklab_lightness(surface_color, 0.03)
+        } else {
+            ColorTheory::adjust_oklab_lightness(surface_color, -0.03)
+        };
+        base_surface = hsla(base_surface.h, target_s, base_surface.l, 1.0);
 
-        // Compute chrome colors using color theory from a neutral surface
-        let chrome_colors = ColorTheory::derive_chrome_colors(neutral_surface);
+        // Compute chrome colors using color theory from the tinted, partially neutralized surface
+        let chrome_colors = ColorTheory::derive_chrome_colors(base_surface);
         let base_colors = if is_dark {
             BaseColors::dark()
         } else {
@@ -505,13 +512,13 @@ impl ChromeTokens {
         // Compute contrasting text color for chrome backgrounds using WCAG-aware logic
         let base_dark = hsla(0.0, 0.0, 0.1, 1.0);
         let base_light = hsla(0.0, 0.0, 0.9, 1.0);
-        let base = if neutral_surface.l > 0.5 {
+        let base = if base_surface.l > 0.5 {
             base_dark
         } else {
             base_light
         };
         let text_on_chrome =
-            ColorTheory::ensure_contrast(neutral_surface, base, ContrastRatios::AA_NORMAL);
+            ColorTheory::ensure_contrast(base_surface, base, ContrastRatios::AA_NORMAL);
 
         Self {
             // Computed chrome backgrounds from color theory
@@ -522,29 +529,29 @@ impl ChromeTokens {
             separator_color: chrome_colors.separator_color,
 
             // Surface system based on computed surface
-            surface: neutral_surface,
+            surface: base_surface,
             surface_elevated: if is_dark {
-                ColorTheory::adjust_oklab_lightness(neutral_surface, 0.05)
+                ColorTheory::adjust_oklab_lightness(base_surface, 0.05)
             } else {
-                ColorTheory::adjust_oklab_lightness(neutral_surface, -0.05)
+                ColorTheory::adjust_oklab_lightness(base_surface, -0.05)
             },
             surface_overlay: if is_dark {
-                hsla(neutral_surface.h, neutral_surface.s, 0.0, 0.95)
+                hsla(base_surface.h, base_surface.s, 0.0, 0.95)
             } else {
-                hsla(neutral_surface.h, neutral_surface.s, 1.0, 0.95)
+                hsla(base_surface.h, base_surface.s, 1.0, 0.95)
             },
             surface_hover: if is_dark {
-                ColorTheory::adjust_oklab_lightness(neutral_surface, 0.03)
+                ColorTheory::adjust_oklab_lightness(base_surface, 0.03)
             } else {
-                ColorTheory::adjust_oklab_lightness(neutral_surface, -0.03)
+                ColorTheory::adjust_oklab_lightness(base_surface, -0.03)
             },
             surface_active: if is_dark {
-                ColorTheory::adjust_oklab_lightness(neutral_surface, 0.08)
+                ColorTheory::adjust_oklab_lightness(base_surface, 0.08)
             } else {
-                ColorTheory::adjust_oklab_lightness(neutral_surface, -0.08)
+                ColorTheory::adjust_oklab_lightness(base_surface, -0.08)
             },
             surface_selected: utils::with_alpha(base_colors.primary_500, 0.2),
-            surface_disabled: utils::with_alpha(neutral_surface, 0.6),
+            surface_disabled: utils::with_alpha(base_surface, 0.6),
 
             // Border system for chrome elements
             border_default: chrome_colors.separator_color,

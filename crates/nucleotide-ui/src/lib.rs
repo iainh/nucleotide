@@ -39,6 +39,7 @@ pub mod split;
 pub mod style_utils;
 pub mod styling;
 pub mod text_utils;
+pub mod theme_debug;
 pub mod theme_manager;
 pub mod theme_utils;
 pub mod titlebar;
@@ -130,6 +131,7 @@ pub use styling::{
     VariantStyler, ViewportContext, compute_component_style, compute_contextual_style,
     compute_style_for_states, merge_styles, should_enable_animations,
 };
+pub use theme_debug::ThemeDebugView;
 pub use tokens::{
     ChromeTokens, ColorContext, CompletionIconTokens, DesignTokens, EditorTokens, FileTreeTokens,
     SizeTokens, StatusBarTokens, TabBarTokens, TitleBarTokens,

@@ -110,7 +110,7 @@ pub mod editor {
 pub mod help {
     use super::actions;
 
-    actions!(help, [About, OpenTutorial,]);
+    actions!(help, [About, OpenTutorial, ThemeDebug,]);
 }
 
 pub mod workspace {

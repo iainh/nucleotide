@@ -1053,8 +1053,8 @@ mod surface_extraction_tests {
             let bg = ui.tokens.editor.background;
             let surface = ui.tokens.chrome.surface;
             assert!(
-                surface.s.abs() < 1e-6,
-                "surface saturation should be neutralized to 0.0, got {}",
+                surface.s <= 0.8,
+                "surface saturation should be clamped (<=0.8), got {}",
                 surface.s
             );
             assert!(
@@ -1068,8 +1068,8 @@ mod surface_extraction_tests {
             let bg2 = ui2.tokens.editor.background;
             let surface2 = ui2.tokens.chrome.surface;
             assert!(
-                surface2.s.abs() < 1e-6,
-                "surface saturation should be neutralized to 0.0, got {}",
+                surface2.s <= 0.8,
+                "surface saturation should be clamped (<=0.8), got {}",
                 surface2.s
             );
             assert!(

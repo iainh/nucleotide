@@ -445,7 +445,7 @@ use nucleotide::actions::{
         CloseFile, Copy, DecreaseFontSize, IncreaseFontSize, OpenDirectory, OpenFile, OpenSettings,
         Paste, Quit, Redo, ReloadConfiguration, Save, SaveAs, Undo,
     },
-    help::{About, OpenTutorial},
+    help::{About, OpenTutorial, ThemeDebug},
     picker::{ConfirmSelection, DismissPicker, SelectFirst, SelectLast, TogglePreview},
     test::{TestCompletion, TestPrompt},
     window::{Hide, HideOthers, Minimize, ShowAll, Zoom},
@@ -501,6 +501,8 @@ fn app_menus() -> Vec<Menu> {
                 MenuItem::action("Tutorial", OpenTutorial),
                 MenuItem::action("Test Prompt", TestPrompt),
                 MenuItem::action("Test Completion", TestCompletion),
+                MenuItem::separator(),
+                MenuItem::action("Theme Debug", ThemeDebug),
             ],
         },
     ]

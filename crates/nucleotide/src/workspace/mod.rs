@@ -93,6 +93,7 @@ pub struct Workspace {
     _pending_lsp_startup: Option<std::path::PathBuf>, // Track pending server startup requests
     prefix_extractor: PrefixExtractor,                // Language-aware completion prefix extraction
     about_window: Entity<AboutWindow>,                // About dialog window
+    theme_debug: Entity<nucleotide_ui::ThemeDebugView>, // Theme debug overlay
     // Pending file operation that expects a text input via prompt
     pending_file_op: Option<PendingFileOp>,
     // Defer a file tree refresh until after processing core events
@@ -515,8 +516,9 @@ impl Workspace {
         // Initialize workspace-specific actions with the input coordinator
         Self::register_workspace_actions(&input_coordinator);
 
-        // Create about window
+        // Create about window and theme debug overlay
         let about_window = cx.new(|_cx| AboutWindow::new());
+        let theme_debug = cx.new(|_cx| nucleotide_ui::ThemeDebugView::new());
 
         // Initialize ProjectLspManager for proactive LSP startup
         let project_lsp_manager = if let Some(ref root) = root_path_for_manager {
@@ -621,6 +623,7 @@ impl Workspace {
             _pending_lsp_startup: None,
             prefix_extractor: PrefixExtractor::new(),
             about_window,
+            theme_debug,
             pending_file_op: None,
             needs_file_tree_refresh: false,
             delete_confirm_open: false,
@@ -6612,6 +6615,7 @@ impl Render for Workspace {
                         }
                     })
                     .child(self.about_window.clone())
+                    .child(self.theme_debug.clone())
                     .when(
                         !self.info_hidden && !self.info.read(cx).is_empty(),
                         |this| this.child(self.info.clone()),
@@ -6743,6 +6747,13 @@ impl Render for Workspace {
                 workspace.about_window.update(cx, |about_window, cx| {
                     about_window.show(cx);
                 });
+            },
+        ));
+
+        // Theme Debug action opens the overlay
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::help::ThemeDebug, _window, cx| {
+                workspace.theme_debug.update(cx, |view, cx| view.show(cx));
             },
         ));
 
