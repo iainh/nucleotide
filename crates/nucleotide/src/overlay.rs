@@ -636,7 +636,7 @@ impl OverlayView {
                                                     .into(),
                                                 font_features: gpui::FontFeatures::default(),
                                                 font_fallbacks: None,
-                                                font_size: gpui::px(editor_font.size).into(),
+                                                font_size: gpui::px((editor_font.size * 0.9).max(8.0)).into(),
                                                 line_height: gpui::phi(),
                                                 font_weight: editor_font.weight.into(),
                                                 font_style: gpui::FontStyle::Normal,
@@ -726,7 +726,7 @@ impl OverlayView {
                                     style: nucleotide_types::FontStyle::Normal,
                                 }
                                 .into();
-                                let editor_size = editor_cfg.size;
+                                let editor_size = (editor_cfg.size * 0.9).max(8.0);
 
                                 let mut container = div()
                                     .px_3()
