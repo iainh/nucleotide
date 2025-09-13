@@ -211,6 +211,7 @@ struct CachedDimensions {
 pub struct PickerStyle {
     pub modal_style: ModalStyle,
     pub preview_background: Hsla,
+    pub preview_text: Hsla,
     pub cursor: Hsla,
 }
 
@@ -219,7 +220,8 @@ impl Default for PickerStyle {
         let dt = crate::DesignTokens::dark();
         Self {
             modal_style: ModalStyle::default(),
-            preview_background: dt.chrome.surface_elevated,
+            preview_background: dt.editor.background,
+            preview_text: dt.editor.text_primary,
             cursor: dt.editor.cursor_normal,
         }
     }
@@ -248,7 +250,8 @@ impl PickerStyle {
             };
             return Self {
                 modal_style,
-                preview_background: dt.chrome.surface_elevated,
+                preview_background: dt.editor.background,
+                preview_text: dt.editor.text_primary,
                 cursor: dt.editor.cursor_normal,
             };
         }
@@ -268,9 +271,11 @@ impl PickerStyle {
             .or_else(|| theme.get("ui.cursor.primary").fg.and_then(color_to_hsla))
             .or_else(|| theme.get("ui.cursor").bg.and_then(color_to_hsla))
             .unwrap_or(modal_style.text);
+        let preview_text = modal_style.text;
         Self {
             modal_style,
             preview_background,
+            preview_text,
             cursor,
         }
     }
@@ -1353,17 +1358,17 @@ impl PickerView {
                                                     } else if let Some(renderer) = &self.preview_element_cb {
                                                         (renderer)(doc_id, view_id, cx)
                                                     } else {
-                                                        div()
-                                                            .px_3()
-                                                            .py_2()
-                                                            .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
-                                                            .text_color(self.style.modal_style.text)
-                                .font_family({
-                                    cx.global::<nucleotide_types::FontSettings>()
-                                        .fixed_font
-                                        .family
-                                        .clone()
-                                })
+                                                    div()
+                                                        .px_3()
+                                                        .py_2()
+                                                        .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
+                                                        .text_color(self.style.preview_text)
+                                                        .font_family({
+                                                            cx.global::<nucleotide_types::FontSettings>()
+                                                                .fixed_font
+                                                                .family
+                                                                .clone()
+                                                        })
                                                             .child("Preview available (no renderer)")
                                                             .into_any_element()
                                                     }
@@ -1374,7 +1379,7 @@ impl PickerView {
                                                         .px_3()
                                                         .py_2()
                                                         .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
-                                                        .text_color(self.style.modal_style.text)
+                                                        .text_color(self.style.preview_text)
                                                                                     .font_family({
                                                                                         cx.global::<nucleotide_types::FontSettings>()
                                                                                             .fixed_font
@@ -1395,7 +1400,7 @@ impl PickerView {
                                                     .px_3()
                                                     .py_2()
                                                     .text_size(cx.global::<crate::Theme>().tokens.sizes.text_sm)
-                                                    .text_color(self.style.modal_style.text)
+                                                    .text_color(self.style.preview_text)
                                                     .font_family({
                                                         cx.global::<nucleotide_types::FontSettings>()
                                                             .fixed_font

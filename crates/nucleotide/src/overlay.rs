@@ -1406,12 +1406,14 @@ impl OverlayView {
         let tokens = &theme.tokens;
 
         // Use chrome/editor tokens directly
-        let preview_background = tokens.chrome.surface;
+        let preview_background = tokens.editor.background;
+        let preview_text = tokens.editor.text_primary;
         let cursor = tokens.editor.cursor_normal;
 
         let picker_style = nucleotide_ui::picker_view::PickerStyle {
             modal_style,
             preview_background,
+            preview_text,
             cursor,
         };
 
