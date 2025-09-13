@@ -3,7 +3,6 @@
 
 pub mod about_window;
 pub mod actions;
-pub mod advanced_theming;
 pub mod assets;
 pub mod button;
 pub mod common;
@@ -19,17 +18,12 @@ pub mod completion_renderer;
 pub mod completion_v2;
 pub mod debouncer;
 pub mod file_icon;
-pub mod focus_indicator;
-pub mod fuzzy;
 pub mod global_input;
 pub mod info_box;
 pub mod key_hint_view;
-pub mod keyboard_navigation;
 pub mod list_item;
 pub mod notification;
 pub mod picker;
-pub mod picker_delegate;
-pub mod picker_element;
 pub mod picker_view;
 pub mod prompt;
 pub mod prompt_view;
@@ -46,7 +40,6 @@ pub mod titlebar;
 pub mod tokens;
 pub mod traits;
 pub mod utils;
-pub mod vcs_gutter;
 pub mod vcs_icon;
 
 #[cfg(test)]
@@ -59,11 +52,6 @@ mod initialization_tests;
 mod styling_tests;
 
 pub use about_window::AboutWindow;
-pub use advanced_theming::{
-    AdvancedThemeManager, AnimationStep, HelixThemeBridge, HelixThemeDiscovery,
-    RuntimeThemeSwitcher, ThemeAnimator, ThemeBuilder, ThemeCategory, ThemeMetadata, ThemeRegistry,
-    ThemeValidator, ValidationResult,
-};
 pub use assets::Assets;
 pub use button::{Button, ButtonSize, ButtonVariant, IconPosition};
 pub use completion_docs::{
@@ -96,19 +84,12 @@ pub use completion_v2::{
     StringMatch, StringMatchCandidate,
 };
 pub use file_icon::FileIcon;
-pub use focus_indicator::{
-    FocusIndicator, focused_element, high_contrast_focus_ring, subtle_focus_ring,
-};
 pub use global_input::{
     DismissTarget, FocusElement, FocusElementType, FocusGroup as GlobalFocusGroup, FocusGroupInfo,
     FocusIndicatorConfig, FocusIndicatorStyle, FocusIndicatorStyles, FocusPriority,
     FocusedElementInfo, GlobalInputDispatcher, InputContext,
     NavigationDirection as GlobalNavigationDirection, NavigationOptions, ShortcutAction,
     ShortcutDefinition, ShortcutInfo,
-};
-pub use keyboard_navigation::{
-    KeyboardNavigationHandler, ListVirtualization, NavigationAction,
-    NavigationDirection as KeyboardNavigationDirection, NavigationResult,
 };
 pub use list_item::{
     ListItem, ListItemSpacing, ListItemState, ListItemVariant, SelectionMode, SelectionState,
@@ -142,12 +123,9 @@ pub use traits::{
     Tooltipped, Validatable, ValidationState, compute_component_state,
 };
 pub use utils::{
-    ExperimentalFeatures, FeatureFlags, FocusGroup as UtilsFocusGroup, FocusManager,
-    KeyboardShortcut, MemoryTracker, PerfTimer, PerformanceFeatures, Profiler,
-    ShortcutRegistry as UtilsShortcutRegistry, is_feature_enabled as is_utils_feature_enabled,
-    is_named_feature_enabled,
+    ExperimentalFeatures, FeatureFlags, PerformanceFeatures,
+    is_feature_enabled as is_utils_feature_enabled, is_named_feature_enabled,
 };
-pub use vcs_gutter::{VcsGutter, VcsLineIndicator, get_vcs_indicator_for_line};
 pub use vcs_icon::{VcsIcon, VcsIconRenderer};
 // VcsStatus is now re-exported from nucleotide-types
 
@@ -155,21 +133,6 @@ pub use vcs_icon::{VcsIcon, VcsIconRenderer};
 // (Functions are defined in this module, types can be re-exported)
 
 use gpui::{App, Hsla};
-
-/// Standard spacing values following Zed's design system
-pub mod spacing {
-    use gpui::px;
-
-    pub const XS: gpui::Pixels = px(2.);
-    pub const SM: gpui::Pixels = px(4.);
-    pub const MD: gpui::Pixels = px(8.);
-    pub const LG: gpui::Pixels = px(12.);
-}
-
-/// Theme trait for consistent styling
-pub trait Themed {
-    fn theme(&self, cx: &App) -> &Theme;
-}
 
 /// Application theme built on DesignTokens only
 #[derive(Clone, Debug)]
