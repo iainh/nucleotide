@@ -307,15 +307,9 @@ pub struct DesignTokens {
 impl EditorTokens {
     /// Create editor tokens from Helix theme colors
     pub fn from_helix_colors(helix_colors: crate::theme_manager::HelixThemeColors) -> Self {
-        // Compute text colors from gutter background (approximation of editor background)
+        // Prefer explicit text from theme; fallback computed below if required
         let editor_bg = helix_colors.gutter_background;
-        let text_primary = if editor_bg.l > 0.5 {
-            // Light background, use dark text
-            hsla(0.0, 0.0, 0.1, 1.0)
-        } else {
-            // Dark background, use light text
-            hsla(0.0, 0.0, 0.9, 1.0)
-        };
+        let text_primary = helix_colors.text_primary;
         let text_secondary = utils::with_alpha(text_primary, 0.7);
 
         // Compute text_on_primary with dark-theme preference for white when valid
@@ -347,7 +341,7 @@ impl EditorTokens {
             cursor_select: helix_colors.cursor_select,
             cursor_match: helix_colors.cursor_match,
 
-            // Text colors computed from editor background
+            // Text colors from theme with fallback already applied by theme manager
             text_primary,
             text_secondary,
             text_on_primary,
@@ -663,6 +657,7 @@ impl DesignTokens {
 
         // Create editor tokens from Helix colors
         let mut editor = EditorTokens::from_helix_colors(helix_colors);
+        // Ensure editor background matches the extracted editor background
         editor.background = editor_background;
 
         // Create chrome tokens strictly from the computed surface color

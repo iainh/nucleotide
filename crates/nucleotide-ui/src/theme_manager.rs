@@ -45,6 +45,9 @@ pub struct HelixThemeColors {
     // Separator and focus system
     pub separator: Hsla,
     pub focus: Hsla,
+
+    // Text colors
+    pub text_primary: Hsla,
 }
 
 /// System appearance state
@@ -762,15 +765,12 @@ impl ThemeManager {
 
         let text_from_theme = ui_text.fg.and_then(color_to_hsla);
         let text = text_from_theme.unwrap_or_else(|| {
-            // Simplified fallback: sentinel red
-            let red = hsla(0.0, 1.0, 0.5, 1.0);
-            nucleotide_logging::debug!(
-                system_appearance = ?system_appearance,
-                background_color = ?background,
-                fallback_text = ?red,
-                "Missing ui.text; using sentinel red"
-            );
-            red
+            // Fallback: derive readable text from background if theme doesn't specify
+            if background.l > 0.5 {
+                hsla(0.0, 0.0, 0.10, 1.0)
+            } else {
+                hsla(0.0, 0.0, 0.90, 1.0)
+            }
         });
 
         // Compute derived colors from actual background instead of hardcoded grays
@@ -908,6 +908,8 @@ impl ThemeManager {
             // Separator and focus system
             separator: extract_color("ui.background.separator", border),
             focus: extract_color("ui.focus", accent),
+            // Text
+            text_primary: text,
         };
 
         // Use the new hybrid token system that computes chrome colors from surface

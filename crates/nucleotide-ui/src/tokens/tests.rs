@@ -98,6 +98,7 @@ mod titlebar_contrast_tests {
             menu_separator: gpui::hsla(0.0, 0.0, 0.9, 1.0),
             separator: gpui::hsla(0.0, 0.0, 0.9, 1.0),
             focus: gpui::hsla(220.0 / 360.0, 0.7, 0.6, 1.0),
+            text_primary: gpui::hsla(0.0, 0.0, 0.10, 1.0),
         };
 
         let test_cases = [
@@ -179,6 +180,7 @@ mod component_token_tests {
             menu_separator: hsla(0.0, 0.0, 0.15, 1.0),
             separator: hsla(0.0, 0.0, 0.2, 1.0),
             focus: hsla(220.0 / 360.0, 0.7, 0.6, 1.0),
+            text_primary: hsla(0.0, 0.0, 0.90, 1.0),
         };
 
         let surface_color = hsla(0.0, 0.0, 0.05, 1.0); // Dark surface (chrome)
