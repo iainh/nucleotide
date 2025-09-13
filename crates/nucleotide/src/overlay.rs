@@ -718,14 +718,20 @@ impl OverlayView {
                                     .and_then(nucleotide_ui::theme_utils::color_to_hsla)
                                     .unwrap_or(cx.theme().tokens.chrome.text_on_chrome);
 
-                                // Use the editor font and size for preview
-                                let editor_font = cx.global::<nucleotide_types::FontSettings>().var_font.clone();
-                                let editor_size = cx.global::<nucleotide_types::UiFontConfig>().size;
+                                // Use the editor fixed font and editor font size for code preview
+                                let editor_cfg = cx.global::<nucleotide_types::EditorFontConfig>().clone();
+                                let editor_font: gpui::Font = nucleotide_types::Font {
+                                    family: editor_cfg.family.clone(),
+                                    weight: editor_cfg.weight,
+                                    style: nucleotide_types::FontStyle::Normal,
+                                }
+                                .into();
+                                let editor_size = editor_cfg.size;
 
                                 let mut container = div()
                                     .px_3()
                                     .py_2()
-                                    .font(editor_font.into())
+                                    .font(editor_font)
                                     .text_size(px(editor_size))
                                     .text_color(default_text)
                                     .overflow_y_hidden()
