@@ -145,7 +145,7 @@ Rendering
 - Scrollbar: reuse `scrollbar` component if possible; otherwise simple custom bar.
 
 Input & Focus
-- Integrate with `nucleotide-ui::global_input` and `keyboard_navigation`.
+- Integrate with `nucleotide-ui::global_input` for focus groups, navigation, and shortcuts.
 - Two modes:
   - “Terminal Insert” (default): raw key passthrough → `TerminalInput` bytes.
   - “Editor” optional vi‑style navigation (Phase 3): when enabled, arrow keys/gg/G search operate on scrollback.

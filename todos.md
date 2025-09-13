@@ -25,7 +25,8 @@ This document summarizes TODO/FIXME-style markers and incomplete areas discovere
 - Completion cursor position: use actual document/workspace cursor for placement (src/completion_v2.rs:1554).
 - Documentation panel: check async task completion and add scroll tracking when APIs available (src/completion_docs.rs:279, 573).
 - Popup positioning/z-index: compute from real window bounds and apply proper z-index when API available (src/completion_popup.rs:389, 408).
-- Focus/animations: implement animation support when GPUI APIs available (src/focus_indicator.rs:47).
+- Focus/animations: consider animation support when GPUI APIs are available.
+  Use global_input focus indicator config and tokens for styling rather than a dedicated focus_indicator module.
 - Event bus: replace manual handling with an event bus subscription (src/info_box.rs:37).
 - Linux integration: optional gsettings checks for button layout and theme (src/titlebar/linux_platform_detector.rs:224, 279); implement shading/always-on-top/context menu (src/titlebar/linux_window_controls.rs:307, 311, 315).
 
@@ -47,4 +48,3 @@ This document summarizes TODO/FIXME-style markers and incomplete areas discovere
 
 - Theme TODO notes in assets and runtime themes (e.g., crates/nucleotide/assets/themes/*, runtime/themes/sunset.toml).
 - Tree-sitter queries: various TODO/FIXME comments under crates/nucleotide/runtime/queries/** pertaining to language highlight/indent rules.
-

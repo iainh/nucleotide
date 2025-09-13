@@ -18,7 +18,7 @@ Based on my analysis, here's a plan to refactor Nucleotide into a multi-crate wo
 
 3. **nucleotide-widgets** - Complex UI widgets
    - File tree (`src/file_tree/`)
-   - Picker system (`picker`, `picker_delegate`, `picker_element`, `picker_view`)
+   - Picker system (`picker`, `picker_view`)
    - Overlay views (`overlay`, `prompt`, `prompt_view`)
    - Info/notification views (`info_box`, `notification`, `key_hint_view`)
    - Dependencies: nucleotide-ui, gpui, notify

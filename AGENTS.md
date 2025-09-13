@@ -60,9 +60,9 @@
   - Compose: `ProviderComposition::app_providers()` or build via `provider_tree()`.
   - Access: `use_theme()`, `use_provider<T>()`, `use_provider_or_default<T>()`.
 - Styling: Use `Styled`, `ComponentFactory`, and `Variant*` types from `nucleotide-ui::styling` to compute styles from tokens/state.
-- Keyboard & Focus: Centralized input handling in `nucleotide-ui::{global_input, keyboard_navigation}` with focus rings and navigation helpers.
+- Keyboard & Focus: Centralized input handling in `nucleotide-ui::global_input` with focus group management, navigation, and shortcut routing. No separate `keyboard_navigation` module.
 - Popups & Layout: Use `completion_popup` and sizing utilities for anchored overlays; avoid manual positioning where helpers exist.
-- Theming: `theme_manager`, `advanced_theming` support runtime switching and Helix theme bridge while keeping token‑first APIs.
+- Theming: `theme_manager` provides runtime switching and the Helix→GPUI bridge; favor token‑first APIs (`tokens`) for styling. The previous `advanced_theming` module has been removed.
 
 ## Where To Add Things
 - New domain events: `crates/nucleotide-events/src/v2/<domain>/` plus handler wiring in `crates/nucleotide/src/application/*`.
@@ -73,7 +73,7 @@
 ## References
 - Event system: `docs/event_system.md`
 - Token system: `crates/nucleotide-ui/src/tokens/README.md`
-- UI theming & providers: `crates/nucleotide-ui/src/{providers,theme_manager,advanced_theming}`
+- UI theming & providers: `crates/nucleotide-ui/src/{providers,theme_manager}`
 
 ## Version Control
 - Use standard Git for committing, branching, and pushing.
