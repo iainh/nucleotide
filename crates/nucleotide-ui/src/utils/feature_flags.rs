@@ -1,43 +1,8 @@
 // ABOUTME: Feature flag system for conditional compilation and runtime features
 // ABOUTME: Provides compile-time and runtime feature toggling for nucleotide-ui components
 
-use gpui::{App, SharedString};
+use gpui::SharedString;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
-
-/// Global feature flag state
-static FEATURE_FLAGS: OnceLock<Arc<RwLock<FeatureFlags>>> = OnceLock::new();
-
-/// Initialize the feature flag system
-pub fn init_feature_flags() {
-    FEATURE_FLAGS.get_or_init(|| Arc::new(RwLock::new(FeatureFlags::default())));
-}
-
-/// Get access to the global feature flags
-pub fn with_feature_flags<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&FeatureFlags) -> R,
-{
-    FEATURE_FLAGS
-        .get()
-        .and_then(|flags| flags.read().ok().map(|guard| f(&guard)))
-}
-
-/// Update feature flags
-pub fn update_feature_flags<F>(f: F) -> bool
-where
-    F: FnOnce(&mut FeatureFlags),
-{
-    FEATURE_FLAGS.get().is_some_and(|flags| {
-        flags
-            .write()
-            .map(|mut guard| {
-                f(&mut guard);
-                true
-            })
-            .unwrap_or(false)
-    })
-}
 
 /// Feature flag configuration
 #[derive(Debug, Clone, Default)]
@@ -262,70 +227,7 @@ impl ExperimentalFeatures {
     }
 }
 
-/// Convenience function to check if a feature is enabled
-pub fn is_feature_enabled<F>(_cx: &App, feature_check: F) -> bool
-where
-    F: FnOnce(&FeatureFlags) -> bool,
-{
-    with_feature_flags(feature_check).unwrap_or(false)
-}
-
-/// Convenience function to check if a named feature is enabled
-pub fn is_named_feature_enabled(feature_name: &str) -> bool {
-    with_feature_flags(|flags| flags.is_enabled(feature_name)).unwrap_or(false)
-}
-
-/// Conditional compilation macros for feature flags
-/// Compile code only if a feature is enabled at compile time
-#[macro_export]
-macro_rules! feature_enabled {
-    ($feature:literal) => {
-        cfg!(feature = $feature)
-    };
-}
-
-/// Conditionally compile code based on multiple features (AND logic)
-#[macro_export]
-macro_rules! features_enabled {
-    ($($feature:literal),+) => {
-        cfg!(all($(feature = $feature),+))
-    };
-}
-
-/// Conditionally compile code based on any of multiple features (OR logic)
-#[macro_export]
-macro_rules! any_feature_enabled {
-    ($($feature:literal),+) => {
-        cfg!(any($(feature = $feature),+))
-    };
-}
-
-/// Compile code only in debug builds with feature enabled
-#[macro_export]
-macro_rules! debug_feature {
-    ($feature:literal, $code:block) => {
-        #[cfg(all(debug_assertions, feature = $feature))]
-        $code
-    };
-}
-
-/// Runtime feature checking with fallback
-#[macro_export]
-macro_rules! if_feature_enabled {
-    ($cx:expr, $feature_check:expr, $enabled_code:block, $disabled_code:block) => {
-        if $crate::utils::is_feature_enabled($cx, $feature_check) {
-            $enabled_code
-        } else {
-            $disabled_code
-        }
-    };
-
-    ($cx:expr, $feature_check:expr, $enabled_code:block) => {
-        if $crate::utils::is_feature_enabled($cx, $feature_check) {
-            $enabled_code
-        }
-    };
-}
+// Removed global feature registry and feature flag macros; prefer passing FeatureFlags via providers
 
 /// Feature configuration loading
 pub struct FeatureConfig;

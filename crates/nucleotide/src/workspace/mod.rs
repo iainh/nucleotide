@@ -6490,7 +6490,6 @@ impl Render for Workspace {
         if self.colors_dirty {
             self.recompute_theme_colors(cx);
         }
-        let editor = &self.core.read(cx).editor;
         let bg_color = self.cached_bg_color;
 
         // We'll compute the desired editor size from GPUI layout further below
@@ -7106,7 +7105,7 @@ impl Render for Workspace {
                 let desired_size = (cols, rows);
 
                 // Resize Helix compositor/editor if size changed
-                let prev = self.last_editor_size;
+                let _prev = self.last_editor_size;
                 if self
                     .last_editor_size
                     .map(|(w, h)| w != desired_size.0 || h != desired_size.1)

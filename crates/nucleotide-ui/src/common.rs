@@ -4,10 +4,7 @@
 #![allow(dead_code)]
 
 use gpui::prelude::FluentBuilder;
-use gpui::{
-    Div, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement, Stateful,
-    Styled, Window, div, hsla, px,
-};
+use gpui::{FocusHandle, Hsla, IntoElement, ParentElement, Styled, Window, div, hsla, px};
 
 /// Common modal styling configuration
 #[derive(Clone)]

@@ -122,10 +122,7 @@ pub use traits::{
     Interactive, KeyboardNavigable, Loadable, Measurable, Slotted, Styled, ThemedContext,
     Tooltipped, Validatable, ValidationState, compute_component_state,
 };
-pub use utils::{
-    ExperimentalFeatures, FeatureFlags, PerformanceFeatures,
-    is_feature_enabled as is_utils_feature_enabled, is_named_feature_enabled,
-};
+pub use utils::{ExperimentalFeatures, FeatureFlags, PerformanceFeatures};
 pub use vcs_icon::{VcsIcon, VcsIconRenderer};
 // VcsStatus is now re-exported from nucleotide-types
 
