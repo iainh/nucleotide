@@ -121,8 +121,9 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
     let handle_hit_w = (handle_visual_w + 6.0).min(12.0); // 6px padding each side, cap at 12px
 
     root = root.child({
-        // Separator color uses theme tokens
-        let sep_color = cx.theme().tokens.chrome.separator_color;
+        // Separator color uses theme tokens (via Provider hooks)
+        let theme = crate::providers::ProviderHooks::theme();
+        let sep_color = theme.tokens.chrome.separator_color;
 
         let pad = ((handle_hit_w - handle_visual_w) * 0.5).max(0.0);
 
@@ -141,9 +142,10 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
                     .h_full()
                     .bg(sep_color)
                     .hover(|d| {
+                        let is_dark = crate::providers::ProviderHooks::is_dark_theme();
                         d.bg(crate::styling::ColorTheory::adjust_oklab_lightness(
                             sep_color,
-                            if cx.theme().is_dark() { 0.1 } else { -0.1 },
+                            if is_dark { 0.1 } else { -0.1 },
                         ))
                     }),
             );

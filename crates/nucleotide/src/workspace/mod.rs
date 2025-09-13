@@ -2273,6 +2273,9 @@ impl Workspace {
 
         // Clear caches and redraw
         self.clear_shaped_lines_cache(cx);
+        // Mark cached colors dirty and recompute immediately so background updates propagate
+        self.colors_dirty = true;
+        self.recompute_theme_colors(cx);
         cx.notify();
     }
 
@@ -6581,7 +6584,7 @@ impl Render for Workspace {
                     // Debug: container styling; label appended later to ensure on top
                     .when(self.debug_colors_enabled, |d| {
                         d.relative()
-                            .bg(crate::nucleotide_ui::styling::ColorTheory::with_alpha(
+                            .bg(nucleotide_ui::ColorTheory::with_alpha(
                                 cx.theme().tokens.chrome.surface,
                                 0.10,
                             ))
@@ -6630,7 +6633,7 @@ impl Render for Workspace {
                     .when(self.debug_colors_enabled, |this| {
                         this.child(
                             gpui::deferred(div().absolute().top_0().left_0().size_full().bg(
-                                crate::nucleotide_ui::styling::ColorTheory::with_alpha(
+                                nucleotide_ui::ColorTheory::with_alpha(
                                     cx.theme().tokens.chrome.surface_overlay,
                                     1.0,
                                 ),

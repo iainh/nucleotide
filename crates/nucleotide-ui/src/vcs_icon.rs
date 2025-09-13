@@ -1,7 +1,7 @@
 // ABOUTME: Combined file icon and VCS status indicator component for consistent UI
 // ABOUTME: Provides unified icon display with integrated VCS status using design system colors
 
-use gpui::{Context, Hsla, IntoElement, ParentElement, Styled, div, hsla, px};
+use gpui::{Context, Hsla, IntoElement, ParentElement, Styled, div, px};
 use std::path::Path;
 
 use crate::{FileIcon, Theme};

@@ -455,19 +455,21 @@ impl ThemeManager {
             .unwrap_or(false);
 
         if test_fallback {
-            nucleotide_logging::warn!("TESTING MODE: Forcing fallback surface color computation");
-            let fallback_color = match system_appearance {
-                SystemAppearance::Light => hsla(0.0, 0.0, 0.98, 1.0), // Light background
-                SystemAppearance::Dark => hsla(0.0, 0.0, 0.05, 1.0),  // Dark background
-            };
-            return (fallback_color, SurfaceColorSource::SystemFallback);
+            // Simplified fallback: use an obvious sentinel color (red)
+            let red = hsla(0.0, 1.0, 0.5, 1.0);
+            nucleotide_logging::warn!(
+                "TESTING MODE: Returning sentinel red for missing theme colors"
+            );
+            return (red, SurfaceColorSource::SystemFallback);
         }
 
-        // Priority order for surface color extraction
+        // Priority order for editor background extraction
+        // Important: Do NOT fall back to `ui.menu` here. `ui.menu` (aka panel) is used to
+        // derive chrome surfaces only; using it for the editor background causes the
+        // entire editor view to take on the chrome panel color (e.g., purple in some themes).
         let extraction_attempts = [
             ("ui.background", "Primary editor background"),
             ("ui.window", "Window/container background"),
-            ("ui.menu", "Menu/surface background"),
         ];
 
         for (theme_key, description) in &extraction_attempts {
@@ -739,17 +741,17 @@ impl ThemeManager {
         };
 
         let surface = surface_from_theme.unwrap_or_else(|| {
-            // Derive surface from background instead of using hardcoded gray
-            let fallback_color = compute_surface_from_bg(background);
+            // Simplified fallback: sentinel red surface
+            let red = hsla(0.0, 1.0, 0.5, 1.0);
             nucleotide_logging::warn!(
                 system_appearance = ?system_appearance,
                 background_color = ?background,
-                computed_surface = ?fallback_color,
+                fallback_surface = ?red,
                 ui_menu_bg_available = ui_menu.bg.is_some(),
                 ui_background_available = ui_bg.bg.is_some(),
-                "TITLEBAR THEME_MANAGER: Using computed surface color derived from ui.background - Helix theme may not define ui.menu"
+                "TITLEBAR THEME_MANAGER: Missing surface inputs; using sentinel red surface"
             );
-            fallback_color
+            red
         });
 
         nucleotide_logging::debug!(
@@ -760,22 +762,22 @@ impl ThemeManager {
 
         let text_from_theme = ui_text.fg.and_then(color_to_hsla);
         let text = text_from_theme.unwrap_or_else(|| {
-            // Derive text color from background instead of using hardcoded gray
-            let fallback_color = compute_text_from_bg(background);
+            // Simplified fallback: sentinel red
+            let red = hsla(0.0, 1.0, 0.5, 1.0);
             nucleotide_logging::debug!(
                 system_appearance = ?system_appearance,
                 background_color = ?background,
-                computed_text = ?fallback_color,
-                "Using computed text color derived from ui.background"
+                fallback_text = ?red,
+                "Missing ui.text; using sentinel red"
             );
-            fallback_color
+            red
         });
 
         // Compute derived colors from actual background instead of hardcoded grays
         let derived_surface = compute_surface_from_bg(background);
         let derived_text = compute_text_from_bg(background);
-        let derived_hover = compute_hover_from_bg(background);
-        let derived_active = compute_active_from_bg(background);
+        let _derived_hover = compute_hover_from_bg(background);
+        let _derived_active = compute_active_from_bg(background);
 
         let border_from_theme = ui_window
             .fg
@@ -783,22 +785,22 @@ impl ThemeManager {
             .or_else(|| ui_text.fg.and_then(color_to_hsla))
             .map(|c| hsla(c.h, c.s * 0.5, c.l * 0.5, c.a * 0.8));
         let border = border_from_theme.unwrap_or_else(|| {
-            // Derive border color from background instead of using hardcoded gray
-            let fallback_color = compute_border_from_bg(background);
+            // Simplified fallback: sentinel red
+            let red = hsla(0.0, 1.0, 0.5, 1.0);
             nucleotide_logging::debug!(
                 system_appearance = ?system_appearance,
                 background_color = ?background,
-                computed_border = ?fallback_color,
-                "Using computed border color derived from ui.background"
+                fallback_border = ?red,
+                "Missing border color; using sentinel red"
             );
-            fallback_color
+            red
         });
 
         let accent_from_theme = ui_selection
             .bg
             .and_then(color_to_hsla)
             .or_else(|| ui_cursor.bg.and_then(color_to_hsla));
-        let accent = accent_from_theme.unwrap_or_else(|| hsla(220.0 / 360.0, 0.6, 0.5, 1.0));
+        let accent = accent_from_theme.unwrap_or_else(|| hsla(0.0, 1.0, 0.5, 1.0));
 
         let error_from_theme = error_style.fg.and_then(color_to_hsla);
         let error = error_from_theme.unwrap_or_else(|| hsla(0.0, 0.8, 0.5, 1.0));
@@ -811,20 +813,20 @@ impl ThemeManager {
 
         // Extract additional cursor colors from Helix theme
         let cursor_insert_from_theme = ui_cursor_insert.bg.and_then(color_to_hsla);
-        let cursor_insert = cursor_insert_from_theme.unwrap_or(success); // Fallback to success color
+        let cursor_insert = cursor_insert_from_theme.unwrap_or(hsla(0.0, 1.0, 0.5, 1.0));
 
         let cursor_select_from_theme = ui_cursor_select.bg.and_then(color_to_hsla);
-        let cursor_select = cursor_select_from_theme.unwrap_or(warning); // Fallback to warning color
+        let cursor_select = cursor_select_from_theme.unwrap_or(hsla(0.0, 1.0, 0.5, 1.0));
 
         let cursor_match_from_theme = ui_cursor_match.bg.and_then(color_to_hsla);
-        let cursor_match = cursor_match_from_theme.unwrap_or(accent); // Fallback to accent color
+        let cursor_match = cursor_match_from_theme.unwrap_or(hsla(0.0, 1.0, 0.5, 1.0));
 
         // Extract statusline and popup colors
         let statusline_from_theme = ui_statusline.bg.and_then(color_to_hsla);
-        let statusline = statusline_from_theme.unwrap_or(surface);
+        let statusline = statusline_from_theme.unwrap_or(hsla(0.0, 1.0, 0.5, 1.0));
 
         let popup_from_theme = ui_popup.bg.and_then(color_to_hsla);
-        let popup = popup_from_theme.unwrap_or(surface);
+        let popup = popup_from_theme.unwrap_or(hsla(0.0, 1.0, 0.5, 1.0));
 
         if test_fallback {
             nucleotide_logging::info!(
@@ -844,27 +846,27 @@ impl ThemeManager {
         }
 
         // Extract additional UI component colors for comprehensive mapping
-        let extract_color = |key: &str, fallback: Hsla| -> Hsla {
+        let extract_color = |key: &str, _fallback: Hsla| -> Hsla {
             if test_fallback {
-                fallback
+                hsla(0.0, 1.0, 0.5, 1.0)
             } else {
                 helix_theme
                     .get(key)
                     .bg
                     .and_then(color_to_hsla)
-                    .unwrap_or(fallback)
+                    .unwrap_or(hsla(0.0, 1.0, 0.5, 1.0))
             }
         };
 
-        let extract_fg_color = |key: &str, fallback: Hsla| -> Hsla {
+        let extract_fg_color = |key: &str, _fallback: Hsla| -> Hsla {
             if test_fallback {
-                fallback
+                hsla(0.0, 1.0, 0.5, 1.0)
             } else {
                 helix_theme
                     .get(key)
                     .fg
                     .and_then(color_to_hsla)
-                    .unwrap_or(fallback)
+                    .unwrap_or(hsla(0.0, 1.0, 0.5, 1.0))
             }
         };
 
@@ -910,7 +912,7 @@ impl ThemeManager {
 
         // Use the new hybrid token system that computes chrome colors from surface
         let is_dark_theme = background.l < 0.5;
-        let mut tokens = crate::DesignTokens::from_helix_and_surface(
+        let tokens = crate::DesignTokens::from_helix_and_surface(
             theme_colors,
             surface,    // computed chrome surface
             background, // editor background (ui.background)
@@ -997,4 +999,84 @@ fn hsla_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
     };
 
     (r_prime + m, g_prime + m, b_prime + m)
+}
+
+#[cfg(test)]
+mod surface_extraction_tests {
+    use super::*;
+
+    fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
+        let prev = std::env::var(key).ok();
+        unsafe { std::env::set_var(key, value) };
+        let out = f();
+        if let Some(prev) = prev {
+            unsafe { std::env::set_var(key, prev) };
+        } else {
+            unsafe { std::env::remove_var(key) };
+        }
+        out
+    }
+
+    #[test]
+    fn test_extract_surface_color_fallback_returns_red() {
+        with_env_var("NUCLEOTIDE_DISABLE_THEME_LOADING", "1", || {
+            let helix_theme = helix_view::Theme::default();
+
+            let (bg1, src1) =
+                ThemeManager::extract_surface_color(&helix_theme, SystemAppearance::Light);
+            assert!(matches!(src1, SurfaceColorSource::SystemFallback));
+            assert!(
+                (bg1.h - 0.0).abs() < 1e-6
+                    && (bg1.s - 1.0).abs() < 1e-6
+                    && (bg1.l - 0.5).abs() < 1e-6
+            );
+
+            let (bg2, src2) =
+                ThemeManager::extract_surface_color(&helix_theme, SystemAppearance::Dark);
+            assert!(matches!(src2, SurfaceColorSource::SystemFallback));
+            assert!(
+                (bg2.h - 0.0).abs() < 1e-6
+                    && (bg2.s - 1.0).abs() < 1e-6
+                    && (bg2.l - 0.5).abs() < 1e-6
+            );
+        });
+    }
+
+    #[test]
+    fn test_chrome_surface_neutral_in_fallback() {
+        with_env_var("NUCLEOTIDE_DISABLE_THEME_LOADING", "1", || {
+            // Dark appearance: expect surface lighter than background and neutral saturation
+            let helix_theme = helix_view::Theme::default();
+            let mut tm = ThemeManager::new(helix_theme.clone());
+            tm.set_system_appearance(SystemAppearance::Dark);
+            let ui = tm.ui_theme().clone();
+            let bg = ui.tokens.editor.background;
+            let surface = ui.tokens.chrome.surface;
+            assert!(
+                surface.s.abs() < 1e-6,
+                "surface saturation should be neutralized to 0.0, got {}",
+                surface.s
+            );
+            assert!(
+                (bg.h - 0.0).abs() < 1e-6 && (bg.s - 1.0).abs() < 1e-6 && (bg.l - 0.5).abs() < 1e-6
+            );
+
+            // Light appearance: expect surface darker than background and neutral saturation
+            let mut tm2 = ThemeManager::new(helix_theme);
+            tm2.set_system_appearance(SystemAppearance::Light);
+            let ui2 = tm2.ui_theme().clone();
+            let bg2 = ui2.tokens.editor.background;
+            let surface2 = ui2.tokens.chrome.surface;
+            assert!(
+                surface2.s.abs() < 1e-6,
+                "surface saturation should be neutralized to 0.0, got {}",
+                surface2.s
+            );
+            assert!(
+                (bg2.h - 0.0).abs() < 1e-6
+                    && (bg2.s - 1.0).abs() < 1e-6
+                    && (bg2.l - 0.5).abs() < 1e-6
+            );
+        });
+    }
 }

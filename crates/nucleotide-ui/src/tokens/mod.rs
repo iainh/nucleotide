@@ -648,7 +648,7 @@ impl DesignTokens {
         editor_background: Hsla,
         is_dark_theme: bool,
     ) -> Self {
-        let base_colors = if is_dark_theme {
+        let _base_colors = if is_dark_theme {
             BaseColors::dark()
         } else {
             BaseColors::light()
@@ -658,7 +658,8 @@ impl DesignTokens {
         let mut editor = EditorTokens::from_helix_colors(helix_colors);
         editor.background = editor_background;
 
-        // Create chrome tokens from surface color using color theory
+        // Create chrome tokens strictly from the computed surface color
+        // All chrome backgrounds, borders, and separators derive from surface
         let chrome = ChromeTokens::from_surface_color(surface_color, is_dark_theme);
 
         Self {
@@ -1217,8 +1218,8 @@ impl PickerTokens {
         // Items use transparent backgrounds with Helix selection colors
         let item_bg = ColorTheory::transparent();
         let item_bg_hover = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
-        // Use UI menu selection color for consistency across chrome
-        let item_bg_selected = chrome.menu_selected;
+        // Use Helix selection color for familiarity across components
+        let item_bg_selected = editor.selection_primary;
         // Ensure item text contrasts against the container background (popup surface)
         let item_text = ColorTheory::ensure_contrast(
             container_bg,
@@ -1226,11 +1227,7 @@ impl PickerTokens {
             ContrastRatios::AA_NORMAL,
         );
         let item_text_secondary = ColorTheory::with_alpha(item_text, 0.7);
-        let item_text_selected = ColorTheory::ensure_contrast(
-            item_bg_selected,
-            chrome.text_on_chrome,
-            ContrastRatios::AA_NORMAL,
-        );
+        let item_text_selected = editor.text_on_primary;
 
         // Input fields use chrome backgrounds with Helix focus
         let input_bg = chrome.surface_hover;

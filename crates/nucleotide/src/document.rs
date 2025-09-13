@@ -642,12 +642,13 @@ impl DocumentElement {
         // Get syntax highlighter
         let syntax_highlighter = Self::doc_syntax_highlights(doc, anchor, height, theme, &loader);
 
-        // Get default style
+        // Get default text style from theme, but explicitly drop any background.
+        // The editor background and row highlights (cursorline/selection) are painted separately.
         const THEME_KEY_UI_TEXT: &str = "ui.text";
         let default_style = theme.get(THEME_KEY_UI_TEXT);
         let text_style = helix_view::graphics::Style {
             fg: default_style.fg,
-            bg: default_style.bg,
+            bg: None, // avoid overriding cursorline/selection backgrounds
             ..Default::default()
         };
 

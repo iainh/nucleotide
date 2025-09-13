@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::titlebar::window_controls::WindowControls;
-use crate::tokens::{ColorContext, TitleBarTokens};
+use crate::tokens::ColorContext;
 use nucleotide_logging::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +118,8 @@ impl Render for PlatformTitleBar {
         } else {
             // Fallback: use global theme for tokens
             let ui_theme = cx.global::<crate::Theme>();
-            let tokens = TitleBarTokens::on_surface(&ui_theme.tokens);
+            // Prefer computed chrome-based titlebar tokens for consistency
+            let tokens = ui_theme.tokens.titlebar_tokens();
             #[cfg(debug_assertions)]
             debug!(
                 "TITLEBAR RENDER: Using fallback global theme tokens - bg={:?}, fg={:?}, border={:?}, height={:?}",

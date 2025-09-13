@@ -4918,6 +4918,18 @@ pub fn init_editor(
     let mut theme_parent_dirs = vec![helix_loader::config_dir()];
     theme_parent_dirs.extend(helix_loader::runtime_dirs().iter().cloned());
 
+    // Developer-friendly: include our repo assets path so `nucleotide-*` themes are found in dev runs
+    if let Ok(cwd) = std::env::current_dir() {
+        let repo_assets = cwd.join("crates").join("nucleotide").join("assets");
+        if repo_assets.join("themes").is_dir() {
+            nucleotide_logging::info!(
+                dev_assets = %repo_assets.display(),
+                "Adding repo assets path for theme discovery"
+            );
+            theme_parent_dirs.push(repo_assets);
+        }
+    }
+
     // Add bundle runtime as a backup for macOS
     #[cfg(target_os = "macos")]
     if let Some(rt) = crate::utils::detect_bundle_runtime()
@@ -4930,18 +4942,23 @@ pub fn init_editor(
 
     let true_color = true;
 
-    // Load initial theme - will be corrected based on system appearance after window creation
-    // For non-system modes, load the appropriate theme directly
+    // Load initial theme
+    // For System mode, choose initial theme based on OS appearance when available to avoid purple flicker from Helix default.
     let theme_name = match gui_config.gui.theme.mode {
         crate::config::ThemeMode::Light => Some(gui_config.gui.theme.get_light_theme()),
         crate::config::ThemeMode::Dark => Some(gui_config.gui.theme.get_dark_theme()),
         crate::config::ThemeMode::System => {
-            // For system mode, start with light theme as default since most systems start light
-            // The window appearance observer will correct it to match actual OS appearance
-            helix_config
-                .theme
-                .clone()
-                .or_else(|| Some(gui_config.gui.theme.get_light_theme()))
+            // Best-effort OS appearance detection prior to window creation
+            // macOS: AppleInterfaceStyle=Dark indicates dark appearance
+            let initial_dark = std::env::var("AppleInterfaceStyle")
+                .map(|v| v.eq_ignore_ascii_case("dark"))
+                .unwrap_or(false);
+
+            if initial_dark {
+                Some(gui_config.gui.theme.get_dark_theme())
+            } else {
+                Some(gui_config.gui.theme.get_light_theme())
+            }
         }
     };
 
@@ -4957,18 +4974,45 @@ pub fn init_editor(
         // Use any theme here - the derive_ui_theme function will ignore it when testing mode is enabled
         helix_view::Theme::default()
     } else {
-        theme_name
-            .and_then(|theme_name| {
-                theme_loader
-                    .load(&theme_name)
-                    .map_err(|e| {
-                        warn!(theme_name = %theme_name, error = %e, "Failed to load theme");
-                        e
-                    })
-                    .ok()
-                    .filter(|theme| (true_color || theme.is_16_color()))
-            })
-            .unwrap_or_else(|| theme_loader.default_theme(true_color))
+        // Try the chosen theme, then the opposite (dark vs light), then fall back to loader default.
+        let mut try_names = vec![];
+        if let Some(primary) = theme_name.clone() {
+            try_names.push(primary);
+        }
+        // Opposite mode counterpart as a second try
+        match gui_config.gui.theme.mode {
+            crate::config::ThemeMode::Light => {
+                try_names.push(gui_config.gui.theme.get_dark_theme())
+            }
+            crate::config::ThemeMode::Dark => {
+                try_names.push(gui_config.gui.theme.get_light_theme())
+            }
+            crate::config::ThemeMode::System => {
+                // If we picked dark first, also try light (and vice versa)
+                let initial_dark = std::env::var("AppleInterfaceStyle")
+                    .map(|v| v.eq_ignore_ascii_case("dark"))
+                    .unwrap_or(false);
+                if initial_dark {
+                    try_names.push(gui_config.gui.theme.get_light_theme());
+                } else {
+                    try_names.push(gui_config.gui.theme.get_dark_theme());
+                }
+            }
+        }
+
+        let mut loaded = None;
+        for name in try_names {
+            match theme_loader.load(&name) {
+                Ok(theme) => {
+                    loaded = Some(theme);
+                    break;
+                }
+                Err(e) => {
+                    warn!(theme_name = %name, error = %e, "Failed to load theme; trying fallback")
+                }
+            }
+        }
+        loaded.unwrap_or_else(|| theme_loader.default_theme(true_color))
     };
 
     // Log theme's ui.background and ui.window raw styles to verify inputs

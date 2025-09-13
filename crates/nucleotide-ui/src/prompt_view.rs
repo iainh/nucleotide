@@ -5,8 +5,7 @@ use crate::common::ModalStyle;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Window, div, hsla, px,
-    svg,
+    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Window, div, px, svg,
 };
 
 #[derive(Clone, Debug)]
