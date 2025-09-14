@@ -179,10 +179,11 @@ pub mod session {
                             Ok(n) => {
                                 engine.feed_bytes(&buf[..n]);
                                 if last_emit.elapsed() >= window {
-                                    if let Some(frame) = engine.take_frame() {
-                                        if tx.try_send(frame).is_err() {
-                                            break;
-                                        }
+                                    if engine
+                                        .take_frame()
+                                        .is_some_and(|frame| tx.try_send(frame).is_err())
+                                    {
+                                        break;
                                     }
                                     last_emit = Instant::now();
                                 }
@@ -236,9 +237,7 @@ pub mod session {
                 pixel_width: 0,
                 pixel_height: 0,
             };
-            self.master
-                .resize(size)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            self.master.resize(size).map_err(std::io::Error::other)
         }
 
         /// Get a clone of the control channel sender (emulator feature only)
@@ -350,7 +349,7 @@ pub mod engine {
                 let content: RenderableContent<'_> = term.renderable_content();
                 // Prepare grid buffer
                 if self.grid.len() as u16 != self.rows
-                    || self.grid.get(0).map(|r| r.len()).unwrap_or(0) as u16 != self.cols
+                    || self.grid.first().map(|r| r.len()).unwrap_or(0) as u16 != self.cols
                 {
                     self.grid = vec![
                         vec![
@@ -372,7 +371,7 @@ pub mod engine {
                     let pos = indexed.point;
                     let cell = indexed.cell;
                     let row = pos.line.0 as usize;
-                    let col = pos.column.0 as usize;
+                    let col = pos.column.0;
                     if row < self.grid.len() && col < self.grid[row].len() {
                         let ch = cell.c;
                         let fg = Self::color_to_rgb_u32(cell.fg);
