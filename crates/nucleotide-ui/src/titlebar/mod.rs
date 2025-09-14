@@ -25,7 +25,7 @@ pub use linux_titlebar::LinuxTitlebar;
 #[cfg(target_os = "linux")]
 pub use linux_window_controls::LinuxWindowControls;
 
-use gpui::{AppContext, Context, Entity, IntoElement, Render, Window};
+use gpui::{AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div};
 
 pub struct TitleBar {
     platform_titlebar: Entity<PlatformTitleBar>,
@@ -72,14 +72,17 @@ impl Render for TitleBar {
             // This mirrors Zed’s approach for platforms without a global menubar.
             if let Some(menu) = &self.application_menu {
                 let titlebar_view = self.platform_titlebar.clone();
-                return gpui::v_flex()
+                return div()
+                    .flex()
+                    .flex_col()
                     .w_full()
                     .child(titlebar_view)
-                    .child(menu.clone());
+                    .child(menu.clone())
+                    .into_any_element();
             }
         }
 
         // macOS (or fallback): just the platform titlebar
-        self.platform_titlebar.clone()
+        self.platform_titlebar.clone().into_any_element()
     }
 }

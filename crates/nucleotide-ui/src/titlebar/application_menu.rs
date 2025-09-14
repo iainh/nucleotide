@@ -2,8 +2,8 @@
 // ABOUTME: Inspired by Zed's ApplicationMenu, simplified for Nucleotide's UI stack
 
 use gpui::{
-    Context, ElementId, IntoElement, ParentElement, Pixels, Render, SharedString, Styled, Window,
-    actions, deferred, div, hsla,
+    Context, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, Render,
+    SharedString, Styled, Window, actions, div,
 };
 
 use gpui::{OwnedMenu, OwnedMenuItem};
@@ -122,12 +122,9 @@ impl ApplicationMenu {
 
         // Render items
         items.into_iter().fold(panel, |panel, item| match item {
-            OwnedMenuItem::Separator => panel.child(
-                div()
-                    .h_0_5()
-                    .my_1()
-                    .bg(chrome.menu_separator.with_alpha(0.7)),
-            ),
+            OwnedMenuItem::Separator => {
+                panel.child(div().h_0p5().my_1().bg(chrome.menu_separator.alpha(0.7)))
+            }
             OwnedMenuItem::Action { name, action, .. } => {
                 // Each action item is a row with hover highlight
                 let label: SharedString = name.into();
@@ -136,12 +133,12 @@ impl ApplicationMenu {
                         .px_3()
                         .py_2()
                         .text_size(theme.tokens.sizes.text_sm)
-                        .text_color(chrome.text_chrome_primary)
+                        .text_color(chrome.text_chrome_secondary)
                         .hover(|el| el.bg(chrome.menu_selected))
                         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
                             // Dispatch the associated action and close menus
                             window.dispatch_action(action.boxed_clone(), cx);
-                            cx.dispatch_action(CloseMenus);
+                            cx.dispatch_action(&CloseMenus);
                         })
                         .child(label),
                 )
@@ -187,11 +184,13 @@ impl Render for ApplicationMenu {
                 Button::new(SharedString::from(format!("menu-trigger-{}", name)), name)
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Small)
-                    .on_click(cx.listener(move |this, ev, _window, cx| {
-                        this.open_index = Some(i);
-                        this.anchor_x = Some(ev.position.x.0);
-                        cx.notify();
-                    })),
+                    .on_click(
+                        cx.listener(move |this, ev: &gpui::MouseUpEvent, _window, cx| {
+                            this.open_index = Some(i);
+                            this.anchor_x = Some(ev.position.x.0);
+                            cx.notify();
+                        }),
+                    ),
             );
         }
 
@@ -206,21 +205,16 @@ impl Render for ApplicationMenu {
         if let Some(idx) = self.open_index {
             let left = self.anchor_x.unwrap_or(12.0);
             container = container.child(
-                // Defer drawing to the end to guarantee top-most stacking
-                deferred(
-                    div()
-                        .absolute()
-                        .left(gpui::px(left))
-                        .top(row_h)
-                        .z_index(2000)
-                        .child(self.render_dropdown_for(idx)),
-                )
-                .with_priority(200),
+                div()
+                    .absolute()
+                    .left(gpui::px(left))
+                    .top(row_h)
+                    .child(self.render_dropdown_for(idx)),
             );
 
             // Lightweight click-away within this row area: clicking the row background closes it
             container = container.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                cx.dispatch_action(CloseMenus);
+                cx.dispatch_action(&CloseMenus);
             });
         }
 
