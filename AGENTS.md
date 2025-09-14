@@ -53,7 +53,7 @@
   - Access via `Theme.tokens` (e.g., `theme.tokens.colors.text_primary`, `theme.tokens.sizes.space_3`).
   - Prefer semantic tokens over hardcoded colors or px values; use utilities like `lighten`, `darken`, `with_alpha`.
   - Components map tokens to styles (see `crates/nucleotide-ui/src/button.rs` compute style from tokens).
-- Migration: Legacy theme fields remain (e.g., `Theme::dark()`); new work should favor tokens and `Theme::from_tokens(...)`.
+- Migration: Theme now uses tokens exclusively. Use `Theme::from_tokens(...)` with `DesignTokens::{dark,light}()`; legacy constructors like `Theme::dark()` have been removed.
 
 ## UI Paradigms
 - Providers: `crates/nucleotide-ui/src/providers` offers React‑style providers for theme, config, and events.

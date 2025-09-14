@@ -93,12 +93,11 @@ let tooltip_surface = theme.surface_at_elevation(3);   // Higher elevation
 .p(theme.tokens.sizes.space_3)
 ```
 
-### Backward Compatibility
+### Creating Themes
 
-Existing code continues to work unchanged:
+Use tokens explicitly for clarity and consistency:
 ```rust
-// These still work exactly as before
-let theme = Theme::dark();
+let theme = Theme::from_tokens(DesignTokens::dark());
 .bg(theme.tokens.editor.background)
 .text_color(theme.tokens.chrome.text_on_chrome)
 .border_color(theme.tokens.chrome.border_default)

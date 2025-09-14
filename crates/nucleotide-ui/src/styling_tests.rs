@@ -40,7 +40,7 @@ mod tests {
 
     #[test]
     fn test_style_context_creation() {
-        let theme = Theme::dark();
+        let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
         let context = StyleContext::new(&theme, StyleState::Default, "primary", "medium");
 
         assert_eq!(context.variant, "primary");
@@ -51,7 +51,7 @@ mod tests {
 
     #[test]
     fn test_base_style_computation() {
-        let theme = Theme::dark();
+        let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
         let context = StyleContext::new(&theme, StyleState::Default, "primary", "medium");
 
         let style = context.compute_base_style();
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     #[ignore = "Test assertion failed - disabled until fixed"]
     fn test_variant_style_application() {
-        let theme = Theme::dark();
+        let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
         let context = StyleContext::new(&theme, StyleState::Default, "primary", "medium");
 
         let base_style = context.compute_base_style();
@@ -87,7 +87,7 @@ mod tests {
     #[test]
     #[ignore = "Test assertion failed - disabled until fixed"]
     fn test_state_style_application() {
-        let theme = Theme::dark();
+        let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
 
         // Test hover state
         let hover_context = StyleContext::new(&theme, StyleState::Hover, "primary", "medium");
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     #[ignore = "Test assertion failed - disabled until fixed"]
     fn test_complete_style_computation() {
-        let theme = Theme::dark();
+        let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
 
         let style = compute_component_style(&theme, StyleState::Hover, "secondary", "large");
 
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_style_state_priority_resolution() {
-        let theme = Theme::dark();
+        let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
         let states = vec![StyleState::Hover, StyleState::Disabled, StyleState::Active];
 
         let style = compute_style_for_states(&theme, &states, "primary", "medium");
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_variant_colors() {
-        let theme = Theme::dark();
+        let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
 
         let primary_colors = VariantColors::for_variant_hybrid(StyleVariant::Primary, &theme);
         let btn = theme.tokens.button_tokens();
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn test_variant_styler() {
-        let theme = Theme::dark();
+        let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
 
         let variant_style =
             VariantStyler::compute_variant_style(StyleVariant::Primary, StyleSize::Medium, &theme);

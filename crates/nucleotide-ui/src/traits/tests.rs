@@ -109,7 +109,7 @@ fn test_styled_trait() {
     assert_eq!(*component.size(), MockSize::Large);
 
     // Test theme styling
-    let theme = Theme::dark();
+    let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
     let styles = component.apply_theme_styling(&theme);
 
     assert_eq!(styles.background, theme.tokens.chrome.surface);
@@ -144,7 +144,7 @@ fn test_component_factory() {
 
 #[test]
 fn test_component_styles() {
-    let theme = Theme::dark();
+    let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
     let variant = MockVariant::Primary;
     let size = MockSize::Medium;
 

@@ -139,23 +139,12 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::dark()
+        // Default to dark tokens; callers should prefer from_tokens(...)
+        Self::from_tokens(DesignTokens::dark())
     }
 }
 
 impl Theme {
-    pub fn dark() -> Self {
-        Self {
-            tokens: DesignTokens::dark(),
-        }
-    }
-
-    pub fn light() -> Self {
-        Self {
-            tokens: DesignTokens::light(),
-        }
-    }
-
     /// Create a theme from design tokens (new API)
     pub fn from_tokens(tokens: DesignTokens) -> Self {
         Self { tokens }
@@ -219,7 +208,7 @@ pub struct UIFeatures {
 impl Default for UIConfig {
     fn default() -> Self {
         Self {
-            default_theme: Theme::dark(),
+            default_theme: Theme::from_tokens(DesignTokens::dark()),
             enable_performance_monitoring: cfg!(debug_assertions),
             features: UIFeatures::default(),
         }

@@ -118,7 +118,7 @@ impl ThemeProvider {
         let current_theme = themes
             .get(default_theme_name)
             .cloned()
-            .unwrap_or_else(Theme::dark);
+            .unwrap_or_else(|| Theme::from_tokens(crate::tokens::DesignTokens::dark()));
         let default_name: SharedString = default_theme_name.to_string().into();
 
         Self {
@@ -404,7 +404,7 @@ impl ThemeProvider {
 
 impl Default for ThemeProvider {
     fn default() -> Self {
-        Self::new(Theme::dark())
+        Self::new(Theme::from_tokens(crate::tokens::DesignTokens::dark()))
     }
 }
 
@@ -499,8 +499,14 @@ impl ThemeConfigurations {
     /// Create a standard light/dark theme provider
     pub fn light_dark() -> ThemeProvider {
         let mut themes = HashMap::new();
-        themes.insert("light".into(), Theme::light());
-        themes.insert("dark".into(), Theme::dark());
+        themes.insert(
+            "light".into(),
+            Theme::from_tokens(crate::tokens::DesignTokens::light()),
+        );
+        themes.insert(
+            "dark".into(),
+            Theme::from_tokens(crate::tokens::DesignTokens::dark()),
+        );
 
         ThemeProvider::with_themes(themes, "light")
     }
@@ -510,7 +516,7 @@ impl ThemeConfigurations {
         let mut provider = Self::light_dark();
 
         // Add high contrast variants
-        let mut high_contrast_light = Theme::light();
+        let mut high_contrast_light = Theme::from_tokens(crate::tokens::DesignTokens::light());
         high_contrast_light.tokens.chrome.text_on_chrome = gpui::Hsla {
             h: 0.0,
             s: 0.0,
@@ -524,7 +530,7 @@ impl ThemeConfigurations {
             a: 1.0,
         };
 
-        let mut high_contrast_dark = Theme::dark();
+        let mut high_contrast_dark = Theme::from_tokens(crate::tokens::DesignTokens::dark());
         high_contrast_dark.tokens.chrome.text_on_chrome = gpui::Hsla {
             h: 0.0,
             s: 0.0,
@@ -564,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_theme_provider_creation() {
-        let theme = Theme::dark();
+        let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
         let provider = ThemeProvider::new(theme.clone());
 
         assert_eq!(provider.current_theme.is_dark(), theme.is_dark());
@@ -575,8 +581,14 @@ mod tests {
     #[test]
     fn test_theme_switching() {
         let mut themes = HashMap::new();
-        themes.insert("light".into(), Theme::light());
-        themes.insert("dark".into(), Theme::dark());
+        themes.insert(
+            "light".into(),
+            Theme::from_tokens(crate::tokens::DesignTokens::light()),
+        );
+        themes.insert(
+            "dark".into(),
+            Theme::from_tokens(crate::tokens::DesignTokens::dark()),
+        );
 
         let mut provider = ThemeProvider::with_themes(themes, "light");
 
@@ -593,9 +605,13 @@ mod tests {
 
     #[test]
     fn test_theme_addition_and_removal() {
-        let mut provider = ThemeProvider::new(Theme::light());
+        let mut provider =
+            ThemeProvider::new(Theme::from_tokens(crate::tokens::DesignTokens::light()));
 
-        provider.add_theme("custom", Theme::dark());
+        provider.add_theme(
+            "custom",
+            Theme::from_tokens(crate::tokens::DesignTokens::dark()),
+        );
         assert!(provider.has_theme("custom"));
         assert_eq!(provider.available_theme_names().len(), 2);
 
@@ -607,7 +623,8 @@ mod tests {
 
     #[test]
     fn test_theme_overrides() {
-        let mut provider = ThemeProvider::new(Theme::light());
+        let mut provider =
+            ThemeProvider::new(Theme::from_tokens(crate::tokens::DesignTokens::light()));
         let custom_color = gpui::Hsla {
             h: 200.0,
             s: 0.8,
@@ -626,7 +643,8 @@ mod tests {
 
     #[test]
     fn test_typography_overrides() {
-        let mut provider = ThemeProvider::new(Theme::light());
+        let mut provider =
+            ThemeProvider::new(Theme::from_tokens(crate::tokens::DesignTokens::light()));
 
         let typography_overrides = TypographyOverrides {
             font_family: Some("CustomFont".into()),
@@ -649,7 +667,8 @@ mod tests {
 
     #[test]
     fn test_theme_transition_config() {
-        let mut provider = ThemeProvider::new(Theme::light());
+        let mut provider =
+            ThemeProvider::new(Theme::from_tokens(crate::tokens::DesignTokens::light()));
 
         let transition_config = ThemeTransitionConfig {
             enable_transitions: false,
@@ -670,8 +689,14 @@ mod tests {
     #[test]
     fn test_dark_mode_toggle() {
         let mut themes = HashMap::new();
-        themes.insert("light".into(), Theme::light());
-        themes.insert("dark".into(), Theme::dark());
+        themes.insert(
+            "light".into(),
+            Theme::from_tokens(crate::tokens::DesignTokens::light()),
+        );
+        themes.insert(
+            "dark".into(),
+            Theme::from_tokens(crate::tokens::DesignTokens::dark()),
+        );
 
         let mut provider = ThemeProvider::with_themes(themes, "light");
 
@@ -729,7 +754,7 @@ mod tests {
 
     #[test]
     fn test_derive_theme() {
-        let provider = ThemeProvider::new(Theme::light());
+        let provider = ThemeProvider::new(Theme::from_tokens(crate::tokens::DesignTokens::light()));
 
         let derived = provider.derive_theme("custom", |theme| {
             theme.tokens.chrome.primary = gpui::Hsla {
@@ -760,7 +785,8 @@ mod tests {
 
     #[test]
     fn test_transition_styles() {
-        let mut provider = ThemeProvider::new(Theme::light());
+        let mut provider =
+            ThemeProvider::new(Theme::from_tokens(crate::tokens::DesignTokens::light()));
 
         provider.transition_config.enable_transitions = true;
         provider.transition_config.transition_duration = std::time::Duration::from_millis(300);

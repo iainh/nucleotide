@@ -817,7 +817,7 @@ mod tests {
     #[test]
     #[ignore = "Test assertion failed - disabled until fixed"]
     fn test_style_integration() {
-        let theme = Theme::dark();
+        let theme = Theme::from_tokens(crate::tokens::DesignTokens::dark());
 
         // Test style computation for different variants
         let primary_style = crate::compute_component_style(

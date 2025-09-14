@@ -60,7 +60,7 @@ mod tests {
         };
 
         let config = UIConfig {
-            default_theme: Theme::light(),
+            default_theme: Theme::from_tokens(crate::tokens::DesignTokens::light()),
             enable_performance_monitoring: true,
             features: custom_features.clone(),
         };
@@ -83,7 +83,7 @@ mod tests {
         };
 
         let config = UIConfig {
-            default_theme: Theme::dark(),
+            default_theme: Theme::from_tokens(crate::tokens::DesignTokens::dark()),
             enable_performance_monitoring: false,
             features: all_features,
         };
@@ -168,7 +168,7 @@ mod tests {
     fn test_theme_integration_with_config() {
         // Test that themes integrate properly with config
         let dark_config = UIConfig {
-            default_theme: Theme::dark(),
+            default_theme: Theme::from_tokens(crate::tokens::DesignTokens::dark()),
             enable_performance_monitoring: false,
             features: UIFeatures::default(),
         };
@@ -178,7 +178,7 @@ mod tests {
         assert!(dark_config.default_theme.tokens.editor.background.a > 0.0);
 
         let light_config = UIConfig {
-            default_theme: Theme::light(),
+            default_theme: Theme::from_tokens(crate::tokens::DesignTokens::light()),
             enable_performance_monitoring: false,
             features: UIFeatures::default(),
         };

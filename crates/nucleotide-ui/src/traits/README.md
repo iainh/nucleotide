@@ -50,7 +50,7 @@ assert_eq!(*button.variant(), ButtonVariant::Primary);
 assert_eq!(*button.size(), ButtonSize::Large);
 
 // Theme-aware styling
-let theme = Theme::dark();
+let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
 let styles = button.apply_theme_styling(&theme);
 ```
 
@@ -276,7 +276,7 @@ Computed styles based on theme and component state.
 ```rust
 use nucleotide_ui::{ComponentStyles, Theme, ButtonVariant, ButtonSize};
 
-let theme = Theme::dark();
+let theme = Theme::from_tokens(nucleotide_ui::DesignTokens::dark());
 let base_styles = ComponentStyles::from_theme(&theme, &ButtonVariant::Primary, &ButtonSize::Medium);
 
 // Create state variants
