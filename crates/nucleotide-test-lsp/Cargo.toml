@@ -28,4 +28,3 @@ lsp-types.workspace = true
 lsp-server.workspace = true
 
 [dev-dependencies]
-tempfile = "3.10"

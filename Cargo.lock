@@ -343,28 +343,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-stream"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
-dependencies = [
- "async-stream-impl",
- "futures-core",
- "pin-project-lite",
-]
-
-[[package]]
-name = "async-stream-impl"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.106",
-]
-
-[[package]]
 name = "async-task"
 version = "4.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4805,7 +4783,6 @@ name = "nucleotide-env"
 version = "0.1.0"
 dependencies = [
  "nucleotide-logging",
- "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -4858,7 +4835,6 @@ dependencies = [
  "rand 0.8.5",
  "serde_json",
  "slotmap",
- "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -4894,7 +4870,6 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
- "tokio-test",
  "toml 0.8.23",
 ]
 
@@ -4940,7 +4915,6 @@ dependencies = [
  "lsp-types",
  "serde",
  "serde_json",
- "tempfile",
  "toml 0.8.23",
  "tracing",
 ]
@@ -4960,7 +4934,6 @@ name = "nucleotide-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "dirs 6.0.0",
  "gpui",
  "helix-lsp",
  "helix-view",
@@ -4969,7 +4942,6 @@ dependencies = [
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-types",
- "parking_lot",
  "rust-embed",
  "smallvec",
  "tokio",
@@ -4986,7 +4958,6 @@ dependencies = [
  "nucleotide-events",
  "nucleotide-logging",
  "nucleotide-types",
- "tempfile",
 ]
 
 [[package]]
@@ -7590,19 +7561,6 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
-]
-
-[[package]]
-name = "tokio-test"
-version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2468baabc3311435b55dd935f702f42cd1b8abb7e754fb7dfb16bd36aa88f9f7"
-dependencies = [
- "async-stream",
- "bytes",
- "futures-core",
- "tokio",
- "tokio-stream",
 ]
 
 [[package]]

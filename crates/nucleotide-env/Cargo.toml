@@ -16,4 +16,3 @@ tracing.workspace = true
 ignored = ["tracing"]
 
 [dev-dependencies]
-tempfile = "3.0"

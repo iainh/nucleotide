@@ -20,4 +20,3 @@ parking_lot.workspace = true
 
 [dev-dependencies]
 tempfile = "3.0"
-tokio-test = "0.4"
