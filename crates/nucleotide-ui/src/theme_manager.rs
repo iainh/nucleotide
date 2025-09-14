@@ -513,11 +513,9 @@ impl ThemeManager {
             );
         }
 
-        // No suitable color found in theme, use system appearance fallback
-        let fallback_color = match system_appearance {
-            SystemAppearance::Light => hsla(0.0, 0.0, 0.98, 1.0), // Light background
-            SystemAppearance::Dark => hsla(0.0, 0.0, 0.05, 1.0),  // Dark background
-        };
+        // No suitable color found in theme. Use a clear sentinel (red)
+        // to make missing theme data obvious in tests and debug builds.
+        let fallback_color = hsla(0.0, 1.0, 0.5, 1.0);
 
         nucleotide_logging::warn!(
             system_appearance = ?system_appearance,
