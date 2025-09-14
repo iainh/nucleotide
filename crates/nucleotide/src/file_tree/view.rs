@@ -56,10 +56,15 @@ impl FileTreeView {
         let scroll_handle = UniformListScrollHandle::new();
         let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
 
+        let focus_handle = cx.focus_handle();
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+            coord.set_file_tree_focus(focus_handle.clone());
+        }
+
         let mut instance = Self {
             tree,
             selected_path: None,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             scroll_handle,
             scrollbar_state,
             _tokio_handle: None,
@@ -115,10 +120,15 @@ impl FileTreeView {
         let scroll_handle = UniformListScrollHandle::new();
         let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
 
+        let focus_handle = cx.focus_handle();
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+            coord.set_file_tree_focus(focus_handle.clone());
+        }
+
         let mut instance = Self {
             tree,
             selected_path: None,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             scroll_handle,
             scrollbar_state,
             _tokio_handle: tokio_handle,

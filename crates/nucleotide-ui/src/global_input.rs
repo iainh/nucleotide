@@ -40,6 +40,7 @@ pub struct FocusCoordinator {
     terminal: Arc<RwLock<Option<FocusHandle>>>,
     picker: Arc<RwLock<Option<FocusHandle>>>,
     diagnostics: Arc<RwLock<Option<FocusHandle>>>,
+    file_tree: Arc<RwLock<Option<FocusHandle>>>,
 }
 
 impl FocusCoordinator {
@@ -95,6 +96,15 @@ impl FocusCoordinator {
     }
     pub fn diagnostics_focus(&self) -> Option<FocusHandle> {
         self.diagnostics.read().ok().and_then(|g| g.clone())
+    }
+
+    pub fn set_file_tree_focus(&self, h: FocusHandle) {
+        if let Ok(mut slot) = self.file_tree.write() {
+            *slot = Some(h);
+        }
+    }
+    pub fn file_tree_focus(&self) -> Option<FocusHandle> {
+        self.file_tree.read().ok().and_then(|g| g.clone())
     }
 }
 
