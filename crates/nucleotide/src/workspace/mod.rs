@@ -901,9 +901,7 @@ impl Workspace {
             // Prevent hover/move from reaching the file tree beneath the menu
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .children(items.into_iter().enumerate().map(|(i, (label, handler))| {
-                let _hover_bg = dd_tokens.item_background_hover;
                 let text_default = dd_tokens.item_text;
-                let _text_hover = dd_tokens.item_text_selected;
                 // Compute rounded corner radius for selected rows at the top/bottom of the menu
                 let inner_radius = tokens.sizes.radius_md - px(0.5); // Outer radius minus half border
                 let is_first = i == 0;
@@ -2543,7 +2541,7 @@ impl Workspace {
 
             // Check if the appearance gets reset by something else shortly after
             // Schedule a delayed check to see if our setting persists
-            let _window_ptr = window as *const _ as usize;
+
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 unsafe {
@@ -4189,8 +4187,7 @@ impl Workspace {
         let current_doc_ids: std::collections::HashSet<_> =
             editor.documents.keys().copied().collect();
 
-        // Release the core borrow early
-        let _ = core;
+        // Release the core borrow early by ending the scope
 
         // Clean up order list - remove documents that no longer exist
         self.document_order
@@ -4227,9 +4224,6 @@ impl Workspace {
                 });
             }
         }
-
-        // Release the core borrow
-        let _ = core;
 
         // Ensure VCS service is monitoring the current project directory
         if let Some(ref project_dir) = project_directory {
@@ -4387,9 +4381,6 @@ impl Workspace {
                 });
             }
         }
-
-        // Release the core borrow
-        let _ = core;
 
         // Calculate available width for tabs dynamically (same as in render_tab_bar)
         let window_size = window.viewport_size();
@@ -5126,11 +5117,11 @@ impl Workspace {
     // removed unused setup_action_handlers
 
     /// Register action handlers with the global input system
-    fn register_action_handlers(&mut self, cx: &mut Context<Self>) {
+    fn register_action_handlers(&mut self, _cx: &mut Context<Self>) {
         nucleotide_logging::info!("Registering action handlers with global input system");
 
         // Get weak references to avoid circular dependencies
-        let _workspace_handle = cx.entity().downgrade();
+        // Weak workspace handle can be created via cx.entity().downgrade() if needed
 
         // For now, register simple logging handlers - the real functionality will be
         // implemented via proper GPUI actions below
@@ -6514,9 +6505,7 @@ impl Render for Workspace {
                 .cloned()
         } else {
             // Fallback to Helix's tree focus or any existing view entity
-            let core_read = self.core.read(cx);
-            let helix_focus = core_read.editor.tree.focus;
-            let _ = core_read;
+            let helix_focus = self.core.read(cx).editor.tree.focus;
             self.view_manager
                 .get_document_view(&helix_focus)
                 .cloned()
@@ -6552,7 +6541,7 @@ impl Render for Workspace {
             // Focus is managed by DocumentView's focus state
         }
 
-        let _has_overlay = !self.overlay.read(cx).is_empty();
+        // Overlay may add top-layer views; checked lazily below when rendering
 
         // Create main content area using semantic layout with design tokens
         let main_content = div()
@@ -6659,8 +6648,6 @@ impl Render for Workspace {
             );
 
         // Create the main workspace container using nucleotide-ui theme access
-        let theme = cx.theme();
-        let _tokens = &theme.tokens;
 
         let mut workspace_div = div()
             .key_context("Workspace")
@@ -7014,9 +7001,7 @@ impl Render for Workspace {
         // New default layout
         let content_area = {
             // Basic layout mode: render simple colored, resizable panes
-            let ui_theme = cx.global::<nucleotide_ui::Theme>();
-            let status_bar_tokens = ui_theme.tokens.status_bar_tokens();
-            let _border_color = status_bar_tokens.border;
+            let _ui_theme = cx.global::<nucleotide_ui::Theme>();
 
             // Clamp terminal height to available space
             let min_term = 80.0f32;
@@ -7105,7 +7090,7 @@ impl Render for Workspace {
                 let desired_size = (cols, rows);
 
                 // Resize Helix compositor/editor if size changed
-                let _prev = self.last_editor_size;
+
                 if self
                     .last_editor_size
                     .map(|(w, h)| w != desired_size.0 || h != desired_size.1)
@@ -7123,8 +7108,7 @@ impl Render for Workspace {
                     });
                     self.last_editor_size = Some(desired_size);
 
-                    // Debug: validate Helix visible size equals our computed size
-                    // Removed extra logging; sizes are now aligned by cells
+                    // Helix visible size equals our computed cell size
                 }
 
                 if self.terminal_panel_visible {
@@ -7245,8 +7229,6 @@ impl Render for Workspace {
                 root
             };
 
-            let _entity = cx.entity().clone();
-            // Clamp left pane so right side always has at least 200px
             let viewport_w = window.viewport_size().width.0;
             let max_left = (viewport_w - 200.0).max(150.0);
             if self.file_tree_width > max_left {
@@ -8243,7 +8225,6 @@ fn test_completion(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
     let items = core.read(cx).create_sample_completion_items();
 
     // Position the completion near the top-left (simulating cursor position)
-    let _anchor_position = gpui::point(gpui::px(200.0), gpui::px(300.0));
 
     // Create completion view
     let completion_view = cx.new(|cx| {
@@ -8287,7 +8268,7 @@ mod tests {
     #[allow(clippy::assertions_on_constants)]
     fn test_project_detection_basic() {
         // Test that project detection function exists and doesn't panic with valid path
-        let _current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
         //         let _detected_types = crate::project_indicator::detect_project_types_for_path(&current_dir);
 
         // The main goal is ensuring the integration compiles and doesn't panic
