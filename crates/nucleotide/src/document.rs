@@ -2187,7 +2187,7 @@ impl Element for DocumentElement {
                         doc_formatter::DocumentFormatter, text_annotations::TextAnnotations,
                     };
                     let annotations = TextAnnotations::default();
-                    let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
+                    let formatter = DocumentFormatter::new_at_prev_checkpoint(
                         text.slice(..),
                         &tf,
                         &annotations,
