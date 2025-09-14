@@ -359,12 +359,19 @@ impl CompletionFocusManager {
     /// Set the editor's focus handle for coordination
     pub fn set_editor_focus(&mut self, focus_handle: FocusHandle) {
         self.editor_focus_handle = Some(focus_handle);
+        // Also register with the global focus coordinator if available
+        // This allows other components to retrieve the editor focus handle
+        // without ad-hoc wiring.
+        // Note: Context not available here; registration occurs where this is called.
     }
 
     /// Focus the completion system
     pub fn focus_completion<V: 'static>(&mut self, cx: &mut Context<V>) {
         if !self.completion_focused {
             self.handle_focus_change(true, cx);
+            // If a completion focus handle was registered, ensure the window tracks it
+            // If a completion focus handle was registered, consumers with window context
+            // should focus it during their event/render cycle. No direct window access here.
         }
     }
 
@@ -372,6 +379,8 @@ impl CompletionFocusManager {
     pub fn focus_editor<V: 'static>(&mut self, cx: &mut Context<V>) {
         if let Some(_editor_handle) = &self.editor_focus_handle {
             self.handle_focus_change(false, cx);
+            // If an editor focus handle was registered, consumers with window context
+            // should restore it during their event/render cycle.
         }
     }
 

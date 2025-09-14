@@ -437,6 +437,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
+        // Register editor focus with the global coordinator for centralized focus handling
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+            coord.set_editor_focus(focus_handle.clone());
+        }
 
         // Subscribe to overlay dismiss events to restore focus
         cx.subscribe(

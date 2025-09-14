@@ -266,6 +266,12 @@ pub struct CompletionView {
 impl CompletionView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         println!("COMP: Creating new CompletionView");
+        let focus_handle = cx.focus_handle();
+        // Register completion focus with the global coordinator if available
+        if let Some(coord) = cx.try_global::<crate::FocusCoordinator>() {
+            coord.set_completion_focus(focus_handle.clone());
+        }
+
         Self {
             all_items: Vec::new(),
             match_candidates: Vec::new(),
@@ -290,7 +296,7 @@ impl CompletionView {
             documentation_panel: DocumentationPanel::new(),
             list_state: CompletionListState::new(32.0, 400.0), // Increased from 24px to account for padding and multi-row layout
             current_documentation: None,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
         }
     }
 

@@ -107,6 +107,12 @@ fn create_icon(icon_path: String, size: f32, color: Option<Hsla>) -> impl IntoEl
 
 impl PromptView {
     pub fn new(prompt: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        // Register prompt focus with the global coordinator if available
+        if let Some(coord) = cx.try_global::<crate::FocusCoordinator>() {
+            coord.set_prompt_focus(focus_handle.clone());
+        }
+
         Self {
             prompt: prompt.into(),
             input: SharedString::default(),
@@ -117,7 +123,7 @@ impl PromptView {
             completion_selection: 0,
             show_completions: false,
             original_input: None,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             completion_scroll_offset: 0,
             on_submit: None,
             on_cancel: None,
