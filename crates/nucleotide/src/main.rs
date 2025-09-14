@@ -625,6 +625,9 @@ fn gui_main(
                 "Provider system initialized with theme and configuration providers"
             );
 
+            // Initialize centralized focus coordinator for input/focus management
+            cx.set_global(nucleotide_ui::FocusCoordinator::default());
+
             // Setup provider lifecycle management
             setup_provider_lifecycle(cx);
 

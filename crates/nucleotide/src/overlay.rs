@@ -28,8 +28,6 @@ pub struct OverlayView {
     >,
     diagnostics_panel: Option<Entity<crate::DiagnosticsPanel>>,
     terminal_panel: Option<Entity<nucleotide_terminal_panel::TerminalPanel>>,
-    // Dedicated focus handle for the terminal panel area
-    terminal_focus: Option<FocusHandle>,
     // Resizable terminal panel height (pixels)
     terminal_height_px: f32,
     // Resize interaction state
@@ -66,7 +64,6 @@ impl OverlayView {
             code_action_pairs: None,
             diagnostics_panel: None,
             terminal_panel: None,
-            terminal_focus: None,
             terminal_height_px: 220.0,
             _terminal_resizing: false,
             _resize_start_mouse_y: px(0.0),
@@ -1325,8 +1322,8 @@ impl OverlayView {
 // For navigation keys, emit xterm-style modifier encodings (CSI 1;N <final> or CSI <num>;N ~)
 // where N = 1 + (Shift?1) + (Alt?2) + (Ctrl?4), avoiding an extra ESC prefix for Alt.
 pub(crate) fn translate_key_to_bytes(event: &gpui::KeyDownEvent) -> Vec<u8> {
-    // Delegate to centralized encoder for easier maintenance and future migration
-    crate::terminal_input::encode_key_event(event)
+    // Delegate to centralized encoder in UI global input
+    nucleotide_ui::global_input::encode_terminal_key_event(event)
 }
 
 /// Layout information for positioning UI elements relative to workspace
@@ -1571,11 +1568,19 @@ impl Render for OverlayView {
         // Terminal panel - docked at bottom
         if self.terminal_panel.is_some() {
             {
-                // Ensure we have a persistent focus handle for the terminal panel area
-                if self.terminal_focus.is_none() {
-                    self.terminal_focus = Some(cx.focus_handle());
+                // Ensure we have a persistent focus handle for the terminal panel area via coordinator
+                let coordinator = cx
+                    .try_global::<nucleotide_ui::FocusCoordinator>()
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let c = nucleotide_ui::FocusCoordinator::default();
+                        cx.set_global(c.clone());
+                        c
+                    });
+                if coordinator.terminal_focus().is_none() {
+                    coordinator.set_terminal_focus(cx.focus_handle());
                 }
-                let panel_focus = self.terminal_focus.as_ref().unwrap().clone();
+                let panel_focus = coordinator.terminal_focus().unwrap();
                 let panel_focus_for_keys = panel_focus.clone();
 
                 // Sync from window-level resize state

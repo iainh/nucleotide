@@ -85,9 +85,9 @@ pub use completion_v2::{
 };
 pub use file_icon::FileIcon;
 pub use global_input::{
-    DismissTarget, FocusElement, FocusElementType, FocusGroup as GlobalFocusGroup, FocusGroupInfo,
-    FocusIndicatorConfig, FocusIndicatorStyle, FocusIndicatorStyles, FocusPriority,
-    FocusedElementInfo, GlobalInputDispatcher, InputContext,
+    DismissTarget, FocusCoordinator, FocusElement, FocusElementType,
+    FocusGroup as GlobalFocusGroup, FocusGroupInfo, FocusIndicatorConfig, FocusIndicatorStyle,
+    FocusIndicatorStyles, FocusPriority, FocusedElementInfo, GlobalInputDispatcher, InputContext,
     NavigationDirection as GlobalNavigationDirection, NavigationOptions, ShortcutAction,
     ShortcutDefinition, ShortcutInfo,
 };
