@@ -12,6 +12,10 @@ mod linux_titlebar;
 #[cfg(target_os = "linux")]
 mod linux_window_controls;
 
+// Cross‑platform in-window application menu (used on Linux/Windows)
+#[cfg(not(target_os = "macos"))]
+mod application_menu;
+
 pub use platform_titlebar::PlatformTitleBar;
 
 #[cfg(target_os = "linux")]
@@ -26,15 +30,22 @@ use gpui::{AppContext, Context, Entity, IntoElement, Render, Window};
 pub struct TitleBar {
     platform_titlebar: Entity<PlatformTitleBar>,
     filename: String,
+    #[cfg(not(target_os = "macos"))]
+    application_menu: Option<Entity<application_menu::ApplicationMenu>>,
 }
 
 impl TitleBar {
     pub fn new(id: impl Into<gpui::ElementId>, cx: &mut Context<Self>) -> Self {
         let platform_titlebar = cx.new(|_cx| PlatformTitleBar::new(id));
 
+        #[cfg(not(target_os = "macos"))]
+        let application_menu = Some(cx.new(|cx| application_menu::ApplicationMenu::new(cx)));
+
         Self {
             platform_titlebar,
             filename: "Nucleotide".to_string(),
+            #[cfg(not(target_os = "macos"))]
+            application_menu,
         }
     }
 
@@ -55,6 +66,20 @@ impl Render for TitleBar {
             titlebar.set_title(self.filename.clone());
         });
 
+        #[cfg(not(target_os = "macos"))]
+        {
+            // On Linux and Windows, show an in-window application menu below the titlebar.
+            // This mirrors Zed’s approach for platforms without a global menubar.
+            if let Some(menu) = &self.application_menu {
+                let titlebar_view = self.platform_titlebar.clone();
+                return gpui::v_flex()
+                    .w_full()
+                    .child(titlebar_view)
+                    .child(menu.clone());
+            }
+        }
+
+        // macOS (or fallback): just the platform titlebar
         self.platform_titlebar.clone()
     }
 }
