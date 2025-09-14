@@ -100,3 +100,7 @@ future/*.bak
 
 # Ignore local zed checkout used for inspection
 zed-src/
+
+# Temporary release artifacts
+nucleotide-linux/
+nucleotide-linux.tar.gz

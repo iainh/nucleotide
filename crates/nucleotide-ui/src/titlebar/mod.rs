@@ -12,8 +12,8 @@ mod linux_titlebar;
 #[cfg(target_os = "linux")]
 mod linux_window_controls;
 
-// TEMP: Cross‑platform in-window application menu (enabled on macOS too)
-// This is a temporary change to aid development and can be reverted.
+// Cross‑platform in-window application menu (non-macOS only)
+#[cfg(not(target_os = "macos"))]
 mod application_menu;
 
 pub use platform_titlebar::PlatformTitleBar;
@@ -30,7 +30,7 @@ use gpui::{AppContext, Context, Entity, IntoElement, ParentElement, Render, Styl
 pub struct TitleBar {
     platform_titlebar: Entity<PlatformTitleBar>,
     filename: String,
-    // TEMP: Show in-window menubar on macOS as well
+    #[cfg(not(target_os = "macos"))]
     application_menu: Option<Entity<application_menu::ApplicationMenu>>,
 }
 
@@ -38,12 +38,13 @@ impl TitleBar {
     pub fn new(id: impl Into<gpui::ElementId>, cx: &mut Context<Self>) -> Self {
         let platform_titlebar = cx.new(|_cx| PlatformTitleBar::new(id));
 
-        // TEMP: Enable application menu across all platforms (including macOS)
+        #[cfg(not(target_os = "macos"))]
         let application_menu = Some(cx.new(|cx| application_menu::ApplicationMenu::new(cx)));
 
         Self {
             platform_titlebar,
             filename: "Nucleotide".to_string(),
+            #[cfg(not(target_os = "macos"))]
             application_menu,
         }
     }
@@ -65,19 +66,21 @@ impl Render for TitleBar {
             titlebar.set_title(self.filename.clone());
         });
 
-        // TEMP: Always render in-window menubar under platform titlebar (including macOS)
-        if let Some(menu) = &self.application_menu {
-            let titlebar_view = self.platform_titlebar.clone();
-            return div()
-                .flex()
-                .flex_col()
-                .w_full()
-                .child(titlebar_view)
-                .child(menu.clone())
-                .into_any_element();
+        #[cfg(not(target_os = "macos"))]
+        {
+            if let Some(menu) = &self.application_menu {
+                let titlebar_view = self.platform_titlebar.clone();
+                return div()
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .child(titlebar_view)
+                    .child(menu.clone())
+                    .into_any_element();
+            }
         }
 
-        // Fallback: just the platform titlebar
+        // macOS (or fallback): just the platform titlebar
         self.platform_titlebar.clone().into_any_element()
     }
 }
