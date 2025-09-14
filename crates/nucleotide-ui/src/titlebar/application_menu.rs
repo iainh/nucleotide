@@ -2,21 +2,14 @@
 // ABOUTME: Inspired by Zed's ApplicationMenu, simplified for Nucleotide's UI stack
 
 use gpui::{
-    Context, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, Render,
-    SharedString, Styled, Window, actions, div,
+    AnchoredPositionMode, Context, Corner, ElementId, FocusHandle, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, ParentElement, Pixels, Render, SharedString, Styled, Window,
+    anchored, deferred, div, point, px,
 };
 
 use gpui::{OwnedMenu, OwnedMenuItem};
 
 use crate::{Button, ButtonSize, ButtonVariant, Theme, tokens::ColorContext};
-
-actions!(
-    app_menu,
-    [
-        /// Close the open application menu
-        CloseMenus,
-    ]
-);
 
 #[derive(Clone)]
 struct MenuEntry {
@@ -30,6 +23,8 @@ pub struct ApplicationMenu {
     // Anchor x position for the dropdown (relative to this view)
     anchor_x: Option<f32>,
     row_height: Pixels,
+    // Focus handle to capture Esc while menu is open
+    focus_handle: FocusHandle,
 }
 
 impl ApplicationMenu {
@@ -52,6 +47,7 @@ impl ApplicationMenu {
             open_index: None,
             anchor_x: None,
             row_height: titlebar_height,
+            focus_handle: cx.focus_handle(),
         }
     }
 
@@ -89,7 +85,7 @@ impl ApplicationMenu {
         cleaned
     }
 
-    fn render_dropdown_for(&self, idx: usize) -> impl IntoElement {
+    fn render_dropdown_for(&self, idx: usize, cx: &mut Context<Self>) -> impl IntoElement {
         // Read theme colors for menu surfaces
         let theme = crate::ProviderHooks::theme();
         let chrome = &theme.tokens.chrome;
@@ -135,11 +131,16 @@ impl ApplicationMenu {
                         .text_size(theme.tokens.sizes.text_sm)
                         .text_color(chrome.text_chrome_secondary)
                         .hover(|el| el.bg(chrome.menu_selected))
-                        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                            // Dispatch the associated action and close menus
-                            window.dispatch_action(action.boxed_clone(), cx);
-                            cx.dispatch_action(&CloseMenus);
-                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _ev, window, cx| {
+                                // Dispatch the associated action and close menus locally
+                                window.dispatch_action(action.boxed_clone(), cx);
+                                this.open_index = None;
+                                this.anchor_x = None;
+                                cx.notify();
+                            }),
+                        )
                         .child(label),
                 )
             }
@@ -149,7 +150,7 @@ impl ApplicationMenu {
 }
 
 impl Render for ApplicationMenu {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Pull theme for row colors
         let theme = cx.global::<Theme>();
         let titlebar_tokens = if let Some(provider) =
@@ -175,7 +176,17 @@ impl Render for ApplicationMenu {
             .pl_2()
             .bg(titlebar_tokens.background)
             .border_b_1()
-            .border_color(titlebar_tokens.border);
+            .border_color(titlebar_tokens.border)
+            .track_focus(&self.focus_handle)
+            // Handle Esc to close the menu while focused
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
+                if ev.keystroke.key == "escape" {
+                    this.open_index = None;
+                    this.anchor_x = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }));
 
         // Menu triggers
         for (i, entry) in self.entries.iter().enumerate() {
@@ -194,28 +205,44 @@ impl Render for ApplicationMenu {
             );
         }
 
-        // Close menus when requested
-        container = container.on_action(cx.listener(|this, _: &CloseMenus, _w, cx| {
-            this.open_index = None;
-            this.anchor_x = None;
-            cx.notify();
-        }));
+        // Close menus handled locally by listeners
 
-        // Dropdown panel
+        // Dropdown panel (rendered as a deferred anchored element to ensure top-most layering)
         if let Some(idx) = self.open_index {
-            let left = self.anchor_x.unwrap_or(12.0);
-            container = container.child(
-                div()
-                    .absolute()
-                    .left(gpui::px(left))
-                    .top(row_h)
-                    .child(self.render_dropdown_for(idx)),
-            );
+            // Ensure we capture keyboard focus for Escape handling
+            window.focus(&self.focus_handle);
 
-            // Lightweight click-away within this row area: clicking the row background closes it
-            container = container.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                cx.dispatch_action(&CloseMenus);
-            });
+            // Full-window click-away blocker below the dropdown to prevent underlying interactions
+            let viewport = window.viewport_size();
+            let click_away = anchored()
+                .position_mode(AnchoredPositionMode::Window)
+                .position(point(px(0.0), px(0.0)))
+                .child(
+                    div()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.open_index = None;
+                                this.anchor_x = None;
+                                cx.notify();
+                                cx.stop_propagation();
+                            }),
+                        ),
+                );
+            container = container.child(deferred(click_away).with_priority(450));
+
+            let left = self.anchor_x.unwrap_or(12.0);
+            let popup = anchored()
+                .position_mode(AnchoredPositionMode::Local)
+                .snap_to_window_with_margin(px(8.0))
+                .anchor(Corner::TopLeft)
+                .position(point(px(left), row_h))
+                .child(div().occlude().child(self.render_dropdown_for(idx, cx)));
+
+            container = container.child(deferred(popup).with_priority(500));
         }
 
         container
