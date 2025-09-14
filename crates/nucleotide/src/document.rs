@@ -2920,24 +2920,14 @@ impl Element for DocumentElement {
                             }
                         }
 
-                        // Paint cursorline background for soft-wrap mode - BEFORE checking if line is empty
-                        // Empty lines still need cursorline rendering when cursor is on them
-                        if let Some(cursorline_bg) = cursorline_style {
-                            // Get the document line for this visual line from the graphemes
-                            let visual_line_doc_line = if let Some(first_grapheme) = line_graphemes.first() {
-                                first_grapheme.line_idx
+                        // Determine whether this visual line corresponds to the cursor's document line
+                        let is_cursor_visual_line = {
+                            if let Some(first_grapheme) = line_graphemes.first() {
+                                first_grapheme.line_idx == cursor_line_num
                             } else {
-                                current_doc_line // Fallback to current if no graphemes
-                            };
-                            // Check if this visual line belongs to the cursor's document line
-                            if visual_line_doc_line == cursor_line_num {
-                                let cursorline_bounds = Bounds {
-                                    origin: point(bounds.origin.x, line_y),
-                                    size: size(bounds.size.width, after_layout.line_height),
-                                };
-                                window.paint_quad(fill(cursorline_bounds, cursorline_bg));
+                                current_doc_line == cursor_line_num
                             }
-                        }
+                        };
 
                         // Paint the line text (only for non-empty lines)
                         if !line_str.is_empty() {
@@ -2947,18 +2937,32 @@ impl Element for DocumentElement {
                             // Paint background highlights using the shaped line for accurate positioning
                             let mut byte_offset = 0;
                             for run in &line_runs {
-                                if let Some(bg_color) = run.background_color {
-                                    // Calculate the x positions using the shaped line
-                                    let start_x = shaped_line.x_for_index(byte_offset);
-                                    let end_x = shaped_line.x_for_index(byte_offset + run.len);
+                                // Do not overpaint the cursor row background with per-run backgrounds
+                                if !is_cursor_visual_line {
+                                    if let Some(bg_color) = run.background_color {
+                                        // Calculate the x positions using the shaped line
+                                        let start_x = shaped_line.x_for_index(byte_offset);
+                                        let end_x = shaped_line.x_for_index(byte_offset + run.len);
 
-                                    let bg_bounds = Bounds {
-                                        origin: point(text_origin_x + start_x, line_y),
-                                        size: size(end_x - start_x, after_layout.line_height),
-                                    };
-                                    window.paint_quad(fill(bg_bounds, bg_color));
+                                        let bg_bounds = Bounds {
+                                            origin: point(text_origin_x + start_x, line_y),
+                                            size: size(end_x - start_x, after_layout.line_height),
+                                        };
+                                        window.paint_quad(fill(bg_bounds, bg_color));
+                                    }
                                 }
                                 byte_offset += run.len;
+                            }
+
+                            // Paint cursorline background after per-run backgrounds so it applies across the row
+                            if is_cursor_visual_line {
+                                if let Some(cursorline_bg) = cursorline_style {
+                                    let cursorline_bounds = Bounds {
+                                        origin: point(bounds.origin.x, line_y),
+                                        size: size(bounds.size.width, after_layout.line_height),
+                                    };
+                                    window.paint_quad(fill(cursorline_bounds, cursorline_bg));
+                                }
                             }
 
                             if let Err(e) = shaped_line.paint(point(text_origin_x, line_y), after_layout.line_height, window, cx) {
@@ -3726,16 +3730,7 @@ impl Element for DocumentElement {
                     // core goes out of scope here
 
                     let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
-                    // Paint cursorline background if this is the cursor's line
-                    if let Some(cursorline_bg) = cursorline_style
-                        && line_idx == cursor_line_num {
-                            debug!("Painting cursorline for line {} (cursor at line {})", line_idx, cursor_line_num);
-                            let cursorline_bounds = Bounds {
-                                origin: point(bounds.origin.x, bounds.origin.y + px(1.) + y_offset),
-                                size: size(bounds.size.width, after_layout.line_height),
-                            };
-                            window.paint_quad(fill(cursorline_bounds, cursorline_bg));
-                        }
+                    // Defer painting of cursorline until after per-run backgrounds are drawn
 
                     // Always create a shaped line, even for empty lines (needed for cursor positioning)
                     let shaped_line = if !line_str.is_empty() {
@@ -3759,18 +3754,36 @@ impl Element for DocumentElement {
                         // Paint background highlights using the shaped line for accurate positioning
                         let mut byte_offset = 0;
                         for run in &line_runs {
-                            if let Some(bg_color) = run.background_color {
-                                // Calculate the x positions using the shaped line
-                                let start_x = shaped.x_for_index(byte_offset);
-                                let end_x = shaped.x_for_index(byte_offset + run.len);
+                            // Do not overpaint the cursor row background with per-run backgrounds
+                            if line_idx != cursor_line_num {
+                                if let Some(bg_color) = run.background_color {
+                                    // Calculate the x positions using the shaped line
+                                    let start_x = shaped.x_for_index(byte_offset);
+                                    let end_x = shaped.x_for_index(byte_offset + run.len);
 
-                                let bg_bounds = Bounds {
-                                    origin: point(text_origin.x + start_x, text_origin.y),
-                                    size: size(end_x - start_x, after_layout.line_height),
-                                };
-                                window.paint_quad(fill(bg_bounds, bg_color));
+                                    let bg_bounds = Bounds {
+                                        origin: point(text_origin.x + start_x, text_origin.y),
+                                        size: size(end_x - start_x, after_layout.line_height),
+                                    };
+                                    window.paint_quad(fill(bg_bounds, bg_color));
+                                }
                             }
                             byte_offset += run.len;
+                        }
+
+                        // Paint cursorline background after per-run backgrounds so it applies across the row
+                        if line_idx == cursor_line_num {
+                            if let Some(cursorline_bg) = cursorline_style {
+                                debug!(
+                                    "Painting cursorline for line {} (cursor at line {})",
+                                    line_idx, cursor_line_num
+                                );
+                                let cursorline_bounds = Bounds {
+                                    origin: point(bounds.origin.x, bounds.origin.y + px(1.) + y_offset),
+                                    size: size(bounds.size.width, after_layout.line_height),
+                                };
+                                window.paint_quad(fill(cursorline_bounds, cursorline_bg));
+                            }
                         }
 
                         if let Err(e) = shaped.paint(text_origin, after_layout.line_height, window, cx) {
