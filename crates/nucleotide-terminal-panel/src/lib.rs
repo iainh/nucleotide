@@ -22,11 +22,11 @@ impl TerminalPanel {
     }
 
     pub fn initialize(&mut self, cx: &mut Context<Self>) {
-        if self.view_entity.is_none() {
-            if let Some(model) = get_view_model(self.active) {
-                let created = cx.new(|_cx| TerminalView::new(model));
-                self.view_entity = Some(created);
-            }
+        if self.view_entity.is_none()
+            && let Some(model) = get_view_model(self.active)
+        {
+            let created = cx.new(|_cx| TerminalView::new(model));
+            self.view_entity = Some(created);
         }
     }
 }
@@ -34,11 +34,11 @@ impl TerminalPanel {
 impl Render for TerminalPanel {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         // Lazy-initialize the view when the model becomes available
-        if self.view_entity.is_none() {
-            if let Some(model) = get_view_model(self.active) {
-                let created = _cx.new(|_cx| TerminalView::new(model));
-                self.view_entity = Some(created);
-            }
+        if self.view_entity.is_none()
+            && let Some(model) = get_view_model(self.active)
+        {
+            let created = _cx.new(|_cx| TerminalView::new(model));
+            self.view_entity = Some(created);
         }
 
         let theme = _cx.theme();

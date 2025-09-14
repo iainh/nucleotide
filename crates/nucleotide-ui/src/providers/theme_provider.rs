@@ -659,7 +659,7 @@ mod tests {
 
         provider.set_transition_config(transition_config.clone());
 
-        assert_eq!(provider.transition_config.enable_transitions, false);
+        assert!(!provider.transition_config.enable_transitions);
         assert_eq!(
             provider.transition_config.transition_duration,
             std::time::Duration::from_millis(500)

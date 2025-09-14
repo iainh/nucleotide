@@ -1786,7 +1786,7 @@ impl Render for CompletionView {
                                                     .w_full()
                                                     .child(
                                                         completion_element
-                                                            .into_element_with_theme(&theme),
+                                                            .into_element_with_theme(theme),
                                                     )
                                             })
                                             .collect::<Vec<_>>()
@@ -1819,7 +1819,7 @@ mod tests {
         let match2 = StringMatch::new(2, 200, vec![0, 1]);
         let match3 = StringMatch::new(3, 150, vec![0, 2]);
 
-        let mut matches = vec![match1, match2, match3];
+        let mut matches = [match1, match2, match3];
         matches.sort();
 
         // Should be sorted by score descending

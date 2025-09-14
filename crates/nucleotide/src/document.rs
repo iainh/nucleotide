@@ -336,7 +336,6 @@ impl DocumentView {
     /// Returns None if cursor is not visible or cannot be calculated
     /// TODO: Implement this method once we figure out the correct Helix API usage
     #[allow(dead_code)]
-
     /// Get the actual line height used by this DocumentView
     pub fn get_line_height(&self) -> Pixels {
         self.line_height
@@ -2094,7 +2093,7 @@ impl Element for DocumentElement {
                     };
                     let chars = end.saturating_sub(start).max(1);
                     // ceil(chars / columns)
-                    visual = visual.saturating_add((chars + columns - 1) / columns);
+                    visual = visual.saturating_add(chars.div_ceil(columns));
                 }
                 visual.max(1)
             } else {
@@ -2134,7 +2133,7 @@ impl Element for DocumentElement {
                 let mut desired_vertical_offset: Option<usize> = None;
 
                 // Use Helix's notion of viewport height to avoid rounding asymmetry
-                let height_rows: usize = view.inner_height().max(1) as usize;
+                let height_rows: usize = view.inner_height().max(1);
 
                 if !soft_wrap {
                     let view_offset = doc.view_offset(view_id);
@@ -2148,7 +2147,7 @@ impl Element for DocumentElement {
 
                     // Viewport height in lines from Helix (avoids rounding differences)
                     let viewport_lines = height_rows;
-                    let scrolloff = editor.config().scrolloff.max(0) as usize;
+                    let scrolloff = editor.config().scrolloff.max(0);
 
                     // Visible is [top, top + height)
                     let top = anchor_line;
@@ -2181,7 +2180,7 @@ impl Element for DocumentElement {
                     let text = doc.text();
                     // Determine viewport height in visual lines using Helix
                     let viewport_lines = height_rows;
-                    let scrolloff = editor.config().scrolloff.max(0) as usize;
+                    let scrolloff = editor.config().scrolloff.max(0);
 
                     // Build formatter from current anchor
                     use helix_core::{
@@ -2200,7 +2199,7 @@ impl Element for DocumentElement {
 
                     let mut cursor_visual_row: Option<usize> = None;
                     let mut last_row = 0usize;
-                    while let Some(g) = formatter.next() {
+                    for g in formatter {
                         let char_pos = text.byte_to_char(g.char_idx);
                         if char_pos > cursor_char {
                             break;
@@ -2211,7 +2210,7 @@ impl Element for DocumentElement {
                     let cursor_vrow = cursor_visual_row.unwrap_or(last_row);
 
                     // Current top visual row (relative to anchor)
-                    let top = view_offset.vertical_offset as usize;
+                    let top = view_offset.vertical_offset;
                     let bottom = top.saturating_add(viewport_lines.saturating_sub(1));
 
                     // Decide desired top to honor scrolloff
@@ -2938,31 +2937,31 @@ impl Element for DocumentElement {
                             let mut byte_offset = 0;
                             for run in &line_runs {
                                 // Do not overpaint the cursor row background with per-run backgrounds
-                                if !is_cursor_visual_line {
-                                    if let Some(bg_color) = run.background_color {
-                                        // Calculate the x positions using the shaped line
-                                        let start_x = shaped_line.x_for_index(byte_offset);
-                                        let end_x = shaped_line.x_for_index(byte_offset + run.len);
+                                if !is_cursor_visual_line
+                                    && let Some(bg_color) = run.background_color
+                                {
+                                    // Calculate the x positions using the shaped line
+                                    let start_x = shaped_line.x_for_index(byte_offset);
+                                    let end_x = shaped_line.x_for_index(byte_offset + run.len);
 
-                                        let bg_bounds = Bounds {
-                                            origin: point(text_origin_x + start_x, line_y),
-                                            size: size(end_x - start_x, after_layout.line_height),
-                                        };
-                                        window.paint_quad(fill(bg_bounds, bg_color));
-                                    }
+                                    let bg_bounds = Bounds {
+                                        origin: point(text_origin_x + start_x, line_y),
+                                        size: size(end_x - start_x, after_layout.line_height),
+                                    };
+                                    window.paint_quad(fill(bg_bounds, bg_color));
                                 }
                                 byte_offset += run.len;
                             }
 
                             // Paint cursorline background after per-run backgrounds so it applies across the row
-                            if is_cursor_visual_line {
-                                if let Some(cursorline_bg) = cursorline_style {
-                                    let cursorline_bounds = Bounds {
-                                        origin: point(bounds.origin.x, line_y),
-                                        size: size(bounds.size.width, after_layout.line_height),
-                                    };
-                                    window.paint_quad(fill(cursorline_bounds, cursorline_bg));
-                                }
+                            if is_cursor_visual_line
+                                && let Some(cursorline_bg) = cursorline_style
+                            {
+                                let cursorline_bounds = Bounds {
+                                    origin: point(bounds.origin.x, line_y),
+                                    size: size(bounds.size.width, after_layout.line_height),
+                                };
+                                window.paint_quad(fill(cursorline_bounds, cursorline_bg));
                             }
 
                             if let Err(e) = shaped_line.paint(point(text_origin_x, line_y), after_layout.line_height, window, cx) {
@@ -4256,15 +4255,13 @@ impl Element for DocumentElement {
                         let style = self.style.clone();
                         let gutter_last_row = last_row;
                         let mut lines = Vec::new();
-                        let mut current_visual_line = 0u16;
-                        for doc_line in first_row..gutter_last_row {
+                        for (current_visual_line, doc_line) in (first_row..gutter_last_row).enumerate() {
                             lines.push(LinePos {
                                 first_visual_line: true,
                                 doc_line,
-                                visual_line: current_visual_line,
+                                visual_line: current_visual_line as u16,
                                 start_char_idx: 0,
                             });
-                            current_visual_line += 1;
                         }
                         let lines = lines.into_iter();
 
@@ -4521,10 +4518,7 @@ fn safe_highlight(theme: &Theme, highlight: syntax::Highlight) -> helix_view::gr
     // a default style instead of panicking.
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    match catch_unwind(AssertUnwindSafe(|| theme.highlight(highlight))) {
-        Ok(style) => style,
-        Err(_) => helix_view::graphics::Style::default(),
-    }
+    catch_unwind(AssertUnwindSafe(|| theme.highlight(highlight))).unwrap_or_default()
 }
 
 struct SyntaxHighlighter<'h, 'r, 't> {

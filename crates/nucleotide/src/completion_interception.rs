@@ -3,7 +3,6 @@
 
 /// Shotgun hook system - logs every possible completion pipeline event with unique IDs
 /// This will help us identify exactly where the completion flow stops
-
 /// Initialize the shotgun hook system
 pub fn initialize_shotgun_hooks() {
     nucleotide_logging::info!(

@@ -892,9 +892,11 @@ priority = 70
     #[test]
     fn test_project_markers_config_validation() {
         // Valid config
-        let mut valid_config = ProjectMarkersConfig::default();
-        valid_config.enable_project_markers = true;
-        valid_config.detection_timeout_ms = 1000;
+        let mut valid_config = ProjectMarkersConfig {
+            enable_project_markers: true,
+            detection_timeout_ms: 1000,
+            ..Default::default()
+        };
         valid_config.markers.insert(
             "rust".to_string(),
             ProjectMarker {
@@ -907,13 +909,17 @@ priority = 70
         assert!(valid_config.validate().is_ok());
 
         // Invalid - zero timeout
-        let mut invalid_config = ProjectMarkersConfig::default();
-        invalid_config.detection_timeout_ms = 0;
+        let invalid_config = ProjectMarkersConfig {
+            detection_timeout_ms: 0,
+            ..Default::default()
+        };
         assert!(invalid_config.validate().is_err());
 
         // Invalid - timeout too high
-        let mut invalid_config = ProjectMarkersConfig::default();
-        invalid_config.detection_timeout_ms = 50000;
+        let invalid_config = ProjectMarkersConfig {
+            detection_timeout_ms: 50000,
+            ..Default::default()
+        };
         assert!(invalid_config.validate().is_err());
 
         // Invalid - empty project name
@@ -961,18 +967,24 @@ priority = 70
     #[test]
     fn test_project_markers_config_sanitization() {
         // Test sanitizing invalid timeout
-        let mut config = ProjectMarkersConfig::default();
-        config.detection_timeout_ms = 0;
-        let sanitized = config.sanitized();
+        let config_timeout0 = ProjectMarkersConfig {
+            detection_timeout_ms: 0,
+            ..Default::default()
+        };
+        let sanitized = config_timeout0.sanitized();
         assert_eq!(sanitized.detection_timeout_ms, 1000);
 
         // Test sanitizing timeout too high
-        config.detection_timeout_ms = 50000;
-        let sanitized = config.sanitized();
+        let config_timeout_high = ProjectMarkersConfig {
+            detection_timeout_ms: 50000,
+            ..Default::default()
+        };
+        let sanitized = config_timeout_high.sanitized();
         assert_eq!(sanitized.detection_timeout_ms, 30000);
 
         // Test sanitizing empty project name
-        config.markers.insert(
+        let mut config_with_markers = ProjectMarkersConfig::default();
+        config_with_markers.markers.insert(
             "".to_string(),
             ProjectMarker {
                 markers: vec!["Cargo.toml".to_string()],
@@ -981,7 +993,7 @@ priority = 70
                 priority: 50,
             },
         );
-        config.markers.insert(
+        config_with_markers.markers.insert(
             "valid_name".to_string(),
             ProjectMarker {
                 markers: vec!["package.json".to_string()],
@@ -990,7 +1002,7 @@ priority = 70
                 priority: 60,
             },
         );
-        let sanitized = config.sanitized();
+        let sanitized = config_with_markers.sanitized();
         assert!(!sanitized.markers.contains_key(""));
         assert!(sanitized.markers.contains_key("valid_name"));
         assert_eq!(sanitized.markers.len(), 1);
@@ -1061,9 +1073,9 @@ priority = 70
             gui: gui_config,
         };
 
-        assert_eq!(config.is_project_markers_enabled(), true);
+        assert!(config.is_project_markers_enabled());
         assert_eq!(config.project_detection_timeout_ms(), 2000);
-        assert_eq!(config.is_project_builtin_fallback_enabled(), false);
+        assert!(!config.is_project_builtin_fallback_enabled());
         assert!(config.project_markers().markers.is_empty());
     }
 
@@ -1088,12 +1100,12 @@ startup_timeout_ms = 3000
             toml::from_str(config_str).expect("Failed to parse GUI config with project markers");
 
         // Test that project markers are properly integrated
-        assert_eq!(config.project_markers.enable_project_markers, true);
+        assert!(config.project_markers.enable_project_markers);
         assert_eq!(config.project_markers.detection_timeout_ms, 1500);
-        assert_eq!(config.project_markers.enable_builtin_fallback, true);
+        assert!(config.project_markers.enable_builtin_fallback);
 
         // Test that other configs still work
-        assert_eq!(config.lsp.project_lsp_startup, true);
+        assert!(config.lsp.project_lsp_startup);
         assert_eq!(config.lsp.startup_timeout_ms, 3000);
 
         let ui_font = config.ui.font.as_ref().expect("UI font should be set");

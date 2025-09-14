@@ -83,6 +83,7 @@ impl Tab {
     fn element_id_for(doc_id: DocumentId) -> ElementId {
         ElementId::from(SharedString::from(format!("tab-{}", doc_id)))
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         doc_id: DocumentId,
         label: String,
@@ -421,6 +422,7 @@ impl Tab {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_content_row(
         label: String,
         file_path: Option<std::path::PathBuf>,

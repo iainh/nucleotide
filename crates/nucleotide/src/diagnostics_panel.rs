@@ -325,6 +325,7 @@ impl DiagnosticsPanel {
     }
 
     /// Build a single diagnostics row element.
+    #[allow(clippy::too_many_arguments)]
     fn build_row(
         &mut self,
         cx: &mut Context<Self>,

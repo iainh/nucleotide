@@ -31,13 +31,13 @@ pub fn encode_key_event(event: &KeyDownEvent) -> Vec<u8> {
     }
 
     // Ctrl-modified keys
-    if mods.control {
-        if let Some(b) = ctrl_byte_for(ks.key.as_str()) {
-            if mods.alt {
-                return vec![0x1B, b];
-            }
-            return vec![b];
+    if mods.control
+        && let Some(b) = ctrl_byte_for(ks.key.as_str())
+    {
+        if mods.alt {
+            return vec![0x1B, b];
         }
+        return vec![b];
     }
 
     // Navigation and non-printables
@@ -183,7 +183,7 @@ fn csi_with_mod_tilde(code: u8, mods: &gpui::Modifiers) -> Vec<u8> {
 fn ctrl_byte_for(key: &str) -> Option<u8> {
     if key.len() == 1 {
         let ch = key.as_bytes()[0].to_ascii_uppercase();
-        if (b'A'..=b'Z').contains(&ch) {
+        if ch.is_ascii_uppercase() {
             return Some(ch - b'@');
         }
         if ch == b' ' {

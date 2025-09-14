@@ -332,6 +332,7 @@ impl Workspace {
     }
 
     /// Build the main content row for the unified status bar.
+    #[allow(clippy::too_many_arguments)]
     fn statusbar_main_content(
         &self,
         mode_name: &'static str,
@@ -382,6 +383,8 @@ impl Workspace {
 
         row.into_any_element()
     }
+    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity)]
     fn context_menu_items() -> Vec<(&'static str, fn(&mut Workspace, &mut Context<Workspace>))> {
         vec![
             ("New File", Workspace::cm_action_new_file),
@@ -422,6 +425,7 @@ impl Workspace {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_views(
         core: Entity<Core>,
         input: Entity<Input>,
@@ -5152,7 +5156,7 @@ impl Workspace {
         nucleotide_logging::info!("Successfully registered all action handlers");
     }
 
-    /// Handle only truly global shortcuts that should work regardless of focus state
+    // /// Handle only truly global shortcuts that should work regardless of focus state
     // removed unused handle_global_shortcuts_only
 
     /// Handle completion events directly using the event system
@@ -5413,7 +5417,7 @@ impl Workspace {
         // via hooks that we'll register to capture when Helix has completion results ready
     }
 
-    /// Convert completion items and show completion popup
+    // /// Convert completion items and show completion popup
     // removed unused show_completion_items
 
     /// Convert completion items and show completion popup with prefix filtering
@@ -5525,7 +5529,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Handle keyboard shortcuts detected by the global input system (full processing)
+    // /// Handle keyboard shortcuts detected by the global input system (full processing)
     // removed unused handle_global_input_shortcuts
 
     // === Action Handler Implementations ===
@@ -5974,7 +5978,7 @@ impl Workspace {
         nucleotide_logging::info!("Plain text completion processing complete - view dismissed");
     }
 
-    /// Handle completion acceptance - insert the selected text into the editor (DEPRECATED)
+    // /// Handle completion acceptance - insert the selected text into the editor (DEPRECATED)
     // removed unused handle_completion_accepted
 
     /// Accept the current completion selection
@@ -6098,7 +6102,7 @@ impl Workspace {
         }
     }
 
-    /// Trigger completion UI based on current editor state
+    // /// Trigger completion UI based on current editor state
 
     /// Send a key directly to Helix, ensuring the editor has focus
     fn send_helix_key(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -6452,15 +6456,15 @@ impl Render for Workspace {
         let editor = &self.core.read(cx).editor;
         let focused_file_name = (|| {
             let view = editor.tree.get(editor.tree.focus);
-            if editor.tree.contains(view.id) {
-                if let Some(doc) = editor.document(view.doc) {
-                    return doc.path().map(|p| {
-                        p.file_name()
-                            .and_then(|name| name.to_str())
-                            .map(std::string::ToString::to_string)
-                            .unwrap_or_else(|| p.display().to_string())
-                    });
-                }
+            if editor.tree.contains(view.id)
+                && let Some(doc) = editor.document(view.doc)
+            {
+                return doc.path().map(|p| {
+                    p.file_name()
+                        .and_then(|name| name.to_str())
+                        .map(std::string::ToString::to_string)
+                        .unwrap_or_else(|| p.display().to_string())
+                });
             }
             None
         })();

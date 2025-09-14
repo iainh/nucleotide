@@ -542,7 +542,6 @@ impl Render for ThemeDebugView {
         // Build a virtualized list with our rows and a scrollbar
         let list = gpui::uniform_list("theme-debug-list", items.len(), {
             let items = items.clone();
-            let tokens = tokens; // Copy
             cx.processor(move |_this, range: std::ops::Range<usize>, _window, _cx| {
                 let mut els: Vec<gpui::AnyElement> = Vec::with_capacity(range.end - range.start);
                 for ix in range {

@@ -755,6 +755,5 @@ mod tests {
 
         let _element = tree.build();
         // Test would verify the element structure in a real implementation
-        assert!(true); // Placeholder assertion
     }
 }

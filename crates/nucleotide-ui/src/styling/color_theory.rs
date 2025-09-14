@@ -886,7 +886,8 @@ mod tests {
 
         // Separator may have different hue due to saturation reduction, but should be similar
         let hue_diff = (chrome_colors.separator_color.h - blue_surface.h).abs();
-        assert!(hue_diff < 0.1 || hue_diff > (1.0 - 0.1)); // Allow for hue wrap-around
+        // Allow for hue wrap-around by ensuring it's not in the middle range
+        assert!(!(0.1..=0.9).contains(&hue_diff));
     }
 
     #[test]

@@ -25,7 +25,9 @@ pub use linux_titlebar::LinuxTitlebar;
 #[cfg(target_os = "linux")]
 pub use linux_window_controls::LinuxWindowControls;
 
-use gpui::{AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div};
+use gpui::{AppContext, Context, Entity, IntoElement, Render, Window};
+#[cfg(not(target_os = "macos"))]
+use gpui::{ParentElement, Styled, div};
 
 pub struct TitleBar {
     platform_titlebar: Entity<PlatformTitleBar>,

@@ -2,10 +2,13 @@
 
 use nucleotide_events::v2::terminal::TerminalId;
 
+#[cfg(feature = "emulator")]
 use gpui::AppContext; // bring trait into scope for Context::new
 #[cfg(feature = "emulator")]
 use gpui::FontWeight;
-use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, rgb};
+#[cfg(feature = "emulator")]
+use gpui::rgb;
+use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div};
 #[cfg(feature = "emulator")]
 use nucleotide_terminal::frame::{Cell, FramePayload, GridDiff, GridSnapshot};
 use nucleotide_ui::ThemedContext;

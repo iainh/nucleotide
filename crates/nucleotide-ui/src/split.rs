@@ -44,6 +44,7 @@ impl DragRuntimeState {
 /// - `handle_px`: drag handle thickness (visual/hit)
 /// - `on_change`: callback invoked with the new width during drag
 /// - `default_px`: width to snap to on double-click
+#[allow(clippy::too_many_arguments)]
 pub fn sidebar_split<L: IntoElement, R: IntoElement>(
     width_px: f32,
     min_px: f32,
@@ -276,6 +277,7 @@ pub fn bottom_panel_split<C: IntoElement>(
 
 /// A two-pane adjustable split with a draggable divider.
 /// Uses a fraction in [0,1] for the first pane size along the axis.
+#[allow(clippy::too_many_arguments)]
 pub fn two_pane_split<A: IntoElement, B: IntoElement>(
     horizontal: bool,
     fraction: f32,

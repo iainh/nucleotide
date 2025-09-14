@@ -4108,12 +4108,7 @@ impl Application {
         let server_start_timeout = tokio::time::Duration::from_secs(15); // Generous timeout for server startup
         match tokio::time::timeout(
             server_start_timeout,
-            bridge.start_server(
-                &mut self.editor,
-                &workspace_root.to_path_buf(),
-                server_name,
-                language_id,
-            ),
+            bridge.start_server(&mut self.editor, workspace_root, server_name, language_id),
         )
         .await
         {

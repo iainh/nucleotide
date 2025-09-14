@@ -1579,10 +1579,10 @@ impl Render for OverlayView {
                 let panel_focus_for_keys = panel_focus.clone();
 
                 // Sync from window-level resize state
-                if let Ok(st) = self.resize_state.lock() {
-                    if (st.height - self.terminal_height_px).abs() >= 0.5 {
-                        self.terminal_height_px = st.height;
-                    }
+                if let Ok(st) = self.resize_state.lock()
+                    && (st.height - self.terminal_height_px).abs() >= 0.5
+                {
+                    self.terminal_height_px = st.height;
                 }
 
                 // Dynamically compute terminal cols/rows from current window bounds and font metrics
@@ -1605,14 +1605,11 @@ impl Render for OverlayView {
                         // If panel disappeared mid-render, skip sizing
                         return div().into_any_element();
                     };
-                    let changed = match self.last_terminal_size {
+                    let changed = !matches!(
+                        self.last_terminal_size,
                         Some((id, last_c, last_r))
-                            if id == active_id && last_c == cols && last_r == rows =>
-                        {
-                            false
-                        }
-                        _ => true,
-                    };
+                            if id == active_id && last_c == cols && last_r == rows
+                    );
                     if changed {
                         self.last_terminal_size = Some((active_id, cols, rows));
                         core.update(cx, |app, _| {
@@ -1630,8 +1627,8 @@ impl Render for OverlayView {
                                         id: active_id,
                                         cols,
                                         rows,
-                                        cell_width: char_w as f32,
-                                        cell_height: line_h as f32,
+                                        cell_width: char_w,
+                                        cell_height: line_h,
                                     },
                                 );
                             }

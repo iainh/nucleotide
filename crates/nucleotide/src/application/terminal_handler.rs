@@ -1,5 +1,4 @@
 // ABOUTME: Terminal runtime handler; consumes terminal events and updates view state
-#![cfg(feature = "terminal-emulator")]
 
 use nucleotide_core as core;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
@@ -42,6 +41,7 @@ impl TerminalRuntimeHandler {
         self.sessions.get(&id).map(|e| e.view.clone())
     }
 
+    #[allow(clippy::await_holding_lock)]
     fn handle_spawn(&mut self, id: TerminalId, cfg: &TerminalSessionCfg) {
         let cfg = cfg.clone();
         let (session, mut rx) =
@@ -81,7 +81,7 @@ impl TerminalRuntimeHandler {
         let input_task = std::thread::spawn(move || {
             while let Ok(bytes) = rx_input.recv() {
                 // Best-effort write; ignore errors to keep loop alive until channel closes
-                let _ = futures_executor::block_on(async {
+                futures_executor::block_on(async {
                     if let Ok(guard) = session_for_input.lock() {
                         let _ = guard.write(&bytes).await;
                     }
@@ -100,6 +100,11 @@ impl TerminalRuntimeHandler {
             },
         );
         info!(terminal_id=?id, "Terminal session spawned and consumer started");
+    }
+}
+impl Default for TerminalRuntimeHandler {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -123,10 +128,10 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 self.handle_spawn(*id, &cfg);
             }
             TerminalEvent::Resized { id, cols, rows } => {
-                if let Some(entry) = self.sessions.get(id) {
-                    if let Ok(session) = entry.session.lock() {
-                        let _ = futures_executor::block_on(session.resize(*cols, *rows));
-                    }
+                if let Some(entry) = self.sessions.get(id)
+                    && let Ok(session) = entry.session.lock()
+                {
+                    let _ = futures_executor::block_on(session.resize(*cols, *rows));
                 }
             }
             TerminalEvent::ResizedWithMetrics {
@@ -136,18 +141,18 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 cell_width,
                 cell_height,
             } => {
-                if let Some(entry) = self.sessions.get(id) {
-                    if let Ok(session) = entry.session.lock() {
-                        // Push control message to engine
-                        let _ = session.control_sender().send(ControlMsg::Resize {
-                            cols: *cols,
-                            rows: *rows,
-                            cell_width: *cell_width,
-                            cell_height: *cell_height,
-                        });
-                        // Also resize PTY to maintain app expectations
-                        let _ = futures_executor::block_on(session.resize(*cols, *rows));
-                    }
+                if let Some(entry) = self.sessions.get(id)
+                    && let Ok(session) = entry.session.lock()
+                {
+                    // Push control message to engine
+                    let _ = session.control_sender().send(ControlMsg::Resize {
+                        cols: *cols,
+                        rows: *rows,
+                        cell_width: *cell_width,
+                        cell_height: *cell_height,
+                    });
+                    // Also resize PTY to maintain app expectations
+                    let _ = futures_executor::block_on(session.resize(*cols, *rows));
                 }
             }
             TerminalEvent::Input { id, bytes } => {

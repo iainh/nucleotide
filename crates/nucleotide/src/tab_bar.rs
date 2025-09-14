@@ -364,6 +364,7 @@ impl RenderOnce for TabBar {
 
 // Helpers to improve function shape and centralize control flow
 impl TabBar {
+    #[allow(clippy::too_many_arguments)]
     fn render_tabs_row(
         &self,
         tabs: Vec<Tab>,
