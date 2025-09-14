@@ -397,7 +397,7 @@ impl EditorTokens {
 
         Self {
             background: if is_dark {
-                base_colors.neutral_900
+                base_colors.neutral_50
             } else {
                 base_colors.neutral_50
             },
