@@ -427,10 +427,13 @@ fn window_options(
         show: true,
         kind: WindowKind::Normal,
         is_movable: true,
+        is_resizable: true,
+        is_minimizable: true,
         display_id: None,
         window_background,
         window_decorations: Some(window_decorations),
         window_min_size: Some(gpui::size(px(400.0), px(300.0))),
+        tabbing_identifier: None,
     }
 }
 

@@ -1113,6 +1113,7 @@ impl OverlayView {
                         files: false,      // Don't allow file selection
                         directories: true, // Allow directory selection
                         multiple: false,   // Single directory only
+                        prompt: Default::default(),
                     };
 
                     // Open the native directory picker
