@@ -53,10 +53,14 @@ impl DiagnosticsPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         nucleotide_logging::info!("DIAG: DiagnosticsPanel created");
+        let focus_handle = cx.focus_handle();
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+            coord.set_diagnostics_focus(focus_handle.clone());
+        }
         Self {
             lsp_state,
             filter,
-            focus: cx.focus_handle(),
+            focus: focus_handle,
             selected_index: 0,
         }
     }

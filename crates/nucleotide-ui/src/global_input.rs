@@ -38,6 +38,8 @@ pub struct FocusCoordinator {
     completion: Arc<RwLock<Option<FocusHandle>>>,
     prompt: Arc<RwLock<Option<FocusHandle>>>,
     terminal: Arc<RwLock<Option<FocusHandle>>>,
+    picker: Arc<RwLock<Option<FocusHandle>>>,
+    diagnostics: Arc<RwLock<Option<FocusHandle>>>,
 }
 
 impl FocusCoordinator {
@@ -75,6 +77,24 @@ impl FocusCoordinator {
     }
     pub fn terminal_focus(&self) -> Option<FocusHandle> {
         self.terminal.read().ok().and_then(|g| g.clone())
+    }
+
+    pub fn set_picker_focus(&self, h: FocusHandle) {
+        if let Ok(mut slot) = self.picker.write() {
+            *slot = Some(h);
+        }
+    }
+    pub fn picker_focus(&self) -> Option<FocusHandle> {
+        self.picker.read().ok().and_then(|g| g.clone())
+    }
+
+    pub fn set_diagnostics_focus(&self, h: FocusHandle) {
+        if let Ok(mut slot) = self.diagnostics.write() {
+            *slot = Some(h);
+        }
+    }
+    pub fn diagnostics_focus(&self) -> Option<FocusHandle> {
+        self.diagnostics.read().ok().and_then(|g| g.clone())
     }
 }
 

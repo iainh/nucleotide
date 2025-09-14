@@ -283,6 +283,11 @@ impl PickerStyle {
 
 impl PickerView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        if let Some(coord) = cx.try_global::<crate::FocusCoordinator>() {
+            coord.set_picker_focus(focus_handle.clone());
+        }
+
         Self {
             query: SharedString::default(),
             cursor_position: 0,
@@ -290,7 +295,7 @@ impl PickerView {
             filtered_indices: Vec::new(),
             selected_index: 0,
             matcher: None,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             list_scroll_handle: UniformListScrollHandle::new(),
             show_preview: true,
             preview_content: None,
@@ -316,6 +321,11 @@ impl PickerView {
     pub fn new_with_theme(theme: &helix_view::Theme, cx: &mut Context<Self>) -> Self {
         let style = PickerStyle::from_theme(theme);
 
+        let focus_handle = cx.focus_handle();
+        if let Some(coord) = cx.try_global::<crate::FocusCoordinator>() {
+            coord.set_picker_focus(focus_handle.clone());
+        }
+
         Self {
             query: SharedString::default(),
             cursor_position: 0,
@@ -323,7 +333,7 @@ impl PickerView {
             filtered_indices: Vec::new(),
             selected_index: 0,
             matcher: None,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             list_scroll_handle: UniformListScrollHandle::new(),
             show_preview: true,
             preview_content: None,
