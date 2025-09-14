@@ -6559,11 +6559,12 @@ impl Render for Workspace {
             .child({
                 // Tab bar at the top of editor area, consistently wrapped in a Div
                 let debug = self.debug_colors_enabled;
+                let debug_border = cx.theme().tokens.chrome.border_default;
                 let tab = self.render_tab_bar(window, cx);
                 div()
                     .when(debug, |d| {
                         // Tab bar wrapper (blue)
-                        d.border_1().border_color(gpui::hsla(0.60, 0.80, 0.60, 1.0))
+                        d.border_1().border_color(debug_border)
                     })
                     .child(tab)
             })
@@ -7025,12 +7026,11 @@ impl Render for Workspace {
                 .min_h(px(0.0))
                 // Ensure solid fill regardless of nested sizing by using an absolute overlay
                 .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .bg(gpui::hsla(0.14, 1.0, 0.6, 1.0)),
+                    div().absolute().top_0().left_0().size_full().bg(cx
+                        .theme()
+                        .tokens
+                        .chrome
+                        .surface),
                 )
                 .child(
                     div()
@@ -7039,8 +7039,8 @@ impl Render for Workspace {
                         .left_0()
                         .px(px(6.0))
                         .py(px(2.0))
-                        .bg(gpui::hsla(0.14, 1.0, 0.3, 1.0))
-                        .text_color(gpui::black())
+                        .bg(cx.theme().tokens.chrome.surface_active)
+                        .text_color(cx.theme().tokens.chrome.text_on_chrome)
                         .child("FILE TREE"),
                 );
 
@@ -7200,7 +7200,10 @@ impl Render for Workspace {
                             // Overlay our own visible handle positioned at top of the panel
                             .child({
                                 let handle_h = 6.0f32;
-                                let sep_color = gpui::hsla(0.0, 0.0, 0.55, 0.6);
+                                let sep_color = nucleotide_ui::tokens::with_alpha(
+                                    cx.theme().tokens.chrome.border_default,
+                                    0.6,
+                                );
                                 div()
                                     .absolute()
                                     .left_0()
@@ -7326,7 +7329,14 @@ impl Render for Workspace {
                     })
                     // Vertical handle at the boundary
                     .child({
-                        let sep_color = gpui::hsla(0.0, 0.0, 0.55, 0.6);
+                        let sep_color = nucleotide_ui::tokens::with_alpha(
+                            cx.theme().tokens.chrome.border_default,
+                            0.6,
+                        );
+                        let sep_color_hover = nucleotide_ui::tokens::with_alpha(
+                            cx.theme().tokens.chrome.border_default,
+                            0.9,
+                        );
                         div()
                             .absolute()
                             .top_0()
@@ -7339,7 +7349,7 @@ impl Render for Workspace {
                                     .w(px(handle_visual_w))
                                     .h_full()
                                     .bg(sep_color)
-                                    .hover(|d| d.bg(gpui::hsla(0.0, 0.0, 0.55, 0.9))),
+                                    .hover(|d| d.bg(sep_color_hover)),
                             )
                             .on_mouse_down(
                                 MouseButton::Left,

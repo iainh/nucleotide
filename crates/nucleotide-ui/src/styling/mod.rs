@@ -1,6 +1,7 @@
 // ABOUTME: Advanced styling system for nucleotide-ui components
 // ABOUTME: Provides style computation, variants, responsive design, and animations
 
+use crate::tokens::with_alpha;
 use crate::{DesignTokens, Theme};
 use gpui::{Hsla, Pixels, px};
 use std::time::Duration;
@@ -237,23 +238,19 @@ impl<'a> StyleContext<'a> {
 
         // Set border visibility and shadow for non-ghost variants
         if self.variant != "ghost" {
-            // Add subtle shadow for depth and visual hierarchy
+            // Add subtle shadow for depth and visual hierarchy derived from tokens
+            let base_shadow = if self.is_dark_theme { 0.25 } else { 0.10 };
+            let shadow_color = with_alpha(self.tokens.chrome.text_on_chrome, base_shadow);
             style.shadow = Some(BoxShadow {
                 offset_x: px(0.0),
                 offset_y: px(1.0),
                 blur_radius: px(1.5), // Reduced blur radius for crisper borders
                 spread_radius: px(0.0),
-                color: if self.is_dark_theme {
-                    // For dark themes, use a darker shadow
-                    gpui::hsla(0.0, 0.0, 0.0, 0.25)
-                } else {
-                    // For light themes, use a lighter shadow
-                    gpui::hsla(0.0, 0.0, 0.0, 0.1)
-                },
+                color: shadow_color,
             });
         } else {
             // Ghost variants get transparent borders to maintain consistent box model
-            style.border_color = gpui::hsla(0.0, 0.0, 0.0, 0.0); // Transparent border
+            style.border_color = with_alpha(self.tokens.chrome.border_default, 0.0);
         }
 
         style
@@ -270,16 +267,14 @@ impl<'a> StyleContext<'a> {
 
                 // Enhance shadow on hover for non-ghost variants
                 if self.variant != "ghost" {
+                    let hover_shadow = if self.is_dark_theme { 0.30 } else { 0.15 };
+                    let shadow_color = with_alpha(self.tokens.chrome.text_on_chrome, hover_shadow);
                     style.shadow = Some(BoxShadow {
                         offset_x: px(0.0),
                         offset_y: px(2.0),
                         blur_radius: px(2.5), // Reduced blur radius for crisper borders
                         spread_radius: px(0.0),
-                        color: if self.is_dark_theme {
-                            gpui::hsla(0.0, 0.0, 0.0, 0.3)
-                        } else {
-                            gpui::hsla(0.0, 0.0, 0.0, 0.15)
-                        },
+                        color: shadow_color,
                     });
                 }
             }
@@ -290,16 +285,14 @@ impl<'a> StyleContext<'a> {
 
                 // Reduce shadow on active for pressed feeling
                 if self.variant != "ghost" {
+                    let active_shadow = if self.is_dark_theme { 0.40 } else { 0.20 };
+                    let shadow_color = with_alpha(self.tokens.chrome.text_on_chrome, active_shadow);
                     style.shadow = Some(BoxShadow {
                         offset_x: px(0.0),
                         offset_y: px(0.5),
                         blur_radius: px(1.0), // Minimal blur for active state
                         spread_radius: px(0.0),
-                        color: if self.is_dark_theme {
-                            gpui::hsla(0.0, 0.0, 0.0, 0.4)
-                        } else {
-                            gpui::hsla(0.0, 0.0, 0.0, 0.2)
-                        },
+                        color: shadow_color,
                     });
                 }
             }
@@ -399,17 +392,10 @@ impl<'a> StyleContext<'a> {
 
     /// Create an appropriate active color based on background
     fn create_active_color(&self, background: Hsla) -> Hsla {
-        use gpui::hsla;
-
         // For ghost variant, create a more pronounced overlay
         if self.variant == "ghost" {
-            return if self.is_dark_theme {
-                // Brighter overlay for dark themes
-                hsla(0.0, 0.0, 1.0, 0.15)
-            } else {
-                // Darker overlay for light themes
-                hsla(0.0, 0.0, 0.0, 0.15)
-            };
+            // Use a token-derived overlay to ensure consistent contrast
+            return with_alpha(self.tokens.chrome.text_on_chrome, 0.15);
         }
 
         // For transparent backgrounds, use surface active
