@@ -1507,7 +1507,7 @@ impl Render for OverlayView {
                 .bottom_0()
                 .left_0()
                 .occlude()
-                // Clicking outside the diagnostics panel dismisses it and restores editor focus group
+                // Clicking outside the diagnostics panel dismisses it and restores focus
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this: &mut OverlayView, _e, window, cx| {
@@ -1515,6 +1515,16 @@ impl Render for OverlayView {
                         window.disable_focus();
                         this.diagnostics_panel = None;
                         cx.emit(DismissEvent);
+                        // Try immediate focus restoration via coordinator for responsiveness
+                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                            let _ = coord.focus_first(
+                                window,
+                                &[
+                                    nucleotide_ui::FocusRole::Editor,
+                                    nucleotide_ui::FocusRole::FileTree,
+                                ],
+                            );
+                        }
                         cx.notify();
                     }),
                 )

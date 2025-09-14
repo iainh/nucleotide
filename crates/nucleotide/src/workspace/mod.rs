@@ -6445,8 +6445,23 @@ impl Render for Workspace {
 
         // Handle focus restoration if needed
         if self.view_manager.needs_focus_restore() {
-            // Focus the workspace; input routing will handle contexts
-            window.focus(&self.focus_handle);
+            // Prefer centralized focus roles when available; fall back to workspace focus
+            if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                // Prioritize returning focus to the editor; then terminal, picker, prompt, file tree, completion
+                let _ = coord.focus_first(
+                    window,
+                    &[
+                        nucleotide_ui::FocusRole::Editor,
+                        nucleotide_ui::FocusRole::Terminal,
+                        nucleotide_ui::FocusRole::Picker,
+                        nucleotide_ui::FocusRole::Prompt,
+                        nucleotide_ui::FocusRole::FileTree,
+                        nucleotide_ui::FocusRole::Completion,
+                    ],
+                );
+            } else {
+                window.focus(&self.focus_handle);
+            }
             self.view_manager.set_needs_focus_restore(false);
         }
 
