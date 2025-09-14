@@ -934,7 +934,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
+source = "git+https://github.com/zed-industries/zed?tag=v0.203.5#5f49cf7511f2aa71d95e9ce12f984cadc8950d06"
 dependencies = [
  "indexmap",
  "rustc-hash 2.1.1",
@@ -1368,7 +1368,7 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
+source = "git+https://github.com/zed-industries/zed?tag=v0.203.5#5f49cf7511f2aa71d95e9ce12f984cadc8950d06"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2989,7 +2989,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
+source = "git+https://github.com/zed-industries/zed?tag=v0.203.5#5f49cf7511f2aa71d95e9ce12f984cadc8950d06"
 dependencies = [
  "anyhow",
  "as-raw-xcb-connection",
@@ -3056,6 +3056,7 @@ dependencies = [
  "slotmap",
  "smallvec",
  "smol",
+ "stacksafe",
  "strum 0.27.2",
  "sum_tree",
  "taffy",
@@ -3083,7 +3084,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
+source = "git+https://github.com/zed-industries/zed?tag=v0.203.5#5f49cf7511f2aa71d95e9ce12f984cadc8950d06"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -3565,7 +3566,7 @@ dependencies = [
 [[package]]
 name = "http_client"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
+source = "git+https://github.com/zed-industries/zed?tag=v0.203.5#5f49cf7511f2aa71d95e9ce12f984cadc8950d06"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4431,7 +4432,7 @@ dependencies = [
 [[package]]
 name = "media"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
+source = "git+https://github.com/zed-industries/zed?tag=v0.203.5#5f49cf7511f2aa71d95e9ce12f984cadc8950d06"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -5653,6 +5654,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro-error-attr2"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96de42df36bb9bba5542fe9f1a054b8cc87e172759a1868aa05c1f3acc89dfc5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
+name = "proc-macro-error2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802"
+dependencies = [
+ "proc-macro-error-attr2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5687,6 +5710,15 @@ checksum = "52717f9a02b6965224f95ca2a81e2e0c5c43baacd28ca057577988930b6c3d5b"
 dependencies = [
  "quote",
  "syn 2.0.106",
+]
+
+[[package]]
+name = "psm"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e944464ec8536cd1beb0bbfd96987eb5e3b72f2ecdafdc5c769a37f1fa2ae1f"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -6020,7 +6052,7 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
+source = "git+https://github.com/zed-industries/zed?tag=v0.203.5#5f49cf7511f2aa71d95e9ce12f984cadc8950d06"
 dependencies = [
  "derive_refineable",
  "workspace-hack",
@@ -6511,7 +6543,7 @@ checksum = "0f7d95a54511e0c7be3f51e8867aa8cf35148d7b9445d44de2f943e2b206e749"
 [[package]]
 name = "semantic_version"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
+source = "git+https://github.com/zed-industries/zed?tag=v0.203.5#5f49cf7511f2aa71d95e9ce12f984cadc8950d06"
 dependencies = [
  "anyhow",
  "serde",
@@ -6920,6 +6952,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 
 [[package]]
+name = "stacker"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cddb07e32ddb770749da91081d8d0ac3a16f1a569a18b20348cd371f5dead06b"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "psm",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "stacksafe"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d9c1172965d317e87ddb6d364a040d958b40a1db82b6ef97da26253a8b3d090"
+dependencies = [
+ "stacker",
+ "stacksafe-macro",
+]
+
+[[package]]
+name = "stacksafe-macro"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "172175341049678163e979d9107ca3508046d4d2a7c6682bee46ac541b17db69"
+dependencies = [
+ "proc-macro-error2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6992,7 +7058,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
+source = "git+https://github.com/zed-industries/zed?tag=v0.203.5#5f49cf7511f2aa71d95e9ce12f984cadc8950d06"
 dependencies = [
  "arrayvec",
  "log",
@@ -8030,7 +8096,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "util"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
+source = "git+https://github.com/zed-industries/zed?tag=v0.203.5#5f49cf7511f2aa71d95e9ce12f984cadc8950d06"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -8068,7 +8134,7 @@ dependencies = [
 [[package]]
 name = "util_macros"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.200.5#537f6781a9dd6d453a3e132e10528982fd299cb5"
+source = "git+https://github.com/zed-industries/zed?tag=v0.203.5#5f49cf7511f2aa71d95e9ce12f984cadc8950d06"
 dependencies = [
  "quote",
  "syn 2.0.106",
@@ -9076,7 +9142,7 @@ checksum = "bec9e4a500ca8864c5b47b8b482a73d62e4237670e5b5f1d6b9e3cae50f28f2b"
 [[package]]
 name = "xim"
 version = "0.4.0"
-source = "git+https://github.com/XDeme1/xim-rs?rev=d50d461764c2213655cd9cf65a0ea94c70d3c4fd#d50d461764c2213655cd9cf65a0ea94c70d3c4fd"
+source = "git+https://github.com/zed-industries/xim-rs?rev=c0a70c1bd2ce197364216e5e818a2cb3adb99a8d#c0a70c1bd2ce197364216e5e818a2cb3adb99a8d"
 dependencies = [
  "ahash",
  "hashbrown 0.14.5",
@@ -9089,7 +9155,7 @@ dependencies = [
 [[package]]
 name = "xim-ctext"
 version = "0.3.0"
-source = "git+https://github.com/XDeme1/xim-rs?rev=d50d461764c2213655cd9cf65a0ea94c70d3c4fd#d50d461764c2213655cd9cf65a0ea94c70d3c4fd"
+source = "git+https://github.com/zed-industries/xim-rs?rev=c0a70c1bd2ce197364216e5e818a2cb3adb99a8d#c0a70c1bd2ce197364216e5e818a2cb3adb99a8d"
 dependencies = [
  "encoding_rs",
 ]
@@ -9097,7 +9163,7 @@ dependencies = [
 [[package]]
 name = "xim-parser"
 version = "0.2.1"
-source = "git+https://github.com/XDeme1/xim-rs?rev=d50d461764c2213655cd9cf65a0ea94c70d3c4fd#d50d461764c2213655cd9cf65a0ea94c70d3c4fd"
+source = "git+https://github.com/zed-industries/xim-rs?rev=c0a70c1bd2ce197364216e5e818a2cb3adb99a8d#c0a70c1bd2ce197364216e5e818a2cb3adb99a8d"
 dependencies = [
  "bitflags 2.9.3",
 ]

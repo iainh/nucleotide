@@ -30,9 +30,9 @@ homepage = "https://github.com/iainh/nucleotide"
 
 [workspace.dependencies]
 # GPUI and Zed dependencies - using v0.200.5 tag
-gpui = { git = "https://github.com/zed-industries/zed", tag = "v0.200.5", features = ["test-support"] }
-gpui_tokio = { git = "https://github.com/zed-industries/zed", tag = "v0.200.5" }
-sum_tree = { git = "https://github.com/zed-industries/zed", tag = "v0.200.5" }
+gpui = { git = "https://github.com/zed-industries/zed", tag = "v0.203.5", features = ["test-support"] }
+gpui_tokio = { git = "https://github.com/zed-industries/zed", tag = "v0.203.5" }
+sum_tree = { git = "https://github.com/zed-industries/zed", tag = "v0.203.5" }
 
 # Helix dependencies - using forked version for consistency
 helix-core = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
@@ -119,5 +119,3 @@ codegen-units = 1
 strip = "debuginfo"
 split-debuginfo = "packed"  # Faster linking on macOS
 incremental = false  # Disable for release builds for maximum optimization
-
-# Local gpui patch available in docs/patches; not wired by default
