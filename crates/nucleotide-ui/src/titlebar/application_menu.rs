@@ -3,7 +3,7 @@
 
 use gpui::{
     Context, ElementId, IntoElement, ParentElement, Pixels, Render, SharedString, Styled, Window,
-    actions, div, hsla,
+    actions, deferred, div, hsla,
 };
 
 use gpui::{OwnedMenu, OwnedMenuItem};
@@ -206,12 +206,16 @@ impl Render for ApplicationMenu {
         if let Some(idx) = self.open_index {
             let left = self.anchor_x.unwrap_or(12.0);
             container = container.child(
-                div()
-                    .absolute()
-                    .left(gpui::px(left))
-                    .top(row_h)
-                    .z_index(10)
-                    .child(self.render_dropdown_for(idx)),
+                // Defer drawing to the end to guarantee top-most stacking
+                deferred(
+                    div()
+                        .absolute()
+                        .left(gpui::px(left))
+                        .top(row_h)
+                        .z_index(2000)
+                        .child(self.render_dropdown_for(idx)),
+                )
+                .with_priority(200),
             );
 
             // Lightweight click-away within this row area: clicking the row background closes it
