@@ -87,9 +87,9 @@ pub use file_icon::FileIcon;
 pub use global_input::{
     DismissTarget, FocusCoordinator, FocusElement, FocusElementType,
     FocusGroup as GlobalFocusGroup, FocusGroupInfo, FocusIndicatorConfig, FocusIndicatorStyle,
-    FocusIndicatorStyles, FocusPriority, FocusedElementInfo, GlobalInputDispatcher, InputContext,
-    NavigationDirection as GlobalNavigationDirection, NavigationOptions, ShortcutAction,
-    ShortcutDefinition, ShortcutInfo,
+    FocusIndicatorStyles, FocusPriority, FocusRole, FocusedElementInfo, GlobalInputDispatcher,
+    InputContext, NavigationDirection as GlobalNavigationDirection, NavigationOptions,
+    ShortcutAction, ShortcutDefinition, ShortcutInfo,
 };
 pub use list_item::{
     ListItem, ListItemSpacing, ListItemState, ListItemVariant, SelectionMode, SelectionState,

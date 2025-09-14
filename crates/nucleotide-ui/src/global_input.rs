@@ -1709,6 +1709,53 @@ fn ctrl_byte_for(key: &str) -> Option<u8> {
     }
 }
 
+// === Focus utilities ===
+
+/// Logical focus roles supported by the app
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusRole {
+    Editor,
+    Completion,
+    Prompt,
+    Terminal,
+    Picker,
+    Diagnostics,
+    FileTree,
+}
+
+impl FocusCoordinator {
+    /// Focus the given role if a handle is registered. Returns true on success.
+    pub fn focus_role(&self, window: &mut gpui::Window, role: FocusRole) -> bool {
+        let handle = match role {
+            FocusRole::Editor => self.editor_focus(),
+            FocusRole::Completion => self.completion_focus(),
+            FocusRole::Prompt => self.prompt_focus(),
+            FocusRole::Terminal => self.terminal_focus(),
+            FocusRole::Picker => self.picker_focus(),
+            FocusRole::Diagnostics => self.diagnostics_focus(),
+            FocusRole::FileTree => self.file_tree_focus(),
+        };
+        if let Some(h) = handle {
+            if !h.is_focused(window) {
+                h.focus(window);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Focus the first available role in order. Returns true if any focus was applied.
+    pub fn focus_first(&self, window: &mut gpui::Window, roles: &[FocusRole]) -> bool {
+        for role in roles {
+            if self.focus_role(window, *role) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 impl Default for GlobalInputDispatcher {
     fn default() -> Self {
         Self::new()
