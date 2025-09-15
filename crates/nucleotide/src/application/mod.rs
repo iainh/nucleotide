@@ -93,24 +93,44 @@ use helix_view::{Editor, doc_mut, graphics::Rect, handlers::Handlers};
 
 // Helper function to find workspace root from a specific directory
 pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
-    // Check most common VCS types first for early exit optimization
+    // Prefer a Cargo workspace root when present
+    fn find_upwards_for(start: &Path, file: &str) -> Option<PathBuf> {
+        for ancestor in start.ancestors() {
+            let candidate = ancestor.join(file);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    fn cargo_toml_has_workspace(path: &Path) -> bool {
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.contains("[workspace]"))
+            .unwrap_or(false)
+    }
+
+    if let Some(manifest) = find_upwards_for(start_dir, "Cargo.toml") {
+        if cargo_toml_has_workspace(&manifest) {
+            if let Some(parent) = manifest.parent() {
+                return parent.to_path_buf();
+            }
+        }
+    }
+
+    // Fallback: VCS root detection
     const VCS_DIRS: &[&str] = &[".git", ".helix", ".hg", ".jj", ".svn"];
-
-    // Walk up the directory tree looking for VCS directories
     for ancestor in start_dir.ancestors() {
-        // Use path reuse optimization to avoid repeated allocations
         let mut vcs_path = ancestor.to_path_buf();
-
         for &vcs_dir in VCS_DIRS {
             vcs_path.push(vcs_dir);
             if vcs_path.exists() {
                 return ancestor.to_path_buf();
             }
-            vcs_path.pop(); // Reuse the PathBuf for next iteration
+            vcs_path.pop();
         }
     }
-
-    // If no VCS directory found, use the start directory
     start_dir.to_path_buf()
 }
 
