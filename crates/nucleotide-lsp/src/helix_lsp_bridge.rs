@@ -783,22 +783,10 @@ fn find_representative_file(
 
 /// For Rust, prefer a single workspace root and let rust-analyzer expand the workspace members.
 fn rust_root_dirs(workspace_root: &std::path::Path) -> Vec<PathBuf> {
-    let cargo_toml = workspace_root.join("Cargo.toml");
-    if cargo_toml.is_file() {
-        vec![workspace_root.to_path_buf()]
-    } else {
-        vec![workspace_root.to_path_buf()]
-    }
+    vec![workspace_root.to_path_buf()]
 }
 
-fn cargo_toml_has_workspace(path: &std::path::Path) -> bool {
-    if let Ok(contents) = std::fs::read_to_string(path) {
-        // Cheap check to avoid pulling in a full TOML parser here
-        contents.contains("[workspace]")
-    } else {
-        false
-    }
-}
+// removed: cargo_toml_has_workspace (no longer used)
 
 /// Find any .rs file within the directory up to a limited depth to use as a representative file.
 fn find_rs_file_shallow(root: &std::path::Path, max_depth: usize) -> Option<PathBuf> {
