@@ -1597,16 +1597,37 @@ impl Render for OverlayView {
                 .top_0()
                 .left_0()
                 .occlude() // Ensure overlay is on top of other elements
-                .on_mouse_down(MouseButton::Left, |_, _, _| {
-                    // Prevent click-through to elements below
-                })
+                // Clicking outside the completion popup dismisses it and restores focus
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this: &mut OverlayView, _e, window, cx| {
+                        window.disable_focus();
+                        this.completion_view = None;
+                        cx.emit(DismissEvent);
+                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                            let _ = coord.focus_first(
+                                window,
+                                &[
+                                    nucleotide_ui::FocusRole::Editor,
+                                    nucleotide_ui::FocusRole::FileTree,
+                                ],
+                            );
+                        }
+                        cx.notify();
+                    }),
+                )
                 .child(
                     anchored()
                         .position(point(cursor_x, cursor_y))
                         .anchor(Corner::TopLeft) // Anchor top-left of completion to cursor position
                         .offset(point(px(0.0), px(2.0))) // Small offset below cursor
                         .snap_to_window_with_margin(px(8.0))
-                        .child(completion_view.clone()),
+                        // Consume clicks inside the popup so they don't dismiss
+                        .child(
+                            div()
+                                .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                                .child(completion_view.clone()),
+                        ),
                 )
                 .into_any_element();
         }
