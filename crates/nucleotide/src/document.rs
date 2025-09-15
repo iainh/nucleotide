@@ -2933,35 +2933,56 @@ impl Element for DocumentElement {
                             let shaped_line = window.text_system()
                                 .shape_line(SharedString::from(line_str.clone()), self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
 
+                            // Helper for approximate HSLA equality to tolerate minor rounding differences
+                            #[inline]
+                            fn approx_hsla_eq(a: gpui::Hsla, b: gpui::Hsla) -> bool {
+                                let eh = (a.h - b.h).abs() <= 0.005;
+                                let es = (a.s - b.s).abs() <= 0.005;
+                                let el = (a.l - b.l).abs() <= 0.005;
+                                let ea = (a.a - b.a).abs() <= 0.005;
+                                eh && es && el && ea
+                            }
+
+                            // If this is the cursor line, paint the cursorline first (row-wide),
+                            // then paint selection backgrounds on top. For non-cursor lines,
+                            // paint any run backgrounds normally.
+                            if is_cursor_visual_line {
+                                if let Some(cursorline_bg) = cursorline_style {
+                                    let cursorline_bounds = Bounds {
+                                        origin: point(bounds.origin.x, line_y),
+                                        size: size(bounds.size.width, after_layout.line_height),
+                                    };
+                                    window.paint_quad(fill(cursorline_bounds, cursorline_bg));
+                                }
+                            }
+
                             // Paint background highlights using the shaped line for accurate positioning
                             let mut byte_offset = 0;
                             for run in &line_runs {
-                                // Do not overpaint the cursor row background with per-run backgrounds
-                                if !is_cursor_visual_line
-                                    && let Some(bg_color) = run.background_color
-                                {
-                                    // Calculate the x positions using the shaped line
-                                    let start_x = shaped_line.x_for_index(byte_offset);
-                                    let end_x = shaped_line.x_for_index(byte_offset + run.len);
-
-                                    let bg_bounds = Bounds {
-                                        origin: point(text_origin_x + start_x, line_y),
-                                        size: size(end_x - start_x, after_layout.line_height),
+                                if let Some(bg_color) = run.background_color {
+                                    // On the cursor line, only paint selection backgrounds over the cursorline;
+                                    // on other lines, paint all backgrounds as usual.
+                                    let should_paint = if is_cursor_visual_line {
+                                        let sel1 = tokens.editor.selection_primary;
+                                        let sel2 = tokens.editor.selection_secondary;
+                                        approx_hsla_eq(bg_color, sel1) || approx_hsla_eq(bg_color, sel2)
+                                    } else {
+                                        true
                                     };
-                                    window.paint_quad(fill(bg_bounds, bg_color));
+
+                                    if should_paint {
+                                        // Calculate the x positions using the shaped line
+                                        let start_x = shaped_line.x_for_index(byte_offset);
+                                        let end_x = shaped_line.x_for_index(byte_offset + run.len);
+
+                                        let bg_bounds = Bounds {
+                                            origin: point(text_origin_x + start_x, line_y),
+                                            size: size(end_x - start_x, after_layout.line_height),
+                                        };
+                                        window.paint_quad(fill(bg_bounds, bg_color));
+                                    }
                                 }
                                 byte_offset += run.len;
-                            }
-
-                            // Paint cursorline background after per-run backgrounds so it applies across the row
-                            if is_cursor_visual_line
-                                && let Some(cursorline_bg) = cursorline_style
-                            {
-                                let cursorline_bounds = Bounds {
-                                    origin: point(bounds.origin.x, line_y),
-                                    size: size(bounds.size.width, after_layout.line_height),
-                                };
-                                window.paint_quad(fill(cursorline_bounds, cursorline_bg));
                             }
 
                             if let Err(e) = shaped_line.paint(point(text_origin_x, line_y), after_layout.line_height, window, cx) {
