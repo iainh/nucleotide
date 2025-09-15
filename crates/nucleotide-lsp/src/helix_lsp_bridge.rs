@@ -1,6 +1,7 @@
 // ABOUTME: Bridge between ProjectLspManager and Helix's LSP Registry system
 // ABOUTME: Provides seamless integration without breaking existing LSP infrastructure
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -42,6 +43,8 @@ pub struct HelixLspBridge {
     project_event_tx: broadcast::Sender<ProjectLspEvent>,
     /// Environment provider for LSP server startup
     environment_provider: Option<Arc<dyn EnvironmentProvider>>,
+    /// Map of (workspace_root, server_name) -> LanguageServerId to scope reuse by workspace
+    workspace_server_map: Arc<std::sync::Mutex<HashMap<(PathBuf, String), LanguageServerId>>>,
 }
 
 impl HelixLspBridge {
@@ -50,6 +53,7 @@ impl HelixLspBridge {
         Self {
             project_event_tx,
             environment_provider: None,
+            workspace_server_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -115,6 +119,7 @@ impl HelixLspBridge {
         Self {
             project_event_tx,
             environment_provider: Some(environment_provider),
+            workspace_server_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -151,6 +156,15 @@ impl HelixLspBridge {
             .start_server_via_registry(editor, language_id, workspace_root, server_name)
             .await?;
 
+        // Record mapping for future scoped reuse
+        {
+            let mut map = self.workspace_server_map.lock().unwrap();
+            map.insert(
+                (workspace_root.to_path_buf(), server_name.to_string()),
+                server_id,
+            );
+        }
+
         // Send success event
         let _ = self
             .project_event_tx
@@ -177,6 +191,12 @@ impl HelixLspBridge {
         // Remove server from registry
         editor.language_servers.remove_by_id(server_id);
 
+        // Remove any mapping entries referencing this server_id
+        {
+            let mut map = self.workspace_server_map.lock().unwrap();
+            map.retain(|_, &mut v| v != server_id);
+        }
+
         info!("Server stopped successfully");
         Ok(())
     }
@@ -187,17 +207,26 @@ impl HelixLspBridge {
         &self,
         editor: &Editor,
         server_name: &str,
-        _workspace_root: &std::path::Path,
+        workspace_root: &std::path::Path,
     ) -> Option<LanguageServerId> {
-        // Check all active language servers
-        for client in editor.language_servers.iter_clients() {
-            if client.name() == server_name {
-                // Check if this server is serving the workspace
-                // This is a simplified check - in practice would need to verify
-                // the server's workspace folders
-                return Some(client.id());
+        // First, consult our scoped map to ensure reuse only within the same workspace
+        if let Some(&id) = self
+            .workspace_server_map
+            .lock()
+            .unwrap()
+            .get(&(workspace_root.to_path_buf(), server_name.to_string()))
+        {
+            // Verify the client is still alive in the editor
+            if editor.language_server_by_id(id).is_some() {
+                return Some(id);
+            } else {
+                // Clean up stale mapping
+                let mut map = self.workspace_server_map.lock().unwrap();
+                map.remove(&(workspace_root.to_path_buf(), server_name.to_string()));
             }
         }
+
+        // If future helix_lsp exposes workdir/workspace_folders, we could fall back to checking those here.
         None
     }
 
@@ -276,18 +305,9 @@ impl HelixLspBridge {
         }
 
         // Create root directories for server startup
-        // For Rust, prefer Cargo workspace roots or nested Cargo.toml directories
+        // For Rust, prefer a single Cargo workspace root and let rust-analyzer expand members
         let root_dirs = if language_id == "rust" {
-            let rust_roots = find_rust_workspace_roots(workspace_root);
-            if !rust_roots.is_empty() {
-                info!(
-                    count = rust_roots.len(),
-                    "Using detected Rust workspace roots"
-                );
-                rust_roots
-            } else {
-                vec![workspace_root.to_path_buf()]
-            }
+            rust_root_dirs(workspace_root)
         } else {
             vec![workspace_root.to_path_buf()]
         };
@@ -363,45 +383,17 @@ impl HelixLspBridge {
             "Starting language server lookup through Helix registry"
         );
 
-        // Find a representative file within the workspace for rust-analyzer to determine proper workspace root
-        // This is critical - Helix expects a file path, not the workspace root directory
-        //
-        // IMPORTANT: If we detected a Cargo workspace (i.e. multiple roots including the workspace root),
-        // prefer the workspace Cargo.toml as the representative file. This ensures rust-analyzer initializes
-        // at the workspace root instead of a nested crate, avoiding overlapping roots and missing completions.
+        // Representative document for server lookup
+        // For Rust, avoid using Cargo.toml; prefer an active .rs or a conventional entry point, else None
         let doc_path = if language_id == "rust" {
-            let workspace_manifest = workspace_root.join("Cargo.toml");
-            let is_workspace =
-                workspace_manifest.is_file() && cargo_toml_has_workspace(&workspace_manifest);
-
-            if is_workspace && root_dirs.len() > 1 {
-                // Force workspace-level initialization for rust-analyzer
-                Some(workspace_manifest)
-            } else {
-                // First, prefer the currently active Rust document (so the chosen root matches the open file)
-                if let Some(active_rs) = find_active_rust_document(editor, workspace_root) {
-                    Some(active_rs)
-                } else {
-                    // Prefer a Rust source file from one of the detected roots; fall back as needed
-                    // Skip choosing from the bare workspace root if we also detected member roots.
-                    let mut candidate: Option<PathBuf> = None;
-                    for root in &root_dirs {
-                        // If this is the workspace root and we have more than one root, skip it for representative file selection
-                        if root == workspace_root && root_dirs.len() > 1 {
-                            continue;
-                        }
-                        if let Some(rs) = find_rs_file_shallow(root, 3) {
-                            candidate = Some(rs);
-                            break;
-                        }
+            find_active_rust_document(editor, workspace_root).or_else(|| {
+                for root in &root_dirs {
+                    if let Some(rs) = find_rs_file_shallow(root, 3) {
+                        return Some(rs);
                     }
-                    // As a very last resort, try the workspace root
-                    if candidate.is_none() {
-                        candidate = find_rs_file_shallow(workspace_root, 2);
-                    }
-                    candidate.or_else(|| find_representative_file(workspace_root, language_id))
                 }
-            }
+                None
+            })
         } else {
             find_representative_file(workspace_root, language_id)
         };
@@ -766,12 +758,6 @@ fn find_representative_file(
 ) -> Option<PathBuf> {
     // For Rust projects, try to find common files that rust-analyzer can use
     if language_id == "rust" {
-        // First, try Cargo.toml (the project root marker)
-        let cargo_toml = workspace_root.join("Cargo.toml");
-        if cargo_toml.exists() && cargo_toml.is_file() {
-            return Some(cargo_toml);
-        }
-
         // Try src/main.rs
         let main_rs = workspace_root.join("src").join("main.rs");
         if main_rs.exists() && main_rs.is_file() {
@@ -795,81 +781,12 @@ fn find_representative_file(
     None
 }
 
-/// For Rust workspaces, try to identify better workspace roots than the VCS root.
-/// Strategy:
-/// - If the provided root has a Cargo.toml with a [workspace] table, use it.
-/// - Else, collect immediate and shallow nested directories that contain a Cargo.toml.
-/// - Limit breadth and depth to avoid costly scans in very large repos.
-fn find_rust_workspace_roots(workspace_root: &std::path::Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-
-    let cargo_toml = workspace_root.join("Cargo.toml");
-    let is_workspace =
-        cargo_toml.exists() && cargo_toml.is_file() && cargo_toml_has_workspace(&cargo_toml);
-    if is_workspace {
-        // Include the workspace root to serve as a workspaceFolder for RA
-        roots.push(workspace_root.to_path_buf());
-        // Fall through to also collect shallow member crates so we can choose better representative files
-    } else if cargo_toml.exists() && cargo_toml.is_file() {
-        // Single crate root
-        roots.push(workspace_root.to_path_buf());
-        return roots;
-    }
-
-    // Collect shallow nested Cargo.toml directories (depth 2). This helps pick member crates in a workspace.
-    const MAX_DIRS: usize = 64; // safety cap
-    let mut count = 0;
-    if let Ok(entries) = std::fs::read_dir(workspace_root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() && path.file_name().and_then(|s| s.to_str()) != Some("target") {
-                let cargo = path.join("Cargo.toml");
-                if cargo.exists() && cargo.is_file() {
-                    roots.push(path.clone());
-                    count += 1;
-                    if count >= MAX_DIRS {
-                        break;
-                    }
-                    continue;
-                }
-                // One more level deep
-                if let Ok(subs) = std::fs::read_dir(&path) {
-                    for sub in subs.flatten() {
-                        let subpath = sub.path();
-                        if subpath.is_dir()
-                            && subpath.file_name().and_then(|s| s.to_str()) != Some("target")
-                        {
-                            let cargo2 = subpath.join("Cargo.toml");
-                            if cargo2.exists() && cargo2.is_file() {
-                                roots.push(subpath.clone());
-                                count += 1;
-                                if count >= MAX_DIRS {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if count >= MAX_DIRS {
-                break;
-            }
-        }
-    }
-
-    // Provide a stable ordering to reduce nondeterminism; lexicographic is fine
-    roots.sort_by(|a, b| a.as_os_str().cmp(b.as_os_str()));
-    roots
+/// For Rust, prefer a single workspace root and let rust-analyzer expand the workspace members.
+fn rust_root_dirs(workspace_root: &std::path::Path) -> Vec<PathBuf> {
+    vec![workspace_root.to_path_buf()]
 }
 
-fn cargo_toml_has_workspace(path: &std::path::Path) -> bool {
-    if let Ok(contents) = std::fs::read_to_string(path) {
-        // Cheap check to avoid pulling in a full TOML parser here
-        contents.contains("[workspace]")
-    } else {
-        false
-    }
-}
+// removed: cargo_toml_has_workspace (no longer used)
 
 /// Find any .rs file within the directory up to a limited depth to use as a representative file.
 fn find_rs_file_shallow(root: &std::path::Path, max_depth: usize) -> Option<PathBuf> {

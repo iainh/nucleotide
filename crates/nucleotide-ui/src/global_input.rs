@@ -1538,13 +1538,13 @@ pub fn encode_terminal_key_event(event: &KeyDownEvent) -> Vec<u8> {
     }
 
     // Ctrl-modified keys
-    if mods.control {
-        if let Some(b) = ctrl_byte_for(&ks.key) {
-            if mods.alt {
-                return vec![0x1B, b];
-            }
-            return vec![b];
+    if mods.control
+        && let Some(b) = ctrl_byte_for(&ks.key)
+    {
+        if mods.alt {
+            return vec![0x1B, b];
         }
+        return vec![b];
     }
 
     // Navigation and non-printables

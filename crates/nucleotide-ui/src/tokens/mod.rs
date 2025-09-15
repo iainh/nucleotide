@@ -396,11 +396,7 @@ impl EditorTokens {
         let selection_color = base_colors.primary_200;
 
         Self {
-            background: if is_dark {
-                base_colors.neutral_50
-            } else {
-                base_colors.neutral_50
-            },
+            background: base_colors.neutral_50,
             selection_primary: selection_color,
             selection_secondary: utils::with_alpha(selection_color, 0.3),
             cursor_normal: base_colors.primary_500,
