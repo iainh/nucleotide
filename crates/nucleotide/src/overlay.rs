@@ -1452,9 +1452,25 @@ impl Render for OverlayView {
                 .bottom_0()
                 .left_0()
                 .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, _| {
-                    // Prevent click-through to elements below
-                })
+                // Clicking outside the picker dismisses it and restores focus
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this: &mut OverlayView, _e, window, cx| {
+                        window.disable_focus();
+                        this.native_picker_view = None;
+                        cx.emit(DismissEvent);
+                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                            let _ = coord.focus_first(
+                                window,
+                                &[
+                                    nucleotide_ui::FocusRole::Editor,
+                                    nucleotide_ui::FocusRole::FileTree,
+                                ],
+                            );
+                        }
+                        cx.notify();
+                    }),
+                )
                 .child(
                     div()
                         .flex()
@@ -1462,6 +1478,8 @@ impl Render for OverlayView {
                         .justify_center()
                         .items_start()
                         .pt(tokens.sizes.space_8)
+                        // Consume clicks inside the picker so they don't dismiss
+                        .on_mouse_down(MouseButton::Left, |_, _, _| {})
                         .child(picker_view.clone()),
                 )
                 .into_any_element();
@@ -1480,9 +1498,25 @@ impl Render for OverlayView {
                 .bottom_0()
                 .left_0()
                 .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, _| {
-                    // Prevent click-through to elements below
-                })
+                // Clicking outside the prompt dismisses it and restores focus
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this: &mut OverlayView, _e, window, cx| {
+                        window.disable_focus();
+                        this.native_prompt_view = None;
+                        cx.emit(DismissEvent);
+                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                            let _ = coord.focus_first(
+                                window,
+                                &[
+                                    nucleotide_ui::FocusRole::Editor,
+                                    nucleotide_ui::FocusRole::FileTree,
+                                ],
+                            );
+                        }
+                        cx.notify();
+                    }),
+                )
                 .child(
                     div()
                         .flex()
@@ -1490,6 +1524,8 @@ impl Render for OverlayView {
                         .justify_center()
                         .items_start()
                         .pt(tokens.sizes.space_8)
+                        // Consume clicks inside the prompt so they don't dismiss
+                        .on_mouse_down(MouseButton::Left, |_, _, _| {})
                         .child(prompt_view.clone()),
                 )
                 .into_any_element();
