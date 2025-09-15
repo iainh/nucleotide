@@ -2293,7 +2293,7 @@ impl Element for DocumentElement {
             let text = doc.text();
             let anchor_line = text.char_to_line(view_offset.anchor);
             // Mirror Helix viewport: include vertical_offset (visual rows) for wrapped/non-wrapped
-            let top_visual = anchor_line.saturating_add(view_offset.vertical_offset as usize);
+            let top_visual = anchor_line.saturating_add(view_offset.vertical_offset);
             let y = px(top_visual as f32 * self.scroll_manager.line_height.get().0);
             // GPUI convention: negative offset when scrolled down
             // Use set_scroll_offset_from_helix to avoid marking as scrollbar-changed
@@ -2946,14 +2946,14 @@ impl Element for DocumentElement {
                             // If this is the cursor line, paint the cursorline first (row-wide),
                             // then paint selection backgrounds on top. For non-cursor lines,
                             // paint any run backgrounds normally.
-                            if is_cursor_visual_line {
-                                if let Some(cursorline_bg) = cursorline_style {
-                                    let cursorline_bounds = Bounds {
-                                        origin: point(bounds.origin.x, line_y),
-                                        size: size(bounds.size.width, after_layout.line_height),
-                                    };
-                                    window.paint_quad(fill(cursorline_bounds, cursorline_bg));
-                                }
+                            if is_cursor_visual_line
+                                && let Some(cursorline_bg) = cursorline_style
+                            {
+                                let cursorline_bounds = Bounds {
+                                    origin: point(bounds.origin.x, line_y),
+                                    size: size(bounds.size.width, after_layout.line_height),
+                                };
+                                window.paint_quad(fill(cursorline_bounds, cursorline_bg));
                             }
 
                             // Paint background highlights using the shaped line for accurate positioning
@@ -3775,35 +3775,35 @@ impl Element for DocumentElement {
                         let mut byte_offset = 0;
                         for run in &line_runs {
                             // Do not overpaint the cursor row background with per-run backgrounds
-                            if line_idx != cursor_line_num {
-                                if let Some(bg_color) = run.background_color {
-                                    // Calculate the x positions using the shaped line
-                                    let start_x = shaped.x_for_index(byte_offset);
-                                    let end_x = shaped.x_for_index(byte_offset + run.len);
+                            if line_idx != cursor_line_num
+                                && let Some(bg_color) = run.background_color
+                            {
+                                // Calculate the x positions using the shaped line
+                                let start_x = shaped.x_for_index(byte_offset);
+                                let end_x = shaped.x_for_index(byte_offset + run.len);
 
-                                    let bg_bounds = Bounds {
-                                        origin: point(text_origin.x + start_x, text_origin.y),
-                                        size: size(end_x - start_x, after_layout.line_height),
-                                    };
-                                    window.paint_quad(fill(bg_bounds, bg_color));
-                                }
+                                let bg_bounds = Bounds {
+                                    origin: point(text_origin.x + start_x, text_origin.y),
+                                    size: size(end_x - start_x, after_layout.line_height),
+                                };
+                                window.paint_quad(fill(bg_bounds, bg_color));
                             }
                             byte_offset += run.len;
                         }
 
                         // Paint cursorline background after per-run backgrounds so it applies across the row
-                        if line_idx == cursor_line_num {
-                            if let Some(cursorline_bg) = cursorline_style {
-                                debug!(
-                                    "Painting cursorline for line {} (cursor at line {})",
-                                    line_idx, cursor_line_num
-                                );
-                                let cursorline_bounds = Bounds {
-                                    origin: point(bounds.origin.x, bounds.origin.y + px(1.) + y_offset),
-                                    size: size(bounds.size.width, after_layout.line_height),
-                                };
-                                window.paint_quad(fill(cursorline_bounds, cursorline_bg));
-                            }
+                        if line_idx == cursor_line_num
+                            && let Some(cursorline_bg) = cursorline_style
+                        {
+                            debug!(
+                                "Painting cursorline for line {} (cursor at line {})",
+                                line_idx, cursor_line_num
+                            );
+                            let cursorline_bounds = Bounds {
+                                origin: point(bounds.origin.x, bounds.origin.y + px(1.) + y_offset),
+                                size: size(bounds.size.width, after_layout.line_height),
+                            };
+                            window.paint_quad(fill(cursorline_bounds, cursorline_bg));
                         }
 
                         if let Err(e) = shaped.paint(text_origin, after_layout.line_height, window, cx) {
