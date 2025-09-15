@@ -775,7 +775,7 @@ impl Workspace {
             "Delete permanently?".to_string()
         };
 
-        // Backdrop to block clicks
+        // Backdrop to block clicks (outside-click dismiss + focus restore)
         let backdrop = div()
             .absolute()
             .size_full()
@@ -783,7 +783,24 @@ impl Workspace {
             .left_0()
             .occlude()
             .bg(tokens.chrome.surface_overlay)
-            .on_mouse_down(MouseButton::Left, |_, _, _| {});
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this: &mut Workspace, _ev, window, cx| {
+                    this.delete_confirm_open = false;
+                    this.delete_confirm_path = None;
+                    // Restore focus immediately for responsiveness
+                    if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                        let _ = coord.focus_first(
+                            window,
+                            &[
+                                nucleotide_ui::FocusRole::Editor,
+                                nucleotide_ui::FocusRole::FileTree,
+                            ],
+                        );
+                    }
+                    cx.notify();
+                }),
+            );
 
         // Dialog content
         let picker_tokens = tokens.picker_tokens();
@@ -974,19 +991,38 @@ impl Workspace {
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|w: &mut Workspace, _ev, _win, cx| {
+                cx.listener(|w: &mut Workspace, _ev, window, cx| {
                     // Clicking backdrop closes the menu
                     if w.context_menu_open {
                         w.context_menu_open = false;
+                        // Restore focus to editor/file tree
+                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                            let _ = coord.focus_first(
+                                window,
+                                &[
+                                    nucleotide_ui::FocusRole::Editor,
+                                    nucleotide_ui::FocusRole::FileTree,
+                                ],
+                            );
+                        }
                         cx.notify();
                     }
                 }),
             )
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(|w: &mut Workspace, _ev, _win, cx| {
+                cx.listener(|w: &mut Workspace, _ev, window, cx| {
                     if w.context_menu_open {
                         w.context_menu_open = false;
+                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                            let _ = coord.focus_first(
+                                window,
+                                &[
+                                    nucleotide_ui::FocusRole::Editor,
+                                    nucleotide_ui::FocusRole::FileTree,
+                                ],
+                            );
+                        }
                         cx.notify();
                     }
                 }),
@@ -7703,8 +7739,19 @@ impl Render for Workspace {
                         .occlude()
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this: &mut Workspace, _ev, _win, cx| {
+                            cx.listener(|this: &mut Workspace, _ev, window, cx| {
                                 this.lsp_menu_open = false;
+                                if let Some(coord) =
+                                    cx.try_global::<nucleotide_ui::FocusCoordinator>()
+                                {
+                                    let _ = coord.focus_first(
+                                        window,
+                                        &[
+                                            nucleotide_ui::FocusRole::Editor,
+                                            nucleotide_ui::FocusRole::FileTree,
+                                        ],
+                                    );
+                                }
                                 cx.notify();
                             }),
                         )
