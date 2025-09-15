@@ -113,10 +113,9 @@ pub fn find_workspace_root_from(start_dir: &Path) -> PathBuf {
 
     if let Some(manifest) = find_upwards_for(start_dir, "Cargo.toml")
         && cargo_toml_has_workspace(&manifest)
+        && let Some(parent) = manifest.parent()
     {
-        if let Some(parent) = manifest.parent() {
-            return parent.to_path_buf();
-        }
+        return parent.to_path_buf();
     }
 
     // Fallback: VCS root detection
