@@ -320,8 +320,11 @@ pub mod shell_command_builder {
         let shell_name = detect_shell_type(shell);
         let mut command = Command::new(shell);
 
+        // Quote directory path for POSIX shells to avoid breaking on characters like '
+        let escaped_dir = quote_path_for_shell(directory);
+
         // Build command string with cd to trigger directory hooks (direnv, asdf, etc.)
-        let mut command_string = format!("cd '{}' && ", directory.display());
+        let mut command_string = format!("cd {} && ", escaped_dir);
 
         // Use `env -0` to capture environment variables with null separators (portable)
         command_string.push_str("env -0");
@@ -329,7 +332,7 @@ pub mod shell_command_builder {
         match shell_name {
             "fish" => {
                 // Fish requires special handling to trigger hooks
-                command_string = format!("cd '{}'; emit fish_prompt; env -0", directory.display());
+                command_string = format!("cd {}; emit fish_prompt; env -0", escaped_dir);
                 command.arg("-l").arg("-c").arg(command_string);
             }
             "tcsh" | "csh" => {
@@ -339,7 +342,7 @@ pub mod shell_command_builder {
             }
             "nu" => {
                 // Nushell requires ^ prefix for external commands
-                let nu_command = format!("cd '{}'; ^env -0", directory.display());
+                let nu_command = format!("cd {}; ^env -0", escaped_dir);
                 command.arg("-l").arg("-c").arg(nu_command);
             }
             _ => {
@@ -349,6 +352,21 @@ pub mod shell_command_builder {
         }
 
         Ok(command)
+    }
+
+    pub(crate) fn quote_path_for_shell(path: &Path) -> String {
+        let path_str = path.to_string_lossy();
+        let mut quoted = String::with_capacity(path_str.len() + 2);
+        quoted.push('\'');
+        for ch in path_str.chars() {
+            if ch == '\'' {
+                quoted.push_str("'\"'\"'");
+            } else {
+                quoted.push(ch);
+            }
+        }
+        quoted.push('\'');
+        quoted
     }
 
     /// Build a generic shell command (for testing)
@@ -532,6 +550,42 @@ mod tests {
 
         let project_env_no_cli = ProjectEnvironment::new(None);
         assert!(project_env_no_cli.cli_environment.is_none());
+    }
+
+    #[test]
+    fn test_quote_path_for_shell_simple() {
+        let path = Path::new("/tmp/project");
+        let quoted = shell_command_builder::quote_path_for_shell(path);
+        assert_eq!(quoted, "'/tmp/project'");
+    }
+
+    #[test]
+    fn test_quote_path_for_shell_handles_single_quotes() {
+        let path = Path::new("/tmp/it's complicated");
+        let quoted = shell_command_builder::quote_path_for_shell(path);
+        assert_eq!(quoted, r#"'/tmp/it'"'"'s complicated'"#);
+    }
+
+    #[test]
+    fn test_build_environment_capture_command_uses_quoted_path() {
+        let cmd = shell_command_builder::build_environment_capture_command(
+            "/bin/zsh",
+            Path::new("/tmp/it's complicated"),
+        )
+        .expect("command should build");
+
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(args.contains(&"-l".to_string()));
+        assert!(args.contains(&"-c".to_string()));
+        let command_string = args
+            .iter()
+            .find(|s| s.contains("cd "))
+            .expect("missing command string");
+        assert!(command_string.contains(r#"cd '/tmp/it'"'"'s complicated' && env -0"#));
     }
 
     #[tokio::test]
