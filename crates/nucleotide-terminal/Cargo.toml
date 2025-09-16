@@ -15,9 +15,9 @@ rust-version = "1.88"
 nucleotide-events.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
-portable-pty = "0.8"
+portable-pty = "0.9"
 alacritty_terminal = { version = "0.25", optional = true }
 
 [features]
 default = []
-emulator = ["alacritty_terminal"] # alacritty_terminal-based emulator
+emulator = ["alacritty_terminal"]
