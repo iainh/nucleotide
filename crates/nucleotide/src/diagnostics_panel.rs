@@ -621,6 +621,7 @@ impl Render for DiagnosticsPanel {
             .flex_col()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                cx.stop_propagation();
                 match nav_key(event) {
                     Some(NavKey::Up) => {
                         if this.selected_index > 0 {
