@@ -98,8 +98,9 @@ impl DiagnosticsPanel {
                 div()
                     .w(px(col_severity_w))
                     .flex_shrink_0()
+                    .flex()
+                    .justify_center()
                     .text_color(color)
-                    .text_left()
                     .child("severity"),
             )
             .child(
@@ -377,12 +378,19 @@ impl DiagnosticsPanel {
             .bg(row_bg)
             .text_color(row_text)
             .child(div().w(px(col_prefix_w)).flex_shrink_0().child(" "))
-            .child(Self::render_severity_icon(
-                info.diagnostic.severity(),
-                sev_color,
-                col_severity_w,
-                18.0,
-            ))
+            .child(
+                div()
+                    .w(px(col_severity_w))
+                    .flex_shrink_0()
+                    .flex()
+                    .justify_center()
+                    .child(Self::render_severity_icon(
+                        info.diagnostic.severity(),
+                        sev_color,
+                        col_severity_w,
+                        18.0,
+                    )),
+            )
             .child(
                 div()
                     .w(px(col_source_w))
@@ -510,7 +518,7 @@ impl Render for DiagnosticsPanel {
 
         // Column widths (keep header and rows in sync)
         const COL_PREFIX_W: f32 = 16.0;
-        const COL_SEVERITY_W: f32 = 90.0; // keep header text visible; rows show symbol inside
+        const COL_SEVERITY_W: f32 = 64.0; // compact column that still fits the header label
         const COL_SOURCE_W: f32 = 120.0;
         const COL_CODE_W: f32 = 70.0;
 
