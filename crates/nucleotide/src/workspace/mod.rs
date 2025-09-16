@@ -6672,10 +6672,6 @@ impl Render for Workspace {
                         // Render the overflow menu as an overlay
                         this.child(self.render_tab_overflow_menu(window, cx))
                     })
-                    .when(self.context_menu_open, |this| {
-                        // Render file tree context menu when open
-                        this.child(self.render_file_tree_context_menu(window, cx))
-                    })
                     .when(self.delete_confirm_open, |this| {
                         // Render delete confirmation modal overlay
                         this.child(self.render_delete_confirm_modal(window, cx))
@@ -7307,7 +7303,7 @@ impl Render for Workspace {
                 let overlay_bg_w = (self.file_tree_width).clamp(0.0, max_left);
 
                 // Root container handling drag to resize
-                div()
+                let mut container = div()
                     .relative()
                     .h(content_max_h)
                     .min_h(px(0.0))
@@ -7341,117 +7337,125 @@ impl Render for Workspace {
                                 window.refresh();
                             }
                         }),
-                    )
-                    // Left file tree content
-                    .child({
-                        let mut container = div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w(px(overlay_bg_w))
-                            .h(content_max_h)
-                            .min_h(px(0.0));
-                        if let Some(file_tree) = &self.file_tree {
-                            container = container.child(
-                                div().size_full().overflow_hidden().child(file_tree.clone()),
-                            );
-                        } else {
-                            // No directory open: show a centered button to open a directory
-                            let core = self.core.clone();
-                            let handle = self.handle.clone();
-                            use nucleotide_ui::button::Button;
-                            let open_btn =
-                                Button::new("open-dir-btn", "Open a directory to view files")
-                                    .on_click(cx.listener(
-                                        move |_: &mut Workspace,
-                                              _ev: &gpui::MouseUpEvent,
-                                              _window,
-                                              cx| {
-                                            open_directory(core.clone(), handle.clone(), cx);
-                                        },
-                                    ));
+                    );
 
-                            container = container.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .size_full()
-                                    .child(open_btn),
-                            );
-                        }
-                        container
-                    })
-                    // Vertical handle at the boundary
-                    .child({
-                        let sep_color = nucleotide_ui::tokens::with_alpha(
-                            cx.theme().tokens.chrome.border_default,
-                            0.6,
-                        );
-                        let sep_color_hover = nucleotide_ui::tokens::with_alpha(
-                            cx.theme().tokens.chrome.border_default,
-                            0.9,
-                        );
+                // Left file tree content
+                let mut file_tree_container = div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w(px(overlay_bg_w))
+                    .h(content_max_h)
+                    .min_h(px(0.0));
+                if let Some(file_tree) = &self.file_tree {
+                    file_tree_container = file_tree_container
+                        .child(div().size_full().overflow_hidden().child(file_tree.clone()));
+                } else {
+                    // No directory open: show a centered button to open a directory
+                    let core = self.core.clone();
+                    let handle = self.handle.clone();
+                    use nucleotide_ui::button::Button;
+                    let open_btn = Button::new("open-dir-btn", "Open a directory to view files")
+                        .on_click(cx.listener(
+                            move |_: &mut Workspace, _ev: &gpui::MouseUpEvent, _window, cx| {
+                                open_directory(core.clone(), handle.clone(), cx);
+                            },
+                        ));
+
+                    file_tree_container = file_tree_container.child(
                         div()
-                            .absolute()
-                            .top_0()
-                            .left(px(self.file_tree_width))
-                            .w(px(handle_hit_w))
-                            .h(content_max_h)
-                            .cursor(gpui::CursorStyle::ResizeLeftRight)
-                            .child(
-                                div()
-                                    .w(px(handle_visual_w))
-                                    .h_full()
-                                    .bg(sep_color)
-                                    .hover(|d| d.bg(sep_color_hover)),
-                            )
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(
-                                    move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
-                                        if ev.click_count >= 2 {
-                                            let viewport_w = window.viewport_size().width.0;
-                                            let max_allowed = (viewport_w - 200.0).max(min_left);
-                                            let snap = 240.0f32.clamp(min_left, max_allowed);
-                                            if (this.file_tree_width - snap).abs() > 0.5 {
-                                                this.file_tree_width = snap;
-                                                cx.notify();
-                                            }
-                                            window.refresh();
-                                            cx.stop_propagation();
-                                            return;
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size_full()
+                            .child(open_btn),
+                    );
+                }
+                container = container.child(file_tree_container);
+
+                // Vertical handle at the boundary
+                let sep_color =
+                    nucleotide_ui::tokens::with_alpha(cx.theme().tokens.chrome.border_default, 0.6);
+                let sep_color_hover =
+                    nucleotide_ui::tokens::with_alpha(cx.theme().tokens.chrome.border_default, 0.9);
+                container = container.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left(px(self.file_tree_width))
+                        .w(px(handle_hit_w))
+                        .h(content_max_h)
+                        .cursor(gpui::CursorStyle::ResizeLeftRight)
+                        .child(
+                            div()
+                                .w(px(handle_visual_w))
+                                .h_full()
+                                .bg(sep_color)
+                                .hover(|d| d.bg(sep_color_hover)),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(
+                                move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
+                                    if ev.click_count >= 2 {
+                                        let viewport_w = window.viewport_size().width.0;
+                                        let max_allowed = (viewport_w - 200.0).max(min_left);
+                                        let snap = 240.0f32.clamp(min_left, max_allowed);
+                                        if (this.file_tree_width - snap).abs() > 0.5 {
+                                            this.file_tree_width = snap;
+                                            cx.notify();
                                         }
-                                        this.is_resizing_file_tree = true;
-                                        this.resize_start_x = ev.position.x.0;
-                                        this.resize_start_width = this.file_tree_width;
                                         window.refresh();
                                         cx.stop_propagation();
-                                    },
-                                ),
-                            )
-                    })
-                    // Right content area positioned after the handle
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left(px(self.file_tree_width + handle_visual_w))
-                            .right_0()
-                            .h(content_max_h)
-                            .min_h(px(0.0))
-                            .child(right),
-                    )
-                    .into_any_element()
+                                        return;
+                                    }
+                                    this.is_resizing_file_tree = true;
+                                    this.resize_start_x = ev.position.x.0;
+                                    this.resize_start_width = this.file_tree_width;
+                                    window.refresh();
+                                    cx.stop_propagation();
+                                },
+                            ),
+                        ),
+                );
+
+                // Right content area positioned after the handle
+                container = container.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left(px(self.file_tree_width + handle_visual_w))
+                        .right_0()
+                        .h(content_max_h)
+                        .min_h(px(0.0))
+                        .child(right),
+                );
+
+                if self.context_menu_open {
+                    container = container.child(
+                        gpui::deferred(self.render_file_tree_context_menu(window, cx))
+                            .with_priority(100),
+                    );
+                }
+
+                container.into_any_element()
             } else {
                 // File tree not shown - render right full width
-                div()
+                let mut container = div()
                     .relative()
                     .w_full()
                     .h(content_max_h)
                     .min_h(px(0.0))
-                    .child(right)
-                    .into_any_element()
+                    .child(right);
+
+                if self.context_menu_open {
+                    container = container.child(
+                        gpui::deferred(self.render_file_tree_context_menu(window, cx))
+                            .with_priority(100),
+                    );
+                }
+
+                container.into_any_element()
             }
         };
 
