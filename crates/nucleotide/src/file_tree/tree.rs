@@ -364,7 +364,6 @@ impl FileTree {
 
             // VCS status will be queried at render time via the global VCS service
 
-            self.path_to_id.insert(child_path, id);
             children.push(child_entry);
         }
 

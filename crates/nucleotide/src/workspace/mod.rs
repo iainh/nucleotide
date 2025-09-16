@@ -1101,10 +1101,8 @@ impl Workspace {
 
     fn cm_action_delete(this: &mut Workspace, cx: &mut Context<Workspace>) {
         if let Some(path) = this.context_menu_path.clone() {
-            // Open confirmation modal
-            this.delete_confirm_open = true;
             this.delete_confirm_path = Some(path);
-            cx.notify();
+            this.perform_delete_confirm(cx);
         }
         this.close_context_menu(cx);
     }
@@ -1782,9 +1780,8 @@ impl Workspace {
             if is_tree_focused {
                 let selected = file_tree.read(cx).selected_path().cloned();
                 if let Some(path) = selected {
-                    self.delete_confirm_open = true;
                     self.delete_confirm_path = Some(path);
-                    cx.notify();
+                    self.perform_delete_confirm(cx);
                 }
             }
         }
@@ -6757,12 +6754,6 @@ impl Render for Workspace {
                 // Close tab overflow dropdown when clicking elsewhere
                 if workspace.tab_overflow_dropdown_open {
                     workspace.tab_overflow_dropdown_open = false;
-                    cx.notify();
-                }
-
-                // Close context menu when clicking elsewhere
-                if workspace.context_menu_open {
-                    workspace.context_menu_open = false;
                     cx.notify();
                 }
 
