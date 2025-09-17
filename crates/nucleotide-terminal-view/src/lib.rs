@@ -62,6 +62,10 @@ pub struct TerminalViewModel {
     cursor_col: u16,
     #[cfg(feature = "emulator")]
     dirty: DirtyFlags,
+    #[cfg(feature = "emulator")]
+    cell_width: f32,
+    #[cfg(feature = "emulator")]
+    cell_height: f32,
 }
 
 impl TerminalViewModel {
@@ -80,6 +84,10 @@ impl TerminalViewModel {
             cursor_col: 0,
             #[cfg(feature = "emulator")]
             dirty: DirtyFlags::default(),
+            #[cfg(feature = "emulator")]
+            cell_width: 0.0,
+            #[cfg(feature = "emulator")]
+            cell_height: 0.0,
         }
     }
 
@@ -154,6 +162,37 @@ impl TerminalViewModel {
     #[cfg(feature = "emulator")]
     pub fn take_dirty_rows(&mut self) -> Vec<usize> {
         self.dirty.take()
+    }
+
+    #[cfg(feature = "emulator")]
+    pub fn resize_grid(&mut self, cols: u16, rows: u16, cell_metrics: Option<(f32, f32)>) {
+        let cols_usize = cols.max(1) as usize;
+        let rows_usize = rows.max(1) as usize;
+
+        if self.grid.len() > rows_usize {
+            self.grid.truncate(rows_usize);
+        }
+        while self.grid.len() < rows_usize {
+            self.grid.push(vec![blank_cell(); cols_usize]);
+        }
+
+        for row in &mut self.grid {
+            if row.len() > cols_usize {
+                row.truncate(cols_usize);
+            } else if row.len() < cols_usize {
+                row.resize(cols_usize, blank_cell());
+            }
+        }
+
+        self.cols = cols;
+        self.rows = rows;
+        self.cursor_row = self.cursor_row.min(rows.saturating_sub(1));
+        self.cursor_col = self.cursor_col.min(cols.saturating_sub(1));
+        self.dirty.resize_and_fill(self.grid.len(), true);
+        if let Some((cw, ch)) = cell_metrics {
+            self.cell_width = cw.max(1.0);
+            self.cell_height = ch.max(1.0);
+        }
     }
 }
 
@@ -282,7 +321,6 @@ impl Render for TerminalRowView {
         let theme = cx.theme();
         let tokens = &theme.tokens;
         let editor_font = cx.global::<nucleotide_types::EditorFontConfig>();
-        let line_height_px = gpui::px(editor_font.size * 1.35);
 
         // Helper to convert emulator RGB u32 to gpui color
         #[inline]
@@ -290,19 +328,33 @@ impl Render for TerminalRowView {
             rgb(c).into()
         }
 
-        let (grid_row, cursor_row, cursor_col) = {
+        let (grid_row, cursor_row, cursor_col, cell_height) = {
             let guard = self.model.lock().unwrap();
             let row = if self.row_index < guard.grid.len() {
                 guard.grid[self.row_index].clone()
             } else {
                 Vec::new()
             };
-            (row, guard.cursor_row as usize, guard.cursor_col as usize)
+            (
+                row,
+                guard.cursor_row as usize,
+                guard.cursor_col as usize,
+                guard.cell_height,
+            )
         };
+
+        let fallback_line_height = editor_font.size * 1.35;
+        let applied_line_height = if cell_height > 0.0 {
+            cell_height
+        } else {
+            fallback_line_height
+        };
+        let line_height_px = gpui::px(applied_line_height);
 
         let mut line = div()
             .flex()
             .flex_row()
+            .flex_shrink()
             .whitespace_nowrap()
             .line_height(line_height_px)
             .text_size(gpui::px(editor_font.size));

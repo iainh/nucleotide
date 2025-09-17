@@ -25,6 +25,9 @@ struct SessionEntry {
     input_tx: std::sync::mpsc::Sender<Vec<u8>>,
     input_task: std::thread::JoinHandle<()>,
     view: Arc<Mutex<TerminalViewModel>>,
+    last_size: Option<(u16, u16)>,
+    #[cfg(feature = "terminal-emulator")]
+    last_metrics: Option<(u16, u16, f32, f32)>,
 }
 
 impl TerminalRuntimeHandler {
@@ -97,6 +100,9 @@ impl TerminalRuntimeHandler {
                 input_tx: tx,
                 input_task,
                 view,
+                last_size: None,
+                #[cfg(feature = "terminal-emulator")]
+                last_metrics: None,
             },
         );
         info!(terminal_id=?id, "Terminal session spawned and consumer started");
@@ -128,10 +134,27 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 self.handle_spawn(*id, &cfg);
             }
             TerminalEvent::Resized { id, cols, rows } => {
-                if let Some(entry) = self.sessions.get(id)
-                    && let Ok(session) = entry.session.lock()
-                {
-                    let _ = futures_executor::block_on(session.resize(*cols, *rows));
+                if let Some(entry) = self.sessions.get_mut(id) {
+                    let size_changed = entry
+                        .last_size
+                        .map(|(prev_cols, prev_rows)| prev_cols != *cols || prev_rows != *rows)
+                        .unwrap_or(true);
+
+                    if size_changed {
+                        if let Ok(session) = entry.session.lock() {
+                            let _ = futures_executor::block_on(session.resize(*cols, *rows));
+                        }
+                        #[cfg(feature = "terminal-emulator")]
+                        if let Ok(mut view) = entry.view.lock() {
+                            view.resize_grid(*cols, *rows, None);
+                        }
+                        entry.last_size = Some((*cols, *rows));
+                        #[cfg(feature = "terminal-emulator")]
+                        if let Some(existing) = entry.last_metrics.as_mut() {
+                            existing.0 = *cols;
+                            existing.1 = *rows;
+                        }
+                    }
                 }
             }
             TerminalEvent::ResizedWithMetrics {
@@ -141,18 +164,53 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 cell_width,
                 cell_height,
             } => {
-                if let Some(entry) = self.sessions.get(id)
-                    && let Ok(session) = entry.session.lock()
-                {
-                    // Push control message to engine
-                    let _ = session.control_sender().send(ControlMsg::Resize {
-                        cols: *cols,
-                        rows: *rows,
-                        cell_width: *cell_width,
-                        cell_height: *cell_height,
-                    });
-                    // Also resize PTY to maintain app expectations
-                    let _ = futures_executor::block_on(session.resize(*cols, *rows));
+                if let Some(entry) = self.sessions.get_mut(id) {
+                    #[cfg(feature = "terminal-emulator")]
+                    {
+                        let metrics_changed = entry
+                            .last_metrics
+                            .map(|(prev_cols, prev_rows, prev_cell_w, prev_cell_h)| {
+                                prev_cols != *cols
+                                    || prev_rows != *rows
+                                    || (prev_cell_w - *cell_width).abs() >= 0.1
+                                    || (prev_cell_h - *cell_height).abs() >= 0.1
+                            })
+                            .unwrap_or(true);
+
+                        if metrics_changed {
+                            if let Ok(session) = entry.session.lock() {
+                                // Push control message to engine so emulator redraws with new metrics
+                                let _ = session.control_sender().send(ControlMsg::Resize {
+                                    cols: *cols,
+                                    rows: *rows,
+                                    cell_width: *cell_width,
+                                    cell_height: *cell_height,
+                                });
+                                // Also resize PTY to maintain app expectations
+                                let _ = futures_executor::block_on(session.resize(*cols, *rows));
+                            }
+                            if let Ok(mut view) = entry.view.lock() {
+                                view.resize_grid(*cols, *rows, Some((*cell_width, *cell_height)));
+                            }
+                            entry.last_metrics = Some((*cols, *rows, *cell_width, *cell_height));
+                            entry.last_size = Some((*cols, *rows));
+                        }
+                    }
+                    #[cfg(not(feature = "terminal-emulator"))]
+                    {
+                        let _ = (cell_width, cell_height);
+                        let size_changed = entry
+                            .last_size
+                            .map(|(prev_cols, prev_rows)| prev_cols != *cols || prev_rows != *rows)
+                            .unwrap_or(true);
+
+                        if size_changed {
+                            if let Ok(session) = entry.session.lock() {
+                                let _ = futures_executor::block_on(session.resize(*cols, *rows));
+                            }
+                            entry.last_size = Some((*cols, *rows));
+                        }
+                    }
                 }
             }
             TerminalEvent::Input { id, bytes } => {

@@ -54,6 +54,29 @@ use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_vcs::VcsServiceHandle;
 
 // (focus logging removed for commit; keep code minimal)
+#[derive(Debug, Clone)]
+struct TerminalViewportMetrics {
+    id: TerminalId,
+    cols: u16,
+    rows: u16,
+    cell_width: f32,
+    cell_height: f32,
+    pixel_width: f32,
+    pixel_height: f32,
+}
+
+impl TerminalViewportMetrics {
+    fn approx_eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.cols == other.cols
+            && self.rows == other.rows
+            && (self.cell_width - other.cell_width).abs() < 0.1
+            && (self.cell_height - other.cell_height).abs() < 0.1
+            && (self.pixel_width - other.pixel_width).abs() < 0.5
+            && (self.pixel_height - other.pixel_height).abs() < 0.5
+    }
+}
+
 pub struct Workspace {
     core: Entity<Core>,
     input: Entity<Input>,
@@ -125,11 +148,15 @@ pub struct Workspace {
     terminal_active: bool,
     // Cache last applied editor size to avoid redundant resizes each frame
     last_editor_size: Option<(u16, u16)>,
+    last_terminal_metrics: Option<TerminalViewportMetrics>,
     // Cached theme-derived colors to avoid per-frame recomputation
     cached_bg_color: gpui::Hsla,
     cached_text_color: gpui::Hsla,
     cached_border_color: gpui::Hsla,
     colors_dirty: bool,
+    cached_font_metrics_key: Option<(String, f32, nucleotide_types::FontWeight)>,
+    cached_char_width: Option<f32>,
+    cached_line_height: Option<f32>,
 }
 
 // Pending file operation kinds awaiting user input (used with the prompt overlay)
@@ -147,6 +174,7 @@ impl Workspace {
         // Basic layout: toggle visibility of embedded bottom panel
         if self.terminal_panel_visible {
             self.terminal_panel_visible = false;
+            self.last_terminal_metrics = None;
             cx.notify();
             return;
         }
@@ -657,11 +685,15 @@ impl Workspace {
             terminal_active: false,
             // Performance cache for editor sizing
             last_editor_size: None,
+            last_terminal_metrics: None,
             // Temporary defaults; recomputed below
             cached_bg_color: black(),
             cached_text_color: white(),
             cached_border_color: white(),
             colors_dirty: true,
+            cached_font_metrics_key: None,
+            cached_char_width: None,
+            cached_line_height: None,
         };
 
         // Compute initial theme-derived colors once
@@ -6282,7 +6314,7 @@ impl Workspace {
     }
 
     /// Update global workspace layout information for UI positioning
-    fn update_workspace_layout_info(&self, cx: &mut Context<Self>) {
+    fn update_workspace_layout_info(&mut self, cx: &mut Context<Self>) {
         use crate::overlay::WorkspaceLayoutInfo;
 
         // Calculate current tab bar height based on configuration
@@ -6327,11 +6359,61 @@ impl Workspace {
         cx.set_global(layout_info);
     }
 
+    fn resolve_editor_font_metrics(&mut self, cx: &mut Context<Self>) -> (f32, f32) {
+        let editor_font = cx.global::<nucleotide_types::EditorFontConfig>();
+        let key = (
+            editor_font.family.clone(),
+            editor_font.size,
+            editor_font.weight,
+        );
+
+        let need_recalc = match &self.cached_font_metrics_key {
+            Some(k) => k != &key,
+            None => true,
+        } || self.cached_char_width.is_none()
+            || self.cached_line_height.is_none();
+
+        if need_recalc {
+            let font = gpui::Font {
+                family: editor_font.family.clone().into(),
+                features: FontFeatures::default(),
+                weight: editor_font.weight.into(),
+                style: gpui::FontStyle::Normal,
+                fallbacks: None,
+            };
+            let font_id = cx.text_system().resolve_font(&font);
+            let font_size = gpui::px(editor_font.size);
+            let char_w = cx
+                .text_system()
+                .advance(font_id, font_size, 'm')
+                .map(|a| a.width.0)
+                .unwrap_or(editor_font.size * 0.6)
+                .max(1.0);
+            let line_h = if editor_font.line_height > 0.0 {
+                editor_font.line_height
+            } else {
+                (editor_font.size * 1.35).max(1.0)
+            };
+
+            self.cached_font_metrics_key = Some(key);
+            self.cached_char_width = Some(char_w);
+            self.cached_line_height = Some(line_h);
+        }
+
+        (
+            self.cached_line_height
+                .unwrap_or((editor_font.size * 1.35).max(1.0)),
+            self.cached_char_width
+                .unwrap_or((editor_font.size * 0.6).max(1.0)),
+        )
+    }
+
     /// Get font metrics (line height, char width) from the focused DocumentView
     fn get_font_metrics_from_focused_view(
-        &self,
+        &mut self,
         cx: &mut Context<Self>,
     ) -> (gpui::Pixels, gpui::Pixels) {
+        let (fallback_line_h, cached_char_w) = self.resolve_editor_font_metrics(cx);
         // Try to get the focused DocumentView
         if let Some(focused_view_id) = self.view_manager.focused_view_id()
             && let Some(doc_view) = self.view_manager.get_document_view(&focused_view_id)
@@ -6341,16 +6423,99 @@ impl Workspace {
                 // Get the actual line height from DocumentView
                 let line_height = doc_view.get_line_height();
 
-                // Calculate character width from font style
-                // This is approximate but much more accurate than hardcoded 8.0
-                let char_width = px(line_height.0 * 0.6); // Typical monospace ratio
+                // Use cached character width derived from font metrics
+                let char_width = px(cached_char_w);
 
                 (line_height, char_width)
             });
         }
 
-        // Fallback to reasonable defaults if no focused view
-        (px(20.0), px(12.0))
+        // Fallback to cached metrics if no focused view exists
+        (px(fallback_line_h), px(cached_char_w))
+    }
+
+    fn sync_embedded_terminal_size(
+        &mut self,
+        available_width_px: f32,
+        panel_height_px: f32,
+        cell_height_px: f32,
+        cell_width_px: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.terminal_panel_visible {
+            self.last_terminal_metrics = None;
+            return;
+        }
+
+        let Some(panel) = &self.embedded_terminal_panel else {
+            self.last_terminal_metrics = None;
+            return;
+        };
+
+        let cell_height = cell_height_px.max(1.0);
+        let cell_width = cell_width_px.max(1.0);
+        let width = available_width_px.max(cell_width);
+        let height = panel_height_px.max(cell_height);
+        let cols_f = (width / cell_width).floor().max(1.0);
+        let rows_f = (height / cell_height).floor().max(1.0);
+        let cols = cols_f as u16;
+        let rows = rows_f as u16;
+        let pixel_width = cols_f * cell_width;
+        let pixel_height = rows_f * cell_height;
+        let active_id = panel.read(cx).active;
+        nucleotide_logging::debug!(
+            terminal_id=?active_id,
+            cols=cols,
+            rows=rows,
+            cell_width=cell_width,
+            cell_height=cell_height,
+            available_width=available_width_px,
+            panel_height=panel_height_px,
+            pixel_width=pixel_width,
+            pixel_height=pixel_height,
+            "workspace computed terminal metrics",
+        );
+        let metrics = TerminalViewportMetrics {
+            id: active_id,
+            cols,
+            rows,
+            cell_width,
+            cell_height,
+            pixel_width,
+            pixel_height,
+        };
+
+        let metrics_changed = self
+            .last_terminal_metrics
+            .as_ref()
+            .map(|prev| !prev.approx_eq(&metrics))
+            .unwrap_or(true);
+
+        if metrics_changed {
+            self.last_terminal_metrics = Some(metrics.clone());
+            if (self.basic_terminal_height - metrics.pixel_height).abs() > 0.5 {
+                self.basic_terminal_height = metrics.pixel_height;
+            }
+            panel.update(cx, |p, _| {
+                p.height_px = metrics.pixel_height;
+            });
+            self.core.update(cx, |app, _| {
+                if let Some(bus) = &app.event_aggregator {
+                    bus.dispatch_terminal(TerminalEvent::Resized {
+                        id: metrics.id,
+                        cols: metrics.cols,
+                        rows: metrics.rows,
+                    });
+                    bus.dispatch_terminal(TerminalEvent::ResizedWithMetrics {
+                        id: metrics.id,
+                        cols: metrics.cols,
+                        rows: metrics.rows,
+                        cell_width: metrics.cell_width,
+                        cell_height: metrics.cell_height,
+                    });
+                }
+            });
+        }
     }
 }
 
@@ -7129,8 +7294,14 @@ impl Render for Workspace {
                 let editor_w_px = (viewport_w_px - file_tree_w_px).max(0.0);
                 let editor_h_px = editor_h.max(0.0);
 
-                // Get font metrics from the focused DocumentView (fallback to defaults)
                 let (line_h_px, char_w_px) = self.get_font_metrics_from_focused_view(cx);
+                self.sync_embedded_terminal_size(
+                    editor_w_px,
+                    self.basic_terminal_height,
+                    line_h_px.0,
+                    char_w_px.0,
+                    cx,
+                );
                 let rows = (editor_h_px / line_h_px.0).floor().max(1.0) as u16;
                 let cols = (editor_w_px / char_w_px.0).floor().max(1.0) as u16;
                 let desired_size = (cols, rows);
