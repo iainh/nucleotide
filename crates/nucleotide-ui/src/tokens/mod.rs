@@ -887,26 +887,36 @@ pub struct StatusBarTokens {
 impl StatusBarTokens {
     /// Create status bar tokens using computed chrome colors for backgrounds
     /// and editor colors for status content
-    pub fn from_tokens(chrome: &ChromeTokens, editor: &EditorTokens) -> Self {
+    pub fn from_tokens(chrome: &ChromeTokens, _editor: &EditorTokens) -> Self {
         let bg_active = chrome.footer_background;
         let bg_inactive = chrome.footer_background; // Use same chrome color for consistency
         let text_primary = chrome.text_on_chrome;
         let text_secondary = chrome.text_chrome_secondary;
-        let text_accent = editor.cursor_normal;
+        let text_accent =
+            ColorTheory::ensure_contrast(bg_active, chrome.primary, ContrastRatios::AA_NORMAL);
         let border = chrome.separator_color;
-        let mode_normal = editor.cursor_normal;
-        let mode_insert = editor.cursor_insert;
-        let mode_select = editor.cursor_select;
+        let mode_normal = text_primary;
+        let mode_insert = ColorTheory::ensure_contrast(
+            bg_active,
+            chrome.primary_hover,
+            ContrastRatios::AA_NORMAL,
+        );
+        let mode_select = ColorTheory::ensure_contrast(
+            bg_active,
+            chrome.primary_active,
+            ContrastRatios::AA_NORMAL,
+        );
 
         nucleotide_logging::debug!(
             status_bg_active = ?bg_active,
             status_bg_inactive = ?bg_inactive,
             status_text = ?text_primary,
+            status_text_accent = ?text_accent,
             mode_colors = ?(mode_normal, mode_insert, mode_select),
             footer_bg = ?chrome.footer_background,
             titlebar_bg = ?chrome.titlebar_background,
             colors_match = (bg_active == chrome.titlebar_background),
-            "Creating status bar tokens from chrome and editor colors"
+            "Creating status bar tokens from chrome colors"
         );
 
         Self {

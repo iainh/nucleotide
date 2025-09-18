@@ -223,7 +223,8 @@ impl Workspace {
         &self,
         cx: &mut Context<Self>,
     ) -> (
-        &'static str,                        // mode
+        helix_view::document::Mode,          // current mode
+        &'static str,                        // mode label
         String,                              // file name display
         String,                              // position text
         bool,                                // has LSP state
@@ -232,6 +233,7 @@ impl Workspace {
         let core = self.core.read(cx);
         let editor = &core.editor;
 
+        let mut mode = helix_view::document::Mode::Normal;
         let mut mode_name = "NOR";
         let mut file_name = "[no file]".to_string();
         let mut position_text = "1:1".to_string();
@@ -243,7 +245,8 @@ impl Workspace {
                 .try_get(view_id)
                 .and_then(|v| editor.document(v.doc).map(|d| (v, d)))
         {
-            mode_name = match editor.mode() {
+            mode = editor.mode();
+            mode_name = match mode {
                 helix_view::document::Mode::Normal => "NOR",
                 helix_view::document::Mode::Insert => "INS",
                 helix_view::document::Mode::Select => "SEL",
@@ -286,6 +289,7 @@ impl Workspace {
 
         let has_lsp_state = core.lsp_state.is_some();
         (
+            mode,
             mode_name,
             file_name,
             position_text,
@@ -363,6 +367,7 @@ impl Workspace {
     #[allow(clippy::too_many_arguments)]
     fn statusbar_main_content(
         &self,
+        mode: helix_view::document::Mode,
         mode_name: &'static str,
         file_name: String,
         position_text: String,
@@ -372,6 +377,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         use nucleotide_ui::{Button, ButtonSize, ButtonVariant, IconPosition};
+        let mode_color = match mode {
+            helix_view::document::Mode::Normal => status_bar_tokens.mode_normal,
+            helix_view::document::Mode::Insert => status_bar_tokens.mode_insert,
+            helix_view::document::Mode::Select => status_bar_tokens.mode_select,
+        };
         let mut row = gpui::div()
             .flex()
             .flex_1()
@@ -382,7 +392,7 @@ impl Workspace {
                 gpui::div()
                     .child(mode_name)
                     .min_w(gpui::px(50.0))
-                    .text_color(status_bar_tokens.text_primary),
+                    .text_color(mode_color),
             )
             .child(self.statusbar_divider(divider_color))
             .child(
@@ -4548,13 +4558,11 @@ impl Workspace {
 
         // Extract design token values before any mutable borrows (none needed here)
 
-        // Get UI font configuration
-        let ui_font_config = cx.global::<crate::types::UiFontConfig>();
-        let font = gpui::font(&ui_font_config.family);
-        let font_size = gpui::px(ui_font_config.size);
+        // Use UI design token text sizing to match other chrome elements
+        let text_size = ui_theme.tokens.sizes.text_md;
 
         // Get current document info first (without LSP indicator to avoid borrow conflicts)
-        let (mode_name, file_name, position_text, has_lsp_state, preferred_server_id) =
+        let (mode, mode_name, file_name, position_text, has_lsp_state, preferred_server_id) =
             self.statusbar_doc_info(cx);
 
         // Get LSP indicator separately to avoid borrowing conflicts
@@ -4577,8 +4585,7 @@ impl Workspace {
             .flex()
             .flex_row()
             .items_center()
-            .font(font)
-            .text_size(font_size)
+            .text_size(text_size)
             .text_color(fg_color)
             .child(
                 // Toggle button container - fixed width regardless of file tree state
@@ -4639,6 +4646,7 @@ impl Workspace {
             .child(
                 // Main status content - fills remaining space
                 self.statusbar_main_content(
+                    mode,
                     mode_name,
                     file_name,
                     position_text,

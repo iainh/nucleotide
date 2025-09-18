@@ -2,7 +2,7 @@
 // ABOUTME: Ensures titlebar colors meet accessibility standards across all themes
 
 use crate::DesignTokens;
-use crate::styling::ColorTheory;
+use crate::styling::{ColorTheory, ContrastRatios};
 use crate::tokens::{ColorContext, TitleBarTokens};
 
 #[cfg(test)]
@@ -203,11 +203,34 @@ mod component_token_tests {
             helix_colors.bufferline_background
         );
 
-        // Verify that editor content colors are preserved from Helix
+        // Verify that editor content colors are preserved from Helix where appropriate
         assert_eq!(file_tree.item_background_selected, helix_colors.selection);
-        assert_eq!(status_bar.mode_normal, helix_colors.cursor_normal);
-        assert_eq!(status_bar.mode_insert, helix_colors.cursor_insert);
         assert_eq!(tab_bar.tab_modified_indicator, helix_colors.warning);
+
+        // Status bar text should derive from chrome tokens rather than editor cursors
+        let expected_accent = ColorTheory::ensure_contrast(
+            tokens.chrome.footer_background,
+            tokens.chrome.primary,
+            ContrastRatios::AA_NORMAL,
+        );
+        let expected_insert = ColorTheory::ensure_contrast(
+            tokens.chrome.footer_background,
+            tokens.chrome.primary_hover,
+            ContrastRatios::AA_NORMAL,
+        );
+        let expected_select = ColorTheory::ensure_contrast(
+            tokens.chrome.footer_background,
+            tokens.chrome.primary_active,
+            ContrastRatios::AA_NORMAL,
+        );
+
+        assert_eq!(status_bar.text_primary, tokens.chrome.text_on_chrome);
+        assert_eq!(status_bar.text_accent, expected_accent);
+        assert_eq!(status_bar.mode_normal, tokens.chrome.text_on_chrome);
+        assert_eq!(status_bar.mode_insert, expected_insert);
+        assert_eq!(status_bar.mode_select, expected_select);
+        assert_ne!(status_bar.mode_insert, helix_colors.cursor_insert);
+        assert_ne!(status_bar.mode_select, helix_colors.cursor_select);
 
         println!("Hybrid component tokens validation passed ✓");
     }
@@ -252,6 +275,29 @@ mod component_token_tests {
         assert_ne!(status_bar.mode_normal, status_bar.mode_insert);
         assert_ne!(status_bar.mode_normal, status_bar.mode_select);
         assert_ne!(status_bar.mode_insert, status_bar.mode_select);
+
+        // Mode colors should align with chrome accents
+        assert_eq!(status_bar.mode_normal, status_bar.text_primary);
+
+        let expected_accent = ColorTheory::ensure_contrast(
+            tokens.chrome.footer_background,
+            tokens.chrome.primary,
+            ContrastRatios::AA_NORMAL,
+        );
+        let expected_insert = ColorTheory::ensure_contrast(
+            tokens.chrome.footer_background,
+            tokens.chrome.primary_hover,
+            ContrastRatios::AA_NORMAL,
+        );
+        let expected_select = ColorTheory::ensure_contrast(
+            tokens.chrome.footer_background,
+            tokens.chrome.primary_active,
+            ContrastRatios::AA_NORMAL,
+        );
+
+        assert_eq!(status_bar.text_accent, expected_accent);
+        assert_eq!(status_bar.mode_insert, expected_insert);
+        assert_eq!(status_bar.mode_select, expected_select);
 
         // Verify background contrast
         let active_contrast =
