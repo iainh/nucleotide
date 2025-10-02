@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "terminal-emulator")]
+use nucleotide_terminal::TerminalBounds;
+#[cfg(feature = "terminal-emulator")]
 use nucleotide_terminal::session::ControlMsg;
 use nucleotide_terminal::session::{TerminalSession, TerminalSessionCfg};
 use nucleotide_terminal_view::{TerminalViewModel, register_view_model};
@@ -27,7 +29,7 @@ struct SessionEntry {
     view: Arc<Mutex<TerminalViewModel>>,
     last_size: Option<(u16, u16)>,
     #[cfg(feature = "terminal-emulator")]
-    last_metrics: Option<(u16, u16, f32, f32)>,
+    last_bounds: Option<TerminalBounds>,
 }
 
 impl TerminalRuntimeHandler {
@@ -102,7 +104,7 @@ impl TerminalRuntimeHandler {
                 view,
                 last_size: None,
                 #[cfg(feature = "terminal-emulator")]
-                last_metrics: None,
+                last_bounds: None,
             },
         );
         info!(terminal_id=?id, "Terminal session spawned and consumer started");
@@ -150,9 +152,8 @@ impl core::EventHandler for TerminalRuntimeHandler {
                         }
                         entry.last_size = Some((*cols, *rows));
                         #[cfg(feature = "terminal-emulator")]
-                        if let Some(existing) = entry.last_metrics.as_mut() {
-                            existing.0 = *cols;
-                            existing.1 = *rows;
+                        if let Some(existing) = entry.last_bounds.as_mut() {
+                            *existing = existing.with_cells(*cols, *rows);
                         }
                     }
                 }
@@ -167,17 +168,15 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 if let Some(entry) = self.sessions.get_mut(id) {
                     #[cfg(feature = "terminal-emulator")]
                     {
-                        let metrics_changed = entry
-                            .last_metrics
-                            .map(|(prev_cols, prev_rows, prev_cell_w, prev_cell_h)| {
-                                prev_cols != *cols
-                                    || prev_rows != *rows
-                                    || (prev_cell_w - *cell_width).abs() >= 0.1
-                                    || (prev_cell_h - *cell_height).abs() >= 0.1
-                            })
+                        let new_bounds =
+                            TerminalBounds::from_cells(*cell_width, *cell_height, *cols, *rows);
+                        let bounds_changed = entry
+                            .last_bounds
+                            .as_ref()
+                            .map(|prev| !prev.approx_eq(&new_bounds))
                             .unwrap_or(true);
 
-                        if metrics_changed {
+                        if bounds_changed {
                             if let Ok(session) = entry.session.lock() {
                                 // Push control message to engine so emulator redraws with new metrics
                                 let _ = session.control_sender().send(ControlMsg::Resize {
@@ -190,9 +189,9 @@ impl core::EventHandler for TerminalRuntimeHandler {
                                 let _ = futures_executor::block_on(session.resize(*cols, *rows));
                             }
                             if let Ok(mut view) = entry.view.lock() {
-                                view.resize_grid(*cols, *rows, Some((*cell_width, *cell_height)));
+                                view.resize_grid(*cols, *rows, Some(new_bounds.cell_size()));
                             }
-                            entry.last_metrics = Some((*cols, *rows, *cell_width, *cell_height));
+                            entry.last_bounds = Some(new_bounds);
                             entry.last_size = Some((*cols, *rows));
                         }
                     }

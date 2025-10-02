@@ -1246,3 +1246,91 @@ mod emulator {
     }
 }
 */
+pub mod bounds {
+    use portable_pty::PtySize;
+
+    /// Represents the visible terminal viewport in both cell and pixel metrics.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct TerminalBounds {
+        cell_width: f32,
+        cell_height: f32,
+        pixel_width: f32,
+        pixel_height: f32,
+    }
+
+    impl TerminalBounds {
+        /// Create bounds from raw pixel dimensions, quantizing to full cells.
+        pub fn from_pixels(cell_width: f32, cell_height: f32, width: f32, height: f32) -> Self {
+            let cell_width = cell_width.max(1.0);
+            let cell_height = cell_height.max(1.0);
+            let cols = (width / cell_width).floor().max(1.0);
+            let rows = (height / cell_height).floor().max(1.0);
+            Self {
+                cell_width,
+                cell_height,
+                pixel_width: cols * cell_width,
+                pixel_height: rows * cell_height,
+            }
+        }
+
+        /// Create bounds from explicit cell counts and cell metrics.
+        pub fn from_cells(cell_width: f32, cell_height: f32, cols: u16, rows: u16) -> Self {
+            let cell_width = cell_width.max(1.0);
+            let cell_height = cell_height.max(1.0);
+            let cols = cols.max(1) as f32;
+            let rows = rows.max(1) as f32;
+            Self {
+                cell_width,
+                cell_height,
+                pixel_width: cols * cell_width,
+                pixel_height: rows * cell_height,
+            }
+        }
+
+        /// Return bounds with updated cell counts while preserving pixel metrics for each cell.
+        pub fn with_cells(&self, cols: u16, rows: u16) -> Self {
+            Self::from_cells(self.cell_width, self.cell_height, cols, rows)
+        }
+
+        #[inline]
+        pub fn cols(&self) -> u16 {
+            (self.pixel_width / self.cell_width).round().max(1.0) as u16
+        }
+
+        #[inline]
+        pub fn rows(&self) -> u16 {
+            (self.pixel_height / self.cell_height).round().max(1.0) as u16
+        }
+
+        #[inline]
+        pub fn cell_size(&self) -> (f32, f32) {
+            (self.cell_width, self.cell_height)
+        }
+
+        #[inline]
+        pub fn pixel_size(&self) -> (f32, f32) {
+            (self.pixel_width, self.pixel_height)
+        }
+
+        #[inline]
+        pub fn approx_eq(&self, other: &Self) -> bool {
+            (self.cols() == other.cols())
+                && (self.rows() == other.rows())
+                && (self.cell_width - other.cell_width).abs() < 0.1
+                && (self.cell_height - other.cell_height).abs() < 0.1
+        }
+
+        #[inline]
+        pub fn to_pty_size(&self) -> PtySize {
+            let (px_w, px_h) = (self.pixel_width, self.pixel_height);
+            PtySize {
+                cols: self.cols(),
+                rows: self.rows(),
+                pixel_width: px_w.round().clamp(0.0, u16::MAX as f32) as u16,
+                pixel_height: px_h.round().clamp(0.0, u16::MAX as f32) as u16,
+            }
+        }
+    }
+}
+
+pub use bounds::TerminalBounds;

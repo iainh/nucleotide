@@ -50,32 +50,9 @@ use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
+use nucleotide_terminal::TerminalBounds;
 // (no direct Workspace v2 items used here)
 use nucleotide_vcs::VcsServiceHandle;
-
-// (focus logging removed for commit; keep code minimal)
-#[derive(Debug, Clone)]
-struct TerminalViewportMetrics {
-    id: TerminalId,
-    cols: u16,
-    rows: u16,
-    cell_width: f32,
-    cell_height: f32,
-    pixel_width: f32,
-    pixel_height: f32,
-}
-
-impl TerminalViewportMetrics {
-    fn approx_eq(&self, other: &Self) -> bool {
-        self.id == other.id
-            && self.cols == other.cols
-            && self.rows == other.rows
-            && (self.cell_width - other.cell_width).abs() < 0.1
-            && (self.cell_height - other.cell_height).abs() < 0.1
-            && (self.pixel_width - other.pixel_width).abs() < 0.5
-            && (self.pixel_height - other.pixel_height).abs() < 0.5
-    }
-}
 
 pub struct Workspace {
     core: Entity<Core>,
@@ -148,7 +125,7 @@ pub struct Workspace {
     terminal_active: bool,
     // Cache last applied editor size to avoid redundant resizes each frame
     last_editor_size: Option<(u16, u16)>,
-    last_terminal_metrics: Option<TerminalViewportMetrics>,
+    last_terminal_bounds: Option<(TerminalId, TerminalBounds)>,
     // Cached theme-derived colors to avoid per-frame recomputation
     cached_bg_color: gpui::Hsla,
     cached_text_color: gpui::Hsla,
@@ -174,7 +151,7 @@ impl Workspace {
         // Basic layout: toggle visibility of embedded bottom panel
         if self.terminal_panel_visible {
             self.terminal_panel_visible = false;
-            self.last_terminal_metrics = None;
+            self.last_terminal_bounds = None;
             cx.notify();
             return;
         }
@@ -695,7 +672,7 @@ impl Workspace {
             terminal_active: false,
             // Performance cache for editor sizing
             last_editor_size: None,
-            last_terminal_metrics: None,
+            last_terminal_bounds: None,
             // Temporary defaults; recomputed below
             cached_bg_color: black(),
             cached_text_color: white(),
@@ -6451,75 +6428,50 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if !self.terminal_panel_visible {
-            self.last_terminal_metrics = None;
+            self.last_terminal_bounds = None;
             return;
         }
 
         let Some(panel) = &self.embedded_terminal_panel else {
-            self.last_terminal_metrics = None;
+            self.last_terminal_bounds = None;
             return;
         };
 
-        let cell_height = cell_height_px.max(1.0);
-        let cell_width = cell_width_px.max(1.0);
-        let width = available_width_px.max(cell_width);
-        let height = panel_height_px.max(cell_height);
-        let cols_f = (width / cell_width).floor().max(1.0);
-        let rows_f = (height / cell_height).floor().max(1.0);
-        let cols = cols_f as u16;
-        let rows = rows_f as u16;
-        let pixel_width = cols_f * cell_width;
-        let pixel_height = rows_f * cell_height;
-        let active_id = panel.read(cx).active;
-        nucleotide_logging::debug!(
-            terminal_id=?active_id,
-            cols=cols,
-            rows=rows,
-            cell_width=cell_width,
-            cell_height=cell_height,
-            available_width=available_width_px,
-            panel_height=panel_height_px,
-            pixel_width=pixel_width,
-            pixel_height=pixel_height,
-            "workspace computed terminal metrics",
+        let bounds = TerminalBounds::from_pixels(
+            cell_width_px,
+            cell_height_px,
+            available_width_px,
+            panel_height_px,
         );
-        let metrics = TerminalViewportMetrics {
-            id: active_id,
-            cols,
-            rows,
-            cell_width,
-            cell_height,
-            pixel_width,
-            pixel_height,
-        };
-
-        let metrics_changed = self
-            .last_terminal_metrics
+        let active_id = panel.read(cx).active;
+        let bounds_changed = self
+            .last_terminal_bounds
             .as_ref()
-            .map(|prev| !prev.approx_eq(&metrics))
+            .map(|(prev_id, prev_bounds)| *prev_id != active_id || !prev_bounds.approx_eq(&bounds))
             .unwrap_or(true);
 
-        if metrics_changed {
-            self.last_terminal_metrics = Some(metrics.clone());
-            if (self.basic_terminal_height - metrics.pixel_height).abs() > 0.5 {
-                self.basic_terminal_height = metrics.pixel_height;
+        if bounds_changed {
+            let (_, pixel_height) = bounds.pixel_size();
+            self.last_terminal_bounds = Some((active_id, bounds));
+            if (self.basic_terminal_height - pixel_height).abs() > 0.5 {
+                self.basic_terminal_height = pixel_height;
             }
             panel.update(cx, |p, _| {
-                p.height_px = metrics.pixel_height;
+                p.height_px = pixel_height;
             });
             self.core.update(cx, |app, _| {
                 if let Some(bus) = &app.event_aggregator {
                     bus.dispatch_terminal(TerminalEvent::Resized {
-                        id: metrics.id,
-                        cols: metrics.cols,
-                        rows: metrics.rows,
+                        id: active_id,
+                        cols: bounds.cols(),
+                        rows: bounds.rows(),
                     });
                     bus.dispatch_terminal(TerminalEvent::ResizedWithMetrics {
-                        id: metrics.id,
-                        cols: metrics.cols,
-                        rows: metrics.rows,
-                        cell_width: metrics.cell_width,
-                        cell_height: metrics.cell_height,
+                        id: active_id,
+                        cols: bounds.cols(),
+                        rows: bounds.rows(),
+                        cell_width: bounds.cell_size().0,
+                        cell_height: bounds.cell_size().1,
                     });
                 }
             });
