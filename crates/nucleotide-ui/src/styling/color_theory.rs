@@ -631,10 +631,10 @@ impl ColorTheory {
 
         // Compute titlebar and footer backgrounds (darker/lighter than surface)
         let titlebar_background = if is_dark_theme {
-            // Dark theme: make titlebar lighter than surface
-            Self::lighten(surface_color, 0.12)
+            // Dark theme: keep the lift subtle so chrome stays close to editor background
+            Self::lighten(surface_color, 0.06)
         } else {
-            // Light theme: make titlebar darker than surface
+            // Light theme: revert to the previous gentle darkening for balance with editor background
             Self::darken(surface_color, 0.12)
         };
 
@@ -643,8 +643,8 @@ impl ColorTheory {
 
         // File tree and tab backgrounds: subtle variation from surface
         let file_tree_background = if is_dark_theme {
-            // Dark theme: slightly lighter than surface
-            Self::lighten(surface_color, 0.05)
+            // Dark theme: keep lift consistent with titlebar for cohesive chrome layers
+            Self::lighten(surface_color, 0.06)
         } else {
             // Light theme: slightly darker than surface
             Self::darken(surface_color, 0.05)
