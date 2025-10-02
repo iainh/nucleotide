@@ -2928,6 +2928,17 @@ impl Element for DocumentElement {
                             }
                         };
 
+                        // Paint cursorline background before any run highlights so empty lines still render it
+                        if is_cursor_visual_line {
+                            if let Some(cursorline_bg) = cursorline_style {
+                                let cursorline_bounds = Bounds {
+                                    origin: point(bounds.origin.x, line_y),
+                                    size: size(bounds.size.width, after_layout.line_height),
+                                };
+                                window.paint_quad(fill(cursorline_bounds, cursorline_bg));
+                            }
+                        }
+
                         // Paint the line text (only for non-empty lines)
                         if !line_str.is_empty() {
                             let shaped_line = window.text_system()
@@ -2941,19 +2952,6 @@ impl Element for DocumentElement {
                                 let el = (a.l - b.l).abs() <= 0.005;
                                 let ea = (a.a - b.a).abs() <= 0.005;
                                 eh && es && el && ea
-                            }
-
-                            // If this is the cursor line, paint the cursorline first (row-wide),
-                            // then paint selection backgrounds on top. For non-cursor lines,
-                            // paint any run backgrounds normally.
-                            if is_cursor_visual_line
-                                && let Some(cursorline_bg) = cursorline_style
-                            {
-                                let cursorline_bounds = Bounds {
-                                    origin: point(bounds.origin.x, line_y),
-                                    size: size(bounds.size.width, after_layout.line_height),
-                                };
-                                window.paint_quad(fill(cursorline_bounds, cursorline_bg));
                             }
 
                             // Paint background highlights using the shaped line for accurate positioning
