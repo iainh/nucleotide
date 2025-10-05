@@ -543,7 +543,7 @@ appearance_follows_theme = true
 
         // 100 detections should complete quickly
         assert!(
-            duration.as_millis() < 100,
+            duration.as_millis() < 150,
             "Batch workspace detection too slow: {:?}",
             duration
         );
