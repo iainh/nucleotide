@@ -15,6 +15,9 @@ impl ContrastRatios {
     pub const MIN_READABLE: f32 = 2.0;
 }
 
+/// Minimum contrast we require between surface chrome layers.
+const CHROME_MIN_CONTRAST: f32 = 1.2;
+
 /// Color theory utilities for intelligent styling
 pub struct ColorTheory;
 
@@ -622,6 +625,28 @@ impl ColorTheory {
     pub fn derive_chrome_colors(surface_color: Hsla) -> ChromeColors {
         let is_dark_theme = surface_color.l < 0.5;
 
+        const CHROME_DELTA_STEP: f32 = 0.02;
+        const CHROME_MAX_DELTA: f32 = 0.4;
+
+        let ensure_chrome_contrast = |mut delta: f32| {
+            let mut attempts = 0;
+            loop {
+                let candidate = if is_dark_theme {
+                    Self::lighten(surface_color, delta)
+                } else {
+                    Self::darken(surface_color, delta)
+                };
+
+                let contrast = Self::contrast_ratio(surface_color, candidate);
+                if contrast >= CHROME_MIN_CONTRAST || delta >= CHROME_MAX_DELTA || attempts >= 12 {
+                    return (candidate, delta);
+                }
+
+                delta = (delta + CHROME_DELTA_STEP).min(CHROME_MAX_DELTA);
+                attempts += 1;
+            }
+        };
+
         nucleotide_logging::debug!(
             surface_color = ?surface_color,
             surface_lightness = surface_color.l,
@@ -630,24 +655,24 @@ impl ColorTheory {
         );
 
         // Compute titlebar and footer backgrounds (darker/lighter than surface)
-        let titlebar_background = if is_dark_theme {
+        let (titlebar_background, titlebar_delta) = if is_dark_theme {
             // Dark theme: keep the lift subtle so chrome stays close to editor background
-            Self::lighten(surface_color, 0.06)
+            ensure_chrome_contrast(0.06)
         } else {
             // Light theme: revert to the previous gentle darkening for balance with editor background
-            Self::darken(surface_color, 0.12)
+            ensure_chrome_contrast(0.12)
         };
 
         // Footer uses same approach as titlebar for consistency
         let footer_background = titlebar_background;
 
         // File tree and tab backgrounds: subtle variation from surface
-        let file_tree_background = if is_dark_theme {
+        let (file_tree_background, _) = if is_dark_theme {
             // Dark theme: keep lift consistent with titlebar for cohesive chrome layers
-            Self::lighten(surface_color, 0.06)
+            (titlebar_background, titlebar_delta)
         } else {
             // Light theme: slightly darker than surface
-            Self::darken(surface_color, 0.05)
+            ensure_chrome_contrast(0.05)
         };
 
         // Tab empty areas use same approach as file tree
@@ -697,8 +722,6 @@ impl ColorTheory {
     /// Validate that chrome colors meet accessibility standards
     fn validate_chrome_colors(chrome_colors: &ChromeColors, surface_color: Hsla) {
         // Chrome backgrounds need lower contrast than text (1.2:1 minimum for visual distinction)
-        const CHROME_MIN_CONTRAST: f32 = 1.2;
-
         let validations = [
             ("titlebar_background", chrome_colors.titlebar_background),
             ("footer_background", chrome_colors.footer_background),
