@@ -29,10 +29,10 @@ repository = "https://github.com/iainh/nucleotide"
 homepage = "https://github.com/iainh/nucleotide"
 
 [workspace.dependencies]
-# GPUI and Zed dependencies - using v0.200.5 tag
-gpui = { git = "https://github.com/zed-industries/zed", tag = "v0.203.5", features = ["test-support"] }
-gpui_tokio = { git = "https://github.com/zed-industries/zed", tag = "v0.203.5" }
-sum_tree = { git = "https://github.com/zed-industries/zed", tag = "v0.203.5" }
+# GPUI and Zed dependencies - using v0.206.6 tag
+gpui = { git = "https://github.com/zed-industries/zed", tag = "v0.206.6", features = ["test-support", "runtime_shaders"] }
+gpui_tokio = { git = "https://github.com/zed-industries/zed", tag = "v0.206.6" }
+sum_tree = { git = "https://github.com/zed-industries/zed", tag = "v0.206.6" }
 
 # Helix dependencies - using forked version for consistency
 helix-core = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
