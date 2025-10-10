@@ -42,7 +42,7 @@ nucleotide-terminal-panel = { path = "../nucleotide-terminal-panel" }
 
 # External dependencies
 gpui.workspace = true
-sum_tree.workspace = true
+zed-sum-tree.workspace = true
 
 helix-stdx.workspace = true
 helix-core.workspace = true

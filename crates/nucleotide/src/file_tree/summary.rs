@@ -1,7 +1,7 @@
 // ABOUTME: Summary types for SumTree aggregation of file tree data
 // ABOUTME: Enables efficient queries like "how many files in this subtree"
 
-use sum_tree::{Dimension, Summary};
+use zed_sum_tree::{Dimension, Summary};
 
 use std::path::PathBuf;
 
@@ -25,13 +25,13 @@ pub struct FileTreeSummary {
 }
 
 impl Summary for FileTreeSummary {
-    type Context = ();
+    type Context<'a> = ();
 
-    fn zero(_: &Self::Context) -> Self {
+    fn zero<'a>(_: Self::Context<'a>) -> Self {
         Self::default()
     }
 
-    fn add_summary(&mut self, other: &Self, _: &Self::Context) {
+    fn add_summary<'a>(&mut self, other: &Self, _: Self::Context<'a>) {
         self.count += other.count;
         self.visible_count += other.visible_count;
         self.file_count += other.file_count;
@@ -50,11 +50,11 @@ impl Summary for FileTreeSummary {
 pub struct Count(pub usize);
 
 impl<'a> Dimension<'a, FileTreeSummary> for Count {
-    fn zero(_: &()) -> Self {
+    fn zero(_: ()) -> Self {
         Count(0)
     }
 
-    fn add_summary(&mut self, summary: &'a FileTreeSummary, _: &()) {
+    fn add_summary(&mut self, summary: &'a FileTreeSummary, _: ()) {
         self.0 += summary.count;
     }
 }
@@ -64,11 +64,11 @@ impl<'a> Dimension<'a, FileTreeSummary> for Count {
 pub struct VisibleCount(pub usize);
 
 impl<'a> Dimension<'a, FileTreeSummary> for VisibleCount {
-    fn zero(_: &()) -> Self {
+    fn zero(_: ()) -> Self {
         VisibleCount(0)
     }
 
-    fn add_summary(&mut self, summary: &'a FileTreeSummary, _: &()) {
+    fn add_summary(&mut self, summary: &'a FileTreeSummary, _: ()) {
         self.0 += summary.visible_count;
     }
 }
@@ -78,11 +78,11 @@ impl<'a> Dimension<'a, FileTreeSummary> for VisibleCount {
 pub struct TotalSize(pub u64);
 
 impl<'a> Dimension<'a, FileTreeSummary> for TotalSize {
-    fn zero(_: &()) -> Self {
+    fn zero(_: ()) -> Self {
         TotalSize(0)
     }
 
-    fn add_summary(&mut self, summary: &'a FileTreeSummary, _: &()) {
+    fn add_summary(&mut self, summary: &'a FileTreeSummary, _: ()) {
         self.0 += summary.total_size;
     }
 }
@@ -92,11 +92,11 @@ impl<'a> Dimension<'a, FileTreeSummary> for TotalSize {
 pub struct MaxDepth(pub usize);
 
 impl<'a> Dimension<'a, FileTreeSummary> for MaxDepth {
-    fn zero(_: &()) -> Self {
+    fn zero(_: ()) -> Self {
         MaxDepth(0)
     }
 
-    fn add_summary(&mut self, summary: &'a FileTreeSummary, _: &()) {
+    fn add_summary(&mut self, summary: &'a FileTreeSummary, _: ()) {
         self.0 = self.0.max(summary.max_depth);
     }
 }

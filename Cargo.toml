@@ -32,7 +32,7 @@ homepage = "https://github.com/iainh/nucleotide"
 # GPUI and Zed dependencies - using crates.io gpui 0.2 series
 gpui = { version = "0.2.0", features = ["test-support", "runtime_shaders"] }
 gpui_tokio = { version = "0.2.0" }
-sum_tree = { git = "https://github.com/zed-industries/zed", tag = "v0.206.6" }
+zed-sum-tree = "0.2.0"
 
 # Helix dependencies - using forked version for consistency
 helix-core = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }

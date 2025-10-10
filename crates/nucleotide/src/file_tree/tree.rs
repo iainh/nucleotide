@@ -6,7 +6,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use sum_tree::SumTree;
+use zed_sum_tree::SumTree;
 
 use crate::file_tree::entry::FileTreeEntryId;
 use crate::file_tree::{FileKind, FileTreeConfig, FileTreeEntry};
@@ -43,7 +43,7 @@ impl FileTree {
 
         Self {
             root_path,
-            entries: SumTree::new(&()),
+            entries: SumTree::new(()),
             path_to_id: HashMap::new(),
             expanded_dirs: HashSet::new(),
             config,
@@ -84,7 +84,7 @@ impl FileTree {
         // Mark root as expanded since we're loading its children
         self.expanded_dirs.insert(self.root_path.clone());
 
-        self.entries = SumTree::from_iter(entries, &());
+        self.entries = SumTree::from_iter(entries, ());
         self.is_loaded = true;
 
         // Don't refresh VCS status here - it needs to be done after Tokio runtime is available
@@ -96,7 +96,7 @@ impl FileTree {
 
     /// Refresh the entire tree
     pub fn refresh(&mut self) -> Result<()> {
-        self.entries = SumTree::new(&());
+        self.entries = SumTree::new(());
         self.path_to_id.clear();
         self.next_id = 1;
         self.is_loaded = false;
@@ -441,7 +441,7 @@ impl FileTree {
 
         // Sort all entries - the Ord implementation ensures parents come before children
         entries.sort();
-        self.entries = SumTree::from_iter(entries, &());
+        self.entries = SumTree::from_iter(entries, ());
         self.invalidate_cache();
     }
 
@@ -630,7 +630,7 @@ impl FileTree {
             updated_entries.push(entry);
         }
 
-        self.entries = SumTree::from_iter(updated_entries, &());
+        self.entries = SumTree::from_iter(updated_entries, ());
         self.invalidate_cache();
     }
 
@@ -649,7 +649,7 @@ impl FileTree {
         }
 
         if removed_entry.is_some() {
-            self.entries = SumTree::from_iter(updated_entries, &());
+            self.entries = SumTree::from_iter(updated_entries, ());
             self.invalidate_cache();
         }
 
@@ -666,7 +666,7 @@ impl FileTree {
             updated_entries.push(entry);
         }
 
-        self.entries = SumTree::from_iter(updated_entries, &());
+        self.entries = SumTree::from_iter(updated_entries, ());
         self.invalidate_cache();
     }
 

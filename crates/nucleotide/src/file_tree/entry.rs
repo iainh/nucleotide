@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::time::SystemTime;
-use sum_tree::{Dimension, Item, KeyedItem};
+use zed_sum_tree::{Dimension, Item, KeyedItem};
 
 /// A single entry in the file tree
 #[derive(Debug, Clone, PartialEq)]
@@ -204,7 +204,7 @@ impl FileTreeEntry {
 impl Item for FileTreeEntry {
     type Summary = crate::file_tree::FileTreeSummary;
 
-    fn summary(&self, _cx: &()) -> Self::Summary {
+    fn summary(&self, _cx: ()) -> Self::Summary {
         crate::file_tree::FileTreeSummary {
             count: 1,
             visible_count: if self.is_visible { 1 } else { 0 },
@@ -246,51 +246,51 @@ pub struct DepthDimension(pub usize);
 pub struct SizeDimension(pub u64);
 
 impl<'a> Dimension<'a, crate::file_tree::FileTreeSummary> for IndexDimension {
-    fn zero(_cx: &()) -> Self {
+    fn zero(_cx: ()) -> Self {
         IndexDimension(0)
     }
 
-    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: &()) {
+    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: ()) {
         self.0 += summary.visible_count;
     }
 }
 
 impl<'a> Dimension<'a, crate::file_tree::FileTreeSummary> for PathDimension {
-    fn zero(_cx: &()) -> Self {
+    fn zero(_cx: ()) -> Self {
         PathDimension(PathBuf::new())
     }
 
-    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: &()) {
+    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: ()) {
         self.0 = summary.max_path.clone();
     }
 }
 
 impl<'a> Dimension<'a, crate::file_tree::FileTreeSummary> for DepthDimension {
-    fn zero(_cx: &()) -> Self {
+    fn zero(_cx: ()) -> Self {
         DepthDimension(0)
     }
 
-    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: &()) {
+    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: ()) {
         self.0 = self.0.max(summary.max_depth);
     }
 }
 
 impl<'a> Dimension<'a, crate::file_tree::FileTreeSummary> for SizeDimension {
-    fn zero(_cx: &()) -> Self {
+    fn zero(_cx: ()) -> Self {
         SizeDimension(0)
     }
 
-    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: &()) {
+    fn add_summary(&mut self, summary: &'a crate::file_tree::FileTreeSummary, _cx: ()) {
         self.0 += summary.total_size;
     }
 }
 
 impl<'a> Dimension<'a, crate::file_tree::FileTreeSummary> for FileTreePathKey {
-    fn zero(_cx: &()) -> Self {
+    fn zero(_cx: ()) -> Self {
         FileTreePathKey(PathBuf::new())
     }
 
-    fn add_summary(&mut self, _summary: &'a crate::file_tree::FileTreeSummary, _cx: &()) {
+    fn add_summary(&mut self, _summary: &'a crate::file_tree::FileTreeSummary, _cx: ()) {
         // For path key, we don't update based on summary
         // The key represents a specific path, not accumulated paths
     }

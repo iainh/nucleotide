@@ -4780,7 +4780,6 @@ dependencies = [
  "serde",
  "serde_json",
  "slotmap",
- "sum_tree",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -4788,6 +4787,7 @@ dependencies = [
  "tracing",
  "unicode-segmentation",
  "url",
+ "zed-sum-tree",
 ]
 
 [[package]]
@@ -7017,17 +7017,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "sum_tree"
-version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?tag=v0.206.6#f6695400b1463d0be8f2ed13589446da41541b90"
-dependencies = [
- "arrayvec",
- "log",
- "rayon",
- "workspace-hack",
-]
 
 [[package]]
 name = "sval"
