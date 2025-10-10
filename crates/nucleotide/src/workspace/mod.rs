@@ -389,7 +389,8 @@ impl Workspace {
                     .on_click(cx.listener(
                         |this: &mut Workspace, ev: &gpui::MouseUpEvent, _w, cx| {
                             this.lsp_menu_open = true;
-                            this.lsp_menu_pos = (ev.position.x.0, ev.position.y.0);
+                            this.lsp_menu_pos =
+                                (f32::from(ev.position.x), f32::from(ev.position.y));
                             cx.notify();
                         },
                     )),
@@ -4213,7 +4214,7 @@ impl Workspace {
 
         // Calculate available width for tabs dynamically
         let window_size = window.viewport_size();
-        let mut available_width = window_size.width.0;
+        let mut available_width = f32::from(window_size.width);
 
         // Subtract file tree width if it's visible
         if self.show_file_tree {
@@ -4226,7 +4227,7 @@ impl Workspace {
         available_width = (available_width - TAB_BAR_MARGIN).max(200.0); // Minimum 200px
 
         debug!(
-            window_width = window_size.width.0,
+            window_width = f32::from(window_size.width),
             file_tree_width = self.file_tree_width,
             show_file_tree = self.show_file_tree,
             calculated_available_width = available_width,
@@ -4444,7 +4445,7 @@ impl Workspace {
 
         // Calculate available width for tabs dynamically (same as in render_tab_bar)
         let window_size = window.viewport_size();
-        let mut available_width = window_size.width.0;
+        let mut available_width = f32::from(window_size.width);
 
         // Subtract file tree width if it's visible
         if self.show_file_tree {
@@ -6371,7 +6372,7 @@ impl Workspace {
             let char_w = cx
                 .text_system()
                 .advance(font_id, font_size, 'm')
-                .map(|a| a.width.0)
+                .map(|a| f32::from(a.width))
                 .unwrap_or(editor_font.size * 0.6)
                 .max(1.0);
             let line_h = if editor_font.line_height > 0.0 {
@@ -6853,7 +6854,7 @@ impl Render for Workspace {
                 .on_mouse_move(
                     cx.listener(|workspace, event: &MouseMoveEvent, _window, cx| {
                         // Mouse events in GPUI are already in logical pixels, no scale correction needed
-                        let mouse_x = event.position.x.0;
+                        let mouse_x = f32::from(event.position.x);
                         let delta = mouse_x - workspace.resize_start_x;
                         let new_width = (workspace.resize_start_width + delta).clamp(150.0, 600.0);
 
@@ -7166,7 +7167,9 @@ impl Render for Workspace {
         let status_bar_height = ui_theme.tokens.sizes.titlebar_height; // status bar height equals titlebar token height
         let titlebar_height = ui_theme.tokens.sizes.titlebar_height;
         let viewport_h = window.viewport_size().height;
-        let available_h = (viewport_h.0 - status_bar_height.0 - titlebar_height.0).max(0.0);
+        let available_h =
+            (f32::from(viewport_h) - f32::from(status_bar_height) - f32::from(titlebar_height))
+                .max(0.0);
         let content_max_h = px(available_h);
         // (debug logging removed)
 
@@ -7245,7 +7248,7 @@ impl Render for Workspace {
 
                 // Compute desired Helix editor area in character cells (cols/rows)
                 // Helix expects compositor/editor sizes in cells, not pixels.
-                let viewport_w_px = window.viewport_size().width.0;
+                let viewport_w_px = f32::from(window.viewport_size().width);
                 let file_tree_w_px = if self.show_file_tree {
                     self.file_tree_width
                 } else {
@@ -7255,15 +7258,17 @@ impl Render for Workspace {
                 let editor_h_px = editor_h.max(0.0);
 
                 let (line_h_px, char_w_px) = self.get_font_metrics_from_focused_view(cx);
+                let line_h_value = f32::from(line_h_px);
+                let char_w_value = f32::from(char_w_px);
                 self.sync_embedded_terminal_size(
                     editor_w_px,
                     self.basic_terminal_height,
-                    line_h_px.0,
-                    char_w_px.0,
+                    line_h_value,
+                    char_w_value,
                     cx,
                 );
-                let rows = (editor_h_px / line_h_px.0).floor().max(1.0) as u16;
-                let cols = (editor_w_px / char_w_px.0).floor().max(1.0) as u16;
+                let rows = (editor_h_px / line_h_value).floor().max(1.0) as u16;
+                let cols = (editor_w_px / char_w_value).floor().max(1.0) as u16;
                 let desired_size = (cols, rows);
 
                 // Resize Helix compositor/editor if size changed
@@ -7334,19 +7339,23 @@ impl Render for Workspace {
                             .right_0()
                             .bottom_0()
                             // Track resize drags at the wrapper level for reliability
-                            .on_mouse_move(cx.listener(move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
-                                if this.basic_term_resizing && ev.dragging() {
-                                    let dy = ev.position.y.0 - this.basic_term_start_mouse_y;
-                                    let min_h = 80.0f32;
-                                    let max_h = (available_h - 80.0).max(min_h);
-                                    let new_h = (this.basic_term_start_height - dy).clamp(min_h, max_h);
-                                    if (this.basic_terminal_height - new_h).abs() > 0.5 {
-                                        this.basic_terminal_height = new_h;
-                                        cx.notify();
-                                        window.refresh();
+                            .on_mouse_move(cx.listener(
+                                move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
+                                    if this.basic_term_resizing && ev.dragging() {
+                                        let dy = f32::from(ev.position.y)
+                                            - this.basic_term_start_mouse_y;
+                                        let min_h = 80.0f32;
+                                        let max_h = (available_h - 80.0).max(min_h);
+                                        let new_h =
+                                            (this.basic_term_start_height - dy).clamp(min_h, max_h);
+                                        if (this.basic_terminal_height - new_h).abs() > 0.5 {
+                                            this.basic_terminal_height = new_h;
+                                            cx.notify();
+                                            window.refresh();
+                                        }
                                     }
-                                }
-                            }))
+                                },
+                            ))
                             .on_mouse_up(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, _cx| {
                                 if this.basic_term_resizing {
                                     this.basic_term_resizing = false;
@@ -7396,7 +7405,8 @@ impl Render for Workspace {
                                             return;
                                         }
                                         this.basic_term_resizing = true;
-                                        this.basic_term_start_mouse_y = ev.position.y.0;
+                                        this.basic_term_start_mouse_y =
+                                            f32::from(ev.position.y);
                                         this.basic_term_start_height = this.basic_terminal_height;
                                         this.terminal_active = true;
                                         window.refresh();
@@ -7409,7 +7419,7 @@ impl Render for Workspace {
                 root
             };
 
-            let viewport_w = window.viewport_size().width.0;
+            let viewport_w = f32::from(window.viewport_size().width);
             let max_left = (viewport_w - 200.0).max(150.0);
             if self.file_tree_width > max_left {
                 self.file_tree_width = max_left;
@@ -7419,7 +7429,7 @@ impl Render for Workspace {
                 let handle_visual_w = 4.0f32;
                 let handle_hit_w = 12.0f32;
                 let min_left = 150.0f32;
-                let viewport_w = window.viewport_size().width.0;
+                let viewport_w = f32::from(window.viewport_size().width);
                 let max_left = (viewport_w - 200.0).max(min_left);
 
                 let overlay_bg_w = (self.file_tree_width).clamp(0.0, max_left);
@@ -7432,10 +7442,10 @@ impl Render for Workspace {
                     .on_mouse_move(cx.listener(
                         move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
                             if this.is_resizing_file_tree && ev.dragging() {
-                                let dx = ev.position.x.0 - this.resize_start_x;
+                                let dx = f32::from(ev.position.x) - this.resize_start_x;
                                 let mut new_w = this.resize_start_width + dx;
                                 // Clamp to viewport and min/max
-                                let viewport_w = window.viewport_size().width.0;
+                                let viewport_w = f32::from(window.viewport_size().width);
                                 let max_allowed = (viewport_w - 200.0).max(min_left);
                                 if new_w < min_left {
                                     new_w = min_left;
@@ -7520,7 +7530,7 @@ impl Render for Workspace {
                             cx.listener(
                                 move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
                                     if ev.click_count >= 2 {
-                                        let viewport_w = window.viewport_size().width.0;
+                                        let viewport_w = f32::from(window.viewport_size().width);
                                         let max_allowed = (viewport_w - 200.0).max(min_left);
                                         let snap = 240.0f32.clamp(min_left, max_allowed);
                                         if (this.file_tree_width - snap).abs() > 0.5 {
@@ -7532,7 +7542,7 @@ impl Render for Workspace {
                                         return;
                                     }
                                     this.is_resizing_file_tree = true;
-                                    this.resize_start_x = ev.position.x.0;
+                                    this.resize_start_x = f32::from(ev.position.x);
                                     this.resize_start_width = this.file_tree_width;
                                     window.refresh();
                                     cx.stop_propagation();

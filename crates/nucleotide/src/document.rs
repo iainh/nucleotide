@@ -52,9 +52,10 @@ fn test_synthetic_click_accuracy(
     if let Some(line_layout) = line_cache.find_line_by_index(target_line_idx) {
         // Calculate approximate pixel position for the target character
         // This is a simple approximation - real position would need character metrics
-        let char_width_estimate =
-            line_layout.shaped_line.width.0 / line_layout.shaped_line.len() as f32;
-        let estimated_x = line_layout.origin.x.0 + (target_char_idx as f32 * char_width_estimate);
+        let char_width_estimate = f32::from(line_layout.shaped_line.width)
+            / line_layout.shaped_line.len() as f32;
+        let estimated_x =
+            f32::from(line_layout.origin.x) + (target_char_idx as f32 * char_width_estimate);
         let synthetic_position = gpui::point(gpui::px(estimated_x), line_layout.origin.y);
 
         // Test if this position would be found correctly
@@ -80,13 +81,14 @@ fn test_synthetic_click_accuracy(
 #[cfg(test)]
 fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, _font_size: f32) {
     // Test various x positions and see if they map to sensible character indices
+    let width = f32::from(shaped_line.width);
     let test_positions = vec![
         0.0,                        // Start of line
-        shaped_line.width.0 * 0.25, // Quarter way
-        shaped_line.width.0 * 0.5,  // Middle
-        shaped_line.width.0 * 0.75, // Three quarters
-        shaped_line.width.0,        // End of line
-        shaped_line.width.0 + 10.0, // Beyond end
+        width * 0.25,               // Quarter way
+        width * 0.5,                // Middle
+        width * 0.75,               // Three quarters
+        width,                      // End of line
+        width + 10.0,               // Beyond end
     ];
 
     for x_pos in test_positions.iter() {
@@ -268,13 +270,13 @@ impl DocumentView {
     #[allow(dead_code)]
     fn anchor_to_scroll_px(&self, anchor_char: usize, document: &helix_view::Document) -> Pixels {
         let row = document.text().char_to_line(anchor_char);
-        px(row as f32 * self.line_height.0)
+        self.line_height * (row as f32)
     }
 
     /// Convert scroll pixels to a Helix anchor (character position)
     #[allow(dead_code)]
     fn scroll_px_to_anchor(&self, y: Pixels, document: &helix_view::Document) -> usize {
-        let row = (y.0 / self.line_height.0).floor() as usize;
+        let row = (y / self.line_height).floor() as usize;
         let text = document.text();
         let clamped_row = row.min(text.len_lines().saturating_sub(1));
         text.line_to_char(clamped_row)
@@ -444,6 +446,7 @@ impl Render for DocumentView {
 
                             // Get the actual line height from scroll manager
                             let line_height = scroll_manager_wheel.line_height.get();
+                            let line_height_value = f32::from(line_height);
                             let delta = event.delta.pixel_delta(line_height);
 
                             debug!(
@@ -455,7 +458,8 @@ impl Render for DocumentView {
                             // Delegate scroll to Helix only; do not adjust local scroll immediately
                             core_wheel.update(cx, |core, cx| {
                                 let editor = &mut core.editor;
-                                let scroll_lines = (delta.y.0 / line_height.0).round() as isize;
+                                let scroll_lines =
+                                    (f32::from(delta.y) / line_height_value).round() as isize;
                                 if scroll_lines != 0 {
                                     use helix_core::movement::Direction;
                                     use helix_term::commands;
@@ -717,7 +721,7 @@ impl DocumentElement {
         cell_width: Pixels,
     ) -> Bounds<Pixels> {
         // Calculate gutter width in pixels
-        let gutter_width = Pixels::from(gutter_offset as f32 * cell_width.0);
+        let gutter_width = cell_width * (gutter_offset as f32);
 
         // Add small padding to prevent text cutoff (matching existing pattern)
         let right_padding = cell_width * 2.0; // 2 characters of padding
@@ -862,8 +866,10 @@ impl DocumentElement {
         let annotations = TextAnnotations::default();
 
         // Convert pixel position to visual row and column
-        let visual_row = (text_area_pos.y.0 / line_height.0) as usize;
-        let visual_col = (text_area_pos.x.0 / cell_width.0) as usize;
+        let line_height_value = f32::from(line_height);
+        let cell_width_value = f32::from(cell_width);
+        let visual_row = (f32::from(text_area_pos.y) / line_height_value) as usize;
+        let visual_col = (f32::from(text_area_pos.x) / cell_width_value) as usize;
 
         // Adjust visual row to account for viewport offset
         let absolute_visual_row = visual_row + view_offset.vertical_offset;
@@ -912,8 +918,8 @@ impl DocumentElement {
 
         // Convert to pixel coordinates within the document line
         // This gives us the position within the unwrapped document coordinates
-        let result_x = px(char_offset as f32 * cell_width.0);
-        let result_y = px(doc_line as f32 * line_height.0);
+        let result_x = px(char_offset as f32 * cell_width_value);
+        let result_y = px(doc_line as f32 * line_height_value);
 
         Some(Point {
             x: result_x,
@@ -1626,10 +1632,11 @@ impl Element for DocumentElement {
                         return;
                     }
                 };
+                let cell_width_value = f32::from(cell_width);
                 // Calculate text bounds to get actual text area
                 // This is the missing piece - we need to know where the text area starts
                 let text_bounds = {
-                    let gutter_width = Pixels::from(gutter_offset as f32 * cell_width.0);
+                    let gutter_width = cell_width * (gutter_offset as f32);
                     let right_padding = cell_width * 2.0;
                     let top_padding = px(1.0);
                     gpui::Bounds {
@@ -1645,7 +1652,7 @@ impl Element for DocumentElement {
                 };
 
                 let _expected_text_origin_x =
-                    element_bounds.origin.x + Pixels::from(gutter_offset as f32 * cell_width.0);
+                    element_bounds.origin.x + cell_width * (gutter_offset as f32);
 
                 // STEP 1: Convert window coordinates to text-area coordinates
                 let text_area_pos = gpui::Point {
@@ -1661,11 +1668,12 @@ impl Element for DocumentElement {
                         if let Some(_view) = editor.tree.try_get(view_id) {
                             let theme = cx.global::<crate::ThemeManager>().helix_theme();
                             // Calculate viewport width for text formatting (matching paint calculation)
-                            let gutter_width_px = f32::from(gutter_offset) * cell_width.0;
-                            let right_padding = cell_width.0 * 2.0; // 2 characters of padding
+                            let gutter_width_px = f32::from(gutter_offset) * cell_width_value;
+                            let right_padding = cell_width_value * 2.0; // 2 characters of padding
                             let text_area_width =
-                                text_bounds.size.width.0 - gutter_width_px - right_padding;
-                            let viewport_width = (text_area_width / cell_width.0).max(10.0) as u16;
+                                f32::from(text_bounds.size.width) - gutter_width_px - right_padding;
+                            let viewport_width =
+                                (text_area_width / cell_width_value).max(10.0) as u16;
 
                             let text_format = document.text_format(viewport_width, Some(theme));
                             text_format.soft_wrap
@@ -1690,12 +1698,13 @@ impl Element for DocumentElement {
                             if let Some(_view) = editor.tree.try_get(view_id) {
                                 let theme = cx.global::<crate::ThemeManager>().helix_theme();
                                 // Calculate viewport width for text formatting
-                                let gutter_width_px = f32::from(gutter_offset) * cell_width.0;
-                                let right_padding = cell_width.0 * 2.0;
-                                let text_area_width =
-                                    text_bounds.size.width.0 - gutter_width_px - right_padding;
+                                let gutter_width_px = f32::from(gutter_offset) * cell_width_value;
+                                let right_padding = cell_width_value * 2.0;
+                                let text_area_width = f32::from(text_bounds.size.width)
+                                    - gutter_width_px
+                                    - right_padding;
                                 let viewport_width =
-                                    (text_area_width / cell_width.0).max(10.0) as u16;
+                                    (text_area_width / cell_width_value).max(10.0) as u16;
 
                                 // Get text format and view offset
                                 let text_format = document.text_format(viewport_width, Some(theme));
@@ -1753,7 +1762,7 @@ impl Element for DocumentElement {
                     let editor = &core.editor;
                     if let Some(document) = editor.document(doc_id) {
                         let total_lines = document.text().len_lines();
-                        px(total_lines as f32 * line_height.0)
+                        line_height * (total_lines as f32)
                     } else {
                         px(1000.0) // Fallback
                     }
@@ -2294,7 +2303,8 @@ impl Element for DocumentElement {
             let anchor_line = text.char_to_line(view_offset.anchor);
             // Mirror Helix viewport: include vertical_offset (visual rows) for wrapped/non-wrapped
             let top_visual = anchor_line.saturating_add(view_offset.vertical_offset);
-            let y = px(top_visual as f32 * self.scroll_manager.line_height.get().0);
+            let line_height = self.scroll_manager.line_height.get();
+            let y = line_height * (top_visual as f32);
             // GPUI convention: negative offset when scrolled down
             // Use set_scroll_offset_from_helix to avoid marking as scrollbar-changed
             self.scroll_manager
@@ -3529,7 +3539,8 @@ impl Element for DocumentElement {
                                 // Use existing gutter_width from outer scope instead of calling view.gutter_offset(document)
                                 let gutter_offset = gutter_width;
                                 let text_bounds = {
-                                    let gutter_width = Pixels::from(gutter_offset as f32 * after_layout.cell_width.0);
+                                    let gutter_width =
+                                        after_layout.cell_width * (gutter_offset as f32);
                                     let right_padding = after_layout.cell_width * 2.0;
                                     let top_padding = px(1.0);
 
@@ -3747,6 +3758,8 @@ impl Element for DocumentElement {
                     // Drop core before painting
                     // core goes out of scope here
 
+                    let font_size_px = self.style.font_size.to_pixels(px(16.0));
+                    let cache_viewport_width = f32::from(bounds.size.width) as u32;
                     let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
                     // Defer painting of cursorline until after per-run backgrounds are drawn
 
@@ -3755,8 +3768,8 @@ impl Element for DocumentElement {
                         // Try to get cached shaped line first
                         let cache_key = nucleotide_editor::ShapedLineKey {
                             line_text: line_str.to_string(),
-                            font_size: self.style.font_size.to_pixels(px(16.0)).0 as u32,
-                            viewport_width: bounds.size.width.0 as u32,
+                            font_size: f32::from(font_size_px) as u32,
+                            viewport_width: cache_viewport_width,
                         };
 
                         let shaped = if let Some(cached) = line_cache.get_shaped_line(&cache_key) {
@@ -3764,7 +3777,7 @@ impl Element for DocumentElement {
                         } else {
                             // Shape and cache the line
                             let shaped = window.text_system()
-                                .shape_line(line_str.clone(), self.style.font_size.to_pixels(px(16.0)), &line_runs, None);
+                                .shape_line(line_str.clone(), font_size_px, &line_runs, None);
                             line_cache.store_shaped_line(cache_key, shaped.clone());
                             shaped
                         };
@@ -3812,15 +3825,15 @@ impl Element for DocumentElement {
                         // Create an empty shaped line for cursor positioning
                         let cache_key = nucleotide_editor::ShapedLineKey {
                             line_text: String::new(),
-                            font_size: self.style.font_size.to_pixels(px(16.0)).0 as u32,
-                            viewport_width: bounds.size.width.0 as u32,
+                            font_size: f32::from(font_size_px) as u32,
+                            viewport_width: cache_viewport_width,
                         };
 
                         if let Some(cached) = line_cache.get_shaped_line(&cache_key) {
                             cached
                         } else {
                             let shaped = window.text_system()
-                                .shape_line("".into(), self.style.font_size.to_pixels(px(16.0)), &[], None);
+                                .shape_line("".into(), font_size_px, &[], None);
                             line_cache.store_shaped_line(cache_key, shaped.clone());
                             shaped
                         }
@@ -4003,7 +4016,8 @@ impl Element for DocumentElement {
 
                                 // Calculate text bounds (same as mouse coordinate system)
                                 let text_bounds = {
-                                    let gutter_width = Pixels::from(gutter_offset_u16 as f32 * cell_width.0);
+                                    let gutter_width =
+                                        cell_width * (gutter_offset_u16 as f32);
                                     let right_padding = cell_width * 2.0;
                                     let top_padding = px(1.0);
 
@@ -4128,7 +4142,8 @@ impl Element for DocumentElement {
                                     let element_bounds = bounds;
 
                                     let phantom_text_bounds = {
-                                        let gutter_width_px = Pixels::from(gutter_offset_u16 as f32 * cell_width.0);
+                                let gutter_width_px =
+                                    cell_width * (gutter_offset_u16 as f32);
                                         let right_padding = cell_width * 2.0;
                                         let top_padding = px(1.0);
 
@@ -4749,8 +4764,8 @@ mod coordinate_transformation_tests {
         let text_area_pos = point(px(40.0), px(60.0));
 
         // Content position = text_area_position + scroll_offset
-        let scroll_x = px(view_offset.horizontal_offset as f32 * cell_width.0);
-        let scroll_y = px(view_offset.vertical_offset as f32 * line_height.0);
+        let scroll_x = cell_width * (view_offset.horizontal_offset as f32);
+        let scroll_y = line_height * (view_offset.vertical_offset as f32);
 
         let content_pos = point(text_area_pos.x + scroll_x, text_area_pos.y + scroll_y);
 
@@ -4765,8 +4780,8 @@ mod coordinate_transformation_tests {
             vertical_offset: 3,   // 3 lines scrolled down
         };
 
-        let scroll_x_h = px(view_offset_with_h_scroll.horizontal_offset as f32 * cell_width.0);
-        let scroll_y_h = px(view_offset_with_h_scroll.vertical_offset as f32 * line_height.0);
+        let scroll_x_h = cell_width * (view_offset_with_h_scroll.horizontal_offset as f32);
+        let scroll_y_h = line_height * (view_offset_with_h_scroll.vertical_offset as f32);
 
         let content_pos_h = point(text_area_pos.x + scroll_x_h, text_area_pos.y + scroll_y_h);
 
@@ -4783,8 +4798,8 @@ mod coordinate_transformation_tests {
         // Test basic pixel to display point conversion
         let content_pos = point(px(64.0), px(100.0));
 
-        let display_col = (content_pos.x.0 / cell_width.0) as usize;
-        let display_row = (content_pos.y.0 / line_height.0) as usize;
+        let display_col = (content_pos.x / cell_width) as usize;
+        let display_row = (content_pos.y / line_height) as usize;
 
         // Expected: (64/8, 100/20) = (8, 5)
         assert_eq!(display_col, 8);
@@ -4792,8 +4807,8 @@ mod coordinate_transformation_tests {
 
         // Test fractional positioning (should truncate)
         let fractional_pos = point(px(67.5), px(109.9));
-        let frac_col = (fractional_pos.x.0 / cell_width.0) as usize;
-        let frac_row = (fractional_pos.y.0 / line_height.0) as usize;
+        let frac_col = (fractional_pos.x / cell_width) as usize;
+        let frac_row = (fractional_pos.y / line_height) as usize;
 
         // Expected: (67.5/8, 109.9/20) = (8, 5) (truncated)
         assert_eq!(frac_col, 8);
@@ -4801,8 +4816,8 @@ mod coordinate_transformation_tests {
 
         // Test zero position
         let zero_pos = point(px(0.0), px(0.0));
-        let zero_col = (zero_pos.x.0 / cell_width.0) as usize;
-        let zero_row = (zero_pos.y.0 / line_height.0) as usize;
+        let zero_col = (zero_pos.x / cell_width) as usize;
+        let zero_row = (zero_pos.y / line_height) as usize;
         assert_eq!(zero_col, 0);
         assert_eq!(zero_row, 0);
     }
@@ -4828,16 +4843,16 @@ mod coordinate_transformation_tests {
         assert_eq!(text_area_pos.y, px(60.0));
 
         // Step 2: TextArea → Content
-        let scroll_x = px(view_offset.horizontal_offset as f32 * cell_width.0);
-        let scroll_y = px(view_offset.vertical_offset as f32 * line_height.0);
+        let scroll_x = cell_width * (view_offset.horizontal_offset as f32);
+        let scroll_y = line_height * (view_offset.vertical_offset as f32);
         let content_pos = point(text_area_pos.x + scroll_x, text_area_pos.y + scroll_y);
         // Expected: (96 + 0*8, 60 + 2*20) = (96, 100)
         assert_eq!(content_pos.x, px(96.0));
         assert_eq!(content_pos.y, px(100.0));
 
         // Step 3: Content → DisplayPoint
-        let display_col = (content_pos.x.0 / cell_width.0) as usize;
-        let display_row = (content_pos.y.0 / line_height.0) as usize;
+        let display_col = (content_pos.x / cell_width) as usize;
+        let display_row = (content_pos.y / line_height) as usize;
         // Expected: (96/8, 100/20) = (12, 5)
         assert_eq!(display_col, 12);
         assert_eq!(display_row, 5);
@@ -4917,12 +4932,12 @@ mod coordinate_transformation_tests {
 
         // Click within line bounds
         let within_bounds = px(64.0); // 8 characters in
-        let within_col = (within_bounds.0 / cell_width.0) as usize;
+        let within_col = (within_bounds / cell_width) as usize;
         assert_eq!(within_col, 8);
 
         // Click past end of line (should allow overshoot)
         let past_end = px(120.0); // 15 characters in (past the 10-char line)
-        let past_col = (past_end.0 / cell_width.0) as usize;
+        let past_col = (past_end / cell_width) as usize;
         assert_eq!(past_col, 15); // Should allow overshoot for selections
 
         // Verify overshoot distance
@@ -4937,22 +4952,22 @@ mod coordinate_transformation_tests {
 
         // Test coordinates exactly at cell boundaries
         let exact_boundary = point(px(80.0), px(100.0));
-        let boundary_col = (exact_boundary.x.0 / cell_width.0) as usize;
-        let boundary_row = (exact_boundary.y.0 / line_height.0) as usize;
+        let boundary_col = (exact_boundary.x / cell_width) as usize;
+        let boundary_row = (exact_boundary.y / line_height) as usize;
         assert_eq!(boundary_col, 10); // Exactly at character 10
         assert_eq!(boundary_row, 5); // Exactly at line 5
 
         // Test coordinates just before boundaries
         let before_boundary = point(px(79.9), px(99.9));
-        let before_col = (before_boundary.x.0 / cell_width.0) as usize;
-        let before_row = (before_boundary.y.0 / line_height.0) as usize;
+        let before_col = (before_boundary.x / cell_width) as usize;
+        let before_row = (before_boundary.y / line_height) as usize;
         assert_eq!(before_col, 9); // Still character 9
         assert_eq!(before_row, 4); // Still line 4
 
         // Test coordinates just after boundaries
         let after_boundary = point(px(80.1), px(100.1));
-        let after_col = (after_boundary.x.0 / cell_width.0) as usize;
-        let after_row = (after_boundary.y.0 / line_height.0) as usize;
+        let after_col = (after_boundary.x / cell_width) as usize;
+        let after_row = (after_boundary.y / line_height) as usize;
         assert_eq!(after_col, 10); // Now character 10
         assert_eq!(after_row, 5); // Now line 5
     }
@@ -4964,13 +4979,13 @@ mod coordinate_transformation_tests {
 
         // Calculate visible lines in viewport
         let viewport_height = text_bounds.size.height;
-        let lines_in_viewport = (viewport_height.0 / line_height.0) as usize;
+        let lines_in_viewport = (viewport_height / line_height) as usize;
         // Expected: 600 / 20 = 30 lines visible
         assert_eq!(lines_in_viewport, 30);
 
         // Test first/last visible line calculation with scroll
         let scroll_y = px(40.0); // Scrolled down 2 lines
-        let first_visible_line = (scroll_y.0 / line_height.0) as usize;
+        let first_visible_line = (scroll_y / line_height) as usize;
         let last_visible_line = first_visible_line + lines_in_viewport;
 
         assert_eq!(first_visible_line, 2); // Line 2 is first visible
@@ -5001,13 +5016,13 @@ mod coordinate_transformation_tests {
 
         // Convert to pixel coordinates
         let content_pos = point(
-            px(original_col as f32 * cell_width.0),
-            px(original_row as f32 * line_height.0),
+            cell_width * (original_col as f32),
+            line_height * (original_row as f32),
         );
 
         // Convert back to display coordinates
-        let recovered_col = (content_pos.x.0 / cell_width.0) as usize;
-        let recovered_row = (content_pos.y.0 / line_height.0) as usize;
+        let recovered_col = (content_pos.x / cell_width) as usize;
+        let recovered_row = (content_pos.y / line_height) as usize;
 
         // Should match original values
         assert_eq!(recovered_col, original_col);
@@ -5016,12 +5031,12 @@ mod coordinate_transformation_tests {
         // Test reverse transformation: pixel → display → pixel
         let original_pixel_pos = point(px(96.0), px(100.0));
 
-        let display_col = (original_pixel_pos.x.0 / cell_width.0) as usize;
-        let display_row = (original_pixel_pos.y.0 / line_height.0) as usize;
+        let display_col = (original_pixel_pos.x / cell_width) as usize;
+        let display_row = (original_pixel_pos.y / line_height) as usize;
 
         let recovered_pixel_pos = point(
-            px(display_col as f32 * cell_width.0),
-            px(display_row as f32 * line_height.0),
+            cell_width * (display_col as f32),
+            line_height * (display_row as f32),
         );
 
         // Should be at character boundary (may differ due to truncation)

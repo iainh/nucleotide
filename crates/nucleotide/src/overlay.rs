@@ -1260,13 +1260,13 @@ impl OverlayView {
                         // Account for UI layout: file tree + gutter + character position
                         let cursor_x = layout_info.file_tree_width
                             + layout_info.gutter_width
-                            + px(cursor_pos.col as f32 * layout_info.char_width.0);
+                            + layout_info.char_width * (cursor_pos.col as f32);
 
                         // Account for UI layout: title bar + tab bar + line position within document area
                         let document_area_y =
                             layout_info.title_bar_height + layout_info.tab_bar_height;
                         let cursor_y =
-                            document_area_y + px(relative_row as f32 * layout_info.line_height.0);
+                            document_area_y + layout_info.line_height * (relative_row as f32);
 
                         return (cursor_x, cursor_y + layout_info.line_height); // Position below cursor
                     }
@@ -1373,7 +1373,7 @@ impl OverlayView {
             let char_w = cx
                 .text_system()
                 .advance(font_id, font_size, 'm')
-                .map(|a| a.width.0)
+                .map(|a| f32::from(a.width))
                 .unwrap_or(editor_font.size * 0.6)
                 .max(1.0);
             // Prefer configured line_height when available
@@ -1661,13 +1661,14 @@ impl Render for OverlayView {
                 // to keep the PTY/emulator sized to the visible area.
                 if let Some(core) = self.core.upgrade() {
                     let layout = self.get_workspace_layout_info(cx);
-                    let window_width = _window.bounds().size.width.0;
+                    let window_width = f32::from(_window.bounds().size.width);
                     // Use cached terminal metrics (font family/size/weight)
                     let (char_w, line_h) = self.terminal_metrics(cx);
                     // Use resizable panel height
                     let panel_height = self.terminal_height_px;
                     // Constrain to editor content width by subtracting file tree width
-                    let usable_width = (window_width - layout.file_tree_width.0).max(1.0);
+                    let file_tree_width = f32::from(layout.file_tree_width);
+                    let usable_width = (window_width - file_tree_width).max(1.0);
                     let cols = (usable_width / char_w).floor().max(1.0) as u16;
                     let rows = (panel_height / line_h).floor().max(1.0) as u16;
                     // Read the active terminal id after metrics calculation to avoid borrow conflicts
@@ -1709,7 +1710,7 @@ impl Render for OverlayView {
                 }
 
                 // Constrain terminal height to avoid covering the entire editor
-                let window_h = _window.bounds().size.height.0;
+                let window_h = f32::from(_window.bounds().size.height);
                 let max_h = (window_h * 0.6).max(120.0);
                 let clamped_h = self.terminal_height_px.clamp(80.0, max_h);
                 if (clamped_h - self.terminal_height_px).abs() > 0.5 {

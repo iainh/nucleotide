@@ -75,10 +75,10 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
                 if drag.dragging.get() && ev.dragging() {
                     let start_x = drag.start_mouse.get().0;
-                    let dx = ev.position.x.0 - start_x;
+                    let dx = f32::from(ev.position.x) - start_x;
                     let start_w = drag.start_primary.get();
                     // Ensure a minimum width for right pane (200px) so editor never collapses
-                    let viewport_w = window.viewport_size().width.0;
+                    let viewport_w = f32::from(window.viewport_size().width);
                     let max_allowed = (viewport_w - 200.0).max(min_px);
                     let new_w = clamp_primary(start_w, dx, min_px, max_allowed.min(max_px));
                     on_change(new_w, cx);
@@ -156,7 +156,7 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             let on_change = on_change.clone();
             move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
                 if ev.click_count >= 2 {
-                    let viewport_w = window.viewport_size().width.0;
+                    let viewport_w = f32::from(window.viewport_size().width);
                     let max_allowed = (viewport_w - 200.0).max(min_px);
                     on_change(default_px.clamp(min_px, max_allowed.min(max_px)), cx);
                     window.refresh();
@@ -164,7 +164,8 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
                     return;
                 }
                 drag.dragging.set(true);
-                drag.start_mouse.set((ev.position.x.0, ev.position.y.0));
+                drag.start_mouse
+                    .set((f32::from(ev.position.x), f32::from(ev.position.y)));
                 drag.start_primary.set(width_px);
                 window.refresh();
                 cx.stop_propagation();
@@ -215,7 +216,7 @@ pub fn bottom_panel_split<C: IntoElement>(
             move |ev: &MouseMoveEvent, window: &mut Window, cx: &mut App| {
                 if drag.dragging.get() && ev.dragging() {
                     let start_y = drag.start_mouse.get().1;
-                    let dy = ev.position.y.0 - start_y;
+                    let dy = f32::from(ev.position.y) - start_y;
                     let start_h = drag.start_primary.get();
                     let new_h = clamp_primary_vertical(start_h, dy, min_px, max_px);
                     on_change(new_h, cx);
@@ -262,7 +263,8 @@ pub fn bottom_panel_split<C: IntoElement>(
                                 return;
                             }
                             drag.dragging.set(true);
-                            drag.start_mouse.set((ev.position.x.0, ev.position.y.0));
+                            drag.start_mouse
+                                .set((f32::from(ev.position.x), f32::from(ev.position.y)));
                             drag.start_primary.set(height_px);
                             window.refresh();
                             cx.stop_propagation();
@@ -315,7 +317,8 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
                 let drag = drag.clone();
                 move |ev: &MouseDownEvent, window: &mut Window, _cx: &mut App| {
                     drag.dragging.set(true);
-                    drag.start_mouse.set((ev.position.x.0, ev.position.y.0));
+                    drag.start_mouse
+                        .set((f32::from(ev.position.x), f32::from(ev.position.y)));
                     window.refresh();
                 }
             })

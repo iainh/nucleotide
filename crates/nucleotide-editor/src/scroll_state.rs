@@ -1,7 +1,7 @@
 // ABOUTME: Scroll state management for the editor view
 // ABOUTME: Tracks scroll position and visible range independently
 
-use gpui::Pixels;
+use gpui::{Pixels, px};
 
 /// Scroll state for the editor
 #[derive(Debug, Clone)]
@@ -30,7 +30,7 @@ impl ScrollState {
             first_visible_line: 0,
             last_visible_line: 0,
             total_lines: 0,
-            viewport_height: Pixels(800.0),
+            viewport_height: px(800.0),
         }
     }
 
@@ -43,14 +43,14 @@ impl ScrollState {
 
     /// Scroll by a number of lines
     pub fn scroll_by_lines(&mut self, lines: i32, line_height: Pixels) {
-        let delta = Pixels(lines as f32 * line_height.0);
+        let delta = line_height * (lines as f32);
         self.scroll_y = (self.scroll_y + delta).max(Pixels::ZERO);
         self.update_from_scroll_position(line_height);
     }
 
     /// Scroll to a specific line
     pub fn scroll_to_line(&mut self, line: usize, line_height: Pixels) {
-        self.scroll_y = Pixels(line as f32 * line_height.0);
+        self.scroll_y = line_height * (line as f32);
         self.first_visible_line = line;
         self.update_visible_range();
     }
@@ -95,10 +95,15 @@ impl ScrollState {
 
     /// Ensure a line is visible
     pub fn ensure_line_visible(&mut self, line: usize, line_height: Pixels) {
+        let line_height_value: f32 = line_height.into();
+        if line_height_value <= 0.0 {
+            return;
+        }
+
         if line < self.first_visible_line {
             self.scroll_to_line(line, line_height);
         } else if line > self.last_visible_line {
-            let lines_in_view = (self.viewport_height.0 / line_height.0) as usize;
+            let lines_in_view = (self.viewport_height / line_height) as usize;
             let new_first = line.saturating_sub(lines_in_view - 1);
             self.scroll_to_line(new_first, line_height);
         }
@@ -107,23 +112,31 @@ impl ScrollState {
     // Private helper methods
 
     fn update_from_scroll_position(&mut self, line_height: Pixels) {
-        if line_height.0 > 0.0 {
-            self.first_visible_line = (self.scroll_y.0 / line_height.0) as usize;
-            self.update_visible_range_with_height(line_height);
+        let line_height_value: f32 = line_height.into();
+        if line_height_value <= 0.0 {
+            return;
         }
+
+        let scroll_y = self.scroll_y / line_height;
+        self.first_visible_line = scroll_y as usize;
+        self.update_visible_range_with_height(line_height);
     }
 
     fn update_visible_range(&mut self) {
         // Default line height of 20px if not specified
-        self.update_visible_range_with_height(Pixels(20.0));
+        self.update_visible_range_with_height(px(20.0));
     }
 
     fn update_visible_range_with_height(&mut self, line_height: Pixels) {
-        if line_height.0 > 0.0 {
-            let lines_in_view = (self.viewport_height.0 / line_height.0).ceil() as usize;
-            self.last_visible_line =
-                (self.first_visible_line + lines_in_view).min(self.total_lines.saturating_sub(1));
+        let line_height_value: f32 = line_height.into();
+        if line_height_value <= 0.0 {
+            return;
         }
+
+        let ratio = self.viewport_height / line_height;
+        let lines_in_view = ratio.ceil() as usize;
+        self.last_visible_line =
+            (self.first_visible_line + lines_in_view).min(self.total_lines.saturating_sub(1));
     }
 }
 

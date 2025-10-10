@@ -42,15 +42,16 @@ impl Breakpoint {
 
     /// Get breakpoint from viewport width
     pub fn from_width(width: Pixels) -> Self {
-        if width.0 >= 1536.0 {
+        let width_value = f32::from(width);
+        if width_value >= 1536.0 {
             Self::XXLarge
-        } else if width.0 >= 1280.0 {
+        } else if width_value >= 1280.0 {
             Self::ExtraLarge
-        } else if width.0 >= 1024.0 {
+        } else if width_value >= 1024.0 {
             Self::Large
-        } else if width.0 >= 768.0 {
+        } else if width_value >= 768.0 {
             Self::Medium
-        } else if width.0 >= 640.0 {
+        } else if width_value >= 640.0 {
             Self::Small
         } else {
             Self::ExtraSmall

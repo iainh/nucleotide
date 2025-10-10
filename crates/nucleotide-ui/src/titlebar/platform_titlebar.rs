@@ -202,9 +202,9 @@ impl Render for PlatformTitleBar {
                     .on_mouse_down(MouseButton::Left, |event, window, cx| {
                         // Only start window move if not clicking on controls
                         let bounds = window.window_bounds().get_bounds();
-                        let control_area_start = bounds.size.width.0 - 150.0;
+                        let control_area_start = f32::from(bounds.size.width) - 150.0;
 
-                        if event.position.x.0 < control_area_start {
+                        if f32::from(event.position.x) < control_area_start {
                             window.start_window_move();
                         }
                         cx.stop_propagation();

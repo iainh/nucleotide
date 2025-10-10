@@ -163,7 +163,8 @@ impl ScrollbarState {
         let current_offset = offset_along_axis.clamp(-max_offset, Pixels::ZERO).abs();
 
         // Handle division by zero
-        let start_offset = if max_offset.0 > 0.0 {
+        let max_offset_value = f32::from(max_offset);
+        let start_offset = if max_offset_value > 0.0 {
             (current_offset / max_offset) * (viewport_size - thumb_size)
         } else {
             px(0.0)

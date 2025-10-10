@@ -101,19 +101,19 @@ fn merge_styles_intelligent(mut base: ComputedStyle, overlay: ComputedStyle) -> 
     }
 
     // Override non-zero values
-    if overlay.border_width.0 > 0.0 {
+    if f32::from(overlay.border_width) > 0.0 {
         base.border_width = overlay.border_width;
     }
-    if overlay.border_radius.0 > 0.0 {
+    if f32::from(overlay.border_radius) > 0.0 {
         base.border_radius = overlay.border_radius;
     }
-    if overlay.padding_x.0 > 0.0 {
+    if f32::from(overlay.padding_x) > 0.0 {
         base.padding_x = overlay.padding_x;
     }
-    if overlay.padding_y.0 > 0.0 {
+    if f32::from(overlay.padding_y) > 0.0 {
         base.padding_y = overlay.padding_y;
     }
-    if overlay.font_size.0 > 0.0 {
+    if f32::from(overlay.font_size) > 0.0 {
         base.font_size = overlay.font_size;
     }
     if overlay.font_weight != 400 {
@@ -142,9 +142,9 @@ fn merge_styles_additive(mut base: ComputedStyle, overlay: ComputedStyle) -> Com
     base.border_color = blend_colors(base.border_color, overlay.border_color);
 
     // Add dimensions
-    base.border_width = px(base.border_width.0 + overlay.border_width.0);
-    base.padding_x = px(base.padding_x.0 + overlay.padding_x.0);
-    base.padding_y = px(base.padding_y.0 + overlay.padding_y.0);
+    base.border_width = px(f32::from(base.border_width) + f32::from(overlay.border_width));
+    base.padding_x = px(f32::from(base.padding_x) + f32::from(overlay.padding_x));
+    base.padding_y = px(f32::from(base.padding_y) + f32::from(overlay.padding_y));
 
     // Multiply opacity
     base.opacity *= overlay.opacity;

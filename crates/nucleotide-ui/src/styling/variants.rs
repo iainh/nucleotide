@@ -127,7 +127,7 @@ impl StyleSize {
     /// Get font size for this size
     pub fn font_size(self, base_size: Pixels) -> Pixels {
         let scale = self.scale_factor();
-        px(base_size.0 * scale)
+        px(f32::from(base_size) * scale)
     }
 
     /// Get border radius for this size

@@ -268,7 +268,7 @@ impl TabBar {
             let char_width = cx
                 .text_system()
                 .advance(font_id, font_size, ch)
-                .map(|advance| advance.width.0)
+                .map(|advance| f32::from(advance.width))
                 .unwrap_or(8.0); // fallback to 8px if measurement fails
 
             total_width += char_width;

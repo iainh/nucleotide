@@ -1129,8 +1129,8 @@ impl FileTreeView {
                     // Emit context menu request with screen coordinates
                     cx.emit(FileTreeEvent::ContextMenuRequested {
                         path: path.clone(),
-                        x: event.position.x.0,
-                        y: event.position.y.0,
+                        x: f32::from(event.position.x),
+                        y: f32::from(event.position.y),
                     });
                 })
             })

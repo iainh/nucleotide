@@ -764,12 +764,11 @@ impl ConfigurationProvider {
 
     /// Get effective text size based on accessibility settings
     pub fn get_effective_text_size(&self, base_size: Pixels) -> Pixels {
-        let scaled_size = px(base_size.0 * self.ui_config.font_scale);
+        let scaled = f32::from(base_size) * self.ui_config.font_scale;
+        let min_size = f32::from(self.accessibility_config.text_config.min_text_size);
+        let max_size = f32::from(self.accessibility_config.text_config.max_text_size);
 
-        px(scaled_size
-            .0
-            .max(self.accessibility_config.text_config.min_text_size.0)
-            .min(self.accessibility_config.text_config.max_text_size.0))
+        px(scaled.max(min_size).min(max_size))
     }
 
     /// Load configuration from environment variables

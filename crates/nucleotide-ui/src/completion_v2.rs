@@ -1463,7 +1463,7 @@ impl Render for CompletionView {
         nucleotide_logging::debug!(
             filtered_count = filtered_entries.len(),
             max_visible_items = max_visible_items,
-            max_container_height = max_container_height.0,
+            max_container_height = f32::from(max_container_height),
             "Using flexible layout for completion list"
         );
 

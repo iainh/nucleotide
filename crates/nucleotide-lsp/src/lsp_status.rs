@@ -183,7 +183,8 @@ impl Element for LspStatusElement {
 
             let font_size = self.style.font_size.to_pixels(px(16.0));
             let line_height = self.style.line_height_in_pixels(font_size);
-            let y_center = bounds.origin.y + Pixels((bounds.size.height - line_height).0 / 2.0);
+            let vertical_padding = f32::from(bounds.size.height - line_height) / 2.0;
+            let y_center = bounds.origin.y + px(vertical_padding);
 
             if let Err(e) = shaped.paint(
                 gpui::Point::new(bounds.origin.x, y_center),

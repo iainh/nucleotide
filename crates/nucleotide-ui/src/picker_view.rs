@@ -629,7 +629,7 @@ impl PickerView {
 
     fn calculate_dimensions(&self, window_size: Size<Pixels>) -> CachedDimensions {
         let min_width_for_preview = 800.0;
-        let window_width = f64::from(window_size.width.0);
+        let window_width = f32::from(window_size.width) as f64;
         let window_height = window_size.height;
 
         let show_preview = self.show_preview && window_width > min_width_for_preview;

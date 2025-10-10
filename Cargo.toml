@@ -29,9 +29,9 @@ repository = "https://github.com/iainh/nucleotide"
 homepage = "https://github.com/iainh/nucleotide"
 
 [workspace.dependencies]
-# GPUI and Zed dependencies - using v0.206.6 tag
-gpui = { git = "https://github.com/zed-industries/zed", tag = "v0.206.6", features = ["test-support", "runtime_shaders"] }
-gpui_tokio = { git = "https://github.com/zed-industries/zed", tag = "v0.206.6" }
+# GPUI and Zed dependencies - using crates.io gpui 0.2 series
+gpui = { version = "0.2.0", features = ["test-support", "runtime_shaders"] }
+gpui_tokio = { version = "0.2.0" }
 sum_tree = { git = "https://github.com/zed-industries/zed", tag = "v0.206.6" }
 
 # Helix dependencies - using forked version for consistency

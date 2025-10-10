@@ -225,7 +225,7 @@ impl PopupPositioner {
         let space_factor = if required_space >= size.height || required_space >= size.width {
             1.0 // Full space available
         } else {
-            required_space.0 / size.height.max(size.width).0 // Partial space
+            f32::from(required_space) / f32::from(size.height.max(size.width))
         };
 
         // Prefer Below > Right > Above > Left

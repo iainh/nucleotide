@@ -67,7 +67,7 @@ impl ScrollManager {
     pub fn max_scroll_offset(&self) -> Size<Pixels> {
         let total_lines = self.total_lines.get();
         let line_height = self.line_height.get();
-        let content_height = px(total_lines as f32 * line_height.0);
+        let content_height = line_height * (total_lines as f32);
         let viewport_height = self.viewport_size.get().height;
         let max_y = (content_height - viewport_height).max(px(0.0));
 
@@ -139,14 +139,14 @@ impl ScrollManager {
     pub fn pixels_to_anchor(&self, y: Pixels) -> usize {
         let line_height = self.line_height.get();
         let total_lines = self.total_lines.get();
-        let line = (y.0 / line_height.0).floor() as usize;
+        let line = (y / line_height).floor() as usize;
         line.min(total_lines.saturating_sub(1))
     }
 
     /// Convert a Helix viewport anchor (line number) to pixel scroll offset
     pub fn anchor_to_pixels(&self, anchor: usize) -> Pixels {
         let line_height = self.line_height.get();
-        px(anchor as f32 * line_height.0)
+        line_height * (anchor as f32)
     }
 
     /// Update scroll position from Helix's ViewOffset
@@ -209,7 +209,8 @@ impl ScrollManager {
     pub fn scroll_to_line(&mut self, line: usize, strategy: ScrollStrategy) {
         let viewport_height = self.viewport_size.get().height;
         let line_height = self.line_height.get();
-        let lines_per_viewport = (viewport_height.0 / line_height.0) as usize;
+        let ratio = viewport_height / line_height;
+        let lines_per_viewport = ratio as usize;
 
         let target_y = match strategy {
             ScrollStrategy::Top => self.anchor_to_pixels(line),

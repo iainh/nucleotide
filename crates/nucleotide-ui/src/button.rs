@@ -619,7 +619,7 @@ impl RenderOnce for Button {
             .bg(computed_style.background)
             .text_color(computed_style.foreground)
             .border_color(computed_style.border_color)
-            .when(computed_style.border_width.0 > 0.0, |el| {
+            .when(f32::from(computed_style.border_width) > 0.0, |el| {
                 el.border_1().border_color(computed_style.border_color)
             })
             .when(computed_style.shadow.is_some(), |el| {
