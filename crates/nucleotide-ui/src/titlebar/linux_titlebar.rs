@@ -245,12 +245,14 @@ impl LinuxTitlebar {
                 move |event, window, cx| {
                     // Handle titlebar dragging, but avoid interfering with window controls
                     let bounds = window.window_bounds().get_bounds();
-                    let control_area_width = 120.0; // Approximate width of control area
+                    let event_x = event.position.x;
+                    let window_width = bounds.size.width;
+                    let control_area_width = px(120.0); // Approximate width of control area
 
                     let should_drag = match button_layout {
-                        WindowButtonLayout::Left => event.position.x.0 > control_area_width,
+                        WindowButtonLayout::Left => event_x > control_area_width,
                         WindowButtonLayout::Right | WindowButtonLayout::Custom => {
-                            event.position.x.0 < (bounds.size.width.0 - control_area_width)
+                            event_x < (window_width - control_area_width)
                         }
                     };
 

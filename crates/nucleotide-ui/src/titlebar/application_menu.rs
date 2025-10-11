@@ -198,7 +198,7 @@ impl Render for ApplicationMenu {
                     .on_click(
                         cx.listener(move |this, ev: &gpui::MouseUpEvent, _window, cx| {
                             this.open_index = Some(i);
-                            this.anchor_x = Some(ev.position.x.0);
+                            this.anchor_x = Some(f32::from(ev.position.x));
                             cx.notify();
                         }),
                     ),
