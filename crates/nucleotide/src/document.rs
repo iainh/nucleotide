@@ -2858,11 +2858,20 @@ impl Element for DocumentElement {
                         let mut line_runs = if let Some(first_grapheme) = line_graphemes.iter().find(|g| !g.is_virtual()) {
                             // Use the first non-virtual grapheme for the start position
                             let line_start = first_grapheme.char_idx;
-                            let line_end = line_graphemes.iter()
-                                .filter(|g| !g.is_virtual())
-                                .next_back()
+                            let last_non_virtual = line_graphemes.iter()
+                                .rev()
+                                .find(|g| !g.is_virtual());
+                            let mut line_end = last_non_virtual
                                 .map(|g| g.char_idx + g.doc_chars())
                                 .unwrap_or(line_start);
+
+                            // GPUI expects TextRun lengths to match the rendered string length. We omit newline
+                            // graphemes from `line_str`, so ensure the highlighted range does too.
+                            if let Some(last_grapheme) = last_non_virtual {
+                                if matches!(last_grapheme.raw, helix_core::graphemes::Grapheme::Newline) {
+                                    line_end = last_grapheme.char_idx;
+                                }
+                            }
 
                             // Re-read core to get highlights and immediately drop the borrow
                             {
