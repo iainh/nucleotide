@@ -30,7 +30,7 @@ homepage = "https://github.com/iainh/nucleotide"
 
 [workspace.dependencies]
 # GPUI and Zed dependencies - using crates.io gpui 0.2 series
-gpui = { version = "0.2.0", features = ["test-support", "runtime_shaders"] }
+gpui = { version = "0.2.2", features = ["test-support", "runtime_shaders"] }
 gpui_tokio = { version = "0.2.0" }
 zed-sum-tree = "0.2.0"
 
