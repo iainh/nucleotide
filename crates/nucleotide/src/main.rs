@@ -311,6 +311,7 @@ fn main() -> Result<()> {
     }
 
     setup_logging(args.verbosity).context("failed to initialize logging")?;
+    configure_wsl_graphics();
 
     // Before setting the working directory, resolve all the paths in args.files
     args.files = args
@@ -435,6 +436,62 @@ fn window_options(
         window_min_size: Some(gpui::size(px(400.0), px(300.0))),
         tabbing_identifier: None,
     }
+}
+
+#[cfg(target_os = "linux")]
+fn configure_wsl_graphics() {
+    // WSLg currently ships a pared-down Wayland compositor that lacks the newer
+    // surface APIs gpui (via Zed) requires. When both WAYLAND_DISPLAY and DISPLAY
+    // exist, gpui assumes Wayland, hits UnsupportedVersion, and panics. Force the
+    // compositor detection to fall back to X11 so Nucleotide can launch on WSL.
+    if !is_running_in_wsl() {
+        return;
+    }
+
+    let wayland_display_present = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let x11_display_present = std::env::var_os("DISPLAY").is_some();
+
+    if wayland_display_present && x11_display_present {
+        warn!(
+            "WSL Wayland backend is unstable for gpui; forcing X11 fallback by clearing WAYLAND_DISPLAY"
+        );
+        unsafe {
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+
+        if std::env::var("XDG_SESSION_TYPE")
+            .is_ok_and(|value| value.eq_ignore_ascii_case("wayland"))
+        {
+            unsafe {
+                std::env::set_var("XDG_SESSION_TYPE", "x11");
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_wsl_graphics() {}
+
+#[cfg(target_os = "linux")]
+fn is_running_in_wsl() -> bool {
+    if std::env::var_os("WSL_DISTRO_NAME").is_some()
+        || std::env::var_os("WSL_INTEROP").is_some()
+        || std::env::var_os("WSLENV").is_some()
+    {
+        return true;
+    }
+
+    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .map(|release| {
+            let release = release.to_ascii_lowercase();
+            release.contains("microsoft") || release.contains("wsl")
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_running_in_wsl() -> bool {
+    false
 }
 
 // Import actions from our centralized definitions
