@@ -16,15 +16,10 @@
       url = "github:helix-editor/helix/25.07.1";
       flake = false;
     };
-    
-    # Zed repository for GPUI
-    zed = {
-      url = "github:zed-industries/zed/faa45c53d7754cfdd91d2f7edd3c786abc703ec7";
-      flake = false;
-    };
+
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, helix, zed }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, helix}:
     flake-utils.lib.eachSystem [ "x86_64-darwin" "aarch64-darwin" "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = import nixpkgs {
@@ -43,7 +38,7 @@
 
         # Dependency management following Helix patterns
         inherit (pkgs) lib stdenv;
-        
+
         # Common build inputs
         commonBuildInputs = with pkgs; [
           openssl
@@ -53,7 +48,7 @@
           sqlite
         ];
 
-        # Platform-specific build inputs  
+        # Platform-specific build inputs
         darwinBuildInputs = with pkgs; lib.optionals stdenv.isDarwin [
           libiconv
           # Modern Apple SDK - the hooks will ensure proper framework linking
@@ -104,12 +99,12 @@
             if [ -d runtime ]; then
               cp -r runtime/* $out/
             fi
-            
+
             # Ensure languages.toml exists
             if [ ! -f $out/languages.toml ]; then
               cp ./languages.toml $out/
             fi
-            
+
             # Clean up source directories
             rm -rf $out/grammars/sources 2>/dev/null || true
           '';
@@ -120,12 +115,12 @@
         buildScript = pkgs.writeScriptBin "build-nucleotide" ''
           #!${pkgs.stdenv.shell}
           set -e
-          
+
           export PATH="${rustToolchain}/bin:${pkgs.pkg-config}/bin:${pkgs.git}/bin:$PATH"
           export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig"
           export OPENSSL_NO_VENDOR=1
           export HELIX_RUNTIME="${helixRuntime}"
-          
+
           # Platform-specific setup
           ${lib.optionalString stdenv.isDarwin ''
             export DYLD_LIBRARY_PATH="${lib.makeLibraryPath darwinBuildInputs}:$DYLD_LIBRARY_PATH"
@@ -133,24 +128,24 @@
           ${lib.optionalString stdenv.isLinux ''
             export LD_LIBRARY_PATH="${lib.makeLibraryPath linuxBuildInputs}:$LD_LIBRARY_PATH"
           ''}
-          
+
           # Set up build environment
           export HOME=$TMPDIR
           export CARGO_HOME=$TMPDIR/.cargo
-          
+
           # Configure git
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git config --global init.defaultBranch main
-          
+
           # Ensure runtime directory exists with proper permissions
           rm -rf runtime 2>/dev/null || true
           mkdir -p runtime
           cp ${helixRuntime}/languages.toml runtime/languages.toml
           chmod -R u+w runtime
-          
+
           # Build the project
           cargo build --release
-          
+
           # Copy binary to output
           mkdir -p $out/bin
           cp target/release/nucl $out/bin/
@@ -160,40 +155,40 @@
         makeMacOSBundle = pkgs.writeScriptBin "make-macos-bundle" ''
           #!${pkgs.stdenv.shell}
           set -e
-          
+
           if [ ! -f "target/release/nucl" ]; then
             echo "Error: Binary not found. Run 'nix develop --command cargo build --release' first"
             exit 1
           fi
-          
+
           echo "Creating macOS app bundle..."
-          
+
           # Clean up any existing bundle
           rm -rf Nucleotide.app
-          
+
           # Create app structure
           mkdir -p Nucleotide.app/Contents/{MacOS,Resources}
-          
+
           # Copy binary
           cp target/release/nucl Nucleotide.app/Contents/MacOS/Nucleotide
-          
+
           # Copy runtime files (from Nix store to writable location)
           echo "Copying runtime files..."
           mkdir -p Nucleotide.app/Contents/MacOS/runtime
-          
+
           # Use rsync to properly copy from read-only Nix store
           ${pkgs.rsync}/bin/rsync -a --no-perms --no-owner --no-group \
             ${helixRuntime}/ Nucleotide.app/Contents/MacOS/runtime/
-          
+
           # Ensure proper permissions
           chmod -R u+w Nucleotide.app/Contents/MacOS/runtime
-          
+
           # Copy custom Nucleotide themes if available
           if [ -d "assets/themes" ]; then
             echo "Copying custom Nucleotide themes..."
             cp -r assets/themes/*.toml Nucleotide.app/Contents/MacOS/runtime/themes/ 2>/dev/null || true
           fi
-          
+
           # Create Info.plist with full document type support
           cat > Nucleotide.app/Contents/Info.plist <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -315,12 +310,12 @@
           </dict>
           </plist>
           EOF
-          
+
           # Copy icon if available
           if [ -f assets/nucleotide.icns ]; then
             cp assets/nucleotide.icns Nucleotide.app/Contents/Resources/
           fi
-          
+
           echo "✓ App bundle created at Nucleotide.app"
         '';
 
@@ -328,40 +323,40 @@
         makeLinuxPackage = pkgs.writeScriptBin "make-linux-package" ''
           #!${pkgs.stdenv.shell}
           set -e
-          
+
           if [ ! -f "target/release/nucl" ]; then
             echo "Error: Binary not found. Run 'nix develop --command cargo build --release' first"
             exit 1
           fi
-          
+
           echo "Creating Linux package..."
-          
+
           # Clean up any existing package
           rm -rf nucleotide-linux nucleotide-linux.tar.gz
-          
+
           # Create directory structure
           mkdir -p nucleotide-linux/{bin,share/{applications,nucleotide}}
-          
+
           # Copy binary
           cp target/release/nucl nucleotide-linux/bin/
-          
+
           # Copy runtime files (from Nix store to writable location)
           echo "Copying runtime files..."
           mkdir -p nucleotide-linux/share/nucleotide/runtime
-          
+
           # Use rsync to properly copy from read-only Nix store
           ${pkgs.rsync}/bin/rsync -a --no-perms --no-owner --no-group \
             ${helixRuntime}/ nucleotide-linux/share/nucleotide/runtime/
-          
+
           # Ensure proper permissions
           chmod -R u+w nucleotide-linux/share/nucleotide/runtime
-          
+
           # Copy custom Nucleotide themes if available
           if [ -d "assets/themes" ]; then
             echo "Copying custom Nucleotide themes..."
             cp -r assets/themes/*.toml nucleotide-linux/share/nucleotide/runtime/themes/ 2>/dev/null || true
           fi
-          
+
           # Create desktop file
           cat > nucleotide-linux/share/applications/nucleotide.desktop <<EOF
           [Desktop Entry]
@@ -374,10 +369,10 @@
           Categories=Development;TextEditor;
           MimeType=text/plain;
           EOF
-          
+
           # Create tarball
           tar czf nucleotide-linux.tar.gz nucleotide-linux
-          
+
           echo "✓ Linux package created at nucleotide-linux.tar.gz"
         '';
 
@@ -434,7 +429,7 @@
           HELIX_RUNTIME = "${helixRuntime}";
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
           OPENSSL_NO_VENDOR = 1;
-          
+
           # Build performance settings following Helix patterns
           CARGO_INCREMENTAL = "1";  # Default to incremental for dev builds
           RUSTFLAGS = lib.concatStringsSep " " ([
@@ -447,7 +442,7 @@
             # macOS-specific optimizations
             "-C link-arg=-Wl,-dead_strip"
           ]);
-          
+
           # Linker selection (conditional assignment)
         } // lib.optionalAttrs stdenv.isLinux {
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "${pkgs.lld}/bin/lld";
@@ -462,7 +457,7 @@
             alias build-incremental='unset RUSTC_WRAPPER && CARGO_INCREMENTAL=1 cargo build'
             alias build-release-cached='CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build --release'
             alias build-release-incremental='unset RUSTC_WRAPPER && cargo build --release'
-            
+
             # Always show welcome message to stderr (visible even in non-interactive mode)
             echo "╔════════════════════════════════════════════════════════════════╗" >&2
             echo "║         Welcome to Nucleotide development environment!         ║" >&2

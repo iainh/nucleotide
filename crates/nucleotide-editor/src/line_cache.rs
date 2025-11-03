@@ -32,24 +32,32 @@ pub struct ShapedLineKey {
     pub viewport_width: u32, // Store as integer pixels
 }
 
+#[derive(Default)]
+struct LayoutStore {
+    ordered: Vec<LineLayout>,
+    /// Map of document line index to the first layout index stored in `ordered`.
+    line_to_first_layout: HashMap<usize, usize>,
+}
+
 /// Thread-safe cache for line layouts
 #[derive(Clone, Default)]
 pub struct LineLayoutCache {
-    layouts: Arc<Mutex<Vec<LineLayout>>>,
+    layouts: Arc<Mutex<LayoutStore>>,
     shaped_lines: Arc<Mutex<HashMap<ShapedLineKey, ShapedLine>>>,
 }
 
 impl LineLayoutCache {
     pub fn new() -> Self {
         Self {
-            layouts: Arc::new(Mutex::new(Vec::new())),
+            layouts: Arc::new(Mutex::new(LayoutStore::default())),
             shaped_lines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn clear(&self) {
         if let Ok(mut layouts) = self.layouts.lock() {
-            layouts.clear();
+            layouts.ordered.clear();
+            layouts.line_to_first_layout.clear();
         }
         // Don't clear shaped_lines - keep them cached across frames
     }
@@ -63,7 +71,12 @@ impl LineLayoutCache {
 
     pub fn push(&self, layout: LineLayout) {
         if let Ok(mut layouts) = self.layouts.lock() {
-            layouts.push(layout);
+            let idx = layouts.ordered.len();
+            let line_idx = layout.line_idx;
+            if !layouts.line_to_first_layout.contains_key(&line_idx) {
+                layouts.line_to_first_layout.insert(line_idx, idx);
+            }
+            layouts.ordered.push(layout);
         }
     }
 
@@ -87,7 +100,7 @@ impl LineLayoutCache {
         line_height: Pixels,
     ) -> Option<LineLayout> {
         if let Ok(layouts) = self.layouts.lock() {
-            if layouts.is_empty() {
+            if layouts.ordered.is_empty() {
                 return None;
             }
 
@@ -97,11 +110,11 @@ impl LineLayoutCache {
             let target_y = position.y;
 
             let mut left = 0;
-            let mut right = layouts.len();
+            let mut right = layouts.ordered.len();
 
             while left < right {
                 let mid = left + (right - left) / 2;
-                let layout = &layouts[mid];
+                let layout = &layouts.ordered[mid];
                 let line_bounds = Bounds {
                     origin: layout.origin,
                     size: size(bounds_width, line_height),
@@ -147,10 +160,11 @@ impl LineLayoutCache {
 
     pub fn find_line_by_index(&self, line_idx: usize) -> Option<LineLayout> {
         if let Ok(layouts) = self.layouts.lock() {
-            layouts
-                .iter()
-                .find(|layout| layout.line_idx == line_idx)
-                .cloned()
+            if let Some(first_index) = layouts.line_to_first_layout.get(&line_idx) {
+                layouts.ordered.get(*first_index).cloned()
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -226,9 +240,10 @@ mod tests {
         let line_height = px(24.0);
         let bounds_width = px(800.0);
 
+        let line_height_value: f32 = line_height.into();
         // Add test lines at different Y positions
         for line_idx in 0..3 {
-            let y_position = px(line_idx as f32 * line_height.0);
+            let y_position = px(line_idx as f32 * line_height_value);
             let layout = LineLayout {
                 line_idx,
                 shaped_line: create_test_shaped_line(),
@@ -276,9 +291,10 @@ mod tests {
         let bounds_width = px(800.0);
         let scroll_offset = point(px(0.0), px(-48.0)); // Scrolled down 2 lines
 
+        let line_height_value: f32 = line_height.into();
         // Add test lines at their unscrolled positions
         for line_idx in 0..5 {
-            let y_position = px(line_idx as f32 * line_height.0);
+            let y_position = px(line_idx as f32 * line_height_value);
             let layout = LineLayout {
                 line_idx,
                 shaped_line: create_test_shaped_line(),
@@ -397,8 +413,9 @@ mod tests {
 
         // Add many test lines to verify binary search works with larger datasets
         let num_lines = 100;
+        let line_height_value: f32 = line_height.into();
         for line_idx in 0..num_lines {
-            let y_position = px(line_idx as f32 * line_height.0);
+            let y_position = px(line_idx as f32 * line_height_value);
             let layout = LineLayout {
                 line_idx,
                 shaped_line: create_test_shaped_line(),

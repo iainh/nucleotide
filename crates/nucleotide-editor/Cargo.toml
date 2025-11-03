@@ -23,3 +23,11 @@ helix-view = { workspace = true }
 
 # Standard dependencies
 nucleotide-logging = { workspace = true }
+
+[dev-dependencies]
+criterion = "0.5"
+rand = "0.8"
+
+[[bench]]
+name = "line_layout_cache"
+harness = false
