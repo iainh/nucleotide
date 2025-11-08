@@ -46,8 +46,8 @@ pub use core_event::CoreEvent;
 
 // Event bridge exports
 pub use event_bridge::{
-    BridgedEvent, BridgedEventReceiver, CompletionTrigger, create_bridge_channel,
-    initialize_bridge, register_event_hooks, send_bridged_event,
+    BridgedEvent, BridgedEventReceiver, CompletionTrigger, LspCommandDispatcher,
+    create_bridge_channel, initialize_bridge, register_event_hooks, send_bridged_event,
 };
 
 // GPUI to Helix bridge exports

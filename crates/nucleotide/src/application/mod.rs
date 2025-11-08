@@ -5249,6 +5249,16 @@ pub fn init_editor(
         handle
     };
 
+    // Create the dispatcher for routing LSP commands from events
+    let dispatcher = nucleotide_core::LspCommandDispatcher::new(project_lsp_command_tx.clone());
+
+    // Initialize the core with the dispatcher
+    let mut core = ApplicationCore::new();
+    core.initialize()
+        .expect("Failed to initialize ApplicationCore");
+    // Wire the dispatcher into the LSP handler
+    core.lsp_handler_mut().set_command_dispatcher(dispatcher);
+
     Ok(Application {
         editor,
         compositor,
@@ -5273,12 +5283,7 @@ pub fn init_editor(
         )),
         project_environment, // Already created above before LSP system initialization
         // V2 Event System Core
-        core: {
-            let mut core = ApplicationCore::new();
-            core.initialize()
-                .expect("Failed to initialize ApplicationCore");
-            core
-        },
+        core,
         // Event aggregator for UI and workspace events
         event_aggregator: Some(event_aggregator),
         sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),

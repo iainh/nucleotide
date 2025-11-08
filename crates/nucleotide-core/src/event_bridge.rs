@@ -377,3 +377,25 @@ pub fn create_lsp_command_channel() -> (mpsc::UnboundedSender<ProjectLspCommand>
 {
     mpsc::unbounded_channel()
 }
+
+/// LSP Command Dispatcher - a lightweight wrapper around ProjectLspCommand sender
+/// Used to dispatch LSP commands from event handlers without tight coupling to the raw channel
+#[derive(Clone)]
+pub struct LspCommandDispatcher {
+    sender: mpsc::UnboundedSender<ProjectLspCommand>,
+}
+
+impl LspCommandDispatcher {
+    /// Create a new LSP command dispatcher
+    pub fn new(sender: mpsc::UnboundedSender<ProjectLspCommand>) -> Self {
+        Self { sender }
+    }
+
+    /// Send an LSP command
+    pub fn send(
+        &self,
+        command: ProjectLspCommand,
+    ) -> Result<(), mpsc::error::SendError<ProjectLspCommand>> {
+        self.sender.send(command)
+    }
+}

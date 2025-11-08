@@ -2,6 +2,7 @@
 // ABOUTME: Processes V2 LSP events and maintains server state tracking
 
 use helix_lsp::LanguageServerId;
+use nucleotide_core::LspCommandDispatcher;
 use nucleotide_events::v2::handler::EventHandler;
 use nucleotide_events::v2::lsp::{ActiveServer, Event, ServerHealth};
 use nucleotide_logging::{debug, error, info, instrument, warn};
@@ -19,6 +20,8 @@ pub struct LspHandler {
     server_health: Arc<RwLock<HashMap<LanguageServerId, ServerHealth>>>,
     /// Progress tracking by server
     progress_tokens: Arc<RwLock<HashMap<LanguageServerId, Vec<String>>>>,
+    /// LSP command dispatcher for routing commands from events
+    command_dispatcher: Option<LspCommandDispatcher>,
     /// Initialization state
     initialized: bool,
 }
@@ -30,8 +33,14 @@ impl LspHandler {
             active_servers: Arc::new(RwLock::new(HashMap::new())),
             server_health: Arc::new(RwLock::new(HashMap::new())),
             progress_tokens: Arc::new(RwLock::new(HashMap::new())),
+            command_dispatcher: None,
             initialized: false,
         }
+    }
+
+    /// Set the command dispatcher for routing LSP commands
+    pub fn set_command_dispatcher(&mut self, dispatcher: LspCommandDispatcher) {
+        self.command_dispatcher = Some(dispatcher);
     }
 
     /// Initialize the handler
@@ -362,7 +371,29 @@ impl EventHandler<Event> for LspHandler {
                     language_id = %language_id,
                     "🚀 V2_HANDLER: Processing server startup request"
                 );
-                // TODO: Need access to application's command sender to route to sync processor
+
+                if let Some(dispatcher) = &self.command_dispatcher {
+                    let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+                    let span = tracing::info_span!(
+                        "lsp_server_start_server",
+                        workspace = %workspace_root.display(),
+                        server = %server_name
+                    );
+
+                    let command = nucleotide_events::ProjectLspCommand::StartServer {
+                        workspace_root,
+                        server_name,
+                        language_id,
+                        response: response_tx,
+                        span,
+                    };
+
+                    if dispatcher.send(command).is_err() {
+                        warn!("Failed to enqueue StartServer command");
+                    }
+                } else {
+                    warn!("Command dispatcher not initialized in LspHandler");
+                }
             }
             Event::ServerRestarted {
                 server_id,
@@ -486,5 +517,58 @@ mod tests {
         let result = handler.handle(event).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not initialized"));
+    }
+
+    #[tokio::test]
+    async fn test_startup_requested_with_dispatcher() {
+        use nucleotide_events::ProjectLspCommand;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let dispatcher = nucleotide_core::LspCommandDispatcher::new(tx);
+
+        let mut handler = LspHandler::new();
+        handler.initialize().unwrap();
+        handler.set_command_dispatcher(dispatcher);
+
+        let event = Event::ServerStartupRequested {
+            workspace_root: PathBuf::from("/test/workspace"),
+            server_name: "rust-analyzer".to_string(),
+            language_id: "rust".to_string(),
+        };
+
+        let result = handler.handle(event).await;
+        assert!(result.is_ok());
+
+        // Verify the command was sent to the dispatcher
+        match rx.try_recv() {
+            Ok(ProjectLspCommand::StartServer {
+                workspace_root,
+                server_name,
+                language_id,
+                ..
+            }) => {
+                assert_eq!(workspace_root, PathBuf::from("/test/workspace"));
+                assert_eq!(server_name, "rust-analyzer");
+                assert_eq!(language_id, "rust");
+            }
+            other => panic!("expected StartServer command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_startup_requested_without_dispatcher() {
+        let mut handler = LspHandler::new();
+        handler.initialize().unwrap();
+        // Don't set dispatcher - handler should still work
+
+        let event = Event::ServerStartupRequested {
+            workspace_root: PathBuf::from("/test/workspace"),
+            server_name: "rust-analyzer".to_string(),
+            language_id: "rust".to_string(),
+        };
+
+        // Should succeed but with a warning since dispatcher is not set
+        let result = handler.handle(event).await;
+        assert!(result.is_ok());
     }
 }
