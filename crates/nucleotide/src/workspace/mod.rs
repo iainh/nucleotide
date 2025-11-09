@@ -22,6 +22,7 @@ use gpui::{
 };
 use helix_core::Selection;
 use helix_core::syntax::config::LanguageServerFeature;
+use helix_lsp::lsp;
 use helix_view::ViewId;
 use helix_view::info::Info as HelixInfo;
 use helix_view::input::KeyEvent;
@@ -46,6 +47,7 @@ use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
+use crate::types::HoverDocEntry;
 use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
@@ -1458,6 +1460,28 @@ impl Workspace {
             return;
         }
 
+        // Handle hover popup keyboard shortcuts before other overlay logic
+        if self.overlay.read(cx).has_hover_popup() {
+            match ev.keystroke.key.as_str() {
+                "escape" => {
+                    self.overlay
+                        .update(cx, |overlay, cx| overlay.dismiss_hover_popup(cx));
+                    return;
+                }
+                "n" if ev.keystroke.modifiers.alt => {
+                    self.overlay
+                        .update(cx, |overlay, cx| overlay.advance_hover_popup(true, cx));
+                    return;
+                }
+                "p" if ev.keystroke.modifiers.alt => {
+                    self.overlay
+                        .update(cx, |overlay, cx| overlay.advance_hover_popup(false, cx));
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // Check if completion is visible and handle navigation/control keys
         if self.overlay.read(cx).has_completion() {
             match ev.keystroke.key.as_str() {
@@ -1728,6 +1752,17 @@ impl Workspace {
                     event_bridge::send_bridged_event(
                         event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace: true },
                     );
+                    return;
+                }
+                "k" if self.leader_active => {
+                    info!("Leader: SPACE-k detected, requesting hover documentation");
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    show_hover_docs(self.core.clone(), self.handle.clone(), cx);
                     return;
                 }
                 "escape" if self.leader_active => {
@@ -3941,7 +3976,8 @@ impl Workspace {
             | crate::Update::Picker(_)
             | crate::Update::DirectoryPicker(_)
             | crate::Update::DiagnosticsPanel(_)
-            | crate::Update::TerminalPanel(_) => {
+            | crate::Update::TerminalPanel(_)
+            | crate::Update::HoverDocs(_) => {
                 self.handle_overlay_update(cx);
             }
             crate::Update::Completion(_completion_view) => {
@@ -8467,6 +8503,113 @@ fn test_completion(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
     core.update(cx, |_core, cx| {
         cx.emit(crate::Update::Completion(completion_view));
     });
+}
+
+fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
+    use futures_util::stream::{FuturesOrdered, StreamExt};
+
+    info!("Requesting hover documentation");
+
+    let (mut futures, requested_servers) = {
+        let core_r = core.read(cx);
+        let editor = &core_r.editor;
+        let view = editor.tree.get(editor.tree.focus);
+        let doc = editor.documents.get(&view.doc).expect("doc exists");
+
+        let mut seen = HashSet::new();
+        let identifier = doc.identifier();
+        let mut requested = 0usize;
+
+        let futures: FuturesOrdered<_> = doc
+            .language_servers_with_feature(LanguageServerFeature::Hover)
+            .filter(|ls| seen.insert(ls.id()))
+            .filter_map(|language_server| {
+                requested += 1;
+                let server_name = language_server.name().to_string();
+                let identifier = identifier.clone();
+                let pos = doc.position(view.id, language_server.offset_encoding());
+                let request = language_server.text_document_hover(identifier, pos, None)?;
+
+                Some(async move { request.await.map(|hover| (server_name, hover)) })
+            })
+            .collect();
+
+        (futures, requested)
+    };
+
+    if requested_servers == 0 {
+        info!("No LSP servers with hover capability are available");
+        core.update(cx, |core, _| {
+            core.editor
+                .set_error("No configured language server supports hover");
+        });
+        return;
+    }
+
+    let core_weak = core.downgrade();
+    cx.spawn(async move |cx| {
+        let mut entries: Vec<HoverDocEntry> = Vec::new();
+
+        while let Some(result) = futures.next().await {
+            match result {
+                Ok((server_name, Some(hover))) => {
+                    let markdown = hover_contents_to_markdown(hover.contents);
+                    if !markdown.trim().is_empty() {
+                        entries.push(HoverDocEntry {
+                            server_name,
+                            markdown,
+                        });
+                    }
+                }
+                Ok((_server_name, None)) => {}
+                Err(err) => {
+                    warn!(error = %err, "Hover request failed");
+                }
+            }
+        }
+
+        if entries.is_empty() {
+            if let Some(core) = core_weak.upgrade() {
+                let _ = core.update(cx, |core, _| {
+                    core.editor.set_status("No hover results available.");
+                });
+            }
+            return;
+        }
+
+        if let Some(core) = core_weak.upgrade() {
+            let payload = entries;
+            let _ = core.update(cx, |_core, cx| {
+                cx.emit(crate::Update::HoverDocs(payload));
+            });
+        }
+    })
+    .detach();
+}
+
+fn hover_contents_to_markdown(contents: lsp::HoverContents) -> String {
+    fn marked_string_to_markdown(contents: lsp::MarkedString) -> String {
+        match contents {
+            lsp::MarkedString::String(contents) => contents,
+            lsp::MarkedString::LanguageString(string) => {
+                if string.language == "markdown" {
+                    string.value
+                } else {
+                    format!("```{}\n{}\n```", string.language, string.value)
+                }
+            }
+        }
+    }
+
+    match contents {
+        lsp::HoverContents::Scalar(contents) => marked_string_to_markdown(contents),
+        lsp::HoverContents::Array(contents) => contents
+            .into_iter()
+            .map(marked_string_to_markdown)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        lsp::HoverContents::Markup(contents) => contents.value,
+    }
 }
 
 fn quit(core: Entity<Core>, rt: tokio::runtime::Handle, cx: &mut App) {

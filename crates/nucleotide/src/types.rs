@@ -35,6 +35,12 @@ pub enum PickerType {
     Symbol,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoverDocEntry {
+    pub server_name: String,
+    pub markdown: String,
+}
+
 // Hybrid Update enum for event system
 // Uses Event(AppEvent) for data-only events and direct variants for complex UI components with behavior
 pub enum Update {
@@ -55,6 +61,7 @@ pub enum Update {
             helix_lsp::OffsetEncoding,
         )>,
     ),
+    HoverDocs(Vec<HoverDocEntry>),
     CompletionEvent(helix_view::handlers::completion::CompletionEvent),
     Info(helix_view::info::Info),
 
@@ -119,6 +126,7 @@ impl std::fmt::Debug for Update {
             Update::DirectoryPicker(_) => write!(f, "DirectoryPicker(...)"),
             Update::Completion(_) => write!(f, "Completion(...)"),
             Update::Info(_) => write!(f, "Info(...)"),
+            Update::HoverDocs(entries) => write!(f, "HoverDocs(len={})", entries.len()),
             Update::EditorEvent(_) => write!(f, "EditorEvent(...)"),
             Update::EditorStatus(status) => write!(f, "EditorStatus({status:?})"),
             Update::Redraw => write!(f, "Redraw"),
