@@ -1658,6 +1658,7 @@ impl Workspace {
                                b   Buffer Picker\n\
                                t   Toggle File Tree\n\
                                a   Code Actions\n\
+                               k   Hover Documentation\n\
                                d   Diagnostics (buffer)\n\
                                D   Diagnostics (workspace)\n\
                                esc Cancel"
