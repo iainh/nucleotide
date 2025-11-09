@@ -3971,11 +3971,14 @@ impl Workspace {
                 let core = self.core.clone();
                 show_buffer_picker(core, handle, cx);
             }
-            crate::Update::Info(_) => {
+            crate::Update::Info(info) => {
                 self.info_hidden = false;
-                // handled by the info box view
-                // Also update key hints
+                self.info.update(cx, |info_box, info_cx| {
+                    info_box.set_info(info);
+                    info_cx.notify();
+                });
                 self.update_key_hints(cx);
+                cx.notify();
             }
             crate::Update::ShouldQuit => {
                 info!("ShouldQuit event received - triggering application quit");
@@ -4169,6 +4172,7 @@ impl Workspace {
                         // Diagnostics domain events are handled upstream to update LspState
                     }
                 }
+                self.forward_info_box_event(event, cx);
             }
         }
     }
@@ -4750,6 +4754,16 @@ impl Workspace {
             key_hints.set_info(editor_info);
             key_hints.set_theme(theme);
             cx.notify();
+        });
+    }
+
+    fn forward_info_box_event(&self, event: &crate::types::AppEvent, cx: &mut Context<Self>) {
+        if !matches!(event, crate::types::AppEvent::Ui(_)) {
+            return;
+        }
+
+        self.info.update(cx, |info_box, info_cx| {
+            info_box.handle_app_event(event, info_cx);
         });
     }
 

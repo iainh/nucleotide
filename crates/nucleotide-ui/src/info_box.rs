@@ -27,8 +27,8 @@ impl InfoBoxView {
         }
     }
 
-    #[allow(dead_code)]
-    fn handle_event(&mut self, ev: &AppEvent, cx: &mut Context<Self>) {
+    /// React to UI-level application events forwarded by the workspace.
+    pub fn handle_app_event(&mut self, ev: &AppEvent, cx: &mut Context<Self>) {
         if let AppEvent::Ui(UiEvent::OverlayShown { overlay_type, .. }) = ev
             && matches!(
                 *overlay_type,
@@ -39,13 +39,6 @@ impl InfoBoxView {
             cx.notify();
         }
     }
-
-    // TODO: Replace with event bus subscription
-    // pub fn subscribe(&self, event_bus: &EventBus, cx: &mut Context<Self>) {
-    //     event_bus.subscribe_ui(|this, event| {
-    //         this.handle_event(event, cx);
-    //     })
-    // }
 
     pub fn is_empty(&self) -> bool {
         self.title.is_none()
