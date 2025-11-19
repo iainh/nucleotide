@@ -190,6 +190,31 @@ impl ViewHandler {
         Ok(())
     }
 
+    /// Handle view closed event
+    #[instrument(skip(self), fields(view_id = ?view_id, doc_id = ?doc_id))]
+    async fn handle_closed(
+        &mut self,
+        view_id: ViewId,
+        doc_id: DocumentId,
+    ) -> Result<(), HandlerError> {
+        info!(
+            view_id = ?view_id,
+            doc_id = ?doc_id,
+            "Processing view close"
+        );
+
+        // Remove metadata
+        self.view_metadata.remove(&view_id);
+
+        // Update focused view if needed
+        if self.focused_view == Some(view_id) {
+            self.focused_view = None;
+            info!("Focused view closed, clearing focus");
+        }
+
+        Ok(())
+    }
+
     /// Get view metadata (for debugging/testing)
     pub fn get_metadata(&self, view_id: &ViewId) -> Option<&ViewMetadata> {
         self.view_metadata.get(view_id)
@@ -245,11 +270,7 @@ impl EventHandler<ViewEvent> for ViewHandler {
                 debug!("SplitCreated event received but not yet implemented");
                 Ok(())
             }
-            ViewEvent::Closed { .. } => {
-                // TODO: Implement view closed handling
-                debug!("Closed event received but not yet implemented");
-                Ok(())
-            }
+            ViewEvent::Closed { view_id, doc_id } => self.handle_closed(view_id, doc_id).await,
         }
     }
 }
