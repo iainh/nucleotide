@@ -158,6 +158,7 @@ pub enum ProjectLspCommand {
     LspServerStartupRequested {
         server_name: String,
         workspace_root: PathBuf,
+        language_id: String,
     },
 }
 

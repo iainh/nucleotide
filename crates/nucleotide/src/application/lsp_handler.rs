@@ -373,23 +373,16 @@ impl EventHandler<Event> for LspHandler {
                 );
 
                 if let Some(dispatcher) = &self.command_dispatcher {
-                    let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-                    let span = tracing::info_span!(
-                        "lsp_server_start_server",
-                        workspace = %workspace_root.display(),
-                        server = %server_name
-                    );
-
-                    let command = nucleotide_events::ProjectLspCommand::StartServer {
-                        workspace_root,
-                        server_name,
-                        language_id,
-                        response: response_tx,
-                        span,
+                    // Use the dedicated fire-and-forget command for startup requests
+                    // This routes to process_pending_lsp_commands_sync in the application loop
+                    let command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                        workspace_root: workspace_root.clone(),
+                        server_name: server_name.clone(),
+                        language_id: language_id.clone(),
                     };
 
                     if dispatcher.send(command).is_err() {
-                        warn!("Failed to enqueue StartServer command");
+                        warn!("Failed to enqueue LspServerStartupRequested command");
                     }
                 } else {
                     warn!("Command dispatcher not initialized in LspHandler");

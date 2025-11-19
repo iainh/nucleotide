@@ -354,16 +354,8 @@ impl Application {
                         nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
                             server_name,
                             workspace_root,
+                            language_id,
                         } => {
-                            let language_id = match server_name.as_str() {
-                                "rust-analyzer" => "rust",
-                                "pyright" | "pylsp" => "python",
-                                "typescript-language-server" => "typescript",
-                                "clangd" => "c",
-                                "gopls" => "go",
-                                _ => "unknown",
-                            };
-
                             info!(
                                 server_name = %server_name,
                                 workspace_root = %workspace_root.display(),
@@ -2546,7 +2538,7 @@ impl Application {
                             event_bridge::BridgedEvent::LspServerStartupRequested {
                                 workspace_root,
                                 server_name,
-                                language_id: _
+                                language_id,
                             } => {
                                 // BRIDGE TO SYNC: Convert bridged event to sync processor command
                                 info!(
@@ -2559,6 +2551,7 @@ impl Application {
                                 let command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
                                     server_name: server_name.clone(),
                                     workspace_root: workspace_root.clone(),
+                                    language_id: language_id.clone(),
                                 };
 
                                 // Send to sync processor channel
@@ -4055,15 +4048,16 @@ impl Application {
                     warn!("Failed to send EnsureDocumentTracked response - receiver dropped");
                 }
             }
-            ProjectLspCommand::LspServerStartupRequested {
-                server_name,
-                workspace_root,
-            } => {
-                info!(
-                    server_name = %server_name,
-                    workspace_root = %workspace_root.display(),
-                    "LspServerStartupRequested command - starting server"
-                );
+                        nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                            server_name,
+                            workspace_root,
+                            language_id: _,
+                        } => {
+                            info!(
+                                server_name = %server_name,
+                                workspace_root = %workspace_root.display(),
+                                "LspServerStartupRequested command - starting server"
+                            );
 
                 // Determine language_id from server_name
                 let language_id = match server_name.as_str() {

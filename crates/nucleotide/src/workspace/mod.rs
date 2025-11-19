@@ -2178,9 +2178,10 @@ impl Workspace {
                                 );
 
                                 // Create the event command
-                    let _command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                                let _command = nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
                                     server_name: server_name.clone(),
                                     workspace_root: project_info.workspace_root.clone(),
+                                    language_id: "unknown".to_string(), // Best effort, updated when processed
                                 };
 
                                 // Project detection completed - LSP events will be sent from event bridge
