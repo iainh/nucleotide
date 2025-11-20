@@ -4,7 +4,7 @@
 use crate::{
     ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
     Styled as UIStyled,
-    styling::ComputedStyle,
+    styling::{ComputedStyle, TimingFunction, Transition, TransitionProperty},
     tokens::{ButtonTokens, DesignTokens},
 };
 use gpui::prelude::FluentBuilder;
@@ -13,6 +13,7 @@ use gpui::{
     App, ElementId, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseUpEvent,
     ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, svg,
 };
+use std::time::Duration;
 
 /// Button variant styles (backward compatibility)
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -491,7 +492,19 @@ impl Button {
                     color: tokens.shadow_color,
                 })
             },
-            transition: None, // Simplified - no transitions for now
+            transition: if state.is_interactive() {
+                Some(Transition {
+                    duration: Duration::from_millis(150),
+                    timing_function: TimingFunction::EaseOut,
+                    properties: vec![
+                        TransitionProperty::Background,
+                        TransitionProperty::BorderColor,
+                        TransitionProperty::Transform,
+                    ],
+                })
+            } else {
+                None
+            },
         }
     }
 }
