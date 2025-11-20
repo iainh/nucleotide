@@ -20,6 +20,7 @@ pub mod debouncer;
 pub mod file_icon;
 pub mod global_input;
 pub mod info_box;
+pub mod input;
 pub mod key_hint_view;
 pub mod list_item;
 pub mod notification;
@@ -56,7 +57,7 @@ pub use assets::Assets;
 pub use button::{Button, ButtonSize, ButtonVariant, IconPosition};
 pub use completion_docs::{
     DocumentationCache, DocumentationCacheConfig, DocumentationContent, DocumentationLoader,
-    DocumentationPanel, DocumentationSource, DocumentationState, MarkdownRenderer,
+    DocumentationPanel, DocumentationSource, DocumentationState,
 };
 pub use completion_error::{
     CompletionError, CompletionErrorHandler, ErrorContext, ErrorHandlingConfig,
@@ -91,6 +92,7 @@ pub use global_input::{
     InputContext, NavigationDirection as GlobalNavigationDirection, NavigationOptions,
     ShortcutAction, ShortcutDefinition, ShortcutInfo,
 };
+pub use input::{Input, InputSize, InputVariant};
 pub use list_item::{
     ListItem, ListItemSpacing, ListItemState, ListItemVariant, SelectionMode, SelectionState,
 };
@@ -277,6 +279,9 @@ impl gpui::Global for ComponentRegistry {}
 /// the configuration but won't cause any issues.
 pub fn init(cx: &mut App, config: Option<UIConfig>) {
     let config = config.unwrap_or_default();
+
+    // Initialize gpui-component so shared widgets (e.g., TextView) are registered
+    gpui_component::init(cx);
 
     // Setup global theme
     cx.set_global(config.default_theme.clone());

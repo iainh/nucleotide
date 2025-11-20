@@ -89,97 +89,107 @@ impl RenderOnce for PickerElement {
                     let picker_tokens = theme.tokens.picker_tokens();
 
                     let tokens = &cx.global::<crate::Theme>().tokens;
-                    div()
-                        .track_focus(&self.focus)
-                        .flex()
-                        .flex_col()
-                        .w(px(600.))
-                        .max_h(px(400.))
-                        .bg(picker_tokens.container_background)
-                        .border_1()
-                        .border_color(picker_tokens.border)
-                        .rounded_md()
-                        .shadow(vec![gpui::BoxShadow {
-                            color: picker_tokens.shadow,
-                            offset: gpui::point(px(picker_tokens.shadow_offset_x), px(picker_tokens.shadow_offset_y)),
-                            blur_radius: px(picker_tokens.shadow_blur_radius),
-                            spread_radius: px(0.0), // No spread for clean shadows
-                        }])
-                        .font(font)
-                        .text_size(tokens.sizes.text_md)
-                        .child(
-                            // Title bar - uses chrome header colors
-                            div()
-                                .flex()
-                                .items_center()
-                                .px_3()
-                                .py_2()
-                                .bg(picker_tokens.header_background)
-                                .border_b_1()
-                                .border_color(picker_tokens.border)
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(picker_tokens.header_text)
-                                        .child(title.clone())
-                                )
-                        )
-                        .child(
-                            // Items list - uses Helix selection colors for familiarity
-                            div()
-                                .flex_1()
-                                .overflow_hidden()
-                                .children(items.iter().enumerate().take(8).map(|(idx, item)| {
-                                    let is_selected = idx == self.selected_index;
 
+                    // Wrap in modal overlay
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(picker_tokens.overlay_background)
+                        .child(
+                            div()
+                                .track_focus(&self.focus)
+                                .flex()
+                                .flex_col()
+                                .w(px(600.))
+                                .max_h(px(400.))
+                                .bg(picker_tokens.container_background)
+                                .border_1()
+                                .border_color(picker_tokens.border)
+                                .rounded_md()
+                                .shadow(vec![gpui::BoxShadow {
+                                    color: picker_tokens.shadow,
+                                    offset: gpui::point(px(picker_tokens.shadow_offset_x), px(picker_tokens.shadow_offset_y)),
+                                    blur_radius: px(picker_tokens.shadow_blur_radius),
+                                    spread_radius: px(0.0), // No spread for clean shadows
+                                }])
+                                .font(font)
+                                .text_size(tokens.sizes.text_md)
+                                .child(
+                                    // Title bar - uses chrome header colors
                                     div()
                                         .flex()
-                                        .flex_col()
+                                        .items_center()
+                                        .px_3()
+                                        .py_2()
+                                        .bg(picker_tokens.header_background)
+                                        .border_b_1()
+                                        .border_color(picker_tokens.border)
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(picker_tokens.header_text)
+                                                .child(title.clone())
+                                        )
+                                )
+                                .child(
+                                    // Items list - uses Helix selection colors for familiarity
+                                    div()
+                                        .flex_1()
+                                        .overflow_hidden()
+                                        .children(items.iter().enumerate().take(8).map(|(idx, item)| {
+                                            let is_selected = idx == self.selected_index;
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .px_3()
+                                                .py_1()
+                                                .when(is_selected, |this| {
+                                                    this.bg(picker_tokens.item_background_selected)
+                                                        .text_color(picker_tokens.item_text_selected)
+                                                })
+                                                .when(!is_selected, |this| {
+                                                    this.bg(picker_tokens.item_background)
+                                                        .text_color(picker_tokens.item_text)
+                                                })
+                                                .hover(|this| {
+                                                    if !is_selected {
+                                                        this.bg(picker_tokens.item_background_hover)
+                                                    } else {
+                                                        this
+                                                    }
+                                                })
+                                                .child(item.label.clone())
+                                                .when_some(item.sublabel.as_ref(), |this, sublabel| {
+                                                    this.child(
+                                                        div()
+                                                            .text_size(tokens.sizes.text_sm)
+                                                            .text_color(picker_tokens.item_text_secondary)
+                                                            .child(sublabel.clone())
+                                                    )
+                                                })
+                                        }))
+                                )
+                                .child(
+                                    // Footer with instructions
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
                                         .px_3()
                                         .py_1()
-                                        .when(is_selected, |this| {
-                                            this.bg(picker_tokens.item_background_selected)
-                                                .text_color(picker_tokens.item_text_selected)
-                                        })
-                                        .when(!is_selected, |this| {
-                                            this.bg(picker_tokens.item_background)
-                                                .text_color(picker_tokens.item_text)
-                                        })
-                                        .hover(|this| {
-                                            if !is_selected {
-                                                this.bg(picker_tokens.item_background_hover)
-                                            } else {
-                                                this
-                                            }
-                                        })
-                                        .child(item.label.clone())
-                                        .when_some(item.sublabel.as_ref(), |this, sublabel| {
-                                            this.child(
-                                                div()
-                                                    .text_size(tokens.sizes.text_sm)
-                                                    .text_color(picker_tokens.item_text_secondary)
-                                                    .child(sublabel.clone())
-                                            )
-                                        })
-                                }))
-                        )
-                        .child(
-                            // Footer with instructions
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .px_3()
-                                .py_1()
-                                .border_t_1()
-                                .border_color(picker_tokens.separator)
-                                .text_size(tokens.sizes.text_xs)
-                                .text_color(picker_tokens.item_text_secondary)
-                                .child(format!(
-                                    "Native GPUI Picker [{}/{}] - ↑↓ to navigate, Enter to select, Esc to cancel",
-                                    self.selected_index + 1,
-                                    items.len().min(8)
-                                ))
+                                        .border_t_1()
+                                        .border_color(picker_tokens.separator)
+                                        .text_size(tokens.sizes.text_xs)
+                                        .text_color(picker_tokens.item_text_secondary)
+                                        .child(format!(
+                                            "Native GPUI Picker [{}/{}] - ↑↓ to navigate, Enter to select, Esc to cancel",
+                                            self.selected_index + 1,
+                                            items.len().min(8)
+                                        ))
+                                )
                         )
                 }
             }
