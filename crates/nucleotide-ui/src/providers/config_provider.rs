@@ -1024,19 +1024,19 @@ mod tests {
         let base_size = px(14.0);
         config.ui_config.font_scale = 1.2;
         let effective_size = config.get_effective_text_size(base_size);
-        assert_eq!(effective_size.0, 16.8); // 14 * 1.2
+        assert_eq!(effective_size, px(16.8)); // 14 * 1.2
 
         // Clamped to minimum
         config.ui_config.font_scale = 0.5;
         config.accessibility_config.text_config.min_text_size = px(12.0);
         let effective_size = config.get_effective_text_size(base_size);
-        assert_eq!(effective_size.0, 12.0); // Clamped to min
+        assert_eq!(effective_size, px(12.0)); // Clamped to min
 
         // Clamped to maximum
         config.ui_config.font_scale = 2.0;
         config.accessibility_config.text_config.max_text_size = px(20.0);
         let effective_size = config.get_effective_text_size(base_size);
-        assert_eq!(effective_size.0, 20.0); // Clamped to max
+        assert_eq!(effective_size, px(20.0)); // Clamped to max
     }
 
     #[test]

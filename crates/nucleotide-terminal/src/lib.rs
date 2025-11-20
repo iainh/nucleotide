@@ -334,9 +334,7 @@ pub mod engine {
                 self.rebuild_term();
             }
             if let Some(term) = &mut self.term {
-                for &b in bytes {
-                    self.parser.advance(term, b);
-                }
+                self.parser.advance(term, bytes);
             }
         }
 
