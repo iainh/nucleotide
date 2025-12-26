@@ -534,17 +534,19 @@ mod tests {
 
         // Verify the command was sent to the dispatcher
         match rx.try_recv() {
-            Ok(ProjectLspCommand::StartServer {
+            Ok(ProjectLspCommand::LspServerStartupRequested {
                 workspace_root,
                 server_name,
                 language_id,
-                ..
             }) => {
                 assert_eq!(workspace_root, PathBuf::from("/test/workspace"));
                 assert_eq!(server_name, "rust-analyzer");
                 assert_eq!(language_id, "rust");
             }
-            other => panic!("expected StartServer command, got {:?}", other),
+            other => panic!(
+                "expected LspServerStartupRequested command, got {:?}",
+                other
+            ),
         }
     }
 
