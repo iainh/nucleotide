@@ -48,28 +48,47 @@ impl Default for LspManagerConfig {
     }
 }
 
+/// Errors that can occur during configuration validation
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ConfigError {
+    #[error("LSP startup timeout must be greater than 0")]
+    TimeoutZero,
+
+    #[error("LSP startup timeout should not exceed 60 seconds (got {0}ms)")]
+    TimeoutTooLong(u64),
+
+    #[error(
+        "Project LSP startup enabled without fallback - this may cause startup failures if project detection fails"
+    )]
+    ProjectLspWithoutFallback,
+}
+
 impl LspManagerConfig {
     /// Validate the LSP configuration
-    pub fn validate(&self) -> Result<(), String> {
+    ///
+    /// Returns an error if the configuration is invalid or unsafe.
+    /// Configurations that warn but don't fail can be checked with `validate_with_warnings`.
+    pub fn validate(&self) -> Result<(), ConfigError> {
         // Validate timeout is reasonable
         if self.startup_timeout_ms == 0 {
-            return Err("LSP startup timeout must be greater than 0".to_string());
+            return Err(ConfigError::TimeoutZero);
         }
 
         if self.startup_timeout_ms > 60000 {
-            return Err("LSP startup timeout should not exceed 60 seconds".to_string());
+            return Err(ConfigError::TimeoutTooLong(self.startup_timeout_ms));
         }
 
-        // Log warnings for potentially problematic configurations
+        // Enforce that project LSP startup requires fallback enabled
+        if self.project_lsp_startup && !self.enable_fallback {
+            return Err(ConfigError::ProjectLspWithoutFallback);
+        }
+
+        // Log warnings for potentially problematic but valid configurations
         if self.startup_timeout_ms < 1000 {
             warn!(
                 timeout_ms = self.startup_timeout_ms,
                 "LSP startup timeout is very low - may cause frequent failures"
             );
-        }
-
-        if self.project_lsp_startup && !self.enable_fallback {
-            warn!("Project LSP startup enabled without fallback - may cause startup failures");
         }
 
         Ok(())
@@ -164,7 +183,7 @@ impl LspManager {
                 "Invalid LSP configuration provided for update"
             );
             return Err(LspError::ConfigValidationFailed {
-                message: validation_error,
+                message: validation_error.to_string(),
             });
         }
 
@@ -602,12 +621,30 @@ mod tests {
         let initial_config = create_test_config(false, true, 5000);
         let mut manager = LspManager::new(initial_config);
 
-        let new_config = create_test_config(true, false, 3000);
-        let _ = manager.update_config(new_config);
+        // Use a valid config: project_lsp=true requires enable_fallback=true
+        let new_config = create_test_config(true, true, 3000);
+        let result = manager.update_config(new_config);
 
+        assert!(result.is_ok());
         assert!(manager.config.project_lsp_startup);
-        assert!(!manager.config.enable_fallback);
+        assert!(manager.config.enable_fallback);
         assert_eq!(manager.config.startup_timeout_ms, 3000);
+    }
+
+    #[test]
+    fn test_config_update_rejects_invalid_config() {
+        let initial_config = create_test_config(false, true, 5000);
+        let mut manager = LspManager::new(initial_config);
+
+        // Invalid config: project_lsp=true without fallback enabled
+        let invalid_config = create_test_config(true, false, 3000);
+        let result = manager.update_config(invalid_config);
+
+        assert!(result.is_err());
+        // Original config should be unchanged
+        assert!(!manager.config.project_lsp_startup);
+        assert!(manager.config.enable_fallback);
+        assert_eq!(manager.config.startup_timeout_ms, 5000);
     }
 
     #[test]
@@ -668,22 +705,65 @@ mod tests {
     }
 
     #[test]
-    fn test_determine_startup_mode_no_project_no_fallback() {
-        let config = create_test_config(true, false, 5000);
-        let manager = LspManager::new(config);
+    fn test_config_validation_rejects_project_lsp_without_fallback() {
+        // This configuration is now invalid and should fail validation
+        let config = LspManagerConfig {
+            project_lsp_startup: true,
+            startup_timeout_ms: 5000,
+            enable_fallback: false,
+        };
 
-        let file_path = Path::new("/some/file.rs");
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(ConfigError::ProjectLspWithoutFallback)
+        ));
+    }
 
-        let mode = manager.determine_startup_mode(Some(file_path), None);
+    #[test]
+    fn test_config_validation_accepts_valid_configs() {
+        // File-based LSP (fallback doesn't matter)
+        let config1 = LspManagerConfig {
+            project_lsp_startup: false,
+            startup_timeout_ms: 5000,
+            enable_fallback: false,
+        };
+        assert!(config1.validate().is_ok());
 
-        // Should still use file mode even when fallback is disabled
-        // since we need some startup mechanism
-        match mode {
-            LspStartupMode::File { file_path: path } => {
-                assert_eq!(path, file_path);
-            }
-            _ => panic!("Expected file mode even when fallback disabled"),
-        }
+        // Project-based LSP with fallback enabled
+        let config2 = LspManagerConfig {
+            project_lsp_startup: true,
+            startup_timeout_ms: 5000,
+            enable_fallback: true,
+        };
+        assert!(config2.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_validation_rejects_zero_timeout() {
+        let config = LspManagerConfig {
+            project_lsp_startup: false,
+            startup_timeout_ms: 0,
+            enable_fallback: true,
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ConfigError::TimeoutZero)));
+    }
+
+    #[test]
+    fn test_config_validation_rejects_excessive_timeout() {
+        let config = LspManagerConfig {
+            project_lsp_startup: false,
+            startup_timeout_ms: 120000,
+            enable_fallback: true,
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ConfigError::TimeoutTooLong(120000))));
     }
 
     #[test]
