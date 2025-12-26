@@ -342,7 +342,8 @@ async fn test_config_hot_reload() {
     let initial_config = create_lsp_test_config(false, true, 5000);
     let mut lsp_manager = LspManager::new(initial_config);
 
-    let new_config = create_lsp_test_config(true, false, 3000);
+    // Use a valid config: project_lsp_startup=true requires enable_fallback=true
+    let new_config = create_lsp_test_config(true, true, 3000);
     let result = lsp_manager.update_config(new_config);
 
     assert!(result.is_ok());
@@ -360,6 +361,20 @@ async fn test_config_hot_reload() {
         }
         _ => panic!("Expected project mode after configuration update"),
     }
+}
+
+#[tokio::test]
+async fn test_config_hot_reload_rejects_invalid_config() {
+    // Test that invalid configs are rejected during hot reload
+    let initial_config = create_lsp_test_config(false, true, 5000);
+    let mut lsp_manager = LspManager::new(initial_config);
+
+    // Invalid config: project_lsp_startup=true without fallback enabled
+    let invalid_config = create_lsp_test_config(true, false, 3000);
+    let result = lsp_manager.update_config(invalid_config);
+
+    // Should fail validation
+    assert!(result.is_err());
 }
 
 #[tokio::test]
