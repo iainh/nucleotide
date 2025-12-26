@@ -32,19 +32,21 @@ homepage = "https://github.com/iainh/nucleotide"
 # GPUI and Zed dependencies - using crates.io gpui 0.2 series
 gpui = { version = "0.2.2", features = ["test-support", "runtime_shaders"] }
 gpui_tokio = { version = "0.2.0" }
+gpui-component = "0.5.0"
 zed-sum-tree = "0.2.0"
 
-# Helix dependencies - using forked version for consistency
-helix-core = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
-helix-event = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
-helix-loader = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
-helix-lsp = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
-helix-term = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
-helix-tui = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
-helix-view = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
-helix-vcs = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
-helix-parsec = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
-helix-stdx = { git = "https://github.com/iainh/helix", branch = "nucleotide-lsp-integration" }
+# Helix dependencies - pinned to specific commit for reproducible builds
+# To update: git ls-remote https://github.com/iainh/helix refs/heads/nucleotide-lsp-integration
+helix-core = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
+helix-event = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
+helix-loader = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
+helix-lsp = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
+helix-term = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
+helix-tui = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
+helix-view = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
+helix-vcs = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
+helix-parsec = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
+helix-stdx = { git = "https://github.com/iainh/helix", rev = "cd2ee5a29e7309e69af5cd5529e3bef1759bdbd4" }
 
 # Common dependencies
 tokio = { version = "1.32", features = ["full"] }
