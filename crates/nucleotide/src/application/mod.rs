@@ -4048,16 +4048,16 @@ impl Application {
                     warn!("Failed to send EnsureDocumentTracked response - receiver dropped");
                 }
             }
-                        nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
-                            server_name,
-                            workspace_root,
-                            language_id: _,
-                        } => {
-                            info!(
-                                server_name = %server_name,
-                                workspace_root = %workspace_root.display(),
-                                "LspServerStartupRequested command - starting server"
-                            );
+            nucleotide_events::ProjectLspCommand::LspServerStartupRequested {
+                server_name,
+                workspace_root,
+                language_id: _,
+            } => {
+                info!(
+                    server_name = %server_name,
+                    workspace_root = %workspace_root.display(),
+                    "LspServerStartupRequested command - starting server"
+                );
 
                 // Determine language_id from server_name
                 let language_id = match server_name.as_str() {
