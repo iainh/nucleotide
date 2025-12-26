@@ -11,6 +11,7 @@ nucleotide-types = { workspace = true, features = ["gpui-bridge"] }
 nucleotide-events.workspace = true
 nucleotide-core = { path = "../nucleotide-core" }
 gpui.workspace = true
+gpui-component.workspace = true
 nucleotide-logging.workspace = true
 helix-view.workspace = true
 helix-lsp.workspace = true
