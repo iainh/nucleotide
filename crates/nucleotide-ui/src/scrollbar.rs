@@ -1,7 +1,7 @@
 //! Scrollbar component for GPUI based on Zed's implementation
 //! Provides vertical and horizontal scrollbars for scrollable content
 
-use std::{any::Any, cell::Cell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
+use std::{any::Any, cell::Cell, cell::RefCell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
 
 use gpui::{
     Along, App, Axis, BorderStyle, Bounds, ContentMask, Corners, CursorStyle, Edges, Element,
@@ -29,6 +29,10 @@ enum ThumbState {
 impl ThumbState {
     fn is_dragging(&self) -> bool {
         matches!(*self, ThumbState::Dragging(_))
+    }
+
+    fn is_active(&self) -> bool {
+        matches!(*self, ThumbState::Hover | ThumbState::Dragging(_))
     }
 }
 
@@ -94,17 +98,44 @@ impl ScrollableHandle for UniformListScrollHandle {
     }
 }
 
+/// Animated values for smooth scrollbar transitions
+#[derive(Debug, Clone)]
+struct AnimatedValues {
+    /// Current interpolated thumb width ratio (0.0 to 1.0)
+    width_ratio: f32,
+    /// Current interpolated alpha (0.0 to 1.0)
+    alpha: f32,
+}
+
+impl Default for AnimatedValues {
+    fn default() -> Self {
+        Self {
+            width_ratio: 0.35, // Start at inactive width
+            alpha: 0.25,       // Start at inactive alpha
+        }
+    }
+}
+
 /// Scrollbar state that should be persisted across frames
 #[derive(Clone, Debug)]
 pub struct ScrollbarState {
     thumb_state: Rc<Cell<ThumbState>>,
+    track_hovered: Rc<Cell<bool>>,
+    animated: Rc<RefCell<AnimatedValues>>,
     scroll_handle: Arc<dyn ScrollableHandle>,
 }
+
+/// Animation speed factor (higher = faster animation)
+const ANIMATION_SPEED: f32 = 0.25;
+/// Threshold for considering animation complete
+const ANIMATION_THRESHOLD: f32 = 0.01;
 
 impl ScrollbarState {
     pub fn new(scroll: impl ScrollableHandle) -> Self {
         Self {
             thumb_state: Rc::default(),
+            track_hovered: Rc::default(),
+            animated: Rc::default(),
             scroll_handle: Arc::new(scroll),
         }
     }
@@ -132,6 +163,65 @@ impl ScrollbarState {
 
     fn set_thumb_state(&self, state: ThumbState) {
         self.thumb_state.set(state);
+    }
+
+    fn set_track_hovered(&self, hovered: bool) {
+        self.track_hovered.set(hovered);
+    }
+
+    fn is_expanded(&self) -> bool {
+        self.track_hovered.get() || self.thumb_state.get().is_active()
+    }
+
+    /// Get target values based on current state
+    fn target_values(&self) -> (f32, f32) {
+        let thumb_state = self.thumb_state.get();
+        let is_expanded = self.is_expanded();
+
+        // Target width ratio
+        let target_width = if is_expanded { 0.70 } else { 0.35 };
+
+        // Target alpha based on state
+        let target_alpha = match thumb_state {
+            ThumbState::Dragging(_) => 0.75,
+            ThumbState::Hover => 0.60,
+            ThumbState::Inactive if is_expanded => 0.45,
+            ThumbState::Inactive => 0.25,
+        };
+
+        (target_width, target_alpha)
+    }
+
+    /// Animate values toward targets, returns true if animation is still in progress
+    fn animate(&self) -> bool {
+        let (target_width, target_alpha) = self.target_values();
+        let mut animated = self.animated.borrow_mut();
+
+        // Lerp toward targets
+        let width_diff = target_width - animated.width_ratio;
+        let alpha_diff = target_alpha - animated.alpha;
+
+        animated.width_ratio += width_diff * ANIMATION_SPEED;
+        animated.alpha += alpha_diff * ANIMATION_SPEED;
+
+        // Check if we're close enough to snap to final values
+        let width_animating = width_diff.abs() > ANIMATION_THRESHOLD;
+        let alpha_animating = alpha_diff.abs() > ANIMATION_THRESHOLD;
+
+        if !width_animating {
+            animated.width_ratio = target_width;
+        }
+        if !alpha_animating {
+            animated.alpha = target_alpha;
+        }
+
+        width_animating || alpha_animating
+    }
+
+    /// Get current animated values
+    fn current_values(&self) -> (f32, f32) {
+        let animated = self.animated.borrow();
+        (animated.width_ratio, animated.alpha)
     }
 
     fn thumb_range(&self, axis: Axis) -> Option<Range<f32>> {
@@ -276,29 +366,30 @@ impl Element for Scrollbar {
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let axis = self.axis;
-            let thumb_state = self.state.thumb_state.get();
+
+            // Animate toward target values and request refresh if still animating
+            let is_animating = self.state.animate();
+            if is_animating {
+                window.refresh();
+            }
+
+            // Get current animated values
+            let (current_width_ratio, current_alpha) = self.state.current_values();
 
             // Use chrome tokens to ensure visibility in file tree/editor contexts
             let (thumb_bg, gutter_bg) = if let Some(theme) = cx.try_global::<crate::Theme>() {
                 let chrome = &theme.tokens.chrome;
                 // Base the thumb on readable text-on-chrome color for contrast
                 let base_thumb = chrome.text_on_chrome;
-                let thumb = match thumb_state {
-                    ThumbState::Dragging(_) => {
-                        crate::styling::ColorTheory::with_alpha(base_thumb, 0.75)
-                    }
-                    ThumbState::Hover => crate::styling::ColorTheory::with_alpha(base_thumb, 0.65),
-                    ThumbState::Inactive => {
-                        crate::styling::ColorTheory::with_alpha(base_thumb, 0.55)
-                    }
-                };
+                // Use animated alpha value
+                let thumb = crate::styling::ColorTheory::with_alpha(base_thumb, current_alpha);
                 // Make the scrollbar track (gutter) transparent
                 let track = crate::styling::ColorTheory::with_alpha(chrome.separator_color, 0.0);
                 (thumb, track)
             } else {
                 (
-                    hsla(0.0, 0.0, 0.8, 0.6), // thumb
-                    hsla(0.0, 0.0, 0.0, 0.0), // gutter transparent when theme unavailable
+                    hsla(0.0, 0.0, 0.8, current_alpha), // thumb with animated alpha
+                    hsla(0.0, 0.0, 0.0, 0.0),           // gutter transparent
                 )
             };
 
@@ -324,8 +415,8 @@ impl Element for Scrollbar {
             let thumb_offset = self.thumb.start * padded_bounds.size.along(axis);
             let thumb_end = self.thumb.end * padded_bounds.size.along(axis);
 
-            // Center the thumb within the scrollbar gutter
-            let thumb_width = padded_bounds.size.along(axis.invert()) * 0.5; // Make thumb half the gutter width
+            // Use animated width ratio for smooth expansion
+            let thumb_width = padded_bounds.size.along(axis.invert()) * current_width_ratio;
             let thumb_center_offset = (padded_bounds.size.along(axis.invert()) - thumb_width) / 2.0;
 
             let thumb_bounds = Bounds::new(
@@ -442,7 +533,6 @@ impl Element for Scrollbar {
             // Mouse move events
             window.on_mouse_event({
                 let state = self.state.clone();
-                let _bounds = bounds;
                 move |event: &MouseMoveEvent, phase, window, _| {
                     // Handle dragging in capture phase to prevent text selection
                     if phase.capture() && state.thumb_state.get().is_dragging() && event.dragging()
@@ -461,11 +551,21 @@ impl Element for Scrollbar {
                             // Event is consumed by handling it in capture phase
                         }
                     } else if phase.bubble() && event.pressed_button.is_none() {
-                        // Handle hover state in bubble phase - only the thumb changes
+                        // Track hover over entire scrollbar track for expansion effect
+                        let over_track = bounds.contains(&event.position);
+                        let was_track_hovered = state.track_hovered.get();
+                        state.set_track_hovered(over_track);
+
+                        // Track hover over thumb for thumb-specific styling
                         let over_thumb = actual_thumb_bounds.contains(&event.position);
-                        let was_hover = matches!(state.thumb_state.get(), ThumbState::Hover);
+                        let was_thumb_hover = matches!(state.thumb_state.get(), ThumbState::Hover);
                         state.set_thumb_hovered(over_thumb);
-                        if over_thumb || was_hover {
+
+                        // Refresh if any hover state changed
+                        if over_track != was_track_hovered
+                            || over_thumb != was_thumb_hover
+                            || was_thumb_hover
+                        {
                             window.refresh();
                         }
                     }
@@ -475,15 +575,16 @@ impl Element for Scrollbar {
             // Mouse up events
             window.on_mouse_event({
                 let state = self.state.clone();
-                let _bounds = bounds;
                 move |event: &MouseUpEvent, phase, window, _| {
                     // Handle in capture phase if we were dragging
                     if phase.capture() && state.is_dragging() {
                         state.scroll_handle().drag_ended();
+                        state.set_track_hovered(bounds.contains(&event.position));
                         state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position));
-                        // Event is consumed by handling it in capture phase
+                        window.refresh();
                     } else if phase.bubble() && !state.is_dragging() {
                         // Update hover state for non-drag releases
+                        state.set_track_hovered(bounds.contains(&event.position));
                         state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position));
                         window.refresh();
                     }
