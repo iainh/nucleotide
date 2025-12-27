@@ -126,7 +126,7 @@ pub struct ScrollbarState {
 }
 
 /// Animation speed factor (higher = faster animation)
-const ANIMATION_SPEED: f32 = 0.25;
+const ANIMATION_SPEED: f32 = 0.5;
 /// Threshold for considering animation complete
 const ANIMATION_THRESHOLD: f32 = 0.01;
 
