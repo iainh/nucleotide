@@ -388,29 +388,38 @@ pub mod engine {
                 // Renderable content for current viewport
                 let content: RenderableContent<'_> = term.renderable_content();
                 // Prepare grid buffer
+                let blank = Cell {
+                    ch: ' ',
+                    fg: 0xffffff,
+                    bg: 0x000000,
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    inverse: false,
+                };
                 if self.grid.len() as u16 != self.rows
                     || self.grid.first().map(|r| r.len()).unwrap_or(0) as u16 != self.cols
                 {
-                    self.grid = vec![
-                        vec![
-                            Cell {
-                                ch: ' ',
-                                fg: 0xffffff,
-                                bg: 0x000000,
-                                bold: false,
-                                italic: false,
-                                underline: false,
-                                inverse: false
-                            };
-                            self.cols as usize
-                        ];
-                        self.rows as usize
-                    ];
+                    self.grid = vec![vec![blank; self.cols as usize]; self.rows as usize];
+                } else {
+                    // Clear stale content so cells not yielded by display_iter
+                    // (e.g. blanks after scrolling) don't retain old values.
+                    for row in &mut self.grid {
+                        row.fill(blank);
+                    }
                 }
+                // display_offset shifts Line indices: scrollback lines have
+                // negative Line values (e.g. Line(-5) when display_offset=5).
+                // Convert to viewport-relative row by adding the offset.
+                let display_offset = term.grid().display_offset() as i32;
                 for indexed in content.display_iter {
                     let pos = indexed.point;
                     let cell = indexed.cell;
-                    let row = pos.line.0 as usize;
+                    let viewport_line = pos.line.0 + display_offset;
+                    if viewport_line < 0 {
+                        continue;
+                    }
+                    let row = viewport_line as usize;
                     let col = pos.column.0;
                     if row < self.grid.len() && col < self.grid[row].len() {
                         let ch = cell.c;
@@ -430,15 +439,16 @@ pub mod engine {
 
                 let cursor = content.cursor.point;
                 let history_size = term.grid().history_size();
-                let display_offset = term.grid().display_offset();
+                let grid_display_offset = term.grid().display_offset();
+                let cursor_viewport_row = (cursor.line.0 + display_offset).max(0) as u16;
                 return Some(FramePayload::Full(GridSnapshot {
                     rows: self.grid.clone(),
                     cols: self.cols,
                     rows_len: self.rows,
-                    cursor_row: cursor.line.0.max(0) as u16,
+                    cursor_row: cursor_viewport_row,
                     cursor_col: (cursor.column.0 as u16),
                     history_size,
-                    display_offset,
+                    display_offset: grid_display_offset,
                 }));
             }
             None
