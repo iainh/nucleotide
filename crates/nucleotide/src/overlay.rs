@@ -1933,16 +1933,29 @@ impl Render for OverlayView {
                                 if let Some(id) = maybe_id {
                                     let bytes = translate_key_to_bytes(event);
                                     if !bytes.is_empty() {
-                                        core.update(cx, |app, _| {
-                                            if let Some(bus) = &app.event_aggregator {
-                                                bus.dispatch_terminal(
-                                                    nucleotide_events::v2::terminal::Event::Input {
-                                                        id,
-                                                        bytes,
-                                                    },
-                                                );
-                                            }
-                                        });
+                                        // Fast path: send directly to PTY writer, bypassing event queue
+                                        #[cfg(feature = "terminal-emulator")]
+                                        let sent = core.read(cx).terminal_input_senders
+                                            .lock()
+                                            .ok()
+                                            .and_then(|senders| {
+                                                senders.get(&id).map(|tx| { let _ = tx.send(bytes.clone()); })
+                                            })
+                                            .is_some();
+                                        #[cfg(not(feature = "terminal-emulator"))]
+                                        let sent = false;
+                                        if !sent {
+                                            core.update(cx, |app, _| {
+                                                if let Some(bus) = &app.event_aggregator {
+                                                    bus.dispatch_terminal(
+                                                        nucleotide_events::v2::terminal::Event::Input {
+                                                            id,
+                                                            bytes,
+                                                        },
+                                                    );
+                                                }
+                                            });
+                                        }
                                         cx.stop_propagation();
                                     }
                                 }
