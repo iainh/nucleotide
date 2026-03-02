@@ -25,7 +25,7 @@ impl TerminalPanel {
         if self.view_entity.is_none()
             && let Some(model) = get_view_model(self.active)
         {
-            let created = cx.new(|_cx| TerminalView::new(model));
+            let created = cx.new(|cx| TerminalView::new(model, cx));
             self.view_entity = Some(created);
         }
     }
@@ -37,7 +37,7 @@ impl Render for TerminalPanel {
         if self.view_entity.is_none()
             && let Some(model) = get_view_model(self.active)
         {
-            let created = _cx.new(|_cx| TerminalView::new(model));
+            let created = _cx.new(|cx| TerminalView::new(model, cx));
             self.view_entity = Some(created);
         }
 
