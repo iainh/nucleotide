@@ -205,6 +205,7 @@ struct CargoPackage {
 #[derive(serde::Deserialize)]
 struct CargoWorkspace {
     members: Option<Vec<String>>,
+    #[allow(dead_code)]
     exclude: Option<Vec<String>>,
 }
 

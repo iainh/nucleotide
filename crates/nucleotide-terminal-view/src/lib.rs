@@ -288,10 +288,10 @@ impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
         let new_display_offset = history.saturating_sub(scrolled_lines);
         let delta = new_display_offset as i32 - guard.display_offset as i32;
         guard.display_offset = new_display_offset;
-        if delta != 0 {
-            if let Some(tx) = &guard.control_tx {
-                let _ = tx.send(nucleotide_terminal::session::ControlMsg::Scroll { delta });
-            }
+        if delta != 0
+            && let Some(tx) = &guard.control_tx
+        {
+            let _ = tx.send(nucleotide_terminal::session::ControlMsg::Scroll { delta });
         }
     }
 
@@ -359,10 +359,8 @@ impl TerminalView {
                         };
                         guard.has_dirty_rows()
                     };
-                    if has_updates {
-                        if this.update(cx, |_, cx| cx.notify()).is_err() {
-                            break;
-                        }
+                    if has_updates && this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
                     }
                 }
             })
@@ -461,13 +459,12 @@ impl Render for TerminalView {
                                 as usize;
                             let delta = new_offset as i32 - guard.display_offset as i32;
                             guard.display_offset = new_offset;
-                            if delta != 0 {
-                                if let Some(tx) = &guard.control_tx {
-                                    let _ =
-                                        tx.send(nucleotide_terminal::session::ControlMsg::Scroll {
-                                            delta,
-                                        });
-                                }
+                            if delta != 0
+                                && let Some(tx) = &guard.control_tx
+                            {
+                                let _ = tx.send(nucleotide_terminal::session::ControlMsg::Scroll {
+                                    delta,
+                                });
                             }
                         }
                     });
@@ -476,10 +473,10 @@ impl Render for TerminalView {
                 .flex_row()
                 .size_full()
                 .child(interactive_content);
-            if let Some(state) = &self.scrollbar_state {
-                if let Some(scrollbar) = Scrollbar::vertical(state.clone()) {
-                    w = w.child(scrollbar);
-                }
+            if let Some(state) = &self.scrollbar_state
+                && let Some(scrollbar) = Scrollbar::vertical(state.clone())
+            {
+                w = w.child(scrollbar);
             }
             w
         };

@@ -1125,6 +1125,7 @@ enum VcpkgDependency {
 #[derive(serde::Deserialize)]
 struct VcpkgDependencyObject {
     name: String,
+    #[allow(dead_code)]
     version: Option<String>,
 }
 

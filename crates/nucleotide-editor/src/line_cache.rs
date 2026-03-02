@@ -73,9 +73,7 @@ impl LineLayoutCache {
         if let Ok(mut layouts) = self.layouts.lock() {
             let idx = layouts.ordered.len();
             let line_idx = layout.line_idx;
-            if !layouts.line_to_first_layout.contains_key(&line_idx) {
-                layouts.line_to_first_layout.insert(line_idx, idx);
-            }
+            layouts.line_to_first_layout.entry(line_idx).or_insert(idx);
             layouts.ordered.push(layout);
         }
     }

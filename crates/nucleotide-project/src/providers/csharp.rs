@@ -726,6 +726,7 @@ struct GlobalJson {
 #[derive(serde::Deserialize)]
 struct DotNetSdk {
     version: Option<String>,
+    #[allow(dead_code)]
     #[serde(rename = "rollForward")]
     roll_forward: Option<String>,
 }

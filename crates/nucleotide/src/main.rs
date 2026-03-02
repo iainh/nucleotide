@@ -489,11 +489,6 @@ fn is_running_in_wsl() -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn is_running_in_wsl() -> bool {
-    false
-}
-
 // Import actions from our centralized definitions
 use nucleotide::actions::{
     common::{Cancel, Confirm, MoveDown, MoveLeft, MoveRight, MoveUp},
