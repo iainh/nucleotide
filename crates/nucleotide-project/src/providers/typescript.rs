@@ -490,6 +490,7 @@ struct TsConfig {
     compiler_options: Option<std::collections::HashMap<String, serde_json::Value>>,
     files: Option<Vec<String>>,
     include: Option<Vec<String>>,
+    #[allow(dead_code)]
     exclude: Option<Vec<String>>,
 }
 

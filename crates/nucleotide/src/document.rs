@@ -2867,10 +2867,10 @@ impl Element for DocumentElement {
 
                             // GPUI expects TextRun lengths to match the rendered string length. We omit newline
                             // graphemes from `line_str`, so ensure the highlighted range does too.
-                            if let Some(last_grapheme) = last_non_virtual {
-                                if matches!(last_grapheme.raw, helix_core::graphemes::Grapheme::Newline) {
-                                    line_end = last_grapheme.char_idx;
-                                }
+                            if let Some(last_grapheme) = last_non_virtual
+                                && matches!(last_grapheme.raw, helix_core::graphemes::Grapheme::Newline)
+                            {
+                                line_end = last_grapheme.char_idx;
                             }
 
                             // Re-read core to get highlights and immediately drop the borrow
@@ -2948,14 +2948,14 @@ impl Element for DocumentElement {
                         };
 
                         // Paint cursorline background before any run highlights so empty lines still render it
-                        if is_cursor_visual_line {
-                            if let Some(cursorline_bg) = cursorline_style {
-                                let cursorline_bounds = Bounds {
-                                    origin: point(bounds.origin.x, line_y),
-                                    size: size(bounds.size.width, after_layout.line_height),
-                                };
-                                window.paint_quad(fill(cursorline_bounds, cursorline_bg));
-                            }
+                        if is_cursor_visual_line
+                            && let Some(cursorline_bg) = cursorline_style
+                        {
+                            let cursorline_bounds = Bounds {
+                                origin: point(bounds.origin.x, line_y),
+                                size: size(bounds.size.width, after_layout.line_height),
+                            };
+                            window.paint_quad(fill(cursorline_bounds, cursorline_bg));
                         }
 
                         // Paint the line text (only for non-empty lines)
