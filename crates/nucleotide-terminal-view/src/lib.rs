@@ -203,6 +203,21 @@ impl TerminalViewModel {
         self.dirty.take()
     }
 
+    /// Resets scroll position to bottom (live cursor), snapping back from scrollback.
+    /// Returns `true` if the offset actually changed.
+    #[cfg(feature = "emulator")]
+    pub fn scroll_to_bottom(&mut self) -> bool {
+        if self.display_offset == 0 {
+            return false;
+        }
+        let delta = -(self.display_offset as i32);
+        self.display_offset = 0;
+        if let Some(tx) = &self.control_tx {
+            let _ = tx.send(nucleotide_terminal::session::ControlMsg::Scroll { delta });
+        }
+        true
+    }
+
     #[cfg(feature = "emulator")]
     pub fn resize_grid(&mut self, cols: u16, rows: u16, cell_metrics: Option<(f32, f32)>) {
         let cols_usize = cols.max(1) as usize;

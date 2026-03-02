@@ -1376,6 +1376,13 @@ impl Workspace {
                 let id = panel.read(cx).active;
                 let bytes = crate::overlay::translate_key_to_bytes(ev);
                 if !bytes.is_empty() {
+                    // Snap scroll back to cursor when the user types
+                    #[cfg(feature = "terminal-emulator")]
+                    if let Some(vm) = nucleotide_terminal_view::get_view_model(id)
+                        && let Ok(mut guard) = vm.lock()
+                    {
+                        guard.scroll_to_bottom();
+                    }
                     // Fast path: send directly to the PTY writer thread,
                     // bypassing the event queue (which defers until next render).
                     #[cfg(feature = "terminal-emulator")]
@@ -7415,6 +7422,13 @@ impl Render for Workspace {
                                         let id = panel.read(cx).active;
                                         let bytes = crate::overlay::translate_key_to_bytes(event);
                                         if !bytes.is_empty() {
+                                            // Snap scroll back to cursor when the user types
+                                            #[cfg(feature = "terminal-emulator")]
+                                            if let Some(vm) = nucleotide_terminal_view::get_view_model(id)
+                                                && let Ok(mut guard) = vm.lock()
+                                            {
+                                                guard.scroll_to_bottom();
+                                            }
                                             // Fast path: bypass event queue
                                             #[cfg(feature = "terminal-emulator")]
                                             let sent = this.core.read(cx).terminal_input_senders
