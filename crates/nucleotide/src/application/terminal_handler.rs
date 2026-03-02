@@ -13,9 +13,15 @@ use nucleotide_terminal::session::ControlMsg;
 use nucleotide_terminal::session::{TerminalSession, TerminalSessionCfg};
 use nucleotide_terminal_view::{TerminalViewModel, register_view_model};
 
+/// Shared map of terminal input senders, allowing the UI thread to bypass the
+/// event queue and write keystrokes directly to the PTY background writer.
+pub type TerminalInputSenders = Arc<Mutex<HashMap<TerminalId, std::sync::mpsc::Sender<Vec<u8>>>>>;
+
 /// Manages terminal sessions and translates frames into UI view state updates
 pub struct TerminalRuntimeHandler {
     sessions: HashMap<TerminalId, SessionEntry>,
+    /// Shared sender map so callers outside the event loop can write input directly
+    input_senders: TerminalInputSenders,
 }
 
 struct SessionEntry {
@@ -36,7 +42,14 @@ impl TerminalRuntimeHandler {
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
+            input_senders: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Get a clone of the shared input senders map.
+    /// Store this on the Application so the UI thread can send input directly.
+    pub fn input_senders(&self) -> TerminalInputSenders {
+        self.input_senders.clone()
     }
 
     pub fn get_view_model(
@@ -85,14 +98,17 @@ impl TerminalRuntimeHandler {
         let session_for_input = session_arc.clone();
         let input_task = std::thread::spawn(move || {
             while let Ok(bytes) = rx_input.recv() {
-                // Best-effort write; ignore errors to keep loop alive until channel closes
-                futures_executor::block_on(async {
-                    if let Ok(guard) = session_for_input.lock() {
-                        let _ = guard.write(&bytes).await;
-                    }
-                });
+                // Best-effort synchronous write; no block_on overhead
+                if let Ok(guard) = session_for_input.lock() {
+                    let _ = guard.write_sync(&bytes);
+                }
             }
         });
+
+        // Register sender in shared map so UI thread can bypass the event queue
+        if let Ok(mut senders) = self.input_senders.lock() {
+            senders.insert(id, tx.clone());
+        }
 
         self.sessions.insert(
             id,
@@ -222,6 +238,10 @@ impl core::EventHandler for TerminalRuntimeHandler {
                 // Output is produced by session read loop; nothing to do
             }
             TerminalEvent::Exited { id, .. } => {
+                // Remove from shared sender map first
+                if let Ok(mut senders) = self.input_senders.lock() {
+                    senders.remove(id);
+                }
                 if let Some(entry) = self.sessions.remove(id) {
                     // Close input channel to stop input task
                     drop(entry.input_tx);

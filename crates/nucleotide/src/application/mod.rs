@@ -17,7 +17,7 @@ pub use document_handler::DocumentHandler;
 pub use editor_handler::EditorHandler;
 pub use lsp_handler::LspHandler;
 #[cfg(feature = "terminal-emulator")]
-pub use terminal_handler::TerminalRuntimeHandler;
+pub use terminal_handler::{TerminalInputSenders, TerminalRuntimeHandler};
 pub use view_handler::ViewHandler;
 pub use workspace_handler::WorkspaceHandler;
 
@@ -178,6 +178,9 @@ pub struct Application {
     pub core: crate::application::ApplicationCore,
     // Event aggregator for dispatching integration events
     pub event_aggregator: Option<EventAggregatorHandle>,
+    // Fast-path input senders for terminal — bypasses the event queue
+    #[cfg(feature = "terminal-emulator")]
+    pub terminal_input_senders: TerminalInputSenders,
     // Counter for sync cycles to delay LSP startup until system is fully initialized
     pub sync_cycle_counter: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -5228,6 +5231,8 @@ pub fn init_editor(
     );
 
     // Initialize V2 Event Aggregator and register core handlers
+    #[cfg(feature = "terminal-emulator")]
+    let terminal_input_senders;
     let event_aggregator = {
         let agg = nucleotide_core::EventAggregator::new();
         let handle = nucleotide_core::EventAggregatorHandle::new(agg);
@@ -5238,6 +5243,7 @@ pub fn init_editor(
         #[cfg(feature = "terminal-emulator")]
         {
             let terminal_handler = crate::application::TerminalRuntimeHandler::new();
+            terminal_input_senders = terminal_handler.input_senders();
             handle.register_handler(terminal_handler);
         }
         handle
@@ -5280,6 +5286,8 @@ pub fn init_editor(
         core,
         // Event aggregator for UI and workspace events
         event_aggregator: Some(event_aggregator),
+        #[cfg(feature = "terminal-emulator")]
+        terminal_input_senders,
         sync_cycle_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
 }

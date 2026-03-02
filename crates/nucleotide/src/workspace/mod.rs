@@ -1376,14 +1376,43 @@ impl Workspace {
                 let id = panel.read(cx).active;
                 let bytes = crate::overlay::translate_key_to_bytes(ev);
                 if !bytes.is_empty() {
-                    self.core.update(cx, |app, _| {
-                        if let Some(bus) = &app.event_aggregator {
-                            bus.dispatch_terminal(nucleotide_events::v2::terminal::Event::Input {
-                                id,
-                                bytes,
+                    // Fast path: send directly to the PTY writer thread,
+                    // bypassing the event queue (which defers until next render).
+                    #[cfg(feature = "terminal-emulator")]
+                    {
+                        let sent = self
+                            .core
+                            .read(cx)
+                            .terminal_input_senders
+                            .lock()
+                            .ok()
+                            .and_then(|senders| {
+                                senders.get(&id).map(|tx| {
+                                    let _ = tx.send(bytes.clone());
+                                })
+                            })
+                            .is_some();
+                        if !sent {
+                            // Fallback: dispatch through event bus if sender not yet registered
+                            self.core.update(cx, |app, _| {
+                                if let Some(bus) = &app.event_aggregator {
+                                    bus.dispatch_terminal(
+                                        nucleotide_events::v2::terminal::Event::Input { id, bytes },
+                                    );
+                                }
                             });
                         }
-                    });
+                    }
+                    #[cfg(not(feature = "terminal-emulator"))]
+                    {
+                        self.core.update(cx, |app, _| {
+                            if let Some(bus) = &app.event_aggregator {
+                                bus.dispatch_terminal(
+                                    nucleotide_events::v2::terminal::Event::Input { id, bytes },
+                                );
+                            }
+                        });
+                    }
                 }
             }
             // Prevent further handling by editor/others
@@ -7373,11 +7402,24 @@ impl Render for Workspace {
                                         let id = panel.read(cx).active;
                                         let bytes = crate::overlay::translate_key_to_bytes(event);
                                         if !bytes.is_empty() {
-                                            this.core.update(cx, |app, _| {
-                                                if let Some(bus) = &app.event_aggregator {
-                                                    bus.dispatch_terminal(nucleotide_events::v2::terminal::Event::Input { id, bytes });
-                                                }
-                                            });
+                                            // Fast path: bypass event queue
+                                            #[cfg(feature = "terminal-emulator")]
+                                            let sent = this.core.read(cx).terminal_input_senders
+                                                .lock()
+                                                .ok()
+                                                .and_then(|senders| {
+                                                    senders.get(&id).map(|tx| { let _ = tx.send(bytes.clone()); })
+                                                })
+                                                .is_some();
+                                            #[cfg(not(feature = "terminal-emulator"))]
+                                            let sent = false;
+                                            if !sent {
+                                                this.core.update(cx, |app, _| {
+                                                    if let Some(bus) = &app.event_aggregator {
+                                                        bus.dispatch_terminal(nucleotide_events::v2::terminal::Event::Input { id, bytes });
+                                                    }
+                                                });
+                                            }
                                             cx.stop_propagation();
                                         }
                                     }

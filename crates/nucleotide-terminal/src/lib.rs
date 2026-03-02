@@ -225,6 +225,12 @@ pub mod session {
         }
 
         pub async fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
+            self.write_sync(bytes)
+        }
+
+        /// Synchronous write — preferred for the input hot-path since the
+        /// underlying PTY writer is blocking anyway.
+        pub fn write_sync(&self, bytes: &[u8]) -> std::io::Result<()> {
             let mut guard = self.writer.lock().unwrap();
             guard.write_all(bytes)?;
             guard.flush()
