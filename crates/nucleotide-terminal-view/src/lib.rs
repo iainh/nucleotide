@@ -7,11 +7,15 @@ use gpui::AppContext; // bring trait into scope for Context::new
 #[cfg(feature = "emulator")]
 use gpui::FontWeight;
 #[cfg(feature = "emulator")]
+use gpui::InteractiveElement;
+#[cfg(feature = "emulator")]
 use gpui::rgb;
 use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div};
 #[cfg(feature = "emulator")]
 use nucleotide_terminal::frame::{Cell, FramePayload, GridDiff, GridSnapshot};
 use nucleotide_ui::ThemedContext;
+#[cfg(feature = "emulator")]
+use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -66,6 +70,14 @@ pub struct TerminalViewModel {
     cell_width: f32,
     #[cfg(feature = "emulator")]
     cell_height: f32,
+    #[cfg(feature = "emulator")]
+    pub history_size: usize,
+    #[cfg(feature = "emulator")]
+    pub display_offset: usize,
+    #[cfg(feature = "emulator")]
+    control_tx: Option<std::sync::mpsc::Sender<nucleotide_terminal::session::ControlMsg>>,
+    #[cfg(feature = "emulator")]
+    scroll_dragging: bool,
 }
 
 impl TerminalViewModel {
@@ -88,7 +100,23 @@ impl TerminalViewModel {
             cell_width: 0.0,
             #[cfg(feature = "emulator")]
             cell_height: 0.0,
+            #[cfg(feature = "emulator")]
+            history_size: 0,
+            #[cfg(feature = "emulator")]
+            display_offset: 0,
+            #[cfg(feature = "emulator")]
+            control_tx: None,
+            #[cfg(feature = "emulator")]
+            scroll_dragging: false,
         }
+    }
+
+    #[cfg(feature = "emulator")]
+    pub fn set_control_sender(
+        &mut self,
+        tx: std::sync::mpsc::Sender<nucleotide_terminal::session::ControlMsg>,
+    ) {
+        self.control_tx = Some(tx);
     }
 
     #[cfg(feature = "emulator")]
@@ -105,12 +133,23 @@ impl TerminalViewModel {
     }
 
     #[cfg(feature = "emulator")]
+    pub fn has_dirty_rows(&self) -> bool {
+        self.dirty.flags.iter().any(|&f| f)
+    }
+
+    #[cfg(feature = "emulator")]
     fn set_snapshot(&mut self, snapshot: GridSnapshot) {
         self.cols = snapshot.cols;
         self.rows = snapshot.rows_len;
         self.grid = snapshot.rows;
         self.cursor_row = snapshot.cursor_row;
         self.cursor_col = snapshot.cursor_col;
+        self.history_size = snapshot.history_size;
+        // Don't overwrite display_offset during scrollbar drag to avoid
+        // race conditions where stale frames snap the scroll position back.
+        if !self.scroll_dragging {
+            self.display_offset = snapshot.display_offset;
+        }
         self.dirty.resize_and_fill(self.grid.len(), true);
     }
 
@@ -209,19 +248,133 @@ fn blank_cell() -> Cell {
     }
 }
 
+/// Bridges the terminal's line-based scrollback to the pixel-based `ScrollableHandle` trait.
+#[cfg(feature = "emulator")]
+#[derive(Debug)]
+pub struct TerminalScrollHandle {
+    model: Arc<Mutex<TerminalViewModel>>,
+}
+
+#[cfg(feature = "emulator")]
+impl nucleotide_ui::scrollbar::ScrollableHandle for TerminalScrollHandle {
+    fn max_offset(&self) -> gpui::Size<gpui::Pixels> {
+        let guard = self.model.lock().unwrap();
+        let max_y = guard.history_size as f32 * guard.cell_height.max(1.0);
+        gpui::Size {
+            width: gpui::px(0.0),
+            height: gpui::px(max_y),
+        }
+    }
+
+    fn offset(&self) -> gpui::Point<gpui::Pixels> {
+        let guard = self.model.lock().unwrap();
+        // display_offset=0 → at bottom (live) → most scrolled → offset = -max
+        // display_offset=history_size → at top → not scrolled → offset = 0
+        let scrolled_lines = (guard.history_size - guard.display_offset) as f32;
+        let y = -(scrolled_lines * guard.cell_height.max(1.0));
+        gpui::Point {
+            x: gpui::px(0.0),
+            y: gpui::px(y),
+        }
+    }
+
+    fn set_offset(&self, point: gpui::Point<gpui::Pixels>) {
+        let mut guard = self.model.lock().unwrap();
+        let cell_h = guard.cell_height.max(1.0);
+        let history = guard.history_size;
+        // Convert pixel offset back to display_offset
+        // offset.y is negative; abs gives pixels scrolled from top
+        let scrolled_lines = (f32::from(point.y).abs() / cell_h).round() as usize;
+        let new_display_offset = history.saturating_sub(scrolled_lines);
+        let delta = new_display_offset as i32 - guard.display_offset as i32;
+        guard.display_offset = new_display_offset;
+        if delta != 0 {
+            if let Some(tx) = &guard.control_tx {
+                let _ = tx.send(nucleotide_terminal::session::ControlMsg::Scroll { delta });
+            }
+        }
+    }
+
+    fn viewport(&self) -> gpui::Bounds<gpui::Pixels> {
+        let guard = self.model.lock().unwrap();
+        let h = guard.rows as f32 * guard.cell_height.max(1.0);
+        let w = guard.cols as f32 * guard.cell_width.max(1.0);
+        gpui::Bounds::new(
+            gpui::Point {
+                x: gpui::px(0.0),
+                y: gpui::px(0.0),
+            },
+            gpui::Size {
+                width: gpui::px(w),
+                height: gpui::px(h),
+            },
+        )
+    }
+
+    fn drag_started(&self) {
+        self.model.lock().unwrap().scroll_dragging = true;
+    }
+
+    fn drag_ended(&self) {
+        self.model.lock().unwrap().scroll_dragging = false;
+    }
+}
+
 /// A simple GPUI component that renders a TerminalViewModel as text lines.
 pub struct TerminalView {
     pub model: Arc<Mutex<TerminalViewModel>>,
     #[cfg(feature = "emulator")]
-    rows: Vec<gpui::Entity<TerminalRowView>>, // row entities for dirty rendering
+    rows: Vec<gpui::Entity<TerminalRowView>>,
+    #[cfg(feature = "emulator")]
+    scrollbar_state: Option<ScrollbarState>,
 }
 
 impl TerminalView {
-    pub fn new(model: Arc<Mutex<TerminalViewModel>>) -> Self {
+    pub fn new(
+        model: Arc<Mutex<TerminalViewModel>>,
+        #[allow(unused)] cx: &mut Context<Self>,
+    ) -> Self {
+        #[cfg(feature = "emulator")]
+        let scrollbar_state = {
+            let handle = TerminalScrollHandle {
+                model: model.clone(),
+            };
+            Some(ScrollbarState::new(handle))
+        };
+
+        // Poll for background frame updates and trigger GPUI re-renders.
+        // The frame consumer thread updates the view model on a background
+        // thread with no access to GPUI; this task bridges the gap.
+        #[cfg(feature = "emulator")]
+        {
+            let poll_model = model.clone();
+            cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(32))
+                        .await;
+                    let has_updates = {
+                        let Ok(guard) = poll_model.lock() else {
+                            break;
+                        };
+                        guard.has_dirty_rows()
+                    };
+                    if has_updates {
+                        if this.update(cx, |_, cx| cx.notify()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            })
+            .detach();
+        }
+
         Self {
             model,
             #[cfg(feature = "emulator")]
             rows: Vec::new(),
+            #[cfg(feature = "emulator")]
+            scrollbar_state,
         }
     }
 }
@@ -233,11 +386,13 @@ impl Render for TerminalView {
         let default_bg = tokens.editor.background;
         let default_fg = tokens.editor.text_primary;
 
-        // Base container styling: editor-like background, foreground, and configured monospace font
-        let mut container = div()
+        // Terminal content column (flex_1 so scrollbar gets space)
+        let mut content = div()
             .flex()
             .flex_col()
-            .size_full()
+            .w_full()
+            .h_full()
+            .flex_1()
             .overflow_hidden()
             .bg(default_bg)
             .text_color(default_fg)
@@ -245,7 +400,7 @@ impl Render for TerminalView {
 
         // Apply editor font configuration (family/size/weight) to match the editor
         let editor_font = _cx.global::<nucleotide_types::EditorFontConfig>();
-        container = container
+        content = content
             .font_family(editor_font.family.clone())
             .text_size(gpui::px(editor_font.size))
             .font_weight(editor_font.weight.into());
@@ -277,17 +432,61 @@ impl Render for TerminalView {
 
             // Mount all row entities
             for row_ent in &self.rows {
-                container = container.child(row_ent.clone());
+                content = content.child(row_ent.clone());
             }
         }
 
         #[cfg(not(feature = "emulator"))]
         {
             // No emulator: show a placeholder with correct styling
-            container = container.child(div().child("Terminal emulator disabled"));
+            content = content.child(div().child("Terminal emulator disabled"));
         }
 
-        container
+        // Wrap content + scrollbar in a horizontal flex container
+        #[cfg(feature = "emulator")]
+        let wrapper = {
+            // Add scroll wheel support (requires an id for interactive element)
+            let scroll_model = self.model.clone();
+            let interactive_content =
+                content
+                    .id("terminal-content")
+                    .on_scroll_wheel(move |event, _window, _cx| {
+                        let mut guard = scroll_model.lock().unwrap();
+                        let cell_h = guard.cell_height.max(1.0);
+                        let delta_y = f32::from(event.delta.pixel_delta(_window.line_height()).y);
+                        let lines = (delta_y / cell_h).round() as i32;
+                        if lines != 0 {
+                            let new_offset = (guard.display_offset as i32 + lines)
+                                .clamp(0, guard.history_size as i32)
+                                as usize;
+                            let delta = new_offset as i32 - guard.display_offset as i32;
+                            guard.display_offset = new_offset;
+                            if delta != 0 {
+                                if let Some(tx) = &guard.control_tx {
+                                    let _ =
+                                        tx.send(nucleotide_terminal::session::ControlMsg::Scroll {
+                                            delta,
+                                        });
+                                }
+                            }
+                        }
+                    });
+            let mut w = div()
+                .flex()
+                .flex_row()
+                .size_full()
+                .child(interactive_content);
+            if let Some(state) = &self.scrollbar_state {
+                if let Some(scrollbar) = Scrollbar::vertical(state.clone()) {
+                    w = w.child(scrollbar);
+                }
+            }
+            w
+        };
+        #[cfg(not(feature = "emulator"))]
+        let wrapper = div().flex().flex_row().size_full().child(content);
+
+        wrapper
     }
 }
 

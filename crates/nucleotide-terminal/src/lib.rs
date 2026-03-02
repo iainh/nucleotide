@@ -19,6 +19,8 @@ pub mod frame {
         pub rows_len: u16,
         pub cursor_row: u16,
         pub cursor_col: u16,
+        pub history_size: usize,
+        pub display_offset: usize,
     }
 
     #[cfg(feature = "emulator")]
@@ -75,6 +77,9 @@ pub mod session {
             rows: u16,
             cell_width: f32,
             cell_height: f32,
+        },
+        Scroll {
+            delta: i32,
         },
     }
 
@@ -150,11 +155,30 @@ pub mod session {
             {
                 use crate::engine::AlacrittyEngine as Engine;
                 use std::time::{Duration, Instant};
+
+                // Spawn a reader thread so PTY reads don't block control message
+                // processing (e.g. scroll commands while the terminal is idle).
+                let (data_tx, data_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+                std::thread::spawn(move || {
+                    let mut buf = vec![0u8; 8192];
+                    loop {
+                        match reader.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                if data_tx.send(buf[..n].to_vec()).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+
                 tokio::task::spawn_blocking(move || {
                     let mut engine = Engine::new(cfg.cols.unwrap_or(80), cfg.rows.unwrap_or(24));
-                    let mut buf = vec![0u8; 8192];
                     let mut last_emit = Instant::now();
                     let window = Duration::from_millis(16); // ~60 FPS cap
+                    let mut needs_frame = false;
                     loop {
                         // Handle any pending control messages
                         while let Ok(msg) = control_rx.try_recv() {
@@ -166,29 +190,41 @@ pub mod session {
                                     cell_height: ch,
                                 } => {
                                     engine.resize_with_metrics(cols, rows, cw, ch);
+                                    needs_frame = true;
+                                }
+                                ControlMsg::Scroll { delta } => {
+                                    engine.scroll_display(delta);
+                                    needs_frame = true;
                                 }
                             }
                         }
-                        match reader.read(&mut buf) {
-                            Ok(0) => {
+                        // Try to receive data with a short timeout
+                        match data_rx.recv_timeout(Duration::from_millis(8)) {
+                            Ok(data) => {
+                                engine.feed_bytes(&data);
+                                while let Ok(more) = data_rx.try_recv() {
+                                    engine.feed_bytes(&more);
+                                }
+                                needs_frame = true;
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                                 if let Some(frame) = engine.take_frame() {
                                     let _ = tx.try_send(frame);
                                 }
                                 break;
                             }
-                            Ok(n) => {
-                                engine.feed_bytes(&buf[..n]);
-                                if last_emit.elapsed() >= window {
-                                    if engine
-                                        .take_frame()
-                                        .is_some_and(|frame| tx.try_send(frame).is_err())
-                                    {
-                                        break;
-                                    }
-                                    last_emit = Instant::now();
-                                }
+                        }
+                        // Rate-limited frame emission
+                        if needs_frame && last_emit.elapsed() >= window {
+                            if engine
+                                .take_frame()
+                                .is_some_and(|frame| tx.try_send(frame).is_err())
+                            {
+                                break;
                             }
-                            Err(_) => break,
+                            last_emit = Instant::now();
+                            needs_frame = false;
                         }
                     }
                 });
@@ -286,7 +322,7 @@ pub mod session {
 pub mod engine {
     use crate::frame::{Cell, FramePayload, GridSnapshot};
     use alacritty_terminal::event::{Event as TermEvent, EventListener};
-    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::grid::{Dimensions, Scroll};
     use alacritty_terminal::term::{self, RenderableContent, Term};
     use alacritty_terminal::vte::ansi::{
         self, Color as VteColor, NamedColor as VteNamedColor, Rgb as VteRgb,
@@ -393,12 +429,16 @@ pub mod engine {
                 }
 
                 let cursor = content.cursor.point;
+                let history_size = term.grid().history_size();
+                let display_offset = term.grid().display_offset();
                 return Some(FramePayload::Full(GridSnapshot {
                     rows: self.grid.clone(),
                     cols: self.cols,
                     rows_len: self.rows,
                     cursor_row: cursor.line.0.max(0) as u16,
                     cursor_col: (cursor.column.0 as u16),
+                    history_size,
+                    display_offset,
                 }));
             }
             None
@@ -435,8 +475,25 @@ pub mod engine {
         ) {
             self.cell_width = cell_width;
             self.cell_height = cell_height;
+            // Resize the local snapshot buffer
             self.resize(cols, rows);
-            self.rebuild_term();
+            // Resize the Alacritty Term in-place to preserve scrollback history.
+            // Only rebuild if no Term exists yet.
+            if let Some(term) = &mut self.term {
+                let dims = SimpleSize {
+                    cols: cols as usize,
+                    rows: rows as usize,
+                };
+                term.resize(dims);
+            } else {
+                self.rebuild_term();
+            }
+        }
+
+        pub fn scroll_display(&mut self, delta: i32) {
+            if let Some(term) = &mut self.term {
+                term.scroll_display(Scroll::Delta(delta));
+            }
         }
 
         fn rebuild_term(&mut self) {

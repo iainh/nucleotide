@@ -72,6 +72,12 @@ impl TerminalRuntimeHandler {
             };
 
         let view = Arc::new(Mutex::new(TerminalViewModel::new(id)));
+        #[cfg(feature = "terminal-emulator")]
+        {
+            view.lock()
+                .unwrap()
+                .set_control_sender(session.control_sender());
+        }
         let view_clone = Arc::clone(&view);
         // Register globally so UI panels can fetch by TerminalId
         register_view_model(id, view.clone());
