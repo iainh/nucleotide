@@ -6538,8 +6538,9 @@ impl Workspace {
             if (self.basic_terminal_height - pixel_height).abs() > 0.5 {
                 self.basic_terminal_height = pixel_height;
             }
-            panel.update(cx, |p, _| {
+            panel.update(cx, |p, cx| {
                 p.height_px = pixel_height;
+                cx.notify();
             });
             self.core.update(cx, |app, _| {
                 if let Some(bus) = &app.event_aggregator {
@@ -6555,6 +6556,18 @@ impl Workspace {
                         cell_width: bounds.cell_size().0,
                         cell_height: bounds.cell_size().1,
                     });
+                    // Process resize events immediately so the PTY is resized
+                    // in the same frame. Without this, events dispatched during
+                    // render sit in the queue until the next render cycle which
+                    // may never come (process_events runs at the top of render).
+                    bus.process_events();
+                }
+            });
+            // Notify the terminal view entity so it re-renders with the
+            // updated grid dimensions (new row/column count).
+            panel.update(cx, |p, cx| {
+                if let Some(view) = &p.view_entity {
+                    view.update(cx, |_, cx| cx.notify());
                 }
             });
         }

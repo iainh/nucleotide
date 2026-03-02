@@ -1889,8 +1889,22 @@ impl Render for OverlayView {
                                         cell_height: line_h,
                                     },
                                 );
+                                // Process resize events immediately so the PTY is
+                                // resized in the same frame rather than waiting for
+                                // the next render cycle.
+                                bus.process_events();
                             }
                         });
+                        // Notify the terminal view entity so it re-renders with
+                        // the updated grid dimensions (new row/column count).
+                        if let Some(panel) = &self.terminal_panel {
+                            panel.update(cx, |p, cx| {
+                                cx.notify();
+                                if let Some(view) = &p.view_entity {
+                                    view.update(cx, |_, cx| cx.notify());
+                                }
+                            });
+                        }
                     }
                 }
 

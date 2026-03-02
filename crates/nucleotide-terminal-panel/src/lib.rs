@@ -9,7 +9,7 @@ use nucleotide_ui::ThemedContext;
 pub struct TerminalPanel {
     pub active: TerminalId,
     pub height_px: f32,
-    view_entity: Option<Entity<nucleotide_terminal_view::TerminalView>>,
+    pub view_entity: Option<Entity<nucleotide_terminal_view::TerminalView>>,
 }
 
 impl TerminalPanel {
