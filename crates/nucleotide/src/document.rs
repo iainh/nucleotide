@@ -1298,11 +1298,9 @@ impl DocumentElement {
                 selection_scope
             };
 
-            // Skip single-character "cursor" selections in block mode for primary selection
-            // since we render the cursor separately in GUI
-            if range.head == range.anchor {
-                // This is just a cursor position, not a real selection
-                // We don't add any highlight for this in GUI mode
+            // Special-case: cursor at end of the rope.
+            if range.head == range.anchor && range.head == text.len_chars() {
+                // At end of rope, nothing to highlight (cursor is rendered separately)
                 continue;
             }
 
@@ -1312,8 +1310,8 @@ impl DocumentElement {
             if range.head > range.anchor {
                 // Forward selection
                 let cursor_start = prev_grapheme_boundary(text, range.head);
-                // For selections, we want to show the full selection minus the cursor position
-                // if it's the primary selection in block mode
+                // In GUI mode, block cursors are rendered separately, so exclude
+                // the cursor position from the selection highlight
                 let selection_end = if selection_is_primary
                     && cursor_is_block
                     && mode != helix_view::document::Mode::Insert
@@ -1329,7 +1327,8 @@ impl DocumentElement {
             } else {
                 // Reverse selection
                 let cursor_end = next_grapheme_boundary(text, range.head);
-                // For selections, show from cursor end to anchor
+                // In GUI mode, block cursors are rendered separately, so exclude
+                // the cursor position from the selection highlight
                 let selection_start = if selection_is_primary
                     && cursor_is_block
                     && mode != helix_view::document::Mode::Insert
@@ -3791,27 +3790,7 @@ impl Element for DocumentElement {
                             shaped
                         };
 
-                        // Paint background highlights using the shaped line for accurate positioning
-                        let mut byte_offset = 0;
-                        for run in &line_runs {
-                            // Do not overpaint the cursor row background with per-run backgrounds
-                            if line_idx != cursor_line_num
-                                && let Some(bg_color) = run.background_color
-                            {
-                                // Calculate the x positions using the shaped line
-                                let start_x = shaped.x_for_index(byte_offset);
-                                let end_x = shaped.x_for_index(byte_offset + run.len);
-
-                                let bg_bounds = Bounds {
-                                    origin: point(text_origin.x + start_x, text_origin.y),
-                                    size: size(end_x - start_x, after_layout.line_height),
-                                };
-                                window.paint_quad(fill(bg_bounds, bg_color));
-                            }
-                            byte_offset += run.len;
-                        }
-
-                        // Paint cursorline background after per-run backgrounds so it applies across the row
+                        // Paint cursorline background BEFORE run backgrounds so selections render on top
                         if line_idx == cursor_line_num
                             && let Some(cursorline_bg) = cursorline_style
                         {
@@ -3824,6 +3803,44 @@ impl Element for DocumentElement {
                                 size: size(bounds.size.width, after_layout.line_height),
                             };
                             window.paint_quad(fill(cursorline_bounds, cursorline_bg));
+                        }
+
+                        // Paint background highlights using the shaped line for accurate positioning
+                        // On the cursor line, only paint selection backgrounds (over the cursorline);
+                        // on other lines, paint all backgrounds as usual.
+                        {
+                            #[inline]
+                            fn approx_hsla_eq(a: gpui::Hsla, b: gpui::Hsla) -> bool {
+                                let eh = (a.h - b.h).abs() <= 0.005;
+                                let es = (a.s - b.s).abs() <= 0.005;
+                                let el = (a.l - b.l).abs() <= 0.005;
+                                let ea = (a.a - b.a).abs() <= 0.005;
+                                eh && es && el && ea
+                            }
+                            let mut byte_offset = 0;
+                            for run in &line_runs {
+                                if let Some(bg_color) = run.background_color {
+                                    let should_paint = if line_idx == cursor_line_num {
+                                        let sel1 = tokens.editor.selection_primary;
+                                        let sel2 = tokens.editor.selection_secondary;
+                                        approx_hsla_eq(bg_color, sel1) || approx_hsla_eq(bg_color, sel2)
+                                    } else {
+                                        true
+                                    };
+
+                                    if should_paint {
+                                        let start_x = shaped.x_for_index(byte_offset);
+                                        let end_x = shaped.x_for_index(byte_offset + run.len);
+
+                                        let bg_bounds = Bounds {
+                                            origin: point(text_origin.x + start_x, text_origin.y),
+                                            size: size(end_x - start_x, after_layout.line_height),
+                                        };
+                                        window.paint_quad(fill(bg_bounds, bg_color));
+                                    }
+                                }
+                                byte_offset += run.len;
+                            }
                         }
 
                         if let Err(e) = shaped.paint(text_origin, after_layout.line_height, window, cx) {
