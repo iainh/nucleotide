@@ -44,29 +44,22 @@ impl ManifestProviders {
             "Registering manifest provider"
         );
 
-        // Check for duplicates
-        {
-            let providers = self.providers.read().unwrap();
-            if providers.contains_key(&name) {
-                nucleotide_logging::warn!(
-                    provider_name = %name,
-                    "Provider already registered, replacing existing"
-                );
-            }
+        // Hold both write locks atomically to avoid TOCTOU races and duplicate entries
+        let mut providers = self.providers.write().unwrap();
+        let mut ordered = self.ordered_providers.write().unwrap();
+
+        if providers.contains_key(&name) {
+            nucleotide_logging::warn!(
+                provider_name = %name,
+                "Provider already registered, replacing existing"
+            );
+            // Remove old entry from ordered list before inserting replacement
+            ordered.retain(|p| p.name() != name);
         }
 
-        // Insert into main registry
-        {
-            let mut providers = self.providers.write().unwrap();
-            providers.insert(name, provider.clone());
-        }
-
-        // Update ordered list (sorted by priority, descending)
-        {
-            let mut ordered = self.ordered_providers.write().unwrap();
-            ordered.push(provider);
-            ordered.sort_by_key(|p| std::cmp::Reverse(p.priority()));
-        }
+        providers.insert(name, provider.clone());
+        ordered.push(provider);
+        ordered.sort_by_key(|p| std::cmp::Reverse(p.priority()));
 
         nucleotide_logging::debug!("Provider registration completed successfully");
     }
