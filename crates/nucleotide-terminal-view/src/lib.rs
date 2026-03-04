@@ -78,6 +78,8 @@ pub struct TerminalViewModel {
     control_tx: Option<std::sync::mpsc::Sender<nucleotide_terminal::session::ControlMsg>>,
     #[cfg(feature = "emulator")]
     scroll_dragging: bool,
+    /// Set to true when the shell process has exited
+    exited: bool,
 }
 
 impl TerminalViewModel {
@@ -108,6 +110,7 @@ impl TerminalViewModel {
             control_tx: None,
             #[cfg(feature = "emulator")]
             scroll_dragging: false,
+            exited: false,
         }
     }
 
@@ -247,6 +250,14 @@ impl TerminalViewModel {
             self.cell_width = cw.max(1.0);
             self.cell_height = ch.max(1.0);
         }
+    }
+
+    pub fn set_exited(&mut self) {
+        self.exited = true;
+    }
+
+    pub fn has_exited(&self) -> bool {
+        self.exited
     }
 }
 
