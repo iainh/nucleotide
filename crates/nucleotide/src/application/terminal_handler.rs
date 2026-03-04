@@ -1,6 +1,7 @@
 // ABOUTME: Terminal runtime handler; consumes terminal events and updates view state
 
-use nucleotide_core as core;
+use nucleotide_core::{self as core, EventAggregatorHandle};
+use nucleotide_events::EventBus;
 use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_logging::{error, info};
 use std::collections::HashMap;
@@ -22,6 +23,8 @@ pub struct TerminalRuntimeHandler {
     sessions: HashMap<TerminalId, SessionEntry>,
     /// Shared sender map so callers outside the event loop can write input directly
     input_senders: TerminalInputSenders,
+    /// Event bus handle so consumer threads can dispatch Exited events
+    event_bus: Option<EventAggregatorHandle>,
 }
 
 struct SessionEntry {
@@ -43,7 +46,13 @@ impl TerminalRuntimeHandler {
         Self {
             sessions: HashMap::new(),
             input_senders: Arc::new(Mutex::new(HashMap::new())),
+            event_bus: None,
         }
+    }
+
+    /// Set the event bus handle so exit events can be dispatched from consumer threads
+    pub fn set_event_bus(&mut self, bus: EventAggregatorHandle) {
+        self.event_bus = Some(bus);
     }
 
     /// Get a clone of the shared input senders map.
@@ -83,6 +92,7 @@ impl TerminalRuntimeHandler {
         register_view_model(id, view.clone());
 
         // Spawn a blocking thread to consume frames, coalescing bursts to the latest
+        let exit_bus = self.event_bus.clone();
         let handle = std::thread::spawn(move || {
             loop {
                 // Wait for at least one frame
@@ -95,6 +105,15 @@ impl TerminalRuntimeHandler {
                 }
                 let mut guard = view_clone.lock().unwrap();
                 guard.apply_frame(frame);
+            }
+            // Channel closed – shell process exited; mark view model and notify the event bus
+            view_clone.lock().unwrap().set_exited();
+            if let Some(bus) = exit_bus {
+                bus.dispatch_terminal(TerminalEvent::Exited {
+                    id,
+                    code: None,
+                    signal: None,
+                });
             }
         });
 

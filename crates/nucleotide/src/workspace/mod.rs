@@ -4144,8 +4144,18 @@ impl Workspace {
                             _ => {}
                         }
                     }
-                    crate::types::AppEvent::Terminal(_term_event) => {
-                        // Terminal events currently handled by TerminalRuntimeHandler and overlay
+                    crate::types::AppEvent::Terminal(term_event) => {
+                        // Close the terminal pane when the shell process exits
+                        if let TerminalEvent::Exited { id, .. } = term_event
+                            && self.terminal_id == Some(*id)
+                        {
+                            self.terminal_panel_visible = false;
+                            self.embedded_terminal_panel = None;
+                            self.terminal_id = None;
+                            self.terminal_active = false;
+                            self.last_terminal_bounds = None;
+                            cx.notify();
+                        }
                     }
                     crate::types::AppEvent::Workspace(workspace_event) => {
                         if let crate::types::WorkspaceEvent::FileSelected { path, source } =
@@ -6593,6 +6603,20 @@ impl Render for Workspace {
         if let Some(aggregator) = self.core.read(cx).event_aggregator.as_ref() {
             aggregator.process_events();
         }
+
+        // Close terminal panel when the shell process has exited
+        if self.terminal_panel_visible
+            && let Some(id) = self.terminal_id
+            && let Some(vm) = nucleotide_terminal_view::get_view_model(id)
+            && vm.lock().unwrap().has_exited()
+        {
+            self.terminal_panel_visible = false;
+            self.terminal_active = false;
+            self.terminal_id = None;
+            self.embedded_terminal_panel = None;
+            self.last_terminal_bounds = None;
+        }
+
         // Fallback: full refresh if any pending flag remains
         if self.needs_file_tree_refresh {
             if let Some(ref file_tree) = self.file_tree {

@@ -5242,7 +5242,8 @@ pub fn init_editor(
         // Register Terminal runtime handler (behind feature)
         #[cfg(feature = "terminal-emulator")]
         {
-            let terminal_handler = crate::application::TerminalRuntimeHandler::new();
+            let mut terminal_handler = crate::application::TerminalRuntimeHandler::new();
+            terminal_handler.set_event_bus(handle.clone());
             terminal_input_senders = terminal_handler.input_senders();
             handle.register_handler(terminal_handler);
         }
