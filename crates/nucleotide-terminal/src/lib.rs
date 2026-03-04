@@ -1089,13 +1089,18 @@ mod emulator {
                 1 => {
                     for row in 0..=self.cursor_row as usize {
                         if row < self.grid.len() {
-                            let end = if row == self.cursor_row as usize {
-                                self.cursor_col as usize
+                            if row == self.cursor_row as usize {
+                                // Cursor row: erase from start to cursor inclusive (ECMA-48)
+                                for col in 0..=self.cursor_col as usize {
+                                    if col < self.grid[row].len() {
+                                        self.grid[row][col] = blank_cell();
+                                    }
+                                }
                             } else {
-                                self.cols as usize
-                            };
-                            for col in 0..end {
-                                self.grid[row][col] = blank_cell();
+                                // Rows above cursor: erase entirely
+                                for col in 0..self.cols as usize {
+                                    self.grid[row][col] = blank_cell();
+                                }
                             }
                         }
                     }
