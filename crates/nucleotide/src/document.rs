@@ -206,7 +206,7 @@ struct HighlightLineParams<'a> {
     fg_color: Hsla,
     font: Font,
     /// Optional diagnostic overlays to merge (underline ranges)
-    diag_overlays: Option<helix_core::syntax::OverlayHighlights>,
+    diag_overlay_spans: Option<Vec<(helix_core::syntax::Highlight, std::ops::Range<usize>)>>,
 }
 
 pub struct DocumentView {
@@ -576,12 +576,39 @@ impl DocumentElement {
             .or(style.fg)
             .and_then(crate::utils::color_to_hsla)
     }
-    /// Build diagnostic overlay highlights for the entire document.
+
+    fn hsla_to_helix(c: gpui::Hsla) -> Option<helix_view::graphics::Color> {
+        let c_chroma = (1.0 - (2.0 * c.l - 1.0).abs()) * c.s;
+        let x = c_chroma * (1.0 - (((c.h * 360.0) / 60.0) % 2.0 - 1.0).abs());
+        let hue = c.h * 360.0;
+        let (r1, g1, b1) = if hue < 60.0 {
+            (c_chroma, x, 0.0)
+        } else if hue < 120.0 {
+            (x, c_chroma, 0.0)
+        } else if hue < 180.0 {
+            (0.0, c_chroma, x)
+        } else if hue < 240.0 {
+            (0.0, x, c_chroma)
+        } else if hue < 300.0 {
+            (x, 0.0, c_chroma)
+        } else {
+            (c_chroma, 0.0, x)
+        };
+        let m = c.l - c_chroma / 2.0;
+        let (r, g, b) = (r1 + m, g1 + m, b1 + m);
+        Some(helix_view::graphics::Color::Rgb(
+            (r * 255.0) as u8,
+            (g * 255.0) as u8,
+            (b * 255.0) as u8,
+        ))
+    }
+
+    /// Build diagnostic overlay highlight spans for the entire document.
     /// Uses theme keys diagnostic.error|warning|info|hint to set underline color.
-    fn diagnostics_overlays(
+    fn diagnostic_overlay_spans(
         doc: &Document,
         theme: &Theme,
-    ) -> Option<helix_core::syntax::OverlayHighlights> {
+    ) -> Option<Vec<(helix_core::syntax::Highlight, std::ops::Range<usize>)>> {
         let mut spans: Vec<(helix_core::syntax::Highlight, std::ops::Range<usize>)> = Vec::new();
         // Resolve highlight ids once
         let error_h = theme.find_highlight_exact("diagnostic.error");
@@ -622,11 +649,7 @@ impl DocumentElement {
             }
         }
 
-        if spans.is_empty() {
-            None
-        } else {
-            Some(helix_core::syntax::OverlayHighlights::Heterogenous { highlights: spans })
-        }
+        if spans.is_empty() { None } else { Some(spans) }
     }
     /// Get the text style (with syntax highlighting) at a specific character position
     fn get_text_style_at_position(
@@ -1135,7 +1158,7 @@ impl DocumentElement {
         };
         let view = editor.tree.try_get(self.view_id)?;
 
-        let diag_overlays = Self::diagnostics_overlays(document, params.cx.helix_theme());
+        let diag_overlay_spans = Self::diagnostic_overlay_spans(document, params.cx.helix_theme());
         let line_runs = Self::highlight_line_with_params(HighlightLineParams {
             doc: document,
             view,
@@ -1148,7 +1171,7 @@ impl DocumentElement {
             line_end,
             fg_color: params.fg_color,
             font: self.style.font(),
-            diag_overlays,
+            diag_overlay_spans,
         });
 
         // Create the shaped line
@@ -1356,40 +1379,9 @@ impl DocumentElement {
     }
 
     fn highlight_line_with_params(params: HighlightLineParams) -> Vec<TextRun> {
-        let mut runs = vec![];
         let loader = params.syn_loader.load();
-
-        // Get the theme from context
         let theme = params.cx.helix_theme();
 
-        // Helper to convert HSLA to Helix Color
-        let hsla_to_helix = |c: gpui::Hsla| -> Option<helix_view::graphics::Color> {
-            // Basic HSLA->RGB conversion (matches usage in ThemeManager bridge)
-            let c_chroma = (1.0 - (2.0 * c.l - 1.0).abs()) * c.s;
-            let x = c_chroma * (1.0 - (((c.h * 360.0) / 60.0) % 2.0 - 1.0).abs());
-            let (r1, g1, b1) = if c.h * 360.0 < 60.0 {
-                (c_chroma, x, 0.0)
-            } else if c.h * 360.0 < 120.0 {
-                (x, c_chroma, 0.0)
-            } else if c.h * 360.0 < 180.0 {
-                (0.0, c_chroma, x)
-            } else if c.h * 360.0 < 240.0 {
-                (0.0, x, c_chroma)
-            } else if c.h * 360.0 < 300.0 {
-                (x, 0.0, c_chroma)
-            } else {
-                (c_chroma, 0.0, x)
-            };
-            let m = c.l - c_chroma / 2.0;
-            let (r, g, b) = (r1 + m, g1 + m, b1 + m);
-            Some(helix_view::graphics::Color::Rgb(
-                (r * 255.0) as u8,
-                (g * 255.0) as u8,
-                (b * 255.0) as u8,
-            ))
-        };
-
-        // Get syntax highlighter for the entire document view
         let text = params.doc.text().slice(..);
         let anchor = params.doc.view_offset(params.view.id).anchor;
         let lines_from_anchor = text.len_lines() - text.char_to_line(anchor);
@@ -1410,26 +1402,47 @@ impl DocumentElement {
 
         let tokens = params.cx.theme().tokens;
         let text_style = helix_view::graphics::Style {
-            fg: hsla_to_helix(tokens.editor.text_primary),
-            bg: hsla_to_helix(tokens.editor.background),
+            fg: Self::hsla_to_helix(tokens.editor.text_primary),
+            bg: Self::hsla_to_helix(tokens.editor.background),
             ..Default::default()
         };
 
-        // Create syntax and overlay highlighters
         let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
-        // Build overlay list: selections + optional diagnostics
         let mut overlays = Vec::new();
         overlays.push(selection_overlay);
-        if let Some(diag) = params.diag_overlays {
-            overlays.push(diag);
+        if let Some(highlights) = params.diag_overlay_spans {
+            overlays.push(helix_core::syntax::OverlayHighlights::Heterogenous { highlights });
         }
         let mut overlay_hl = OverlayHighlighter::new(overlays, theme);
 
-        // Get the line text slice to convert character positions to byte lengths
-        let line_slice = text.slice(params.line_start..params.line_end);
+        Self::highlight_line_with_state(
+            text,
+            &mut syntax_hl,
+            &mut overlay_hl,
+            params.line_start,
+            params.line_end,
+            params.fg_color,
+            params.font,
+            tokens.editor.background,
+        )
+    }
 
-        let mut position = params.line_start;
-        while position < params.line_end {
+    fn highlight_line_with_state(
+        text: RopeSlice<'_>,
+        syntax_hl: &mut SyntaxHighlighter<'_, '_, '_>,
+        overlay_hl: &mut OverlayHighlighter<'_>,
+        line_start: usize,
+        line_end: usize,
+        fg_color: Hsla,
+        font: Font,
+        default_bg: Hsla,
+    ) -> Vec<TextRun> {
+        let mut runs = vec![];
+
+        let line_slice = text.slice(line_start..line_end);
+
+        let mut position = line_start;
+        while position < line_end {
             // Advance highlighters to current position
             while position >= syntax_hl.pos {
                 syntax_hl.advance();
@@ -1439,10 +1452,7 @@ impl DocumentElement {
             }
 
             // Calculate next position where style might change
-            let next_pos = std::cmp::min(
-                std::cmp::min(syntax_hl.pos, overlay_hl.pos),
-                params.line_end,
-            );
+            let next_pos = std::cmp::min(std::cmp::min(syntax_hl.pos, overlay_hl.pos), line_end);
 
             let char_len = next_pos - position;
             if char_len == 0 {
@@ -1451,29 +1461,20 @@ impl DocumentElement {
 
             // Convert character length to byte length for this segment
             // Get the text slice for this run and measure its byte length
-            let run_start_in_line = position - params.line_start;
-            let run_end_in_line = next_pos - params.line_start;
+            let run_start_in_line = position - line_start;
+            let run_end_in_line = next_pos - line_start;
             let run_slice = line_slice.slice(run_start_in_line..run_end_in_line);
             let byte_len = run_slice.len_bytes();
 
             // Combine syntax and overlay styles
             let style = syntax_hl.style.patch(overlay_hl.style);
 
-            let fg = style.fg.and_then(color_to_hsla).unwrap_or(params.fg_color);
+            let fg = style.fg.and_then(color_to_hsla).unwrap_or(fg_color);
             let bg = style.bg.and_then(color_to_hsla);
             let underline = style.underline_color.and_then(color_to_hsla);
-            // Get default background color from theme for reversed modifier
-            let default_bg = tokens.editor.background;
 
-            let run = create_styled_text_run(
-                byte_len,
-                &params.font,
-                &style,
-                fg,
-                bg,
-                default_bg,
-                underline,
-            );
+            let run =
+                create_styled_text_run(byte_len, &font, &style, fg, bg, default_bg, underline);
             runs.push(run);
             position = next_pos;
         }
@@ -2639,10 +2640,6 @@ impl Element for DocumentElement {
                 // Clone text to avoid borrowing issues
                 let doc_text = document.text().clone();
 
-                // Also extract document_id and view_id for use in the loop
-                let doc_id = self.doc_id;
-                let view_id = self.view_id;
-
                 // Extract cursor-related data before dropping core
                 // cursor_char_idx was already extracted earlier for phantom line check
                 let _tab_width = document.tab_width() as u16;
@@ -2693,6 +2690,8 @@ impl Element for DocumentElement {
                 // core goes out of scope here
 
                 let text = doc_text.slice(..);
+                let diag_overlay_spans =
+                    Self::diagnostic_overlay_spans(document, cx.helix_theme());
 
                 // Update the shared line layouts for mouse interaction
                 if soft_wrap_enabled {
@@ -2872,38 +2871,35 @@ impl Element for DocumentElement {
                                 line_end = last_grapheme.char_idx;
                             }
 
-                            // Re-read core to get highlights and immediately drop the borrow
                             {
                                 let core = self.core.read(cx);
                                 let editor = &core.editor;
-                                if let Some(document) = editor.document(self.doc_id) {
-                                    let view = match editor.tree.try_get(self.view_id) {
-                                        Some(v) => v,
-                                        None => return,
-                                    };
-                                    // Precompute diagnostic overlays once
-                                    let diag_overlays = Self::diagnostics_overlays(document, cx.helix_theme());
-                                    Self::highlight_line_with_params(HighlightLineParams {
-                                        doc: document,
-                                        view,
-                                        cx,
-                                        editor_mode,
-                                        cursor_shape: &cursor_shape,
-                                        syn_loader: &syn_loader,
-                                        is_view_focused: self.is_focused,
-                                        line_start,
-                                        line_end,
-                                        fg_color,
-                                        font: self.style.font(),
-                                        diag_overlays,
-                                    })
-                                } else {
-                                    Vec::new()
-                                }
+                                let document = match editor.document(self.doc_id) {
+                                    Some(doc) => doc,
+                                    None => return,
+                                };
+                                let view = match editor.tree.try_get(self.view_id) {
+                                    Some(v) => v,
+                                    None => return,
+                                };
+                                Self::highlight_line_with_params(HighlightLineParams {
+                                    doc: document,
+                                    view,
+                                    cx,
+                                    editor_mode,
+                                    cursor_shape: &cursor_shape,
+                                    syn_loader: &syn_loader,
+                                    is_view_focused: self.is_focused,
+                                    line_start,
+                                    line_end,
+                                    fg_color,
+                                    font: self.style.font(),
+                                    diag_overlay_spans: diag_overlay_spans.clone(),
+                                })
                             }
-                        } else {
-                            Vec::new()
-                        };
+	                        } else {
+	                            Vec::new()
+	                        };
 
                         // Adjust text runs to account for leading spaces and wrap indicator
                         if !line_runs.is_empty() {
@@ -3731,37 +3727,35 @@ impl Element for DocumentElement {
                             SharedString::from(s)
                         };
 
-                        // Get highlights for this specific line using the extracted values
-                        // Re-read core for this iteration
-                        let core = self.core.read(cx);
-                        let editor = &core.editor;
-                        let document = match editor.document(doc_id) {
-                            Some(doc) => doc,
-                            None => return,
-                        };
-                        let view = match editor.tree.try_get(view_id) {
-                            Some(v) => v,
-                            None => return,
+                        let line_runs = {
+                            let core = self.core.read(cx);
+                            let editor = &core.editor;
+                            let document = match editor.document(self.doc_id) {
+                                Some(doc) => doc,
+                                None => return,
+                            };
+                            let view = match editor.tree.try_get(self.view_id) {
+                                Some(v) => v,
+                                None => return,
+                            };
+                            Self::highlight_line_with_params(HighlightLineParams {
+                                doc: document,
+                                view,
+                                cx,
+                                editor_mode,
+                                cursor_shape: &cursor_shape,
+                                syn_loader: &syn_loader,
+                                is_view_focused: self.is_focused,
+                                line_start,
+                                line_end,
+                                fg_color,
+                                font: self.style.font(),
+                                diag_overlay_spans: diag_overlay_spans.clone(),
+                            })
                         };
 
-                        let diag_overlays = Self::diagnostics_overlays(document, cx.helix_theme());
-                        let line_runs = Self::highlight_line_with_params(HighlightLineParams {
-                            doc: document,
-                            view,
-                            cx,
-                            editor_mode,
-                            cursor_shape: &cursor_shape,
-                            syn_loader: &syn_loader,
-                            is_view_focused: self.is_focused,
-                            line_start,
-                            line_end,
-                            fg_color,
-                            font: self.style.font(),
-                            diag_overlays,
-                        });
-
-                        (line_str, line_runs)
-                    };
+	                        (line_str, line_runs)
+	                    };
 
                     // Drop core before painting
                     // core goes out of scope here
