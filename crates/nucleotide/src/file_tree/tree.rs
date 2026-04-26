@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -112,16 +113,11 @@ impl FileTree {
             return cache.clone();
         }
 
-        // Get all visible entries from the tree
-        let entries: Vec<_> = self
-            .entries
-            .iter()
-            .filter(|entry| entry.is_visible)
-            .cloned()
-            .collect();
+        let entries_by_parent = self.visible_entries_by_parent();
 
         // Create the root entry
-        let mut result = Vec::with_capacity(entries.len() + 1);
+        let visible_entry_count = entries_by_parent.values().map(Vec::len).sum::<usize>();
+        let mut result = Vec::with_capacity(visible_entry_count + 1);
 
         // Add the root directory as the first entry
         let root_id = FileTreeEntryId(0); // Special ID for root
@@ -130,10 +126,7 @@ impl FileTree {
         root_entry.is_expanded = self.is_expanded(&self.root_path);
 
         // Count direct children
-        let children_count = entries
-            .iter()
-            .filter(|e| e.path.parent() == Some(&self.root_path))
-            .count();
+        let children_count = entries_by_parent.get(&self.root_path).map_or(0, Vec::len);
 
         if let FileKind::Directory {
             ref mut child_count,
@@ -148,17 +141,7 @@ impl FileTree {
 
         // Build sorted tree starting from root only if root is expanded
         if self.is_expanded(&self.root_path) {
-            // Adjust depth for all entries
-            let adjusted_entries: Vec<FileTreeEntry> = entries
-                .iter()
-                .map(|e| {
-                    let mut entry = e.clone();
-                    entry.depth += 1;
-                    entry
-                })
-                .collect();
-
-            self.build_sorted_tree(&adjusted_entries, &self.root_path, &mut result);
+            self.build_sorted_tree(&entries_by_parent, &self.root_path, &mut result);
         }
 
         let result = Arc::<[FileTreeEntry]>::from(result);
@@ -166,43 +149,53 @@ impl FileTree {
         result
     }
 
+    fn visible_entries_by_parent(&self) -> HashMap<PathBuf, Vec<FileTreeEntry>> {
+        let mut entries_by_parent: HashMap<PathBuf, Vec<FileTreeEntry>> = HashMap::new();
+
+        for entry in self.entries.iter().filter(|entry| entry.is_visible) {
+            if let Some(parent) = entry.path.parent() {
+                let mut entry = entry.clone();
+                // The synthetic root row occupies depth 0, so visible children are offset by one.
+                entry.depth += 1;
+                entries_by_parent
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .push(entry);
+            }
+        }
+
+        for entries in entries_by_parent.values_mut() {
+            entries.sort_by(Self::compare_tree_entries);
+        }
+
+        entries_by_parent
+    }
+
+    fn compare_tree_entries(a: &FileTreeEntry, b: &FileTreeEntry) -> Ordering {
+        match (a.is_directory(), b.is_directory()) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            _ => a.path.file_name().cmp(&b.path.file_name()),
+        }
+    }
+
     /// Build sorted tree with directories first at each level
     fn build_sorted_tree(
         &self,
-        entries: &[FileTreeEntry],
+        entries_by_parent: &HashMap<PathBuf, Vec<FileTreeEntry>>,
         parent_path: &Path,
         result: &mut Vec<FileTreeEntry>,
     ) {
-        // Find all immediate children of parent_path
-        let mut dirs = Vec::new();
-        let mut files = Vec::new();
+        let Some(children) = entries_by_parent.get(parent_path) else {
+            return;
+        };
 
-        for entry in entries {
-            if let Some(entry_parent) = entry.path.parent()
-                && entry_parent == parent_path
-            {
-                if entry.is_directory() {
-                    dirs.push(entry.clone());
-                } else {
-                    files.push(entry.clone());
-                }
+        for entry in children {
+            result.push(entry.clone());
+            if entry.is_directory() && self.is_expanded(&entry.path) {
+                self.build_sorted_tree(entries_by_parent, &entry.path, result);
             }
         }
-
-        // Sort directories and files by name
-        dirs.sort_by(|a, b| a.path.file_name().cmp(&b.path.file_name()));
-        files.sort_by(|a, b| a.path.file_name().cmp(&b.path.file_name()));
-
-        // Add directories first, recursively processing their children
-        for dir in dirs {
-            result.push(dir.clone());
-            if self.is_expanded(&dir.path) {
-                self.build_sorted_tree(entries, &dir.path, result);
-            }
-        }
-
-        // Then add files
-        result.extend(files);
     }
 
     /// Invalidate the visible entries cache
