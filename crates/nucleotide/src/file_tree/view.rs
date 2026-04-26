@@ -677,7 +677,7 @@ impl FileTreeView {
         // Get current visible entries to see what files actually exist
         let entries = self.tree.visible_entries();
         debug!("Current visible entries:");
-        for entry in &entries {
+        for entry in entries.iter() {
             debug!(
                 path = ?entry.path,
                 entry_type = if entry.is_directory() { "dir" } else { "file" },
@@ -686,7 +686,7 @@ impl FileTreeView {
         }
 
         // Add test statuses for files that actually exist in the tree
-        for entry in &entries {
+        for entry in entries.iter() {
             if !entry.is_directory() {
                 let filename = entry.path.file_name().unwrap_or_default().to_string_lossy();
                 match filename.as_ref() {

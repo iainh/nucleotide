@@ -6,6 +6,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use zed_sum_tree::SumTree;
 
 use crate::file_tree::entry::FileTreeEntryId;
@@ -28,7 +29,7 @@ pub struct FileTree {
     /// Whether the tree has been initially loaded
     is_loaded: bool,
     /// Cache of visible entries to avoid recomputing
-    visible_entries_cache: Option<Vec<FileTreeEntry>>,
+    visible_entries_cache: Option<Arc<[FileTreeEntry]>>,
     /// Set of directories currently being loaded
     loading_dirs: HashSet<PathBuf>,
     /// Gitignore matcher for filtering files
@@ -106,7 +107,7 @@ impl FileTree {
     }
 
     /// Get all visible entries
-    pub fn visible_entries(&mut self) -> Vec<FileTreeEntry> {
+    pub fn visible_entries(&mut self) -> Arc<[FileTreeEntry]> {
         if let Some(ref cache) = self.visible_entries_cache {
             return cache.clone();
         }
@@ -160,6 +161,7 @@ impl FileTree {
             self.build_sorted_tree(&adjusted_entries, &self.root_path, &mut result);
         }
 
+        let result = Arc::<[FileTreeEntry]>::from(result);
         self.visible_entries_cache = Some(result.clone());
         result
     }
@@ -473,7 +475,8 @@ impl FileTree {
         // Find the parent in visible entries
         let visible_entries = self.visible_entries();
         visible_entries
-            .into_iter()
+            .iter()
+            .cloned()
             .find(|entry| entry.path == target_path)
     }
 
@@ -490,13 +493,16 @@ impl FileTree {
 
         // Find the first child in visible entries
         let visible_entries = self.visible_entries();
-        visible_entries.into_iter().find(|entry| {
-            if let Some(parent) = entry.path.parent() {
-                parent == dir_path
-            } else {
-                false
-            }
-        })
+        visible_entries
+            .iter()
+            .find(|entry| {
+                if let Some(parent) = entry.path.parent() {
+                    parent == dir_path
+                } else {
+                    false
+                }
+            })
+            .cloned()
     }
 
     /// Generate next entry ID
