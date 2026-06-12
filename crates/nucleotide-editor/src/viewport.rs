@@ -2,6 +2,9 @@
 // ABOUTME: Owns GUI scroll state before it is synced into Helix view offsets
 
 use gpui::{Bounds, Pixels, Point, Size, point, px};
+use helix_core::char_idx_at_visual_offset;
+use helix_view::{DocumentId, Editor, ViewId};
+use nucleotide_logging::debug;
 
 use crate::ScrollManager;
 
@@ -99,6 +102,64 @@ impl EditorViewport {
         let y = self.scroll.anchor_to_pixels(top_visual_row);
         self.scroll
             .set_scroll_position_from_helix_preserving_intra_line_offset(point(px(0.0), y));
+    }
+
+    pub fn sync_to_helix_view(
+        &self,
+        editor: &mut Editor,
+        doc_id: DocumentId,
+        view_id: ViewId,
+    ) -> bool {
+        let Some(view) = editor.tree.try_get(view_id).cloned() else {
+            return false;
+        };
+
+        let Some(doc) = editor.document_mut(doc_id) else {
+            return false;
+        };
+
+        let top_visual_row = self.top_visual_row();
+        let mut view_offset = doc.view_offset(view_id);
+        let (anchor, vertical_offset, soft_wrap) = {
+            let doc_text = doc.text().slice(..);
+            let viewport = view.inner_area(doc);
+            let text_fmt = doc.text_format(viewport.width.max(1), None);
+            let annotations = view.text_annotations(doc, None);
+            let (anchor, vertical_offset) = char_idx_at_visual_offset(
+                doc_text,
+                0,
+                top_visual_row as isize,
+                0,
+                &text_fmt,
+                &annotations,
+            );
+            (anchor, vertical_offset, text_fmt.soft_wrap)
+        };
+
+        if view_offset.anchor == anchor
+            && view_offset.vertical_offset == vertical_offset
+            && (!soft_wrap || view_offset.horizontal_offset == 0)
+        {
+            return false;
+        }
+
+        debug!(
+            view_id = ?view_id,
+            top_visual_row,
+            old_anchor = view_offset.anchor,
+            new_anchor = anchor,
+            old_vertical_offset = view_offset.vertical_offset,
+            new_vertical_offset = vertical_offset,
+            "Syncing GUI scroll position to Helix view"
+        );
+
+        view_offset.anchor = anchor;
+        view_offset.vertical_offset = vertical_offset;
+        if soft_wrap {
+            view_offset.horizontal_offset = 0;
+        }
+        doc.set_view_offset(view_id, view_offset);
+        true
     }
 
     pub fn top_visual_row(&self) -> usize {
