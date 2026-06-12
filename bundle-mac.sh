@@ -88,8 +88,43 @@ fi
 
 # Copy runtime files to Resources (macOS standard location)
 echo -e "${GREEN}Copying runtime files...${NC}"
-# Use rsync to handle symlinks and missing files gracefully
-rsync -a --exclude='grammars/sources' "${HELIX_RUNTIME_SOURCE}/" "${BUNDLE_NAME}/Contents/Resources/runtime/"
+# Use rsync to handle symlinks and missing files gracefully. Grammar sources
+# are copied temporarily so the bundled runtime can build parser libraries.
+rsync -a "${HELIX_RUNTIME_SOURCE}/" "${BUNDLE_NAME}/Contents/Resources/runtime/"
+
+RUNTIME_DEST="${BUNDLE_NAME}/Contents/Resources/runtime"
+
+# Build compiled tree-sitter grammars into the bundled runtime when the source
+# runtime does not already provide them. Helix uses ".so" for grammar dynamic
+# libraries on all Unix platforms, including macOS.
+GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.so" | wc -l)
+if [ "${GRAMMAR_COUNT}" -eq 0 ]; then
+    if [ -d "${RUNTIME_DEST}/grammars/sources" ]; then
+        echo -e "${GREEN}Building compiled grammars for bundled runtime...${NC}"
+        # helix_loader writes grammars to the first runtime directory. Setting
+        # CARGO_MANIFEST_DIR makes that first directory resolve to Resources/runtime.
+        set +e
+        CARGO_MANIFEST_DIR="$(pwd)/${BUNDLE_NAME}/Contents/Resources/nucleotide" \
+            HELIX_RUNTIME="$(pwd)/${RUNTIME_DEST}" \
+            "${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}" --grammar build
+        GRAMMAR_BUILD_STATUS=$?
+        set -e
+        if [ "${GRAMMAR_BUILD_STATUS}" -ne 0 ]; then
+            GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.so" | wc -l)
+            if [ "${GRAMMAR_COUNT}" -gt 0 ]; then
+                echo -e "${YELLOW}Warning: some grammars failed to build; bundling ${GRAMMAR_COUNT} compiled grammar(s)${NC}"
+            else
+                echo -e "${RED}Error: grammar build failed and produced no compiled grammars${NC}"
+                exit "${GRAMMAR_BUILD_STATUS}"
+            fi
+        fi
+    else
+        echo -e "${YELLOW}Warning: no compiled grammars or grammar sources found${NC}"
+    fi
+fi
+
+# Do not ship grammar source checkouts in the final app bundle.
+rm -rf "${RUNTIME_DEST}/grammars/sources"
 
 # Copy custom Nucleotide themes
 if [ -d "crates/nucleotide/assets/themes" ]; then
@@ -101,12 +136,16 @@ if [ -d "crates/nucleotide/assets/themes" ]; then
     fi
 fi
 
-# Verify runtime files were copied
-RUNTIME_DEST="${BUNDLE_NAME}/Contents/Resources/runtime"
 if [ -d "${RUNTIME_DEST}/grammars" ] && [ -d "${RUNTIME_DEST}/themes" ] && [ -d "${RUNTIME_DEST}/queries" ]; then
-    GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -name "*.so" | wc -l)
+    GRAMMAR_COUNT=$(find "${RUNTIME_DEST}/grammars" -maxdepth 1 -name "*.so" | wc -l)
     THEME_COUNT=$(find "${RUNTIME_DEST}/themes" -name "*.toml" | wc -l)
     QUERY_COUNT=$(find "${RUNTIME_DEST}/queries" -mindepth 1 -type d | wc -l)
+    if [ "${GRAMMAR_COUNT}" -eq 0 ]; then
+        echo -e "${RED}Error: no compiled grammar files were bundled${NC}"
+        echo "Run the bundle again after fetching grammar sources, or inspect the"
+        echo "grammar build output above for the failing parser."
+        exit 1
+    fi
     echo -e "${GREEN}Runtime files copied successfully:${NC}"
     echo "  - ${GRAMMAR_COUNT} grammar files"
     echo "  - ${THEME_COUNT} theme files"
