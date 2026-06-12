@@ -7,8 +7,8 @@ use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, Font, GlobalElementId, Hitbox, Hsla, InspectorElementId,
     InteractiveElement, Interactivity, IntoElement, LayoutId, ParentElement, Pixels, Point, Render,
-    ScrollWheelEvent, ShapedLine, SharedString, Size, StatefulInteractiveElement, Style, Styled,
-    TextStyle, Window, WindowTextSystem, black, div, fill, px, relative, white,
+    ShapedLine, SharedString, Size, StatefulInteractiveElement, Style, Styled, TextStyle, Window,
+    WindowTextSystem, black, div, fill, px, relative, white,
 };
 use gpui::{TextRun, point, size};
 use helix_core::{
@@ -31,7 +31,7 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
-use nucleotide_editor::{EditorViewport, LineLayoutCache};
+use nucleotide_editor::{EditorSurface, EditorViewport, LineLayoutCache};
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
     apply_color_modifiers, apply_font_modifiers, create_styled_text_run,
@@ -414,6 +414,30 @@ impl Render for DocumentView {
             x_overshoot: Rc::new(Cell::new(px(0.0))),
         };
 
+        let editor_surface =
+            EditorSurface::new(self.viewport.clone(), self.line_height, document_element)
+                .on_scroll({
+                    let core = self.core.clone();
+                    let view_id = self.view_id;
+
+                    move |viewport, scroll_update, cx| {
+                        debug!(
+                            crossed_lines = scroll_update.crossed_visual_rows,
+                            top_visual_row = scroll_update.top_visual_row,
+                            offset_within_row = %scroll_update.offset_within_row,
+                            "Scroll wheel event handled by editor surface"
+                        );
+
+                        if scroll_update.crossed_visual_rows != 0 {
+                            core.update(cx, |core, cx| {
+                                if viewport.sync_to_helix_view(&mut core.editor, doc_id, view_id) {
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    }
+                });
+
         // Create the scrollbar
         let scrollbar_opt = Scrollbar::vertical(self.scrollbar_state.clone());
 
@@ -430,7 +454,7 @@ impl Render for DocumentView {
                     .w_full()
                     .h_full()
                     .flex_1()
-                    .child(document_element),
+                    .child(editor_surface),
             )
             .when_some(scrollbar_opt, gpui::ParentElement::child);
 
@@ -1954,49 +1978,6 @@ impl Element for DocumentElement {
         let text_area_height = bounds.size.height - px(1.0);
         let effective_viewport_size = size(bounds.size.width, text_area_height);
         self.viewport.set_viewport_size(effective_viewport_size);
-
-        window.on_mouse_event({
-            let scroll_bounds = bounds;
-            let core = self.core.clone();
-            let doc_id = self.doc_id;
-            let view_id = self.view_id;
-            let view_entity_id = window.current_view();
-            let viewport = self.viewport.clone();
-
-            move |event: &ScrollWheelEvent, phase, _window, cx| {
-                if !(scroll_bounds.contains(&event.position) && phase.bubble()) {
-                    return;
-                }
-
-                let raw_delta = event.delta.pixel_delta(line_height);
-                let delta = point(px(0.0), raw_delta.y);
-                let scroll_update = viewport.scroll_by_delta(delta);
-
-                if !scroll_update.changed {
-                    return;
-                }
-
-                debug!(
-                    raw_delta = ?event.delta,
-                    pixel_delta = ?delta,
-                    crossed_lines = scroll_update.crossed_visual_rows,
-                    top_visual_row = scroll_update.top_visual_row,
-                    offset_within_row = %scroll_update.offset_within_row,
-                    "Scroll wheel event handled by editor viewport"
-                );
-
-                if scroll_update.crossed_visual_rows != 0 {
-                    core.update(cx, |core, cx| {
-                        if viewport.sync_to_helix_view(&mut core.editor, doc_id, view_id) {
-                            cx.notify();
-                        }
-                    });
-                }
-
-                cx.notify(view_entity_id);
-                cx.stop_propagation();
-            }
-        });
 
         // TODO: Update shared cell_width for mouse handlers (requires structural change to pass between prepaint/paint)
 
