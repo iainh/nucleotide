@@ -94,8 +94,7 @@ impl ScrollManager {
     /// Set the scroll offset in pixels from scrollbar interaction (negative when scrolled down/right)
     /// This marks the position as needing sync back to Helix
     pub fn set_scroll_offset(&self, offset: Point<Pixels>) {
-        let position = point(-offset.x, -offset.y);
-        self.set_scroll_position_internal(position, true);
+        self.set_scroll_offset_internal(offset, true);
     }
 
     /// Set the scroll position from Helix sync (doesn't mark as scrollbar-changed)
@@ -105,8 +104,58 @@ impl ScrollManager {
 
     /// Set the scroll offset from Helix sync (doesn't mark as scrollbar-changed)
     pub fn set_scroll_offset_from_helix(&self, offset: Point<Pixels>) {
+        self.set_scroll_offset_internal(offset, false);
+    }
+
+    fn set_scroll_offset_internal(&self, offset: Point<Pixels>, from_scrollbar: bool) {
         let position = point(-offset.x, -offset.y);
-        self.set_scroll_position_internal(position, false);
+        self.set_scroll_position_internal(position, from_scrollbar);
+    }
+
+    /// Apply a GPUI-style pixel scroll delta to the current offset.
+    ///
+    /// Returns whether the offset changed and how many whole document lines the
+    /// scroll position crossed. Wheel scrolling uses this to keep fractional
+    /// pixel movement local while letting the GUI viewport decide when to sync
+    /// the visible visual row back to Helix.
+    pub fn scroll_by_delta(&self, delta: Point<Pixels>) -> (bool, isize) {
+        let old_position = self.scroll_position.get();
+        let old_line = self.pixels_to_anchor(old_position.y);
+        let next_offset = self.scroll_offset() + delta;
+
+        self.set_scroll_offset_internal(next_offset, false);
+
+        let new_position = self.scroll_position.get();
+        let new_line = self.pixels_to_anchor(new_position.y);
+        (
+            old_position != new_position,
+            new_line as isize - old_line as isize,
+        )
+    }
+
+    /// Set the scroll position from Helix while retaining a local sub-line
+    /// pixel offset if both positions point at the same top line.
+    pub fn set_scroll_position_from_helix_preserving_intra_line_offset(
+        &self,
+        position: Point<Pixels>,
+    ) {
+        let current = self.scroll_position.get();
+        let current_line = self.pixels_to_anchor(current.y);
+        let incoming_line = self.pixels_to_anchor(position.y);
+        let y = if current_line == incoming_line {
+            current.y
+        } else {
+            position.y
+        };
+
+        self.set_scroll_position_internal(point(position.x, y), false);
+    }
+
+    /// Pixel distance scrolled within the current top line.
+    pub fn vertical_offset_within_line(&self) -> Pixels {
+        let position_y = self.scroll_position.get().y;
+        let top_line = self.pixels_to_anchor(position_y);
+        (position_y - self.anchor_to_pixels(top_line)).max(px(0.0))
     }
 
     /// Internal method to set scroll position with control over scrollbar_changed flag
@@ -274,6 +323,46 @@ mod scroll_manager_tests {
         manager.set_scroll_offset(offset);
         let expected_position = point(px(0.0), px(150.0));
         assert_eq!(manager.scroll_position(), expected_position);
+    }
+
+    #[test]
+    fn test_scroll_by_delta_accumulates_subline_wheel_motion() {
+        let mut manager = ScrollManager::new(px(20.0));
+        manager.set_total_lines(100);
+        manager.set_viewport_size(size(px(800.0), px(400.0)));
+
+        let (changed, crossed_lines) = manager.scroll_by_delta(point(px(0.0), px(-5.0)));
+        assert!(changed);
+        assert_eq!(crossed_lines, 0);
+        assert_eq!(manager.scroll_position(), point(px(0.0), px(5.0)));
+        assert_eq!(manager.vertical_offset_within_line(), px(5.0));
+        assert!(!manager.scrollbar_changed.get());
+
+        let (_, crossed_lines) = manager.scroll_by_delta(point(px(0.0), px(-15.0)));
+        assert_eq!(crossed_lines, 1);
+        assert_eq!(manager.scroll_position(), point(px(0.0), px(20.0)));
+        assert_eq!(manager.vertical_offset_within_line(), px(0.0));
+    }
+
+    #[test]
+    fn test_helix_sync_preserves_intra_line_offset_for_same_top_line() {
+        let mut manager = ScrollManager::new(px(20.0));
+        manager.set_total_lines(100);
+        manager.set_viewport_size(size(px(800.0), px(400.0)));
+
+        manager.scroll_by_delta(point(px(0.0), px(-25.0)));
+        assert_eq!(manager.scroll_position(), point(px(0.0), px(25.0)));
+        assert_eq!(manager.vertical_offset_within_line(), px(5.0));
+
+        manager
+            .set_scroll_position_from_helix_preserving_intra_line_offset(point(px(0.0), px(20.0)));
+        assert_eq!(manager.scroll_position(), point(px(0.0), px(25.0)));
+        assert_eq!(manager.vertical_offset_within_line(), px(5.0));
+
+        manager
+            .set_scroll_position_from_helix_preserving_intra_line_offset(point(px(0.0), px(40.0)));
+        assert_eq!(manager.scroll_position(), point(px(0.0), px(40.0)));
+        assert_eq!(manager.vertical_offset_within_line(), px(0.0));
     }
 
     #[test]
