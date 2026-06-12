@@ -112,6 +112,26 @@ fn install_panic_handler() {
     }));
 }
 
+#[cfg(target_os = "macos")]
+fn configure_bundle_runtime_environment() {
+    let Some(rt) = nucleotide::utils::detect_bundle_runtime() else {
+        return;
+    };
+
+    if let Some(manifest_dir) = nucleotide::utils::manifest_dir_for_runtime(&rt) {
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", manifest_dir) };
+    }
+
+    let needs_override = match std::env::var("HELIX_RUNTIME") {
+        Ok(p) => p.contains("$(") || !std::path::Path::new(&p).join("themes").is_dir(),
+        Err(_) => true,
+    };
+
+    if needs_override {
+        unsafe { std::env::set_var("HELIX_RUNTIME", &rt) };
+    }
+}
+
 // Use constructor to set environment variable before any static initialization
 #[cfg(target_os = "macos")]
 #[ctor::ctor]
@@ -120,14 +140,7 @@ fn _early_runtime_init() {
     // This ensures rust-analyzer and other tools can be found when launched from dock
     setup_comprehensive_environment();
 
-    let needs_override = match std::env::var("HELIX_RUNTIME") {
-        Ok(p) => p.contains("$(") || !std::path::Path::new(&p).join("themes").is_dir(),
-        Err(_) => true,
-    };
-
-    if needs_override && let Some(rt) = nucleotide::utils::detect_bundle_runtime() {
-        unsafe { std::env::set_var("HELIX_RUNTIME", &rt) };
-    }
+    configure_bundle_runtime_environment();
 
     // Set RUST_LOG to info level for bundled app to show our debugging messages
     // Only set if not already configured by user
@@ -274,11 +287,7 @@ fn determine_workspace_root(args: &Args) -> Result<Option<PathBuf>> {
 fn main() -> Result<()> {
     // Set HELIX_RUNTIME for macOS bundles before any Helix code runs (backup)
     #[cfg(target_os = "macos")]
-    if std::env::var("HELIX_RUNTIME").is_err()
-        && let Some(rt) = nucleotide::utils::detect_bundle_runtime()
-    {
-        unsafe { std::env::set_var("HELIX_RUNTIME", &rt) };
-    }
+    configure_bundle_runtime_environment();
 
     // Install panic handler to prevent data loss
     install_panic_handler();
