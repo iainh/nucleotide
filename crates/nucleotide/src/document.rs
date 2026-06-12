@@ -31,8 +31,7 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
-use nucleotide_editor::LineLayoutCache;
-use nucleotide_editor::ScrollManager;
+use nucleotide_editor::{EditorViewport, LineLayoutCache};
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
     apply_color_modifiers, apply_font_modifiers, create_styled_text_run,
@@ -105,10 +104,10 @@ fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, _f
 }
 */
 
-/// Custom scroll handle for DocumentView that integrates with ScrollManager
+/// Custom scroll handle for DocumentView that integrates with EditorViewport
 #[derive(Clone)]
 pub struct DocumentScrollHandle {
-    scroll_manager: ScrollManager,
+    viewport: EditorViewport,
     on_change: Option<Rc<dyn Fn()>>,
     view_id: ViewId,
 }
@@ -116,7 +115,7 @@ pub struct DocumentScrollHandle {
 impl std::fmt::Debug for DocumentScrollHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DocumentScrollHandle")
-            .field("scroll_manager", &self.scroll_manager)
+            .field("viewport", &self.viewport)
             .field("on_change", &self.on_change.is_some())
             .field("view_id", &self.view_id)
             .finish()
@@ -124,17 +123,17 @@ impl std::fmt::Debug for DocumentScrollHandle {
 }
 
 impl DocumentScrollHandle {
-    pub fn new(scroll_manager: ScrollManager, view_id: ViewId) -> Self {
+    pub fn new(viewport: EditorViewport, view_id: ViewId) -> Self {
         Self {
-            scroll_manager,
+            viewport,
             on_change: None,
             view_id,
         }
     }
 
-    pub fn with_callback(scroll_manager: ScrollManager, on_change: impl Fn() + 'static) -> Self {
+    pub fn with_callback(viewport: EditorViewport, on_change: impl Fn() + 'static) -> Self {
         Self {
-            scroll_manager,
+            viewport,
             on_change: Some(Rc::new(on_change)),
             view_id: ViewId::default(),
         }
@@ -143,11 +142,11 @@ impl DocumentScrollHandle {
 
 impl ScrollableHandle for DocumentScrollHandle {
     fn max_offset(&self) -> Size<Pixels> {
-        self.scroll_manager.max_scroll_offset()
+        self.viewport.max_scroll_offset()
     }
 
     fn set_offset(&self, point: Point<Pixels>) {
-        self.scroll_manager.set_scroll_offset(point);
+        self.viewport.set_scroll_offset_from_scrollbar(point);
 
         // Mark that we need to sync back to Helix
         // This will be done in the next paint cycle when we have access to cx
@@ -159,20 +158,19 @@ impl ScrollableHandle for DocumentScrollHandle {
     }
 
     fn offset(&self) -> Point<Pixels> {
-        self.scroll_manager.scroll_offset()
+        self.viewport.scroll_offset()
     }
 
     fn viewport(&self) -> Bounds<Pixels> {
-        let size = self.scroll_manager.viewport_size.get();
-        Bounds::new(point(px(0.0), px(0.0)), size)
+        self.viewport.viewport_bounds()
     }
 }
 
-fn sync_scroll_manager_to_helix_view(
+fn sync_editor_viewport_to_helix_view(
     editor: &mut Editor,
     doc_id: DocumentId,
     view_id: ViewId,
-    scroll_manager: &ScrollManager,
+    viewport: &EditorViewport,
 ) -> bool {
     let Some(view) = editor.tree.try_get(view_id).cloned() else {
         return false;
@@ -182,7 +180,7 @@ fn sync_scroll_manager_to_helix_view(
         return false;
     };
 
-    let top_visual_row = scroll_manager.pixels_to_anchor(scroll_manager.scroll_position().y);
+    let top_visual_row = viewport.top_visual_row();
     let mut view_offset = doc.view_offset(view_id);
     let (anchor, vertical_offset, soft_wrap) = {
         let doc_text = doc.text().slice(..);
@@ -274,7 +272,7 @@ pub struct DocumentView {
     style: TextStyle,
     focus: FocusHandle,
     is_focused: bool,
-    scroll_manager: ScrollManager,
+    viewport: EditorViewport,
     scrollbar_state: ScrollbarState,
     line_height: Pixels,
     /// Last cursor position in window coordinates (for completion positioning)
@@ -291,12 +289,12 @@ impl DocumentView {
         focus: &FocusHandle,
         is_focused: bool,
     ) -> Self {
-        // Create scroll manager with placeholder doc_id (will be updated in render)
+        // Create viewport with placeholder document metrics (updated during render/paint).
         let line_height = px(20.0); // Default, will be updated
-        let scroll_manager = ScrollManager::new(line_height);
+        let viewport = EditorViewport::new(line_height);
 
-        // Create custom scroll handle that wraps our scroll manager
-        let scroll_handle = DocumentScrollHandle::new(scroll_manager.clone(), view_id);
+        // Create custom scroll handle that wraps our viewport.
+        let scroll_handle = DocumentScrollHandle::new(viewport.clone(), view_id);
         let scrollbar_state = ScrollbarState::new(scroll_handle);
 
         Self {
@@ -305,7 +303,7 @@ impl DocumentView {
             style,
             focus: focus.clone(),
             is_focused,
-            scroll_manager,
+            viewport,
             scrollbar_state,
             line_height,
             last_cursor_position: None,
@@ -434,23 +432,23 @@ impl Render for DocumentView {
             }
         };
 
-        // Update scroll manager with document info
+        // Update viewport with document info
         {
             let core = self.core.read(cx);
             let editor = &core.editor;
             if let Some(document) = editor.document(doc_id) {
                 let total_lines = document.text().len_lines();
-                self.scroll_manager.set_total_lines(total_lines);
-                self.scroll_manager.set_line_height(self.line_height);
+                self.viewport.set_content_visual_rows(total_lines);
+                self.viewport.set_line_height(self.line_height);
 
                 // Set a reasonable default viewport size if not already set
                 // This will be updated with actual size in the paint method
                 // Use a height that shows fewer lines than total to ensure scrollbar appears
                 let viewport_height = self.line_height * 30.0; // Show 30 lines
-                self.scroll_manager
+                self.viewport
                     .set_viewport_size(size(px(800.0), viewport_height));
 
-                // Don't recreate scrollbar state - it's already using our scroll manager
+                // Don't recreate scrollbar state - it's already using our viewport
 
                 debug!(
                     "Document has {} lines, viewport shows ~30 lines",
@@ -460,7 +458,7 @@ impl Render for DocumentView {
         }
 
         // Create the DocumentElement that will handle the actual rendering
-        // Pass the same scroll manager and scrollbar state to ensure state is shared
+        // Pass the same viewport and scrollbar state to ensure state is shared
         let document_element = DocumentElement {
             core: self.core.clone(),
             doc_id,
@@ -469,7 +467,7 @@ impl Render for DocumentView {
             interactivity: Interactivity::new(),
             focus: self.focus.clone(),
             is_focused: self.is_focused,
-            scroll_manager: self.scroll_manager.clone(),
+            viewport: self.viewport.clone(),
             scrollbar_state: self.scrollbar_state.clone(),
             x_overshoot: Rc::new(Cell::new(px(0.0))),
         };
@@ -543,7 +541,7 @@ pub struct DocumentElement {
     interactivity: Interactivity,
     focus: FocusHandle,
     is_focused: bool,
-    scroll_manager: ScrollManager,
+    viewport: EditorViewport,
     scrollbar_state: ScrollbarState,
     /// X-overshoot tracking for dragging selections past end-of-line (like Zed)
     /// Stores how far past the end of a line the selection extends in pixels
@@ -783,7 +781,7 @@ impl DocumentElement {
     /// Uses positive scroll positions matching Zed's conventions
     #[allow(dead_code)]
     fn text_area_to_content(&self, text_area_pos: Point<Pixels>) -> Point<Pixels> {
-        let scroll_position = self.scroll_manager.scroll_position();
+        let scroll_position = self.viewport.scroll_position();
 
         // Zed convention: scroll_position.y is positive when scrolled down
         // To get content coordinates: content_y = text_area_y + scroll_position.y
@@ -969,10 +967,10 @@ impl DocumentElement {
     ) -> Self {
         // Create scroll manager for this element
         let line_height = px(20.0); // Default, will be updated
-        let scroll_manager = ScrollManager::new(line_height);
+        let viewport = EditorViewport::new(line_height);
 
         // Create a default scrollbar state
-        let scroll_handle = DocumentScrollHandle::new(scroll_manager.clone(), view_id);
+        let scroll_handle = DocumentScrollHandle::new(viewport.clone(), view_id);
         let scrollbar_state = ScrollbarState::new(scroll_handle);
 
         Self {
@@ -983,7 +981,7 @@ impl DocumentElement {
             interactivity: Interactivity::new(),
             focus: focus.clone(),
             is_focused,
-            scroll_manager,
+            viewport,
             scrollbar_state,
             x_overshoot: Rc::new(Cell::new(px(0.0))),
         }
@@ -1576,7 +1574,7 @@ impl Element for DocumentElement {
         // CRITICAL: Register mouse event handlers BEFORE calling interactivity.prepaint()
         // This is required for GPUI to generate a hitbox for our element
         let core_for_down = self.core.clone();
-        let scroll_manager_for_down = self.scroll_manager.clone();
+        let viewport_for_down = self.viewport.clone();
         let view_id = self.view_id;
         let doc_id = self.doc_id;
         let line_height = self
@@ -1685,7 +1683,7 @@ impl Element for DocumentElement {
 
                 // STEP 3: Convert text-area coordinates to content coordinates
                 // Branch based on soft-wrap mode for different coordinate transformation logic
-                let scroll_position = scroll_manager_for_down.scroll_position();
+                let scroll_position = viewport_for_down.scroll_position();
                 let content_pos = if soft_wrap_enabled {
                     // Implement wrapped mode coordinate transformation
                     let wrapped_content_pos = {
@@ -1709,7 +1707,7 @@ impl Element for DocumentElement {
                                 let view_offset = document.view_offset(view_id);
 
                                 // Get line height from scroll manager or use default
-                                let line_height = scroll_manager_for_down.line_height.get();
+                                let line_height = viewport_for_down.line_height();
 
                                 // Convert text-area position to visual coordinates
                                 Self::text_area_to_visual_wrapped(
@@ -2008,13 +2006,12 @@ impl Element for DocumentElement {
         let line_height = after_layout.line_height;
 
         // Update scroll manager with current layout info
-        self.scroll_manager.set_line_height(line_height);
+        self.viewport.set_line_height(line_height);
 
         // Set scroll manager viewport to the actual text-area height (exclude top padding)
         let text_area_height = bounds.size.height - px(1.0);
         let effective_viewport_size = size(bounds.size.width, text_area_height);
-        self.scroll_manager
-            .set_viewport_size(effective_viewport_size);
+        self.viewport.set_viewport_size(effective_viewport_size);
 
         window.on_mouse_event({
             let scroll_bounds = bounds;
@@ -2022,7 +2019,7 @@ impl Element for DocumentElement {
             let doc_id = self.doc_id;
             let view_id = self.view_id;
             let view_entity_id = window.current_view();
-            let scroll_manager = self.scroll_manager.clone();
+            let viewport = self.viewport.clone();
 
             move |event: &ScrollWheelEvent, phase, _window, cx| {
                 if !(scroll_bounds.contains(&event.position) && phase.bubble()) {
@@ -2031,26 +2028,28 @@ impl Element for DocumentElement {
 
                 let raw_delta = event.delta.pixel_delta(line_height);
                 let delta = point(px(0.0), raw_delta.y);
-                let (scrolled, crossed_lines) = scroll_manager.scroll_by_delta(delta);
+                let scroll_update = viewport.scroll_by_delta(delta);
 
-                if !scrolled {
+                if !scroll_update.changed {
                     return;
                 }
 
                 debug!(
                     raw_delta = ?event.delta,
                     pixel_delta = ?delta,
-                    crossed_lines,
+                    crossed_lines = scroll_update.crossed_visual_rows,
+                    top_visual_row = scroll_update.top_visual_row,
+                    offset_within_row = %scroll_update.offset_within_row,
                     "Scroll wheel event handled by editor viewport"
                 );
 
-                if crossed_lines != 0 {
+                if scroll_update.crossed_visual_rows != 0 {
                     core.update(cx, |core, cx| {
-                        if sync_scroll_manager_to_helix_view(
+                        if sync_editor_viewport_to_helix_view(
                             &mut core.editor,
                             doc_id,
                             view_id,
-                            &scroll_manager,
+                            &viewport,
                         ) {
                             cx.notify();
                         }
@@ -2073,19 +2072,19 @@ impl Element for DocumentElement {
 
         // Sync scroll position back to Helix only if scrollbar changed it
         // This prevents overriding Helix's auto-scroll behavior
-        if self.scroll_manager.scrollbar_changed.get() {
+        if self.viewport.has_pending_scrollbar_sync() {
             core.update(cx, |core, cx| {
-                if sync_scroll_manager_to_helix_view(
+                if sync_editor_viewport_to_helix_view(
                     &mut core.editor,
                     self.doc_id,
                     view_id,
-                    &self.scroll_manager,
+                    &self.viewport,
                 ) {
                     cx.notify();
                 }
             });
             // Clear the flag after syncing
-            self.scroll_manager.scrollbar_changed.set(false);
+            self.viewport.clear_pending_scrollbar_sync();
         }
 
         // Determine total content height in "visual" lines for correct scrolling
@@ -2134,7 +2133,7 @@ impl Element for DocumentElement {
             }
         };
 
-        self.scroll_manager.set_total_lines(visual_total_lines);
+        self.viewport.set_content_visual_rows(visual_total_lines);
 
         let gutter_width_cells = {
             let editor = &core.read(cx).editor;
@@ -2156,12 +2155,9 @@ impl Element for DocumentElement {
             let anchor_line = text.char_to_line(view_offset.anchor);
             // Mirror Helix viewport: include vertical_offset (visual rows) for wrapped/non-wrapped
             let top_visual = anchor_line.saturating_add(view_offset.vertical_offset);
-            let line_height = self.scroll_manager.line_height.get();
-            let y = line_height * (top_visual as f32);
             // Preserve local sub-line wheel motion when Helix reports the same
             // top line, but snap to Helix when commands/cursor movement change it.
-            self.scroll_manager
-                .set_scroll_position_from_helix_preserving_intra_line_offset(point(px(0.0), y));
+            self.viewport.sync_from_helix_top_visual_row(top_visual);
 
             view.gutter_offset(doc)
         };
@@ -2215,7 +2211,7 @@ impl Element for DocumentElement {
         // let view_id_drag = self.view_id;
         // let line_cache_drag = line_cache.clone();
         // let scrollbar_state_drag = self.scrollbar_state.clone();
-        // let _scroll_manager_drag = self.scroll_manager.clone();
+        // let _viewport_drag = self.viewport.clone();
 
         // TODO: This was the ACTUAL source of mouse selection following mouse movement!
         // This handler was extending selection on every mouse move without any drag state checking.
@@ -2331,8 +2327,8 @@ impl Element for DocumentElement {
                 let total_lines = text.len_lines();
 
                 // Use scroll manager to determine visible lines
-                let (first_row, last_row_from_scroll) = self.scroll_manager.visible_line_range();
-                let scroll_line_offset = self.scroll_manager.vertical_offset_within_line();
+                let (first_row, last_row_from_scroll) = self.viewport.visible_visual_range();
+                let scroll_line_offset = self.viewport.offset_within_row();
 
                 // Get the character under the cursor for block cursor mode
                 let cursor_text = if matches!(cursor_kind, CursorKind::Block) && self.is_focused {
@@ -2598,7 +2594,7 @@ impl Element for DocumentElement {
                     let mut y_offset = -scroll_line_offset;
                     let mut visual_line = 0;
                     let mut current_doc_line = text.char_to_line(view_offset.anchor);
-                    // Account for padding in viewport height calculation - match ScrollManager exactly
+                    // Account for padding in viewport height calculation - match EditorViewport exactly
                     let effective_height = bounds.size.height - px(2.0); // Account for padding
                     let calculated_height = (effective_height / after_layout.line_height) as usize;
                     // Render one extra row when the top row is partially scrolled,
