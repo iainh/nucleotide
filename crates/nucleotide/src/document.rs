@@ -12,7 +12,7 @@ use gpui::{
 };
 use gpui::{TextRun, point, size};
 use helix_core::{
-    Uri, char_idx_at_visual_offset,
+    Uri,
     doc_formatter::{DocumentFormatter, TextFormat},
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     ropey::RopeSlice,
@@ -164,64 +164,6 @@ impl ScrollableHandle for DocumentScrollHandle {
     fn viewport(&self) -> Bounds<Pixels> {
         self.viewport.viewport_bounds()
     }
-}
-
-fn sync_editor_viewport_to_helix_view(
-    editor: &mut Editor,
-    doc_id: DocumentId,
-    view_id: ViewId,
-    viewport: &EditorViewport,
-) -> bool {
-    let Some(view) = editor.tree.try_get(view_id).cloned() else {
-        return false;
-    };
-
-    let Some(doc) = editor.document_mut(doc_id) else {
-        return false;
-    };
-
-    let top_visual_row = viewport.top_visual_row();
-    let mut view_offset = doc.view_offset(view_id);
-    let (anchor, vertical_offset, soft_wrap) = {
-        let doc_text = doc.text().slice(..);
-        let viewport = view.inner_area(doc);
-        let text_fmt = doc.text_format(viewport.width.max(1), None);
-        let annotations = view.text_annotations(doc, None);
-        let (anchor, vertical_offset) = char_idx_at_visual_offset(
-            doc_text,
-            0,
-            top_visual_row as isize,
-            0,
-            &text_fmt,
-            &annotations,
-        );
-        (anchor, vertical_offset, text_fmt.soft_wrap)
-    };
-
-    if view_offset.anchor == anchor
-        && view_offset.vertical_offset == vertical_offset
-        && (!soft_wrap || view_offset.horizontal_offset == 0)
-    {
-        return false;
-    }
-
-    debug!(
-        view_id = ?view_id,
-        top_visual_row,
-        old_anchor = view_offset.anchor,
-        new_anchor = anchor,
-        old_vertical_offset = view_offset.vertical_offset,
-        new_vertical_offset = vertical_offset,
-        "Syncing GUI scroll position to Helix view"
-    );
-
-    view_offset.anchor = anchor;
-    view_offset.vertical_offset = vertical_offset;
-    if soft_wrap {
-        view_offset.horizontal_offset = 0;
-    }
-    doc.set_view_offset(view_id, view_offset);
-    true
 }
 
 /// Parameters for render_with_softwrap
@@ -2045,12 +1987,7 @@ impl Element for DocumentElement {
 
                 if scroll_update.crossed_visual_rows != 0 {
                     core.update(cx, |core, cx| {
-                        if sync_editor_viewport_to_helix_view(
-                            &mut core.editor,
-                            doc_id,
-                            view_id,
-                            &viewport,
-                        ) {
+                        if viewport.sync_to_helix_view(&mut core.editor, doc_id, view_id) {
                             cx.notify();
                         }
                     });
@@ -2074,12 +2011,10 @@ impl Element for DocumentElement {
         // This prevents overriding Helix's auto-scroll behavior
         if self.viewport.has_pending_scrollbar_sync() {
             core.update(cx, |core, cx| {
-                if sync_editor_viewport_to_helix_view(
-                    &mut core.editor,
-                    self.doc_id,
-                    view_id,
-                    &self.viewport,
-                ) {
+                if self
+                    .viewport
+                    .sync_to_helix_view(&mut core.editor, self.doc_id, view_id)
+                {
                     cx.notify();
                 }
             });
