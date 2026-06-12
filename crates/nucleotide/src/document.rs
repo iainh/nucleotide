@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
@@ -7,8 +6,8 @@ use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, Font, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
     Interactivity, IntoElement, LayoutId, ParentElement, Pixels, Point, Render, ShapedLine,
-    SharedString, Size, StatefulInteractiveElement, Style, Styled, TextStyle, Window,
-    WindowTextSystem, black, div, fill, px, relative, white,
+    SharedString, Size, Style, Styled, TextStyle, Window, WindowTextSystem, black, div, fill, px,
+    relative, white,
 };
 use gpui::{TextRun, point, size};
 use helix_core::{
@@ -32,7 +31,8 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_editor::{
-    EditorLayout, EditorSurface, EditorSurfaceGeometry, EditorViewport, LineLayoutCache,
+    EditorLayout, EditorSurface, EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorViewport,
+    LineLayoutCache,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
@@ -208,6 +208,165 @@ struct HighlightLineParams<'a> {
     font: Font,
     /// Optional diagnostic overlays to merge (underline ranges)
     diag_overlay_spans: Option<Vec<(helix_core::syntax::Highlight, std::ops::Range<usize>)>>,
+}
+
+fn handle_editor_mouse_down(
+    core: &Entity<Core>,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    viewport: &EditorViewport,
+    event: EditorSurfacePointerEvent,
+    cx: &mut App,
+) {
+    let cell_width = event.cell_width;
+    let line_height = event.line_height;
+
+    let gutter_offset = {
+        let core = core.read(cx);
+        let editor = &core.editor;
+        if let (Some(document), Some(view)) =
+            (editor.document(doc_id), editor.tree.try_get(view_id))
+        {
+            view.gutter_offset(document)
+        } else {
+            debug!("Could not get document/view for coordinate transformation");
+            return;
+        }
+    };
+
+    let surface_geometry = EditorSurfaceGeometry::new(event.bounds, gutter_offset, cell_width);
+    let text_bounds = surface_geometry.text_bounds();
+    let text_area_pos = surface_geometry.window_to_text_area(event.position);
+
+    let soft_wrap_enabled = {
+        let core = core.read(cx);
+        let editor = &core.editor;
+        if let Some(document) = editor.document(doc_id) {
+            if editor.tree.try_get(view_id).is_some() {
+                let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                let viewport_width = surface_geometry.viewport_columns(10);
+                let text_format = document.text_format(viewport_width, Some(theme));
+                text_format.soft_wrap
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
+    let scroll_position = viewport.scroll_position();
+    let content_pos = if soft_wrap_enabled {
+        let wrapped_content_pos = {
+            let core = core.read(cx);
+            let editor = &core.editor;
+            if let Some(document) = editor.document(doc_id) {
+                if editor.tree.try_get(view_id).is_some() {
+                    let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                    let viewport_width = surface_geometry.viewport_columns(10);
+                    let text_format = document.text_format(viewport_width, Some(theme));
+                    let view_offset = document.view_offset(view_id);
+
+                    DocumentElement::text_area_to_visual_wrapped(
+                        text_area_pos,
+                        &text_format,
+                        view_offset,
+                        document,
+                        cell_width,
+                        viewport.line_height(),
+                    )
+                    .unwrap_or(text_area_pos)
+                } else {
+                    text_area_pos
+                }
+            } else {
+                text_area_pos
+            }
+        };
+
+        surface_geometry.text_area_to_content(wrapped_content_pos, scroll_position)
+    } else {
+        surface_geometry.text_area_to_content(text_area_pos, scroll_position)
+    };
+
+    let clamped_text_area_pos = surface_geometry.clamp_text_area_position(text_area_pos, false);
+    let line_cache = cx.global::<LineLayoutCache>();
+
+    debug!(
+        original_window_pos = ?event.position,
+        text_area_pos = ?text_area_pos,
+        clamped_text_area_pos = ?clamped_text_area_pos,
+        text_bounds = ?text_bounds,
+        line_height = %line_height,
+        "Click hit test using editor surface geometry"
+    );
+
+    let line_layout = line_cache.find_line_at_position(
+        clamped_text_area_pos,
+        text_bounds.size.width,
+        line_height,
+    );
+
+    if let Some(line_layout) = line_layout {
+        let line_width = line_layout.shaped_line.width;
+        let raw_content_x = content_pos.x.max(px(0.0));
+        let (_clamped_x, _x_overshoot) =
+            EditorSurfaceGeometry::x_overshoot(raw_content_x, line_width);
+
+        let relative_x = clamped_text_area_pos.x - line_layout.origin.x;
+        let byte_index = if relative_x < px(0.0) {
+            0
+        } else if relative_x > line_layout.shaped_line.width {
+            line_layout.shaped_line.len()
+        } else {
+            line_layout.shaped_line.index_for_x(relative_x).unwrap_or(0)
+        };
+
+        core.update(cx, |core, cx| {
+            let editor = &mut core.editor;
+            if let Some(document) = editor.document_mut(doc_id) {
+                let text = document.text();
+                let line_start = text.line_to_char(line_layout.line_idx);
+                let line_text = text.line(line_layout.line_idx).to_string();
+                let char_offset = if line_layout.segment_char_offset == 0 {
+                    line_text
+                        .char_indices()
+                        .take_while(|(byte_idx, _)| *byte_idx < byte_index)
+                        .count()
+                } else {
+                    let adjusted_byte_index =
+                        byte_index.saturating_sub(line_layout.text_start_byte_offset);
+                    let segment_text = line_text
+                        .chars()
+                        .skip(line_layout.segment_char_offset)
+                        .collect::<String>();
+                    let char_offset_in_segment = segment_text
+                        .char_indices()
+                        .take_while(|(byte_idx, _)| *byte_idx < adjusted_byte_index)
+                        .count();
+
+                    line_layout.segment_char_offset + char_offset_in_segment
+                };
+
+                let target_pos = (line_start + char_offset).min(text.len_chars());
+                let range = helix_core::Range::new(target_pos, target_pos);
+                let selection = helix_core::Selection::new(helix_core::SmallVec::from([range]), 0);
+                document.set_selection(view_id, selection);
+
+                cx.notify();
+            }
+        });
+    } else {
+        debug!(
+            window_pos = ?event.position,
+            text_area_pos = ?text_area_pos,
+            clamped_text_area_pos = ?clamped_text_area_pos,
+            content_pos = ?content_pos,
+            text_bounds = ?text_bounds,
+            line_height = %line_height,
+            "Click hit test did not find a line"
+        );
+    }
 }
 
 pub struct DocumentView {
@@ -401,6 +560,19 @@ impl Render for DocumentView {
             }
         }
 
+        let font_id = cx.text_system().resolve_font(&self.style.font());
+        let font_size = self.style.font_size.to_pixels(px(16.0));
+        let em_width = cx
+            .text_system()
+            .typographic_bounds(font_id, font_size, 'm')
+            .map(|bounds| bounds.size.width)
+            .unwrap_or(px(8.0));
+        let cell_width = cx
+            .text_system()
+            .advance(font_id, font_size, 'm')
+            .map(|advance| advance.width)
+            .unwrap_or(em_width);
+
         // Create the DocumentElement that will handle the actual rendering
         // Pass the same viewport and scrollbar state to ensure state is shared
         let document_element = DocumentElement {
@@ -413,32 +585,47 @@ impl Render for DocumentView {
             is_focused: self.is_focused,
             viewport: self.viewport.clone(),
             scrollbar_state: self.scrollbar_state.clone(),
-            x_overshoot: Rc::new(Cell::new(px(0.0))),
         };
 
-        let editor_surface =
-            EditorSurface::new(self.viewport.clone(), self.line_height, document_element)
-                .on_scroll({
-                    let core = self.core.clone();
-                    let view_id = self.view_id;
+        let editor_surface = EditorSurface::new(
+            self.viewport.clone(),
+            self.line_height,
+            cell_width,
+            document_element,
+        )
+        .on_scroll({
+            let core = self.core.clone();
+            let view_id = self.view_id;
 
-                    move |viewport, scroll_update, cx| {
-                        debug!(
-                            crossed_lines = scroll_update.crossed_visual_rows,
-                            top_visual_row = scroll_update.top_visual_row,
-                            offset_within_row = %scroll_update.offset_within_row,
-                            "Scroll wheel event handled by editor surface"
-                        );
+            move |viewport, scroll_update, cx| {
+                debug!(
+                    crossed_lines = scroll_update.crossed_visual_rows,
+                    top_visual_row = scroll_update.top_visual_row,
+                    offset_within_row = %scroll_update.offset_within_row,
+                    "Scroll wheel event handled by editor surface"
+                );
 
-                        if scroll_update.crossed_visual_rows != 0 {
-                            core.update(cx, |core, cx| {
-                                if viewport.sync_to_helix_view(&mut core.editor, doc_id, view_id) {
-                                    cx.notify();
-                                }
-                            });
+                if scroll_update.crossed_visual_rows != 0 {
+                    core.update(cx, |core, cx| {
+                        if viewport.sync_to_helix_view(&mut core.editor, doc_id, view_id) {
+                            cx.notify();
                         }
-                    }
-                });
+                    });
+                }
+            }
+        })
+        .on_mouse_down({
+            let core = self.core.clone();
+            let viewport = self.viewport.clone();
+            let view_id = self.view_id;
+
+            move |event: EditorSurfacePointerEvent, cx| {
+                handle_editor_mouse_down(&core, doc_id, view_id, &viewport, event, cx);
+            }
+        })
+        .on_mouse_up(|event: EditorSurfacePointerEvent, _cx| {
+            debug!(position = ?event.position, "Mouse up event - click completed");
+        });
 
         // Create the scrollbar
         let scrollbar_opt = Scrollbar::vertical(self.scrollbar_state.clone());
@@ -511,9 +698,6 @@ pub struct DocumentElement {
     is_focused: bool,
     viewport: EditorViewport,
     scrollbar_state: ScrollbarState,
-    /// X-overshoot tracking for dragging selections past end-of-line (like Zed)
-    /// Stores how far past the end of a line the selection extends in pixels
-    x_overshoot: Rc<Cell<Pixels>>,
 }
 
 impl IntoElement for DocumentElement {
@@ -697,21 +881,6 @@ impl DocumentElement {
         grapheme_idx
     }
 
-    /// Get current x-overshoot value
-    pub fn x_overshoot(&self) -> Pixels {
-        self.x_overshoot.get()
-    }
-
-    /// Set x-overshoot value (used when dragging selections past line end)
-    pub fn set_x_overshoot(&self, overshoot: Pixels) {
-        self.x_overshoot.set(overshoot.max(px(0.0)));
-    }
-
-    /// Reset x-overshoot (used when starting a new selection or clicking)
-    pub fn reset_x_overshoot(&self) {
-        self.x_overshoot.set(px(0.0));
-    }
-
     /// Convert text-area coordinates to visual coordinates for wrapped mode
     /// This handles the complex case where document lines are wrapped across multiple visual lines
     fn text_area_to_visual_wrapped(
@@ -787,38 +956,6 @@ impl DocumentElement {
             x: result_x,
             y: result_y,
         })
-    }
-
-    pub fn new(
-        core: Entity<Core>,
-        doc_id: DocumentId,
-        view_id: ViewId,
-        style: TextStyle,
-        focus: &FocusHandle,
-        is_focused: bool,
-    ) -> Self {
-        // Create scroll manager for this element
-        let line_height = px(20.0); // Default, will be updated
-        let viewport = EditorViewport::new(line_height);
-
-        // Create a default scrollbar state
-        let scroll_handle = DocumentScrollHandle::new(viewport.clone(), view_id);
-        let scrollbar_state = ScrollbarState::new(scroll_handle);
-
-        Self {
-            core,
-            doc_id,
-            view_id,
-            style,
-            interactivity: Interactivity::new(),
-            focus: focus.clone(),
-            is_focused,
-            viewport,
-            scrollbar_state,
-            x_overshoot: Rc::new(Cell::new(px(0.0))),
-        }
-        // Focus tracking removed - now handled by InputCoordinator
-        // .track_focus(focus)
     }
 
     /// Get the TextFormat for soft wrap support
@@ -1311,14 +1448,6 @@ impl DocumentElement {
     }
 }
 
-impl InteractiveElement for DocumentElement {
-    fn interactivity(&mut self) -> &mut Interactivity {
-        &mut self.interactivity
-    }
-}
-
-impl StatefulInteractiveElement for DocumentElement {}
-
 struct RopeWrapper<'a>(RopeSlice<'a>);
 
 impl<'a> From<RopeWrapper<'a>> for SharedString {
@@ -1361,7 +1490,7 @@ impl Element for DocumentElement {
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _before_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
         debug!(bounds = ?bounds, size = ?bounds.size, "Editor bounds for prepaint");
@@ -1374,386 +1503,30 @@ impl Element for DocumentElement {
             );
         }
 
-        // ============================================================================
-        // MOUSE EVENT HANDLING SYSTEM - FIXED COORDINATE SYSTEM
-        // ============================================================================
-        //
-        // COORDINATE SYSTEM OVERVIEW (CORRECTED):
-        // 1. GPUI provides mouse events in WINDOW-LOCAL coordinates (not element-local!)
-        // 2. Line cache stores line origins in element-local coordinates
-        // 3. We must transform: Window -> Text Area -> Content -> Line Lookup
-        // 4. Text positioning uses byte offsets (GPUI) converted to character offsets (Helix)
-        //
-        // TRANSFORMATION CHAIN:
-        // Window Coords -> (- text_bounds.origin) -> Text Area Coords -> (+ scroll_position) -> Content Coords
-        //
-        // EVENT FLOW:
-        // Mouse Down -> Transform coordinates -> Set cursor position + start drag state
-        // Mouse Move -> Transform coordinates -> Extend selection (only if dragging)
-        // Mouse Up   -> End drag state
-        //
-        // CRITICAL: Register mouse event handlers BEFORE calling interactivity.prepaint()
-        // This is required for GPUI to generate a hitbox for our element
-        let core_for_down = self.core.clone();
-        let viewport_for_down = self.viewport.clone();
-        let view_id = self.view_id;
-        let doc_id = self.doc_id;
-        let line_height = self
-            .style
-            .line_height_in_pixels(self.style.font_size.to_pixels(px(16.0)));
+        let font_id = cx.text_system().resolve_font(&self.style.font());
+        let font_size = self.style.font_size.to_pixels(px(16.0));
+        let line_height = self.style.line_height_in_pixels(font_size);
+        let em_width = cx
+            .text_system()
+            .typographic_bounds(font_id, font_size, 'm')
+            .map(|bounds| bounds.size.width)
+            .unwrap_or(px(8.0));
+        let cell_width = cx
+            .text_system()
+            .advance(font_id, font_size, 'm')
+            .map(|advance| advance.width)
+            .unwrap_or(em_width);
+        let columns = ((bounds.size.width / em_width).floor() as usize).max(1);
+        let rows = ((bounds.size.height / line_height).floor() as usize).max(1);
 
-        // Simplified state for click-to-cursor only (no drag selection)
-        // When drag selection is re-implemented, we'll need to restore the drag state tracking
-
-        // Shared state to store actual layout values for mouse handlers
-        // These get updated during prepaint and used by mouse event handlers
-        let surface_bounds_shared = std::rc::Rc::new(std::cell::Cell::new(Bounds::new(
-            point(px(0.0), px(0.0)),
-            size(px(800.0), px(600.0)),
-        )));
-        let surface_bounds_for_down = surface_bounds_shared.clone();
-        let cell_width_shared = std::rc::Rc::new(std::cell::Cell::new(px(16.0))); // Default fallback
-        let cell_width_for_down = cell_width_shared.clone();
-
-        // Clone x_overshoot for use in closures
-        let x_overshoot_for_down = self.x_overshoot.clone();
-
-        // FIXED: Register mouse down handler with proper coordinate transformation
-        self.interactivity
-            .on_mouse_down(gpui::MouseButton::Left, move |event, _window, cx| {
-                // Reset x-overshoot at the start of a new click
-                // This ensures that each new click/selection starts without overshoot
-                // Overshoot will be recalculated based on the new cursor position
-                // self.reset_x_overshoot(); // TODO: Uncomment when ready to test
-                // Get gutter offset and calculate text bounds
-                let (gutter_offset, cell_width, element_bounds) = {
-                    let core = core_for_down.read(cx);
-                    let editor = &core.editor;
-                    if let (Some(document), Some(view)) =
-                        (editor.document(doc_id), editor.tree.try_get(view_id))
-                    {
-                        let gutter_offset = view.gutter_offset(document);
-                        let element_bounds = surface_bounds_for_down.get();
-                        (gutter_offset, cell_width_for_down.get(), element_bounds)
-                    // Use actual cell_width
-                    } else {
-                        debug!("Could not get document/view for coordinate transformation");
-                        return;
-                    }
-                };
-                let surface_geometry =
-                    EditorSurfaceGeometry::new(element_bounds, gutter_offset, cell_width);
-                let text_bounds = surface_geometry.text_bounds();
-
-                let _expected_text_origin_x =
-                    element_bounds.origin.x + cell_width * (gutter_offset as f32);
-
-                // STEP 1: Convert window coordinates to text-area coordinates
-                let text_area_pos = surface_geometry.window_to_text_area(event.position);
-
-                // STEP 2: Detect soft-wrap mode for branched coordinate transformation
-                let soft_wrap_enabled = {
-                    let core = core_for_down.read(cx);
-                    let editor = &core.editor;
-                    if let Some(document) = editor.document(doc_id) {
-                        if let Some(_view) = editor.tree.try_get(view_id) {
-                            let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                            let viewport_width = surface_geometry.viewport_columns(10);
-
-                            let text_format = document.text_format(viewport_width, Some(theme));
-                            text_format.soft_wrap
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                };
-
-                // STEP 3: Convert text-area coordinates to content coordinates
-                // Branch based on soft-wrap mode for different coordinate transformation logic
-                let scroll_position = viewport_for_down.scroll_position();
-                let content_pos = if soft_wrap_enabled {
-                    // Implement wrapped mode coordinate transformation
-                    let wrapped_content_pos = {
-                        // Get core data needed for wrapped coordinate transformation
-                        let core = core_for_down.read(cx);
-                        let editor = &core.editor;
-                        if let Some(document) = editor.document(doc_id) {
-                            if let Some(_view) = editor.tree.try_get(view_id) {
-                                let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                                let viewport_width = surface_geometry.viewport_columns(10);
-
-                                // Get text format and view offset
-                                let text_format = document.text_format(viewport_width, Some(theme));
-                                let view_offset = document.view_offset(view_id);
-
-                                // Get line height from scroll manager or use default
-                                let line_height = viewport_for_down.line_height();
-
-                                // Convert text-area position to visual coordinates
-                                Self::text_area_to_visual_wrapped(
-                                    text_area_pos,
-                                    &text_format,
-                                    view_offset,
-                                    document,
-                                    cell_width,
-                                    line_height,
-                                )
-                                .unwrap_or({
-                                    // Fallback to non-wrapped transformation
-                                    text_area_pos
-                                })
-                            } else {
-                                text_area_pos
-                            }
-                        } else {
-                            text_area_pos
-                        }
-                    };
-
-                    // Add scroll position to get final content coordinates
-                    surface_geometry.text_area_to_content(wrapped_content_pos, scroll_position)
-                } else {
-                    // Zed convention: scroll_position.y is positive when scrolled down
-                    // To get content coordinates: content_y = text_area_y + scroll_position.y
-                    surface_geometry.text_area_to_content(text_area_pos, scroll_position)
-                };
-
-                // STEP 4: Apply bounds validation and clamping
-                // Clamp coordinates to valid ranges to prevent out-of-bounds access
-                // FIXED: Don't clamp Y to viewport height - allow clicks in rendered content area
-                let clamped_text_area_pos =
-                    surface_geometry.clamp_text_area_position(text_area_pos, false);
-
-                // Calculate total content height based on document lines
-                let total_content_height = {
-                    let core = core_for_down.read(cx);
-                    let editor = &core.editor;
-                    if let Some(document) = editor.document(doc_id) {
-                        let total_lines = document.text().len_lines();
-                        line_height * (total_lines as f32)
-                    } else {
-                        px(1000.0) // Fallback
-                    }
-                };
-
-                // For now, clamp content position without x-overshoot tracking
-                // X-overshoot will be calculated later when we have line width information
-                let _clamped_content_pos = Point {
-                    x: content_pos.x.max(px(0.0)), // Will be updated with x-overshoot tracking below
-                    y: content_pos.y.max(px(0.0)).min(total_content_height),
-                };
-
-                // STEP 4: Find line using clamped coordinates
-                let line_cache = cx.global::<nucleotide_editor::LineLayoutCache>();
-
-                // NOTE: Line cache still stores in element-local coordinates, so we use clamped_text_area_pos
-                // This ensures we don't access out-of-bounds positions in the line cache
-
-                // DEBUG: Log line cache contents and search
-                debug!(
-                    original_window_pos = ?event.position,
-                    text_area_pos = ?text_area_pos,
-                    clamped_text_area_pos = ?clamped_text_area_pos,
-                    text_bounds = ?text_bounds,
-                    line_height = %line_height,
-                    "🔍 CLICK DEBUG: About to search line cache"
-                );
-                let line_layout = line_cache.find_line_at_position(
-                    clamped_text_area_pos, // Use clamped text-area coordinates
-                    text_bounds.size.width,
-                    line_height,
-                );
-
-                if let Some(line_layout) = line_layout {
-                    // STEP 4.5: Calculate and track x-overshoot for selection dragging
-                    let line_width = line_layout.shaped_line.width;
-                    let raw_content_x = content_pos.x.max(px(0.0));
-                    let (_clamped_x, x_overshoot) =
-                        EditorSurfaceGeometry::x_overshoot(raw_content_x, line_width);
-
-                    // Store x-overshoot for future selection operations
-                    x_overshoot_for_down.set(x_overshoot.max(px(0.0)));
-
-                    // STEP 5: Calculate character position within the line using clamped coordinates
-                    // line_layout.origin is in element-local coordinates (text-area relative)
-                    let relative_x = clamped_text_area_pos.x - line_layout.origin.x;
-
-                    // Convert pixel position to byte offset with proper bounds checking
-                    let byte_index = if relative_x < px(0.0) {
-                        0 // Click before line start
-                    } else if relative_x > line_layout.shaped_line.width {
-                        line_layout.shaped_line.len() // Click beyond line end
-                    } else {
-                        line_layout.shaped_line.index_for_x(relative_x).unwrap_or(0)
-                    };
-
-                    // Update Helix editor selection
-                    core_for_down.update(cx, |core, cx| {
-                        let editor = &mut core.editor;
-                        if let Some(document) = editor.document_mut(doc_id) {
-                            let text = document.text();
-                            let line_start = text.line_to_char(line_layout.line_idx);
-
-                            // FIXED: Handle wrapped line segments correctly, accounting for wrap indicators
-                            let line_text = text.line(line_layout.line_idx).to_string();
-                            let char_offset = if line_layout.segment_char_offset == 0 {
-                                // Non-wrapped line: byte_index is relative to full line
-                                line_text
-                                    .char_indices()
-                                    .take_while(|(byte_idx, _)| *byte_idx < byte_index)
-                                    .count()
-                            } else {
-                                // Wrapped line: adjust byte_index to account for wrap indicators
-                                // byte_index is offset within the complete shaped line text (including indicators)
-                                // text_start_byte_offset tells us where the real text begins
-                                let adjusted_byte_index =
-                                    byte_index.saturating_sub(line_layout.text_start_byte_offset);
-
-                                // Get the segment text (real text only, starting at segment_char_offset)
-                                let segment_text = line_text
-                                    .chars()
-                                    .skip(line_layout.segment_char_offset)
-                                    .collect::<String>();
-
-                                // Convert adjusted byte offset to character offset within the segment
-                                let char_offset_in_segment = segment_text
-                                    .char_indices()
-                                    .take_while(|(byte_idx, _)| *byte_idx < adjusted_byte_index)
-                                    .count();
-
-                                line_layout.segment_char_offset + char_offset_in_segment
-                            };
-
-                            let target_pos = (line_start + char_offset).min(text.len_chars());
-
-                            // Create cursor selection
-                            let range = helix_core::Range::new(target_pos, target_pos);
-                            let selection =
-                                helix_core::Selection::new(helix_core::SmallVec::from([range]), 0);
-                            document.set_selection(view_id, selection);
-
-                            cx.notify();
-                        }
-                    });
-                } else {
-                    debug!(
-                        window_pos = ?event.position,
-                        text_area_pos = ?text_area_pos,
-                        clamped_text_area_pos = ?clamped_text_area_pos,
-                        content_pos = ?content_pos,
-                        text_bounds = ?text_bounds,
-                        line_height = %line_height,
-                        "🚨 NO LINE FOUND - CLICK FAILED in bottom area"
-                    );
-                }
-            });
-
-        // TODO: Implement proper click and drag selection
-        // For now, disable drag selection to focus on basic click-to-cursor functionality
-        // The drag selection logic needs more investigation to work properly with Helix's
-        // selection model and GPUI's coordinate systems.
-        //
-        // Issues to investigate:
-        // 1. Proper anchor handling during drag operations
-        // 2. Integration with Helix's Range and Selection types
-        // 3. Visual feedback during selection operations
-        // 4. Performance implications of frequent selection updates
-
-        // Disabled mouse move handler - no drag selection for now
-        // self.interactivity.on_mouse_move(...)
-
-        // Mouse up handler - simplified since drag selection is disabled
-        self.interactivity
-            .on_mouse_up(gpui::MouseButton::Left, move |event, _window, _cx| {
-                debug!(position = ?event.position, "Mouse up event - click completed");
-                // Note: No drag state to clean up since drag selection is disabled
-            });
-
-        let _core = self.core.clone();
-        self.interactivity.prepaint(
-            _global_id,
-            _inspector_id,
-            bounds,
-            bounds.size,
-            window,
-            cx,
-            |_, _, hitbox, _window, cx| {
-                // Calculate actual cell width here (same as lines 1613-1617)
-                let font_id = cx.text_system().resolve_font(&self.style.font());
-                let font_size = self.style.font_size.to_pixels(px(16.0));
-                let em_width = cx
-                    .text_system()
-                    .typographic_bounds(font_id, font_size, 'm')
-                    .map(|bounds| bounds.size.width)
-                    .unwrap_or(px(8.0));
-                let actual_cell_width = cx
-                    .text_system()
-                    .advance(font_id, font_size, 'm')
-                    .map(|advance| advance.width)
-                    .unwrap_or(em_width);
-
-                // Update layout values for mouse handlers
-                surface_bounds_shared.set(bounds);
-                cell_width_shared.set(actual_cell_width);
-                debug!(
-                    bounds_width = ?bounds.size.width,
-                    element_bounds_origin = ?bounds.origin,
-                    actual_cell_width = %actual_cell_width,
-                    "Updated layout values for mouse handlers - CRITICAL FIX WITH REAL CELL WIDTH"
-                );
-
-                // Font metrics consistency validation - temporarily disabled
-                // #[cfg(debug_assertions)]
-                // { ... font validation disabled for now }
-
-                // Hitbox should now be generated due to registered mouse handlers
-                debug!(?hitbox, ">> GPUI returned hitbox for editor");
-                if hitbox.is_none() {
-                    error!("UNEXPECTED: NO HITBOX despite registered mouse handlers");
-                    // This should not happen now that we have mouse handlers
-                } else {
-                    debug!("SUCCESS: Hitbox generated, mouse events will reach this element");
-                }
-
-                // CONTENT MASKING:
-                // Modern GPUI handles content clipping automatically through the layout system
-                // Content is automatically clipped to element bounds during rendering
-                // No explicit masking API calls are needed in current GPUI version
-                {
-                    let font_id = cx.text_system().resolve_font(&self.style.font());
-                    let font_size = self.style.font_size.to_pixels(px(16.0));
-                    let line_height = self.style.line_height_in_pixels(font_size);
-                    let em_width = cx
-                        .text_system()
-                        .typographic_bounds(font_id, font_size, 'm')
-                        .map(|bounds| bounds.size.width)
-                        .unwrap_or(px(8.0)); // Default em width
-                    let cell_width = cx
-                        .text_system()
-                        .advance(font_id, font_size, 'm')
-                        .map(|advance| advance.width)
-                        .unwrap_or(em_width); // Use em_width as fallback
-                    // Division of Pixels returns f32
-                    let columns_f32 = (bounds.size.width / em_width).floor();
-                    let rows_f32 = (bounds.size.height / line_height).floor();
-                    let columns = (columns_f32 as usize).max(1);
-                    let rows = (rows_f32 as usize).max(1);
-
-                    // Don't update editor state during layout/prepaint phase
-                    // The editor should be resized elsewhere, not during rendering
-                    EditorLayout {
-                        hitbox,
-                        rows,
-                        columns,
-                        line_height,
-                        font_size,
-                        cell_width,
-                    }
-                }
-            },
-        )
+        EditorLayout {
+            hitbox: None,
+            rows,
+            columns,
+            line_height,
+            font_size,
+            cell_width,
+        }
     }
 
     fn paint(
