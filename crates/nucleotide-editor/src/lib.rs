@@ -9,6 +9,6 @@ pub mod scroll_state;
 
 pub use document_renderer::DocumentRenderer;
 pub use editor_view::EditorView;
-pub use line_cache::{LineLayout, LineLayoutCache, ShapedLineKey};
+pub use line_cache::{LineLayout, LineLayoutCache, ShapedLineKey, text_runs_hash};
 pub use scroll_manager::ScrollManager;
 pub use scroll_state::ScrollState;
