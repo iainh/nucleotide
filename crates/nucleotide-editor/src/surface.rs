@@ -5,27 +5,48 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, Pixels, ScrollWheelEvent, Window, point, px,
+    LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, Window,
+    point, px,
 };
 
 use crate::{EditorViewport, ViewportScrollUpdate};
 
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
+type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditorSurfacePointerEvent {
+    pub position: Point<Pixels>,
+    pub bounds: Bounds<Pixels>,
+    pub line_height: Pixels,
+    pub cell_width: Pixels,
+}
 
 pub struct EditorSurface {
     viewport: EditorViewport,
     line_height: Pixels,
+    cell_width: Pixels,
     child: Option<AnyElement>,
     on_scroll: Option<ScrollCallback>,
+    on_mouse_down: Option<PointerCallback>,
+    on_mouse_up: Option<PointerCallback>,
 }
 
 impl EditorSurface {
-    pub fn new(viewport: EditorViewport, line_height: Pixels, child: impl IntoElement) -> Self {
+    pub fn new(
+        viewport: EditorViewport,
+        line_height: Pixels,
+        cell_width: Pixels,
+        child: impl IntoElement,
+    ) -> Self {
         Self {
             viewport,
             line_height,
+            cell_width,
             child: Some(child.into_any_element()),
             on_scroll: None,
+            on_mouse_down: None,
+            on_mouse_up: None,
         }
     }
 
@@ -34,6 +55,22 @@ impl EditorSurface {
         callback: impl Fn(&EditorViewport, ViewportScrollUpdate, &mut App) + 'static,
     ) -> Self {
         self.on_scroll = Some(Rc::new(callback));
+        self
+    }
+
+    pub fn on_mouse_down(
+        mut self,
+        callback: impl Fn(EditorSurfacePointerEvent, &mut App) + 'static,
+    ) -> Self {
+        self.on_mouse_down = Some(Rc::new(callback));
+        self
+    }
+
+    pub fn on_mouse_up(
+        mut self,
+        callback: impl Fn(EditorSurfacePointerEvent, &mut App) + 'static,
+    ) -> Self {
+        self.on_mouse_up = Some(Rc::new(callback));
         self
     }
 }
@@ -103,6 +140,66 @@ impl Element for EditorSurface {
 
                 if let Some(on_scroll) = &on_scroll {
                     on_scroll(&viewport, scroll_update, cx);
+                }
+
+                cx.notify(view_entity_id);
+                cx.stop_propagation();
+            }
+        });
+
+        window.on_mouse_event({
+            let line_height = self.line_height;
+            let cell_width = self.cell_width;
+            let on_mouse_down = self.on_mouse_down.clone();
+            let view_entity_id = window.current_view();
+
+            move |event: &MouseDownEvent, phase, _window, cx| {
+                if event.button != MouseButton::Left
+                    || !(bounds.contains(&event.position) && phase.bubble())
+                {
+                    return;
+                }
+
+                if let Some(on_mouse_down) = &on_mouse_down {
+                    on_mouse_down(
+                        EditorSurfacePointerEvent {
+                            position: event.position,
+                            bounds,
+                            line_height,
+                            cell_width,
+                        },
+                        cx,
+                    );
+                }
+
+                cx.notify(view_entity_id);
+                cx.stop_propagation();
+            }
+        });
+
+        window.on_mouse_event({
+            let line_height = self.line_height;
+            let cell_width = self.cell_width;
+            let on_mouse_up = self.on_mouse_up.clone();
+            let view_entity_id = window.current_view();
+
+            move |event: &MouseUpEvent, phase, _window, cx| {
+                if event.button != MouseButton::Left
+                    || !(bounds.contains(&event.position) && phase.bubble())
+                {
+                    return;
+                }
+
+                if let Some(on_mouse_up) = &on_mouse_up {
+                    on_mouse_up(
+                        EditorSurfacePointerEvent {
+                            position: event.position,
+                            bounds,
+                            line_height,
+                            cell_width,
+                        },
+                        cx,
+                    );
                 }
 
                 cx.notify(view_entity_id);

@@ -16,5 +16,5 @@ pub use geometry::{EditorLayout, EditorSurfaceGeometry};
 pub use line_cache::{LineLayout, LineLayoutCache, ShapedLineKey, text_runs_hash};
 pub use scroll_manager::ScrollManager;
 pub use scroll_state::ScrollState;
-pub use surface::EditorSurface;
+pub use surface::{EditorSurface, EditorSurfacePointerEvent};
 pub use viewport::{EditorViewport, ViewportScrollUpdate};
