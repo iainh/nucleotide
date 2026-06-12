@@ -210,7 +210,7 @@ impl ScrollManager {
         let viewport_height = self.viewport_size.get().height;
         let line_height = self.line_height.get();
         let ratio = viewport_height / line_height;
-        let lines_per_viewport = ratio as usize;
+        let lines_per_viewport = (ratio as usize).max(1);
 
         let target_y = match strategy {
             ScrollStrategy::Top => self.anchor_to_pixels(line),
@@ -498,6 +498,17 @@ mod scroll_manager_tests {
 
         // Flag should not be set since position didn't change (already at 0)
         assert!(!manager.scrollbar_changed.get());
+    }
+
+    #[test]
+    fn test_scroll_to_line_bottom_with_zero_height_viewport() {
+        let mut manager = ScrollManager::new(px(20.0));
+        manager.set_total_lines(100);
+        manager.set_viewport_size(size(px(800.0), px(0.0)));
+
+        manager.scroll_to_line(25, ScrollStrategy::Bottom);
+
+        assert_eq!(manager.scroll_position().y, px(500.0));
     }
 
     #[test]
