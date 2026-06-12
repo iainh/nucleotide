@@ -83,14 +83,16 @@
           src = helix;
 
           buildPhase = ''
-            # Ensure languages.toml exists for helix-loader
-            if [ -f runtime/languages.toml ]; then
-              cp runtime/languages.toml ./
+            # Helix stores the canonical language table at the repository root.
+            # Older assumptions looked under runtime/ and produced a Rust-only
+            # fallback, which breaks grammar metadata for packaged runtimes.
+            if [ -f languages.toml ]; then
+              true
+            elif [ -f runtime/languages.toml ]; then
+              cp runtime/languages.toml ./languages.toml
             else
-              echo "# Minimal languages.toml" > ./languages.toml
-              echo "[[language]]" >> ./languages.toml
-              echo 'name = "rust"' >> ./languages.toml
-              echo 'scope = "source.rust"' >> ./languages.toml
+              echo "error: Helix languages.toml not found" >&2
+              exit 1
             fi
           '';
 

@@ -94,6 +94,14 @@ rsync -a "${HELIX_RUNTIME_SOURCE}/" "${BUNDLE_NAME}/Contents/Resources/runtime/"
 
 RUNTIME_DEST="${BUNDLE_NAME}/Contents/Resources/runtime"
 
+if [ -f "${HELIX_RUNTIME_SOURCE}/languages.toml" ]; then
+    cp "${HELIX_RUNTIME_SOURCE}/languages.toml" "${RUNTIME_DEST}/languages.toml"
+elif [ -f "$(dirname "${HELIX_RUNTIME_SOURCE}")/languages.toml" ]; then
+    cp "$(dirname "${HELIX_RUNTIME_SOURCE}")/languages.toml" "${RUNTIME_DEST}/languages.toml"
+else
+    echo -e "${YELLOW}Warning: Helix languages.toml not found next to runtime${NC}"
+fi
+
 # Build compiled tree-sitter grammars into the bundled runtime when the source
 # runtime does not already provide them. Helix uses ".so" for grammar dynamic
 # libraries on all Unix platforms, including macOS.

@@ -9,16 +9,26 @@ use nucleotide_logging::{debug, warn};
 /// Detect the runtime directory when running from a macOS bundle
 #[cfg(target_os = "macos")]
 pub fn detect_bundle_runtime() -> Option<std::path::PathBuf> {
-    if let Ok(mut exe) = std::env::current_exe() {
-        exe.pop(); // nucl or nucleotide-bin
-        exe.pop(); // MacOS
-        exe.push("Resources");
-        exe.push("runtime");
-        if exe.is_dir() {
-            return Some(exe);
-        }
-    }
-    None
+    let exe = std::env::current_exe().ok()?;
+    let macos_dir = exe.parent()?;
+    let contents_dir = macos_dir.parent()?;
+
+    [
+        contents_dir.join("Resources").join("runtime"),
+        macos_dir.join("runtime"),
+    ]
+    .into_iter()
+    .find(|runtime| runtime.is_dir())
+}
+
+/// Return a synthetic manifest directory that makes helix-loader prefer `runtime`.
+///
+/// helix-loader gives highest priority to `<CARGO_MANIFEST_DIR>/../runtime`.
+/// For app bundles, pointing this at a path under the same parent as the bundled
+/// runtime keeps bundled grammars ahead of stale user runtime files.
+#[cfg(target_os = "macos")]
+pub fn manifest_dir_for_runtime(runtime: &std::path::Path) -> Option<std::path::PathBuf> {
+    runtime.parent().map(|parent| parent.join("nucleotide"))
 }
 
 /// Setup comprehensive environment for LSP servers when launched from macOS dock
@@ -315,6 +325,19 @@ mod tests {
 
         assert_eq!(key_event.code, KeyCode::Char('a'));
         assert_eq!(key_event.modifiers, KeyModifiers::NONE);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn manifest_dir_points_helix_loader_at_runtime_sibling() {
+        let runtime = std::path::Path::new("/App/Contents/Resources/runtime");
+        let manifest_dir = manifest_dir_for_runtime(runtime).unwrap();
+
+        assert_eq!(
+            manifest_dir,
+            std::path::Path::new("/App/Contents/Resources/nucleotide")
+        );
+        assert_eq!(manifest_dir.parent().unwrap().join("runtime"), runtime);
     }
 
     #[test]
