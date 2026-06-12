@@ -52,7 +52,7 @@ impl ScrollState {
     pub fn scroll_to_line(&mut self, line: usize, line_height: Pixels) {
         self.scroll_y = line_height * (line as f32);
         self.first_visible_line = line;
-        self.update_visible_range();
+        self.update_visible_range_with_height(line_height);
     }
 
     /// Update scroll from pixel position
@@ -103,7 +103,7 @@ impl ScrollState {
         if line < self.first_visible_line {
             self.scroll_to_line(line, line_height);
         } else if line > self.last_visible_line {
-            let lines_in_view = (self.viewport_height / line_height) as usize;
+            let lines_in_view = ((self.viewport_height / line_height) as usize).max(1);
             let new_first = line.saturating_sub(lines_in_view - 1);
             self.scroll_to_line(new_first, line_height);
         }
@@ -134,14 +134,41 @@ impl ScrollState {
         }
 
         let ratio = self.viewport_height / line_height;
-        let lines_in_view = ratio.ceil() as usize;
-        self.last_visible_line =
-            (self.first_visible_line + lines_in_view).min(self.total_lines.saturating_sub(1));
+        let lines_in_view = (ratio.ceil() as usize).max(1);
+        self.last_visible_line = (self.first_visible_line + lines_in_view.saturating_sub(1))
+            .min(self.total_lines.saturating_sub(1));
     }
 }
 
 impl Default for ScrollState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_line_visible_handles_zero_height_viewport() {
+        let mut state = ScrollState::new();
+        state.set_total_lines(100);
+        state.set_viewport_height(px(0.0), px(20.0));
+
+        state.ensure_line_visible(10, px(20.0));
+
+        assert_eq!(state.first_visible_line(), 10);
+        assert_eq!(state.last_visible_line(), 10);
+    }
+
+    #[test]
+    fn visible_range_keeps_one_line_for_sub_line_viewport() {
+        let mut state = ScrollState::new();
+        state.set_total_lines(100);
+        state.set_viewport_height(px(0.5), px(20.0));
+
+        assert_eq!(state.first_visible_line(), 0);
+        assert_eq!(state.last_visible_line(), 0);
     }
 }
