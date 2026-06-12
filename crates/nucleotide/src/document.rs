@@ -7,15 +7,16 @@ use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, Font, GlobalElementId, Hitbox, Hsla, InspectorElementId,
     InteractiveElement, Interactivity, IntoElement, LayoutId, ParentElement, Pixels, Point, Render,
-    ShapedLine, SharedString, Size, StatefulInteractiveElement, Style, Styled, TextStyle, Window,
-    WindowTextSystem, black, div, fill, px, relative, white,
+    ScrollWheelEvent, ShapedLine, SharedString, Size, StatefulInteractiveElement, Style, Styled,
+    TextStyle, Window, WindowTextSystem, black, div, fill, px, relative, white,
 };
 use gpui::{TextRun, point, size};
 use helix_core::{
-    Uri,
+    Uri, char_idx_at_visual_offset,
     doc_formatter::{DocumentFormatter, TextFormat},
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     ropey::RopeSlice,
+    softwrapped_dimensions,
     syntax::{self, Highlight, HighlightEvent, OverlayHighlights},
     text_annotations::TextAnnotations,
 };
@@ -165,6 +166,64 @@ impl ScrollableHandle for DocumentScrollHandle {
         let size = self.scroll_manager.viewport_size.get();
         Bounds::new(point(px(0.0), px(0.0)), size)
     }
+}
+
+fn sync_scroll_manager_to_helix_view(
+    editor: &mut Editor,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    scroll_manager: &ScrollManager,
+) -> bool {
+    let Some(view) = editor.tree.try_get(view_id).cloned() else {
+        return false;
+    };
+
+    let Some(doc) = editor.document_mut(doc_id) else {
+        return false;
+    };
+
+    let top_visual_row = scroll_manager.pixels_to_anchor(scroll_manager.scroll_position().y);
+    let mut view_offset = doc.view_offset(view_id);
+    let (anchor, vertical_offset, soft_wrap) = {
+        let doc_text = doc.text().slice(..);
+        let viewport = view.inner_area(doc);
+        let text_fmt = doc.text_format(viewport.width.max(1), None);
+        let annotations = view.text_annotations(doc, None);
+        let (anchor, vertical_offset) = char_idx_at_visual_offset(
+            doc_text,
+            0,
+            top_visual_row as isize,
+            0,
+            &text_fmt,
+            &annotations,
+        );
+        (anchor, vertical_offset, text_fmt.soft_wrap)
+    };
+
+    if view_offset.anchor == anchor
+        && view_offset.vertical_offset == vertical_offset
+        && (!soft_wrap || view_offset.horizontal_offset == 0)
+    {
+        return false;
+    }
+
+    debug!(
+        view_id = ?view_id,
+        top_visual_row,
+        old_anchor = view_offset.anchor,
+        new_anchor = anchor,
+        old_vertical_offset = view_offset.vertical_offset,
+        new_vertical_offset = vertical_offset,
+        "Syncing GUI scroll position to Helix view"
+    );
+
+    view_offset.anchor = anchor;
+    view_offset.vertical_offset = vertical_offset;
+    if soft_wrap {
+        view_offset.horizontal_offset = 0;
+    }
+    doc.set_view_offset(view_id, view_offset);
+    true
 }
 
 /// Parameters for render_with_softwrap
@@ -418,10 +477,6 @@ impl Render for DocumentView {
         // Create the scrollbar
         let scrollbar_opt = Scrollbar::vertical(self.scrollbar_state.clone());
 
-        // Create scroll wheel handler for the editor area
-        let scroll_manager_wheel = self.scroll_manager.clone();
-        let core_wheel = self.core.clone();
-
         // Create the editor content with custom scrollbar
         let editor_content = div()
             .id("editor-content")
@@ -435,65 +490,7 @@ impl Render for DocumentView {
                     .w_full()
                     .h_full()
                     .flex_1()
-                    .child(document_element)
-                    .on_scroll_wheel({
-                        move |event, _window, cx| {
-                            use nucleotide_logging::debug;
-                            debug!(
-                                delta = ?event.delta,
-                                "Scroll wheel event received on editor paint area"
-                            );
-
-                            // Get the actual line height from scroll manager
-                            let line_height = scroll_manager_wheel.line_height.get();
-                            let line_height_value = f32::from(line_height);
-                            let delta = event.delta.pixel_delta(line_height);
-
-                            debug!(
-                                line_height = %line_height,
-                                pixel_delta = ?delta,
-                                "Converted scroll delta to pixels on paint area"
-                            );
-
-                            // Delegate scroll to Helix only; do not adjust local scroll immediately
-                            core_wheel.update(cx, |core, cx| {
-                                let editor = &mut core.editor;
-                                let scroll_lines =
-                                    (f32::from(delta.y) / line_height_value).round() as isize;
-                                if scroll_lines != 0 {
-                                    use helix_core::movement::Direction;
-                                    use helix_term::commands;
-
-                                    let count = scroll_lines.unsigned_abs();
-                                    let mut ctx = helix_term::commands::Context {
-                                        editor,
-                                        register: None,
-                                        count: None,
-                                        callback: Vec::new(),
-                                        on_next_key_callback: None,
-                                        jobs: &mut core.jobs,
-                                    };
-
-                                    if scroll_lines > 0 {
-                                        commands::scroll(
-                                            &mut ctx,
-                                            count,
-                                            Direction::Backward,
-                                            false,
-                                        );
-                                    } else {
-                                        commands::scroll(
-                                            &mut ctx,
-                                            count,
-                                            Direction::Forward,
-                                            false,
-                                        );
-                                    }
-                                }
-                                cx.notify();
-                            });
-                        }
-                    }),
+                    .child(document_element),
             )
             .when_some(scrollbar_opt, gpui::ParentElement::child);
 
@@ -2019,6 +2016,52 @@ impl Element for DocumentElement {
         self.scroll_manager
             .set_viewport_size(effective_viewport_size);
 
+        window.on_mouse_event({
+            let scroll_bounds = bounds;
+            let core = self.core.clone();
+            let doc_id = self.doc_id;
+            let view_id = self.view_id;
+            let view_entity_id = window.current_view();
+            let scroll_manager = self.scroll_manager.clone();
+
+            move |event: &ScrollWheelEvent, phase, _window, cx| {
+                if !(scroll_bounds.contains(&event.position) && phase.bubble()) {
+                    return;
+                }
+
+                let raw_delta = event.delta.pixel_delta(line_height);
+                let delta = point(px(0.0), raw_delta.y);
+                let (scrolled, crossed_lines) = scroll_manager.scroll_by_delta(delta);
+
+                if !scrolled {
+                    return;
+                }
+
+                debug!(
+                    raw_delta = ?event.delta,
+                    pixel_delta = ?delta,
+                    crossed_lines,
+                    "Scroll wheel event handled by editor viewport"
+                );
+
+                if crossed_lines != 0 {
+                    core.update(cx, |core, cx| {
+                        if sync_scroll_manager_to_helix_view(
+                            &mut core.editor,
+                            doc_id,
+                            view_id,
+                            &scroll_manager,
+                        ) {
+                            cx.notify();
+                        }
+                    });
+                }
+
+                cx.notify(view_entity_id);
+                cx.stop_propagation();
+            }
+        });
+
         // TODO: Update shared cell_width for mouse handlers (requires structural change to pass between prepaint/paint)
 
         // Fill editor background from design tokens
@@ -2031,19 +2074,14 @@ impl Element for DocumentElement {
         // Sync scroll position back to Helix only if scrollbar changed it
         // This prevents overriding Helix's auto-scroll behavior
         if self.scroll_manager.scrollbar_changed.get() {
-            core.update(cx, |core, _| {
-                let editor = &mut core.editor;
-                if let Some(doc) = editor.document(self.doc_id) {
-                    let new_offset = self.scroll_manager.sync_to_helix(doc);
-                    // Convert our ViewOffset to helix ViewPosition
-                    let view_position = ViewPosition {
-                        anchor: new_offset.anchor,
-                        horizontal_offset: new_offset.horizontal_offset,
-                        vertical_offset: new_offset.vertical_offset,
-                    };
-                    if let Some(doc_mut) = editor.document_mut(self.doc_id) {
-                        doc_mut.set_view_offset(view_id, view_position);
-                    }
+            core.update(cx, |core, cx| {
+                if sync_scroll_manager_to_helix_view(
+                    &mut core.editor,
+                    self.doc_id,
+                    view_id,
+                    &self.scroll_manager,
+                ) {
+                    cx.notify();
                 }
             });
             // Clear the flag after syncing
@@ -2052,10 +2090,10 @@ impl Element for DocumentElement {
 
         // Determine total content height in "visual" lines for correct scrolling
         // This ensures the scrollbar range matches the wrapped content height.
-        let _visual_total_lines = {
+        let visual_total_lines = {
             let core = self.core.read(cx);
             let editor = &core.editor;
-            let _view = match editor.tree.try_get(view_id) {
+            let view = match editor.tree.try_get(view_id) {
                 Some(v) => v,
                 None => return,
             };
@@ -2078,211 +2116,25 @@ impl Element for DocumentElement {
                 .map(|advance| advance.width)
                 .unwrap_or(em_width);
 
-            // Columns based on available width in cells (approximate)
-            let columns = ((bounds.size.width / cell_width).floor() as usize).max(1);
+            let gutter_width_px = f32::from(view.gutter_offset(doc)) * cell_width;
+            let right_padding = cell_width * 2.0;
+            let text_area_width = bounds.size.width - gutter_width_px - right_padding;
+            let columns = ((text_area_width / cell_width).floor() as u16).max(1);
 
             // Check soft-wrap setting from Helix for this document/view
             // Build TextFormat to read soft_wrap flag; viewport_width expects u16 columns
             let theme = cx.global::<crate::ThemeManager>().helix_theme();
-            let tf = doc.text_format(columns as u16, Some(theme));
+            let tf = doc.text_format(columns, Some(theme));
             let soft_wrap_enabled = tf.soft_wrap;
 
             if soft_wrap_enabled {
-                // Estimate visual lines by wrapping each document line to columns.
-                // This is an approximation (tabs/variable widths not considered),
-                // but greatly improves scrollbar range vs. raw line count.
-                let text = doc.text();
-                let line_count = text.len_lines();
-                let mut visual = 0usize;
-                for line_idx in 0..line_count {
-                    let start = text.line_to_char(line_idx);
-                    let end = if line_idx + 1 < line_count {
-                        text.line_to_char(line_idx + 1)
-                    } else {
-                        text.len_chars()
-                    };
-                    let chars = end.saturating_sub(start).max(1);
-                    // ceil(chars / columns)
-                    visual = visual.saturating_add(chars.div_ceil(columns));
-                }
-                visual.max(1)
+                softwrapped_dimensions(doc.text().slice(..), &tf).0.max(1)
             } else {
                 doc.text().len_lines().max(1)
             }
         };
 
-        // PROACTIVE VIEWPORT-ALIGN SCROLL WITH HELIX (non-wrap mode)
-        // Compute our viewport height in lines and enforce Helix view offset to keep the cursor
-        // within [scrolloff, height - scrolloff] like Helix does, but using our measured height.
-        {
-            let core = self.core.read(cx);
-            let editor = &core.editor;
-            if let (Some(view), Some(doc)) =
-                (editor.tree.try_get(view_id), editor.document(self.doc_id))
-            {
-                // Skip when soft-wrap is enabled; wrapped logic requires visual line mapping
-                let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                let font_id = cx.text_system().resolve_font(&self.style.font());
-                let font_size = self.style.font_size.to_pixels(px(16.0));
-                let em_width = cx
-                    .text_system()
-                    .typographic_bounds(font_id, font_size, 'm')
-                    .map(|b| b.size.width)
-                    .unwrap_or(px(8.0));
-                let cell_w = cx
-                    .text_system()
-                    .advance(font_id, font_size, 'm')
-                    .map(|a| a.width)
-                    .unwrap_or(em_width);
-                let columns = ((bounds.size.width / cell_w).floor() as usize).max(1);
-                let tf = doc.text_format(columns as u16, Some(theme));
-                let soft_wrap = tf.soft_wrap;
-
-                // Collect a desired new anchor char if we need to adjust scrolling.
-                let mut desired_anchor_char: Option<usize> = None;
-                let mut desired_vertical_offset: Option<usize> = None;
-
-                // Use Helix's notion of viewport height to avoid rounding asymmetry
-                let height_rows: usize = view.inner_height().max(1);
-
-                if !soft_wrap {
-                    let view_offset = doc.view_offset(view_id);
-                    let text = doc.text();
-                    let total_lines = text.len_lines();
-                    let anchor_line = text.char_to_line(view_offset.anchor);
-
-                    // Determine cursor line
-                    let cursor_char = doc.selection(view_id).primary().cursor(text.slice(..));
-                    let cursor_line = text.char_to_line(cursor_char);
-
-                    // Viewport height in lines from Helix (avoids rounding differences)
-                    let viewport_lines = height_rows;
-                    let scrolloff = editor.config().scrolloff.max(0);
-
-                    // Visible is [top, top + height)
-                    let top = anchor_line;
-                    let bottom_exclusive = anchor_line.saturating_add(viewport_lines);
-
-                    let mut desired_anchor = anchor_line;
-                    // If cursor above top + scrolloff -> move up
-                    if cursor_line < top.saturating_add(scrolloff) {
-                        desired_anchor = cursor_line.saturating_sub(scrolloff);
-                    }
-                    // If cursor below bottom - scrolloff - 1 (i.e., cursor >= bottom - scrolloff)
-                    else if cursor_line >= bottom_exclusive.saturating_sub(scrolloff) {
-                        desired_anchor = cursor_line
-                            .saturating_add(scrolloff + 1)
-                            .saturating_sub(viewport_lines);
-                    }
-
-                    // Clamp desired_anchor to valid range
-                    let max_anchor = total_lines.saturating_sub(viewport_lines);
-                    if desired_anchor > max_anchor {
-                        desired_anchor = max_anchor;
-                    }
-
-                    if desired_anchor != anchor_line {
-                        desired_anchor_char = Some(text.line_to_char(desired_anchor));
-                    }
-                } else {
-                    // Soft-wrap alignment using visual line indices
-                    let view_offset = doc.view_offset(view_id);
-                    let text = doc.text();
-                    // Determine viewport height in visual lines using Helix
-                    let viewport_lines = height_rows;
-                    let scrolloff = editor.config().scrolloff.max(0);
-
-                    // Build formatter from current anchor
-                    use helix_core::{
-                        doc_formatter::DocumentFormatter, text_annotations::TextAnnotations,
-                    };
-                    let annotations = TextAnnotations::default();
-                    let formatter = DocumentFormatter::new_at_prev_checkpoint(
-                        text.slice(..),
-                        &tf,
-                        &annotations,
-                        view_offset.anchor,
-                    );
-
-                    // Find cursor visual row relative to current anchor
-                    let cursor_char = doc.selection(view_id).primary().cursor(text.slice(..));
-
-                    let mut cursor_visual_row: Option<usize> = None;
-                    let mut last_row = 0usize;
-                    for g in formatter {
-                        let char_pos = text.byte_to_char(g.char_idx);
-                        if char_pos > cursor_char {
-                            break;
-                        }
-                        last_row = g.visual_pos.row;
-                        cursor_visual_row = Some(last_row);
-                    }
-                    let cursor_vrow = cursor_visual_row.unwrap_or(last_row);
-
-                    // Current top visual row (relative to anchor)
-                    let top = view_offset.vertical_offset;
-                    let bottom = top.saturating_add(viewport_lines.saturating_sub(1));
-
-                    // Decide desired top to honor scrolloff
-                    let desired_top = if cursor_vrow < top.saturating_add(scrolloff) {
-                        cursor_vrow.saturating_sub(scrolloff)
-                    } else if cursor_vrow > bottom.saturating_sub(scrolloff) {
-                        cursor_vrow.saturating_sub(viewport_lines.saturating_sub(1 + scrolloff))
-                    } else {
-                        top
-                    };
-
-                    if desired_top != top {
-                        // Prefer adjusting vertical_offset to avoid anchor jumps in soft-wrap
-                        let desired_v_off_usize: usize = desired_top;
-                        if desired_v_off_usize != view_offset.vertical_offset {
-                            desired_vertical_offset = Some(desired_v_off_usize);
-                        }
-                    }
-                }
-
-                // After leaving the read-borrowing scope, apply updates if needed
-                if let Some(new_anchor_char) = desired_anchor_char {
-                    let core2 = self.core.clone();
-                    core2.update(cx, |core, _| {
-                        if let Some(doc_mut) = core.editor.document_mut(self.doc_id) {
-                            let current = doc_mut.view_offset(view_id);
-                            // Only update anchor here (non-wrap path) and preserve vertical_offset
-                            let new_pos = ViewPosition {
-                                anchor: new_anchor_char,
-                                horizontal_offset: current.horizontal_offset,
-                                vertical_offset: current.vertical_offset,
-                            };
-                            doc_mut.set_view_offset(view_id, new_pos);
-                        }
-                    });
-                }
-
-                if let Some(new_v_off) = desired_vertical_offset {
-                    let core2 = self.core.clone();
-                    core2.update(cx, |core, _| {
-                        if let Some(doc_mut) = core.editor.document_mut(self.doc_id) {
-                            let current = doc_mut.view_offset(view_id);
-                            let new_pos = ViewPosition {
-                                anchor: current.anchor,
-                                horizontal_offset: current.horizontal_offset,
-                                vertical_offset: new_v_off,
-                            };
-                            doc_mut.set_view_offset(view_id, new_pos);
-                        }
-                    });
-                }
-            }
-        }
-
-        // Update scrollbar range approximately to document line count
-        // (Helix drives actual scrolling; this is for UI scale only.)
-        {
-            let core = self.core.read(cx);
-            if let Some(doc) = core.editor.document(self.doc_id) {
-                self.scroll_manager.total_lines.set(doc.text().len_lines());
-            }
-        }
+        self.scroll_manager.set_total_lines(visual_total_lines);
 
         let gutter_width_cells = {
             let editor = &core.read(cx).editor;
@@ -2306,10 +2158,10 @@ impl Element for DocumentElement {
             let top_visual = anchor_line.saturating_add(view_offset.vertical_offset);
             let line_height = self.scroll_manager.line_height.get();
             let y = line_height * (top_visual as f32);
-            // GPUI convention: negative offset when scrolled down
-            // Use set_scroll_offset_from_helix to avoid marking as scrollbar-changed
+            // Preserve local sub-line wheel motion when Helix reports the same
+            // top line, but snap to Helix when commands/cursor movement change it.
             self.scroll_manager
-                .set_scroll_offset_from_helix(point(px(0.0), -y));
+                .set_scroll_position_from_helix_preserving_intra_line_offset(point(px(0.0), y));
 
             view.gutter_offset(doc)
         };
@@ -2480,6 +2332,7 @@ impl Element for DocumentElement {
 
                 // Use scroll manager to determine visible lines
                 let (first_row, last_row_from_scroll) = self.scroll_manager.visible_line_range();
+                let scroll_line_offset = self.scroll_manager.vertical_offset_within_line();
 
                 // Get the character under the cursor for block cursor mode
                 let cursor_text = if matches!(cursor_kind, CursorKind::Block) && self.is_focused {
@@ -2587,7 +2440,7 @@ impl Element for DocumentElement {
                 };
 
                 // Render text line by line to avoid newline issues
-                let mut y_offset = px(0.);
+                let mut y_offset = -scroll_line_offset;
                 // COORDINATE SYSTEM ANALYSIS: The original version stored in GLOBAL coordinates
                 // but current version converts to LOCAL coordinates before storage
                 // The px(2.) was part of the global calculation, but since we now convert to local,
@@ -2742,15 +2595,16 @@ impl Element for DocumentElement {
                     );
 
                     let text_origin_x = bounds.origin.x + (f32::from(gutter_offset) * after_layout.cell_width);
-                    let mut y_offset = px(0.0);
+                    let mut y_offset = -scroll_line_offset;
                     let mut visual_line = 0;
                     let mut current_doc_line = text.char_to_line(view_offset.anchor);
                     // Account for padding in viewport height calculation - match ScrollManager exactly
                     let effective_height = bounds.size.height - px(2.0); // Account for padding
                     let calculated_height = (effective_height / after_layout.line_height) as usize;
-                    // IMPORTANT: Don't add buffer lines here - this must match ScrollManager's viewport calculation
-                    // The ScrollManager uses exactly this height for max scroll calculations
-                    let viewport_height = calculated_height;
+                    // Render one extra row when the top row is partially scrolled,
+                    // matching GPUI's pixel-scroll behavior at the bottom edge.
+                    let viewport_height = calculated_height
+                        + usize::from(f32::from(scroll_line_offset) > 0.0);
 
                     // Skip lines before the viewport - need to consume all graphemes for skipped lines
                     // Skip lines before viewport if needed
@@ -3074,7 +2928,7 @@ impl Element for DocumentElement {
 
                         // Track which document lines we've seen and at what visual positions
                         let mut doc_line_positions = Vec::new();
-                        let mut current_y = px(0.0);
+                        let mut current_y = -scroll_line_offset;
 
                         // Re-create formatter to match what we did in the main rendering loop
                         let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
@@ -4267,7 +4121,7 @@ impl Element for DocumentElement {
                 {
                     let mut gutter_origin = bounds.origin;
                     gutter_origin.x += px(2.);
-                    gutter_origin.y += px(1.);
+                    gutter_origin.y += px(1.) - scroll_line_offset;
 
                     // Build gutter lines and diagnostics map inside a limited borrow scope, then paint
                     let (gutter_lines, _diag_line_severity_nonwrap) = {
