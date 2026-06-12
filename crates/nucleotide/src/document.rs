@@ -3754,8 +3754,8 @@ impl Element for DocumentElement {
                             })
                         };
 
-	                        (line_str, line_runs)
-	                    };
+                        (line_str, line_runs)
+                    };
 
                     // Drop core before painting
                     // core goes out of scope here
@@ -3763,6 +3763,7 @@ impl Element for DocumentElement {
                     let font_size_px = self.style.font_size.to_pixels(px(16.0));
                     let cache_viewport_width = f32::from(bounds.size.width) as u32;
                     let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
+                    let line_runs_hash = nucleotide_editor::text_runs_hash(&line_runs);
                     // Defer painting of cursorline until after per-run backgrounds are drawn
 
                     // Always create a shaped line, even for empty lines (needed for cursor positioning)
@@ -3772,6 +3773,7 @@ impl Element for DocumentElement {
                             line_text: line_str.to_string(),
                             font_size: f32::from(font_size_px) as u32,
                             viewport_width: cache_viewport_width,
+                            runs_hash: line_runs_hash,
                         };
 
                         let shaped = if let Some(cached) = line_cache.get_shaped_line(&cache_key) {
@@ -3847,6 +3849,7 @@ impl Element for DocumentElement {
                             line_text: String::new(),
                             font_size: f32::from(font_size_px) as u32,
                             viewport_width: cache_viewport_width,
+                            runs_hash: 0,
                         };
 
                         if let Some(cached) = line_cache.get_shaped_line(&cache_key) {

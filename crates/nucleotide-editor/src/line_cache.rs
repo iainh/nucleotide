@@ -1,8 +1,9 @@
 // ABOUTME: Line layout cache for mouse interaction in document view
 // ABOUTME: Stores line layouts in element-local coordinates (text-area relative) for fast mouse hit testing
 
-use gpui::{Bounds, Pixels, ShapedLine, size};
+use gpui::{Bounds, Pixels, ShapedLine, TextRun, size};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 /// Layout information for a single line in the document
@@ -25,11 +26,26 @@ pub struct LineLayout {
 }
 
 /// Key for caching shaped lines
-#[derive(Hash, Eq, PartialEq, Clone)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub struct ShapedLineKey {
     pub line_text: String,
     pub font_size: u32,      // Store as integer to avoid float comparison issues
     pub viewport_width: u32, // Store as integer pixels
+    pub runs_hash: u64,      // TextRun styling affects how GPUI paints the shaped line
+}
+
+pub fn text_runs_hash(runs: &[TextRun]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    runs.len().hash(&mut hasher);
+    for run in runs {
+        run.len.hash(&mut hasher);
+        run.font.hash(&mut hasher);
+        run.color.hash(&mut hasher);
+        run.background_color.hash(&mut hasher);
+        run.underline.hash(&mut hasher);
+        run.strikethrough.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 #[derive(Default)]
@@ -194,12 +210,57 @@ impl gpui::Global for LineLayoutCache {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{point, px};
+    use gpui::{FontWeight, TextRun, font, point, px};
 
     fn create_test_shaped_line() -> ShapedLine {
         // Create a mock shaped line - in real usage this would be from the font system
         // Use the default implementation since the struct has private fields
         <ShapedLine as std::default::Default>::default()
+    }
+
+    fn create_test_text_run() -> TextRun {
+        TextRun {
+            len: 4,
+            font: font("TestFont"),
+            color: gpui::black(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }
+    }
+
+    #[test]
+    fn shaped_line_key_distinguishes_text_run_styles() {
+        let base_key = ShapedLineKey {
+            line_text: "same text".to_string(),
+            font_size: 16,
+            viewport_width: 800,
+            runs_hash: 1,
+        };
+        let restyled_key = ShapedLineKey {
+            runs_hash: 2,
+            ..base_key.clone()
+        };
+
+        assert_ne!(base_key, restyled_key);
+    }
+
+    #[test]
+    fn text_run_hash_includes_font_identity() {
+        let normal = create_test_text_run();
+        let mut bold = normal.clone();
+        bold.font.weight = FontWeight::BOLD;
+
+        assert_ne!(text_runs_hash(&[normal]), text_runs_hash(&[bold]));
+    }
+
+    #[test]
+    fn text_run_hash_includes_paint_style() {
+        let normal = create_test_text_run();
+        let mut highlighted = normal.clone();
+        highlighted.background_color = Some(gpui::white());
+
+        assert_ne!(text_runs_hash(&[normal]), text_runs_hash(&[highlighted]));
     }
 
     #[test]
