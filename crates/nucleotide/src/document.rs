@@ -5,9 +5,9 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, Font, GlobalElementId, Hitbox, Hsla, InspectorElementId,
-    InteractiveElement, Interactivity, IntoElement, LayoutId, ParentElement, Pixels, Point, Render,
-    ShapedLine, SharedString, Size, StatefulInteractiveElement, Style, Styled, TextStyle, Window,
+    FocusHandle, Focusable, Font, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
+    Interactivity, IntoElement, LayoutId, ParentElement, Pixels, Point, Render, ShapedLine,
+    SharedString, Size, StatefulInteractiveElement, Style, Styled, TextStyle, Window,
     WindowTextSystem, black, div, fill, px, relative, white,
 };
 use gpui::{TextRun, point, size};
@@ -31,7 +31,9 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
-use nucleotide_editor::{EditorSurface, EditorViewport, LineLayoutCache};
+use nucleotide_editor::{
+    EditorLayout, EditorSurface, EditorSurfaceGeometry, EditorViewport, LineLayoutCache,
+};
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
     apply_color_modifiers, apply_font_modifiers, create_styled_text_run,
@@ -695,130 +697,6 @@ impl DocumentElement {
         grapheme_idx
     }
 
-    /// Calculate text area bounds excluding gutters, headers, scrollbars
-    /// This returns the bounds of the actual text editing area in window coordinates
-    #[allow(dead_code)]
-    fn text_bounds(
-        &self,
-        element_bounds: Bounds<Pixels>,
-        gutter_offset: u16,
-        cell_width: Pixels,
-    ) -> Bounds<Pixels> {
-        // Calculate gutter width in pixels
-        let gutter_width = cell_width * (gutter_offset as f32);
-
-        // Add small padding to prevent text cutoff (matching existing pattern)
-        let right_padding = cell_width * 2.0; // 2 characters of padding
-        let top_padding = px(1.0); // Small top padding (matches line rendering)
-
-        // Text area starts after the gutter
-        let text_origin = Point {
-            x: element_bounds.origin.x + gutter_width,
-            y: element_bounds.origin.y + top_padding,
-        };
-
-        // Text area size excludes gutter and padding
-        let text_size = Size {
-            width: element_bounds.size.width - gutter_width - right_padding,
-            height: element_bounds.size.height - top_padding,
-        };
-
-        Bounds {
-            origin: text_origin,
-            size: text_size,
-        }
-    }
-
-    /// Convert window-local coordinates to text-area coordinates
-    /// This is the critical transformation that fixes mouse positioning issues
-    #[allow(dead_code)]
-    fn window_to_text_area(
-        &self,
-        window_pos: Point<Pixels>,
-        text_bounds: Bounds<Pixels>,
-    ) -> Point<Pixels> {
-        Point {
-            x: window_pos.x - text_bounds.origin.x,
-            y: window_pos.y - text_bounds.origin.y,
-        }
-    }
-
-    /// Convert text-area coordinates to content coordinates by applying scroll
-    /// Uses positive scroll positions matching Zed's conventions
-    #[allow(dead_code)]
-    fn text_area_to_content(&self, text_area_pos: Point<Pixels>) -> Point<Pixels> {
-        let scroll_position = self.viewport.scroll_position();
-
-        // Zed convention: scroll_position.y is positive when scrolled down
-        // To get content coordinates: content_y = text_area_y + scroll_position.y
-        // Example: When scrolled down 100px, scroll_position.y = 100, so content_y = text_area_y + 100
-        Point {
-            x: text_area_pos.x + scroll_position.x, // Horizontal scroll
-            y: text_area_pos.y + scroll_position.y, // Vertical scroll: add positive scroll distance
-        }
-    }
-
-    /// Unified coordinate transformation: Window -> Text Area -> Content
-    /// This implements the correct transformation chain from coordinate_system.md with bounds validation
-    #[allow(dead_code)]
-    fn screen_to_content(
-        &self,
-        window_pos: Point<Pixels>,
-        text_bounds: Bounds<Pixels>,
-    ) -> Point<Pixels> {
-        // Step 1: Window coordinates to text-area coordinates
-        let text_area_pos = self.window_to_text_area(window_pos, text_bounds);
-
-        // Step 2: Apply text-area bounds validation
-        let clamped_text_area_pos = Point {
-            x: text_area_pos.x.max(px(0.0)).min(text_bounds.size.width),
-            y: text_area_pos.y.max(px(0.0)).min(text_bounds.size.height),
-        };
-
-        // Step 3: Text-area coordinates to content coordinates
-        let content_pos = self.text_area_to_content(clamped_text_area_pos);
-
-        // Step 4: Apply content bounds validation (Y only, allow X overshoot)
-        Point {
-            x: content_pos.x.max(px(0.0)), // Allow horizontal overshoot for selection dragging
-            y: content_pos.y.max(px(0.0)), // Prevent negative Y coordinates
-        }
-    }
-
-    /// Coordinate transformation with x-overshoot tracking
-    /// Returns (clamped_point, x_overshoot_amount) for selection dragging past line ends
-    #[allow(dead_code)]
-    fn screen_to_content_with_overshoot(
-        &self,
-        window_pos: Point<Pixels>,
-        text_bounds: Bounds<Pixels>,
-        line_width: Option<Pixels>,
-    ) -> (Point<Pixels>, Pixels) {
-        // Step 1: Window coordinates to text-area coordinates
-        let text_area_pos = self.window_to_text_area(window_pos, text_bounds);
-
-        // Step 2: Apply text-area bounds validation
-        let clamped_text_area_pos = Point {
-            x: text_area_pos.x.max(px(0.0)).min(text_bounds.size.width),
-            y: text_area_pos.y.max(px(0.0)).min(text_bounds.size.height),
-        };
-
-        // Step 3: Text-area coordinates to content coordinates
-        let content_pos = self.text_area_to_content(clamped_text_area_pos);
-
-        // Step 4: Apply content bounds validation with x-overshoot calculation
-        let y = content_pos.y.max(px(0.0)); // Prevent negative Y coordinates
-
-        // Calculate x-overshoot if line width is provided
-        let (x, x_overshoot) = if let Some(line_width) = line_width {
-            self.calculate_x_overshoot(content_pos.x.max(px(0.0)), line_width)
-        } else {
-            (content_pos.x.max(px(0.0)), px(0.0))
-        };
-
-        (Point { x, y }, x_overshoot)
-    }
-
     /// Get current x-overshoot value
     pub fn x_overshoot(&self) -> Pixels {
         self.x_overshoot.get()
@@ -909,18 +787,6 @@ impl DocumentElement {
             x: result_x,
             y: result_y,
         })
-    }
-
-    /// Calculate x-overshoot for a given position and line width
-    /// Returns (clamped_x, overshoot_amount)
-    #[allow(dead_code)]
-    fn calculate_x_overshoot(&self, x: Pixels, line_width: Pixels) -> (Pixels, Pixels) {
-        if x > line_width {
-            let overshoot = x - line_width;
-            (line_width, overshoot)
-        } else {
-            (x, px(0.0))
-        }
     }
 
     pub fn new(
@@ -1453,17 +1319,6 @@ impl InteractiveElement for DocumentElement {
 
 impl StatefulInteractiveElement for DocumentElement {}
 
-#[derive(Debug)]
-#[allow(unused)]
-pub struct DocumentLayout {
-    rows: usize,
-    columns: usize,
-    line_height: Pixels,
-    font_size: Pixels,
-    cell_width: Pixels,
-    hitbox: Option<Hitbox>,
-}
-
 struct RopeWrapper<'a>(RopeSlice<'a>);
 
 impl<'a> From<RopeWrapper<'a>> for SharedString {
@@ -1476,7 +1331,7 @@ impl<'a> From<RopeWrapper<'a>> for SharedString {
 impl Element for DocumentElement {
     type RequestLayoutState = ();
 
-    type PrepaintState = DocumentLayout;
+    type PrepaintState = EditorLayout;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -1552,11 +1407,11 @@ impl Element for DocumentElement {
 
         // Shared state to store actual layout values for mouse handlers
         // These get updated during prepaint and used by mouse event handlers
-        let bounds_width = std::rc::Rc::new(std::cell::Cell::new(px(800.0))); // Default fallback
-        let bounds_width_for_down = bounds_width.clone();
-        let element_bounds_shared =
-            std::rc::Rc::new(std::cell::Cell::new(gpui::Point::new(px(0.0), px(0.0)))); // Default fallback
-        let element_bounds_for_down = element_bounds_shared.clone();
+        let surface_bounds_shared = std::rc::Rc::new(std::cell::Cell::new(Bounds::new(
+            point(px(0.0), px(0.0)),
+            size(px(800.0), px(600.0)),
+        )));
+        let surface_bounds_for_down = surface_bounds_shared.clone();
         let cell_width_shared = std::rc::Rc::new(std::cell::Cell::new(px(16.0))); // Default fallback
         let cell_width_for_down = cell_width_shared.clone();
 
@@ -1578,15 +1433,7 @@ impl Element for DocumentElement {
                         (editor.document(doc_id), editor.tree.try_get(view_id))
                     {
                         let gutter_offset = view.gutter_offset(document);
-                        // Use stored bounds width, with fallback calculation
-                        let bounds_width = bounds_width_for_down.get();
-                        let element_bounds = gpui::Bounds {
-                            origin: element_bounds_for_down.get(), // Use actual bounds from prepaint
-                            size: gpui::Size {
-                                width: bounds_width,
-                                height: px(600.0),
-                            }, // Approximate height
-                        };
+                        let element_bounds = surface_bounds_for_down.get();
                         (gutter_offset, cell_width_for_down.get(), element_bounds)
                     // Use actual cell_width
                     } else {
@@ -1594,33 +1441,15 @@ impl Element for DocumentElement {
                         return;
                     }
                 };
-                let cell_width_value = f32::from(cell_width);
-                // Calculate text bounds to get actual text area
-                // This is the missing piece - we need to know where the text area starts
-                let text_bounds = {
-                    let gutter_width = cell_width * (gutter_offset as f32);
-                    let right_padding = cell_width * 2.0;
-                    let top_padding = px(1.0);
-                    gpui::Bounds {
-                        origin: gpui::Point {
-                            x: element_bounds.origin.x + gutter_width,
-                            y: element_bounds.origin.y + top_padding,
-                        },
-                        size: gpui::Size {
-                            width: element_bounds.size.width - gutter_width - right_padding,
-                            height: element_bounds.size.height - top_padding,
-                        },
-                    }
-                };
+                let surface_geometry =
+                    EditorSurfaceGeometry::new(element_bounds, gutter_offset, cell_width);
+                let text_bounds = surface_geometry.text_bounds();
 
                 let _expected_text_origin_x =
                     element_bounds.origin.x + cell_width * (gutter_offset as f32);
 
                 // STEP 1: Convert window coordinates to text-area coordinates
-                let text_area_pos = gpui::Point {
-                    x: event.position.x - text_bounds.origin.x,
-                    y: event.position.y - text_bounds.origin.y,
-                };
+                let text_area_pos = surface_geometry.window_to_text_area(event.position);
 
                 // STEP 2: Detect soft-wrap mode for branched coordinate transformation
                 let soft_wrap_enabled = {
@@ -1629,13 +1458,7 @@ impl Element for DocumentElement {
                     if let Some(document) = editor.document(doc_id) {
                         if let Some(_view) = editor.tree.try_get(view_id) {
                             let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                            // Calculate viewport width for text formatting (matching paint calculation)
-                            let gutter_width_px = f32::from(gutter_offset) * cell_width_value;
-                            let right_padding = cell_width_value * 2.0; // 2 characters of padding
-                            let text_area_width =
-                                f32::from(text_bounds.size.width) - gutter_width_px - right_padding;
-                            let viewport_width =
-                                (text_area_width / cell_width_value).max(10.0) as u16;
+                            let viewport_width = surface_geometry.viewport_columns(10);
 
                             let text_format = document.text_format(viewport_width, Some(theme));
                             text_format.soft_wrap
@@ -1659,14 +1482,7 @@ impl Element for DocumentElement {
                         if let Some(document) = editor.document(doc_id) {
                             if let Some(_view) = editor.tree.try_get(view_id) {
                                 let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                                // Calculate viewport width for text formatting
-                                let gutter_width_px = f32::from(gutter_offset) * cell_width_value;
-                                let right_padding = cell_width_value * 2.0;
-                                let text_area_width = f32::from(text_bounds.size.width)
-                                    - gutter_width_px
-                                    - right_padding;
-                                let viewport_width =
-                                    (text_area_width / cell_width_value).max(10.0) as u16;
+                                let viewport_width = surface_geometry.viewport_columns(10);
 
                                 // Get text format and view offset
                                 let text_format = document.text_format(viewport_width, Some(theme));
@@ -1697,26 +1513,18 @@ impl Element for DocumentElement {
                     };
 
                     // Add scroll position to get final content coordinates
-                    gpui::Point {
-                        x: wrapped_content_pos.x + scroll_position.x,
-                        y: wrapped_content_pos.y + scroll_position.y,
-                    }
+                    surface_geometry.text_area_to_content(wrapped_content_pos, scroll_position)
                 } else {
                     // Zed convention: scroll_position.y is positive when scrolled down
                     // To get content coordinates: content_y = text_area_y + scroll_position.y
-                    gpui::Point {
-                        x: text_area_pos.x + scroll_position.x, // Horizontal scroll (currently unused)
-                        y: text_area_pos.y + scroll_position.y, // Add positive scroll distance
-                    }
+                    surface_geometry.text_area_to_content(text_area_pos, scroll_position)
                 };
 
                 // STEP 4: Apply bounds validation and clamping
                 // Clamp coordinates to valid ranges to prevent out-of-bounds access
                 // FIXED: Don't clamp Y to viewport height - allow clicks in rendered content area
-                let clamped_text_area_pos = Point {
-                    x: text_area_pos.x.max(px(0.0)).min(text_bounds.size.width),
-                    y: text_area_pos.y.max(px(0.0)), // Only clamp to positive, not to viewport height
-                };
+                let clamped_text_area_pos =
+                    surface_geometry.clamp_text_area_position(text_area_pos, false);
 
                 // Calculate total content height based on document lines
                 let total_content_height = {
@@ -1762,12 +1570,8 @@ impl Element for DocumentElement {
                     // STEP 4.5: Calculate and track x-overshoot for selection dragging
                     let line_width = line_layout.shaped_line.width;
                     let raw_content_x = content_pos.x.max(px(0.0));
-                    let (_clamped_x, x_overshoot) = if raw_content_x > line_width {
-                        let overshoot = raw_content_x - line_width;
-                        (line_width, overshoot)
-                    } else {
-                        (raw_content_x, px(0.0))
-                    };
+                    let (_clamped_x, x_overshoot) =
+                        EditorSurfaceGeometry::x_overshoot(raw_content_x, line_width);
 
                     // Store x-overshoot for future selection operations
                     x_overshoot_for_down.set(x_overshoot.max(px(0.0)));
@@ -1891,8 +1695,7 @@ impl Element for DocumentElement {
                     .unwrap_or(em_width);
 
                 // Update layout values for mouse handlers
-                bounds_width.set(bounds.size.width);
-                element_bounds_shared.set(bounds.origin);
+                surface_bounds_shared.set(bounds);
                 cell_width_shared.set(actual_cell_width);
                 debug!(
                     bounds_width = ?bounds.size.width,
@@ -1940,7 +1743,7 @@ impl Element for DocumentElement {
 
                     // Don't update editor state during layout/prepaint phase
                     // The editor should be resized elsewhere, not during rendering
-                    DocumentLayout {
+                    EditorLayout {
                         hitbox,
                         rows,
                         columns,
@@ -2031,10 +1834,9 @@ impl Element for DocumentElement {
                 .map(|advance| advance.width)
                 .unwrap_or(em_width);
 
-            let gutter_width_px = f32::from(view.gutter_offset(doc)) * cell_width;
-            let right_padding = cell_width * 2.0;
-            let text_area_width = bounds.size.width - gutter_width_px - right_padding;
-            let columns = ((text_area_width / cell_width).floor() as u16).max(1);
+            let surface_geometry =
+                EditorSurfaceGeometry::new(bounds, view.gutter_offset(doc), cell_width);
+            let columns = surface_geometry.viewport_columns(1);
 
             // Check soft-wrap setting from Helix for this document/view
             // Build TextFormat to read soft_wrap flag; viewport_width expects u16 columns
@@ -2088,12 +1890,9 @@ impl Element for DocumentElement {
                     let gutter_offset = view.gutter_offset(document);
                     let theme = cx.global::<crate::ThemeManager>().helix_theme();
 
-                    // Calculate viewport width accounting for gutter and some padding
-                    let gutter_width_px = f32::from(gutter_offset) * after_layout.cell_width;
-                    let right_padding = after_layout.cell_width * 2.0; // 2 characters of padding
-                    let text_area_width = bounds.size.width - gutter_width_px - right_padding;
-                    let viewport_width =
-                        (text_area_width / after_layout.cell_width).max(10.0) as u16;
+                    let surface_geometry =
+                        EditorSurfaceGeometry::new(bounds, gutter_offset, after_layout.cell_width);
+                    let viewport_width = surface_geometry.viewport_columns(10);
 
                     let text_format = document.text_format(viewport_width, Some(theme));
                     text_format.soft_wrap
@@ -2357,7 +2156,9 @@ impl Element for DocumentElement {
                 // but current version converts to LOCAL coordinates before storage
                 // The px(2.) was part of the global calculation, but since we now convert to local,
                 // we need to match the soft-wrap calculation which doesn't include px(2.)
-                let text_origin_x = bounds.origin.x + (after_layout.cell_width * f32::from(gutter_width));
+                let text_origin_x =
+                    EditorSurfaceGeometry::new(bounds, gutter_width, after_layout.cell_width)
+                        .text_origin_x();
 
 
                 // Render rulers before text
@@ -2484,13 +2285,9 @@ impl Element for DocumentElement {
                         let view_offset = document.view_offset(self.view_id);
                         let gutter_offset = view.gutter_offset(document);
 
-                        // Calculate viewport width accounting for gutter and some padding
-                        // The text area width is the total width minus the gutter width
-                        // We also subtract a small amount for right padding to prevent text cutoff
-                        let gutter_width_px = f32::from(gutter_offset) * after_layout.cell_width;
-                        let right_padding = after_layout.cell_width * 2.0; // 2 characters of padding
-                        let text_area_width = bounds.size.width - gutter_width_px - right_padding;
-                        let viewport_width = (text_area_width / after_layout.cell_width).max(10.0) as u16;
+                        let surface_geometry =
+                            EditorSurfaceGeometry::new(bounds, gutter_offset, after_layout.cell_width);
+                        let viewport_width = surface_geometry.viewport_columns(10);
 
                         let text_format = document.text_format(viewport_width, Some(&theme));
                         (text_format, view_offset, gutter_offset)
@@ -2506,7 +2303,9 @@ impl Element for DocumentElement {
                         view_offset.anchor,
                     );
 
-                    let text_origin_x = bounds.origin.x + (f32::from(gutter_offset) * after_layout.cell_width);
+                    let text_origin_x =
+                        EditorSurfaceGeometry::new(bounds, gutter_offset, after_layout.cell_width)
+                            .text_origin_x();
                     let mut y_offset = -scroll_line_offset;
                     let mut visual_line = 0;
                     let mut current_doc_line = text.char_to_line(view_offset.anchor);
@@ -3308,24 +3107,13 @@ impl Element for DocumentElement {
                                 // Calculate cursor position - FIXED: Use text_bounds coordinate system to match mouse clicks
                                 // Get text bounds (excluding gutter) to match mouse coordinate system
                                 // Use existing gutter_width from outer scope instead of calling view.gutter_offset(document)
-                                let gutter_offset = gutter_width;
-                                let text_bounds = {
-                                    let gutter_width =
-                                        after_layout.cell_width * (gutter_offset as f32);
-                                    let right_padding = after_layout.cell_width * 2.0;
-                                    let top_padding = px(1.0);
-
-                                    gpui::Bounds {
-                                        origin: gpui::Point {
-                                            x: bounds.origin.x + gutter_width,
-                                            y: bounds.origin.y + top_padding,
-                                        },
-                                        size: gpui::Size {
-                                            width: bounds.size.width - gutter_width - right_padding,
-                                            height: bounds.size.height - top_padding,
-                                        },
-                                    }
-                                };
+                                let text_bounds =
+                                    EditorSurfaceGeometry::new(
+                                        bounds,
+                                        gutter_width,
+                                        after_layout.cell_width,
+                                    )
+                                    .text_bounds();
 
                                 let relative_line = cursor_line - view_offset.vertical_offset;
                                 let cursor_y = text_bounds.origin.y + (after_layout.line_height * relative_line as f32);
@@ -3800,28 +3588,13 @@ impl Element for DocumentElement {
                                 // FIXED: Convert from line-relative coordinates to text-area coordinates
                                 // Line layouts are stored in text-area coordinates (x=0), so we need to add text bounds offset
                                 // Use existing values from the outer scope (editor, document, view, gutter_width are already available)
-                                let cell_width = after_layout.cell_width; // Use actual calculated cell width, not hardcoded
-                                let gutter_offset_u16 = gutter_width;
-                                let element_bounds = bounds;
-
-                                // Calculate text bounds (same as mouse coordinate system)
-                                let text_bounds = {
-                                    let gutter_width =
-                                        cell_width * (gutter_offset_u16 as f32);
-                                    let right_padding = cell_width * 2.0;
-                                    let top_padding = px(1.0);
-
-                                    gpui::Bounds {
-                                        origin: gpui::Point {
-                                            x: element_bounds.origin.x + gutter_width,
-                                            y: element_bounds.origin.y + top_padding,
-                                        },
-                                        size: gpui::Size {
-                                            width: element_bounds.size.width - gutter_width - right_padding,
-                                            height: element_bounds.size.height - top_padding,
-                                        },
-                                    }
-                                };
+                                let text_bounds =
+                                    EditorSurfaceGeometry::new(
+                                        bounds,
+                                        gutter_width,
+                                        after_layout.cell_width,
+                                    )
+                                    .text_bounds();
 
                                 // Convert to absolute coordinates by adding text bounds origin
                                 let cursor_x = text_bounds.origin.x + cursor_x_relative_to_line;
@@ -3927,27 +3700,13 @@ impl Element for DocumentElement {
                                 if cursor_at_end && file_ends_with_newline && cursor_char_idx >= text.len_chars() {
 
                                     // Calculate text bounds for phantom cursor positioning (same as normal cursor logic)
-                                    let cell_width = after_layout.cell_width;
-                                    let gutter_offset_u16 = gutter_width;
-                                    let element_bounds = bounds;
-
-                                    let phantom_text_bounds = {
-                                let gutter_width_px =
-                                    cell_width * (gutter_offset_u16 as f32);
-                                        let right_padding = cell_width * 2.0;
-                                        let top_padding = px(1.0);
-
-                                        gpui::Bounds {
-                                            origin: gpui::Point {
-                                                x: element_bounds.origin.x + gutter_width_px,
-                                                y: element_bounds.origin.y + top_padding,
-                                            },
-                                            size: gpui::Size {
-                                                width: element_bounds.size.width - gutter_width_px - right_padding,
-                                                height: element_bounds.size.height - top_padding,
-                                            },
-                                        }
-                                    };
+                                    let phantom_text_bounds =
+                                        EditorSurfaceGeometry::new(
+                                            bounds,
+                                            gutter_width,
+                                            after_layout.cell_width,
+                                        )
+                                        .text_bounds();
 
                                     // Calculate cursor position at the first tilde line
                                     // Use the y_offset from the main loop (where the next line would be)
@@ -4135,7 +3894,7 @@ impl Element for DocumentElement {
 }
 
 struct Gutter<'a> {
-    after_layout: &'a DocumentLayout,
+    after_layout: &'a EditorLayout,
     text_system: std::sync::Arc<WindowTextSystem>,
     lines: Vec<(Point<Pixels>, ShapedLine)>,
     style: TextStyle,
@@ -4487,350 +4246,3 @@ impl<'t> OverlayHighlighter<'t> {
 }
 
 // Removed DiagnosticView - diagnostics are now handled through events and document highlights
-
-#[cfg(test)]
-mod coordinate_transformation_tests {
-    use super::*;
-    use gpui::{Bounds, point, px, size};
-    use helix_view::view::ViewPosition;
-
-    fn create_test_text_bounds() -> Bounds<Pixels> {
-        // Simulate text area: starts at (48, 24) with size 800x600
-        Bounds {
-            origin: point(px(48.0), px(24.0)), // After gutter (48px) and header (24px)
-            size: size(px(800.0), px(600.0)),
-        }
-    }
-
-    fn create_test_view_offset() -> ViewPosition {
-        ViewPosition {
-            anchor: 100, // Character position 100 in document
-            horizontal_offset: 0,
-            vertical_offset: 2, // 2 lines scrolled down
-        }
-    }
-
-    #[test]
-    fn test_window_to_text_area_coordinate_conversion() {
-        let text_bounds = create_test_text_bounds();
-
-        // Test basic coordinate conversion
-        let window_pos = point(px(100.0), px(100.0));
-        let text_area_pos = point(
-            window_pos.x - text_bounds.origin.x,
-            window_pos.y - text_bounds.origin.y,
-        );
-
-        // Expected: (100-48, 100-24) = (52, 76)
-        assert_eq!(text_area_pos.x, px(52.0));
-        assert_eq!(text_area_pos.y, px(76.0));
-
-        // Test position at text area origin
-        let origin_pos = text_bounds.origin;
-        let converted = point(
-            origin_pos.x - text_bounds.origin.x,
-            origin_pos.y - text_bounds.origin.y,
-        );
-        assert_eq!(converted.x, px(0.0));
-        assert_eq!(converted.y, px(0.0));
-
-        // Test position outside text area (should handle negative coordinates)
-        let outside_pos = point(px(20.0), px(10.0));
-        let outside_converted = point(
-            outside_pos.x - text_bounds.origin.x,
-            outside_pos.y - text_bounds.origin.y,
-        );
-        assert_eq!(outside_converted.x, px(-28.0));
-        assert_eq!(outside_converted.y, px(-14.0));
-    }
-
-    #[test]
-    fn test_text_area_to_content_coordinate_conversion() {
-        let view_offset = create_test_view_offset();
-        let cell_width = px(8.0);
-        let line_height = px(20.0);
-
-        // Test conversion with scroll offset
-        let text_area_pos = point(px(40.0), px(60.0));
-
-        // Content position = text_area_position + scroll_offset
-        let scroll_x = cell_width * (view_offset.horizontal_offset as f32);
-        let scroll_y = line_height * (view_offset.vertical_offset as f32);
-
-        let content_pos = point(text_area_pos.x + scroll_x, text_area_pos.y + scroll_y);
-
-        // Expected: (40 + 0*8, 60 + 2*20) = (40, 100)
-        assert_eq!(content_pos.x, px(40.0));
-        assert_eq!(content_pos.y, px(100.0));
-
-        // Test with horizontal scroll
-        let view_offset_with_h_scroll = ViewPosition {
-            anchor: 100,
-            horizontal_offset: 5, // 5 characters scrolled right
-            vertical_offset: 3,   // 3 lines scrolled down
-        };
-
-        let scroll_x_h = cell_width * (view_offset_with_h_scroll.horizontal_offset as f32);
-        let scroll_y_h = line_height * (view_offset_with_h_scroll.vertical_offset as f32);
-
-        let content_pos_h = point(text_area_pos.x + scroll_x_h, text_area_pos.y + scroll_y_h);
-
-        // Expected: (40 + 5*8, 60 + 3*20) = (80, 120)
-        assert_eq!(content_pos_h.x, px(80.0));
-        assert_eq!(content_pos_h.y, px(120.0));
-    }
-
-    #[test]
-    fn test_content_to_display_point_conversion() {
-        let cell_width = px(8.0);
-        let line_height = px(20.0);
-
-        // Test basic pixel to display point conversion
-        let content_pos = point(px(64.0), px(100.0));
-
-        let display_col = (content_pos.x / cell_width) as usize;
-        let display_row = (content_pos.y / line_height) as usize;
-
-        // Expected: (64/8, 100/20) = (8, 5)
-        assert_eq!(display_col, 8);
-        assert_eq!(display_row, 5);
-
-        // Test fractional positioning (should truncate)
-        let fractional_pos = point(px(67.5), px(109.9));
-        let frac_col = (fractional_pos.x / cell_width) as usize;
-        let frac_row = (fractional_pos.y / line_height) as usize;
-
-        // Expected: (67.5/8, 109.9/20) = (8, 5) (truncated)
-        assert_eq!(frac_col, 8);
-        assert_eq!(frac_row, 5);
-
-        // Test zero position
-        let zero_pos = point(px(0.0), px(0.0));
-        let zero_col = (zero_pos.x / cell_width) as usize;
-        let zero_row = (zero_pos.y / line_height) as usize;
-        assert_eq!(zero_col, 0);
-        assert_eq!(zero_row, 0);
-    }
-
-    #[test]
-    fn test_complete_coordinate_transformation_chain() {
-        // Test the complete chain: Window → TextArea → Content → DisplayPoint
-        let text_bounds = create_test_text_bounds();
-        let view_offset = create_test_view_offset();
-        let cell_width = px(8.0);
-        let line_height = px(20.0);
-
-        // Start with a window coordinate
-        let window_pos = point(px(144.0), px(84.0));
-
-        // Step 1: Window → TextArea
-        let text_area_pos = point(
-            window_pos.x - text_bounds.origin.x,
-            window_pos.y - text_bounds.origin.y,
-        );
-        // Expected: (144-48, 84-24) = (96, 60)
-        assert_eq!(text_area_pos.x, px(96.0));
-        assert_eq!(text_area_pos.y, px(60.0));
-
-        // Step 2: TextArea → Content
-        let scroll_x = cell_width * (view_offset.horizontal_offset as f32);
-        let scroll_y = line_height * (view_offset.vertical_offset as f32);
-        let content_pos = point(text_area_pos.x + scroll_x, text_area_pos.y + scroll_y);
-        // Expected: (96 + 0*8, 60 + 2*20) = (96, 100)
-        assert_eq!(content_pos.x, px(96.0));
-        assert_eq!(content_pos.y, px(100.0));
-
-        // Step 3: Content → DisplayPoint
-        let display_col = (content_pos.x / cell_width) as usize;
-        let display_row = (content_pos.y / line_height) as usize;
-        // Expected: (96/8, 100/20) = (12, 5)
-        assert_eq!(display_col, 12);
-        assert_eq!(display_row, 5);
-    }
-
-    #[test]
-    fn test_bounds_validation() {
-        let text_bounds = create_test_text_bounds();
-
-        // Test position inside bounds
-        let inside_pos = point(px(100.0), px(100.0));
-        assert!(text_bounds.contains(&inside_pos));
-
-        // Test position outside bounds (left)
-        let left_outside = point(px(20.0), px(100.0));
-        assert!(!text_bounds.contains(&left_outside));
-
-        // Test position outside bounds (top)
-        let top_outside = point(px(100.0), px(10.0));
-        assert!(!text_bounds.contains(&top_outside));
-
-        // Test position outside bounds (right)
-        let right_outside = point(px(900.0), px(100.0)); // text_bounds.origin.x + size.width = 48 + 800 = 848
-        assert!(!text_bounds.contains(&right_outside));
-
-        // Test position outside bounds (bottom)
-        let bottom_outside = point(px(100.0), px(700.0)); // text_bounds.origin.y + size.height = 24 + 600 = 624
-        assert!(!text_bounds.contains(&bottom_outside));
-
-        // Test position exactly at bounds edges
-        let top_left = text_bounds.origin;
-        assert!(text_bounds.contains(&top_left));
-
-        let bottom_right = point(
-            text_bounds.origin.x + text_bounds.size.width - px(1.0),
-            text_bounds.origin.y + text_bounds.size.height - px(1.0),
-        );
-        assert!(text_bounds.contains(&bottom_right));
-    }
-
-    #[test]
-    fn test_scroll_position_clamping() {
-        // Test scroll position clamping logic
-        let max_scroll_x = px(200.0);
-        let max_scroll_y = px(500.0);
-
-        // Test normal position (should not be clamped)
-        let normal_pos = point(px(100.0), px(250.0));
-        let clamped_normal = point(
-            normal_pos.x.max(px(0.0)).min(max_scroll_x),
-            normal_pos.y.max(px(0.0)).min(max_scroll_y),
-        );
-        assert_eq!(clamped_normal, normal_pos);
-
-        // Test negative position (should clamp to 0)
-        let negative_pos = point(px(-50.0), px(-100.0));
-        let clamped_negative = point(
-            negative_pos.x.max(px(0.0)).min(max_scroll_x),
-            negative_pos.y.max(px(0.0)).min(max_scroll_y),
-        );
-        assert_eq!(clamped_negative, point(px(0.0), px(0.0)));
-
-        // Test position beyond maximum (should clamp to max)
-        let beyond_max = point(px(300.0), px(600.0));
-        let clamped_beyond = point(
-            beyond_max.x.max(px(0.0)).min(max_scroll_x),
-            beyond_max.y.max(px(0.0)).min(max_scroll_y),
-        );
-        assert_eq!(clamped_beyond, point(max_scroll_x, max_scroll_y));
-    }
-
-    #[test]
-    fn test_x_overshoot_behavior() {
-        // Test X-overshoot tracking for selections past end-of-line
-        let line_width = px(80.0); // Line has 10 characters * 8px = 80px
-        let cell_width = px(8.0);
-
-        // Click within line bounds
-        let within_bounds = px(64.0); // 8 characters in
-        let within_col = (within_bounds / cell_width) as usize;
-        assert_eq!(within_col, 8);
-
-        // Click past end of line (should allow overshoot)
-        let past_end = px(120.0); // 15 characters in (past the 10-char line)
-        let past_col = (past_end / cell_width) as usize;
-        assert_eq!(past_col, 15); // Should allow overshoot for selections
-
-        // Verify overshoot distance
-        let overshoot_distance = past_end - line_width;
-        assert_eq!(overshoot_distance, px(40.0)); // 5 characters * 8px = 40px
-    }
-
-    #[test]
-    fn test_edge_case_coordinates() {
-        let cell_width = px(8.0);
-        let line_height = px(20.0);
-
-        // Test coordinates exactly at cell boundaries
-        let exact_boundary = point(px(80.0), px(100.0));
-        let boundary_col = (exact_boundary.x / cell_width) as usize;
-        let boundary_row = (exact_boundary.y / line_height) as usize;
-        assert_eq!(boundary_col, 10); // Exactly at character 10
-        assert_eq!(boundary_row, 5); // Exactly at line 5
-
-        // Test coordinates just before boundaries
-        let before_boundary = point(px(79.9), px(99.9));
-        let before_col = (before_boundary.x / cell_width) as usize;
-        let before_row = (before_boundary.y / line_height) as usize;
-        assert_eq!(before_col, 9); // Still character 9
-        assert_eq!(before_row, 4); // Still line 4
-
-        // Test coordinates just after boundaries
-        let after_boundary = point(px(80.1), px(100.1));
-        let after_col = (after_boundary.x / cell_width) as usize;
-        let after_row = (after_boundary.y / line_height) as usize;
-        assert_eq!(after_col, 10); // Now character 10
-        assert_eq!(after_row, 5); // Now line 5
-    }
-
-    #[test]
-    fn test_viewport_coordinate_calculations() {
-        let text_bounds = create_test_text_bounds();
-        let line_height = px(20.0);
-
-        // Calculate visible lines in viewport
-        let viewport_height = text_bounds.size.height;
-        let lines_in_viewport = (viewport_height / line_height) as usize;
-        // Expected: 600 / 20 = 30 lines visible
-        assert_eq!(lines_in_viewport, 30);
-
-        // Test first/last visible line calculation with scroll
-        let scroll_y = px(40.0); // Scrolled down 2 lines
-        let first_visible_line = (scroll_y / line_height) as usize;
-        let last_visible_line = first_visible_line + lines_in_viewport;
-
-        assert_eq!(first_visible_line, 2); // Line 2 is first visible
-        assert_eq!(last_visible_line, 32); // Line 32 is last visible (2 + 30)
-
-        // Test visibility check
-        let test_line = 15;
-        let is_visible = test_line >= first_visible_line && test_line < last_visible_line;
-        assert!(is_visible); // Line 15 should be visible
-
-        let out_of_view_line = 35;
-        let is_out_of_view =
-            out_of_view_line >= first_visible_line && out_of_view_line < last_visible_line;
-        assert!(!is_out_of_view); // Line 35 should not be visible
-    }
-
-    #[test]
-    fn test_coordinate_system_consistency() {
-        // Verify that forward and reverse transformations are consistent
-        let _text_bounds = create_test_text_bounds();
-        let _view_offset = create_test_view_offset();
-        let cell_width = px(8.0);
-        let line_height = px(20.0);
-
-        // Start with display coordinates
-        let original_col = 12;
-        let original_row = 5;
-
-        // Convert to pixel coordinates
-        let content_pos = point(
-            cell_width * (original_col as f32),
-            line_height * (original_row as f32),
-        );
-
-        // Convert back to display coordinates
-        let recovered_col = (content_pos.x / cell_width) as usize;
-        let recovered_row = (content_pos.y / line_height) as usize;
-
-        // Should match original values
-        assert_eq!(recovered_col, original_col);
-        assert_eq!(recovered_row, original_row);
-
-        // Test reverse transformation: pixel → display → pixel
-        let original_pixel_pos = point(px(96.0), px(100.0));
-
-        let display_col = (original_pixel_pos.x / cell_width) as usize;
-        let display_row = (original_pixel_pos.y / line_height) as usize;
-
-        let recovered_pixel_pos = point(
-            cell_width * (display_col as f32),
-            line_height * (display_row as f32),
-        );
-
-        // Should be at character boundary (may differ due to truncation)
-        assert_eq!(recovered_pixel_pos.x, px(96.0)); // 12 * 8 = 96
-        assert_eq!(recovered_pixel_pos.y, px(100.0)); // 5 * 20 = 100
-    }
-}
