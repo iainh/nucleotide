@@ -469,8 +469,8 @@ impl FileTree {
         let visible_entries = self.visible_entries();
         visible_entries
             .iter()
-            .cloned()
             .find(|entry| entry.path == target_path)
+            .cloned()
     }
 
     /// Find the first child entry of a directory in the visible entries

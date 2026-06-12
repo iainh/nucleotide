@@ -1427,6 +1427,7 @@ impl DocumentElement {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn highlight_line_with_state(
         text: RopeSlice<'_>,
         syntax_hl: &mut SyntaxHighlighter<'_, '_, '_>,
