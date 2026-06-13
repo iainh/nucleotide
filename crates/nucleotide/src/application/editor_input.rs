@@ -767,6 +767,8 @@ fn native_command_supported(command: &MappableCommand) -> bool {
                 | "remove_primary_selection"
                 | "scroll_down"
                 | "scroll_up"
+                | "search_next"
+                | "search_prev"
                 | "select_all"
                 | "select_line_above"
                 | "select_line_below"
@@ -1061,6 +1063,19 @@ mod tests {
         assert!(native_command_supported(&MappableCommand::page_down));
         assert!(native_command_supported(&MappableCommand::half_page_up));
         assert!(native_command_supported(&MappableCommand::half_page_down));
+    }
+
+    #[test]
+    fn native_command_supports_search_repeat_commands() {
+        assert!(native_command_supported(&MappableCommand::search_next));
+        assert!(native_command_supported(&MappableCommand::search_prev));
+        assert!(native_command_supported(
+            &MappableCommand::extend_search_next
+        ));
+        assert!(native_command_supported(
+            &MappableCommand::extend_search_prev
+        ));
+        assert!(!native_command_supported(&MappableCommand::global_search));
     }
 
     #[test]
