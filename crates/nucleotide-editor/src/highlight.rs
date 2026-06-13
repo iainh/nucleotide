@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use gpui::{Font, Hsla, TextRun};
+use gpui::{Font, Hsla, SharedString, TextRun};
 use helix_core::{
     RopeSlice,
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
@@ -17,7 +17,12 @@ use helix_view::{
 };
 use nucleotide_logging::debug;
 
-use crate::style::{create_styled_text_run, helix_color_to_hsla};
+use crate::{
+    line_plan::VisibleLinePlan,
+    line_text::shared_line_text_without_trailing_newline,
+    soft_wrap::{SoftWrapVisualLine, decorate_soft_wrap_line_runs},
+    style::{create_styled_text_run, helix_color_to_hsla},
+};
 
 pub type DiagnosticOverlaySpans = Vec<(syntax::Highlight, Range<usize>)>;
 
@@ -35,7 +40,39 @@ pub struct HighlightLineParams<'a> {
     pub font: Font,
     pub default_text_style: Style,
     pub default_bg: Hsla,
-    pub diagnostic_overlay_spans: Option<DiagnosticOverlaySpans>,
+    pub diagnostic_overlay_spans: Option<&'a DiagnosticOverlaySpans>,
+}
+
+pub struct EditorLineHighlightContext<'a> {
+    pub doc: &'a Document,
+    pub view: &'a View,
+    pub theme: &'a Theme,
+    pub syntax_loader: &'a helix_core::syntax::Loader,
+    pub editor_mode: Mode,
+    pub cursor_shape: &'a helix_view::editor::CursorShapeConfig,
+    pub is_view_focused: bool,
+    pub fg_color: Hsla,
+    pub font: Font,
+    pub default_text_style: Style,
+    pub default_bg: Hsla,
+    pub diagnostic_overlay_spans: Option<&'a DiagnosticOverlaySpans>,
+}
+
+pub struct SoftWrapHighlightedLineRunsParams<'a> {
+    pub context: EditorLineHighlightContext<'a>,
+    pub visual: &'a SoftWrapVisualLine,
+    pub wrap_indicator_color: Option<Hsla>,
+}
+
+pub struct UnwrappedHighlightedLineParams<'a> {
+    pub context: EditorLineHighlightContext<'a>,
+    pub text: RopeSlice<'a>,
+    pub line: &'a VisibleLinePlan,
+}
+
+pub struct UnwrappedHighlightedLine {
+    pub line_text: SharedString,
+    pub line_runs: Vec<TextRun>,
 }
 
 pub fn diagnostic_overlay_spans(doc: &Document, theme: &Theme) -> Option<DiagnosticOverlaySpans> {
@@ -128,7 +165,9 @@ pub fn highlight_line(params: HighlightLineParams<'_>) -> Vec<TextRun> {
     let mut overlays = Vec::new();
     overlays.push(selection_overlay);
     if let Some(highlights) = params.diagnostic_overlay_spans {
-        overlays.push(OverlayHighlights::Heterogenous { highlights });
+        overlays.push(OverlayHighlights::Heterogenous {
+            highlights: highlights.clone(),
+        });
     }
     let mut overlay_hl = OverlayHighlighter::new(overlays, params.theme);
 
@@ -142,6 +181,75 @@ pub fn highlight_line(params: HighlightLineParams<'_>) -> Vec<TextRun> {
         params.font,
         params.default_bg,
     )
+}
+
+pub fn soft_wrap_highlighted_line_runs(
+    params: SoftWrapHighlightedLineRunsParams<'_>,
+) -> Vec<TextRun> {
+    let context = params.context;
+    let mut line_runs = if let (Some(line_start), Some(line_end)) =
+        (params.visual.line_start_char, params.visual.line_end_char)
+    {
+        highlight_line(HighlightLineParams {
+            doc: context.doc,
+            view: context.view,
+            theme: context.theme,
+            syntax_loader: context.syntax_loader,
+            editor_mode: context.editor_mode,
+            cursor_shape: context.cursor_shape,
+            is_view_focused: context.is_view_focused,
+            line_start,
+            line_end,
+            fg_color: context.fg_color,
+            font: context.font.clone(),
+            default_text_style: context.default_text_style,
+            default_bg: context.default_bg,
+            diagnostic_overlay_spans: context.diagnostic_overlay_spans,
+        })
+    } else {
+        Vec::new()
+    };
+
+    line_runs = decorate_soft_wrap_line_runs(
+        line_runs,
+        params.visual,
+        &context.font,
+        context.fg_color,
+        params.wrap_indicator_color,
+    );
+
+    line_runs
+}
+
+pub fn unwrapped_highlighted_line(
+    params: UnwrappedHighlightedLineParams<'_>,
+) -> UnwrappedHighlightedLine {
+    let line_slice = params
+        .text
+        .slice(params.line.line_start..params.line.line_end);
+    let line_text = shared_line_text_without_trailing_newline(line_slice);
+    let context = params.context;
+    let line_runs = highlight_line(HighlightLineParams {
+        doc: context.doc,
+        view: context.view,
+        theme: context.theme,
+        syntax_loader: context.syntax_loader,
+        editor_mode: context.editor_mode,
+        cursor_shape: context.cursor_shape,
+        is_view_focused: context.is_view_focused,
+        line_start: params.line.line_start,
+        line_end: params.line.line_end,
+        fg_color: context.fg_color,
+        font: context.font,
+        default_text_style: context.default_text_style,
+        default_bg: context.default_bg,
+        diagnostic_overlay_spans: context.diagnostic_overlay_spans,
+    });
+
+    UnwrappedHighlightedLine {
+        line_text,
+        line_runs,
+    }
 }
 
 pub fn gpui_hsla_to_helix_color(c: Hsla) -> Option<Color> {
