@@ -59,6 +59,16 @@ impl EditorCursor {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CursorLinePosition {
+    pub line: usize,
+    pub line_start: usize,
+    pub line_end: usize,
+    pub line_text: String,
+    pub cursor_char_offset: usize,
+    pub cursor_byte_offset: usize,
+}
+
 #[derive(Clone)]
 pub struct CursorTextShape {
     pub shaped_line: Option<ShapedLine>,
@@ -121,6 +131,53 @@ pub fn block_cursor_text(
     };
 
     (!char_text.is_empty()).then_some(char_text)
+}
+
+pub fn cursor_line_position(
+    text: RopeSlice<'_>,
+    cursor_line: usize,
+    cursor_char_idx: usize,
+    cursor_at_trailing_newline: bool,
+) -> CursorLinePosition {
+    let line = cursor_line.min(text.len_lines().saturating_sub(1));
+    let line_start = text.line_to_char(line);
+    let line_end = if line + 1 < text.len_lines() {
+        text.line_to_char(line + 1)
+    } else {
+        text.len_chars()
+    };
+    let line_text = line_text_without_newline(text.slice(line_start..line_end));
+    let line_char_count = line_text.chars().count();
+    let cursor_char_offset = if cursor_at_trailing_newline {
+        line_char_count
+    } else {
+        cursor_char_idx.saturating_sub(line_start)
+    }
+    .min(line_char_count);
+    let cursor_byte_offset = byte_offset_for_char_offset(&line_text, cursor_char_offset);
+
+    CursorLinePosition {
+        line,
+        line_start,
+        line_end,
+        line_text,
+        cursor_char_offset,
+        cursor_byte_offset,
+    }
+}
+
+fn line_text_without_newline(line: RopeSlice<'_>) -> String {
+    let mut line_text = line.to_string();
+    while line_text.ends_with('\n') || line_text.ends_with('\r') {
+        line_text.pop();
+    }
+    line_text
+}
+
+fn byte_offset_for_char_offset(text: &str, char_offset: usize) -> usize {
+    text.char_indices()
+        .nth(char_offset)
+        .map_or(text.len(), |(byte_idx, _)| byte_idx)
 }
 
 pub fn cursor_foreground_color(cursor_style: &Style, has_reversed: bool, default_bg: Hsla) -> Hsla {
@@ -250,6 +307,58 @@ mod tests {
     fn block_cursor_text_requires_block_cursor_and_focus() {
         assert!(block_cursor_text("abc".into(), 1, CursorKind::Bar, true).is_none());
         assert!(block_cursor_text("abc".into(), 1, CursorKind::Block, false).is_none());
+    }
+
+    #[test]
+    fn cursor_line_position_reports_ascii_offsets() {
+        let position = cursor_line_position("abc\ndef".into(), 0, 2, false);
+
+        assert_eq!(
+            position,
+            CursorLinePosition {
+                line: 0,
+                line_start: 0,
+                line_end: 4,
+                line_text: "abc".to_string(),
+                cursor_char_offset: 2,
+                cursor_byte_offset: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn cursor_line_position_converts_unicode_char_offset_to_byte_offset() {
+        let position = cursor_line_position("aé𝌆z".into(), 0, 3, false);
+
+        assert_eq!(position.line_text, "aé𝌆z");
+        assert_eq!(position.cursor_char_offset, 3);
+        assert_eq!(position.cursor_byte_offset, "aé𝌆".len());
+    }
+
+    #[test]
+    fn cursor_line_position_clamps_to_line_text() {
+        let position = cursor_line_position("abc\ndef".into(), 0, 99, false);
+
+        assert_eq!(position.cursor_char_offset, 3);
+        assert_eq!(position.cursor_byte_offset, 3);
+    }
+
+    #[test]
+    fn cursor_line_position_uses_line_end_for_trailing_newline_cursor() {
+        let position = cursor_line_position("abc\n".into(), 0, 4, true);
+
+        assert_eq!(position.line_text, "abc");
+        assert_eq!(position.cursor_char_offset, 3);
+        assert_eq!(position.cursor_byte_offset, 3);
+    }
+
+    #[test]
+    fn cursor_line_position_strips_crlf() {
+        let position = cursor_line_position("abc\r\ndef".into(), 0, 3, false);
+
+        assert_eq!(position.line_text, "abc");
+        assert_eq!(position.cursor_char_offset, 3);
+        assert_eq!(position.cursor_byte_offset, 3);
     }
 
     #[test]
