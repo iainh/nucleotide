@@ -1,31 +1,31 @@
 use gpui::size;
 use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
-    IntoElement, LayoutId, ParentElement, Pixels, Render, SharedString, Style, Styled, TextStyle,
-    Window, div, px, relative, white,
+    FocusHandle, Focusable, GlobalElementId, InspectorElementId, InteractiveElement, IntoElement,
+    LayoutId, ParentElement, Pixels, Render, SharedString, Style, Styled, TextStyle, Window, div,
+    px, relative, white,
 };
 use helix_core::Uri;
 use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
-use helix_view::{DocumentId, Theme, ViewId};
+use helix_view::{DocumentId, ViewId};
 use nucleotide_logging::{debug, error};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    DocumentSoftWrapRenderPlanParams, EditorCursor, EditorLayout, EditorLineBackgroundStyle,
-    EditorScrollbarState, EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry,
-    EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    EditorViewportSurfaceLayout, GutterLineParams, HighlightLineParams, LineLayout,
-    LineLayoutCache, SoftWrapCursorPaintPlanParams, UnwrappedCursorPaintPlanParams,
-    UnwrappedCursorPaintPlanSource, UnwrappedRenderPlanParams,
+    DiagnosticGutterMarkerPaintPlanParams, DocumentSoftWrapRenderPlanParams, EditorCursor,
+    EditorLayout, EditorLineBackgroundStyle, EditorScrollbarState, EditorSelectionDragState,
+    EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent,
+    EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout, GutterLineParams,
+    HighlightLineParams, LineLayout, LineLayoutCache, SoftWrapCursorPaintPlanParams,
+    UnwrappedCursorPaintPlanParams, UnwrappedCursorPaintPlanSource, UnwrappedRenderPlanParams,
     begin_editor_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
     build_soft_wrap_gutter_lines, cursor_background_color, cursor_document_line,
     cursor_foreground_color, cursor_has_reversed_modifier, cursor_style_for_mode,
-    decorate_soft_wrap_line_runs, diagnostic_marker_paint_style, diagnostic_marker_plan,
-    diagnostic_overlay_spans, diagnostic_severity_by_line, document_render_snapshot,
+    decorate_soft_wrap_line_runs, diagnostic_gutter_marker_paint_plan, diagnostic_overlay_spans,
+    diagnostic_severity_by_line, diagnostic_severity_color, document_render_snapshot,
     document_soft_wrap_render_plan, gpui_hsla_to_helix_color, highlight_line,
     paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
     paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines, paint_visible_rulers,
@@ -507,23 +507,6 @@ impl IntoElement for DocumentElement {
 
     fn into_element(self) -> Self {
         self
-    }
-}
-
-impl DocumentElement {
-    fn severity_color(theme: &Theme, sev: helix_core::diagnostic::Severity) -> Option<Hsla> {
-        let key = match sev {
-            helix_core::diagnostic::Severity::Error => "diagnostic.error",
-            helix_core::diagnostic::Severity::Warning => "diagnostic.warning",
-            helix_core::diagnostic::Severity::Info => "diagnostic.info",
-            helix_core::diagnostic::Severity::Hint => "diagnostic.hint",
-        };
-        let style = theme.get(key);
-        // Prefer underline color (used by diagnostics), fallback to fg if present
-        style
-            .underline_color
-            .or(style.fg)
-            .and_then(crate::utils::color_to_hsla)
     }
 }
 
@@ -1047,24 +1030,27 @@ impl Element for DocumentElement {
                     for gutter_line in gutter_lines {
                         // Paint a small diagnostic marker in the gutter if this line has diagnostics
                         if let Some(sev) = diag_line_severity.get(&gutter_line.doc_line).copied()
-                            && let Some(color) = Self::severity_color(cx.helix_theme(), sev)
+                            && let Some(color) = diagnostic_severity_color(cx.helix_theme(), sev)
                         {
-                            let marker_plan = diagnostic_marker_plan(
-                                gutter_origin,
-                                gutter_line.origin.y,
-                                after_layout.line_height,
-                                sev,
-                            );
                             let gutter_bg = cx
                                 .theme_style("ui.gutter")
                                 .bg
                                 .and_then(crate::utils::color_to_hsla);
-                            let marker_style = diagnostic_marker_paint_style(
-                                color,
-                                cx.theme().tokens.chrome.text_on_chrome,
-                                gutter_bg,
-                            );
-                            paint_diagnostic_marker(window, &marker_plan, marker_style);
+                            let Some(marker_plan) = diagnostic_gutter_marker_paint_plan(
+                                DiagnosticGutterMarkerPaintPlanParams {
+                                    severity_by_line: &diag_line_severity,
+                                    doc_line: gutter_line.doc_line,
+                                    row_y: gutter_line.origin.y,
+                                    gutter_origin,
+                                    line_height: after_layout.line_height,
+                                    marker_color: color,
+                                    highlight_base: cx.theme().tokens.chrome.text_on_chrome,
+                                    gutter_bg,
+                                },
+                            ) else {
+                                continue;
+                            };
+                            paint_diagnostic_marker(window, &marker_plan.marker, marker_plan.style);
                         }
                     }
                 }
