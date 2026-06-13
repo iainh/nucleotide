@@ -19,19 +19,20 @@ use nucleotide_editor::{
     EditorScrollbarState, EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry,
     EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
     EditorViewportSurfaceLayout, GutterLineParams, HighlightLineParams, LineLayout,
-    LineLayoutCache, UnwrappedCursorPaintPlanParams, UnwrappedCursorPaintPlanSource,
-    UnwrappedRenderPlanParams, begin_editor_pointer_selection_at_event, block_cursor_text,
-    build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
-    cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
-    cursor_style_for_mode, decorate_soft_wrap_line_runs, diagnostic_marker_paint_style,
-    diagnostic_marker_plan, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_render_snapshot, document_soft_wrap_render_plan, gpui_hsla_to_helix_color,
-    highlight_line, paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
+    LineLayoutCache, SoftWrapCursorPaintPlanParams, UnwrappedCursorPaintPlanParams,
+    UnwrappedCursorPaintPlanSource, UnwrappedRenderPlanParams,
+    begin_editor_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
+    build_soft_wrap_gutter_lines, cursor_background_color, cursor_document_line,
+    cursor_foreground_color, cursor_has_reversed_modifier, cursor_style_for_mode,
+    decorate_soft_wrap_line_runs, diagnostic_marker_paint_style, diagnostic_marker_plan,
+    diagnostic_overlay_spans, diagnostic_severity_by_line, document_render_snapshot,
+    document_soft_wrap_render_plan, gpui_hsla_to_helix_color, highlight_line,
+    paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
     paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines, paint_visible_rulers,
-    shape_cursor_text, shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
-    soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_visual_position,
-    text_style_at_position, unwrapped_cursor_paint_plan, unwrapped_render_plan,
-    update_editor_pointer_selection_at_event, visible_ruler_paint_plans,
+    shape_cursor_text, shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_plan,
+    soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, text_style_at_position,
+    unwrapped_cursor_paint_plan, unwrapped_render_plan, update_editor_pointer_selection_at_event,
+    visible_ruler_paint_plans,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -1119,28 +1120,25 @@ impl Element for DocumentElement {
                         }
                     };
 
-                    let cursor_visual_position = soft_wrap_visual_position(
-                        text,
-                        text_format,
-                        view_offset.anchor,
-                        cursor_char_idx,
-                    );
-
-                    if let Some(cursor_position) = cursor_visual_position
-                        && let Some(cursor_paint_position) = soft_wrap_cursor_paint_position(
-                            EditorSurfaceGeometry::new(
+                    if let Some(cursor_paint_plan) =
+                        soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
+                            text,
+                            text_format,
+                            anchor: view_offset.anchor,
+                            cursor_char_idx,
+                            geometry: EditorSurfaceGeometry::new(
                                 bounds,
                                 gutter_width,
                                 after_layout.cell_width,
                             ),
-                            after_layout.line_height,
-                            after_layout.cell_width,
-                            cursor_position,
-                            view_offset.vertical_offset,
+                            line_height: after_layout.line_height,
+                            cell_width: after_layout.cell_width,
+                            vertical_offset: view_offset.vertical_offset,
                             viewport_height,
-                            view_offset.horizontal_offset,
-                        )
+                            horizontal_offset: view_offset.horizontal_offset,
+                        })
                     {
+                        let cursor_paint_position = cursor_paint_plan.paint_position;
                         let has_reversed = cursor_has_reversed_modifier(&cursor_style);
                         let cursor_color =
                             cursor_background_color(&cursor_style, &text_style_at_cursor, fg_color);
