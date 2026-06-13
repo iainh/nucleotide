@@ -53,7 +53,8 @@ pub use hit_test::{EditorHitTestResult, hit_test_document_position};
 pub use line_cache::{LineLayout, LineLayoutCache};
 pub use line_painter::{EditorLineBackgroundStyle, paint_line_backgrounds};
 pub use line_plan::{
-    LineViewportPlan, VisibleLinePlan, line_viewport_plan, unwrapped_visible_line_plans,
+    LineViewportPlan, UnwrappedLinePaintPlan, VisibleLinePlan, line_viewport_plan,
+    unwrapped_line_paint_plans, unwrapped_visible_line_plans,
 };
 pub use line_text::{
     byte_offset_for_char_offset, line_text_without_trailing_newline,

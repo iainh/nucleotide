@@ -1,8 +1,10 @@
 // ABOUTME: Pure visible-line planning for native editor rendering
 // ABOUTME: Converts Helix row ranges into renderable document line segments
 
-use gpui::Pixels;
+use gpui::{Bounds, Pixels, Point, point, size};
 use helix_core::RopeSlice;
+
+use crate::EditorSurfaceGeometry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineViewportPlan {
@@ -20,6 +22,14 @@ pub struct VisibleLinePlan {
     pub line_start: usize,
     pub line_end: usize,
     pub y_offset: Pixels,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UnwrappedLinePaintPlan<'a> {
+    pub line: &'a VisibleLinePlan,
+    pub text_origin: Point<Pixels>,
+    pub cursorline_bounds: Bounds<Pixels>,
+    pub is_cursor_line: bool,
 }
 
 pub fn line_viewport_plan(
@@ -93,6 +103,32 @@ pub fn unwrapped_visible_line_plans(
     plans
 }
 
+pub fn unwrapped_line_paint_plans<'a>(
+    lines: &'a [VisibleLinePlan],
+    geometry: EditorSurfaceGeometry,
+    line_height: Pixels,
+    cursor_line: usize,
+) -> Vec<UnwrappedLinePaintPlan<'a>> {
+    let text_origin_x = geometry.text_origin_x();
+
+    lines
+        .iter()
+        .map(|line| {
+            let line_y = geometry.bounds.origin.y + geometry.top_padding() + line.y_offset;
+
+            UnwrappedLinePaintPlan {
+                line,
+                text_origin: point(text_origin_x, line_y),
+                cursorline_bounds: Bounds::new(
+                    point(geometry.bounds.origin.x, line_y),
+                    size(geometry.bounds.size.width, line_height),
+                ),
+                is_cursor_line: line.line_idx == cursor_line,
+            }
+        })
+        .collect()
+}
+
 fn line_bounds(text: RopeSlice<'_>, line_idx: usize, total_lines: usize) -> (usize, usize) {
     let line_start = if line_idx < total_lines {
         text.line_to_char(line_idx)
@@ -121,8 +157,12 @@ fn is_phantom_line(text: RopeSlice<'_>, line_idx: usize, viewport: LineViewportP
 
 #[cfg(test)]
 mod tests {
-    use super::{line_viewport_plan, unwrapped_visible_line_plans};
-    use gpui::px;
+    use super::{
+        VisibleLinePlan, line_viewport_plan, unwrapped_line_paint_plans,
+        unwrapped_visible_line_plans,
+    };
+    use crate::EditorSurfaceGeometry;
+    use gpui::{Bounds, point, px, size};
 
     #[test]
     fn plans_unwrapped_visible_lines() {
@@ -174,5 +214,46 @@ mod tests {
         assert_eq!(plans[0].line_idx, 0);
         assert_eq!((plans[0].line_start, plans[0].line_end), (0, 5));
         assert_eq!(plans[0].y_offset, px(0.0));
+    }
+
+    #[test]
+    fn plans_unwrapped_line_paint_geometry() {
+        let lines = vec![
+            VisibleLinePlan {
+                line_idx: 4,
+                line_start: 20,
+                line_end: 25,
+                y_offset: px(0.0),
+            },
+            VisibleLinePlan {
+                line_idx: 5,
+                line_start: 26,
+                line_end: 31,
+                y_offset: px(20.0),
+            },
+        ];
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            4,
+            px(8.0),
+        );
+
+        let plans = unwrapped_line_paint_plans(&lines, geometry, px(20.0), 5);
+
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].line, &lines[0]);
+        assert_eq!(plans[0].text_origin, point(px(132.0), px(41.0)));
+        assert_eq!(
+            plans[0].cursorline_bounds,
+            Bounds::new(point(px(100.0), px(41.0)), size(px(500.0), px(20.0)))
+        );
+        assert!(!plans[0].is_cursor_line);
+        assert_eq!(plans[1].line, &lines[1]);
+        assert_eq!(plans[1].text_origin, point(px(132.0), px(61.0)));
+        assert_eq!(
+            plans[1].cursorline_bounds,
+            Bounds::new(point(px(100.0), px(61.0)), size(px(500.0), px(20.0)))
+        );
+        assert!(plans[1].is_cursor_line);
     }
 }
