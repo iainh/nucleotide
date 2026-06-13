@@ -1,12 +1,12 @@
 // ABOUTME: Native GPUI editor viewport state for pixel and visual-row scrolling
 // ABOUTME: Owns GUI scroll state before it is synced into Helix view offsets
 
-use gpui::{Bounds, Pixels, Point, Size, point, px};
+use gpui::{Bounds, Pixels, Point, Size, point, px, size};
 use helix_core::{RopeSlice, char_idx_at_visual_offset};
-use helix_view::{Document, DocumentId, Editor, ViewId, view::ViewPosition};
+use helix_view::{Document, DocumentId, Editor, Theme, ViewId, view::ViewPosition};
 use nucleotide_logging::debug;
 
-use crate::ScrollManager;
+use crate::{EditorDocumentMetrics, ScrollManager};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ViewportScrollUpdate {
@@ -21,6 +21,24 @@ pub struct HelixViewportSnapshot {
     pub anchor_line: usize,
     pub vertical_offset: usize,
     pub top_visual_row: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorViewportSurfaceUpdate {
+    pub gutter_columns: u16,
+    pub visual_rows: usize,
+    pub soft_wrap: bool,
+    pub helix_view_synced: bool,
+    pub helix_snapshot: HelixViewportSnapshot,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct EditorViewportSurfaceLayout<'a> {
+    pub theme: Option<&'a Theme>,
+    pub bounds: Bounds<Pixels>,
+    pub cell_width: Pixels,
+    pub line_height: Pixels,
+    pub minimum_columns: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -197,6 +215,47 @@ impl EditorViewport {
         true
     }
 
+    pub fn sync_surface_layout(
+        &mut self,
+        editor: &mut Editor,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        layout: EditorViewportSurfaceLayout<'_>,
+    ) -> Option<EditorViewportSurfaceUpdate> {
+        self.set_line_height(layout.line_height);
+        self.set_viewport_size(editor_viewport_size_for_bounds(layout.bounds));
+
+        let helix_view_synced = if self.has_pending_scrollbar_sync() {
+            let synced = self.sync_to_helix_view(editor, doc_id, view_id);
+            self.clear_pending_scrollbar_sync();
+            synced
+        } else {
+            false
+        };
+
+        let view = editor.tree.try_get(view_id)?;
+        let document = editor.document(doc_id)?;
+        let gutter_columns = view.gutter_offset(document);
+        let metrics = EditorDocumentMetrics::resolve(
+            document,
+            layout.theme,
+            layout.bounds,
+            gutter_columns,
+            layout.cell_width,
+            layout.minimum_columns,
+        );
+        self.set_content_visual_rows(metrics.visual_rows);
+        let helix_snapshot = self.sync_from_helix_view(document, view_id);
+
+        Some(EditorViewportSurfaceUpdate {
+            gutter_columns,
+            visual_rows: metrics.visual_rows,
+            soft_wrap: metrics.soft_wrap,
+            helix_view_synced,
+            helix_snapshot,
+        })
+    }
+
     pub fn top_visual_row(&self) -> usize {
         self.scroll.pixels_to_anchor(self.scroll_position().y)
     }
@@ -208,6 +267,13 @@ impl EditorViewport {
     pub fn visible_visual_range(&self) -> (usize, usize) {
         self.scroll.visible_line_range()
     }
+}
+
+pub fn editor_viewport_size_for_bounds(bounds: Bounds<Pixels>) -> Size<Pixels> {
+    size(
+        bounds.size.width,
+        (bounds.size.height - px(1.0)).max(px(0.0)),
+    )
 }
 
 pub fn helix_viewport_snapshot(
@@ -227,7 +293,7 @@ pub fn helix_viewport_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use gpui::{point, px, size};
+    use gpui::{Bounds, point, px, size};
     use helix_view::view::ViewPosition;
 
     use super::*;
@@ -303,6 +369,26 @@ mod tests {
 
         assert_eq!(viewport.content_visual_rows(), 30);
         assert_eq!(viewport.max_scroll_offset().height, px(500.0));
+    }
+
+    #[test]
+    fn surface_viewport_size_uses_text_area_height() {
+        let bounds = Bounds::new(point(px(10.0), px(20.0)), size(px(300.0), px(101.0)));
+
+        assert_eq!(
+            editor_viewport_size_for_bounds(bounds),
+            size(px(300.0), px(100.0))
+        );
+    }
+
+    #[test]
+    fn surface_viewport_size_clamps_empty_height() {
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(300.0), px(0.5)));
+
+        assert_eq!(
+            editor_viewport_size_for_bounds(bounds),
+            size(px(300.0), px(0.0))
+        );
     }
 
     #[test]
