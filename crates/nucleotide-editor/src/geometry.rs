@@ -1,7 +1,7 @@
 // ABOUTME: Native editor surface geometry and coordinate transforms
 // ABOUTME: Centralizes text-area bounds used by rendering and input handling
 
-use gpui::{Bounds, Hitbox, Pixels, Point, point, px, size};
+use gpui::{Bounds, Pixels, Point, point, px, size};
 
 const RIGHT_PADDING_COLUMNS: f32 = 2.0;
 const TOP_PADDING: f32 = 1.0;
@@ -13,7 +13,6 @@ pub struct EditorLayout {
     pub line_height: Pixels,
     pub font_size: Pixels,
     pub cell_width: Pixels,
-    pub hitbox: Option<Hitbox>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
