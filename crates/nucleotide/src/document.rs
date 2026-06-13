@@ -7,7 +7,7 @@ use gpui::{
     IntoElement, LayoutId, ParentElement, Pixels, Point, Render, SharedString, Size, Style, Styled,
     TextStyle, Window, div, fill, px, relative, white,
 };
-use gpui::{TextRun, point, size};
+use gpui::{TextRun, size};
 use helix_core::Uri;
 use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
@@ -29,10 +29,10 @@ use nucleotide_editor::{
     highlight_line, hit_test_document_position, line_viewport_plan, paint_line_backgrounds,
     phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
-    soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans, soft_wrap_viewport_height,
-    soft_wrap_visual_lines, soft_wrap_visual_position, text_style_at_position,
-    unwrapped_cursor_paint_position, unwrapped_line_paint_plans, unwrapped_visible_line_plans,
-    visible_ruler_bounds,
+    soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
+    soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
+    text_style_at_position, unwrapped_cursor_paint_position, unwrapped_line_paint_plans,
+    unwrapped_visible_line_plans, visible_ruler_bounds,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -1138,51 +1138,42 @@ impl Element for DocumentElement {
                         scroll_line_offset,
                         cursors.as_ref(),
                     );
-                    for gutter_plan in gutter_plans {
-                        let y = gutter_origin.y + gutter_plan.y_offset;
-
-                        // Choose color based on whether this line contains a cursor (same logic as regular gutter)
-                        // Use UI theme tokens for gutter fallback color
-                        let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
-
-                        let gutter_color = gutter_style
-                            .fg
-                            .and_then(crate::utils::color_to_hsla)
-                            .unwrap_or(default_gutter_color);
-                        let gutter_selected_color = gutter_selected_style
-                            .fg
-                            .and_then(crate::utils::color_to_hsla)
-                            .unwrap_or(default_gutter_color);
-
-                        let line_color = if gutter_plan.is_phantom_line {
-                            // Phantom lines (tildes) always use regular gutter color, never selected
-                            gutter_color
-                        } else if gutter_plan.selected {
-                            // Current line - use selected gutter style
-                            gutter_selected_color
-                        } else {
-                            // Other lines - use regular gutter style
-                            gutter_color
-                        };
+                    let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
+                    let gutter_color = gutter_style
+                        .fg
+                        .and_then(crate::utils::color_to_hsla)
+                        .unwrap_or(default_gutter_color);
+                    let gutter_selected_color = gutter_selected_style
+                        .fg
+                        .and_then(crate::utils::color_to_hsla)
+                        .unwrap_or(default_gutter_color);
+                    let gutter_paint_plans = soft_wrap_gutter_line_paint_plans(
+                        &gutter_plans,
+                        gutter_origin,
+                        gutter_color,
+                        gutter_selected_color,
+                    );
+                    for gutter_paint_plan in gutter_paint_plans {
+                        let gutter_plan = gutter_paint_plan.line;
 
                         let run = TextRun {
                             len: gutter_plan.text.len(),
                             font: self.style.font(),
-                            color: line_color,
+                            color: gutter_paint_plan.color,
                             background_color: None,
                             underline: None,
                             strikethrough: None,
                         };
 
                         let shaped = window.text_system().shape_line(
-                            gutter_plan.text.into(),
+                            gutter_plan.text.clone().into(),
                             self.style.font_size.to_pixels(px(16.0)),
                             &[run],
                             None,
                         );
 
                         let _ = shaped.paint(
-                            point(gutter_origin.x, y),
+                            gutter_paint_plan.origin,
                             after_layout.line_height,
                             window,
                             cx,
@@ -1195,7 +1186,7 @@ impl Element for DocumentElement {
                             use nucleotide_ui::tokens::utils;
                             let marker_plan = diagnostic_marker_plan(
                                 gutter_origin,
-                                y,
+                                gutter_paint_plan.origin.y,
                                 after_layout.line_height,
                                 sev,
                             );
