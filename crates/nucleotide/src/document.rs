@@ -23,10 +23,11 @@ use nucleotide_editor::{
     EditorTextMetrics, EditorViewport, GutterLineParams, HighlightLineParams, LineLayout,
     LineLayoutCache, block_cursor_text, build_gutter_lines, cursor_background_color,
     cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
-    cursor_line_position, cursor_style_for_mode, cursor_viewport_position, diagnostic_marker_plan,
-    diagnostic_overlay_spans, diagnostic_severity_by_line, document_text_format_for_surface,
-    gpui_hsla_to_helix_color, highlight_line, hit_test_document_position, line_viewport_plan,
-    paint_line_backgrounds, phantom_line_cursor_paint_position, shape_cursor_text,
+    cursor_line_position, cursor_style_for_mode, cursor_viewport_position,
+    decorate_soft_wrap_line_runs, diagnostic_marker_plan, diagnostic_overlay_spans,
+    diagnostic_severity_by_line, document_text_format_for_surface, gpui_hsla_to_helix_color,
+    highlight_line, hit_test_document_position, line_viewport_plan, paint_line_backgrounds,
+    phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_plans, soft_wrap_visual_lines, soft_wrap_visual_position,
     text_style_at_position, unwrapped_cursor_paint_position, unwrapped_visible_line_plans,
@@ -1056,38 +1057,13 @@ impl Element for DocumentElement {
                         Vec::new()
                     };
 
-                    // Adjust text runs to account for leading spaces and wrap indicator
-                    if !line_runs.is_empty() {
-                        // Handle indentation spaces separately from wrap indicators
-                        if visual.line_start_col > 0 {
-                            // Add run for indentation spaces using normal text color
-                            let indent_run = TextRun {
-                                len: visual.line_start_col,
-                                font: self.style.font(),
-                                color: fg_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            };
-                            line_runs.insert(0, indent_run);
-                        }
-
-                        if visual.wrap_indicator_len > 0 {
-                            // Use pre-extracted wrap indicator color
-                            let wrap_color = wrap_indicator_color.unwrap_or(fg_color); // Fallback to normal text color
-                            // Add run for wrap indicator using ui.virtual.wrap theme color
-                            let wrap_run = TextRun {
-                                len: visual.wrap_indicator_len,
-                                font: self.style.font(),
-                                color: wrap_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            };
-                            line_runs
-                                .insert(if visual.line_start_col > 0 { 1 } else { 0 }, wrap_run);
-                        }
-                    }
+                    line_runs = decorate_soft_wrap_line_runs(
+                        line_runs,
+                        visual,
+                        &self.style.font(),
+                        fg_color,
+                        wrap_indicator_color,
+                    );
 
                     // Determine whether this visual line corresponds to the cursor's document line
                     let is_cursor_visual_line = visual.doc_line == cursor_line_num;
