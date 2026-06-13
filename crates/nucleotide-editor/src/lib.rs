@@ -32,8 +32,9 @@ pub use cursor::{
 };
 pub use cursor_style::{cursor_has_reversed_modifier, cursor_style_for_mode};
 pub use diagnostics::{
-    DiagnosticMarkerHighlight, DiagnosticMarkerPlan, DiagnosticMarkerShape,
-    DiagnosticSeverityByLine, diagnostic_marker_plan, diagnostic_severity_by_line,
+    DiagnosticMarkerHighlight, DiagnosticMarkerPaintStyle, DiagnosticMarkerPlan,
+    DiagnosticMarkerShape, DiagnosticSeverityByLine, diagnostic_marker_paint_style,
+    diagnostic_marker_plan, diagnostic_severity_by_line, paint_diagnostic_marker,
 };
 pub use document_metrics::{
     EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,
