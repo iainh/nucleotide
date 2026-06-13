@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    Hsla, Pixels, Point, ShapedLine, TextRun, TextStyle, WindowTextSystem, black, point, white,
+    App, Hsla, Pixels, Point, Result, ShapedLine, TextRun, TextStyle, Window, WindowTextSystem,
+    black, point, white,
 };
 use helix_view::{Document, Editor, Theme, View};
 
@@ -80,6 +81,21 @@ pub fn build_gutter_lines(params: GutterLineParams<'_>) -> Vec<GutterLine> {
     }
 
     gutter.lines
+}
+
+pub fn paint_gutter_lines(
+    window: &mut Window,
+    cx: &mut App,
+    lines: &[GutterLine],
+    line_height: Pixels,
+    mut on_error: impl FnMut(Result<()>),
+) {
+    for line in lines {
+        let result = line.shaped_line.paint(line.origin, line_height, window, cx);
+        if result.is_err() {
+            on_error(result);
+        }
+    }
 }
 
 pub fn soft_wrap_gutter_line_plans(
@@ -160,6 +176,21 @@ pub fn build_soft_wrap_gutter_lines(
             }
         })
         .collect()
+}
+
+pub fn paint_soft_wrap_gutter_lines(
+    window: &mut Window,
+    cx: &mut App,
+    lines: &[SoftWrapGutterLine],
+    line_height: Pixels,
+    mut on_error: impl FnMut(Result<()>),
+) {
+    for line in lines {
+        let result = line.shaped_line.paint(line.origin, line_height, window, cx);
+        if result.is_err() {
+            on_error(result);
+        }
+    }
 }
 
 fn soft_wrap_gutter_label(doc_line: usize, is_phantom_line: bool) -> String {
