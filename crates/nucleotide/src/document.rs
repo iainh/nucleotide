@@ -18,15 +18,15 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
-    EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache, block_cursor_text,
-    build_gutter_lines, cursor_background_color, cursor_document_line, cursor_foreground_color,
-    cursor_has_reversed_modifier, cursor_line_position, cursor_style_for_mode,
-    cursor_viewport_position, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
-    hit_test_document_position, line_viewport_plan, paint_line_backgrounds,
-    phantom_line_cursor_paint_position, shape_cursor_text,
+    DiagnosticMarkerShape, EditorCursor, EditorDocumentMetrics, EditorLayout,
+    EditorLineBackgroundStyle, EditorSurface, EditorSurfaceGeometry, EditorSurfacePointerEvent,
+    EditorTextMetrics, EditorViewport, GutterLineParams, HighlightLineParams, LineLayout,
+    LineLayoutCache, block_cursor_text, build_gutter_lines, cursor_background_color,
+    cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
+    cursor_line_position, cursor_style_for_mode, cursor_viewport_position, diagnostic_marker_plan,
+    diagnostic_overlay_spans, diagnostic_severity_by_line, document_text_format_for_surface,
+    gpui_hsla_to_helix_color, highlight_line, hit_test_document_position, line_viewport_plan,
+    paint_line_backgrounds, phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_plans, soft_wrap_visual_lines, soft_wrap_visual_position,
     text_style_at_position, unwrapped_cursor_paint_position, unwrapped_visible_line_plans,
@@ -1231,24 +1231,18 @@ impl Element for DocumentElement {
                             && let Some(color) = Self::severity_color(cx.helix_theme(), sev)
                         {
                             use nucleotide_ui::tokens::utils;
-                            // Indicator size: 60% of line height
-                            let marker_size = (after_layout.line_height * 0.6).max(px(2.0));
-                            // Place marker to the left of the line number
-                            let marker_x = gutter_origin.x + px(2.0);
-                            // Vertically centered
-                            let marker_y = y + (after_layout.line_height - marker_size) * 0.5;
-                            // Paint a background strip to hide built-in sign indicators
-                            let strip_width = marker_size + px(4.0);
-                            let strip_bounds = Bounds {
-                                origin: point(gutter_origin.x, y),
-                                size: size(strip_width, after_layout.line_height),
-                            };
+                            let marker_plan = diagnostic_marker_plan(
+                                gutter_origin,
+                                y,
+                                after_layout.line_height,
+                                sev,
+                            );
                             if let Some(gutter_bg) = cx
                                 .theme_style("ui.gutter")
                                 .bg
                                 .and_then(crate::utils::color_to_hsla)
                             {
-                                window.paint_quad(fill(strip_bounds, gutter_bg));
+                                window.paint_quad(fill(marker_plan.strip_bounds, gutter_bg));
                             }
 
                             // Derived colors with slight transparency + subtle border for 3D effect
@@ -1256,137 +1250,56 @@ impl Element for DocumentElement {
                             let border_col = utils::with_alpha(utils::darken(color, 0.15), 0.9);
 
                             // Draw shape by severity: Info/Hint=Sphere, Warning=Triangle, Error=Square
-                            match sev {
-                                helix_core::diagnostic::Severity::Error => {
-                                    let marker_bounds = Bounds {
-                                        origin: point(marker_x, marker_y),
-                                        size: size(marker_size, marker_size),
-                                    };
-                                    // Slightly rounded square with border and glossy dot
+                            match marker_plan.shape {
+                                DiagnosticMarkerShape::Square { corner_radius } => {
                                     window.paint_quad(gpui::quad(
-                                        marker_bounds,
-                                        px(1.0),
+                                        marker_plan.marker_bounds,
+                                        corner_radius,
                                         base_fill,
                                         px(1.0),
                                         border_col,
                                         gpui::BorderStyle::default(),
                                     ));
-
-                                    // Small top-left highlight
-                                    let h_size = marker_size * 0.22;
-                                    let h_bounds = Bounds {
-                                        origin: point(
-                                            marker_x + marker_size * 0.18,
-                                            marker_y + marker_size * 0.18,
-                                        ),
-                                        size: size(h_size, h_size),
-                                    };
-                                    let h_color = utils::with_alpha(
-                                        cx.theme().tokens.chrome.text_on_chrome,
-                                        0.18,
-                                    );
-                                    window.paint_quad(gpui::quad(
-                                        h_bounds,
-                                        h_size * 0.5,
-                                        h_color,
-                                        0.0,
-                                        gpui::transparent_black(),
-                                        gpui::BorderStyle::default(),
-                                    ));
                                 }
-                                helix_core::diagnostic::Severity::Warning => {
-                                    // Upright triangle inside marker square
-                                    let top = point(marker_x + marker_size * 0.5, marker_y);
-                                    let bl = point(marker_x, marker_y + marker_size);
-                                    let br = point(marker_x + marker_size, marker_y + marker_size);
+                                DiagnosticMarkerShape::Triangle {
+                                    top,
+                                    bottom_left,
+                                    bottom_right,
+                                } => {
                                     let mut pb = gpui::PathBuilder::fill();
                                     pb.move_to(top);
-                                    pb.line_to(bl);
-                                    pb.line_to(br);
+                                    pb.line_to(bottom_left);
+                                    pb.line_to(bottom_right);
                                     pb.close();
                                     if let Ok(path) = pb.build() {
                                         window.paint_path(path, base_fill);
                                     }
-
-                                    // Small internal highlight near top-left edge
-                                    let h_size = marker_size * 0.2;
-                                    let h_bounds = Bounds {
-                                        origin: point(
-                                            marker_x + marker_size * 0.22,
-                                            marker_y + marker_size * 0.18,
-                                        ),
-                                        size: size(h_size, h_size),
-                                    };
-                                    let h_color = utils::with_alpha(
-                                        cx.theme().tokens.chrome.text_on_chrome,
-                                        0.14,
-                                    );
-                                    window.paint_quad(gpui::quad(
-                                        h_bounds,
-                                        h_size * 0.5,
-                                        h_color,
-                                        0.0,
-                                        gpui::transparent_black(),
-                                        gpui::BorderStyle::default(),
-                                    ));
                                 }
-                                helix_core::diagnostic::Severity::Info
-                                | helix_core::diagnostic::Severity::Hint => {
-                                    let marker_bounds = Bounds {
-                                        origin: point(marker_x, marker_y),
-                                        size: size(marker_size, marker_size),
-                                    };
-                                    // Sphere base with border
-                                    let radius = marker_size * 0.5;
+                                DiagnosticMarkerShape::Circle { radius } => {
                                     window.paint_quad(gpui::quad(
-                                        marker_bounds,
+                                        marker_plan.marker_bounds,
                                         radius,
                                         base_fill,
                                         px(1.0),
                                         border_col,
                                         gpui::BorderStyle::default(),
                                     ));
-
-                                    // Specular highlights fully inside the circle bounds
-                                    let offset = marker_size * 0.14;
-                                    let halo_size = marker_size * 0.52;
-                                    let core_size = marker_size * 0.26;
-                                    let halo_bounds = Bounds {
-                                        origin: point(marker_x + offset, marker_y + offset),
-                                        size: size(halo_size, halo_size),
-                                    };
-                                    let core_bounds = Bounds {
-                                        origin: point(
-                                            marker_x + offset + (halo_size - core_size) * 0.25,
-                                            marker_y + offset + (halo_size - core_size) * 0.25,
-                                        ),
-                                        size: size(core_size, core_size),
-                                    };
-                                    let highlight_halo = utils::with_alpha(
-                                        cx.theme().tokens.chrome.text_on_chrome,
-                                        0.14,
-                                    );
-                                    let highlight_core = utils::with_alpha(
-                                        cx.theme().tokens.chrome.text_on_chrome,
-                                        0.45,
-                                    );
-                                    window.paint_quad(gpui::quad(
-                                        halo_bounds,
-                                        halo_size * 0.5,
-                                        highlight_halo,
-                                        0.0,
-                                        gpui::transparent_black(),
-                                        gpui::BorderStyle::default(),
-                                    ));
-                                    window.paint_quad(gpui::quad(
-                                        core_bounds,
-                                        core_size * 0.5,
-                                        highlight_core,
-                                        0.0,
-                                        gpui::transparent_black(),
-                                        gpui::BorderStyle::default(),
-                                    ));
                                 }
+                            }
+
+                            for highlight in marker_plan.highlights {
+                                let highlight_color = utils::with_alpha(
+                                    cx.theme().tokens.chrome.text_on_chrome,
+                                    highlight.alpha,
+                                );
+                                window.paint_quad(gpui::quad(
+                                    highlight.bounds,
+                                    highlight.radius,
+                                    highlight_color,
+                                    0.0,
+                                    gpui::transparent_black(),
+                                    gpui::BorderStyle::default(),
+                                ));
                             }
                         }
                     }
