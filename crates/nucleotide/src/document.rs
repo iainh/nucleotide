@@ -26,8 +26,8 @@ use nucleotide_editor::{
     cursor_viewport_position, decorate_soft_wrap_line_runs, diagnostic_marker_paint_style,
     diagnostic_marker_plan, diagnostic_overlay_spans, diagnostic_severity_by_line,
     document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
-    hit_test_document_position, line_viewport_plan, paint_diagnostic_marker,
-    paint_line_backgrounds, phantom_line_cursor_paint_position, shape_cursor_text,
+    hit_test_document_position, line_viewport_plan, paint_diagnostic_marker, paint_editor_line,
+    phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
     soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
@@ -1073,8 +1073,9 @@ impl Element for DocumentElement {
                             &line_runs,
                         );
 
-                        paint_line_backgrounds(
+                        if let Err(e) = paint_editor_line(
                             window,
+                            cx,
                             &shaped_line,
                             &line_runs,
                             soft_wrap_plan.text_origin,
@@ -1084,13 +1085,6 @@ impl Element for DocumentElement {
                                 selection_primary: tokens.editor.selection_primary,
                                 selection_secondary: tokens.editor.selection_secondary,
                             },
-                        );
-
-                        if let Err(e) = shaped_line.paint(
-                            soft_wrap_plan.text_origin,
-                            after_layout.line_height,
-                            window,
-                            cx,
                         ) {
                             error!(error = ?e, "Failed to paint text");
                         }
@@ -1424,8 +1418,9 @@ impl Element for DocumentElement {
                         window.paint_quad(fill(unwrapped_plan.cursorline_bounds, cursorline_bg));
                     }
 
-                    paint_line_backgrounds(
+                    if let Err(e) = paint_editor_line(
                         window,
+                        cx,
                         &shaped,
                         &line_runs,
                         text_origin,
@@ -1435,10 +1430,7 @@ impl Element for DocumentElement {
                             selection_primary: tokens.editor.selection_primary,
                             selection_secondary: tokens.editor.selection_secondary,
                         },
-                    );
-
-                    if let Err(e) = shaped.paint(text_origin, after_layout.line_height, window, cx)
-                    {
+                    ) {
                         error!(error = ?e, "Failed to paint text");
                     }
                     shaped

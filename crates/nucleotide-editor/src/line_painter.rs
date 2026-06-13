@@ -1,7 +1,9 @@
 // ABOUTME: Native editor line painting helpers
 // ABOUTME: Paints shaped-line backgrounds shared by wrapped and unwrapped render paths
 
-use gpui::{Bounds, Hsla, Pixels, Point, ShapedLine, TextRun, Window, fill, point, size};
+use gpui::{
+    App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, TextRun, Window, fill, point, size,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct EditorLineBackgroundStyle {
@@ -35,6 +37,26 @@ pub fn paint_line_backgrounds(
 
         byte_offset += run.len;
     }
+}
+
+pub fn paint_editor_line(
+    window: &mut Window,
+    cx: &mut App,
+    shaped_line: &ShapedLine,
+    runs: &[TextRun],
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    background_style: EditorLineBackgroundStyle,
+) -> Result<()> {
+    paint_line_backgrounds(
+        window,
+        shaped_line,
+        runs,
+        origin,
+        line_height,
+        background_style,
+    );
+    shaped_line.paint(origin, line_height, window, cx)
 }
 
 fn should_paint_background(bg_color: Hsla, style: EditorLineBackgroundStyle) -> bool {
