@@ -70,6 +70,12 @@ pub struct CursorLinePosition {
     pub cursor_byte_offset: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorViewportPosition {
+    pub line: usize,
+    pub viewport_row: usize,
+}
+
 #[derive(Clone)]
 pub struct CursorTextShape {
     pub shaped_line: Option<ShapedLine>,
@@ -165,6 +171,29 @@ pub fn cursor_line_position(
         cursor_char_offset,
         cursor_byte_offset,
     }
+}
+
+pub fn cursor_document_line(
+    text: RopeSlice<'_>,
+    cursor_char_idx: usize,
+    cursor_at_trailing_newline: bool,
+) -> usize {
+    if cursor_at_trailing_newline {
+        return text.len_lines().saturating_sub(1);
+    }
+
+    text.char_to_line(cursor_char_idx.min(text.len_chars()))
+}
+
+pub fn cursor_viewport_position(
+    cursor_line: usize,
+    first_row: usize,
+    last_row: usize,
+) -> Option<CursorViewportPosition> {
+    (cursor_line >= first_row && cursor_line < last_row).then_some(CursorViewportPosition {
+        line: cursor_line,
+        viewport_row: cursor_line.saturating_sub(first_row),
+    })
 }
 
 pub fn cursor_foreground_color(cursor_style: &Style, has_reversed: bool, default_bg: Hsla) -> Hsla {
@@ -346,6 +375,38 @@ mod tests {
         assert_eq!(position.line_text, "abc");
         assert_eq!(position.cursor_char_offset, 3);
         assert_eq!(position.cursor_byte_offset, 3);
+    }
+
+    #[test]
+    fn cursor_document_line_uses_cursor_char_line() {
+        assert_eq!(cursor_document_line("abc\ndef".into(), 5, false), 1);
+    }
+
+    #[test]
+    fn cursor_document_line_uses_final_empty_line_for_trailing_newline() {
+        assert_eq!(cursor_document_line("abc\n".into(), 4, true), 1);
+    }
+
+    #[test]
+    fn cursor_document_line_clamps_to_document_end() {
+        assert_eq!(cursor_document_line("abc\ndef".into(), 99, false), 1);
+    }
+
+    #[test]
+    fn cursor_viewport_position_reports_visible_row() {
+        assert_eq!(
+            cursor_viewport_position(7, 5, 10),
+            Some(CursorViewportPosition {
+                line: 7,
+                viewport_row: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn cursor_viewport_position_rejects_rows_outside_range() {
+        assert_eq!(cursor_viewport_position(4, 5, 10), None);
+        assert_eq!(cursor_viewport_position(10, 5, 10), None);
     }
 
     #[test]
