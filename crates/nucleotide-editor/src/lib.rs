@@ -31,7 +31,10 @@ pub use cursor::{
     shape_cursor_text, soft_wrap_cursor_paint_position, unwrapped_cursor_paint_position,
 };
 pub use cursor_style::{cursor_has_reversed_modifier, cursor_style_for_mode};
-pub use diagnostics::{DiagnosticSeverityByLine, diagnostic_severity_by_line};
+pub use diagnostics::{
+    DiagnosticMarkerHighlight, DiagnosticMarkerPlan, DiagnosticMarkerShape,
+    DiagnosticSeverityByLine, diagnostic_marker_plan, diagnostic_severity_by_line,
+};
 pub use document_metrics::{
     EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,
 };
