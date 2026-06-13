@@ -139,18 +139,6 @@ pub trait JobSystemAccess {
     fn jobs_mut(&mut self) -> &mut helix_term::job::Jobs;
 }
 
-/// Scroll management for views
-pub trait ScrollManager {
-    /// Get scroll offset for a view
-    fn get_scroll_offset(&self, view_id: ViewId) -> (usize, usize);
-
-    /// Set scroll offset for a view
-    fn set_scroll_offset(&mut self, view_id: ViewId, offset: (usize, usize));
-
-    /// Scroll by a number of lines
-    fn scroll_lines(&mut self, view_id: ViewId, lines: isize);
-}
-
 /// Line caching for rendering optimization
 pub trait LineCache {
     /// Get cached line layout information

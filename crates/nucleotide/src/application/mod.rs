@@ -188,15 +188,6 @@ pub struct Application {
 #[derive(Debug, Clone)]
 pub enum InputEvent {
     Key(helix_view::input::KeyEvent),
-    ScrollLines {
-        line_count: usize,
-        direction: helix_core::movement::Direction,
-        view_id: helix_view::ViewId,
-    },
-    SetViewportAnchor {
-        view_id: helix_view::ViewId,
-        anchor: usize,
-    },
 }
 
 pub struct Input;
@@ -2101,74 +2092,6 @@ impl Application {
                 // Emit overlays after key handling, passing the key that was just processed
                 self.emit_overlays(Some(key), cx);
 
-                cx.emit(crate::Update::Event(AppEvent::Core(
-                    CoreEvent::RedrawRequested,
-                )));
-            }
-            InputEvent::ScrollLines {
-                line_count,
-                direction,
-                ..
-            } => {
-                let mut ctx = helix_term::commands::Context {
-                    editor: &mut self.editor,
-                    register: None,
-                    count: None,
-                    callback: Vec::new(),
-                    on_next_key_callback: None,
-                    jobs: &mut self.jobs,
-                };
-                helix_term::commands::scroll(&mut ctx, line_count, direction, false);
-                cx.emit(crate::Update::Event(AppEvent::Core(
-                    CoreEvent::RedrawRequested,
-                )));
-            }
-            InputEvent::SetViewportAnchor { view_id, anchor } => {
-                // Set the viewport anchor for scrollbar integration
-                debug!(
-                    view_id = ?view_id,
-                    anchor = anchor,
-                    "SetViewportAnchor - setting viewport position"
-                );
-
-                // Get the view and then the document
-                if let Some(view) = self.editor.tree.try_get(view_id) {
-                    let doc_id = view.doc;
-                    if let Some(doc) = self.editor.documents.get_mut(&doc_id) {
-                        // Get current view position to preserve horizontal offset
-                        let current_offset = doc.view_offset(view_id);
-
-                        // Create new view position with updated anchor
-                        let new_offset = helix_view::view::ViewPosition {
-                            anchor,
-                            horizontal_offset: current_offset.horizontal_offset,
-                            vertical_offset: 0, // Reset vertical offset when setting new anchor
-                        };
-
-                        // Set the new viewport position
-                        doc.set_view_offset(view_id, new_offset);
-
-                        debug!(
-                            view_id = ?view_id,
-                            old_anchor = current_offset.anchor,
-                            new_anchor = anchor,
-                            "ViewportAnchor updated successfully"
-                        );
-                    } else {
-                        warn!(
-                            view_id = ?view_id,
-                            doc_id = ?doc_id,
-                            "SetViewportAnchor: Document not found for doc_id"
-                        );
-                    }
-                } else {
-                    warn!(
-                        view_id = ?view_id,
-                        "SetViewportAnchor: View not found for view_id"
-                    );
-                }
-
-                // Emit redraw to reflect the viewport change
                 cx.emit(crate::Update::Event(AppEvent::Core(
                     CoreEvent::RedrawRequested,
                 )));
