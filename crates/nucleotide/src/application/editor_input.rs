@@ -733,7 +733,11 @@ fn native_command_supported(command: &MappableCommand) -> bool {
         || name.starts_with("extend_")
         || matches!(
             name,
-            "collapse_selection"
+            "align_view_bottom"
+                | "align_view_center"
+                | "align_view_middle"
+                | "align_view_top"
+                | "collapse_selection"
                 | "flip_selections"
                 | "goto_file_end"
                 | "goto_file_start"
@@ -1041,6 +1045,16 @@ mod tests {
 
     #[test]
     fn native_command_supports_view_scroll_commands() {
+        assert!(native_command_supported(&MappableCommand::align_view_top));
+        assert!(native_command_supported(
+            &MappableCommand::align_view_center
+        ));
+        assert!(native_command_supported(
+            &MappableCommand::align_view_bottom
+        ));
+        assert!(native_command_supported(
+            &MappableCommand::align_view_middle
+        ));
         assert!(native_command_supported(&MappableCommand::scroll_up));
         assert!(native_command_supported(&MappableCommand::scroll_down));
         assert!(native_command_supported(&MappableCommand::page_up));
