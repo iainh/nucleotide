@@ -26,6 +26,13 @@ pub struct EditorInputOutcome {
     pub handled_by_compositor: bool,
     pub handled_by_native_command: bool,
     pub handled_by_terminal_editor: bool,
+    pub completion_requested: Option<NativeCompletionRequest>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeCompletionRequest {
+    pub doc_id: DocumentId,
+    pub view_id: ViewId,
 }
 
 pub struct EditorInputBridge {
@@ -78,14 +85,18 @@ impl EditorInputBridge {
         let handled_by_compositor = compositor.handle_event(&event, &mut context);
         let mut handled_by_native_command = false;
         let mut handled_by_terminal_editor = false;
+        let mut completion_requested = None;
         if !handled_by_compositor {
             let mode_before_fallback = context.editor.mode();
             match self
                 .native_commands
                 .handle_key(key, compositor, context.editor, context.jobs)
             {
-                NativeInputResult::Handled => {
+                NativeInputResult::Handled {
+                    completion_requested: request,
+                } => {
                     handled_by_native_command = true;
+                    completion_requested = request;
                 }
                 NativeInputResult::Fallback(keys) => {
                     for key in &keys {
@@ -133,6 +144,7 @@ impl EditorInputBridge {
             handled_by_compositor,
             handled_by_native_command,
             handled_by_terminal_editor,
+            completion_requested,
         }
     }
 
@@ -161,13 +173,22 @@ struct NativeCommandInput {
 }
 
 enum NativeInputResult {
-    Handled,
+    Handled {
+        completion_requested: Option<NativeCompletionRequest>,
+    },
     Fallback(Vec<KeyEvent>),
 }
 
 enum NativeCommandResult {
     Handled(Vec<compositor::Callback>),
-    ReplayInsert { keys: Vec<KeyEvent>, count: usize },
+    RequestCompletion {
+        callbacks: Vec<compositor::Callback>,
+        request: Option<NativeCompletionRequest>,
+    },
+    ReplayInsert {
+        keys: Vec<KeyEvent>,
+        count: usize,
+    },
     Fallback(Vec<KeyEvent>),
 }
 
@@ -259,20 +280,31 @@ impl NativeCommandInput {
             NativeCommandResult::Handled(callbacks) => {
                 finalize_native_command(editor, jobs, compositor, callbacks);
                 self.finish_insert_replay_if_needed(mode_before, editor.mode());
-                NativeInputResult::Handled
+                NativeInputResult::Handled {
+                    completion_requested: None,
+                }
+            }
+            NativeCommandResult::RequestCompletion { callbacks, request } => {
+                finalize_native_command(editor, jobs, compositor, callbacks);
+                self.finish_insert_replay_if_needed(mode_before, editor.mode());
+                NativeInputResult::Handled {
+                    completion_requested: request,
+                }
             }
             NativeCommandResult::ReplayInsert { keys, count } => {
                 for _ in 0..count {
                     for replay_key in keys.iter().copied() {
                         match self.handle_key(replay_key, compositor, editor, jobs) {
-                            NativeInputResult::Handled => {}
+                            NativeInputResult::Handled { .. } => {}
                             NativeInputResult::Fallback(fallback_keys) => {
                                 return NativeInputResult::Fallback(fallback_keys);
                             }
                         }
                     }
                 }
-                NativeInputResult::Handled
+                NativeInputResult::Handled {
+                    completion_requested: None,
+                }
             }
             NativeCommandResult::Fallback(keys) => NativeInputResult::Fallback(keys),
         }
@@ -329,6 +361,14 @@ impl NativeCommandInput {
 
         match &key_result {
             KeymapResult::Matched(command) => {
+                if native_insert_completion_command(command) {
+                    self.current_insert_replay.mark_terminal();
+                    self.current_insert_replay.keys.extend(fallback_keys);
+                    return NativeCommandResult::RequestCompletion {
+                        callbacks: Vec::new(),
+                        request: completion_request(context),
+                    };
+                }
                 if !native_insert_command_supported(command) {
                     return NativeCommandResult::Fallback(fallback_keys);
                 }
@@ -342,15 +382,31 @@ impl NativeCommandInput {
                 NativeCommandResult::Handled(Vec::new())
             }
             KeymapResult::MatchedSequence(commands) => {
-                if !commands.iter().all(native_insert_command_supported) {
+                if !commands.iter().all(|command| {
+                    native_insert_command_supported(command)
+                        || native_insert_completion_command(command)
+                }) {
                     return NativeCommandResult::Fallback(fallback_keys);
                 }
                 let mut last_mode = mode;
+                let mut completion_requested = None;
                 for command in commands {
-                    execute_native_command(command, context, &mut last_mode);
+                    if native_insert_completion_command(command) {
+                        self.current_insert_replay.mark_terminal();
+                        completion_requested = completion_request(context);
+                    } else {
+                        execute_native_command(command, context, &mut last_mode);
+                    }
                 }
                 self.current_insert_replay.keys.extend(fallback_keys);
-                NativeCommandResult::Handled(Vec::new())
+                if completion_requested.is_some() {
+                    NativeCommandResult::RequestCompletion {
+                        callbacks: Vec::new(),
+                        request: completion_requested,
+                    }
+                } else {
+                    NativeCommandResult::Handled(Vec::new())
+                }
             }
             KeymapResult::NotFound => {
                 if has_pending_keys {
@@ -538,12 +594,27 @@ impl NativeCommandResultExt for NativeCommandResult {
         context: &mut commands::Context<'_>,
         on_next_key: &mut Option<(OnKeyCallback, OnKeyCallbackKind)>,
     ) -> Self {
-        if matches!(self, NativeCommandResult::Handled(_)) {
-            *on_next_key = context.on_next_key_callback.take();
-            return NativeCommandResult::Handled(std::mem::take(&mut context.callback));
+        match self {
+            NativeCommandResult::Handled(_) => {
+                *on_next_key = context.on_next_key_callback.take();
+                NativeCommandResult::Handled(std::mem::take(&mut context.callback))
+            }
+            NativeCommandResult::RequestCompletion { request, .. } => {
+                *on_next_key = context.on_next_key_callback.take();
+                NativeCommandResult::RequestCompletion {
+                    callbacks: std::mem::take(&mut context.callback),
+                    request,
+                }
+            }
+            other => other,
         }
-        self
     }
+}
+
+fn completion_request(context: &commands::Context<'_>) -> Option<NativeCompletionRequest> {
+    let view_id = context.editor.tree.focus;
+    let doc_id = context.editor.tree.try_get(view_id)?.doc;
+    Some(NativeCompletionRequest { doc_id, view_id })
 }
 
 fn execute_native_command(
@@ -669,6 +740,10 @@ fn native_insert_edit_command(command: &MappableCommand) -> bool {
 
 fn native_insert_interactive_command(command: &MappableCommand) -> bool {
     matches!(command.name(), "insert_register")
+}
+
+fn native_insert_completion_command(command: &MappableCommand) -> bool {
+    matches!(command.name(), "completion")
 }
 
 fn canonicalize_key(key: &mut KeyEvent) {
@@ -821,11 +896,11 @@ mod tests {
         assert!(native_insert_command_supported(
             &MappableCommand::insert_tab
         ));
-        assert!(!native_insert_command_supported(
-            &MappableCommand::completion
-        ));
         assert!(native_insert_command_supported(
             &MappableCommand::insert_register
+        ));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::completion
         ));
         assert!(!native_insert_command_supported(
             &MappableCommand::insert_mode
@@ -901,6 +976,32 @@ mod tests {
         assert!(!native_insert_interactive_command(
             &MappableCommand::normal_mode
         ));
+    }
+
+    #[test]
+    fn insert_completion_commands_are_classified_separately() {
+        assert!(native_insert_completion_command(
+            &MappableCommand::completion
+        ));
+        assert!(!native_insert_completion_command(
+            &MappableCommand::insert_register
+        ));
+        assert!(!native_insert_completion_command(
+            &MappableCommand::insert_newline
+        ));
+        assert!(!native_insert_completion_command(
+            &MappableCommand::normal_mode
+        ));
+    }
+
+    #[test]
+    fn native_completion_request_carries_focused_document_and_view() {
+        let doc_id = DocumentId::default();
+        let view_id = ViewId::default();
+        let request = NativeCompletionRequest { doc_id, view_id };
+
+        assert_eq!(request.doc_id, doc_id);
+        assert_eq!(request.view_id, view_id);
     }
 
     #[test]
