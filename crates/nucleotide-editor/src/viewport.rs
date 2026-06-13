@@ -95,7 +95,7 @@ impl EditorViewport {
     }
 
     pub fn line_height(&self) -> Pixels {
-        self.scroll.line_height.get()
+        self.scroll.line_height()
     }
 
     pub fn set_viewport_size(&mut self, size: Size<Pixels>) {
@@ -107,7 +107,7 @@ impl EditorViewport {
     }
 
     pub fn content_visual_rows(&self) -> usize {
-        self.scroll.total_lines.get()
+        self.scroll.total_lines()
     }
 
     pub fn max_scroll_offset(&self) -> Size<Pixels> {
@@ -127,15 +127,15 @@ impl EditorViewport {
     }
 
     pub fn viewport_bounds(&self) -> Bounds<Pixels> {
-        Bounds::new(point(px(0.0), px(0.0)), self.scroll.viewport_size.get())
+        Bounds::new(point(px(0.0), px(0.0)), self.scroll.viewport_size())
     }
 
     pub fn has_pending_view_sync(&self) -> bool {
-        self.scroll.pending_view_sync.get()
+        self.scroll.has_pending_view_sync()
     }
 
     pub fn clear_pending_view_sync(&self) {
-        self.scroll.pending_view_sync.set(false);
+        self.scroll.clear_pending_view_sync();
     }
 
     pub fn scroll_by_delta(&self, delta: Point<Pixels>) -> ViewportScrollUpdate {
@@ -230,13 +230,13 @@ impl EditorViewport {
             return 1;
         }
 
-        ((self.scroll.viewport_size.get().height / line_height).floor() as usize).max(1)
+        ((self.scroll.viewport_size().height / line_height).floor() as usize).max(1)
     }
 
     pub fn sync_from_helix_top_visual_row(&self, top_visual_row: usize) {
         let y = self.scroll.anchor_to_pixels(top_visual_row);
         self.scroll
-            .set_scroll_position_from_helix_preserving_intra_line_offset(point(px(0.0), y));
+            .set_scroll_position_from_view_sync_preserving_subrow_offset(point(px(0.0), y));
     }
 
     pub fn sync_from_helix_view(
@@ -405,7 +405,16 @@ impl EditorViewport {
     }
 
     pub fn visible_visual_range(&self) -> (usize, usize) {
-        self.scroll.visible_line_range()
+        let position = self.scroll_position();
+        let viewport = self.scroll.viewport_size();
+        let first_row = self.scroll.pixels_to_anchor(position.y);
+        let last_row = self
+            .scroll
+            .pixels_to_anchor(position.y + viewport.height)
+            .saturating_add(1)
+            .min(self.content_visual_rows());
+
+        (first_row, last_row)
     }
 }
 
