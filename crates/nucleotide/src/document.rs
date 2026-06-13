@@ -18,21 +18,21 @@ use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle,
     EditorScrollbarState, EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry,
     EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache, begin_pointer_selection,
-    block_cursor_text, build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
-    cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
-    cursor_line_position, cursor_style_for_mode, cursor_viewport_position,
-    decorate_soft_wrap_line_runs, diagnostic_marker_paint_style, diagnostic_marker_plan,
-    diagnostic_overlay_spans, diagnostic_severity_by_line, document_text_format_for_surface,
-    gpui_hsla_to_helix_color, highlight_line, hit_test_document_position, line_viewport_plan,
-    paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
-    paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines, paint_visible_rulers,
-    phantom_line_cursor_paint_position, shape_cursor_text,
+    GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache,
+    begin_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
+    build_soft_wrap_gutter_lines, cursor_background_color, cursor_document_line,
+    cursor_foreground_color, cursor_has_reversed_modifier, cursor_line_position,
+    cursor_style_for_mode, cursor_viewport_position, decorate_soft_wrap_line_runs,
+    diagnostic_marker_paint_style, diagnostic_marker_plan, diagnostic_overlay_spans,
+    diagnostic_severity_by_line, document_text_format_for_surface, gpui_hsla_to_helix_color,
+    highlight_line, line_viewport_plan, paint_cursorline_background, paint_diagnostic_marker,
+    paint_editor_background, paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines,
+    paint_visible_rulers, phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
     soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
     text_style_at_position, unwrapped_cursor_paint_position, unwrapped_line_paint_plans,
-    unwrapped_visible_line_plans, update_pointer_selection, visible_ruler_paint_plans,
+    unwrapped_visible_line_plans, update_pointer_selection_at_event, visible_ruler_paint_plans,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -110,32 +110,46 @@ fn handle_editor_mouse_down(
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
-    if let Some(hit_test) = hit_test_editor_pointer(core, doc_id, view_id, event, cx) {
-        let mut selection_update = None;
-        core.update(cx, |core, cx| {
-            if let Some(document) = core.editor.document_mut(doc_id) {
-                selection_update = Some(begin_pointer_selection(
-                    document,
-                    view_id,
-                    drag_state,
-                    hit_test.char_idx,
-                    event.modifiers.shift,
-                ));
+    let line_cache = cx.global::<LineLayoutCache>().clone();
+    let mut pointer_update = None;
+
+    core.update(cx, |core, cx| {
+        let gutter_columns = {
+            let editor = &core.editor;
+            let Some(document) = editor.document(doc_id) else {
+                return;
+            };
+            let Some(view) = editor.tree.try_get(view_id) else {
+                return;
+            };
+            view.gutter_offset(document)
+        };
+
+        if let Some(document) = core.editor.document_mut(doc_id) {
+            pointer_update = begin_pointer_selection_at_event(
+                document,
+                view_id,
+                gutter_columns,
+                &line_cache,
+                drag_state,
+                event,
+            );
+
+            if pointer_update.is_some() {
                 cx.notify();
             }
-        });
-
-        if let Some(selection_update) = selection_update {
-            debug!(
-                line_idx = hit_test.line_idx,
-                char_offset = hit_test.char_offset,
-                anchor = selection_update.anchor,
-                target_pos = selection_update.head,
-                "Applied editor click selection"
-            );
         }
+    });
+
+    if let Some(pointer_update) = pointer_update {
+        debug!(
+            line_idx = pointer_update.hit_test.line_idx,
+            char_offset = pointer_update.hit_test.char_offset,
+            anchor = pointer_update.selection.anchor,
+            target_pos = pointer_update.selection.head,
+            "Applied editor click selection"
+        );
     } else {
-        drag_state.clear();
         debug!(
             window_pos = ?event.position,
             bounds = ?event.bounds,
@@ -153,51 +167,45 @@ fn handle_editor_mouse_drag(
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
-    if let Some(hit_test) = hit_test_editor_pointer(core, doc_id, view_id, event, cx) {
-        let mut selection_update = None;
-        core.update(cx, |core, cx| {
-            if let Some(document) = core.editor.document_mut(doc_id) {
-                selection_update =
-                    update_pointer_selection(document, view_id, drag_state, hit_test.char_idx);
-                if selection_update.is_some() {
-                    cx.notify();
-                }
-            }
-        });
+    let line_cache = cx.global::<LineLayoutCache>().clone();
+    let mut pointer_update = None;
 
-        let Some(selection_update) = selection_update else {
-            return;
+    core.update(cx, |core, cx| {
+        let gutter_columns = {
+            let editor = &core.editor;
+            let Some(document) = editor.document(doc_id) else {
+                return;
+            };
+            let Some(view) = editor.tree.try_get(view_id) else {
+                return;
+            };
+            view.gutter_offset(document)
         };
 
+        if let Some(document) = core.editor.document_mut(doc_id) {
+            pointer_update = update_pointer_selection_at_event(
+                document,
+                view_id,
+                gutter_columns,
+                &line_cache,
+                drag_state,
+                event,
+            );
+
+            if pointer_update.is_some() {
+                cx.notify();
+            }
+        }
+    });
+
+    if let Some(pointer_update) = pointer_update {
         debug!(
-            line_idx = hit_test.line_idx,
-            char_offset = hit_test.char_offset,
-            anchor = selection_update.anchor,
-            target_pos = selection_update.head,
+            line_idx = pointer_update.hit_test.line_idx,
+            char_offset = pointer_update.hit_test.char_offset,
+            anchor = pointer_update.selection.anchor,
+            target_pos = pointer_update.selection.head,
             "Applied editor drag selection"
         );
-    }
-}
-
-fn hit_test_editor_pointer(
-    core: &Entity<Core>,
-    doc_id: DocumentId,
-    view_id: ViewId,
-    event: EditorSurfacePointerEvent,
-    cx: &mut App,
-) -> Option<nucleotide_editor::EditorHitTestResult> {
-    let line_cache = cx.global::<LineLayoutCache>();
-    {
-        let core = core.read(cx);
-        let editor = &core.editor;
-        if let (Some(document), Some(view)) =
-            (editor.document(doc_id), editor.tree.try_get(view_id))
-        {
-            hit_test_document_position(event, view.gutter_offset(document), line_cache, document)
-        } else {
-            debug!("Could not get document/view for coordinate transformation");
-            None
-        }
     }
 }
 

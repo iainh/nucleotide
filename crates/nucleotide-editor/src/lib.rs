@@ -78,9 +78,10 @@ pub use scrollbar::{
     scroll_position_for_scrollbar_pointer,
 };
 pub use selection::{
-    EditorSelectionDragState, EditorSelectionUpdate, apply_pointer_selection,
-    begin_pointer_selection, pointer_selection_anchor, primary_selection_anchor,
-    selection_for_range, update_pointer_selection,
+    EditorPointerSelectionUpdate, EditorSelectionDragState, EditorSelectionUpdate,
+    apply_pointer_selection, begin_pointer_selection, begin_pointer_selection_at_event,
+    pointer_selection_anchor, primary_selection_anchor, selection_for_range,
+    update_pointer_selection, update_pointer_selection_at_event,
 };
 pub use soft_wrap::{
     SoftWrapLinePaintPlan, SoftWrapVisualLine, SoftWrapVisualPosition,
