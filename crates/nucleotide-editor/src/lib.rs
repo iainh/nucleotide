@@ -20,6 +20,7 @@ pub mod ruler;
 pub mod scroll_manager;
 pub mod scroll_state;
 pub mod scrollbar;
+pub mod selection;
 pub mod soft_wrap;
 mod style;
 pub mod surface;
@@ -75,6 +76,11 @@ pub use scroll_state::ScrollState;
 pub use scrollbar::{
     EditorScrollbar, EditorScrollbarState, EditorScrollbarThumb, editor_scrollbar_thumb,
     scroll_position_for_scrollbar_pointer,
+};
+pub use selection::{
+    EditorSelectionDragState, EditorSelectionUpdate, apply_pointer_selection,
+    begin_pointer_selection, pointer_selection_anchor, primary_selection_anchor,
+    selection_for_range, update_pointer_selection,
 };
 pub use soft_wrap::{
     SoftWrapLinePaintPlan, SoftWrapVisualLine, SoftWrapVisualPosition,
