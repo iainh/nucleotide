@@ -31,9 +31,6 @@ pub trait ViewManagement {
     /// Get view's document
     fn get_view_document(&self, view_id: ViewId) -> Option<DocumentId>;
 
-    /// Update view's viewport
-    fn update_viewport(&mut self, view_id: ViewId, offset: usize);
-
     /// Get cursor position in view
     fn get_cursor_position(&self, view_id: ViewId) -> Option<(usize, usize)>;
 }

@@ -50,18 +50,6 @@ impl ViewManagement for Application {
         self.editor.tree.try_get(view_id).map(|view| view.doc)
     }
 
-    fn update_viewport(&mut self, view_id: ViewId, _offset: usize) {
-        // Store doc_id first to avoid borrow checker issues
-        let doc_id = match self.editor.tree.try_get(view_id) {
-            Some(view) => view.doc,
-            None => return,
-        };
-        if let Some(doc) = self.editor.documents.get_mut(&doc_id) {
-            let view = self.editor.tree.get_mut(view_id);
-            view.ensure_cursor_in_view(doc, 0);
-        }
-    }
-
     fn get_cursor_position(&self, view_id: ViewId) -> Option<(usize, usize)> {
         self.editor.tree.try_get(view_id).and_then(|view| {
             let doc = self.editor.documents.get(&view.doc)?;

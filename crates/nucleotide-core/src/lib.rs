@@ -18,7 +18,7 @@ pub mod utils;
 pub use capabilities::{
     BufferStore, CapabilityProvider, CommandExecutor, EditorReadAccess, EditorState,
     EditorWriteAccess, EventEmitter, EventSubscriber, JobSystemAccess, LineCache, LineLayoutInfo,
-    OverlayProvider, ScrollManager, SubscriptionId, ThemeProvider, ViewStore,
+    OverlayProvider, SubscriptionId, ThemeProvider, ViewStore,
 };
 
 // Extended editor capabilities exports
