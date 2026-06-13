@@ -28,8 +28,8 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_editor::{
-    EditorLayout, EditorSurface, EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorViewport,
-    LineLayoutCache, hit_test_document_position,
+    EditorLayout, EditorSurface, EditorSurfaceGeometry, EditorSurfacePointerEvent,
+    EditorTextMetrics, EditorViewport, LineLayoutCache, hit_test_document_position,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
@@ -423,6 +423,9 @@ impl Render for DocumentView {
             }
         };
 
+        let metrics = EditorTextMetrics::resolve(cx.text_system(), &self.style);
+        self.line_height = metrics.line_height;
+
         // Update viewport with document info
         {
             let core = self.core.read(cx);
@@ -430,12 +433,12 @@ impl Render for DocumentView {
             if let Some(document) = editor.document(doc_id) {
                 let total_lines = document.text().len_lines();
                 self.viewport.set_content_visual_rows(total_lines);
-                self.viewport.set_line_height(self.line_height);
+                self.viewport.set_line_height(metrics.line_height);
 
                 // Set a reasonable default viewport size if not already set
                 // This will be updated with actual size in the paint method
                 // Use a height that shows fewer lines than total to ensure scrollbar appears
-                let viewport_height = self.line_height * 30.0; // Show 30 lines
+                let viewport_height = metrics.line_height * 30.0; // Show 30 lines
                 self.viewport
                     .set_viewport_size(size(px(800.0), viewport_height));
 
@@ -447,19 +450,6 @@ impl Render for DocumentView {
                 );
             }
         }
-
-        let font_id = cx.text_system().resolve_font(&self.style.font());
-        let font_size = self.style.font_size.to_pixels(px(16.0));
-        let em_width = cx
-            .text_system()
-            .typographic_bounds(font_id, font_size, 'm')
-            .map(|bounds| bounds.size.width)
-            .unwrap_or(px(8.0));
-        let cell_width = cx
-            .text_system()
-            .advance(font_id, font_size, 'm')
-            .map(|advance| advance.width)
-            .unwrap_or(em_width);
 
         // Create the DocumentElement that will handle the actual rendering
         // Pass the same viewport and scrollbar state to ensure state is shared
@@ -475,8 +465,8 @@ impl Render for DocumentView {
 
         let editor_surface = EditorSurface::new(
             self.viewport.clone(),
-            self.line_height,
-            cell_width,
+            metrics.line_height,
+            metrics.cell_width,
             document_element,
         )
         .on_scroll({
@@ -1287,29 +1277,7 @@ impl Element for DocumentElement {
             );
         }
 
-        let font_id = cx.text_system().resolve_font(&self.style.font());
-        let font_size = self.style.font_size.to_pixels(px(16.0));
-        let line_height = self.style.line_height_in_pixels(font_size);
-        let em_width = cx
-            .text_system()
-            .typographic_bounds(font_id, font_size, 'm')
-            .map(|bounds| bounds.size.width)
-            .unwrap_or(px(8.0));
-        let cell_width = cx
-            .text_system()
-            .advance(font_id, font_size, 'm')
-            .map(|advance| advance.width)
-            .unwrap_or(em_width);
-        let columns = ((bounds.size.width / em_width).floor() as usize).max(1);
-        let rows = ((bounds.size.height / line_height).floor() as usize).max(1);
-
-        EditorLayout {
-            rows,
-            columns,
-            line_height,
-            font_size,
-            cell_width,
-        }
+        EditorTextMetrics::resolve(cx.text_system(), &self.style).layout_for_bounds(bounds)
     }
 
     fn paint(
@@ -1376,22 +1344,11 @@ impl Element for DocumentElement {
                 None => return,
             };
 
-            // Compute approximate columns from current bounds and font metrics
-            let font_id = cx.text_system().resolve_font(&self.style.font());
-            let font_size = self.style.font_size.to_pixels(px(16.0));
-            let em_width = cx
-                .text_system()
-                .typographic_bounds(font_id, font_size, 'm')
-                .map(|bounds| bounds.size.width)
-                .unwrap_or(px(8.0));
-            let cell_width = cx
-                .text_system()
-                .advance(font_id, font_size, 'm')
-                .map(|advance| advance.width)
-                .unwrap_or(em_width);
-
-            let surface_geometry =
-                EditorSurfaceGeometry::new(bounds, view.gutter_offset(doc), cell_width);
+            let surface_geometry = EditorSurfaceGeometry::new(
+                bounds,
+                view.gutter_offset(doc),
+                after_layout.cell_width,
+            );
             let columns = surface_geometry.viewport_columns(1);
 
             // Check soft-wrap setting from Helix for this document/view
