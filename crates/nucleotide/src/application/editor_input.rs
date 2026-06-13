@@ -576,7 +576,24 @@ fn native_insert_entry_command(command: &MappableCommand) -> bool {
 }
 
 fn native_insert_command_supported(command: &MappableCommand) -> bool {
-    !native_insert_entry_command(command) && native_command_supported(command)
+    (!native_insert_entry_command(command) && native_command_supported(command))
+        || native_insert_edit_command(command)
+}
+
+fn native_insert_edit_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "commit_undo_checkpoint"
+            | "delete_char_backward"
+            | "delete_char_forward"
+            | "delete_word_backward"
+            | "delete_word_forward"
+            | "insert_newline"
+            | "insert_tab"
+            | "kill_to_line_end"
+            | "kill_to_line_start"
+            | "smart_tab"
+    )
 }
 
 fn canonicalize_key(key: &mut KeyEvent) {
@@ -716,11 +733,24 @@ mod tests {
         assert!(native_insert_command_supported(
             &MappableCommand::normal_mode
         ));
-        assert!(!native_insert_command_supported(
+        assert!(native_insert_command_supported(
             &MappableCommand::delete_char_backward
+        ));
+        assert!(native_insert_command_supported(
+            &MappableCommand::delete_char_forward
+        ));
+        assert!(native_insert_command_supported(
+            &MappableCommand::insert_newline
+        ));
+        assert!(native_insert_command_supported(&MappableCommand::smart_tab));
+        assert!(native_insert_command_supported(
+            &MappableCommand::insert_tab
         ));
         assert!(!native_insert_command_supported(
             &MappableCommand::completion
+        ));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::insert_register
         ));
         assert!(!native_insert_command_supported(
             &MappableCommand::insert_mode
@@ -746,6 +776,37 @@ mod tests {
             &MappableCommand::move_char_left
         ));
         assert!(!native_insert_entry_command(&MappableCommand::normal_mode));
+    }
+
+    #[test]
+    fn insert_edit_commands_are_classified_separately() {
+        assert!(native_insert_edit_command(
+            &MappableCommand::commit_undo_checkpoint
+        ));
+        assert!(native_insert_edit_command(
+            &MappableCommand::delete_char_backward
+        ));
+        assert!(native_insert_edit_command(
+            &MappableCommand::delete_char_forward
+        ));
+        assert!(native_insert_edit_command(
+            &MappableCommand::delete_word_backward
+        ));
+        assert!(native_insert_edit_command(
+            &MappableCommand::delete_word_forward
+        ));
+        assert!(native_insert_edit_command(&MappableCommand::insert_newline));
+        assert!(native_insert_edit_command(&MappableCommand::insert_tab));
+        assert!(native_insert_edit_command(
+            &MappableCommand::kill_to_line_end
+        ));
+        assert!(native_insert_edit_command(
+            &MappableCommand::kill_to_line_start
+        ));
+        assert!(native_insert_edit_command(&MappableCommand::smart_tab));
+        assert!(!native_insert_edit_command(&MappableCommand::completion));
+        assert!(!native_insert_edit_command(&MappableCommand::insert_mode));
+        assert!(!native_insert_edit_command(&MappableCommand::normal_mode));
     }
 
     #[test]
