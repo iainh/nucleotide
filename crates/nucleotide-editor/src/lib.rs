@@ -26,7 +26,8 @@ pub mod viewport;
 pub use cursor::{
     CursorLinePosition, CursorTextShape, CursorViewportPosition, EditorCursor, block_cursor_text,
     cursor_background_color, cursor_document_line, cursor_foreground_color, cursor_line_position,
-    cursor_text_run, cursor_viewport_position, shape_cursor_text,
+    cursor_text_run, cursor_viewport_position, phantom_line_cursor_paint_position,
+    shape_cursor_text, soft_wrap_cursor_paint_position, unwrapped_cursor_paint_position,
 };
 pub use cursor_style::{cursor_has_reversed_modifier, cursor_style_for_mode};
 pub use diagnostics::{DiagnosticSeverityByLine, diagnostic_severity_by_line};

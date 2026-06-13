@@ -25,9 +25,11 @@ use nucleotide_editor::{
     cursor_has_reversed_modifier, cursor_line_position, cursor_style_for_mode,
     cursor_viewport_position, diagnostic_overlay_spans, diagnostic_severity_by_line,
     document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
-    hit_test_document_position, line_viewport_plan, paint_line_backgrounds, shape_cursor_text,
-    shared_line_text_without_trailing_newline, soft_wrap_visual_lines, soft_wrap_visual_position,
-    text_style_at_position, unwrapped_visible_line_plans,
+    hit_test_document_position, line_viewport_plan, paint_line_backgrounds,
+    phantom_line_cursor_paint_position, shape_cursor_text,
+    shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
+    soft_wrap_visual_lines, soft_wrap_visual_position, text_style_at_position,
+    unwrapped_cursor_paint_position, unwrapped_visible_line_plans,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -1474,33 +1476,21 @@ impl Element for DocumentElement {
                         cursor_char_idx,
                     );
 
-                    // If cursor is in viewport, render it
                     if let Some(cursor_position) = cursor_visual_position
-                        && cursor_position.visual_line >= view_offset.vertical_offset
-                        && cursor_position.visual_line
-                            < view_offset.vertical_offset + viewport_height
-                    {
-                        // Do not auto-scroll here; rely on Helix ensure_cursor_in_view.
-                        // Calculate cursor position - FIXED: Use text_bounds coordinate system to match mouse clicks
-                        // Get text bounds (excluding gutter) to match mouse coordinate system
-                        // Use existing gutter_width from outer scope instead of calling view.gutter_offset(document)
-                        let text_bounds = EditorSurfaceGeometry::new(
-                            bounds,
-                            gutter_width,
+                        && let Some(cursor_paint_position) = soft_wrap_cursor_paint_position(
+                            EditorSurfaceGeometry::new(
+                                bounds,
+                                gutter_width,
+                                after_layout.cell_width,
+                            ),
+                            after_layout.line_height,
                             after_layout.cell_width,
+                            cursor_position,
+                            view_offset.vertical_offset,
+                            viewport_height,
+                            view_offset.horizontal_offset,
                         )
-                        .text_bounds();
-
-                        let relative_line =
-                            cursor_position.visual_line - view_offset.vertical_offset;
-                        let cursor_y = text_bounds.origin.y
-                            + (after_layout.line_height * relative_line as f32);
-                        // Account for horizontal scrolling when calculating cursor X position
-                        let visual_col_in_viewport = cursor_position.visual_col as f32
-                            - view_offset.horizontal_offset as f32;
-                        let cursor_x = text_bounds.origin.x
-                            + (after_layout.cell_width * visual_col_in_viewport);
-
+                    {
                         let has_reversed = cursor_has_reversed_modifier(&cursor_style);
                         let cursor_color =
                             cursor_background_color(&cursor_style, &text_style_at_cursor, fg_color);
@@ -1519,7 +1509,7 @@ impl Element for DocumentElement {
 
                         // Create and paint cursor
                         let mut cursor = EditorCursor {
-                            origin: point(px(0.0), px(0.0)), // No offset needed, will be applied in paint
+                            origin: cursor_paint_position.cursor_origin,
                             kind: cursor_kind,
                             color: cursor_color,
                             block_width: cursor_width,
@@ -1528,7 +1518,7 @@ impl Element for DocumentElement {
                         };
 
                         // Store cursor position for overlay positioning
-                        let cursor_point = point(cursor_x, cursor_y);
+                        let cursor_point = cursor_paint_position.cursor_point();
 
                         // Update the global WorkspaceLayoutInfo with exact cursor coordinates
                         {
@@ -1541,7 +1531,7 @@ impl Element for DocumentElement {
                             });
                         }
 
-                        cursor.paint(cursor_point, window, cx);
+                        cursor.paint(cursor_paint_position.paint_origin, window, cx);
                     }
                 }
 
@@ -1753,24 +1743,17 @@ impl Element for DocumentElement {
                             let cursor_char_offset = cursor_position.cursor_char_offset;
                             let cursor_byte_offset = cursor_position.cursor_byte_offset;
 
-                            // Get the x position from the shaped line using byte offset
-                            let cursor_x_relative_to_line =
-                                line_layout.shaped_line.x_for_index(cursor_byte_offset);
-
-                            // Additional debug for x_for_index calculation
-
-                            // FIXED: Convert from line-relative coordinates to text-area coordinates
-                            // Line layouts are stored in text-area coordinates (x=0), so we need to add text bounds offset
-                            // Use existing values from the outer scope (editor, document, view, gutter_width are already available)
-                            let text_bounds = EditorSurfaceGeometry::new(
-                                bounds,
-                                gutter_width,
-                                after_layout.cell_width,
-                            )
-                            .text_bounds();
-
-                            // Convert to absolute coordinates by adding text bounds origin
-                            let cursor_x = text_bounds.origin.x + cursor_x_relative_to_line;
+                            let cursor_paint_position = unwrapped_cursor_paint_position(
+                                EditorSurfaceGeometry::new(
+                                    bounds,
+                                    gutter_width,
+                                    after_layout.cell_width,
+                                ),
+                                &line_layout,
+                                cursor_byte_offset,
+                            );
+                            let cursor_x_relative_to_line = cursor_paint_position.cursor_origin.x;
+                            let cursor_x = cursor_paint_position.cursor_point().x;
 
                             // Debug logging
                             debug!(
@@ -1805,15 +1788,6 @@ impl Element for DocumentElement {
                                 }
                             }
 
-                            // Calculate cursor position RELATIVE to line origin (for paint() method)
-                            // cursor.paint() adds the line_layout.origin, so cursor_origin should be relative
-                            let relative_cursor_x = cursor_x_relative_to_line; // Already relative to line
-                            let relative_cursor_y = px(0.0); // Relative to line origin
-                            let cursor_origin = gpui::Point::new(
-                                relative_cursor_x, // Relative X coordinate
-                                relative_cursor_y, // Relative Y coordinate (line-relative)
-                            );
-
                             let cursor_color = cursor_background_color(
                                 &cursor_style,
                                 &cursor_text_style,
@@ -1822,7 +1796,7 @@ impl Element for DocumentElement {
                             let cursor_width = cursor_text_shape.width_or(after_layout.cell_width);
 
                             let mut cursor = EditorCursor {
-                                origin: cursor_origin,
+                                origin: cursor_paint_position.cursor_origin,
                                 kind: cursor_kind,
                                 color: cursor_color,
                                 block_width: cursor_width,
@@ -1830,13 +1804,7 @@ impl Element for DocumentElement {
                                 text: cursor_text_shape.clone().into_shaped_line(),
                             };
 
-                            // Paint cursor at absolute window coordinates
-                            // Convert text-area relative coordinates to absolute window coordinates
-                            let absolute_cursor_position = point(
-                                text_bounds.origin.x + line_layout.origin.x,
-                                text_bounds.origin.y + line_layout.origin.y,
-                            );
-                            cursor.paint(absolute_cursor_position, window, cx);
+                            cursor.paint(cursor_paint_position.paint_origin, window, cx);
                         } else {
                             debug!(
                                 "❌ CURSOR FAIL: Could not find line layout for cursor line {} (layout_line_idx={})",
@@ -1848,29 +1816,23 @@ impl Element for DocumentElement {
                                 && file_ends_with_newline
                                 && cursor_char_idx >= text.len_chars()
                             {
-                                // Calculate text bounds for phantom cursor positioning (same as normal cursor logic)
-                                let phantom_text_bounds = EditorSurfaceGeometry::new(
-                                    bounds,
-                                    gutter_width,
-                                    after_layout.cell_width,
-                                )
-                                .text_bounds();
-
-                                // Calculate cursor position at the first tilde line
-                                // Use the y_offset from the main loop (where the next line would be)
-                                let cursor_x = phantom_text_bounds.origin.x; // Start of line
-                                let cursor_y =
-                                    phantom_text_bounds.origin.y + next_unwrapped_line_y_offset; // At the phantom line position
-
                                 let cursor_color = cursor_background_color(
                                     &cursor_style,
                                     &cursor_text_style,
                                     fg_color,
                                 );
                                 let cursor_width = after_layout.cell_width;
+                                let cursor_paint_position = phantom_line_cursor_paint_position(
+                                    EditorSurfaceGeometry::new(
+                                        bounds,
+                                        gutter_width,
+                                        after_layout.cell_width,
+                                    ),
+                                    next_unwrapped_line_y_offset,
+                                );
 
                                 let mut cursor = EditorCursor {
-                                    origin: point(px(0.0), px(0.0)),
+                                    origin: cursor_paint_position.cursor_origin,
                                     kind: cursor_kind,
                                     color: cursor_color,
                                     block_width: cursor_width,
@@ -1879,7 +1841,7 @@ impl Element for DocumentElement {
                                 };
 
                                 // Store cursor position for overlay positioning
-                                let cursor_point = point(cursor_x, cursor_y);
+                                let cursor_point = cursor_paint_position.cursor_point();
 
                                 // Update the global WorkspaceLayoutInfo with exact cursor coordinates
                                 {
@@ -1892,7 +1854,7 @@ impl Element for DocumentElement {
                                     });
                                 }
 
-                                cursor.paint(cursor_point, window, cx);
+                                cursor.paint(cursor_paint_position.paint_origin, window, cx);
                             } else {
                                 debug!(
                                     "❌ CURSOR FAIL: Normal line layout missing for line {}",
