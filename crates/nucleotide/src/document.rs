@@ -19,18 +19,18 @@ use nucleotide_editor::{
     EditorScrollbarState, EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry,
     EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
     EditorViewportSurfaceLayout, GutterLineParams, HighlightLineParams, LineLayout,
-    LineLayoutCache, UnwrappedRenderPlanParams, begin_editor_pointer_selection_at_event,
-    block_cursor_text, build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
+    LineLayoutCache, UnwrappedCursorPaintPlanParams, UnwrappedCursorPaintPlanSource,
+    UnwrappedRenderPlanParams, begin_editor_pointer_selection_at_event, block_cursor_text,
+    build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
     cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
-    cursor_line_position, cursor_style_for_mode, decorate_soft_wrap_line_runs,
-    diagnostic_marker_paint_style, diagnostic_marker_plan, diagnostic_overlay_spans,
-    diagnostic_severity_by_line, document_render_snapshot, document_soft_wrap_render_plan,
-    gpui_hsla_to_helix_color, highlight_line, paint_cursorline_background, paint_diagnostic_marker,
-    paint_editor_background, paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines,
-    paint_visible_rulers, phantom_line_cursor_paint_position, shape_cursor_text,
-    shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
+    cursor_style_for_mode, decorate_soft_wrap_line_runs, diagnostic_marker_paint_style,
+    diagnostic_marker_plan, diagnostic_overlay_spans, diagnostic_severity_by_line,
+    document_render_snapshot, document_soft_wrap_render_plan, gpui_hsla_to_helix_color,
+    highlight_line, paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
+    paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines, paint_visible_rulers,
+    shape_cursor_text, shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_visual_position,
-    text_style_at_position, unwrapped_cursor_paint_position, unwrapped_render_plan,
+    text_style_at_position, unwrapped_cursor_paint_plan, unwrapped_render_plan,
     update_editor_pointer_selection_at_event, visible_ruler_paint_plans,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -1355,87 +1355,52 @@ impl Element for DocumentElement {
             // Check both is_focused flag and actual focus state
             if self.is_focused || element_focused {
                 if let Some(cursor_viewport_pos) = cursor_viewport_pos {
-                    let viewport_row = cursor_viewport_pos.viewport_row;
                     let cursor_line = cursor_viewport_pos.line;
 
                     debug!(
                         "Looking for cursor line {cursor_line} in range {first_row}..{last_row}"
                     );
 
-                    {
-                        // Debug: line layouts are now stored in LineLayoutCache
+                    let line_layout = line_cache.find_line_by_index(cursor_line);
+                    let cursor_paint_plan =
+                        unwrapped_cursor_paint_plan(UnwrappedCursorPaintPlanParams {
+                            text: text.slice(..),
+                            geometry: EditorSurfaceGeometry::new(
+                                bounds,
+                                gutter_width,
+                                after_layout.cell_width,
+                            ),
+                            cursor_char_idx,
+                            cursor_at_trailing_newline: cursor_at_end && file_ends_with_newline,
+                            cursor_viewport_position: Some(cursor_viewport_pos),
+                            line_layout: line_layout.as_ref(),
+                            next_line_y_offset: next_unwrapped_line_y_offset,
+                        });
 
-                        // Use the cursor line directly as the layout index
-                        let layout_line_idx = cursor_line;
+                    match cursor_paint_plan {
+                        Some(cursor_paint_plan) => {
+                            let cursor_paint_position = cursor_paint_plan.paint_position;
 
-                        debug!(
-                            "Looking for line layout with index {} (cursor_line: {}, is phantom: {})",
-                            layout_line_idx,
-                            cursor_line,
-                            cursor_at_end && file_ends_with_newline
-                        );
-
-                        // Find the line layout for the cursor line
-                        if let Some(line_layout) = line_cache.find_line_by_index(layout_line_idx) {
-                            debug!(
-                                "Found line layout - line_idx: {}, origin.y: {:?}, expected line: {}",
-                                line_layout.line_idx, line_layout.origin.y, layout_line_idx
-                            );
-
-                            let cursor_position = cursor_line_position(
-                                text.slice(..),
-                                cursor_line,
-                                cursor_char_idx,
-                                cursor_at_end && file_ends_with_newline,
-                            );
-                            let line_text = cursor_position.line_text;
-                            let cursor_char_offset = cursor_position.cursor_char_offset;
-                            let cursor_byte_offset = cursor_position.cursor_byte_offset;
-
-                            let cursor_paint_position = unwrapped_cursor_paint_position(
-                                EditorSurfaceGeometry::new(
-                                    bounds,
-                                    gutter_width,
-                                    after_layout.cell_width,
-                                ),
-                                &line_layout,
-                                cursor_byte_offset,
-                            );
-                            let cursor_x_relative_to_line = cursor_paint_position.cursor_origin.x;
-                            let cursor_x = cursor_paint_position.cursor_point().x;
-
-                            // Debug logging
-                            debug!(
-                                "Cursor rendering - line: {cursor_line}, char_offset: {cursor_char_offset}, byte_offset: {cursor_byte_offset}, x_relative: {cursor_x_relative_to_line:?}, x_absolute: {cursor_x:?}, viewport_row: {viewport_row}"
-                            );
-
-                            // Debug info about the line content
-                            debug!(
-                                "Line content: {:?}, cursor at char offset {} (byte offset {}), at_eof: {}",
-                                &line_text,
-                                cursor_char_offset,
-                                cursor_byte_offset,
-                                cursor_at_end && file_ends_with_newline
-                            );
-
-                            // Additional debug for emoji detection
-                            if !line_text.is_empty() {
-                                use unicode_segmentation::UnicodeSegmentation;
-                                let chars: Vec<char> = line_text.chars().collect();
+                            if let Some(line_position) = &cursor_paint_plan.line_position {
                                 debug!(
-                                    "Line has {} chars, {} bytes, {} graphemes",
-                                    chars.len(),
-                                    line_text.len(),
-                                    line_text.graphemes(true).count()
+                                    "Cursor rendering - line: {}, char_offset: {}, byte_offset: {}, x_relative: {:?}, x_absolute: {:?}, viewport_row: {}",
+                                    line_position.line,
+                                    line_position.cursor_char_offset,
+                                    line_position.cursor_byte_offset,
+                                    cursor_paint_position.cursor_origin.x,
+                                    cursor_paint_position.cursor_point().x,
+                                    cursor_viewport_pos.viewport_row
                                 );
-                                if cursor_char_offset < chars.len() {
-                                    let ch = chars[cursor_char_offset];
-                                    debug!(
-                                        "Char at cursor offset {}: {:?} (U+{:04X})",
-                                        cursor_char_offset, ch, ch as u32
-                                    );
-                                }
+                            } else {
+                                debug!(
+                                    "Cursor rendering - source: {:?}, x_absolute: {:?}, viewport_row: {}",
+                                    cursor_paint_plan.source,
+                                    cursor_paint_position.cursor_point().x,
+                                    cursor_viewport_pos.viewport_row
+                                );
                             }
+
+                            debug!("Cursor paint plan selected: {:?}", cursor_paint_plan.source);
 
                             let cursor_color = cursor_background_color(
                                 &cursor_style,
@@ -1453,63 +1418,27 @@ impl Element for DocumentElement {
                                 text: cursor_text_shape.clone().into_shaped_line(),
                             };
 
-                            cursor.paint(cursor_paint_position.paint_origin, window, cx);
-                        } else {
-                            debug!(
-                                "❌ CURSOR FAIL: Could not find line layout for cursor line {} (layout_line_idx={})",
-                                cursor_line, layout_line_idx
-                            );
-
-                            // Special handling for EOF phantom line cursor
-                            if cursor_at_end
-                                && file_ends_with_newline
-                                && cursor_char_idx >= text.len_chars()
+                            if cursor_paint_plan.source
+                                == UnwrappedCursorPaintPlanSource::PhantomTrailingNewline
                             {
-                                let cursor_color = cursor_background_color(
-                                    &cursor_style,
-                                    &cursor_text_style,
-                                    fg_color,
-                                );
-                                let cursor_width = after_layout.cell_width;
-                                let cursor_paint_position = phantom_line_cursor_paint_position(
-                                    EditorSurfaceGeometry::new(
-                                        bounds,
-                                        gutter_width,
-                                        after_layout.cell_width,
-                                    ),
-                                    next_unwrapped_line_y_offset,
-                                );
-
-                                let mut cursor = EditorCursor {
-                                    origin: cursor_paint_position.cursor_origin,
-                                    kind: cursor_kind,
-                                    color: cursor_color,
-                                    block_width: cursor_width,
-                                    line_height: after_layout.line_height,
-                                    text: cursor_text_shape.into_shaped_line(),
-                                };
-
-                                // Store cursor position for overlay positioning
                                 let cursor_point = cursor_paint_position.cursor_point();
-
-                                // Update the global WorkspaceLayoutInfo with exact cursor coordinates
-                                {
-                                    let layout_info =
-                                        cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
-                                    layout_info.cursor_position = Some(cursor_point);
-                                    layout_info.cursor_size = Some(gpui::Size {
-                                        width: cursor_width,
-                                        height: after_layout.line_height,
-                                    });
-                                }
-
-                                cursor.paint(cursor_paint_position.paint_origin, window, cx);
-                            } else {
-                                debug!(
-                                    "❌ CURSOR FAIL: Normal line layout missing for line {}",
-                                    cursor_line
-                                );
+                                let layout_info =
+                                    cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+                                layout_info.cursor_position = Some(cursor_point);
+                                layout_info.cursor_size = Some(gpui::Size {
+                                    width: cursor_width,
+                                    height: after_layout.line_height,
+                                });
                             }
+
+                            cursor.paint(cursor_paint_position.paint_origin, window, cx);
+                        }
+                        None => {
+                            debug!(
+                                "Cursor paint plan unavailable for visible line {} (at_eof: {})",
+                                cursor_line,
+                                cursor_at_end && file_ends_with_newline
+                            );
                         }
                     }
                 } else {
