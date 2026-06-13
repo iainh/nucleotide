@@ -6,6 +6,10 @@ use std::{cell::Cell, rc::Rc};
 use helix_core::{Range, Selection, SmallVec};
 use helix_view::{Document, ViewId};
 
+use crate::{
+    EditorHitTestResult, EditorSurfacePointerEvent, LineLayoutCache, hit_test_document_position,
+};
+
 #[derive(Clone, Default)]
 pub struct EditorSelectionDragState {
     anchor: Rc<Cell<Option<usize>>>,
@@ -29,6 +33,12 @@ impl EditorSelectionDragState {
 pub struct EditorSelectionUpdate {
     pub anchor: usize,
     pub head: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorPointerSelectionUpdate {
+    pub hit_test: EditorHitTestResult,
+    pub selection: EditorSelectionUpdate,
 }
 
 pub fn pointer_selection_anchor(
@@ -105,11 +115,56 @@ pub fn update_pointer_selection(
     ))
 }
 
+pub fn begin_pointer_selection_at_event(
+    document: &mut Document,
+    view_id: ViewId,
+    gutter_columns: u16,
+    line_cache: &LineLayoutCache,
+    drag_state: &EditorSelectionDragState,
+    event: EditorSurfacePointerEvent,
+) -> Option<EditorPointerSelectionUpdate> {
+    let Some(hit_test) = hit_test_document_position(event, gutter_columns, line_cache, document)
+    else {
+        drag_state.clear();
+        return None;
+    };
+
+    let selection = begin_pointer_selection(
+        document,
+        view_id,
+        drag_state,
+        hit_test.char_idx,
+        event.modifiers.shift,
+    );
+
+    Some(EditorPointerSelectionUpdate {
+        hit_test,
+        selection,
+    })
+}
+
+pub fn update_pointer_selection_at_event(
+    document: &mut Document,
+    view_id: ViewId,
+    gutter_columns: u16,
+    line_cache: &LineLayoutCache,
+    drag_state: &EditorSelectionDragState,
+    event: EditorSurfacePointerEvent,
+) -> Option<EditorPointerSelectionUpdate> {
+    let hit_test = hit_test_document_position(event, gutter_columns, line_cache, document)?;
+    let selection = update_pointer_selection(document, view_id, drag_state, hit_test.char_idx)?;
+
+    Some(EditorPointerSelectionUpdate {
+        hit_test,
+        selection,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        EditorSelectionDragState, EditorSelectionUpdate, pointer_selection_anchor,
-        selection_for_range,
+        EditorPointerSelectionUpdate, EditorSelectionDragState, EditorSelectionUpdate,
+        pointer_selection_anchor, selection_for_range,
     };
 
     #[test]
@@ -149,5 +204,22 @@ mod tests {
 
         state.clear();
         assert_eq!(state.anchor(), None);
+    }
+
+    #[test]
+    fn pointer_selection_update_carries_hit_test_and_selection() {
+        let update = EditorPointerSelectionUpdate {
+            hit_test: crate::EditorHitTestResult {
+                line_idx: 1,
+                char_offset: 2,
+                char_idx: 12,
+            },
+            selection: EditorSelectionUpdate {
+                anchor: 4,
+                head: 12,
+            },
+        };
+
+        assert_eq!(update.hit_test.char_idx, update.selection.head);
     }
 }
