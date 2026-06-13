@@ -2,8 +2,8 @@ use std::{cell::Cell, rc::Rc};
 
 use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
-    Styled, TextStyle, Window, div, px,
+    Focusable, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, SharedString,
+    Size, Styled, TextStyle, Window, div, px,
 };
 use helix_core::Uri;
 use helix_lsp::lsp::Diagnostic;
@@ -15,7 +15,7 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    DocumentFramePaintParams, EditorCursorReveal, EditorDocumentElement,
+    CursorOverlayPlan, DocumentFramePaintParams, EditorCursorReveal, EditorDocumentElement,
     EditorDocumentFrameGutterParams, EditorDocumentFrameParams, EditorLayout, EditorScrollbarState,
     EditorSelectionDragState, EditorSurface, EditorSurfaceMetrics, EditorSurfacePointerEvent,
     EditorTextMetrics, EditorViewport, EditorViewportContentLayout, EditorViewportSurfaceLayout,
@@ -185,9 +185,9 @@ pub struct DocumentView {
     line_height: Pixels,
     selection_drag_state: EditorSelectionDragState,
     /// Last cursor position in window coordinates (for completion positioning)
-    last_cursor_position: Option<gpui::Point<Pixels>>,
+    last_cursor_position: Rc<Cell<Option<Point<Pixels>>>>,
     /// Last cursor dimensions (for completion positioning)  
-    last_cursor_size: Option<gpui::Size<Pixels>>,
+    last_cursor_size: Rc<Cell<Option<Size<Pixels>>>>,
 }
 
 impl DocumentView {
@@ -215,8 +215,8 @@ impl DocumentView {
             cursor_reveal_requested: Rc::new(Cell::new(None)),
             line_height,
             selection_drag_state: EditorSelectionDragState::default(),
-            last_cursor_position: None,
-            last_cursor_size: None,
+            last_cursor_position: Rc::new(Cell::new(None)),
+            last_cursor_size: Rc::new(Cell::new(None)),
         }
     }
 
@@ -323,18 +323,37 @@ impl DocumentView {
 
     /// Get the last cursor position and size in window coordinates
     /// Returns (position, size) where position is bottom-left corner for completion positioning
-    pub fn get_cursor_coordinates(&self) -> Option<(gpui::Point<Pixels>, gpui::Size<Pixels>)> {
-        if let (Some(pos), Some(size)) = (self.last_cursor_position, self.last_cursor_size) {
-            // Return bottom-left corner of cursor for completion positioning
-            let bottom_left = gpui::Point {
-                x: pos.x,
-                y: pos.y + size.height,
-            };
-            Some((bottom_left, size))
-        } else {
-            None
-        }
+    pub fn get_cursor_coordinates(&self) -> Option<(Point<Pixels>, Size<Pixels>)> {
+        cursor_completion_anchor(self.last_cursor_position.get(), self.last_cursor_size.get())
     }
+}
+
+fn set_cursor_overlay_cells(
+    cursor_position: &Cell<Option<Point<Pixels>>>,
+    cursor_size: &Cell<Option<Size<Pixels>>>,
+    overlay_plan: Option<CursorOverlayPlan>,
+) {
+    if let Some(overlay_plan) = overlay_plan {
+        cursor_position.set(Some(overlay_plan.cursor_position));
+        cursor_size.set(Some(overlay_plan.cursor_size));
+    } else {
+        cursor_position.set(None);
+        cursor_size.set(None);
+    }
+}
+
+fn cursor_completion_anchor(
+    cursor_position: Option<Point<Pixels>>,
+    cursor_size: Option<Size<Pixels>>,
+) -> Option<(Point<Pixels>, Size<Pixels>)> {
+    let (position, size) = cursor_position.zip(cursor_size)?;
+    Some((
+        Point {
+            x: position.x,
+            y: position.y + size.height,
+        },
+        size,
+    ))
 }
 
 impl EventEmitter<DismissEvent> for DocumentView {}
@@ -398,6 +417,8 @@ impl Render for DocumentView {
             let mut viewport = self.viewport.clone();
             let surface_metrics = surface_metrics.clone();
             let cursor_reveal_requested = Rc::clone(&self.cursor_reveal_requested);
+            let cursor_position = Rc::clone(&self.last_cursor_position);
+            let cursor_size = Rc::clone(&self.last_cursor_size);
 
             EditorDocumentElement::new(style.clone(), move |bounds, after_layout, window, cx| {
                 paint_document_content(DocumentPaintParams {
@@ -410,6 +431,8 @@ impl Render for DocumentView {
                     viewport: &mut viewport,
                     surface_metrics: &surface_metrics,
                     cursor_reveal_requested: cursor_reveal_requested.as_ref(),
+                    cursor_position: cursor_position.as_ref(),
+                    cursor_size: cursor_size.as_ref(),
                     bounds,
                     layout: after_layout,
                     window,
@@ -540,6 +563,8 @@ struct DocumentPaintParams<'a> {
     viewport: &'a mut EditorViewport,
     surface_metrics: &'a EditorSurfaceMetrics,
     cursor_reveal_requested: &'a Cell<Option<EditorCursorReveal>>,
+    cursor_position: &'a Cell<Option<Point<Pixels>>>,
+    cursor_size: &'a Cell<Option<Size<Pixels>>>,
     bounds: Bounds<Pixels>,
     layout: &'a mut EditorLayout,
     window: &'a mut Window,
@@ -557,6 +582,8 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         viewport,
         surface_metrics,
         cursor_reveal_requested,
+        cursor_position,
+        cursor_size,
         bounds,
         layout,
         window,
@@ -775,7 +802,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
             .bg
             .and_then(crate::utils::color_to_hsla);
         let element_focused = focus.is_focused(window);
-        if let Some(overlay_plan) = paint_document_frame(
+        let overlay_plan = paint_document_frame(
             window,
             cx,
             DocumentFramePaintParams {
@@ -801,12 +828,71 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
                 gutter_bg,
                 scroll_line_offset,
             },
-        ) {
-            let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+        );
+        set_cursor_overlay_cells(cursor_position, cursor_size, overlay_plan);
+
+        let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+        if let Some(overlay_plan) = overlay_plan {
             layout_info.cursor_position = Some(overlay_plan.cursor_position);
             layout_info.cursor_size = Some(overlay_plan.cursor_size);
+        } else {
+            layout_info.cursor_position = None;
+            layout_info.cursor_size = None;
         }
     }
 }
 
 // Removed DiagnosticView - diagnostics are now handled through events and document highlights
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use gpui::{point, px, size};
+
+    use super::*;
+
+    #[test]
+    fn cursor_completion_anchor_uses_cursor_bottom_left() {
+        let position = point(px(12.0), px(34.0));
+        let size = size(px(8.0), px(20.0));
+
+        let Some((anchor, returned_size)) = cursor_completion_anchor(Some(position), Some(size))
+        else {
+            panic!("expected cursor anchor");
+        };
+
+        assert_eq!(anchor, point(px(12.0), px(54.0)));
+        assert_eq!(returned_size, size);
+    }
+
+    #[test]
+    fn cursor_completion_anchor_requires_position_and_size() {
+        let position = point(px(12.0), px(34.0));
+        let size = size(px(8.0), px(20.0));
+
+        assert!(cursor_completion_anchor(Some(position), None).is_none());
+        assert!(cursor_completion_anchor(None, Some(size)).is_none());
+        assert!(cursor_completion_anchor(None, None).is_none());
+    }
+
+    #[test]
+    fn cursor_overlay_cells_track_and_clear_paint_state() {
+        let cursor_position = Cell::new(None);
+        let cursor_size = Cell::new(None);
+        let overlay_plan = CursorOverlayPlan {
+            cursor_position: point(px(4.0), px(6.0)),
+            cursor_size: size(px(8.0), px(20.0)),
+        };
+
+        set_cursor_overlay_cells(&cursor_position, &cursor_size, Some(overlay_plan));
+
+        assert_eq!(cursor_position.get(), Some(overlay_plan.cursor_position));
+        assert_eq!(cursor_size.get(), Some(overlay_plan.cursor_size));
+
+        set_cursor_overlay_cells(&cursor_position, &cursor_size, None);
+
+        assert_eq!(cursor_position.get(), None);
+        assert_eq!(cursor_size.get(), None);
+    }
+}
