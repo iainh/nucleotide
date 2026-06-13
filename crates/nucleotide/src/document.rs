@@ -29,9 +29,9 @@ use nucleotide_editor::{
     highlight_line, hit_test_document_position, line_viewport_plan, paint_line_backgrounds,
     phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
-    soft_wrap_gutter_line_plans, soft_wrap_visual_lines, soft_wrap_visual_position,
-    text_style_at_position, unwrapped_cursor_paint_position, unwrapped_visible_line_plans,
-    visible_ruler_bounds,
+    soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans, soft_wrap_viewport_height,
+    soft_wrap_visual_lines, soft_wrap_visual_position, text_style_at_position,
+    unwrapped_cursor_paint_position, unwrapped_visible_line_plans, visible_ruler_bounds,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -998,16 +998,10 @@ impl Element for DocumentElement {
                     (text_format, view_offset, gutter_offset)
                 };
 
-                let text_origin_x =
-                    EditorSurfaceGeometry::new(bounds, gutter_offset, after_layout.cell_width)
-                        .text_origin_x();
-                // Account for padding in viewport height calculation - match EditorViewport exactly
-                let effective_height = bounds.size.height - px(2.0); // Account for padding
-                let calculated_height = (effective_height / after_layout.line_height) as usize;
-                // Render one extra row when the top row is partially scrolled,
-                // matching GPUI's pixel-scroll behavior at the bottom edge.
+                let soft_wrap_geometry =
+                    EditorSurfaceGeometry::new(bounds, gutter_offset, after_layout.cell_width);
                 let viewport_height =
-                    calculated_height + usize::from(f32::from(scroll_line_offset) > 0.0);
+                    soft_wrap_viewport_height(bounds, after_layout.line_height, scroll_line_offset);
 
                 let soft_wrap_lines = soft_wrap_visual_lines(
                     text,
@@ -1016,12 +1010,17 @@ impl Element for DocumentElement {
                     view_offset.vertical_offset,
                     viewport_height,
                 );
+                let soft_wrap_paint_plans = soft_wrap_line_paint_plans(
+                    &soft_wrap_lines,
+                    soft_wrap_geometry,
+                    after_layout.line_height,
+                    scroll_line_offset,
+                    view_offset.vertical_offset,
+                    cursor_line_num,
+                );
 
-                for visual in &soft_wrap_lines {
-                    let y_offset = -scroll_line_offset
-                        + after_layout.line_height
-                            * visual.relative_row(view_offset.vertical_offset) as f32;
-                    let line_y = bounds.origin.y + px(1.0) + y_offset;
+                for soft_wrap_plan in soft_wrap_paint_plans {
+                    let visual = soft_wrap_plan.visual;
 
                     let mut line_runs = if let (Some(line_start), Some(line_end)) =
                         (visual.line_start_char, visual.line_end_char)
@@ -1065,16 +1064,11 @@ impl Element for DocumentElement {
                         wrap_indicator_color,
                     );
 
-                    // Determine whether this visual line corresponds to the cursor's document line
-                    let is_cursor_visual_line = visual.doc_line == cursor_line_num;
-
                     // Paint cursorline background before any run highlights so empty lines still render it
-                    if is_cursor_visual_line && let Some(cursorline_bg) = cursorline_style {
-                        let cursorline_bounds = Bounds {
-                            origin: point(bounds.origin.x, line_y),
-                            size: size(bounds.size.width, after_layout.line_height),
-                        };
-                        window.paint_quad(fill(cursorline_bounds, cursorline_bg));
+                    if soft_wrap_plan.is_cursor_visual_line
+                        && let Some(cursorline_bg) = cursorline_style
+                    {
+                        window.paint_quad(fill(soft_wrap_plan.cursorline_bounds, cursorline_bg));
                     }
 
                     // Paint the line text (only for non-empty lines)
@@ -1091,17 +1085,17 @@ impl Element for DocumentElement {
                             window,
                             &shaped_line,
                             &line_runs,
-                            point(text_origin_x, line_y),
+                            soft_wrap_plan.text_origin,
                             after_layout.line_height,
                             EditorLineBackgroundStyle {
-                                only_selection_backgrounds: is_cursor_visual_line,
+                                only_selection_backgrounds: soft_wrap_plan.is_cursor_visual_line,
                                 selection_primary: tokens.editor.selection_primary,
                                 selection_secondary: tokens.editor.selection_secondary,
                             },
                         );
 
                         if let Err(e) = shaped_line.paint(
-                            point(text_origin_x, line_y),
+                            soft_wrap_plan.text_origin,
                             after_layout.line_height,
                             window,
                             cx,
@@ -1116,7 +1110,7 @@ impl Element for DocumentElement {
                         let layout = LineLayout::wrapped(
                             visual.doc_line,
                             shaped_line,
-                            y_offset,
+                            soft_wrap_plan.y_offset,
                             visual.segment_char_offset,
                             visual.text_start_byte_offset,
                         );
