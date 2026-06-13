@@ -15,18 +15,17 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    DiagnosticGutterMarkersPaintParams, DocumentRulerPaintParams, EditorCursorTextPaintParams,
-    EditorDocumentFrameParams, EditorLayout, EditorLineBackgroundStyle, EditorScrollbarState,
-    EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics,
-    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout,
-    GutterLineParams, LineLayoutCache, ShapedEditorCursorPaintParams,
-    SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams,
-    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams,
-    begin_editor_pointer_selection_at_event, build_gutter_lines, cursor_document_line,
-    cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color,
-    paint_diagnostic_gutter_markers, paint_document_rulers, paint_editor_background,
-    paint_gutter_lines, paint_shaped_editor_cursor, paint_soft_wrap_editor_line,
-    paint_soft_wrap_gutter, paint_unwrapped_editor_line, shape_and_paint_editor_cursor,
+    DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams, EditorDocumentFrameParams,
+    EditorLayout, EditorLineBackgroundStyle, EditorScrollbarState, EditorSelectionDragState,
+    EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent,
+    EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout, GutterLineParams,
+    LineLayoutCache, ShapedEditorCursorPaintParams, SoftWrapCursorPaintPlanParams,
+    SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams, UnwrappedCursorPaintPlanParams,
+    UnwrappedEditorLinePaintParams, begin_editor_pointer_selection_at_event, build_gutter_lines,
+    cursor_document_line, cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color,
+    paint_diagnostic_gutter_markers, paint_editor_background, paint_gutter_lines,
+    paint_shaped_editor_cursor, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
+    paint_unwrapped_editor_line, paint_visible_rulers, shape_and_paint_editor_cursor,
     shape_cursor_text, soft_wrap_cursor_paint_plan, unwrapped_cursor_paint_plan,
     update_editor_pointer_selection_at_event,
 };
@@ -663,6 +662,12 @@ impl Element for DocumentElement {
             // Get mode-specific cursor theme like terminal version
             let cursor_style = cursor_style_for_mode(editor_mode, |key| cx.theme_style(key));
             let wrap_indicator_color = cx.theme_style("ui.virtual.wrap").fg.and_then(color_to_hsla);
+            const THEME_KEY_VIRTUAL_RULER: &str = "ui.virtual.ruler";
+            let ruler_style = cx.theme_style(THEME_KEY_VIRTUAL_RULER);
+            let ruler_color = ruler_style.bg.and_then(color_to_hsla).unwrap_or_else(|| {
+                // Use UI theme's border color from tokens
+                cx.ui_theme().tokens.chrome.border_default
+            });
             let loader = editor.syn_loader.load();
             let frame = editor_document_frame(EditorDocumentFrameParams {
                 document,
@@ -683,6 +688,7 @@ impl Element for DocumentElement {
                 default_text_style,
                 default_bg: bg_color,
                 wrap_indicator_color,
+                ruler_color,
                 editor_mode,
                 cursor_kind,
                 cursor_style,
@@ -753,26 +759,7 @@ impl Element for DocumentElement {
                 );
             }
 
-            // Render rulers before text
-            const THEME_KEY_VIRTUAL_RULER: &str = "ui.virtual.ruler";
-            let ruler_style = cx.theme_style(THEME_KEY_VIRTUAL_RULER);
-            let ruler_color = ruler_style.bg.and_then(color_to_hsla).unwrap_or_else(|| {
-                // Use UI theme's border color from tokens
-                cx.ui_theme().tokens.chrome.border_default
-            });
-
-            let ruler_geometry =
-                EditorSurfaceGeometry::new(bounds, gutter_width, after_layout.cell_width);
-            paint_document_rulers(
-                window,
-                DocumentRulerPaintParams {
-                    document,
-                    view_id: view.id,
-                    editor_rulers: &frame.editor_rulers,
-                    geometry: ruler_geometry,
-                    color: ruler_color,
-                },
-            );
+            paint_visible_rulers(window, &frame.ruler_paint_plans);
 
             // Extract necessary values before the loop to avoid borrowing issues
             let _editor_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
