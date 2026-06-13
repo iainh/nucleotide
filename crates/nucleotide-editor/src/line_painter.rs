@@ -12,6 +12,10 @@ pub struct EditorLineBackgroundStyle {
     pub selection_secondary: Hsla,
 }
 
+pub fn paint_cursorline_background(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla) {
+    window.paint_quad(fill(bounds, color));
+}
+
 pub fn paint_line_backgrounds(
     window: &mut Window,
     shaped_line: &ShapedLine,
