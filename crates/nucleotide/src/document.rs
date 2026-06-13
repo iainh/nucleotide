@@ -19,8 +19,8 @@ use nucleotide_editor::{
     EditorScrollbarState, EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry,
     EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
     EditorViewportSurfaceLayout, GutterLineParams, HighlightLineParams, LineLayout,
-    LineLayoutCache, begin_editor_pointer_selection_at_event, block_cursor_text,
-    build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
+    LineLayoutCache, UnwrappedRenderPlanParams, begin_editor_pointer_selection_at_event,
+    block_cursor_text, build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
     cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
     cursor_line_position, cursor_style_for_mode, decorate_soft_wrap_line_runs,
     diagnostic_marker_paint_style, diagnostic_marker_plan, diagnostic_overlay_spans,
@@ -30,9 +30,8 @@ use nucleotide_editor::{
     paint_visible_rulers, phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_visual_position,
-    text_style_at_position, unwrapped_cursor_paint_position, unwrapped_line_paint_plans,
-    unwrapped_visible_line_plans, update_editor_pointer_selection_at_event,
-    visible_ruler_paint_plans,
+    text_style_at_position, unwrapped_cursor_paint_position, unwrapped_render_plan,
+    update_editor_pointer_selection_at_event, visible_ruler_paint_plans,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -1200,22 +1199,18 @@ impl Element for DocumentElement {
                 return;
             }
 
-            let line_plans = unwrapped_visible_line_plans(
-                text.slice(..),
+            let unwrapped_plan = unwrapped_render_plan(UnwrappedRenderPlanParams {
+                text: text.slice(..),
                 line_viewport,
-                after_layout.line_height,
+                bounds,
+                gutter_columns: gutter_width,
+                cell_width: after_layout.cell_width,
+                line_height: after_layout.line_height,
                 scroll_line_offset,
-            );
-            let next_unwrapped_line_y_offset =
-                line_plans.last().map_or(-scroll_line_offset, |line| {
-                    line.y_offset + after_layout.line_height
-                });
-            let unwrapped_paint_plans = unwrapped_line_paint_plans(
-                &line_plans,
-                EditorSurfaceGeometry::new(bounds, gutter_width, after_layout.cell_width),
-                after_layout.line_height,
-                cursor_line_num,
-            );
+                cursor_line: cursor_line_num,
+            });
+            let next_unwrapped_line_y_offset = unwrapped_plan.next_line_y_offset;
+            let unwrapped_paint_plans = unwrapped_plan.line_paint_plans();
 
             // Original rendering loop (without soft wrap)
             for unwrapped_plan in unwrapped_paint_plans {
