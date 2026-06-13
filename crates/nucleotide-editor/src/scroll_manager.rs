@@ -29,8 +29,8 @@ pub struct ScrollManager {
     pub scroll_position: Rc<Cell<Point<Pixels>>>,
     /// Viewport size in pixels
     pub viewport_size: Rc<Cell<Size<Pixels>>>,
-    /// Track if scroll was changed by scrollbar (needs sync to Helix)
-    pub scrollbar_changed: Rc<Cell<bool>>,
+    /// Track if native viewport scroll changed and needs sync to Helix
+    pub pending_view_sync: Rc<Cell<bool>>,
 }
 
 impl ScrollManager {
@@ -44,7 +44,7 @@ impl ScrollManager {
             total_lines: Rc::new(Cell::new(1)),
             scroll_position: Rc::new(Cell::new(point(px(0.0), px(0.0)))),
             viewport_size: Rc::new(Cell::new(size(px(800.0), px(600.0)))),
-            scrollbar_changed: Rc::new(Cell::new(false)),
+            pending_view_sync: Rc::new(Cell::new(false)),
         }
     }
 
@@ -85,13 +85,13 @@ impl ScrollManager {
         point(-pos.x, -pos.y)
     }
 
-    /// Set the scroll position in pixels from scrollbar interaction (positive when scrolled down/right)
+    /// Set the scroll position in pixels from native interaction (positive when scrolled down/right)
     /// This marks the position as needing sync back to Helix
     pub fn set_scroll_position(&self, position: Point<Pixels>) {
         self.set_scroll_position_internal(position, true);
     }
 
-    /// Set the scroll offset in pixels from scrollbar interaction (negative when scrolled down/right)
+    /// Set the scroll offset in pixels from native interaction (negative when scrolled down/right)
     /// This marks the position as needing sync back to Helix
     pub fn set_scroll_offset(&self, offset: Point<Pixels>) {
         self.set_scroll_offset_internal(offset, true);
@@ -107,9 +107,9 @@ impl ScrollManager {
         self.set_scroll_offset_internal(offset, false);
     }
 
-    fn set_scroll_offset_internal(&self, offset: Point<Pixels>, from_scrollbar: bool) {
+    fn set_scroll_offset_internal(&self, offset: Point<Pixels>, from_native_view: bool) {
         let position = point(-offset.x, -offset.y);
-        self.set_scroll_position_internal(position, from_scrollbar);
+        self.set_scroll_position_internal(position, from_native_view);
     }
 
     /// Apply a GPUI-style pixel scroll delta to the current offset.
@@ -127,10 +127,12 @@ impl ScrollManager {
 
         let new_position = self.scroll_position.get();
         let new_line = self.pixels_to_anchor(new_position.y);
-        (
-            old_position != new_position,
-            new_line as isize - old_line as isize,
-        )
+        let crossed_lines = new_line as isize - old_line as isize;
+        if crossed_lines != 0 {
+            self.pending_view_sync.set(true);
+        }
+
+        (old_position != new_position, crossed_lines)
     }
 
     /// Set the scroll position from Helix while retaining a local sub-line
@@ -158,8 +160,8 @@ impl ScrollManager {
         (position_y - self.anchor_to_pixels(top_line)).max(px(0.0))
     }
 
-    /// Internal method to set scroll position with control over scrollbar_changed flag
-    fn set_scroll_position_internal(&self, position: Point<Pixels>, from_scrollbar: bool) {
+    /// Internal method to set scroll position with control over native sync tracking
+    fn set_scroll_position_internal(&self, position: Point<Pixels>, from_native_view: bool) {
         let max_offset = self.max_scroll_offset();
         // Zed convention: positions are positive when scrolled, clamped between 0 and max
         let clamped_position = point(
@@ -174,12 +176,11 @@ impl ScrollManager {
                 scroll_manager_id = self.id,
                 old_position = ?old_position,
                 new_position = ?clamped_position,
-                from_scrollbar = from_scrollbar,
+                from_native_view = from_native_view,
                 "ScrollManager position changed"
             );
-            if from_scrollbar {
-                // Mark that scrollbar changed the position (needs sync to Helix)
-                self.scrollbar_changed.set(true);
+            if from_native_view {
+                self.pending_view_sync.set(true);
             }
         }
     }
@@ -300,7 +301,7 @@ mod scroll_manager_tests {
         assert_eq!(manager.line_height.get(), line_height);
         assert_eq!(manager.total_lines.get(), 1);
         assert_eq!(manager.scroll_position(), point(px(0.0), px(0.0)));
-        assert!(!manager.scrollbar_changed.get());
+        assert!(!manager.pending_view_sync.get());
     }
 
     #[test]
@@ -336,12 +337,13 @@ mod scroll_manager_tests {
         assert_eq!(crossed_lines, 0);
         assert_eq!(manager.scroll_position(), point(px(0.0), px(5.0)));
         assert_eq!(manager.vertical_offset_within_line(), px(5.0));
-        assert!(!manager.scrollbar_changed.get());
+        assert!(!manager.pending_view_sync.get());
 
         let (_, crossed_lines) = manager.scroll_by_delta(point(px(0.0), px(-15.0)));
         assert_eq!(crossed_lines, 1);
         assert_eq!(manager.scroll_position(), point(px(0.0), px(20.0)));
         assert_eq!(manager.vertical_offset_within_line(), px(0.0));
+        assert!(manager.pending_view_sync.get());
     }
 
     #[test]
@@ -462,34 +464,34 @@ mod scroll_manager_tests {
     }
 
     #[test]
-    fn test_scrollbar_changed_flag() {
+    fn test_pending_view_sync_flag() {
         let mut manager = ScrollManager::new(px(20.0));
         manager.set_total_lines(100); // Allow scrolling
         manager.set_viewport_size(size(px(800.0), px(400.0))); // Set viewport size
 
         // Initial state
-        assert!(!manager.scrollbar_changed.get());
+        assert!(!manager.pending_view_sync.get());
 
-        // Setting position from scrollbar should set the flag
+        // Setting position from a native interaction should set the flag
         manager.set_scroll_position(point(px(0.0), px(50.0)));
-        assert!(manager.scrollbar_changed.get());
+        assert!(manager.pending_view_sync.get());
 
         // Reset flag manually
-        manager.scrollbar_changed.set(false);
-        assert!(!manager.scrollbar_changed.get());
+        manager.pending_view_sync.set(false);
+        assert!(!manager.pending_view_sync.get());
 
         // Setting position from Helix should NOT set the flag
         manager.set_scroll_position_from_helix(point(px(0.0), px(100.0)));
-        assert!(!manager.scrollbar_changed.get());
+        assert!(!manager.pending_view_sync.get());
 
-        // Setting offset from scrollbar should set the flag
+        // Setting offset from a native interaction should set the flag
         manager.set_scroll_offset(point(px(0.0), px(-150.0)));
-        assert!(manager.scrollbar_changed.get());
+        assert!(manager.pending_view_sync.get());
 
         // Reset and test offset from Helix
-        manager.scrollbar_changed.set(false);
+        manager.pending_view_sync.set(false);
         manager.set_scroll_offset_from_helix(point(px(0.0), px(-200.0)));
-        assert!(!manager.scrollbar_changed.get());
+        assert!(!manager.pending_view_sync.get());
     }
 
     #[test]
@@ -569,24 +571,24 @@ mod scroll_manager_tests {
 
         // Start from a non-zero position to ensure the flag gets set
         manager.set_scroll_position(point(px(0.0), px(100.0)));
-        manager.scrollbar_changed.set(false); // Reset flag
+        manager.pending_view_sync.set(false); // Reset flag
 
         // Test scroll to line 0 with center strategy
         manager.scroll_to_line(0, ScrollStrategy::Center);
         // Should handle underflow: 0 - 10 = 0 (clamped by saturating_sub)
         assert_eq!(manager.scroll_position().y, px(0.0));
 
-        // Test scrollbar changed flag is set (position changed from 100px to 0px)
-        assert!(manager.scrollbar_changed.get());
+        // Test pending sync flag is set (position changed from 100px to 0px)
+        assert!(manager.pending_view_sync.get());
 
         // Reset flag and test another edge case
-        manager.scrollbar_changed.set(false);
+        manager.pending_view_sync.set(false);
         manager.scroll_to_line(5, ScrollStrategy::Bottom);
         // Should handle underflow: 5 - 19 = 0 (clamped by saturating_sub)
         assert_eq!(manager.scroll_position().y, px(0.0));
 
         // Flag should not be set since position didn't change (already at 0)
-        assert!(!manager.scrollbar_changed.get());
+        assert!(!manager.pending_view_sync.get());
     }
 
     #[test]
@@ -615,12 +617,12 @@ mod scroll_manager_tests {
         let pixels = manager.anchor_to_pixels(15);
         assert_eq!(pixels, px(300.0)); // 15 * 20px = 300px
 
-        // Test that sync operations don't change scrollbar_changed flag inappropriately
+        // Test that sync operations don't change pending native sync state inappropriately
         manager.set_scroll_position_from_helix(point(px(0.0), px(100.0)));
-        assert!(!manager.scrollbar_changed.get());
+        assert!(!manager.pending_view_sync.get());
 
         manager.set_scroll_offset_from_helix(point(px(0.0), px(-200.0)));
-        assert!(!manager.scrollbar_changed.get());
+        assert!(!manager.pending_view_sync.get());
         assert_eq!(manager.scroll_position().y, px(200.0));
     }
 }

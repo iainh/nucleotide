@@ -104,12 +104,12 @@ impl EditorViewport {
         Bounds::new(point(px(0.0), px(0.0)), self.scroll.viewport_size.get())
     }
 
-    pub fn has_pending_scrollbar_sync(&self) -> bool {
-        self.scroll.scrollbar_changed.get()
+    pub fn has_pending_view_sync(&self) -> bool {
+        self.scroll.pending_view_sync.get()
     }
 
-    pub fn clear_pending_scrollbar_sync(&self) {
-        self.scroll.scrollbar_changed.set(false);
+    pub fn clear_pending_view_sync(&self) {
+        self.scroll.pending_view_sync.set(false);
     }
 
     pub fn scroll_by_delta(&self, delta: Point<Pixels>) -> ViewportScrollUpdate {
@@ -225,9 +225,9 @@ impl EditorViewport {
         self.set_line_height(layout.line_height);
         self.set_viewport_size(editor_viewport_size_for_bounds(layout.bounds));
 
-        let helix_view_synced = if self.has_pending_scrollbar_sync() {
+        let helix_view_synced = if self.has_pending_view_sync() {
             let synced = self.sync_to_helix_view(editor, doc_id, view_id);
-            self.clear_pending_scrollbar_sync();
+            self.clear_pending_view_sync();
             synced
         } else {
             false
@@ -309,6 +309,7 @@ mod tests {
         assert_eq!(update.crossed_visual_rows, 0);
         assert_eq!(update.top_visual_row, 0);
         assert_eq!(update.offset_within_row, px(5.0));
+        assert!(!viewport.has_pending_view_sync());
     }
 
     #[test]
@@ -322,6 +323,7 @@ mod tests {
         assert_eq!(update.crossed_visual_rows, 1);
         assert_eq!(update.top_visual_row, 1);
         assert_eq!(update.offset_within_row, px(5.0));
+        assert!(viewport.has_pending_view_sync());
     }
 
     #[test]
@@ -335,7 +337,7 @@ mod tests {
         assert_eq!(update.crossed_visual_rows, 3);
         assert_eq!(update.top_visual_row, 3);
         assert_eq!(update.offset_within_row, px(5.0));
-        assert!(viewport.has_pending_scrollbar_sync());
+        assert!(viewport.has_pending_view_sync());
     }
 
     #[test]
