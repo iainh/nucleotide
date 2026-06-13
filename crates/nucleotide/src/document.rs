@@ -188,6 +188,8 @@ pub struct DocumentView {
     last_cursor_position: Rc<Cell<Option<Point<Pixels>>>>,
     /// Last cursor dimensions (for completion positioning)  
     last_cursor_size: Rc<Cell<Option<Size<Pixels>>>>,
+    /// Last painted gutter width in pixels.
+    last_gutter_width: Rc<Cell<Pixels>>,
 }
 
 impl DocumentView {
@@ -217,6 +219,7 @@ impl DocumentView {
             selection_drag_state: EditorSelectionDragState::default(),
             last_cursor_position: Rc::new(Cell::new(None)),
             last_cursor_size: Rc::new(Cell::new(None)),
+            last_gutter_width: Rc::new(Cell::new(px(0.0))),
         }
     }
 
@@ -317,6 +320,11 @@ impl DocumentView {
         self.line_height
     }
 
+    /// Get the last painted gutter width in window pixels.
+    pub fn get_gutter_width(&self) -> Pixels {
+        self.last_gutter_width.get()
+    }
+
     /// Get the cursor's last painted top-left position and size in window coordinates.
     pub fn get_cursor_overlay_bounds(&self) -> Option<(Point<Pixels>, Size<Pixels>)> {
         self.last_cursor_position
@@ -356,6 +364,10 @@ fn cursor_completion_anchor(
         },
         size,
     ))
+}
+
+fn painted_gutter_width(gutter_columns: u16, cell_width: Pixels) -> Pixels {
+    cell_width * f32::from(gutter_columns)
 }
 
 impl EventEmitter<DismissEvent> for DocumentView {}
@@ -421,6 +433,7 @@ impl Render for DocumentView {
             let cursor_reveal_requested = Rc::clone(&self.cursor_reveal_requested);
             let cursor_position = Rc::clone(&self.last_cursor_position);
             let cursor_size = Rc::clone(&self.last_cursor_size);
+            let gutter_width = Rc::clone(&self.last_gutter_width);
 
             EditorDocumentElement::new(style.clone(), move |bounds, after_layout, window, cx| {
                 paint_document_content(DocumentPaintParams {
@@ -435,6 +448,7 @@ impl Render for DocumentView {
                     cursor_reveal_requested: cursor_reveal_requested.as_ref(),
                     cursor_position: cursor_position.as_ref(),
                     cursor_size: cursor_size.as_ref(),
+                    gutter_width: gutter_width.as_ref(),
                     bounds,
                     layout: after_layout,
                     window,
@@ -567,6 +581,7 @@ struct DocumentPaintParams<'a> {
     cursor_reveal_requested: &'a Cell<Option<EditorCursorReveal>>,
     cursor_position: &'a Cell<Option<Point<Pixels>>>,
     cursor_size: &'a Cell<Option<Size<Pixels>>>,
+    gutter_width: &'a Cell<Pixels>,
     bounds: Bounds<Pixels>,
     layout: &'a mut EditorLayout,
     window: &'a mut Window,
@@ -586,6 +601,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         cursor_reveal_requested,
         cursor_position,
         cursor_size,
+        gutter_width,
         bounds,
         layout,
         window,
@@ -637,7 +653,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         return;
     };
     let gutter_width_cells = viewport_update.gutter_columns;
-    let _gutter_width_px = cell_width * f32::from(gutter_width_cells);
+    gutter_width.set(painted_gutter_width(gutter_width_cells, cell_width));
 
     let soft_wrap_enabled = viewport_update.soft_wrap;
 
@@ -870,6 +886,12 @@ mod tests {
     #[test]
     fn cursor_completion_anchor_requires_overlay_bounds() {
         assert!(cursor_completion_anchor(None).is_none());
+    }
+
+    #[test]
+    fn painted_gutter_width_uses_gutter_columns_and_cell_width() {
+        assert_eq!(painted_gutter_width(0, px(8.0)), px(0.0));
+        assert_eq!(painted_gutter_width(6, px(8.0)), px(48.0));
     }
 
     #[test]

@@ -6449,12 +6449,12 @@ impl Workspace {
         };
 
         // Get font and cursor metrics from the focused DocumentView if available
-        let (line_height, char_width, cursor_position, cursor_size) =
+        let (line_height, char_width, gutter_width, cursor_position, cursor_size) =
             self.get_focused_document_view_layout(cx);
 
         let layout_info = WorkspaceLayoutInfo {
             file_tree_width,
-            gutter_width: px(60.0), // Line number gutter width (approximately)
+            gutter_width,
             tab_bar_height,
             title_bar_height: px(30.0), // Much smaller - just window controls
             line_height,
@@ -6520,8 +6520,15 @@ impl Workspace {
     fn get_focused_document_view_layout(
         &mut self,
         cx: &mut Context<Self>,
-    ) -> (Pixels, Pixels, Option<Point<Pixels>>, Option<Size<Pixels>>) {
+    ) -> (
+        Pixels,
+        Pixels,
+        Pixels,
+        Option<Point<Pixels>>,
+        Option<Size<Pixels>>,
+    ) {
         let (fallback_line_h, cached_char_w) = self.resolve_editor_font_metrics(cx);
+        let fallback_gutter_width = px(60.0);
         // Try to get the focused DocumentView
         if let Some(focused_view_id) = self.view_manager.focused_view_id()
             && let Some(doc_view) = self.view_manager.get_document_view(&focused_view_id)
@@ -6533,18 +6540,35 @@ impl Workspace {
 
                 // Use cached character width derived from font metrics
                 let char_width = px(cached_char_w);
+                let gutter_width = if doc_view.get_gutter_width() > px(0.0) {
+                    doc_view.get_gutter_width()
+                } else {
+                    fallback_gutter_width
+                };
                 let (cursor_position, cursor_size) = doc_view
                     .get_cursor_overlay_bounds()
                     .map_or((None, None), |(position, size)| {
                         (Some(position), Some(size))
                     });
 
-                (line_height, char_width, cursor_position, cursor_size)
+                (
+                    line_height,
+                    char_width,
+                    gutter_width,
+                    cursor_position,
+                    cursor_size,
+                )
             });
         }
 
         // Fallback to cached metrics if no focused view exists
-        (px(fallback_line_h), px(cached_char_w), None, None)
+        (
+            px(fallback_line_h),
+            px(cached_char_w),
+            fallback_gutter_width,
+            None,
+            None,
+        )
     }
 
     fn sync_embedded_terminal_size(
@@ -7411,7 +7435,7 @@ impl Render for Workspace {
                 let editor_w_px = (viewport_w_px - file_tree_w_px).max(0.0);
                 let editor_h_px = editor_h.max(0.0);
 
-                let (line_h_px, char_w_px, _, _) = self.get_focused_document_view_layout(cx);
+                let (line_h_px, char_w_px, _, _, _) = self.get_focused_document_view_layout(cx);
                 let line_h_value = f32::from(line_h_px);
                 let char_w_value = f32::from(char_w_px);
                 self.sync_embedded_terminal_size(
