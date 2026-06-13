@@ -1,12 +1,11 @@
 use std::{cell::Cell, rc::Rc};
 
-use gpui::prelude::FluentBuilder;
 use gpui::size;
 use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
-    IntoElement, LayoutId, ParentElement, Pixels, Point, Render, SharedString, Size, Style, Styled,
-    TextStyle, Window, div, px, relative, white,
+    IntoElement, LayoutId, ParentElement, Pixels, Render, SharedString, Style, Styled, TextStyle,
+    Window, div, px, relative, white,
 };
 use helix_core::Uri;
 use helix_lsp::lsp::Diagnostic;
@@ -36,7 +35,6 @@ use nucleotide_editor::{
     text_style_at_position, unwrapped_cursor_paint_position, unwrapped_line_paint_plans,
     unwrapped_visible_line_plans, visible_ruler_paint_plans,
 };
-use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_utils::color_to_hsla;
 
 // Removed unused debug helper: test_synthetic_click_accuracy
@@ -104,68 +102,6 @@ fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, _f
     }
 }
 */
-
-/// Custom scroll handle for DocumentView that integrates with EditorViewport
-#[derive(Clone)]
-pub struct DocumentScrollHandle {
-    viewport: EditorViewport,
-    on_change: Option<Rc<dyn Fn()>>,
-    view_id: ViewId,
-}
-
-impl std::fmt::Debug for DocumentScrollHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DocumentScrollHandle")
-            .field("viewport", &self.viewport)
-            .field("on_change", &self.on_change.is_some())
-            .field("view_id", &self.view_id)
-            .finish()
-    }
-}
-
-impl DocumentScrollHandle {
-    pub fn new(viewport: EditorViewport, view_id: ViewId) -> Self {
-        Self {
-            viewport,
-            on_change: None,
-            view_id,
-        }
-    }
-
-    pub fn with_callback(viewport: EditorViewport, on_change: impl Fn() + 'static) -> Self {
-        Self {
-            viewport,
-            on_change: Some(Rc::new(on_change)),
-            view_id: ViewId::default(),
-        }
-    }
-}
-
-impl ScrollableHandle for DocumentScrollHandle {
-    fn max_offset(&self) -> Size<Pixels> {
-        self.viewport.max_scroll_offset()
-    }
-
-    fn set_offset(&self, point: Point<Pixels>) {
-        self.viewport.set_scroll_offset_from_scrollbar(point);
-
-        // Mark that we need to sync back to Helix
-        // This will be done in the next paint cycle when we have access to cx
-
-        // Trigger callback if available to notify of change
-        if let Some(on_change) = &self.on_change {
-            on_change();
-        }
-    }
-
-    fn offset(&self) -> Point<Pixels> {
-        self.viewport.scroll_offset()
-    }
-
-    fn viewport(&self) -> Bounds<Pixels> {
-        self.viewport.viewport_bounds()
-    }
-}
 
 fn handle_editor_mouse_down(
     core: &Entity<Core>,
@@ -297,7 +233,6 @@ pub struct DocumentView {
     focus: FocusHandle,
     is_focused: bool,
     viewport: EditorViewport,
-    scrollbar_state: ScrollbarState,
     line_height: Pixels,
     drag_anchor: Rc<Cell<Option<usize>>>,
     /// Last cursor position in window coordinates (for completion positioning)
@@ -318,10 +253,6 @@ impl DocumentView {
         let line_height = px(20.0); // Default, will be updated
         let viewport = EditorViewport::new(line_height);
 
-        // Create custom scroll handle that wraps our viewport.
-        let scroll_handle = DocumentScrollHandle::new(viewport.clone(), view_id);
-        let scrollbar_state = ScrollbarState::new(scroll_handle);
-
         Self {
             core,
             view_id,
@@ -329,7 +260,6 @@ impl DocumentView {
             focus: focus.clone(),
             is_focused,
             viewport,
-            scrollbar_state,
             line_height,
             drag_anchor: Rc::new(Cell::new(None)),
             last_cursor_position: None,
@@ -551,25 +481,14 @@ impl Render for DocumentView {
             }
         });
 
-        // Create the scrollbar
-        let scrollbar_opt = Scrollbar::vertical(self.scrollbar_state.clone());
-
-        // Create the editor content with custom scrollbar
-        let editor_content = div()
-            .id("editor-content")
-            .w_full()
-            .h_full()
-            .flex() // Horizontal flex layout
-            .child(
-                // Main editor area with DocumentElement
-                div()
-                    .id("editor-paint-area")
-                    .w_full()
-                    .h_full()
-                    .flex_1()
-                    .child(editor_surface),
-            )
-            .when_some(scrollbar_opt, gpui::ParentElement::child);
+        let editor_content = div().id("editor-content").w_full().h_full().flex().child(
+            div()
+                .id("editor-paint-area")
+                .w_full()
+                .h_full()
+                .flex_1()
+                .child(editor_surface),
+        );
 
         let diags = {
             let _theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
