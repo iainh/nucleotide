@@ -12,7 +12,6 @@ categories = ["text-editors", "gui"]
 rust-version = "1.88"
 
 [dependencies]
-nucleotide-core = { path = "../nucleotide-core" }
 
 # GPUI
 gpui = { workspace = true }

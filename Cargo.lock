@@ -5351,7 +5351,6 @@ dependencies = [
  "helix-core",
  "helix-stdx",
  "helix-view",
- "nucleotide-core",
  "nucleotide-logging",
  "rand 0.10.0",
 ]
