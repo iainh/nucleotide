@@ -412,14 +412,23 @@ fn native_command_supported(command: &MappableCommand) -> bool {
     name == "normal_mode"
         || name.starts_with("move_")
         || name.starts_with("extend_")
-        || name.starts_with("goto_")
-        || name.starts_with("select_")
         || matches!(
             name,
             "collapse_selection"
                 | "flip_selections"
+                | "goto_file_end"
+                | "goto_file_start"
+                | "goto_first_nonwhitespace"
+                | "goto_last_line"
+                | "goto_line_end"
+                | "goto_line_end_newline"
+                | "goto_line_start"
+                | "goto_next_paragraph"
+                | "goto_prev_paragraph"
+                | "goto_window_bottom"
+                | "goto_window_center"
+                | "goto_window_top"
                 | "keep_primary_selection"
-                | "remove_primary_selection"
                 | "page_cursor_up"
                 | "page_cursor_down"
                 | "page_cursor_half_up"
@@ -428,6 +437,11 @@ fn native_command_supported(command: &MappableCommand) -> bool {
                 | "page_cursor_down_select"
                 | "page_cursor_half_up_select"
                 | "page_cursor_half_down_select"
+                | "remove_primary_selection"
+                | "select_all"
+                | "select_line_above"
+                | "select_line_below"
+                | "select_mode"
         )
 }
 
@@ -547,6 +561,7 @@ mod tests {
     fn native_command_supports_movement_but_not_insert_entry() {
         assert!(native_command_supported(&MappableCommand::move_line_down));
         assert!(native_command_supported(&MappableCommand::goto_line_start));
+        assert!(!native_command_supported(&MappableCommand::goto_definition));
         assert!(!native_command_supported(&MappableCommand::insert_mode));
         assert!(!native_command_supported(&MappableCommand::append_mode));
     }
