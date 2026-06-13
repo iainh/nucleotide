@@ -165,18 +165,6 @@ impl ScrollableHandle for DocumentScrollHandle {
     }
 }
 
-/// Parameters for create_shaped_line
-#[allow(dead_code)]
-struct ShapedLineParams<'a> {
-    line_idx: usize,
-    text: RopeSlice<'a>,
-    first_row: usize,
-    end_char: usize,
-    fg_color: Hsla,
-    window: &'a mut Window,
-    cx: &'a mut App,
-}
-
 /// Parameters for highlight_line_with_params
 struct HighlightLineParams<'a> {
     doc: &'a Document,
@@ -719,76 +707,6 @@ impl DocumentElement {
             underline_color,
         )
     }
-    /// Create a shaped line for a specific line, used for cursor positioning and mouse interaction
-    #[allow(dead_code)]
-    fn create_shaped_line(&self, params: ShapedLineParams) -> Option<ShapedLine> {
-        let line_start = params.text.line_to_char(params.line_idx);
-        let line_end = if params.line_idx + 1 < params.text.len_lines() {
-            params
-                .text
-                .line_to_char(params.line_idx + 1)
-                .saturating_sub(1) // Exclude newline
-        } else {
-            params.text.len_chars()
-        };
-
-        // Check if line is within our view
-        let anchor_char = params.text.line_to_char(params.first_row);
-        if line_start >= params.end_char || line_end < anchor_char {
-            return None;
-        }
-
-        // Adjust line bounds to our view
-        let line_start = line_start.max(anchor_char);
-        let line_end = line_end.min(params.end_char);
-
-        // For empty lines, line_start may equal line_end, which is valid
-        if line_start > line_end {
-            return None;
-        }
-
-        let line_slice = params.text.slice(line_start..line_end);
-        let line_str: SharedString = RopeWrapper(line_slice).into();
-
-        // Get highlights for this line (re-read core)
-        let core = self.core.read(params.cx);
-        let editor = &core.editor;
-        let document = match editor.document(self.doc_id) {
-            Some(doc) => doc,
-            None => {
-                // Document was closed, return empty line runs
-                return None;
-            }
-        };
-        let view = editor.tree.try_get(self.view_id)?;
-
-        let diag_overlay_spans = Self::diagnostic_overlay_spans(document, params.cx.helix_theme());
-        let line_runs = Self::highlight_line_with_params(HighlightLineParams {
-            doc: document,
-            view,
-            cx: params.cx,
-            editor_mode: editor.mode(),
-            cursor_shape: &editor.config().cursor_shape,
-            syn_loader: &editor.syn_loader,
-            is_view_focused: self.is_focused,
-            line_start,
-            line_end,
-            fg_color: params.fg_color,
-            font: self.style.font(),
-            diag_overlay_spans,
-        });
-
-        // Create the shaped line
-        let shaped_line = params.window.text_system().shape_line(
-            line_str,
-            self.style.font_size.to_pixels(px(16.0)),
-            &line_runs,
-            None,
-        );
-
-        Some(shaped_line)
-    }
-
     // These 3 methods are just proxies for EditorView
     // TODO: make a PR to helix to extract them from helix_term into helix_view or smth.
     // This function is no longer needed as EditorView::doc_diagnostics_highlights_into
