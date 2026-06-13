@@ -2008,6 +2008,10 @@ impl Application {
                     )));
                 }
 
+                if let Some(request) = outcome.completion_requested {
+                    self.trigger_completion_manual(request.doc_id, request.view_id);
+                }
+
                 // Emit overlays after key handling, passing the key that was just processed
                 self.emit_overlays(Some(key), cx);
 
