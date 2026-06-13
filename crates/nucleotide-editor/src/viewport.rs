@@ -43,6 +43,12 @@ pub struct EditorViewportContentUpdate {
     pub soft_wrap: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorCursorReveal {
+    Scrolloff,
+    Center,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct EditorViewportContentLayout<'a> {
     pub theme: Option<&'a Theme>,
@@ -58,7 +64,7 @@ pub struct EditorViewportSurfaceLayout<'a> {
     pub cell_width: Pixels,
     pub line_height: Pixels,
     pub minimum_columns: u16,
-    pub reveal_cursor: bool,
+    pub cursor_reveal: Option<EditorCursorReveal>,
 }
 
 #[derive(Clone, Debug)]
@@ -165,25 +171,41 @@ impl EditorViewport {
         visual_row: usize,
         scrolloff: usize,
     ) -> ViewportScrollUpdate {
+        self.reveal_visual_row(visual_row, EditorCursorReveal::Scrolloff, scrolloff)
+    }
+
+    pub fn reveal_visual_row(
+        &self,
+        visual_row: usize,
+        reveal: EditorCursorReveal,
+        scrolloff: usize,
+    ) -> ViewportScrollUpdate {
         let old_position = self.scroll_position();
         let old_top_visual_row = self.top_visual_row();
         let visible_rows = self.visible_visual_rows();
-        let margin = scrolloff.min(visible_rows.saturating_sub(1) / 2);
-        let top_visual_row = self.top_visual_row();
-        let lower_bound = top_visual_row.saturating_add(margin);
-        let upper_bound = top_visual_row.saturating_add(visible_rows.saturating_sub(margin));
 
-        let target_top = if visual_row < lower_bound {
-            Some(visual_row.saturating_sub(margin))
-        } else if visual_row >= upper_bound {
-            Some(
-                visual_row
-                    .saturating_add(margin)
-                    .saturating_add(1)
-                    .saturating_sub(visible_rows),
-            )
-        } else {
-            None
+        let target_top = match reveal {
+            EditorCursorReveal::Scrolloff => {
+                let margin = scrolloff.min(visible_rows.saturating_sub(1) / 2);
+                let top_visual_row = self.top_visual_row();
+                let lower_bound = top_visual_row.saturating_add(margin);
+                let upper_bound =
+                    top_visual_row.saturating_add(visible_rows.saturating_sub(margin));
+
+                if visual_row < lower_bound {
+                    Some(visual_row.saturating_sub(margin))
+                } else if visual_row >= upper_bound {
+                    Some(
+                        visual_row
+                            .saturating_add(margin)
+                            .saturating_add(1)
+                            .saturating_sub(visible_rows),
+                    )
+                } else {
+                    None
+                }
+            }
+            EditorCursorReveal::Center => Some(visual_row.saturating_sub(visible_rows / 2)),
         };
 
         if let Some(target_top) = target_top {
@@ -340,14 +362,14 @@ impl EditorViewport {
             false
         };
 
-        let cursor_revealed = if layout.reveal_cursor {
+        let cursor_revealed = if let Some(cursor_reveal) = layout.cursor_reveal {
             let scrolloff = editor.config().scrolloff;
             let cursor_visual_row = {
                 let view = editor.tree.try_get(view_id)?;
                 let document = editor.document(doc_id)?;
                 document_cursor_visual_row(document, view, view_id, &metrics.text_format)
             };
-            let scroll_update = self.ensure_visual_row_visible(cursor_visual_row, scrolloff);
+            let scroll_update = self.reveal_visual_row(cursor_visual_row, cursor_reveal, scrolloff);
 
             if scroll_update.changed {
                 helix_view_synced |=
@@ -584,6 +606,20 @@ mod tests {
         assert!(update.changed);
         assert_eq!(update.crossed_visual_rows, 1);
         assert_eq!(viewport.top_visual_row(), 11);
+    }
+
+    #[test]
+    fn viewport_cursor_reveal_can_center_visual_row() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(800.0), px(100.0)), 100);
+        viewport.sync_from_helix_top_visual_row(0);
+
+        let update = viewport.reveal_visual_row(20, EditorCursorReveal::Center, 0);
+
+        assert!(update.changed);
+        assert_eq!(update.crossed_visual_rows, 18);
+        assert_eq!(viewport.top_visual_row(), 18);
+        assert!(viewport.has_pending_view_sync());
     }
 
     #[test]

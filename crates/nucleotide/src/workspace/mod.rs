@@ -3199,6 +3199,7 @@ impl Workspace {
         });
 
         // We need to execute the search directly in Helix since we've replaced the prompt
+        let mut reveal_center_view = None;
         self.core.update(cx, |core, cx| {
             let _guard = self.handle.enter();
 
@@ -3242,7 +3243,6 @@ impl Workspace {
                         .map(|view| view.doc)
                         .unwrap_or_default();
                     let wrap_around = core.editor.config().search.wrap_around;
-                    let scrolloff = core.editor.config().scrolloff;
 
                     // Get text and current selection
                     let (text, current_selection, search_start_byte) = {
@@ -3300,9 +3300,7 @@ impl Workspace {
                         let doc = core.editor.documents.get_mut(&doc_id).unwrap();
                         doc.set_selection(view_id, new_selection);
 
-                        // Ensure the cursor is visible and centered
-                        let view = core.editor.tree.get_mut(view_id);
-                        view.ensure_cursor_in_view_center(doc, scrolloff);
+                        reveal_center_view = Some(view_id);
 
                         // Show wrapped message if we wrapped
                         if wrap_around && start_byte < search_start_byte {
@@ -3320,6 +3318,15 @@ impl Workspace {
 
             cx.notify();
         });
+
+        if let Some(view_id) = reveal_center_view
+            && let Some(view_entity) = self.view_manager.get_document_view(&view_id)
+        {
+            view_entity.update(cx, |view, cx| {
+                view.request_cursor_center();
+                cx.notify();
+            });
+        }
     }
 
     fn handle_command_submitted(&mut self, command: &str, cx: &mut Context<Self>) {
