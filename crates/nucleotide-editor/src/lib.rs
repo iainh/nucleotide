@@ -71,7 +71,7 @@ pub use soft_wrap::{
     decorate_soft_wrap_line_runs, soft_wrap_line_paint_plans, soft_wrap_viewport_height,
     soft_wrap_visual_lines, soft_wrap_visual_position,
 };
-pub use surface::{EditorSurface, EditorSurfacePointerEvent};
+pub use surface::{EditorSurface, EditorSurfacePointerEvent, paint_editor_background};
 pub use viewport::{
     EditorViewport, HelixViewportSnapshot, ViewportScrollUpdate, helix_viewport_snapshot,
 };

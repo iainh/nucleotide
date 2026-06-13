@@ -4,9 +4,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior,
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
     InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
-    Point, ScrollWheelEvent, Window, point, px,
+    Point, ScrollWheelEvent, Window, fill, point, px,
 };
 
 use crate::{EditorViewport, ViewportScrollUpdate};
@@ -34,6 +34,10 @@ pub struct EditorSurface {
 
 pub struct EditorSurfacePrepaintState {
     hitbox: Hitbox,
+}
+
+pub fn paint_editor_background(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla) {
+    window.paint_quad(fill(bounds, color));
 }
 
 impl EditorSurface {
