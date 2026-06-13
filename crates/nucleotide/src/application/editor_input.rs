@@ -669,6 +669,7 @@ fn native_command_supported(command: &MappableCommand) -> bool {
 
     name == "normal_mode"
         || native_insert_entry_command(command)
+        || native_prompt_command(command)
         || name.starts_with("move_")
         || name.starts_with("extend_")
         || matches!(
@@ -716,8 +717,14 @@ fn native_insert_entry_command(command: &MappableCommand) -> bool {
     )
 }
 
+fn native_prompt_command(command: &MappableCommand) -> bool {
+    matches!(command.name(), "command_mode" | "search" | "rsearch")
+}
+
 fn native_insert_command_supported(command: &MappableCommand) -> bool {
-    (!native_insert_entry_command(command) && native_command_supported(command))
+    (!native_insert_entry_command(command)
+        && !native_prompt_command(command)
+        && native_command_supported(command))
         || native_insert_edit_command(command)
         || native_insert_interactive_command(command)
 }
@@ -872,6 +879,9 @@ mod tests {
         ));
         assert!(native_command_supported(&MappableCommand::open_below));
         assert!(native_command_supported(&MappableCommand::open_above));
+        assert!(native_command_supported(&MappableCommand::command_mode));
+        assert!(native_command_supported(&MappableCommand::search));
+        assert!(native_command_supported(&MappableCommand::rsearch));
         assert!(!native_command_supported(&MappableCommand::goto_definition));
     }
 
@@ -903,6 +913,11 @@ mod tests {
             &MappableCommand::completion
         ));
         assert!(!native_insert_command_supported(
+            &MappableCommand::command_mode
+        ));
+        assert!(!native_insert_command_supported(&MappableCommand::search));
+        assert!(!native_insert_command_supported(&MappableCommand::rsearch));
+        assert!(!native_insert_command_supported(
             &MappableCommand::insert_mode
         ));
         assert!(!native_insert_command_supported(
@@ -926,6 +941,18 @@ mod tests {
             &MappableCommand::move_char_left
         ));
         assert!(!native_insert_entry_command(&MappableCommand::normal_mode));
+    }
+
+    #[test]
+    fn prompt_commands_are_classified_separately() {
+        assert!(native_prompt_command(&MappableCommand::command_mode));
+        assert!(native_prompt_command(&MappableCommand::search));
+        assert!(native_prompt_command(&MappableCommand::rsearch));
+        assert!(!native_prompt_command(&MappableCommand::global_search));
+        assert!(!native_prompt_command(&MappableCommand::file_picker));
+        assert!(!native_prompt_command(&MappableCommand::buffer_picker));
+        assert!(!native_prompt_command(&MappableCommand::insert_mode));
+        assert!(!native_prompt_command(&MappableCommand::normal_mode));
     }
 
     #[test]
