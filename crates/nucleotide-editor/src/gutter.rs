@@ -7,7 +7,7 @@ use gpui::{Pixels, Point, ShapedLine, TextStyle, WindowTextSystem, black, white}
 use helix_view::{Document, Editor, Theme, View};
 
 use crate::{
-    EditorLayout,
+    EditorLayout, SoftWrapVisualLine,
     style::{create_styled_text_run, helix_color_to_hsla},
 };
 
@@ -28,6 +28,15 @@ pub struct GutterLineParams<'a> {
     pub view: &'a View,
     pub theme: &'a Theme,
     pub is_focused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoftWrapGutterLinePlan {
+    pub doc_line: usize,
+    pub is_phantom_line: bool,
+    pub y_offset: Pixels,
+    pub text: String,
+    pub selected: bool,
 }
 
 pub fn build_gutter_lines(params: GutterLineParams<'_>) -> Vec<GutterLine> {
@@ -56,6 +65,44 @@ pub fn build_gutter_lines(params: GutterLineParams<'_>) -> Vec<GutterLine> {
     }
 
     gutter.lines
+}
+
+pub fn soft_wrap_gutter_line_plans(
+    visual_lines: &[SoftWrapVisualLine],
+    vertical_offset: usize,
+    line_height: Pixels,
+    scroll_line_offset: Pixels,
+    cursor_lines: &[usize],
+) -> Vec<SoftWrapGutterLinePlan> {
+    let mut plans = Vec::new();
+    let mut last_doc_line = None;
+
+    for visual in visual_lines {
+        if last_doc_line == Some(visual.doc_line) {
+            continue;
+        }
+
+        let y_offset =
+            -scroll_line_offset + line_height * visual.relative_row(vertical_offset) as f32;
+        plans.push(SoftWrapGutterLinePlan {
+            doc_line: visual.doc_line,
+            is_phantom_line: visual.is_phantom_line,
+            y_offset,
+            text: soft_wrap_gutter_label(visual.doc_line, visual.is_phantom_line),
+            selected: !visual.is_phantom_line && cursor_lines.contains(&visual.doc_line),
+        });
+        last_doc_line = Some(visual.doc_line);
+    }
+
+    plans
+}
+
+fn soft_wrap_gutter_label(doc_line: usize, is_phantom_line: bool) -> String {
+    if is_phantom_line {
+        "   ~ ".to_string()
+    } else {
+        format!("{:>4} ", doc_line + 1)
+    }
 }
 
 struct Gutter<'a> {
@@ -188,7 +235,13 @@ fn gutter_line_positions(
 
 #[cfg(test)]
 mod tests {
-    use super::{GutterLinePosition, gutter_line_positions};
+    use gpui::px;
+
+    use super::{
+        GutterLinePosition, SoftWrapGutterLinePlan, gutter_line_positions,
+        soft_wrap_gutter_line_plans,
+    };
+    use crate::SoftWrapVisualLine;
 
     #[test]
     fn gutter_positions_map_document_rows_to_visual_rows() {
@@ -219,5 +272,73 @@ mod tests {
     #[test]
     fn empty_ranges_produce_no_positions() {
         assert_eq!(gutter_line_positions(4, 4).count(), 0);
+    }
+
+    fn visual_line(
+        visual_line: usize,
+        doc_line: usize,
+        is_phantom_line: bool,
+    ) -> SoftWrapVisualLine {
+        SoftWrapVisualLine {
+            visual_line,
+            doc_line,
+            text: String::new(),
+            line_start_col: 0,
+            wrap_indicator_len: 0,
+            line_start_char: None,
+            line_end_char: None,
+            segment_char_offset: 0,
+            text_start_byte_offset: 0,
+            is_phantom_line,
+        }
+    }
+
+    #[test]
+    fn soft_wrap_gutter_plans_deduplicate_wrapped_document_lines() {
+        let visual_lines = vec![
+            visual_line(2, 0, false),
+            visual_line(3, 0, false),
+            visual_line(4, 1, false),
+        ];
+
+        let plans = soft_wrap_gutter_line_plans(&visual_lines, 2, px(20.0), px(5.0), &[1]);
+
+        assert_eq!(
+            plans,
+            vec![
+                SoftWrapGutterLinePlan {
+                    doc_line: 0,
+                    is_phantom_line: false,
+                    y_offset: px(-5.0),
+                    text: "   1 ".to_string(),
+                    selected: false,
+                },
+                SoftWrapGutterLinePlan {
+                    doc_line: 1,
+                    is_phantom_line: false,
+                    y_offset: px(35.0),
+                    text: "   2 ".to_string(),
+                    selected: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn soft_wrap_gutter_plans_use_tilde_for_phantom_lines() {
+        let visual_lines = vec![visual_line(7, 3, true)];
+
+        let plans = soft_wrap_gutter_line_plans(&visual_lines, 7, px(20.0), px(0.0), &[3]);
+
+        assert_eq!(
+            plans,
+            vec![SoftWrapGutterLinePlan {
+                doc_line: 3,
+                is_phantom_line: true,
+                y_offset: px(0.0),
+                text: "   ~ ".to_string(),
+                selected: false,
+            }]
+        );
     }
 }
