@@ -31,7 +31,8 @@ use nucleotide_editor::{
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans, soft_wrap_viewport_height,
     soft_wrap_visual_lines, soft_wrap_visual_position, text_style_at_position,
-    unwrapped_cursor_paint_position, unwrapped_visible_line_plans, visible_ruler_bounds,
+    unwrapped_cursor_paint_position, unwrapped_line_paint_plans, unwrapped_visible_line_plans,
+    visible_ruler_bounds,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -882,15 +883,6 @@ impl Element for DocumentElement {
                 );
             }
 
-            // Render text line by line to avoid newline issues
-            // COORDINATE SYSTEM ANALYSIS: The original version stored in GLOBAL coordinates
-            // but current version converts to LOCAL coordinates before storage
-            // The px(2.) was part of the global calculation, but since we now convert to local,
-            // we need to match the soft-wrap calculation which doesn't include px(2.)
-            let text_origin_x =
-                EditorSurfaceGeometry::new(bounds, gutter_width, after_layout.cell_width)
-                    .text_origin_x();
-
             // Render rulers before text
             const THEME_KEY_VIRTUAL_RULER: &str = "ui.virtual.ruler";
             let ruler_style = cx.theme_style(THEME_KEY_VIRTUAL_RULER);
@@ -1416,9 +1408,16 @@ impl Element for DocumentElement {
                 line_plans.last().map_or(-scroll_line_offset, |line| {
                     line.y_offset + after_layout.line_height
                 });
+            let unwrapped_paint_plans = unwrapped_line_paint_plans(
+                &line_plans,
+                EditorSurfaceGeometry::new(bounds, gutter_width, after_layout.cell_width),
+                after_layout.line_height,
+                cursor_line_num,
+            );
 
             // Original rendering loop (without soft wrap)
-            for line_plan in line_plans {
+            for unwrapped_plan in unwrapped_paint_plans {
+                let line_plan = unwrapped_plan.line;
                 let line_idx = line_plan.line_idx;
                 let line_start = line_plan.line_start;
                 let line_end = line_plan.line_end;
@@ -1465,7 +1464,7 @@ impl Element for DocumentElement {
                 // core goes out of scope here
 
                 let font_size_px = self.style.font_size.to_pixels(px(16.0));
-                let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
+                let text_origin = unwrapped_plan.text_origin;
                 // Defer painting of cursorline until after per-run backgrounds are drawn
 
                 // Always create a shaped line, even for empty lines (needed for cursor positioning)
@@ -1479,18 +1478,14 @@ impl Element for DocumentElement {
                     );
 
                     // Paint cursorline background BEFORE run backgrounds so selections render on top
-                    if line_idx == cursor_line_num
+                    if unwrapped_plan.is_cursor_line
                         && let Some(cursorline_bg) = cursorline_style
                     {
                         debug!(
                             "Painting cursorline for line {} (cursor at line {})",
                             line_idx, cursor_line_num
                         );
-                        let cursorline_bounds = Bounds {
-                            origin: point(bounds.origin.x, bounds.origin.y + px(1.) + y_offset),
-                            size: size(bounds.size.width, after_layout.line_height),
-                        };
-                        window.paint_quad(fill(cursorline_bounds, cursorline_bg));
+                        window.paint_quad(fill(unwrapped_plan.cursorline_bounds, cursorline_bg));
                     }
 
                     paint_line_backgrounds(
@@ -1500,7 +1495,7 @@ impl Element for DocumentElement {
                         text_origin,
                         after_layout.line_height,
                         EditorLineBackgroundStyle {
-                            only_selection_backgrounds: line_idx == cursor_line_num,
+                            only_selection_backgrounds: unwrapped_plan.is_cursor_line,
                             selection_primary: tokens.editor.selection_primary,
                             selection_secondary: tokens.editor.selection_secondary,
                         },
