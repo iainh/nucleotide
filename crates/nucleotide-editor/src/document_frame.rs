@@ -10,12 +10,13 @@ use helix_view::{
 };
 
 use crate::{
-    DiagnosticOverlaySpans, DiagnosticSeverityByLine, DocumentSoftWrapRenderPlanParams,
-    EditorCursorPresentation, EditorCursorPresentationParams, EditorLineHighlightContext,
-    EditorRenderSnapshot, SoftWrapHighlightedLineRunsParams, SoftWrapRenderPlan,
-    UnwrappedHighlightedLine, UnwrappedHighlightedLineParams, UnwrappedRenderPlan,
-    UnwrappedRenderPlanParams, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_render_snapshot, document_soft_wrap_render_plan, editor_cursor_presentation,
+    DiagnosticOverlaySpans, DiagnosticSeverityByLine, DocumentRulerPaintParams,
+    DocumentSoftWrapRenderPlanParams, EditorCursorPresentation, EditorCursorPresentationParams,
+    EditorLineHighlightContext, EditorRenderSnapshot, EditorSurfaceGeometry, RulerPaintPlan,
+    SoftWrapHighlightedLineRunsParams, SoftWrapRenderPlan, UnwrappedHighlightedLine,
+    UnwrappedHighlightedLineParams, UnwrappedRenderPlan, UnwrappedRenderPlanParams,
+    diagnostic_overlay_spans, diagnostic_severity_by_line, document_render_snapshot,
+    document_ruler_paint_plans, document_soft_wrap_render_plan, editor_cursor_presentation,
     soft_wrap_highlighted_line_runs, unwrapped_highlighted_line, unwrapped_render_plan,
 };
 
@@ -38,6 +39,7 @@ pub struct EditorDocumentFrameParams<'a> {
     pub default_text_style: Style,
     pub default_bg: Hsla,
     pub wrap_indicator_color: Option<Hsla>,
+    pub ruler_color: Hsla,
     pub editor_mode: Mode,
     pub cursor_kind: CursorKind,
     pub cursor_style: Style,
@@ -66,6 +68,7 @@ pub struct EditorDocumentFrame {
     pub unwrapped_render_plan: Option<UnwrappedRenderPlan>,
     pub soft_wrap_line_runs: Vec<Vec<TextRun>>,
     pub unwrapped_highlighted_lines: Vec<UnwrappedHighlightedLine>,
+    pub ruler_paint_plans: Vec<RulerPaintPlan>,
 }
 
 pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDocumentFrame {
@@ -90,6 +93,14 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
     let line_start = text.line_to_char(primary_cursor_line);
     let primary_cursor_col = primary_cursor_idx - line_start;
     let gutter_width = params.view.gutter_offset(params.document);
+    let ruler_geometry = EditorSurfaceGeometry::new(params.bounds, gutter_width, params.cell_width);
+    let ruler_paint_plans = document_ruler_paint_plans(DocumentRulerPaintParams {
+        document: params.document,
+        view_id: params.view_id,
+        editor_rulers: &params.editor_rulers,
+        geometry: ruler_geometry,
+        color: params.ruler_color,
+    });
     let soft_wrap_render_plan = params.soft_wrap_enabled.then(|| {
         document_soft_wrap_render_plan(DocumentSoftWrapRenderPlanParams {
             document: params.document,
@@ -182,6 +193,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         unwrapped_render_plan,
         soft_wrap_line_runs,
         unwrapped_highlighted_lines,
+        ruler_paint_plans,
     }
 }
 
@@ -232,6 +244,7 @@ mod tests {
             default_text_style: Style::default(),
             default_bg: white(),
             wrap_indicator_color: None,
+            ruler_color: black(),
             editor_mode: Mode::Normal,
             cursor_kind: CursorKind::Block,
             cursor_style: Style::default(),
@@ -261,6 +274,7 @@ mod tests {
                 .len()
         );
         assert!(frame.unwrapped_highlighted_lines.is_empty());
+        assert!(frame.ruler_paint_plans.is_empty());
     }
 
     #[test]
@@ -288,7 +302,7 @@ mod tests {
             first_row: 0,
             last_row_from_scroll: 3,
             soft_wrap_enabled: false,
-            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(120.0))),
             cell_width: px(8.0),
             line_height: px(20.0),
             scroll_line_offset: px(5.0),
@@ -298,11 +312,12 @@ mod tests {
             default_text_style: Style::default(),
             default_bg: white(),
             wrap_indicator_color: None,
+            ruler_color: black(),
             editor_mode: Mode::Normal,
             cursor_kind: CursorKind::Block,
             cursor_style: Style::default(),
             cursor_shape: CursorShapeConfig::default(),
-            editor_rulers: vec![80],
+            editor_rulers: vec![1, 4, 80],
             cursorline_enabled: true,
             is_focused: true,
         });
@@ -322,5 +337,6 @@ mod tests {
             unwrapped.visible_lines.len()
         );
         assert!(frame.soft_wrap_line_runs.is_empty());
+        assert!(!frame.ruler_paint_plans.is_empty());
     }
 }
