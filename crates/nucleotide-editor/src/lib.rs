@@ -8,8 +8,6 @@ pub mod document_element;
 pub mod document_frame;
 pub mod document_frame_painter;
 pub mod document_metrics;
-pub mod document_renderer;
-pub mod editor_view;
 pub mod geometry;
 pub mod gutter;
 pub mod highlight;
@@ -22,7 +20,6 @@ pub mod metrics;
 pub mod render_snapshot;
 pub mod ruler;
 pub mod scroll_manager;
-pub mod scroll_state;
 pub mod scrollbar;
 pub mod selection;
 pub mod soft_wrap;
@@ -60,8 +57,6 @@ pub use document_frame_painter::{DocumentFramePaintParams, paint_document_frame}
 pub use document_metrics::{
     EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,
 };
-pub use document_renderer::DocumentRenderer;
-pub use editor_view::EditorView;
 pub use geometry::{EditorLayout, EditorSurfaceGeometry};
 pub use gutter::{
     GutterLine, GutterLineParams, GutterLinePlan, GutterLinePlanParams,
@@ -102,7 +97,6 @@ pub use ruler::{
     paint_visible_rulers, visible_ruler_bounds, visible_ruler_paint_plans,
 };
 pub use scroll_manager::ScrollManager;
-pub use scroll_state::ScrollState;
 pub use scrollbar::{
     EditorScrollbar, EditorScrollbarState, EditorScrollbarThumb, editor_scrollbar_thumb,
     scroll_position_for_scrollbar_pointer,
