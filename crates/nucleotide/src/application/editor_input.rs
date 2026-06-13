@@ -249,6 +249,7 @@ impl NativeCommandInput {
                     _ => self.handle_command_mode(&mut context, key),
                 }
             } else {
+                self.record_insert_replay_key_if_needed(mode_before, key);
                 NativeCommandResult::Handled(Vec::new())
             }
             .with_callbacks_from(&mut context, &mut self.on_next_key)
@@ -303,6 +304,12 @@ impl NativeCommandInput {
             && !self.current_insert_replay.is_empty()
         {
             self.last_insert_replay = Some(std::mem::take(&mut self.current_insert_replay));
+        }
+    }
+
+    fn record_insert_replay_key_if_needed(&mut self, mode_before: Mode, key: KeyEvent) {
+        if mode_before == Mode::Insert {
+            self.current_insert_replay.keys.push(key);
         }
     }
 
@@ -641,6 +648,7 @@ fn native_insert_entry_command(command: &MappableCommand) -> bool {
 fn native_insert_command_supported(command: &MappableCommand) -> bool {
     (!native_insert_entry_command(command) && native_command_supported(command))
         || native_insert_edit_command(command)
+        || native_insert_interactive_command(command)
 }
 
 fn native_insert_edit_command(command: &MappableCommand) -> bool {
@@ -657,6 +665,10 @@ fn native_insert_edit_command(command: &MappableCommand) -> bool {
             | "kill_to_line_start"
             | "smart_tab"
     )
+}
+
+fn native_insert_interactive_command(command: &MappableCommand) -> bool {
+    matches!(command.name(), "insert_register")
 }
 
 fn canonicalize_key(key: &mut KeyEvent) {
@@ -812,7 +824,7 @@ mod tests {
         assert!(!native_insert_command_supported(
             &MappableCommand::completion
         ));
-        assert!(!native_insert_command_supported(
+        assert!(native_insert_command_supported(
             &MappableCommand::insert_register
         ));
         assert!(!native_insert_command_supported(
@@ -868,8 +880,27 @@ mod tests {
         ));
         assert!(native_insert_edit_command(&MappableCommand::smart_tab));
         assert!(!native_insert_edit_command(&MappableCommand::completion));
+        assert!(!native_insert_edit_command(
+            &MappableCommand::insert_register
+        ));
         assert!(!native_insert_edit_command(&MappableCommand::insert_mode));
         assert!(!native_insert_edit_command(&MappableCommand::normal_mode));
+    }
+
+    #[test]
+    fn insert_interactive_commands_are_classified_separately() {
+        assert!(native_insert_interactive_command(
+            &MappableCommand::insert_register
+        ));
+        assert!(!native_insert_interactive_command(
+            &MappableCommand::completion
+        ));
+        assert!(!native_insert_interactive_command(
+            &MappableCommand::insert_newline
+        ));
+        assert!(!native_insert_interactive_command(
+            &MappableCommand::normal_mode
+        ));
     }
 
     #[test]
@@ -901,6 +932,32 @@ mod tests {
         };
 
         input.seed_insert_replay_if_needed(Mode::Normal, Mode::Normal, &[movement]);
+
+        assert!(input.current_insert_replay.is_empty());
+    }
+
+    #[test]
+    fn insert_pseudo_pending_key_is_recorded_for_replay() {
+        let mut input = NativeCommandInput::new(Keymaps::default());
+        let register_key = KeyEvent {
+            code: KeyCode::Char('"'),
+            modifiers: KeyModifiers::empty(),
+        };
+
+        input.record_insert_replay_key_if_needed(Mode::Insert, register_key);
+
+        assert_eq!(input.current_insert_replay.keys, vec![register_key]);
+    }
+
+    #[test]
+    fn command_pseudo_pending_key_is_not_recorded_for_insert_replay() {
+        let mut input = NativeCommandInput::new(Keymaps::default());
+        let register_key = KeyEvent {
+            code: KeyCode::Char('"'),
+            modifiers: KeyModifiers::empty(),
+        };
+
+        input.record_insert_replay_key_if_needed(Mode::Normal, register_key);
 
         assert!(input.current_insert_replay.is_empty());
     }
