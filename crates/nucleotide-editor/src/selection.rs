@@ -4,7 +4,7 @@
 use std::{cell::Cell, rc::Rc};
 
 use helix_core::{Range, Selection, SmallVec};
-use helix_view::{Document, ViewId};
+use helix_view::{Document, DocumentId, Editor, ViewId};
 
 use crate::{
     EditorHitTestResult, EditorSurfacePointerEvent, LineLayoutCache, hit_test_document_position,
@@ -158,6 +158,57 @@ pub fn update_pointer_selection_at_event(
         hit_test,
         selection,
     })
+}
+
+fn editor_gutter_columns(editor: &Editor, doc_id: DocumentId, view_id: ViewId) -> Option<u16> {
+    let document = editor.document(doc_id)?;
+    let view = editor.tree.try_get(view_id)?;
+    Some(view.gutter_offset(document))
+}
+
+pub fn begin_editor_pointer_selection_at_event(
+    editor: &mut Editor,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    line_cache: &LineLayoutCache,
+    drag_state: &EditorSelectionDragState,
+    event: EditorSurfacePointerEvent,
+) -> Option<EditorPointerSelectionUpdate> {
+    let Some(gutter_columns) = editor_gutter_columns(editor, doc_id, view_id) else {
+        drag_state.clear();
+        return None;
+    };
+    let document = editor.document_mut(doc_id)?;
+
+    begin_pointer_selection_at_event(
+        document,
+        view_id,
+        gutter_columns,
+        line_cache,
+        drag_state,
+        event,
+    )
+}
+
+pub fn update_editor_pointer_selection_at_event(
+    editor: &mut Editor,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    line_cache: &LineLayoutCache,
+    drag_state: &EditorSelectionDragState,
+    event: EditorSurfacePointerEvent,
+) -> Option<EditorPointerSelectionUpdate> {
+    let gutter_columns = editor_gutter_columns(editor, doc_id, view_id)?;
+    let document = editor.document_mut(doc_id)?;
+
+    update_pointer_selection_at_event(
+        document,
+        view_id,
+        gutter_columns,
+        line_cache,
+        drag_state,
+        event,
+    )
 }
 
 #[cfg(test)]
