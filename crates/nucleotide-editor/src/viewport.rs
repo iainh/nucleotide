@@ -32,6 +32,7 @@ pub struct EditorViewportSurfaceUpdate {
     pub visual_rows: usize,
     pub soft_wrap: bool,
     pub helix_view_synced: bool,
+    pub cursor_revealed: bool,
     pub helix_snapshot: HelixViewportSnapshot,
 }
 
@@ -57,6 +58,7 @@ pub struct EditorViewportSurfaceLayout<'a> {
     pub cell_width: Pixels,
     pub line_height: Pixels,
     pub minimum_columns: u16,
+    pub reveal_cursor: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -156,6 +158,57 @@ impl EditorViewport {
             top_visual_row: new_top_visual_row,
             offset_within_row: self.offset_within_row(),
         }
+    }
+
+    pub fn ensure_visual_row_visible(
+        &self,
+        visual_row: usize,
+        scrolloff: usize,
+    ) -> ViewportScrollUpdate {
+        let old_position = self.scroll_position();
+        let old_top_visual_row = self.top_visual_row();
+        let visible_rows = self.visible_visual_rows();
+        let margin = scrolloff.min(visible_rows.saturating_sub(1) / 2);
+        let top_visual_row = self.top_visual_row();
+        let lower_bound = top_visual_row.saturating_add(margin);
+        let upper_bound = top_visual_row.saturating_add(visible_rows.saturating_sub(margin));
+
+        let target_top = if visual_row < lower_bound {
+            Some(visual_row.saturating_sub(margin))
+        } else if visual_row >= upper_bound {
+            Some(
+                visual_row
+                    .saturating_add(margin)
+                    .saturating_add(1)
+                    .saturating_sub(visible_rows),
+            )
+        } else {
+            None
+        };
+
+        if let Some(target_top) = target_top {
+            self.scroll
+                .set_scroll_position(point(px(0.0), self.scroll.anchor_to_pixels(target_top)));
+        }
+
+        let new_position = self.scroll_position();
+        let new_top_visual_row = self.top_visual_row();
+
+        ViewportScrollUpdate {
+            changed: old_position != new_position,
+            crossed_visual_rows: new_top_visual_row as isize - old_top_visual_row as isize,
+            top_visual_row: new_top_visual_row,
+            offset_within_row: self.offset_within_row(),
+        }
+    }
+
+    pub fn visible_visual_rows(&self) -> usize {
+        let line_height = self.line_height();
+        if f32::from(line_height) <= 0.0 {
+            return 1;
+        }
+
+        ((self.scroll.viewport_size.get().height / line_height).floor() as usize).max(1)
     }
 
     pub fn sync_from_helix_top_visual_row(&self, top_visual_row: usize) {
@@ -279,10 +332,29 @@ impl EditorViewport {
         );
         self.set_content_visual_rows(metrics.visual_rows);
 
-        let helix_view_synced = if self.has_pending_view_sync() {
+        let mut helix_view_synced = if self.has_pending_view_sync() {
             let synced = self.sync_to_helix_view(editor, doc_id, view_id, &metrics.text_format);
             self.clear_pending_view_sync();
             synced
+        } else {
+            false
+        };
+
+        let cursor_revealed = if layout.reveal_cursor {
+            let scrolloff = editor.config().scrolloff;
+            let cursor_visual_row = {
+                let view = editor.tree.try_get(view_id)?;
+                let document = editor.document(doc_id)?;
+                document_cursor_visual_row(document, view, view_id, &metrics.text_format)
+            };
+            let scroll_update = self.ensure_visual_row_visible(cursor_visual_row, scrolloff);
+
+            if scroll_update.changed {
+                helix_view_synced |=
+                    self.sync_to_helix_view(editor, doc_id, view_id, &metrics.text_format);
+            }
+
+            scroll_update.changed
         } else {
             false
         };
@@ -297,6 +369,7 @@ impl EditorViewport {
             visual_rows: metrics.visual_rows,
             soft_wrap: metrics.soft_wrap,
             helix_view_synced,
+            cursor_revealed,
             helix_snapshot,
         })
     }
@@ -359,13 +432,29 @@ pub fn helix_viewport_snapshot(
     }
 }
 
+pub fn document_cursor_visual_row(
+    document: &Document,
+    view: &helix_view::View,
+    view_id: ViewId,
+    text_format: &TextFormat,
+) -> usize {
+    let text = document.text().slice(..);
+    let cursor_char_idx = document.selection(view_id).primary().cursor(text);
+    let annotations = view.text_annotations(document, None);
+    visual_offset_from_block(text, 0, cursor_char_idx, text_format, &annotations)
+        .0
+        .row
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use arc_swap::ArcSwap;
     use gpui::{Bounds, point, px, size};
-    use helix_core::{Rope, doc_formatter::TextFormat, syntax, text_annotations::TextAnnotations};
+    use helix_core::{
+        Rope, Selection, doc_formatter::TextFormat, syntax, text_annotations::TextAnnotations,
+    };
     use helix_view::{
         Document, DocumentId, View,
         editor::{Config, GutterConfig},
@@ -440,6 +529,61 @@ mod tests {
         assert!(update.changed);
         assert_eq!(viewport.scroll_position().y, px(100.0));
         assert_eq!(update.top_visual_row, 5);
+    }
+
+    #[test]
+    fn viewport_cursor_reveal_keeps_visible_rows_unchanged() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(800.0), px(100.0)), 100);
+        viewport.sync_from_helix_top_visual_row(10);
+
+        let update = viewport.ensure_visual_row_visible(12, 1);
+
+        assert!(!update.changed);
+        assert_eq!(update.crossed_visual_rows, 0);
+        assert_eq!(viewport.top_visual_row(), 10);
+        assert!(!viewport.has_pending_view_sync());
+    }
+
+    #[test]
+    fn viewport_cursor_reveal_scrolls_above_margin() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(800.0), px(100.0)), 100);
+        viewport.sync_from_helix_top_visual_row(10);
+
+        let update = viewport.ensure_visual_row_visible(7, 2);
+
+        assert!(update.changed);
+        assert_eq!(update.crossed_visual_rows, -5);
+        assert_eq!(viewport.top_visual_row(), 5);
+        assert!(viewport.has_pending_view_sync());
+    }
+
+    #[test]
+    fn viewport_cursor_reveal_scrolls_below_margin() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(800.0), px(100.0)), 100);
+        viewport.sync_from_helix_top_visual_row(10);
+
+        let update = viewport.ensure_visual_row_visible(14, 1);
+
+        assert!(update.changed);
+        assert_eq!(update.crossed_visual_rows, 1);
+        assert_eq!(viewport.top_visual_row(), 11);
+        assert!(viewport.has_pending_view_sync());
+    }
+
+    #[test]
+    fn viewport_cursor_reveal_clamps_scrolloff_for_small_viewports() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(800.0), px(40.0)), 100);
+        viewport.sync_from_helix_top_visual_row(10);
+
+        let update = viewport.ensure_visual_row_visible(12, 10);
+
+        assert!(update.changed);
+        assert_eq!(update.crossed_visual_rows, 1);
+        assert_eq!(viewport.top_visual_row(), 11);
     }
 
     #[test]
@@ -607,5 +751,30 @@ mod tests {
 
         assert_eq!(snapshot.anchor_line, 1);
         assert!(snapshot.top_visual_row >= snapshot.anchor_line + 2);
+    }
+
+    #[test]
+    fn document_cursor_visual_row_matches_unwrapped_line() {
+        let (mut document, view) = test_document_and_view("one\ntwo\nthree");
+        document.set_selection(view.id, Selection::single(5, 5));
+
+        let row = document_cursor_visual_row(&document, &view, view.id, &TextFormat::default());
+
+        assert_eq!(row, 1);
+    }
+
+    #[test]
+    fn document_cursor_visual_row_uses_soft_wrap_rows() {
+        let (mut document, view) = test_document_and_view("abcdef\nzz");
+        document.set_selection(view.id, Selection::single(7, 7));
+        let text_format = TextFormat {
+            soft_wrap: true,
+            viewport_width: 3,
+            ..TextFormat::default()
+        };
+
+        let row = document_cursor_visual_row(&document, &view, view.id, &text_format);
+
+        assert!(row > 1);
     }
 }

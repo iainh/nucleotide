@@ -1,3 +1,5 @@
+use std::{cell::Cell, rc::Rc};
+
 use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
@@ -179,6 +181,7 @@ pub struct DocumentView {
     viewport: EditorViewport,
     scrollbar_state: EditorScrollbarState,
     surface_metrics: EditorSurfaceMetrics,
+    cursor_reveal_requested: Rc<Cell<bool>>,
     line_height: Pixels,
     selection_drag_state: EditorSelectionDragState,
     /// Last cursor position in window coordinates (for completion positioning)
@@ -209,6 +212,7 @@ impl DocumentView {
             viewport,
             scrollbar_state: EditorScrollbarState::default(),
             surface_metrics,
+            cursor_reveal_requested: Rc::new(Cell::new(false)),
             line_height,
             selection_drag_state: EditorSelectionDragState::default(),
             last_cursor_position: None,
@@ -231,6 +235,10 @@ impl DocumentView {
 
     pub fn clear_shaped_lines_cache(&self) {
         self.surface_metrics.line_cache().clear_shaped_lines();
+    }
+
+    pub fn request_cursor_reveal(&self) {
+        self.cursor_reveal_requested.set(true);
     }
 
     /// Convert a Helix anchor (character position) to scroll pixels
@@ -383,6 +391,7 @@ impl Render for DocumentView {
             let is_focused = self.is_focused;
             let mut viewport = self.viewport.clone();
             let surface_metrics = surface_metrics.clone();
+            let cursor_reveal_requested = Rc::clone(&self.cursor_reveal_requested);
 
             EditorDocumentElement::new(style.clone(), move |bounds, after_layout, window, cx| {
                 paint_document_content(DocumentPaintParams {
@@ -394,6 +403,7 @@ impl Render for DocumentView {
                     is_focused,
                     viewport: &mut viewport,
                     surface_metrics: &surface_metrics,
+                    cursor_reveal_requested: cursor_reveal_requested.as_ref(),
                     bounds,
                     layout: after_layout,
                     window,
@@ -523,6 +533,7 @@ struct DocumentPaintParams<'a> {
     is_focused: bool,
     viewport: &'a mut EditorViewport,
     surface_metrics: &'a EditorSurfaceMetrics,
+    cursor_reveal_requested: &'a Cell<bool>,
     bounds: Bounds<Pixels>,
     layout: &'a mut EditorLayout,
     window: &'a mut Window,
@@ -539,6 +550,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         is_focused,
         viewport,
         surface_metrics,
+        cursor_reveal_requested,
         bounds,
         layout,
         window,
@@ -569,12 +581,13 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
                 cell_width: layout.cell_width,
                 line_height: layout.line_height,
                 minimum_columns: 1,
+                reveal_cursor: cursor_reveal_requested.replace(false),
             },
         );
 
         if update
             .as_ref()
-            .is_some_and(|update| update.helix_view_synced)
+            .is_some_and(|update| update.helix_view_synced || update.cursor_revealed)
         {
             cx.notify();
         }
