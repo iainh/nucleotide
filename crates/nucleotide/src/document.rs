@@ -29,8 +29,8 @@ use helix_stdx::rope::RopeSliceExt;
 use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
     EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    LineLayoutCache, document_text_format_for_surface, hit_test_document_position,
-    paint_line_backgrounds,
+    LineLayoutCache, diagnostic_severity_by_line, document_text_format_for_surface,
+    hit_test_document_position, paint_line_backgrounds,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
@@ -2235,31 +2235,7 @@ impl Element for DocumentElement {
                         let core = self.core.read(cx);
                         let editor = &core.editor;
                         if let Some(document) = editor.document(self.doc_id) {
-                            let mut m: std::collections::BTreeMap<
-                                usize,
-                                helix_core::diagnostic::Severity,
-                            > = std::collections::BTreeMap::new();
-                            for d in document.diagnostics().iter() {
-                                // Derive start/end lines from character positions
-                                let start_line = text.char_to_line(d.range.start);
-                                let end_char = d.range.end.min(text.len_chars());
-                                let end_line = text.char_to_line(end_char);
-                                if let Some(sev) = d.severity {
-                                    for line in start_line..=end_line {
-                                        m.entry(line)
-                                                .and_modify(|s| {
-                                                    // Keep highest severity (Error > Warning > Info > Hint)
-                                                    if matches!((sev, *s), (helix_core::diagnostic::Severity::Error, _)
-                                                        | (helix_core::diagnostic::Severity::Warning, helix_core::diagnostic::Severity::Info | helix_core::diagnostic::Severity::Hint)
-                                                        | (helix_core::diagnostic::Severity::Info, helix_core::diagnostic::Severity::Hint)) {
-                                                        *s = sev;
-                                                    }
-                                                })
-                                                .or_insert(sev);
-                                    }
-                                }
-                            }
-                            m
+                            diagnostic_severity_by_line(document)
                         } else {
                             std::collections::BTreeMap::new()
                         }
@@ -3409,8 +3385,8 @@ impl Element for DocumentElement {
                 gutter_origin.x += px(2.);
                 gutter_origin.y += px(1.) - scroll_line_offset;
 
-                // Build gutter lines and diagnostics map inside a limited borrow scope, then paint
-                let (gutter_lines, _diag_line_severity_nonwrap) = {
+                // Build gutter lines inside a limited borrow scope, then paint
+                let gutter_lines = {
                     let core = self.core.read(cx);
                     let editor = &core.editor;
                     let view = match editor.tree.try_get(self.view_id) {
@@ -3422,34 +3398,6 @@ impl Element for DocumentElement {
                         None => return,
                     };
                     let theme = cx.global::<crate::ThemeManager>().helix_theme();
-
-                    // Precompute per-line highest diagnostic severity for marker painting
-                    let diag_map = {
-                        let mut m: std::collections::BTreeMap<
-                            usize,
-                            helix_core::diagnostic::Severity,
-                        > = std::collections::BTreeMap::new();
-                        let text = document.text();
-                        for d in document.diagnostics().iter() {
-                            if let Some(sev) = d.severity {
-                                let start_line = text.char_to_line(d.range.start);
-                                let end_char = d.range.end.min(text.len_chars());
-                                let end_line = text.char_to_line(end_char);
-                                for line in start_line..=end_line {
-                                    m.entry(line)
-                                            .and_modify(|s| {
-                                                if matches!((sev, *s), (helix_core::diagnostic::Severity::Error, _)
-                                                    | (helix_core::diagnostic::Severity::Warning, helix_core::diagnostic::Severity::Info | helix_core::diagnostic::Severity::Hint)
-                                                    | (helix_core::diagnostic::Severity::Info, helix_core::diagnostic::Severity::Hint)) {
-                                                    *s = sev;
-                                                }
-                                            })
-                                            .or_insert(sev);
-                                }
-                            }
-                        }
-                        m
-                    };
 
                     // Prepare gutter lines (no wrapping assumed here)
                     let text_system = window.text_system().clone();
@@ -3481,7 +3429,7 @@ impl Element for DocumentElement {
                             gut(line, &mut gutter)
                         }
                     }
-                    (gutter.lines, diag_map)
+                    gutter.lines
                 };
 
                 // Now paint the gutter lines
