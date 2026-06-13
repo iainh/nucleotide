@@ -1,7 +1,7 @@
 // ABOUTME: Per-frame document/view facts for native editor rendering
 // ABOUTME: Builds owned render state from Helix document and view inputs
 
-use gpui::{Bounds, Pixels};
+use gpui::{Bounds, Font, Hsla, Pixels, TextRun};
 use helix_view::{
     Document, Theme, View, ViewId,
     document::Mode,
@@ -11,10 +11,12 @@ use helix_view::{
 
 use crate::{
     DiagnosticOverlaySpans, DiagnosticSeverityByLine, DocumentSoftWrapRenderPlanParams,
-    EditorCursorPresentation, EditorCursorPresentationParams, EditorRenderSnapshot,
-    SoftWrapRenderPlan, UnwrappedRenderPlan, UnwrappedRenderPlanParams, diagnostic_overlay_spans,
-    diagnostic_severity_by_line, document_render_snapshot, document_soft_wrap_render_plan,
-    editor_cursor_presentation, unwrapped_render_plan,
+    EditorCursorPresentation, EditorCursorPresentationParams, EditorLineHighlightContext,
+    EditorRenderSnapshot, SoftWrapHighlightedLineRunsParams, SoftWrapRenderPlan,
+    UnwrappedHighlightedLine, UnwrappedHighlightedLineParams, UnwrappedRenderPlan,
+    UnwrappedRenderPlanParams, diagnostic_overlay_spans, diagnostic_severity_by_line,
+    document_render_snapshot, document_soft_wrap_render_plan, editor_cursor_presentation,
+    soft_wrap_highlighted_line_runs, unwrapped_highlighted_line, unwrapped_render_plan,
 };
 
 pub struct EditorDocumentFrameParams<'a> {
@@ -31,6 +33,11 @@ pub struct EditorDocumentFrameParams<'a> {
     pub line_height: Pixels,
     pub scroll_line_offset: Pixels,
     pub soft_wrap_minimum_columns: u16,
+    pub fg_color: Hsla,
+    pub font: Font,
+    pub default_text_style: Style,
+    pub default_bg: Hsla,
+    pub wrap_indicator_color: Option<Hsla>,
     pub editor_mode: Mode,
     pub cursor_kind: CursorKind,
     pub cursor_style: Style,
@@ -57,6 +64,8 @@ pub struct EditorDocumentFrame {
     pub diagnostic_severity_by_line: DiagnosticSeverityByLine,
     pub soft_wrap_render_plan: Option<SoftWrapRenderPlan>,
     pub unwrapped_render_plan: Option<UnwrappedRenderPlan>,
+    pub soft_wrap_line_runs: Vec<Vec<TextRun>>,
+    pub unwrapped_highlighted_lines: Vec<UnwrappedHighlightedLine>,
 }
 
 pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDocumentFrame {
@@ -106,6 +115,54 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
             cursor_line: render_snapshot.cursor_line,
         })
     });
+    let diagnostic_overlay_spans = diagnostic_overlay_spans(params.document, params.theme);
+
+    let highlight_context = || EditorLineHighlightContext {
+        doc: params.document,
+        view: params.view,
+        theme: params.theme,
+        syntax_loader: params.syntax_loader,
+        editor_mode: params.editor_mode,
+        cursor_shape: &params.cursor_shape,
+        is_view_focused: params.is_focused,
+        fg_color: params.fg_color,
+        font: params.font.clone(),
+        default_text_style: params.default_text_style,
+        default_bg: params.default_bg,
+        diagnostic_overlay_spans: diagnostic_overlay_spans.as_ref(),
+    };
+
+    let soft_wrap_line_runs = soft_wrap_render_plan
+        .as_ref()
+        .map(|plan| {
+            plan.visual_lines
+                .iter()
+                .map(|visual| {
+                    soft_wrap_highlighted_line_runs(SoftWrapHighlightedLineRunsParams {
+                        context: highlight_context(),
+                        visual,
+                        wrap_indicator_color: params.wrap_indicator_color,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let unwrapped_highlighted_lines = unwrapped_render_plan
+        .as_ref()
+        .map(|plan| {
+            plan.visible_lines
+                .iter()
+                .map(|line| {
+                    unwrapped_highlighted_line(UnwrappedHighlightedLineParams {
+                        context: highlight_context(),
+                        text: text.slice(..),
+                        line,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     EditorDocumentFrame {
         gutter_width,
@@ -119,10 +176,12 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         cursorline_enabled: params.cursorline_enabled,
         render_snapshot,
         cursor_presentation,
-        diagnostic_overlay_spans: diagnostic_overlay_spans(params.document, params.theme),
+        diagnostic_overlay_spans,
         diagnostic_severity_by_line: diagnostic_severity_by_line(params.document),
         soft_wrap_render_plan,
         unwrapped_render_plan,
+        soft_wrap_line_runs,
+        unwrapped_highlighted_lines,
     }
 }
 
@@ -131,7 +190,7 @@ mod tests {
     use std::sync::Arc;
 
     use arc_swap::ArcSwap;
-    use gpui::{Bounds, point, px, size};
+    use gpui::{Bounds, black, font, point, px, size, white};
     use helix_core::{Rope, Selection, syntax};
     use helix_view::{
         Document, DocumentId, View,
@@ -168,6 +227,11 @@ mod tests {
             line_height: px(20.0),
             scroll_line_offset: px(0.0),
             soft_wrap_minimum_columns: 10,
+            fg_color: black(),
+            font: font("TestFont"),
+            default_text_style: Style::default(),
+            default_bg: white(),
+            wrap_indicator_color: None,
             editor_mode: Mode::Normal,
             cursor_kind: CursorKind::Block,
             cursor_style: Style::default(),
@@ -187,6 +251,16 @@ mod tests {
         assert!(frame.cursorline_enabled);
         assert!(frame.soft_wrap_render_plan.is_some());
         assert!(frame.unwrapped_render_plan.is_none());
+        assert_eq!(
+            frame.soft_wrap_line_runs.len(),
+            frame
+                .soft_wrap_render_plan
+                .as_ref()
+                .unwrap()
+                .visual_lines
+                .len()
+        );
+        assert!(frame.unwrapped_highlighted_lines.is_empty());
     }
 
     #[test]
@@ -219,6 +293,11 @@ mod tests {
             line_height: px(20.0),
             scroll_line_offset: px(5.0),
             soft_wrap_minimum_columns: 10,
+            fg_color: black(),
+            font: font("TestFont"),
+            default_text_style: Style::default(),
+            default_bg: white(),
+            wrap_indicator_color: None,
             editor_mode: Mode::Normal,
             cursor_kind: CursorKind::Block,
             cursor_style: Style::default(),
@@ -238,5 +317,10 @@ mod tests {
         assert_eq!(unwrapped.visible_lines[0].line_idx, 0);
         assert_eq!(unwrapped.visible_lines[0].y_offset, px(-5.0));
         assert_eq!(unwrapped.cursor_line, frame.render_snapshot.cursor_line);
+        assert_eq!(
+            frame.unwrapped_highlighted_lines.len(),
+            unwrapped.visible_lines.len()
+        );
+        assert!(frame.soft_wrap_line_runs.is_empty());
     }
 }

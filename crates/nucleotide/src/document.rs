@@ -16,20 +16,18 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     DiagnosticGutterMarkersPaintParams, DocumentRulerPaintParams, EditorCursorTextPaintParams,
-    EditorDocumentFrameParams, EditorLayout, EditorLineBackgroundStyle, EditorLineHighlightContext,
-    EditorScrollbarState, EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry,
-    EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    EditorViewportSurfaceLayout, GutterLineParams, LineLayoutCache, ShapedEditorCursorPaintParams,
+    EditorDocumentFrameParams, EditorLayout, EditorLineBackgroundStyle, EditorScrollbarState,
+    EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics,
+    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout,
+    GutterLineParams, LineLayoutCache, ShapedEditorCursorPaintParams,
     SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams,
-    SoftWrapHighlightedLineRunsParams, UnwrappedCursorPaintPlanParams,
-    UnwrappedEditorLinePaintParams, UnwrappedHighlightedLineParams,
+    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams,
     begin_editor_pointer_selection_at_event, build_gutter_lines, cursor_document_line,
     cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color,
     paint_diagnostic_gutter_markers, paint_document_rulers, paint_editor_background,
     paint_gutter_lines, paint_shaped_editor_cursor, paint_soft_wrap_editor_line,
     paint_soft_wrap_gutter, paint_unwrapped_editor_line, shape_and_paint_editor_cursor,
-    shape_cursor_text, soft_wrap_cursor_paint_plan, soft_wrap_highlighted_line_runs,
-    unwrapped_cursor_paint_plan, unwrapped_highlighted_line,
+    shape_cursor_text, soft_wrap_cursor_paint_plan, unwrapped_cursor_paint_plan,
     update_editor_pointer_selection_at_event,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -664,6 +662,7 @@ impl Element for DocumentElement {
 
             // Get mode-specific cursor theme like terminal version
             let cursor_style = cursor_style_for_mode(editor_mode, |key| cx.theme_style(key));
+            let wrap_indicator_color = cx.theme_style("ui.virtual.wrap").fg.and_then(color_to_hsla);
             let loader = editor.syn_loader.load();
             let frame = editor_document_frame(EditorDocumentFrameParams {
                 document,
@@ -679,6 +678,11 @@ impl Element for DocumentElement {
                 line_height: after_layout.line_height,
                 scroll_line_offset,
                 soft_wrap_minimum_columns: 10,
+                fg_color,
+                font: self.style.font(),
+                default_text_style,
+                default_bg: bg_color,
+                wrap_indicator_color,
                 editor_mode,
                 cursor_kind,
                 cursor_style,
@@ -772,8 +776,6 @@ impl Element for DocumentElement {
 
             // Extract necessary values before the loop to avoid borrowing issues
             let _editor_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-            let cursor_shape = frame.cursor_shape.clone();
-            let syn_loader = editor.syn_loader.clone();
 
             // Clone text to avoid borrowing issues
             let doc_text = document.text().clone();
@@ -797,13 +799,9 @@ impl Element for DocumentElement {
             // core goes out of scope here
 
             let text = doc_text.slice(..);
-            let diag_overlay_spans = frame.diagnostic_overlay_spans.as_ref();
 
             // Update the shared line layouts for mouse interaction
             if soft_wrap_enabled {
-                // Extract wrap indicator color early to avoid borrow conflicts later
-                let wrap_indicator_color =
-                    cx.theme_style("ui.virtual.wrap").fg.and_then(color_to_hsla);
                 let Some(soft_wrap_plan) = frame.soft_wrap_render_plan.as_ref() else {
                     return;
                 };
@@ -818,47 +816,16 @@ impl Element for DocumentElement {
                     cursor_line_num,
                 );
 
-                for soft_wrap_plan in soft_wrap_paint_plans {
-                    let visual = soft_wrap_plan.visual;
-
-                    let line_runs = {
-                        let core = self.core.read(cx);
-                        let editor = &core.editor;
-                        let document = match editor.document(self.doc_id) {
-                            Some(doc) => doc,
-                            None => return,
-                        };
-                        let view = match editor.tree.try_get(self.view_id) {
-                            Some(v) => v,
-                            None => return,
-                        };
-                        let loader = syn_loader.load();
-                        soft_wrap_highlighted_line_runs(SoftWrapHighlightedLineRunsParams {
-                            context: EditorLineHighlightContext {
-                                doc: document,
-                                view,
-                                theme: cx.helix_theme(),
-                                syntax_loader: &loader,
-                                editor_mode,
-                                cursor_shape: &cursor_shape,
-                                is_view_focused: self.is_focused,
-                                fg_color,
-                                font: self.style.font(),
-                                default_text_style,
-                                default_bg: bg_color,
-                                diagnostic_overlay_spans: diag_overlay_spans,
-                            },
-                            visual,
-                            wrap_indicator_color,
-                        })
-                    };
-
+                for (soft_wrap_plan, line_runs) in soft_wrap_paint_plans
+                    .into_iter()
+                    .zip(frame.soft_wrap_line_runs.iter())
+                {
                     match paint_soft_wrap_editor_line(
                         window,
                         cx,
                         SoftWrapEditorLinePaintParams {
                             plan: soft_wrap_plan,
-                            line_runs: &line_runs,
+                            line_runs,
                             line_cache: &line_cache,
                             font_size: self.style.font_size.to_pixels(px(16.0)),
                             viewport_width: bounds.size.width,
@@ -1000,44 +967,15 @@ impl Element for DocumentElement {
             let unwrapped_paint_plans = unwrapped_plan.line_paint_plans();
 
             // Original rendering loop (without soft wrap)
-            for unwrapped_plan in unwrapped_paint_plans {
+            for (unwrapped_plan, highlighted_line) in unwrapped_paint_plans
+                .into_iter()
+                .zip(frame.unwrapped_highlighted_lines.iter())
+            {
                 let line_plan = unwrapped_plan.line;
                 let line_idx = line_plan.line_idx;
                 let y_offset = line_plan.y_offset;
-
-                let highlighted_line = {
-                    let core = self.core.read(cx);
-                    let editor = &core.editor;
-                    let document = match editor.document(self.doc_id) {
-                        Some(doc) => doc,
-                        None => return,
-                    };
-                    let view = match editor.tree.try_get(self.view_id) {
-                        Some(v) => v,
-                        None => return,
-                    };
-                    let loader = syn_loader.load();
-                    unwrapped_highlighted_line(UnwrappedHighlightedLineParams {
-                        context: EditorLineHighlightContext {
-                            doc: document,
-                            view,
-                            theme: cx.helix_theme(),
-                            syntax_loader: &loader,
-                            editor_mode,
-                            cursor_shape: &cursor_shape,
-                            is_view_focused: self.is_focused,
-                            fg_color,
-                            font: self.style.font(),
-                            default_text_style,
-                            default_bg: bg_color,
-                            diagnostic_overlay_spans: diag_overlay_spans,
-                        },
-                        text,
-                        line: line_plan,
-                    })
-                };
-                let line_text = highlighted_line.line_text;
-                let line_runs = highlighted_line.line_runs;
+                let line_text = highlighted_line.line_text.clone();
+                let line_runs = &highlighted_line.line_runs;
 
                 // Drop core before painting
                 // core goes out of scope here
@@ -1055,7 +993,7 @@ impl Element for DocumentElement {
                     UnwrappedEditorLinePaintParams {
                         plan: unwrapped_plan,
                         line_text,
-                        line_runs: &line_runs,
+                        line_runs,
                         line_cache: &line_cache,
                         font_size: self.style.font_size.to_pixels(px(16.0)),
                         viewport_width: bounds.size.width,
