@@ -28,7 +28,8 @@ use nucleotide_editor::{
     diagnostic_overlay_spans, diagnostic_severity_by_line, document_text_format_for_surface,
     gpui_hsla_to_helix_color, highlight_line, hit_test_document_position, line_viewport_plan,
     paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
-    paint_editor_line, paint_visible_rulers, phantom_line_cursor_paint_position, shape_cursor_text,
+    paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines, paint_visible_rulers,
+    phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
     soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
@@ -1160,14 +1161,14 @@ impl Element for DocumentElement {
                         self.style.font_size.to_pixels(px(16.0)),
                         &gutter_paint_plans,
                     );
+                    paint_soft_wrap_gutter_lines(
+                        window,
+                        cx,
+                        &gutter_lines,
+                        after_layout.line_height,
+                        |_| {},
+                    );
                     for gutter_line in gutter_lines {
-                        let _ = gutter_line.shaped_line.paint(
-                            gutter_line.origin,
-                            after_layout.line_height,
-                            window,
-                            cx,
-                        );
-
                         // Paint a small diagnostic marker in the gutter if this line has diagnostics
                         if let Some(sev) = diag_line_severity.get(&gutter_line.doc_line).copied()
                             && let Some(color) = Self::severity_color(cx.helix_theme(), sev)
@@ -1686,15 +1687,18 @@ impl Element for DocumentElement {
                     })
                 };
 
-                // Now paint the gutter lines
-                for line in gutter_lines {
-                    if let Err(e) =
-                        line.shaped_line
-                            .paint(line.origin, after_layout.line_height, window, cx)
-                    {
+                paint_gutter_lines(
+                    window,
+                    cx,
+                    &gutter_lines,
+                    after_layout.line_height,
+                    |result| {
+                        let Err(e) = result else {
+                            return;
+                        };
                         error!(error = ?e, "Failed to paint gutter line");
-                    }
-                }
+                    },
+                );
 
                 // Note: In non-soft-wrap mode, we rely on Helix's built-in sign gutters.
                 // Custom diagnostic indicators (circle/triangle/square) are only drawn in soft-wrap mode.
