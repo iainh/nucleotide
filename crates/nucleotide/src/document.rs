@@ -19,7 +19,7 @@ use nucleotide_editor::{
     EditorScrollbarState, EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry,
     EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
     GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache,
-    begin_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
+    begin_editor_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
     build_soft_wrap_gutter_lines, cursor_background_color, cursor_document_line,
     cursor_foreground_color, cursor_has_reversed_modifier, cursor_line_position,
     cursor_style_for_mode, cursor_viewport_position, decorate_soft_wrap_line_runs,
@@ -32,7 +32,8 @@ use nucleotide_editor::{
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
     soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
     text_style_at_position, unwrapped_cursor_paint_position, unwrapped_line_paint_plans,
-    unwrapped_visible_line_plans, update_pointer_selection_at_event, visible_ruler_paint_plans,
+    unwrapped_visible_line_plans, update_editor_pointer_selection_at_event,
+    visible_ruler_paint_plans,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -114,30 +115,17 @@ fn handle_editor_mouse_down(
     let mut pointer_update = None;
 
     core.update(cx, |core, cx| {
-        let gutter_columns = {
-            let editor = &core.editor;
-            let Some(document) = editor.document(doc_id) else {
-                return;
-            };
-            let Some(view) = editor.tree.try_get(view_id) else {
-                return;
-            };
-            view.gutter_offset(document)
-        };
+        pointer_update = begin_editor_pointer_selection_at_event(
+            &mut core.editor,
+            doc_id,
+            view_id,
+            &line_cache,
+            drag_state,
+            event,
+        );
 
-        if let Some(document) = core.editor.document_mut(doc_id) {
-            pointer_update = begin_pointer_selection_at_event(
-                document,
-                view_id,
-                gutter_columns,
-                &line_cache,
-                drag_state,
-                event,
-            );
-
-            if pointer_update.is_some() {
-                cx.notify();
-            }
+        if pointer_update.is_some() {
+            cx.notify();
         }
     });
 
@@ -171,30 +159,17 @@ fn handle_editor_mouse_drag(
     let mut pointer_update = None;
 
     core.update(cx, |core, cx| {
-        let gutter_columns = {
-            let editor = &core.editor;
-            let Some(document) = editor.document(doc_id) else {
-                return;
-            };
-            let Some(view) = editor.tree.try_get(view_id) else {
-                return;
-            };
-            view.gutter_offset(document)
-        };
+        pointer_update = update_editor_pointer_selection_at_event(
+            &mut core.editor,
+            doc_id,
+            view_id,
+            &line_cache,
+            drag_state,
+            event,
+        );
 
-        if let Some(document) = core.editor.document_mut(doc_id) {
-            pointer_update = update_pointer_selection_at_event(
-                document,
-                view_id,
-                gutter_columns,
-                &line_cache,
-                drag_state,
-                event,
-            );
-
-            if pointer_update.is_some() {
-                cx.notify();
-            }
+        if pointer_update.is_some() {
+            cx.notify();
         }
     });
 
