@@ -1,12 +1,12 @@
 // ABOUTME: Native GPUI surface element for editor viewport input
 // ABOUTME: Wraps editor content while owning scroll-wheel capture for the viewport
 
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
+use gpui::prelude::{InteractiveElement, IntoElement, ParentElement, Styled};
 use gpui::{
-    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
-    Point, ScrollWheelEvent, Window, fill, point, px,
+    AnyElement, App, Bounds, Div, EntityId, Hsla, MouseButton, Pixels, Point, Window, div, fill,
+    point, px,
 };
 
 use crate::{EditorViewport, ViewportScrollUpdate};
@@ -23,17 +23,14 @@ pub struct EditorSurfacePointerEvent {
 }
 
 pub struct EditorSurface {
+    view_entity_id: EntityId,
     viewport: EditorViewport,
     line_height: Pixels,
     cell_width: Pixels,
-    child: Option<AnyElement>,
+    child: AnyElement,
     on_scroll: Option<ScrollCallback>,
     on_mouse_down: Option<PointerCallback>,
     on_mouse_up: Option<PointerCallback>,
-}
-
-pub struct EditorSurfacePrepaintState {
-    hitbox: Hitbox,
 }
 
 pub fn paint_editor_background(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla) {
@@ -42,16 +39,18 @@ pub fn paint_editor_background(window: &mut Window, bounds: Bounds<Pixels>, colo
 
 impl EditorSurface {
     pub fn new(
+        view_entity_id: EntityId,
         viewport: EditorViewport,
         line_height: Pixels,
         cell_width: Pixels,
         child: impl IntoElement,
     ) -> Self {
         Self {
+            view_entity_id,
             viewport,
             line_height,
             cell_width,
-            child: Some(child.into_any_element()),
+            child: child.into_any_element(),
             on_scroll: None,
             on_mouse_down: None,
             on_mouse_up: None,
@@ -84,77 +83,28 @@ impl EditorSurface {
 }
 
 impl IntoElement for EditorSurface {
-    type Element = Self;
+    type Element = Div;
 
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
+    fn into_element(self) -> Div {
+        let child_bounds = Rc::new(Cell::new(None));
+        let mut element = div()
+            .w_full()
+            .h_full()
+            .on_children_prepainted({
+                let child_bounds = Rc::clone(&child_bounds);
 
-impl Element for EditorSurface {
-    type RequestLayoutState = AnyElement;
-    type PrepaintState = EditorSurfacePrepaintState;
+                move |bounds, _window, _cx| {
+                    child_bounds.set(bounds.into_iter().next());
+                }
+            })
+            .child(self.child);
 
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut child = self
-            .child
-            .take()
-            .expect("EditorSurface child is consumed once per frame");
-        let layout_id = child.request_layout(window, cx);
-        (layout_id, child)
-    }
-
-    fn prepaint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        child: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        child.prepaint(window, cx);
-        EditorSurfacePrepaintState {
-            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
-        }
-    }
-
-    fn paint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        child: &mut Self::RequestLayoutState,
-        prepaint: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        window.on_mouse_event({
+        if let Some(on_scroll) = self.on_scroll {
             let viewport = self.viewport.clone();
             let line_height = self.line_height;
-            let on_scroll = self.on_scroll.clone();
-            let view_entity_id = window.current_view();
-            let hitbox = prepaint.hitbox.clone();
+            let view_entity_id = self.view_entity_id;
 
-            move |event: &ScrollWheelEvent, phase, window, cx| {
-                if !(phase.bubble() && hitbox.should_handle_scroll(window)) {
-                    return;
-                }
-
+            element = element.on_scroll_wheel(move |event, _window, cx| {
                 let raw_delta = event.delta.pixel_delta(line_height);
                 let delta = point(px(0.0), raw_delta.y);
                 let scroll_update = viewport.scroll_by_delta(delta);
@@ -163,77 +113,61 @@ impl Element for EditorSurface {
                     return;
                 }
 
-                if let Some(on_scroll) = &on_scroll {
-                    on_scroll(&viewport, scroll_update, cx);
-                }
+                on_scroll(&viewport, scroll_update, cx);
 
                 cx.notify(view_entity_id);
                 cx.stop_propagation();
-            }
-        });
+            });
+        }
 
-        window.on_mouse_event({
+        if let Some(on_mouse_down) = self.on_mouse_down {
             let line_height = self.line_height;
             let cell_width = self.cell_width;
-            let on_mouse_down = self.on_mouse_down.clone();
-            let view_entity_id = window.current_view();
-            let hitbox = prepaint.hitbox.clone();
+            let view_entity_id = self.view_entity_id;
+            let child_bounds = Rc::clone(&child_bounds);
 
-            move |event: &MouseDownEvent, phase, window, cx| {
-                if event.button != MouseButton::Left
-                    || !(phase.bubble() && hitbox.is_hovered(window))
-                {
-                    return;
-                }
-
-                if let Some(on_mouse_down) = &on_mouse_down {
+            element = element.on_mouse_down(MouseButton::Left, move |event, _window, cx| {
+                if let Some(bounds) = child_bounds.get() {
                     on_mouse_down(
                         EditorSurfacePointerEvent {
                             position: event.position,
-                            bounds: hitbox.bounds,
+                            bounds,
                             line_height,
                             cell_width,
                         },
                         cx,
                     );
+
+                    cx.notify(view_entity_id);
+                    cx.stop_propagation();
                 }
+            });
+        }
 
-                cx.notify(view_entity_id);
-                cx.stop_propagation();
-            }
-        });
-
-        window.on_mouse_event({
+        if let Some(on_mouse_up) = self.on_mouse_up {
             let line_height = self.line_height;
             let cell_width = self.cell_width;
-            let on_mouse_up = self.on_mouse_up.clone();
-            let view_entity_id = window.current_view();
-            let hitbox = prepaint.hitbox.clone();
+            let view_entity_id = self.view_entity_id;
+            let child_bounds = Rc::clone(&child_bounds);
 
-            move |event: &MouseUpEvent, phase, window, cx| {
-                if event.button != MouseButton::Left
-                    || !(phase.bubble() && hitbox.is_hovered(window))
-                {
-                    return;
-                }
-
-                if let Some(on_mouse_up) = &on_mouse_up {
+            element = element.on_mouse_up(MouseButton::Left, move |event, _window, cx| {
+                if let Some(bounds) = child_bounds.get() {
                     on_mouse_up(
                         EditorSurfacePointerEvent {
                             position: event.position,
-                            bounds: hitbox.bounds,
+                            bounds,
                             line_height,
                             cell_width,
                         },
                         cx,
                     );
+
+                    cx.notify(view_entity_id);
+                    cx.stop_propagation();
                 }
+            });
+        }
 
-                cx.notify(view_entity_id);
-                cx.stop_propagation();
-            }
-        });
-
-        child.paint(window, cx);
+        element
     }
 }

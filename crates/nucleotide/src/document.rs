@@ -420,6 +420,7 @@ impl Render for DocumentView {
         };
 
         let editor_surface = EditorSurface::new(
+            cx.entity_id(),
             self.viewport.clone(),
             metrics.line_height,
             metrics.cell_width,
