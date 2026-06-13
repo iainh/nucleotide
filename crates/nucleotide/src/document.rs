@@ -4,17 +4,12 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, Font, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
+    FocusHandle, Focusable, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
     IntoElement, LayoutId, ParentElement, Pixels, Point, Render, ShapedLine, SharedString, Size,
     Style, Styled, TextStyle, Window, WindowTextSystem, black, div, fill, px, relative, white,
 };
 use gpui::{TextRun, point, size};
-use helix_core::{
-    Uri,
-    graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
-    ropey::RopeSlice,
-    syntax::{self, Highlight, HighlightEvent, OverlayHighlights},
-};
+use helix_core::{Uri, graphemes::next_grapheme_boundary, ropey::RopeSlice};
 use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
 use helix_view::{Document, DocumentId, Editor, Theme, View, ViewId, graphics::CursorKind};
@@ -23,13 +18,14 @@ use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
-use helix_stdx::rope::RopeSliceExt;
 use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
     EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    LineLayoutCache, cursor_has_reversed_modifier, cursor_style_for_mode,
-    diagnostic_severity_by_line, document_text_format_for_surface, hit_test_document_position,
-    paint_line_backgrounds, soft_wrap_visual_lines, soft_wrap_visual_position,
+    HighlightLineParams, LineLayoutCache, cursor_has_reversed_modifier, cursor_style_for_mode,
+    cursor_text_run, diagnostic_overlay_spans, diagnostic_severity_by_line,
+    document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
+    hit_test_document_position, paint_line_backgrounds, soft_wrap_visual_lines,
+    soft_wrap_visual_position, text_style_at_position,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
@@ -163,23 +159,6 @@ impl ScrollableHandle for DocumentScrollHandle {
     fn viewport(&self) -> Bounds<Pixels> {
         self.viewport.viewport_bounds()
     }
-}
-
-/// Parameters for highlight_line_with_params
-struct HighlightLineParams<'a> {
-    doc: &'a Document,
-    view: &'a View,
-    cx: &'a App,
-    editor_mode: helix_view::document::Mode,
-    cursor_shape: &'a helix_view::editor::CursorShapeConfig,
-    syn_loader: &'a std::sync::Arc<arc_swap::ArcSwap<helix_core::syntax::Loader>>,
-    is_view_focused: bool,
-    line_start: usize,
-    line_end: usize,
-    fg_color: Hsla,
-    font: Font,
-    /// Optional diagnostic overlays to merge (underline ranges)
-    diag_overlay_spans: Option<Vec<(helix_core::syntax::Highlight, std::ops::Range<usize>)>>,
 }
 
 fn handle_editor_mouse_down(
@@ -571,439 +550,6 @@ impl DocumentElement {
             .or(style.fg)
             .and_then(crate::utils::color_to_hsla)
     }
-
-    fn hsla_to_helix(c: gpui::Hsla) -> Option<helix_view::graphics::Color> {
-        let c_chroma = (1.0 - (2.0 * c.l - 1.0).abs()) * c.s;
-        let x = c_chroma * (1.0 - (((c.h * 360.0) / 60.0) % 2.0 - 1.0).abs());
-        let hue = c.h * 360.0;
-        let (r1, g1, b1) = if hue < 60.0 {
-            (c_chroma, x, 0.0)
-        } else if hue < 120.0 {
-            (x, c_chroma, 0.0)
-        } else if hue < 180.0 {
-            (0.0, c_chroma, x)
-        } else if hue < 240.0 {
-            (0.0, x, c_chroma)
-        } else if hue < 300.0 {
-            (x, 0.0, c_chroma)
-        } else {
-            (c_chroma, 0.0, x)
-        };
-        let m = c.l - c_chroma / 2.0;
-        let (r, g, b) = (r1 + m, g1 + m, b1 + m);
-        Some(helix_view::graphics::Color::Rgb(
-            (r * 255.0) as u8,
-            (g * 255.0) as u8,
-            (b * 255.0) as u8,
-        ))
-    }
-
-    /// Build diagnostic overlay highlight spans for the entire document.
-    /// Uses theme keys diagnostic.error|warning|info|hint to set underline color.
-    fn diagnostic_overlay_spans(
-        doc: &Document,
-        theme: &Theme,
-    ) -> Option<Vec<(helix_core::syntax::Highlight, std::ops::Range<usize>)>> {
-        let mut spans: Vec<(helix_core::syntax::Highlight, std::ops::Range<usize>)> = Vec::new();
-        // Resolve highlight ids once
-        let error_h = theme.find_highlight_exact("diagnostic.error");
-        let warn_h = theme.find_highlight_exact("diagnostic.warning");
-        let info_h = theme.find_highlight_exact("diagnostic.info");
-        let hint_h = theme.find_highlight_exact("diagnostic.hint");
-
-        let diagnostics = doc.diagnostics();
-        if diagnostics.is_empty() {
-            return None;
-        }
-        for d in diagnostics.iter() {
-            let (start, end) = (d.range.start, d.range.end);
-            // Skip invalid ranges
-            if start >= end {
-                // Zero-width or invalid; underline a single char if possible
-                let s = start;
-                let e = s.saturating_add(1);
-                let h = match d.severity {
-                    Some(helix_core::diagnostic::Severity::Error) => error_h,
-                    Some(helix_core::diagnostic::Severity::Warning) => warn_h,
-                    Some(helix_core::diagnostic::Severity::Info) => info_h,
-                    Some(helix_core::diagnostic::Severity::Hint) | None => hint_h,
-                };
-                if let Some(h) = h {
-                    spans.push((h, s..e));
-                }
-            } else {
-                let h = match d.severity {
-                    Some(helix_core::diagnostic::Severity::Error) => error_h,
-                    Some(helix_core::diagnostic::Severity::Warning) => warn_h,
-                    Some(helix_core::diagnostic::Severity::Info) => info_h,
-                    Some(helix_core::diagnostic::Severity::Hint) | None => hint_h,
-                };
-                if let Some(h) = h {
-                    spans.push((h, start..end));
-                }
-            }
-        }
-
-        if spans.is_empty() { None } else { Some(spans) }
-    }
-    /// Get the text style (with syntax highlighting) at a specific character position
-    fn get_text_style_at_position(
-        doc: &Document,
-        view_id: ViewId,
-        theme: &Theme,
-        syn_loader: &std::sync::Arc<arc_swap::ArcSwap<helix_core::syntax::Loader>>,
-        position: usize,
-    ) -> helix_view::graphics::Style {
-        let loader = syn_loader.load();
-        let text = doc.text().slice(..);
-        let anchor = doc.view_offset(view_id).anchor;
-        let lines_from_anchor = text.len_lines() - text.char_to_line(anchor);
-        let height = u16::try_from(lines_from_anchor).unwrap_or(u16::MAX);
-
-        // Get syntax highlighter
-        let syntax_highlighter = Self::doc_syntax_highlights(doc, anchor, height, theme, &loader);
-
-        // Get default text style from theme, but explicitly drop any background.
-        // The editor background and row highlights (cursorline/selection) are painted separately.
-        const THEME_KEY_UI_TEXT: &str = "ui.text";
-        let default_style = theme.get(THEME_KEY_UI_TEXT);
-        let text_style = helix_view::graphics::Style {
-            fg: default_style.fg,
-            bg: None, // avoid overriding cursorline/selection backgrounds
-            ..Default::default()
-        };
-
-        // Create syntax highlighter and advance to position
-        let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
-
-        // Advance to the position
-        while position >= syntax_hl.pos {
-            syntax_hl.advance();
-        }
-
-        syntax_hl.style
-    }
-
-    /// Create a TextRun for the cursor glyph that preserves the original text style
-    /// (bold/italic/underline/strikethrough) while allowing a custom foreground color
-    /// and default background for contrast.
-    fn make_cursor_text_run(
-        base_font: &gpui::Font,
-        text_len: usize,
-        text_style_at_cursor: &helix_view::graphics::Style,
-        text_color: gpui::Hsla,
-        default_bg: gpui::Hsla,
-    ) -> gpui::TextRun {
-        let underline_color = text_style_at_cursor
-            .underline_color
-            .and_then(nucleotide_ui::theme_utils::color_to_hsla);
-        nucleotide_ui::style_utils::create_styled_text_run(
-            text_len,
-            base_font,
-            text_style_at_cursor,
-            text_color,
-            None,
-            default_bg,
-            underline_color,
-        )
-    }
-    // These 3 methods are just proxies for EditorView
-    // TODO: make a PR to helix to extract them from helix_term into helix_view or smth.
-    // This function is no longer needed as EditorView::doc_diagnostics_highlights_into
-    // directly populates a Vec<OverlayHighlights>
-
-    fn doc_syntax_highlights<'d>(
-        doc: &'d helix_view::Document,
-        anchor: usize,
-        height: u16,
-        _theme: &Theme,
-        syn_loader: &'d helix_core::syntax::Loader,
-    ) -> Option<syntax::Highlighter<'d>> {
-        let syntax = doc.syntax()?;
-        debug!(language = ?doc.language_name(), "Document has syntax support");
-
-        let text = doc.text().slice(..);
-
-        // Ensure anchor is within bounds
-        let anchor = anchor.min(text.len_chars().saturating_sub(1));
-        let row = text.char_to_line(anchor);
-
-        // Get a valid viewport range
-        let range = Self::viewport_byte_range(text, row, height);
-
-        // Ensure the range is valid for u32 conversion
-        let start = (range.start as u32).min(text.len_bytes() as u32);
-        let end = (range.end as u32).min(text.len_bytes() as u32);
-
-        if start >= end {
-            // No valid range for highlighting
-            return None;
-        }
-
-        let range = start..end;
-        let highlighter = syntax.highlighter(text, syn_loader, range);
-        Some(highlighter)
-    }
-
-    fn viewport_byte_range(text: RopeSlice, row: usize, height: u16) -> std::ops::Range<usize> {
-        // Ensure row is within bounds
-        let row = row.min(text.len_lines().saturating_sub(1));
-        let start = text.line_to_byte(row);
-        let end_row = (row + height as usize).min(text.len_lines());
-        let end = text.line_to_byte(end_row);
-
-        // Ensure we have a valid range
-        if start >= end {
-            // Return a minimal valid range
-            0..text.len_bytes().min(1)
-        } else {
-            start..end
-        }
-    }
-
-    #[allow(dead_code)]
-    fn doc_selection_highlights(
-        mode: helix_view::document::Mode,
-        doc: &Document,
-        view: &View,
-        theme: &Theme,
-        cursor_shape_config: &helix_view::editor::CursorShapeConfig,
-        is_window_focused: bool,
-    ) -> Vec<(usize, std::ops::Range<usize>)> {
-        // Get the overlay highlights and convert to the expected format
-        let overlay_highlights = Self::overlay_highlights(
-            mode,
-            doc,
-            view,
-            theme,
-            cursor_shape_config,
-            is_window_focused,
-            true, // is_view_focused - assume true for selection highlights
-        );
-
-        // Convert OverlayHighlights to Vec<(usize, Range<usize>)>
-        // where usize is an artificial highlight ID and Range is the text range
-        // Note: This function is currently unused (#[allow(dead_code)]) and may need revision if actually needed
-        // Since Highlight's internal structure is private, we use ordinal values as IDs
-        match overlay_highlights {
-            helix_core::syntax::OverlayHighlights::Homogeneous {
-                highlight: _,
-                ranges,
-            } => {
-                // All ranges use the same highlight - assign ID 0 for homogeneous highlights
-                const HOMOGENEOUS_HIGHLIGHT_ID: usize = 0;
-                ranges
-                    .into_iter()
-                    .map(|range| (HOMOGENEOUS_HIGHLIGHT_ID, range))
-                    .collect()
-            }
-            helix_core::syntax::OverlayHighlights::Heterogenous { highlights } => {
-                // Each range has its own highlight - assign sequential IDs
-                highlights
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (_highlight, range))| (index, range))
-                    .collect()
-            }
-        }
-    }
-
-    fn overlay_highlights(
-        mode: helix_view::document::Mode,
-        doc: &Document,
-        view: &View,
-        theme: &Theme,
-        cursor_shape_config: &helix_view::editor::CursorShapeConfig,
-        _is_window_focused: bool,
-        _is_view_focused: bool,
-    ) -> helix_core::syntax::OverlayHighlights {
-        // In GUI mode, we need to handle selections but not cursor highlights
-        // since we render the cursor separately as a block overlay.
-
-        let text = doc.text().slice(..);
-        let selection = doc.selection(view.id);
-        let primary_idx = selection.primary_index();
-
-        let cursorkind = cursor_shape_config.from_mode(mode);
-        let cursor_is_block = cursorkind == CursorKind::Block;
-
-        let selection_scope = theme
-            .find_highlight_exact("ui.selection")
-            .expect("could not find `ui.selection` scope in the theme!");
-        let primary_selection_scope = theme
-            .find_highlight_exact("ui.selection.primary")
-            .unwrap_or(selection_scope);
-
-        let mut spans = Vec::new();
-        for (i, range) in selection.iter().enumerate() {
-            let selection_is_primary = i == primary_idx;
-            let selection_scope = if selection_is_primary {
-                primary_selection_scope
-            } else {
-                selection_scope
-            };
-
-            // Special-case: cursor at end of the rope.
-            if range.head == range.anchor && range.head == text.len_chars() {
-                // At end of rope, nothing to highlight (cursor is rendered separately)
-                continue;
-            }
-
-            // Use min_width_1 to handle the selection properly
-            let range = range.min_width_1(text);
-
-            if range.head > range.anchor {
-                // Forward selection
-                let cursor_start = prev_grapheme_boundary(text, range.head);
-                // In GUI mode, block cursors are rendered separately, so exclude
-                // the cursor position from the selection highlight
-                let selection_end = if selection_is_primary
-                    && cursor_is_block
-                    && mode != helix_view::document::Mode::Insert
-                {
-                    cursor_start
-                } else {
-                    range.head
-                };
-
-                if range.anchor < selection_end {
-                    spans.push((selection_scope, range.anchor..selection_end));
-                }
-            } else {
-                // Reverse selection
-                let cursor_end = next_grapheme_boundary(text, range.head);
-                // In GUI mode, block cursors are rendered separately, so exclude
-                // the cursor position from the selection highlight
-                let selection_start = if selection_is_primary
-                    && cursor_is_block
-                    && mode != helix_view::document::Mode::Insert
-                {
-                    cursor_end
-                } else {
-                    range.head
-                };
-
-                if selection_start < range.anchor {
-                    spans.push((selection_scope, selection_start..range.anchor));
-                }
-            }
-        }
-
-        if spans.is_empty() {
-            // Return empty highlights using Homogeneous with empty ranges
-            OverlayHighlights::Homogeneous {
-                highlight: Highlight::new(0), // Default highlight (won't be used with empty ranges)
-                ranges: Vec::new(),
-            }
-        } else {
-            OverlayHighlights::Heterogenous { highlights: spans }
-        }
-    }
-
-    fn highlight_line_with_params(params: HighlightLineParams) -> Vec<TextRun> {
-        let loader = params.syn_loader.load();
-        let theme = params.cx.helix_theme();
-
-        let text = params.doc.text().slice(..);
-        let anchor = params.doc.view_offset(params.view.id).anchor;
-        let lines_from_anchor = text.len_lines() - text.char_to_line(anchor);
-        let height = u16::try_from(lines_from_anchor).unwrap_or(u16::MAX);
-        let syntax_highlighter =
-            Self::doc_syntax_highlights(params.doc, anchor, height, theme, &loader);
-
-        // Get overlay highlights
-        let selection_overlay = Self::overlay_highlights(
-            params.editor_mode,
-            params.doc,
-            params.view,
-            theme,
-            params.cursor_shape,
-            true,
-            params.is_view_focused,
-        );
-
-        let tokens = params.cx.theme().tokens;
-        let text_style = helix_view::graphics::Style {
-            fg: Self::hsla_to_helix(tokens.editor.text_primary),
-            bg: Self::hsla_to_helix(tokens.editor.background),
-            ..Default::default()
-        };
-
-        let mut syntax_hl = SyntaxHighlighter::new(syntax_highlighter, text, theme, text_style);
-        let mut overlays = Vec::new();
-        overlays.push(selection_overlay);
-        if let Some(highlights) = params.diag_overlay_spans {
-            overlays.push(helix_core::syntax::OverlayHighlights::Heterogenous { highlights });
-        }
-        let mut overlay_hl = OverlayHighlighter::new(overlays, theme);
-
-        Self::highlight_line_with_state(
-            text,
-            &mut syntax_hl,
-            &mut overlay_hl,
-            params.line_start,
-            params.line_end,
-            params.fg_color,
-            params.font,
-            tokens.editor.background,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn highlight_line_with_state(
-        text: RopeSlice<'_>,
-        syntax_hl: &mut SyntaxHighlighter<'_, '_, '_>,
-        overlay_hl: &mut OverlayHighlighter<'_>,
-        line_start: usize,
-        line_end: usize,
-        fg_color: Hsla,
-        font: Font,
-        default_bg: Hsla,
-    ) -> Vec<TextRun> {
-        let mut runs = vec![];
-
-        let line_slice = text.slice(line_start..line_end);
-
-        let mut position = line_start;
-        while position < line_end {
-            // Advance highlighters to current position
-            while position >= syntax_hl.pos {
-                syntax_hl.advance();
-            }
-            while position >= overlay_hl.pos {
-                overlay_hl.advance();
-            }
-
-            // Calculate next position where style might change
-            let next_pos = std::cmp::min(std::cmp::min(syntax_hl.pos, overlay_hl.pos), line_end);
-
-            let char_len = next_pos - position;
-            if char_len == 0 {
-                break;
-            }
-
-            // Convert character length to byte length for this segment
-            // Get the text slice for this run and measure its byte length
-            let run_start_in_line = position - line_start;
-            let run_end_in_line = next_pos - line_start;
-            let run_slice = line_slice.slice(run_start_in_line..run_end_in_line);
-            let byte_len = run_slice.len_bytes();
-
-            // Combine syntax and overlay styles
-            let style = syntax_hl.style.patch(overlay_hl.style);
-
-            let fg = style.fg.and_then(color_to_hsla).unwrap_or(fg_color);
-            let bg = style.bg.and_then(color_to_hsla);
-            let underline = style.underline_color.and_then(color_to_hsla);
-
-            let run =
-                create_styled_text_run(byte_len, &font, &style, fg, bg, default_bg, underline);
-            runs.push(run);
-            position = next_pos;
-        }
-
-        runs
-    }
 }
 
 struct RopeWrapper<'a>(RopeSlice<'a>);
@@ -1248,6 +794,11 @@ impl Element for DocumentElement {
             let cursor_style = cursor_style_for_mode(mode, |key| cx.theme_style(key));
             let _bg = fill(bounds, bg_color);
             let fg_color = tokens.editor.text_primary;
+            let default_text_style = helix_view::graphics::Style {
+                fg: gpui_hsla_to_helix_color(tokens.editor.text_primary),
+                bg: gpui_hsla_to_helix_color(tokens.editor.background),
+                ..Default::default()
+            };
 
             let document = match editor.document(self.doc_id) {
                 Some(doc) => doc,
@@ -1481,11 +1032,12 @@ impl Element for DocumentElement {
                         let editor = &core.editor;
                         if let Some(doc) = editor.document(self.doc_id) {
                             let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                            Self::get_text_style_at_position(
+                            let loader = editor.syn_loader.load();
+                            text_style_at_position(
                                 doc,
                                 self.view_id,
                                 theme,
-                                &editor.syn_loader,
+                                &loader,
                                 cursor_char_idx,
                             )
                         } else {
@@ -1493,7 +1045,7 @@ impl Element for DocumentElement {
                         }
                     };
 
-                    let run = Self::make_cursor_text_run(
+                    let run = cursor_text_run(
                         &self.style.font(),
                         text_len,
                         &text_style_at_cursor,
@@ -1515,7 +1067,7 @@ impl Element for DocumentElement {
             // core goes out of scope here
 
             let text = doc_text.slice(..);
-            let diag_overlay_spans = Self::diagnostic_overlay_spans(document, cx.helix_theme());
+            let diag_overlay_spans = diagnostic_overlay_spans(document, cx.helix_theme());
 
             // Update the shared line layouts for mouse interaction
             if soft_wrap_enabled {
@@ -1589,19 +1141,22 @@ impl Element for DocumentElement {
                             Some(v) => v,
                             None => return,
                         };
-                        Self::highlight_line_with_params(HighlightLineParams {
+                        let loader = syn_loader.load();
+                        highlight_line(HighlightLineParams {
                             doc: document,
                             view,
-                            cx,
+                            theme: cx.helix_theme(),
+                            syntax_loader: &loader,
                             editor_mode,
                             cursor_shape: &cursor_shape,
-                            syn_loader: &syn_loader,
                             is_view_focused: self.is_focused,
                             line_start,
                             line_end,
                             fg_color,
                             font: self.style.font(),
-                            diag_overlay_spans: diag_overlay_spans.clone(),
+                            default_text_style,
+                            default_bg: bg_color,
+                            diagnostic_overlay_spans: diag_overlay_spans.clone(),
                         })
                     } else {
                         Vec::new()
@@ -2015,11 +1570,12 @@ impl Element for DocumentElement {
                                 cursor_style_for_mode(mode, |key| cx.theme_style(key));
 
                             // Get text style at cursor for reversed modifier
-                            let text_style_at_cursor = Self::get_text_style_at_position(
+                            let loader = editor.syn_loader.load();
+                            let text_style_at_cursor = text_style_at_position(
                                 document,
                                 self.view_id,
                                 &theme,
-                                &editor.syn_loader,
+                                &loader,
                                 cursor_char_idx,
                             );
 
@@ -2101,7 +1657,7 @@ impl Element for DocumentElement {
                                     white()
                                 };
 
-                                let run = Self::make_cursor_text_run(
+                                let run = cursor_text_run(
                                     &self.style.font(),
                                     text_len,
                                     &text_style_at_cursor,
@@ -2254,19 +1810,22 @@ impl Element for DocumentElement {
                             Some(v) => v,
                             None => return,
                         };
-                        Self::highlight_line_with_params(HighlightLineParams {
+                        let loader = syn_loader.load();
+                        highlight_line(HighlightLineParams {
                             doc: document,
                             view,
-                            cx,
+                            theme: cx.helix_theme(),
+                            syntax_loader: &loader,
                             editor_mode,
                             cursor_shape: &cursor_shape,
-                            syn_loader: &syn_loader,
                             is_view_focused: self.is_focused,
                             line_start,
                             line_end,
                             fg_color,
                             font: self.style.font(),
-                            diag_overlay_spans: diag_overlay_spans.clone(),
+                            default_text_style,
+                            default_bg: bg_color,
+                            diagnostic_overlay_spans: diag_overlay_spans.clone(),
                         })
                     };
 
@@ -2603,11 +2162,12 @@ impl Element for DocumentElement {
                                     let editor = &core.editor;
                                     let theme = cx.global::<crate::ThemeManager>().helix_theme();
                                     if let Some(doc) = editor.document(self.doc_id) {
-                                        Self::get_text_style_at_position(
+                                        let loader = editor.syn_loader.load();
+                                        text_style_at_position(
                                             doc,
                                             self.view_id,
                                             theme,
-                                            &editor.syn_loader,
+                                            &loader,
                                             cursor_char_idx,
                                         )
                                     } else {
@@ -2692,11 +2252,12 @@ impl Element for DocumentElement {
                                         let theme =
                                             cx.global::<crate::ThemeManager>().helix_theme();
                                         if let Some(doc) = editor.document(self.doc_id) {
-                                            Self::get_text_style_at_position(
+                                            let loader = editor.syn_loader.load();
+                                            text_style_at_position(
                                                 doc,
                                                 self.view_id,
                                                 theme,
-                                                &editor.syn_loader,
+                                                &loader,
                                                 cursor_char_idx,
                                             )
                                         } else {
@@ -2979,160 +2540,6 @@ struct LinePos {
     /// a very long inline virtual text then this index will point
     /// at the next (non-virtual) char after this visual line
     pub start_char_idx: usize,
-}
-
-// Syntax highlighting support based on helix-term implementation
-
-/// Safe wrapper for theme.highlight() that handles out of bounds access
-fn safe_highlight(theme: &Theme, highlight: syntax::Highlight) -> helix_view::graphics::Style {
-    // The theme.highlight() method can panic if the highlight index is out of bounds
-    // This can happen when syntax highlighting returns indices for highlights that
-    // don't exist in the current theme. We handle this gracefully by returning
-    // a default style instead of panicking.
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-
-    catch_unwind(AssertUnwindSafe(|| theme.highlight(highlight))).unwrap_or_default()
-}
-
-struct SyntaxHighlighter<'h, 'r, 't> {
-    inner: Option<syntax::Highlighter<'h>>,
-    text: RopeSlice<'r>,
-    /// The character index of the next highlight event, or `usize::MAX` if the highlighter is
-    /// finished.
-    pos: usize,
-    theme: &'t Theme,
-    text_style: helix_view::graphics::Style,
-    style: helix_view::graphics::Style,
-}
-
-impl<'h, 'r, 't> SyntaxHighlighter<'h, 'r, 't> {
-    fn new(
-        inner: Option<syntax::Highlighter<'h>>,
-        text: RopeSlice<'r>,
-        theme: &'t Theme,
-        text_style: helix_view::graphics::Style,
-    ) -> Self {
-        let mut highlighter = Self {
-            inner,
-            text,
-            pos: 0,
-            theme,
-            style: text_style,
-            text_style,
-        };
-        highlighter.update_pos();
-        highlighter
-    }
-
-    fn update_pos(&mut self) {
-        self.pos = self
-            .inner
-            .as_ref()
-            .and_then(|highlighter| {
-                let next_byte_idx = highlighter.next_event_offset();
-                (next_byte_idx != u32::MAX).then(|| {
-                    // Move the byte index to the nearest character boundary (rounding up) and
-                    // convert it to a character index.
-                    self.text
-                        .byte_to_char(self.text.ceil_char_boundary(next_byte_idx as usize))
-                })
-            })
-            .unwrap_or(usize::MAX);
-    }
-
-    fn advance(&mut self) {
-        let Some(highlighter) = self.inner.as_mut() else {
-            return;
-        };
-
-        // Guard against panics from upstream highlighter (tree-house). Process in-place.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (event, highlights) = highlighter.advance();
-            // Collect highlights to detach borrow from highlighter
-            let mut collected: Vec<syntax::Highlight> = Vec::new();
-            for h in highlights {
-                collected.push(h);
-            }
-            (event, collected)
-        }));
-
-        if let Ok((event, collected)) = result {
-            let base = match event {
-                HighlightEvent::Refresh => self.text_style,
-                HighlightEvent::Push => self.style,
-            };
-
-            self.style = collected.into_iter().fold(base, |acc, highlight| {
-                let highlight_style = safe_highlight(self.theme, highlight);
-                let patched = acc.patch(highlight_style);
-                if patched != acc {
-                    debug!(
-                        "Applying highlight: {:?} -> style: {:?}",
-                        highlight, patched.fg
-                    );
-                }
-                patched
-            });
-            self.update_pos();
-        } else {
-            // Disable syntax highlighting for this render cycle to avoid crashing the app
-            self.inner = None;
-            self.pos = usize::MAX;
-        }
-    }
-}
-
-struct OverlayHighlighter<'t> {
-    inner: syntax::OverlayHighlighter,
-    pos: usize,
-    theme: &'t Theme,
-    style: helix_view::graphics::Style,
-}
-
-impl<'t> OverlayHighlighter<'t> {
-    fn new(overlays: Vec<syntax::OverlayHighlights>, theme: &'t Theme) -> Self {
-        let inner = syntax::OverlayHighlighter::new(overlays);
-        let mut highlighter = Self {
-            inner,
-            pos: 0,
-            theme,
-            style: helix_view::graphics::Style::default(),
-        };
-        highlighter.update_pos();
-        highlighter
-    }
-
-    fn update_pos(&mut self) {
-        self.pos = self.inner.next_event_offset();
-    }
-
-    fn advance(&mut self) {
-        // Guard against panics from upstream overlay highlighter. Process in-place.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (event, highlights) = self.inner.advance();
-            let mut collected: Vec<syntax::Highlight> = Vec::new();
-            for h in highlights {
-                collected.push(h);
-            }
-            (event, collected)
-        }));
-
-        if let Ok((event, collected)) = result {
-            let base = match event {
-                HighlightEvent::Refresh => helix_view::graphics::Style::default(),
-                HighlightEvent::Push => self.style,
-            };
-
-            self.style = collected.into_iter().fold(base, |acc, highlight| {
-                let highlight_style = safe_highlight(self.theme, highlight);
-                acc.patch(highlight_style)
-            });
-            self.update_pos();
-        } else {
-            // Disable overlay highlights on panic
-            self.pos = usize::MAX;
-        }
-    }
 }
 
 // Removed DiagnosticView - diagnostics are now handled through events and document highlights

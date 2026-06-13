@@ -19,6 +19,7 @@ gpui = { workspace = true }
 
 # Helix dependencies
 helix-core = { workspace = true }
+helix-stdx = { workspace = true }
 helix-view = { workspace = true }
 
 # Standard dependencies

@@ -5348,6 +5348,7 @@ dependencies = [
  "criterion",
  "gpui",
  "helix-core",
+ "helix-stdx",
  "helix-view",
  "nucleotide-core",
  "nucleotide-logging",

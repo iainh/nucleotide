@@ -8,6 +8,7 @@ pub mod document_metrics;
 pub mod document_renderer;
 pub mod editor_view;
 pub mod geometry;
+pub mod highlight;
 pub mod hit_test;
 pub mod line_cache;
 pub mod line_painter;
@@ -27,6 +28,10 @@ pub use document_metrics::{
 pub use document_renderer::DocumentRenderer;
 pub use editor_view::EditorView;
 pub use geometry::{EditorLayout, EditorSurfaceGeometry};
+pub use highlight::{
+    DiagnosticOverlaySpans, HighlightLineParams, cursor_text_run, diagnostic_overlay_spans,
+    gpui_hsla_to_helix_color, highlight_line, text_style_at_position,
+};
 pub use hit_test::{EditorHitTestResult, hit_test_document_position};
 pub use line_cache::{LineLayout, LineLayoutCache};
 pub use line_painter::{EditorLineBackgroundStyle, paint_line_backgrounds};
