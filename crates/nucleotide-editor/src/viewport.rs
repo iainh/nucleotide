@@ -35,6 +35,21 @@ pub struct EditorViewportSurfaceUpdate {
     pub helix_snapshot: HelixViewportSnapshot,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorViewportContentUpdate {
+    pub gutter_columns: u16,
+    pub visual_rows: usize,
+    pub soft_wrap: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct EditorViewportContentLayout<'a> {
+    pub theme: Option<&'a Theme>,
+    pub bounds: Bounds<Pixels>,
+    pub cell_width: Pixels,
+    pub minimum_columns: u16,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct EditorViewportSurfaceLayout<'a> {
     pub theme: Option<&'a Theme>,
@@ -224,6 +239,22 @@ impl EditorViewport {
         true
     }
 
+    pub fn sync_content_layout(
+        &mut self,
+        document: &Document,
+        view: &helix_view::View,
+        layout: EditorViewportContentLayout<'_>,
+    ) -> EditorViewportContentUpdate {
+        let (gutter_columns, metrics) = editor_viewport_content_metrics(document, view, layout);
+        self.set_content_visual_rows(metrics.visual_rows);
+
+        EditorViewportContentUpdate {
+            gutter_columns,
+            visual_rows: metrics.visual_rows,
+            soft_wrap: metrics.soft_wrap,
+        }
+    }
+
     pub fn sync_surface_layout(
         &mut self,
         editor: &mut Editor,
@@ -236,14 +267,15 @@ impl EditorViewport {
 
         let view = editor.tree.try_get(view_id)?;
         let document = editor.document(doc_id)?;
-        let gutter_columns = view.gutter_offset(document);
-        let metrics = EditorDocumentMetrics::resolve(
+        let (gutter_columns, metrics) = editor_viewport_content_metrics(
             document,
-            layout.theme,
-            layout.bounds,
-            gutter_columns,
-            layout.cell_width,
-            layout.minimum_columns,
+            view,
+            EditorViewportContentLayout {
+                theme: layout.theme,
+                bounds: layout.bounds,
+                cell_width: layout.cell_width,
+                minimum_columns: layout.minimum_columns,
+            },
         );
         self.set_content_visual_rows(metrics.visual_rows);
 
@@ -282,6 +314,24 @@ impl EditorViewport {
     }
 }
 
+fn editor_viewport_content_metrics(
+    document: &Document,
+    view: &helix_view::View,
+    layout: EditorViewportContentLayout<'_>,
+) -> (u16, EditorDocumentMetrics) {
+    let gutter_columns = view.gutter_offset(document);
+    let metrics = EditorDocumentMetrics::resolve(
+        document,
+        layout.theme,
+        layout.bounds,
+        gutter_columns,
+        layout.cell_width,
+        layout.minimum_columns,
+    );
+
+    (gutter_columns, metrics)
+}
+
 pub fn editor_viewport_size_for_bounds(bounds: Bounds<Pixels>) -> Size<Pixels> {
     size(
         bounds.size.width,
@@ -311,14 +361,31 @@ pub fn helix_viewport_snapshot(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
     use gpui::{Bounds, point, px, size};
-    use helix_core::{doc_formatter::TextFormat, text_annotations::TextAnnotations};
-    use helix_view::view::ViewPosition;
+    use helix_core::{Rope, doc_formatter::TextFormat, syntax, text_annotations::TextAnnotations};
+    use helix_view::{
+        Document, DocumentId, View,
+        editor::{Config, GutterConfig},
+        view::ViewPosition,
+    };
 
     use super::*;
 
     fn default_annotations() -> TextAnnotations<'static> {
         TextAnnotations::default()
+    }
+
+    fn test_document_and_view(text: &str) -> (Document, View) {
+        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let mut document = Document::from(Rope::from(text), None, config, syntax_loader);
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        document.ensure_view_init(view.id);
+
+        (document, view)
     }
 
     #[test]
@@ -394,6 +461,38 @@ mod tests {
 
         assert_eq!(viewport.content_visual_rows(), 30);
         assert_eq!(viewport.max_scroll_offset().height, px(500.0));
+    }
+
+    #[test]
+    fn content_layout_sync_updates_visual_row_count_from_document_metrics() {
+        let (document, view) = test_document_and_view("one\ntwo\nthree\n");
+        let mut viewport = EditorViewport::new(px(20.0));
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(80.0)));
+        viewport.set_viewport_size(bounds.size);
+
+        let update = viewport.sync_content_layout(
+            &document,
+            &view,
+            EditorViewportContentLayout {
+                theme: None,
+                bounds,
+                cell_width: px(8.0),
+                minimum_columns: 1,
+            },
+        );
+
+        let expected = EditorDocumentMetrics::resolve(
+            &document,
+            None,
+            bounds,
+            update.gutter_columns,
+            px(8.0),
+            1,
+        );
+
+        assert_eq!(update.visual_rows, expected.visual_rows);
+        assert_eq!(update.soft_wrap, expected.soft_wrap);
+        assert_eq!(viewport.content_visual_rows(), expected.visual_rows);
     }
 
     #[test]

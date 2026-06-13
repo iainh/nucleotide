@@ -1,4 +1,3 @@
-use gpui::size;
 use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, GlobalElementId, InspectorElementId, InteractiveElement, IntoElement,
@@ -18,10 +17,10 @@ use nucleotide_editor::{
     DocumentFramePaintParams, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
     EditorLayout, EditorScrollbarState, EditorSelectionDragState, EditorSurface,
     EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    EditorViewportSurfaceLayout, LineLayoutCache, begin_editor_pointer_selection_at_event,
-    cursor_document_line, cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color,
-    paint_document_frame, paint_editor_background, shape_cursor_text,
-    update_editor_pointer_selection_at_event,
+    EditorViewportContentLayout, EditorViewportSurfaceLayout, LineLayoutCache,
+    begin_editor_pointer_selection_at_event, cursor_document_line, cursor_style_for_mode,
+    editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame, paint_editor_background,
+    shape_cursor_text, update_editor_pointer_selection_at_event,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -347,27 +346,32 @@ impl Render for DocumentView {
             .set(metrics.line_height, metrics.cell_width);
         let surface_metrics = self.surface_metrics.clone();
 
-        // Update viewport with document info
+        // Prime viewport content metrics from the latest known native surface size.
         {
             let core = self.core.read(cx);
             let editor = &core.editor;
-            if let Some(document) = editor.document(doc_id) {
-                let total_lines = document.text().len_lines();
-                self.viewport.set_content_visual_rows(total_lines);
+            if let Some(view) = editor.tree.try_get(self.view_id)
+                && let Some(document) = editor.document(doc_id)
+            {
                 self.viewport.set_line_height(metrics.line_height);
-
-                // Set a reasonable default viewport size if not already set
-                // This will be updated with actual size in the paint method
-                // Use a height that shows fewer lines than total to ensure scrollbar appears
-                let viewport_height = metrics.line_height * 30.0; // Show 30 lines
-                self.viewport
-                    .set_viewport_size(size(px(800.0), viewport_height));
-
-                // Don't recreate scrollbar state - it's already using our viewport
+                let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+                let viewport_bounds = self.viewport.viewport_bounds();
+                let content_update = self.viewport.sync_content_layout(
+                    document,
+                    view,
+                    EditorViewportContentLayout {
+                        theme: Some(&theme),
+                        bounds: viewport_bounds,
+                        cell_width: metrics.cell_width,
+                        minimum_columns: 1,
+                    },
+                );
 
                 debug!(
-                    "Document has {} lines, viewport shows ~30 lines",
-                    total_lines
+                    physical_lines = document.text().len_lines(),
+                    visual_rows = content_update.visual_rows,
+                    soft_wrap = content_update.soft_wrap,
+                    "Primed native editor viewport content metrics"
                 );
             }
         }
