@@ -2252,20 +2252,7 @@ impl Application {
                     crate::completion_interception::hook_19_job_system("callback_received");
 
                     info!("📨 JOB CALLBACK RECEIVED: Processing job callback");
-
-                    // Intercept completion-related callbacks before processing
-                    let intercepted = self.intercept_completion_callback(&callback, cx);
-
-                    if intercepted {
-                        crate::completion_interception::hook_19_job_system("completion_callback_intercepted");
-                        info!("🎯 COMPLETION INTERCEPTED: Converted Helix completion results to GPUI events");
-                        // Don't process the original callback since we handled it
-                    } else {
-                        crate::completion_interception::hook_19_job_system("normal_callback_processing");
-                        info!("📤 PROCESSING NORMAL CALLBACK: Not a completion callback, processing normally");
-                        // Process non-completion callbacks normally
-                        self.jobs.handle_callback(&mut self.editor, &mut self.compositor, Ok(Some(callback)));
-                    }
+                    self.handle_job_callback(callback);
                 }
                 Some(msg) = self.jobs.status_messages.recv() => {
                     let severity = match msg.severity{
@@ -5138,64 +5125,62 @@ pub fn init_editor(
 }
 
 impl Application {
-    /// Comprehensive callback analysis for shotgun PoC
-    /// Returns true if the callback was a completion callback and was handled
-    fn intercept_completion_callback(
-        &mut self,
-        callback: &helix_term::job::Callback,
-        _cx: &mut gpui::Context<Self>,
-    ) -> bool {
-        // Hook 08: We got a dispatch call (job callback)
-        crate::completion_interception::hook_08_dispatch_called();
+    fn handle_job_callback(&mut self, callback: helix_term::job::Callback) {
+        use helix_term::job::Callback;
 
-        info!("🔍 ANALYZING CALLBACK: Checking if this is a completion callback");
+        crate::completion_interception::hook_19_job_system("normal_callback_processing");
 
         match callback {
-            helix_term::job::Callback::EditorCompositor(_) => {
-                // Hook 09: This could be show_completion entry
-                crate::completion_interception::hook_09_show_completion_entry(0); // We don't know items count yet
+            Callback::EditorCompositor(callback) => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    callback(&mut self.editor, &mut self.compositor);
+                }));
 
-                info!(
-                    "🔧 DETECTED EDITOR-COMPOSITOR CALLBACK: This could be a completion callback!"
-                );
-
-                // Instead of trying to execute (risky), let's just analyze the situation
-                // Hook 12: Simulate the compositor search that would happen in show_completion
-                crate::completion_interception::hook_12_compositor_search();
-
-                // We know this will fail because our compositor doesn't have ui::EditorView
-                crate::completion_interception::hook_13_editorview_result(false, None);
-
-                // Hook 15: This is where show_completion would fail
-                crate::completion_interception::hook_15_error(
-                    "compositor_find_editorview",
-                    "ui::EditorView not found in GPUI compositor",
-                );
-
-                // Hook 17: Early return from show_completion (simulated)
-                crate::completion_interception::hook_17_early_return(
-                    "editorview_not_found_or_panic",
-                );
-
-                // For shotgun PoC, let's assume this was a completion callback and intercept it
-                crate::completion_interception::hook_20_final_status(
-                    "completion_intercepted",
-                    "Assumed completion callback intercepted before failure",
-                );
-
-                info!("🎯 ASSUMING COMPLETION CALLBACK: Intercepting to prevent failure");
-                return true; // We handled it
+                if let Err(payload) = result {
+                    let panic_message = panic_payload_message(payload.as_ref());
+                    warn!(
+                        panic = %panic_message,
+                        "Skipped Helix compositor callback after panic in native GPUI mode"
+                    );
+                    self.editor.set_error(format!(
+                        "Skipped terminal compositor callback: {panic_message}"
+                    ));
+                }
             }
-            helix_term::job::Callback::Editor(_) => {
-                info!("🔧 DETECTED EDITOR-ONLY CALLBACK: Probably not a completion callback");
-                crate::completion_interception::hook_20_final_status(
-                    "editor_only_callback",
-                    "Non-completion editor callback, processing normally",
-                );
-            }
+            Callback::Editor(callback) => callback(&mut self.editor),
         }
+    }
+}
 
-        false // Let the original callback proceed
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+#[cfg(test)]
+mod job_callback_tests {
+    use super::*;
+
+    #[test]
+    fn panic_payload_message_reads_static_str_payloads() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("missing ui::EditorView");
+
+        assert_eq!(
+            panic_payload_message(payload.as_ref()),
+            "missing ui::EditorView"
+        );
+    }
+
+    #[test]
+    fn panic_payload_message_reads_string_payloads() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("terminal callback"));
+
+        assert_eq!(panic_payload_message(payload.as_ref()), "terminal callback");
     }
 }
 
