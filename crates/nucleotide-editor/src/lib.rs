@@ -86,7 +86,8 @@ pub use render_snapshot::{
     EditorRenderSnapshot, document_render_snapshot, render_snapshot_for_cursor,
 };
 pub use ruler::{
-    RulerPaintPlan, paint_visible_rulers, visible_ruler_bounds, visible_ruler_paint_plans,
+    DocumentRulerPaintParams, RulerPaintPlan, document_ruler_paint_plans, paint_document_rulers,
+    paint_visible_rulers, visible_ruler_bounds, visible_ruler_paint_plans,
 };
 pub use scroll_manager::ScrollManager;
 pub use scroll_state::ScrollState;

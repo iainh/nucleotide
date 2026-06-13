@@ -2,12 +2,21 @@
 // ABOUTME: Converts configured ruler columns into visible GPUI paint bounds
 
 use gpui::{Bounds, Hsla, Pixels, Window, fill, point, px, size};
+use helix_view::{Document, ViewId};
 
 use crate::EditorSurfaceGeometry;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RulerPaintPlan {
     pub bounds: Bounds<Pixels>,
+    pub color: Hsla,
+}
+
+pub struct DocumentRulerPaintParams<'a> {
+    pub document: &'a Document,
+    pub view_id: ViewId,
+    pub editor_rulers: &'a [u16],
+    pub geometry: EditorSurfaceGeometry,
     pub color: Hsla,
 }
 
@@ -47,6 +56,32 @@ pub fn visible_ruler_paint_plans(
         .into_iter()
         .map(|bounds| RulerPaintPlan { bounds, color })
         .collect()
+}
+
+pub fn document_ruler_paint_plans(params: DocumentRulerPaintParams<'_>) -> Vec<RulerPaintPlan> {
+    let rulers = params
+        .document
+        .language_config()
+        .and_then(|config| config.rulers.as_ref())
+        .map(Vec::as_slice)
+        .unwrap_or(params.editor_rulers);
+    let view_offset = params.document.view_offset(params.view_id);
+
+    visible_ruler_paint_plans(
+        params.geometry,
+        rulers,
+        view_offset.horizontal_offset,
+        params.color,
+    )
+}
+
+pub fn paint_document_rulers(
+    window: &mut Window,
+    params: DocumentRulerPaintParams<'_>,
+) -> Vec<RulerPaintPlan> {
+    let plans = document_ruler_paint_plans(params);
+    paint_visible_rulers(window, &plans);
+    plans
 }
 
 pub fn paint_visible_rulers(window: &mut Window, plans: &[RulerPaintPlan]) {

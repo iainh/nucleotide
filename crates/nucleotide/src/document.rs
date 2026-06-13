@@ -15,7 +15,7 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    DiagnosticGutterMarkersPaintParams, DocumentSoftWrapRenderPlanParams,
+    DiagnosticGutterMarkersPaintParams, DocumentRulerPaintParams, DocumentSoftWrapRenderPlanParams,
     EditorCursorTextPaintParams, EditorLayout, EditorLineBackgroundStyle,
     EditorLineHighlightContext, EditorScrollbarState, EditorSelectionDragState, EditorSurface,
     EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
@@ -27,12 +27,12 @@ use nucleotide_editor::{
     cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
     cursor_style_for_mode, diagnostic_overlay_spans, diagnostic_severity_by_line,
     document_render_snapshot, document_soft_wrap_render_plan, gpui_hsla_to_helix_color,
-    paint_diagnostic_gutter_markers, paint_editor_background, paint_gutter_lines,
-    paint_shaped_editor_cursor, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
-    paint_unwrapped_editor_line, paint_visible_rulers, shape_and_paint_editor_cursor,
+    paint_diagnostic_gutter_markers, paint_document_rulers, paint_editor_background,
+    paint_gutter_lines, paint_shaped_editor_cursor, paint_soft_wrap_editor_line,
+    paint_soft_wrap_gutter, paint_unwrapped_editor_line, shape_and_paint_editor_cursor,
     shape_cursor_text, soft_wrap_cursor_paint_plan, soft_wrap_highlighted_line_runs,
     text_style_at_position, unwrapped_cursor_paint_plan, unwrapped_highlighted_line,
-    unwrapped_render_plan, update_editor_pointer_selection_at_event, visible_ruler_paint_plans,
+    unwrapped_render_plan, update_editor_pointer_selection_at_event,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -763,24 +763,19 @@ impl Element for DocumentElement {
                 cx.ui_theme().tokens.chrome.border_default
             });
 
-            // Get rulers configuration - try language-specific first, then fall back to editor config
             let editor_config = editor.config();
-            let rulers = document
-                .language_config()
-                .and_then(|config| config.rulers.as_ref())
-                .unwrap_or(&editor_config.rulers);
-
-            // Get horizontal scroll offset from view
-            let view_offset = document.view_offset(view.id);
             let ruler_geometry =
                 EditorSurfaceGeometry::new(bounds, gutter_width, after_layout.cell_width);
-            let ruler_plans = visible_ruler_paint_plans(
-                ruler_geometry,
-                rulers,
-                view_offset.horizontal_offset,
-                ruler_color,
+            paint_document_rulers(
+                window,
+                DocumentRulerPaintParams {
+                    document,
+                    view_id: view.id,
+                    editor_rulers: &editor_config.rulers,
+                    geometry: ruler_geometry,
+                    color: ruler_color,
+                },
             );
-            paint_visible_rulers(window, &ruler_plans);
 
             // Extract necessary values before the loop to avoid borrowing issues
             let _editor_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
