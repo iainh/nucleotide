@@ -1,9 +1,9 @@
 // ABOUTME: Per-frame document/view facts for native editor rendering
 // ABOUTME: Builds owned render state from Helix document and view inputs
 
-use gpui::{Bounds, Font, Hsla, Pixels, TextRun};
+use gpui::{Bounds, Font, Hsla, Pixels, TextRun, px};
 use helix_view::{
-    Document, Theme, View, ViewId,
+    Document, Editor, Theme, View, ViewId,
     document::Mode,
     editor::CursorShapeConfig,
     graphics::{CursorKind, Style},
@@ -12,13 +12,19 @@ use helix_view::{
 use crate::{
     DiagnosticOverlaySpans, DiagnosticSeverityByLine, DocumentRulerPaintParams,
     DocumentSoftWrapRenderPlanParams, EditorCursorPresentation, EditorCursorPresentationParams,
-    EditorLineHighlightContext, EditorRenderSnapshot, EditorSurfaceGeometry, RulerPaintPlan,
-    SoftWrapHighlightedLineRunsParams, SoftWrapRenderPlan, UnwrappedHighlightedLine,
-    UnwrappedHighlightedLineParams, UnwrappedRenderPlan, UnwrappedRenderPlanParams,
+    EditorLayout, EditorLineHighlightContext, EditorRenderSnapshot, EditorSurfaceGeometry,
+    GutterLinePlan, GutterLinePlanParams, RulerPaintPlan, SoftWrapHighlightedLineRunsParams,
+    SoftWrapRenderPlan, UnwrappedHighlightedLine, UnwrappedHighlightedLineParams,
+    UnwrappedRenderPlan, UnwrappedRenderPlanParams, build_gutter_line_plans,
     diagnostic_overlay_spans, diagnostic_severity_by_line, document_render_snapshot,
     document_ruler_paint_plans, document_soft_wrap_render_plan, editor_cursor_presentation,
     soft_wrap_highlighted_line_runs, unwrapped_highlighted_line, unwrapped_render_plan,
 };
+
+pub struct EditorDocumentFrameGutterParams<'a> {
+    pub editor: &'a Editor,
+    pub layout: &'a EditorLayout,
+}
 
 pub struct EditorDocumentFrameParams<'a> {
     pub document: &'a Document,
@@ -29,6 +35,7 @@ pub struct EditorDocumentFrameParams<'a> {
     pub first_row: usize,
     pub last_row_from_scroll: usize,
     pub soft_wrap_enabled: bool,
+    pub unwrapped_gutter: Option<EditorDocumentFrameGutterParams<'a>>,
     pub bounds: Bounds<Pixels>,
     pub cell_width: Pixels,
     pub line_height: Pixels,
@@ -69,6 +76,7 @@ pub struct EditorDocumentFrame {
     pub soft_wrap_line_runs: Vec<Vec<TextRun>>,
     pub unwrapped_highlighted_lines: Vec<UnwrappedHighlightedLine>,
     pub ruler_paint_plans: Vec<RulerPaintPlan>,
+    pub unwrapped_gutter_line_plans: Vec<GutterLinePlan>,
 }
 
 pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDocumentFrame {
@@ -101,6 +109,27 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         geometry: ruler_geometry,
         color: params.ruler_color,
     });
+    let unwrapped_gutter_line_plans = if !params.soft_wrap_enabled
+        && let Some(gutter) = params.unwrapped_gutter
+    {
+        let mut gutter_origin = params.bounds.origin;
+        gutter_origin.x += px(2.);
+        gutter_origin.y += px(1.) - params.scroll_line_offset;
+
+        build_gutter_line_plans(GutterLinePlanParams {
+            layout: gutter.layout,
+            origin: gutter_origin,
+            first_row: params.first_row,
+            last_row: render_snapshot.last_row,
+            editor: gutter.editor,
+            document: params.document,
+            view: params.view,
+            theme: params.theme,
+            is_focused: params.is_focused,
+        })
+    } else {
+        Vec::new()
+    };
     let soft_wrap_render_plan = params.soft_wrap_enabled.then(|| {
         document_soft_wrap_render_plan(DocumentSoftWrapRenderPlanParams {
             document: params.document,
@@ -194,6 +223,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         soft_wrap_line_runs,
         unwrapped_highlighted_lines,
         ruler_paint_plans,
+        unwrapped_gutter_line_plans,
     }
 }
 
@@ -234,6 +264,7 @@ mod tests {
             first_row: 0,
             last_row_from_scroll: 2,
             soft_wrap_enabled: true,
+            unwrapped_gutter: None,
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
             cell_width: px(8.0),
             line_height: px(20.0),
@@ -275,6 +306,7 @@ mod tests {
         );
         assert!(frame.unwrapped_highlighted_lines.is_empty());
         assert!(frame.ruler_paint_plans.is_empty());
+        assert!(frame.unwrapped_gutter_line_plans.is_empty());
     }
 
     #[test]
@@ -302,6 +334,7 @@ mod tests {
             first_row: 0,
             last_row_from_scroll: 3,
             soft_wrap_enabled: false,
+            unwrapped_gutter: None,
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(120.0))),
             cell_width: px(8.0),
             line_height: px(20.0),
@@ -338,5 +371,6 @@ mod tests {
         );
         assert!(frame.soft_wrap_line_runs.is_empty());
         assert!(!frame.ruler_paint_plans.is_empty());
+        assert!(frame.unwrapped_gutter_line_plans.is_empty());
     }
 }
