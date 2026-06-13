@@ -2,7 +2,10 @@
 // ABOUTME: Owns GUI scroll state before it is synced into Helix view offsets
 
 use gpui::{Bounds, Pixels, Point, Size, point, px, size};
-use helix_core::{RopeSlice, char_idx_at_visual_offset};
+use helix_core::{
+    RopeSlice, char_idx_at_visual_offset, doc_formatter::TextFormat,
+    text_annotations::TextAnnotations, visual_offset_from_block,
+};
 use helix_view::{Document, DocumentId, Editor, Theme, ViewId, view::ViewPosition};
 use nucleotide_logging::debug;
 
@@ -149,10 +152,17 @@ impl EditorViewport {
     pub fn sync_from_helix_view(
         &self,
         document: &Document,
+        view: &helix_view::View,
         view_id: ViewId,
+        text_format: &TextFormat,
     ) -> HelixViewportSnapshot {
-        let snapshot =
-            helix_viewport_snapshot(document.text().slice(..), document.view_offset(view_id));
+        let annotations = view.text_annotations(document, None);
+        let snapshot = helix_viewport_snapshot(
+            document.text().slice(..),
+            document.view_offset(view_id),
+            text_format,
+            &annotations,
+        );
         self.sync_from_helix_top_visual_row(snapshot.top_visual_row);
         snapshot
     }
@@ -162,6 +172,7 @@ impl EditorViewport {
         editor: &mut Editor,
         doc_id: DocumentId,
         view_id: ViewId,
+        text_format: &TextFormat,
     ) -> bool {
         let Some(view) = editor.tree.try_get(view_id).cloned() else {
             return false;
@@ -173,25 +184,23 @@ impl EditorViewport {
 
         let top_visual_row = self.top_visual_row();
         let mut view_offset = doc.view_offset(view_id);
-        let (anchor, vertical_offset, soft_wrap) = {
+        let (anchor, vertical_offset) = {
             let doc_text = doc.text().slice(..);
-            let viewport = view.inner_area(doc);
-            let text_fmt = doc.text_format(viewport.width.max(1), None);
             let annotations = view.text_annotations(doc, None);
             let (anchor, vertical_offset) = char_idx_at_visual_offset(
                 doc_text,
                 0,
                 top_visual_row as isize,
                 0,
-                &text_fmt,
+                text_format,
                 &annotations,
             );
-            (anchor, vertical_offset, text_fmt.soft_wrap)
+            (anchor, vertical_offset)
         };
 
         if view_offset.anchor == anchor
             && view_offset.vertical_offset == vertical_offset
-            && (!soft_wrap || view_offset.horizontal_offset == 0)
+            && (!text_format.soft_wrap || view_offset.horizontal_offset == 0)
         {
             return false;
         }
@@ -208,7 +217,7 @@ impl EditorViewport {
 
         view_offset.anchor = anchor;
         view_offset.vertical_offset = vertical_offset;
-        if soft_wrap {
+        if text_format.soft_wrap {
             view_offset.horizontal_offset = 0;
         }
         doc.set_view_offset(view_id, view_offset);
@@ -225,14 +234,6 @@ impl EditorViewport {
         self.set_line_height(layout.line_height);
         self.set_viewport_size(editor_viewport_size_for_bounds(layout.bounds));
 
-        let helix_view_synced = if self.has_pending_view_sync() {
-            let synced = self.sync_to_helix_view(editor, doc_id, view_id);
-            self.clear_pending_view_sync();
-            synced
-        } else {
-            false
-        };
-
         let view = editor.tree.try_get(view_id)?;
         let document = editor.document(doc_id)?;
         let gutter_columns = view.gutter_offset(document);
@@ -245,7 +246,19 @@ impl EditorViewport {
             layout.minimum_columns,
         );
         self.set_content_visual_rows(metrics.visual_rows);
-        let helix_snapshot = self.sync_from_helix_view(document, view_id);
+
+        let helix_view_synced = if self.has_pending_view_sync() {
+            let synced = self.sync_to_helix_view(editor, doc_id, view_id, &metrics.text_format);
+            self.clear_pending_view_sync();
+            synced
+        } else {
+            false
+        };
+
+        let view = editor.tree.try_get(view_id)?;
+        let document = editor.document(doc_id)?;
+        let helix_snapshot =
+            self.sync_from_helix_view(document, view, view_id, &metrics.text_format);
 
         Some(EditorViewportSurfaceUpdate {
             gutter_columns,
@@ -279,10 +292,15 @@ pub fn editor_viewport_size_for_bounds(bounds: Bounds<Pixels>) -> Size<Pixels> {
 pub fn helix_viewport_snapshot(
     text: RopeSlice<'_>,
     view_offset: ViewPosition,
+    text_format: &TextFormat,
+    annotations: &TextAnnotations<'_>,
 ) -> HelixViewportSnapshot {
     let anchor = view_offset.anchor.min(text.len_chars());
     let anchor_line = text.char_to_line(anchor);
-    let top_visual_row = anchor_line.saturating_add(view_offset.vertical_offset);
+    let anchor_visual_row = visual_offset_from_block(text, 0, anchor, text_format, annotations)
+        .0
+        .row;
+    let top_visual_row = anchor_visual_row.saturating_add(view_offset.vertical_offset);
 
     HelixViewportSnapshot {
         anchor_line,
@@ -294,9 +312,14 @@ pub fn helix_viewport_snapshot(
 #[cfg(test)]
 mod tests {
     use gpui::{Bounds, point, px, size};
+    use helix_core::{doc_formatter::TextFormat, text_annotations::TextAnnotations};
     use helix_view::view::ViewPosition;
 
     use super::*;
+
+    fn default_annotations() -> TextAnnotations<'static> {
+        TextAnnotations::default()
+    }
 
     #[test]
     fn viewport_reports_subrow_wheel_scroll() {
@@ -396,6 +419,8 @@ mod tests {
     #[test]
     fn helix_viewport_snapshot_reports_top_visual_row() {
         let text = "one\ntwo\nthree";
+        let text_format = TextFormat::default();
+        let annotations = default_annotations();
         let snapshot = helix_viewport_snapshot(
             text.into(),
             ViewPosition {
@@ -403,6 +428,8 @@ mod tests {
                 vertical_offset: 2,
                 horizontal_offset: 7,
             },
+            &text_format,
+            &annotations,
         );
 
         assert_eq!(
@@ -418,6 +445,8 @@ mod tests {
     #[test]
     fn helix_viewport_snapshot_clamps_stale_anchor() {
         let text = "one\ntwo";
+        let text_format = TextFormat::default();
+        let annotations = default_annotations();
         let snapshot = helix_viewport_snapshot(
             text.into(),
             ViewPosition {
@@ -425,9 +454,59 @@ mod tests {
                 vertical_offset: 0,
                 horizontal_offset: 0,
             },
+            &text_format,
+            &annotations,
         );
 
         assert_eq!(snapshot.anchor_line, 1);
         assert_eq!(snapshot.top_visual_row, 1);
+    }
+
+    #[test]
+    fn helix_viewport_snapshot_uses_soft_wrap_visual_rows() {
+        let text = "abcdef\nzz";
+        let text_format = TextFormat {
+            soft_wrap: true,
+            viewport_width: 3,
+            ..TextFormat::default()
+        };
+        let annotations = default_annotations();
+        let snapshot = helix_viewport_snapshot(
+            text.into(),
+            ViewPosition {
+                anchor: 7,
+                vertical_offset: 0,
+                horizontal_offset: 0,
+            },
+            &text_format,
+            &annotations,
+        );
+
+        assert_eq!(snapshot.anchor_line, 1);
+        assert!(snapshot.top_visual_row > snapshot.anchor_line);
+    }
+
+    #[test]
+    fn helix_viewport_snapshot_adds_vertical_offset_to_visual_row() {
+        let text = "abcdef\nzz";
+        let text_format = TextFormat {
+            soft_wrap: true,
+            viewport_width: 3,
+            ..TextFormat::default()
+        };
+        let annotations = default_annotations();
+        let snapshot = helix_viewport_snapshot(
+            text.into(),
+            ViewPosition {
+                anchor: 7,
+                vertical_offset: 2,
+                horizontal_offset: 0,
+            },
+            &text_format,
+            &annotations,
+        );
+
+        assert_eq!(snapshot.anchor_line, 1);
+        assert!(snapshot.top_visual_row >= snapshot.anchor_line + 2);
     }
 }
