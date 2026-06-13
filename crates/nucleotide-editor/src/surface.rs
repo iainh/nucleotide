@@ -62,6 +62,7 @@ pub struct EditorSurface {
     child: AnyElement,
     on_scroll: Option<ScrollCallback>,
     on_mouse_down: Option<PointerCallback>,
+    on_mouse_drag: Option<PointerCallback>,
     on_mouse_up: Option<PointerCallback>,
 }
 
@@ -83,6 +84,7 @@ impl EditorSurface {
             child: child.into_any_element(),
             on_scroll: None,
             on_mouse_down: None,
+            on_mouse_drag: None,
             on_mouse_up: None,
         }
     }
@@ -100,6 +102,14 @@ impl EditorSurface {
         callback: impl Fn(EditorSurfacePointerEvent, &mut App) + 'static,
     ) -> Self {
         self.on_mouse_down = Some(Rc::new(callback));
+        self
+    }
+
+    pub fn on_mouse_drag(
+        mut self,
+        callback: impl Fn(EditorSurfacePointerEvent, &mut App) + 'static,
+    ) -> Self {
+        self.on_mouse_drag = Some(Rc::new(callback));
         self
     }
 
@@ -160,6 +170,34 @@ impl IntoElement for EditorSurface {
                 if let Some(bounds) = child_bounds.get() {
                     let metrics = metrics.get();
                     on_mouse_down(
+                        EditorSurfacePointerEvent {
+                            position: event.position,
+                            bounds,
+                            line_height: metrics.line_height,
+                            cell_width: metrics.cell_width,
+                        },
+                        cx,
+                    );
+
+                    cx.notify(view_entity_id);
+                    cx.stop_propagation();
+                }
+            });
+        }
+
+        if let Some(on_mouse_drag) = self.on_mouse_drag {
+            let metrics = self.metrics.clone();
+            let view_entity_id = self.view_entity_id;
+            let child_bounds = Rc::clone(&child_bounds);
+
+            element = element.on_mouse_move(move |event, _window, cx| {
+                if !event.dragging() {
+                    return;
+                }
+
+                if let Some(bounds) = child_bounds.get() {
+                    let metrics = metrics.get();
+                    on_mouse_drag(
                         EditorSurfacePointerEvent {
                             position: event.position,
                             bounds,
