@@ -1,6 +1,7 @@
 // ABOUTME: Soft-wrap viewport collection for native editor rendering
 // ABOUTME: Converts Helix formatter graphemes into owned visual-line records
 
+use gpui::{Font, Hsla, TextRun};
 use helix_core::{
     RopeSlice,
     doc_formatter::{DocumentFormatter, FormattedGrapheme, TextFormat},
@@ -130,6 +131,48 @@ pub fn soft_wrap_visual_position(
     })
 }
 
+pub fn decorate_soft_wrap_line_runs(
+    mut line_runs: Vec<TextRun>,
+    visual: &SoftWrapVisualLine,
+    font: &Font,
+    fg_color: Hsla,
+    wrap_indicator_color: Option<Hsla>,
+) -> Vec<TextRun> {
+    if line_runs.is_empty() {
+        return line_runs;
+    }
+
+    if visual.line_start_col > 0 {
+        line_runs.insert(
+            0,
+            TextRun {
+                len: visual.line_start_col,
+                font: font.clone(),
+                color: fg_color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            },
+        );
+    }
+
+    if visual.wrap_indicator_len > 0 {
+        line_runs.insert(
+            if visual.line_start_col > 0 { 1 } else { 0 },
+            TextRun {
+                len: visual.wrap_indicator_len,
+                font: font.clone(),
+                color: wrap_indicator_color.unwrap_or(fg_color),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            },
+        );
+    }
+
+    line_runs
+}
+
 fn build_visual_line(
     text: RopeSlice<'_>,
     visual_line: usize,
@@ -209,8 +252,13 @@ fn build_visual_line(
 
 #[cfg(test)]
 mod tests {
-    use super::{soft_wrap_visual_lines, soft_wrap_visual_position};
+    use gpui::{Font, Hsla, TextRun, black, blue, font, white};
     use helix_core::doc_formatter::TextFormat;
+
+    use super::{
+        SoftWrapVisualLine, decorate_soft_wrap_line_runs, soft_wrap_visual_lines,
+        soft_wrap_visual_position,
+    };
 
     fn text_format() -> TextFormat {
         TextFormat {
@@ -223,6 +271,36 @@ mod tests {
             viewport_width: 17,
             soft_wrap_at_text_width: false,
         }
+    }
+
+    fn visual_line(line_start_col: usize, wrap_indicator_len: usize) -> SoftWrapVisualLine {
+        SoftWrapVisualLine {
+            visual_line: 1,
+            doc_line: 0,
+            text: "    .wrapped".to_string(),
+            line_start_col,
+            wrap_indicator_len,
+            line_start_char: Some(4),
+            line_end_char: Some(11),
+            segment_char_offset: 4,
+            text_start_byte_offset: line_start_col + wrap_indicator_len,
+            is_phantom_line: false,
+        }
+    }
+
+    fn run(len: usize, color: Hsla) -> TextRun {
+        TextRun {
+            len,
+            font: test_font(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }
+    }
+
+    fn test_font() -> Font {
+        font("TestFont")
     }
 
     #[test]
@@ -275,5 +353,53 @@ mod tests {
 
         assert_eq!(position.visual_line, 1);
         assert_eq!(position.visual_col, 1);
+    }
+
+    #[test]
+    fn decorated_runs_prefix_indent_and_wrap_indicator() {
+        let runs = decorate_soft_wrap_line_runs(
+            vec![run(7, white())],
+            &visual_line(4, 1),
+            &test_font(),
+            black(),
+            Some(blue()),
+        );
+
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].len, 4);
+        assert_eq!(runs[0].color, black());
+        assert_eq!(runs[1].len, 1);
+        assert_eq!(runs[1].color, blue());
+        assert_eq!(runs[2].len, 7);
+        assert_eq!(runs[2].color, white());
+    }
+
+    #[test]
+    fn decorated_runs_prefix_wrap_indicator_without_indent() {
+        let runs = decorate_soft_wrap_line_runs(
+            vec![run(7, white())],
+            &visual_line(0, 2),
+            &test_font(),
+            black(),
+            Some(blue()),
+        );
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].len, 2);
+        assert_eq!(runs[0].color, blue());
+        assert_eq!(runs[1].len, 7);
+    }
+
+    #[test]
+    fn decorated_runs_leave_empty_highlights_unchanged() {
+        let runs = decorate_soft_wrap_line_runs(
+            Vec::new(),
+            &visual_line(4, 1),
+            &test_font(),
+            black(),
+            Some(blue()),
+        );
+
+        assert!(runs.is_empty());
     }
 }

@@ -64,7 +64,8 @@ pub use ruler::visible_ruler_bounds;
 pub use scroll_manager::ScrollManager;
 pub use scroll_state::ScrollState;
 pub use soft_wrap::{
-    SoftWrapVisualLine, SoftWrapVisualPosition, soft_wrap_visual_lines, soft_wrap_visual_position,
+    SoftWrapVisualLine, SoftWrapVisualPosition, decorate_soft_wrap_line_runs,
+    soft_wrap_visual_lines, soft_wrap_visual_position,
 };
 pub use surface::{EditorSurface, EditorSurfacePointerEvent};
 pub use viewport::{
