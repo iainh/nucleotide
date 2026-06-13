@@ -5,7 +5,7 @@ use std::borrow::Cow;
 
 use gpui::{
     App, Bounds, Font, Hsla, Pixels, Point, ShapedLine, SharedString, TextRun, Window,
-    WindowTextSystem, fill, px, size, white,
+    WindowTextSystem, fill, point, px, size, white,
 };
 use helix_core::{RopeSlice, graphemes::next_grapheme_boundary};
 use helix_view::graphics::{CursorKind, Style};
@@ -13,7 +13,10 @@ use nucleotide_logging::error;
 
 use crate::{
     cursor_has_reversed_modifier,
+    geometry::EditorSurfaceGeometry,
+    line_cache::LineLayout,
     line_text::{byte_offset_for_char_offset, line_text_without_trailing_newline},
+    soft_wrap::SoftWrapVisualPosition,
     style::{create_styled_text_run, helix_color_to_hsla},
 };
 
@@ -74,6 +77,18 @@ pub struct CursorLinePosition {
 pub struct CursorViewportPosition {
     pub line: usize,
     pub viewport_row: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CursorPaintPosition {
+    pub paint_origin: Point<Pixels>,
+    pub cursor_origin: Point<Pixels>,
+}
+
+impl CursorPaintPosition {
+    pub fn cursor_point(&self) -> Point<Pixels> {
+        self.paint_origin + self.cursor_origin
+    }
 }
 
 #[derive(Clone)]
@@ -193,6 +208,60 @@ pub fn cursor_viewport_position(
     (cursor_line >= first_row && cursor_line < last_row).then_some(CursorViewportPosition {
         line: cursor_line,
         viewport_row: cursor_line.saturating_sub(first_row),
+    })
+}
+
+pub fn unwrapped_cursor_paint_position(
+    geometry: EditorSurfaceGeometry,
+    line_layout: &LineLayout,
+    cursor_byte_offset: usize,
+) -> CursorPaintPosition {
+    let text_bounds = geometry.text_bounds();
+    let cursor_x = line_layout.shaped_line.x_for_index(cursor_byte_offset);
+
+    CursorPaintPosition {
+        paint_origin: text_bounds.origin + line_layout.origin,
+        cursor_origin: point(cursor_x, px(0.0)),
+    }
+}
+
+pub fn phantom_line_cursor_paint_position(
+    geometry: EditorSurfaceGeometry,
+    y_offset: Pixels,
+) -> CursorPaintPosition {
+    let text_bounds = geometry.text_bounds();
+
+    CursorPaintPosition {
+        paint_origin: point(text_bounds.origin.x, text_bounds.origin.y + y_offset),
+        cursor_origin: point(px(0.0), px(0.0)),
+    }
+}
+
+pub fn soft_wrap_cursor_paint_position(
+    geometry: EditorSurfaceGeometry,
+    line_height: Pixels,
+    cell_width: Pixels,
+    cursor_position: SoftWrapVisualPosition,
+    vertical_offset: usize,
+    viewport_height: usize,
+    horizontal_offset: usize,
+) -> Option<CursorPaintPosition> {
+    if cursor_position.visual_line < vertical_offset
+        || cursor_position.visual_line >= vertical_offset.saturating_add(viewport_height)
+    {
+        return None;
+    }
+
+    let text_bounds = geometry.text_bounds();
+    let relative_line = cursor_position.visual_line - vertical_offset;
+    let visual_col_in_viewport = cursor_position.visual_col as f32 - horizontal_offset as f32;
+
+    Some(CursorPaintPosition {
+        paint_origin: point(
+            text_bounds.origin.x + cell_width * visual_col_in_viewport,
+            text_bounds.origin.y + line_height * relative_line as f32,
+        ),
+        cursor_origin: point(px(0.0), px(0.0)),
     })
 }
 
@@ -407,6 +476,96 @@ mod tests {
     fn cursor_viewport_position_rejects_rows_outside_range() {
         assert_eq!(cursor_viewport_position(4, 5, 10), None);
         assert_eq!(cursor_viewport_position(10, 5, 10), None);
+    }
+
+    #[test]
+    fn soft_wrap_cursor_paint_position_uses_text_bounds_and_offsets() {
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            4,
+            px(8.0),
+        );
+        let cursor_position = SoftWrapVisualPosition {
+            visual_line: 7,
+            visual_col: 12,
+        };
+
+        let position =
+            soft_wrap_cursor_paint_position(geometry, px(20.0), px(8.0), cursor_position, 5, 10, 3)
+                .expect("visible cursor");
+
+        assert_eq!(position.cursor_origin, point(px(0.0), px(0.0)));
+        assert_eq!(position.paint_origin, point(px(204.0), px(81.0)));
+        assert_eq!(position.cursor_point(), point(px(204.0), px(81.0)));
+    }
+
+    #[test]
+    fn soft_wrap_cursor_paint_position_rejects_rows_outside_viewport() {
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(0.0), px(0.0)), size(px(500.0), px(300.0))),
+            0,
+            px(8.0),
+        );
+
+        assert!(
+            soft_wrap_cursor_paint_position(
+                geometry,
+                px(20.0),
+                px(8.0),
+                SoftWrapVisualPosition {
+                    visual_line: 4,
+                    visual_col: 0,
+                },
+                5,
+                10,
+                0,
+            )
+            .is_none()
+        );
+        assert!(
+            soft_wrap_cursor_paint_position(
+                geometry,
+                px(20.0),
+                px(8.0),
+                SoftWrapVisualPosition {
+                    visual_line: 15,
+                    visual_col: 0,
+                },
+                5,
+                10,
+                0,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn unwrapped_cursor_paint_position_uses_line_layout_origin() {
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            4,
+            px(8.0),
+        );
+        let layout = LineLayout::unwrapped(3, ShapedLine::default(), px(60.0));
+
+        let position = unwrapped_cursor_paint_position(geometry, &layout, 0);
+
+        assert_eq!(position.paint_origin, point(px(132.0), px(101.0)));
+        assert_eq!(position.cursor_origin, point(px(0.0), px(0.0)));
+    }
+
+    #[test]
+    fn phantom_line_cursor_paint_position_uses_text_origin() {
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            4,
+            px(8.0),
+        );
+
+        let position = phantom_line_cursor_paint_position(geometry, px(60.0));
+
+        assert_eq!(position.paint_origin, point(px(132.0), px(101.0)));
+        assert_eq!(position.cursor_origin, point(px(0.0), px(0.0)));
     }
 
     #[test]
