@@ -6,7 +6,7 @@ use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
     IntoElement, LayoutId, ParentElement, Pixels, Point, Render, SharedString, Size, Style, Styled,
-    TextStyle, Window, div, fill, px, relative, white,
+    TextStyle, Window, div, px, relative, white,
 };
 use helix_core::Uri;
 use helix_lsp::lsp::Diagnostic;
@@ -28,12 +28,12 @@ use nucleotide_editor::{
     diagnostic_overlay_spans, diagnostic_severity_by_line, document_text_format_for_surface,
     gpui_hsla_to_helix_color, highlight_line, hit_test_document_position, line_viewport_plan,
     paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
-    paint_editor_line, phantom_line_cursor_paint_position, shape_cursor_text,
+    paint_editor_line, paint_visible_rulers, phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
     soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
     text_style_at_position, unwrapped_cursor_paint_position, unwrapped_line_paint_plans,
-    unwrapped_visible_line_plans, visible_ruler_bounds,
+    unwrapped_visible_line_plans, visible_ruler_paint_plans,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -903,11 +903,13 @@ impl Element for DocumentElement {
             let view_offset = document.view_offset(view.id);
             let ruler_geometry =
                 EditorSurfaceGeometry::new(bounds, gutter_width, after_layout.cell_width);
-            for ruler_bounds in
-                visible_ruler_bounds(ruler_geometry, rulers, view_offset.horizontal_offset)
-            {
-                window.paint_quad(fill(ruler_bounds, ruler_color));
-            }
+            let ruler_plans = visible_ruler_paint_plans(
+                ruler_geometry,
+                rulers,
+                view_offset.horizontal_offset,
+                ruler_color,
+            );
+            paint_visible_rulers(window, &ruler_plans);
 
             // Extract necessary values before the loop to avoid borrowing issues
             let _editor_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
