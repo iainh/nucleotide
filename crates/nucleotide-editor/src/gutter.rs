@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use gpui::{Hsla, Pixels, Point, ShapedLine, TextStyle, WindowTextSystem, black, point, white};
+use gpui::{
+    Hsla, Pixels, Point, ShapedLine, TextRun, TextStyle, WindowTextSystem, black, point, white,
+};
 use helix_view::{Document, Editor, Theme, View};
 
 use crate::{
@@ -12,6 +14,12 @@ use crate::{
 };
 
 pub struct GutterLine {
+    pub origin: Point<Pixels>,
+    pub shaped_line: ShapedLine,
+}
+
+pub struct SoftWrapGutterLine {
+    pub doc_line: usize,
     pub origin: Point<Pixels>,
     pub shaped_line: ShapedLine,
 }
@@ -120,6 +128,36 @@ pub fn soft_wrap_gutter_line_paint_plans<'a>(
             } else {
                 gutter_color
             },
+        })
+        .collect()
+}
+
+pub fn build_soft_wrap_gutter_lines(
+    text_system: Arc<WindowTextSystem>,
+    text_style: &TextStyle,
+    font_size: Pixels,
+    paint_plans: &[SoftWrapGutterLinePaintPlan<'_>],
+) -> Vec<SoftWrapGutterLine> {
+    paint_plans
+        .iter()
+        .map(|paint_plan| {
+            let line = paint_plan.line;
+            let run = TextRun {
+                len: line.text.len(),
+                font: text_style.font(),
+                color: paint_plan.color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped_line =
+                text_system.shape_line(line.text.clone().into(), font_size, &[run], None);
+
+            SoftWrapGutterLine {
+                doc_line: line.doc_line,
+                origin: paint_plan.origin,
+                shaped_line,
+            }
         })
         .collect()
 }

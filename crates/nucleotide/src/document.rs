@@ -1,13 +1,13 @@
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
+use gpui::size;
 use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
     IntoElement, LayoutId, ParentElement, Pixels, Point, Render, SharedString, Size, Style, Styled,
     TextStyle, Window, div, fill, px, relative, white,
 };
-use gpui::{TextRun, size};
 use helix_core::Uri;
 use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
@@ -21,14 +21,14 @@ use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
     EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
     GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache, block_cursor_text,
-    build_gutter_lines, cursor_background_color, cursor_document_line, cursor_foreground_color,
-    cursor_has_reversed_modifier, cursor_line_position, cursor_style_for_mode,
-    cursor_viewport_position, decorate_soft_wrap_line_runs, diagnostic_marker_paint_style,
-    diagnostic_marker_plan, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
-    hit_test_document_position, line_viewport_plan, paint_diagnostic_marker, paint_editor_line,
-    phantom_line_cursor_paint_position, shape_cursor_text,
-    shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
+    build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
+    cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
+    cursor_line_position, cursor_style_for_mode, cursor_viewport_position,
+    decorate_soft_wrap_line_runs, diagnostic_marker_paint_style, diagnostic_marker_plan,
+    diagnostic_overlay_spans, diagnostic_severity_by_line, document_text_format_for_surface,
+    gpui_hsla_to_helix_color, highlight_line, hit_test_document_position, line_viewport_plan,
+    paint_diagnostic_marker, paint_editor_line, phantom_line_cursor_paint_position,
+    shape_cursor_text, shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
     soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
     text_style_at_position, unwrapped_cursor_paint_position, unwrapped_line_paint_plans,
@@ -1147,39 +1147,27 @@ impl Element for DocumentElement {
                         gutter_color,
                         gutter_selected_color,
                     );
-                    for gutter_paint_plan in gutter_paint_plans {
-                        let gutter_plan = gutter_paint_plan.line;
-
-                        let run = TextRun {
-                            len: gutter_plan.text.len(),
-                            font: self.style.font(),
-                            color: gutter_paint_plan.color,
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-
-                        let shaped = window.text_system().shape_line(
-                            gutter_plan.text.clone().into(),
-                            self.style.font_size.to_pixels(px(16.0)),
-                            &[run],
-                            None,
-                        );
-
-                        let _ = shaped.paint(
-                            gutter_paint_plan.origin,
+                    let gutter_lines = build_soft_wrap_gutter_lines(
+                        window.text_system().clone(),
+                        &self.style,
+                        self.style.font_size.to_pixels(px(16.0)),
+                        &gutter_paint_plans,
+                    );
+                    for gutter_line in gutter_lines {
+                        let _ = gutter_line.shaped_line.paint(
+                            gutter_line.origin,
                             after_layout.line_height,
                             window,
                             cx,
                         );
 
                         // Paint a small diagnostic marker in the gutter if this line has diagnostics
-                        if let Some(sev) = diag_line_severity.get(&gutter_plan.doc_line).copied()
+                        if let Some(sev) = diag_line_severity.get(&gutter_line.doc_line).copied()
                             && let Some(color) = Self::severity_color(cx.helix_theme(), sev)
                         {
                             let marker_plan = diagnostic_marker_plan(
                                 gutter_origin,
-                                gutter_paint_plan.origin.y,
+                                gutter_line.origin.y,
                                 after_layout.line_height,
                                 sev,
                             );
