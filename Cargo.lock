@@ -5353,6 +5353,7 @@ dependencies = [
  "helix-view",
  "nucleotide-logging",
  "rand 0.10.0",
+ "tokio",
 ]
 
 [[package]]

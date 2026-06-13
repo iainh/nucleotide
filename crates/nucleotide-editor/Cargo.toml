@@ -28,6 +28,7 @@ nucleotide-logging = { workspace = true }
 arc-swap.workspace = true
 criterion = "0.8"
 rand = "0.10"
+tokio.workspace = true
 
 [[bench]]
 name = "line_layout_cache"
