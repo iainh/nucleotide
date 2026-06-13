@@ -27,9 +27,10 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_editor::{
-    EditorCursor, EditorDocumentMetrics, EditorLayout, EditorSurface, EditorSurfaceGeometry,
-    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, LineLayoutCache,
-    document_text_format_for_surface, hit_test_document_position,
+    EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
+    EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
+    LineLayoutCache, document_text_format_for_surface, hit_test_document_position,
+    paint_line_backgrounds,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
@@ -2036,44 +2037,18 @@ impl Element for DocumentElement {
                             None,
                         );
 
-                        // Helper for approximate HSLA equality to tolerate minor rounding differences
-                        #[inline]
-                        fn approx_hsla_eq(a: gpui::Hsla, b: gpui::Hsla) -> bool {
-                            let eh = (a.h - b.h).abs() <= 0.005;
-                            let es = (a.s - b.s).abs() <= 0.005;
-                            let el = (a.l - b.l).abs() <= 0.005;
-                            let ea = (a.a - b.a).abs() <= 0.005;
-                            eh && es && el && ea
-                        }
-
-                        // Paint background highlights using the shaped line for accurate positioning
-                        let mut byte_offset = 0;
-                        for run in &line_runs {
-                            if let Some(bg_color) = run.background_color {
-                                // On the cursor line, only paint selection backgrounds over the cursorline;
-                                // on other lines, paint all backgrounds as usual.
-                                let should_paint = if is_cursor_visual_line {
-                                    let sel1 = tokens.editor.selection_primary;
-                                    let sel2 = tokens.editor.selection_secondary;
-                                    approx_hsla_eq(bg_color, sel1) || approx_hsla_eq(bg_color, sel2)
-                                } else {
-                                    true
-                                };
-
-                                if should_paint {
-                                    // Calculate the x positions using the shaped line
-                                    let start_x = shaped_line.x_for_index(byte_offset);
-                                    let end_x = shaped_line.x_for_index(byte_offset + run.len);
-
-                                    let bg_bounds = Bounds {
-                                        origin: point(text_origin_x + start_x, line_y),
-                                        size: size(end_x - start_x, after_layout.line_height),
-                                    };
-                                    window.paint_quad(fill(bg_bounds, bg_color));
-                                }
-                            }
-                            byte_offset += run.len;
-                        }
+                        paint_line_backgrounds(
+                            window,
+                            &shaped_line,
+                            &line_runs,
+                            point(text_origin_x, line_y),
+                            after_layout.line_height,
+                            EditorLineBackgroundStyle {
+                                only_selection_backgrounds: is_cursor_visual_line,
+                                selection_primary: tokens.editor.selection_primary,
+                                selection_secondary: tokens.editor.selection_secondary,
+                            },
+                        );
 
                         if let Err(e) = shaped_line.paint(
                             point(text_origin_x, line_y),
@@ -2945,43 +2920,18 @@ impl Element for DocumentElement {
                         window.paint_quad(fill(cursorline_bounds, cursorline_bg));
                     }
 
-                    // Paint background highlights using the shaped line for accurate positioning
-                    // On the cursor line, only paint selection backgrounds (over the cursorline);
-                    // on other lines, paint all backgrounds as usual.
-                    {
-                        #[inline]
-                        fn approx_hsla_eq(a: gpui::Hsla, b: gpui::Hsla) -> bool {
-                            let eh = (a.h - b.h).abs() <= 0.005;
-                            let es = (a.s - b.s).abs() <= 0.005;
-                            let el = (a.l - b.l).abs() <= 0.005;
-                            let ea = (a.a - b.a).abs() <= 0.005;
-                            eh && es && el && ea
-                        }
-                        let mut byte_offset = 0;
-                        for run in &line_runs {
-                            if let Some(bg_color) = run.background_color {
-                                let should_paint = if line_idx == cursor_line_num {
-                                    let sel1 = tokens.editor.selection_primary;
-                                    let sel2 = tokens.editor.selection_secondary;
-                                    approx_hsla_eq(bg_color, sel1) || approx_hsla_eq(bg_color, sel2)
-                                } else {
-                                    true
-                                };
-
-                                if should_paint {
-                                    let start_x = shaped.x_for_index(byte_offset);
-                                    let end_x = shaped.x_for_index(byte_offset + run.len);
-
-                                    let bg_bounds = Bounds {
-                                        origin: point(text_origin.x + start_x, text_origin.y),
-                                        size: size(end_x - start_x, after_layout.line_height),
-                                    };
-                                    window.paint_quad(fill(bg_bounds, bg_color));
-                                }
-                            }
-                            byte_offset += run.len;
-                        }
-                    }
+                    paint_line_backgrounds(
+                        window,
+                        &shaped,
+                        &line_runs,
+                        text_origin,
+                        after_layout.line_height,
+                        EditorLineBackgroundStyle {
+                            only_selection_backgrounds: line_idx == cursor_line_num,
+                            selection_primary: tokens.editor.selection_primary,
+                            selection_secondary: tokens.editor.selection_secondary,
+                        },
+                    );
 
                     if let Err(e) = shaped.paint(text_origin, after_layout.line_height, window, cx)
                     {
