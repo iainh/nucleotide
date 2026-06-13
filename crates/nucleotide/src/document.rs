@@ -21,9 +21,7 @@ use helix_core::{
 };
 use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
-use helix_view::{
-    Document, DocumentId, Editor, Theme, View, ViewId, graphics::CursorKind, view::ViewPosition,
-};
+use helix_view::{Document, DocumentId, Editor, Theme, View, ViewId, graphics::CursorKind};
 use nucleotide_logging::{debug, error};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
@@ -32,7 +30,7 @@ use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_editor::{
     EditorLayout, EditorSurface, EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorViewport,
-    LineLayoutCache,
+    LineLayoutCache, hit_test_document_position,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
@@ -214,144 +212,38 @@ fn handle_editor_mouse_down(
     core: &Entity<Core>,
     doc_id: DocumentId,
     view_id: ViewId,
-    viewport: &EditorViewport,
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
-    let cell_width = event.cell_width;
-    let line_height = event.line_height;
-
-    let gutter_offset = {
+    let line_cache = cx.global::<LineLayoutCache>();
+    let hit_test = {
         let core = core.read(cx);
         let editor = &core.editor;
         if let (Some(document), Some(view)) =
             (editor.document(doc_id), editor.tree.try_get(view_id))
         {
-            view.gutter_offset(document)
+            hit_test_document_position(event, view.gutter_offset(document), line_cache, document)
         } else {
             debug!("Could not get document/view for coordinate transformation");
             return;
         }
     };
 
-    let surface_geometry = EditorSurfaceGeometry::new(event.bounds, gutter_offset, cell_width);
-    let text_bounds = surface_geometry.text_bounds();
-    let text_area_pos = surface_geometry.window_to_text_area(event.position);
-
-    let soft_wrap_enabled = {
-        let core = core.read(cx);
-        let editor = &core.editor;
-        if let Some(document) = editor.document(doc_id) {
-            if editor.tree.try_get(view_id).is_some() {
-                let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                let viewport_width = surface_geometry.viewport_columns(10);
-                let text_format = document.text_format(viewport_width, Some(theme));
-                text_format.soft_wrap
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    };
-
-    let scroll_position = viewport.scroll_position();
-    let content_pos = if soft_wrap_enabled {
-        let wrapped_content_pos = {
-            let core = core.read(cx);
-            let editor = &core.editor;
-            if let Some(document) = editor.document(doc_id) {
-                if editor.tree.try_get(view_id).is_some() {
-                    let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                    let viewport_width = surface_geometry.viewport_columns(10);
-                    let text_format = document.text_format(viewport_width, Some(theme));
-                    let view_offset = document.view_offset(view_id);
-
-                    DocumentElement::text_area_to_visual_wrapped(
-                        text_area_pos,
-                        &text_format,
-                        view_offset,
-                        document,
-                        cell_width,
-                        viewport.line_height(),
-                    )
-                    .unwrap_or(text_area_pos)
-                } else {
-                    text_area_pos
-                }
-            } else {
-                text_area_pos
-            }
-        };
-
-        surface_geometry.text_area_to_content(wrapped_content_pos, scroll_position)
-    } else {
-        surface_geometry.text_area_to_content(text_area_pos, scroll_position)
-    };
-
-    let clamped_text_area_pos = surface_geometry.clamp_text_area_position(text_area_pos, false);
-    let line_cache = cx.global::<LineLayoutCache>();
-
-    debug!(
-        original_window_pos = ?event.position,
-        text_area_pos = ?text_area_pos,
-        clamped_text_area_pos = ?clamped_text_area_pos,
-        text_bounds = ?text_bounds,
-        line_height = %line_height,
-        "Click hit test using editor surface geometry"
-    );
-
-    let line_layout = line_cache.find_line_at_position(
-        clamped_text_area_pos,
-        text_bounds.size.width,
-        line_height,
-    );
-
-    if let Some(line_layout) = line_layout {
-        let line_width = line_layout.shaped_line.width;
-        let raw_content_x = content_pos.x.max(px(0.0));
-        let (_clamped_x, _x_overshoot) =
-            EditorSurfaceGeometry::x_overshoot(raw_content_x, line_width);
-
-        let relative_x = clamped_text_area_pos.x - line_layout.origin.x;
-        let byte_index = if relative_x < px(0.0) {
-            0
-        } else if relative_x > line_layout.shaped_line.width {
-            line_layout.shaped_line.len()
-        } else {
-            line_layout.shaped_line.index_for_x(relative_x).unwrap_or(0)
-        };
-
+    if let Some(hit_test) = hit_test {
         core.update(cx, |core, cx| {
             let editor = &mut core.editor;
             if let Some(document) = editor.document_mut(doc_id) {
-                let text = document.text();
-                let line_start = text.line_to_char(line_layout.line_idx);
-                let line_text = text.line(line_layout.line_idx).to_string();
-                let char_offset = if line_layout.segment_char_offset == 0 {
-                    line_text
-                        .char_indices()
-                        .take_while(|(byte_idx, _)| *byte_idx < byte_index)
-                        .count()
-                } else {
-                    let adjusted_byte_index =
-                        byte_index.saturating_sub(line_layout.text_start_byte_offset);
-                    let segment_text = line_text
-                        .chars()
-                        .skip(line_layout.segment_char_offset)
-                        .collect::<String>();
-                    let char_offset_in_segment = segment_text
-                        .char_indices()
-                        .take_while(|(byte_idx, _)| *byte_idx < adjusted_byte_index)
-                        .count();
-
-                    line_layout.segment_char_offset + char_offset_in_segment
-                };
-
-                let target_pos = (line_start + char_offset).min(text.len_chars());
+                let target_pos = hit_test.char_idx.min(document.text().len_chars());
                 let range = helix_core::Range::new(target_pos, target_pos);
                 let selection = helix_core::Selection::new(helix_core::SmallVec::from([range]), 0);
                 document.set_selection(view_id, selection);
+
+                debug!(
+                    line_idx = hit_test.line_idx,
+                    char_offset = hit_test.char_offset,
+                    target_pos,
+                    "Applied editor click selection"
+                );
 
                 cx.notify();
             }
@@ -359,12 +251,9 @@ fn handle_editor_mouse_down(
     } else {
         debug!(
             window_pos = ?event.position,
-            text_area_pos = ?text_area_pos,
-            clamped_text_area_pos = ?clamped_text_area_pos,
-            content_pos = ?content_pos,
-            text_bounds = ?text_bounds,
-            line_height = %line_height,
-            "Click hit test did not find a line"
+            bounds = ?event.bounds,
+            line_height = %event.line_height,
+            "Click hit test did not find a rendered line"
         );
     }
 }
@@ -616,11 +505,10 @@ impl Render for DocumentView {
         })
         .on_mouse_down({
             let core = self.core.clone();
-            let viewport = self.viewport.clone();
             let view_id = self.view_id;
 
             move |event: EditorSurfacePointerEvent, cx| {
-                handle_editor_mouse_down(&core, doc_id, view_id, &viewport, event, cx);
+                handle_editor_mouse_down(&core, doc_id, view_id, event, cx);
             }
         })
         .on_mouse_up(|event: EditorSurfacePointerEvent, _cx| {
@@ -859,105 +747,6 @@ impl DocumentElement {
             underline_color,
         )
     }
-    /// Convert a byte index within a line to a grapheme index
-    /// GPUI's shaped line works with UTF-8 byte indices
-    /// but Helix works with grapheme cluster indices (visual units)
-    #[allow(dead_code)]
-    fn byte_idx_to_grapheme_idx(line_text: &str, byte_idx: usize) -> usize {
-        use unicode_segmentation::UnicodeSegmentation;
-
-        let mut grapheme_idx = 0;
-        let mut current_byte_idx = 0;
-
-        for grapheme in line_text.graphemes(true) {
-            if current_byte_idx >= byte_idx {
-                break;
-            }
-            // Count UTF-8 bytes in this grapheme cluster
-            current_byte_idx += grapheme.len();
-            grapheme_idx += 1;
-        }
-
-        grapheme_idx
-    }
-
-    /// Convert text-area coordinates to visual coordinates for wrapped mode
-    /// This handles the complex case where document lines are wrapped across multiple visual lines
-    fn text_area_to_visual_wrapped(
-        text_area_pos: Point<Pixels>,
-        text_format: &helix_core::doc_formatter::TextFormat,
-        view_offset: ViewPosition,
-        document: &helix_view::Document,
-        cell_width: Pixels,
-        line_height: Pixels,
-    ) -> Option<Point<Pixels>> {
-        use helix_core::{doc_formatter::DocumentFormatter, text_annotations::TextAnnotations};
-
-        let text = document.text().slice(..);
-        let annotations = TextAnnotations::default();
-
-        // Convert pixel position to visual row and column
-        let line_height_value = f32::from(line_height);
-        let cell_width_value = f32::from(cell_width);
-        let visual_row = (f32::from(text_area_pos.y) / line_height_value) as usize;
-        let visual_col = (f32::from(text_area_pos.x) / cell_width_value) as usize;
-
-        // Adjust visual row to account for viewport offset
-        let absolute_visual_row = visual_row + view_offset.vertical_offset;
-
-        // Create DocumentFormatter to find the character at this visual position
-        let formatter = DocumentFormatter::new_at_prev_checkpoint(
-            text,
-            text_format,
-            &annotations,
-            view_offset.anchor,
-        );
-
-        // Search for grapheme at the target visual position
-        let mut target_char_pos = None;
-        let mut last_char_pos = view_offset.anchor;
-
-        for grapheme in formatter {
-            // Track character position
-            let char_pos = text.byte_to_char(grapheme.char_idx);
-
-            // Check if this grapheme is at our target visual position
-            if grapheme.visual_pos.row == absolute_visual_row {
-                if grapheme.visual_pos.col <= visual_col {
-                    // This is the closest grapheme to our target column
-                    target_char_pos = Some(char_pos);
-                } else {
-                    // We've passed the target column, use the previous character
-                    break;
-                }
-            } else if grapheme.visual_pos.row > absolute_visual_row {
-                // We've passed the target row
-                break;
-            } else {
-                // Row is before target; track last known position
-                last_char_pos = char_pos;
-            }
-        }
-
-        // Use the found character position or the last valid position
-        let final_char_pos = target_char_pos.unwrap_or(last_char_pos);
-
-        // Convert character position back to document line and column
-        let doc_line = text.char_to_line(final_char_pos);
-        let line_start = text.line_to_char(doc_line);
-        let char_offset = final_char_pos - line_start;
-
-        // Convert to pixel coordinates within the document line
-        // This gives us the position within the unwrapped document coordinates
-        let result_x = px(char_offset as f32 * cell_width_value);
-        let result_y = px(doc_line as f32 * line_height_value);
-
-        Some(Point {
-            x: result_x,
-            y: result_y,
-        })
-    }
-
     /// Get the TextFormat for soft wrap support
     #[allow(dead_code)]
     fn get_text_format(
