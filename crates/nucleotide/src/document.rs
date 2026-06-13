@@ -22,14 +22,14 @@ use nucleotide_editor::{
     EditorViewportSurfaceLayout, GutterLineParams, LineLayoutCache, ShapedEditorCursorPaintParams,
     SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams,
     SoftWrapHighlightedLineRunsParams, UnwrappedCursorPaintPlanParams,
-    UnwrappedEditorLinePaintParams, UnwrappedHighlightedLineParams, UnwrappedRenderPlanParams,
+    UnwrappedEditorLinePaintParams, UnwrappedHighlightedLineParams,
     begin_editor_pointer_selection_at_event, build_gutter_lines, cursor_document_line,
     cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color,
     paint_diagnostic_gutter_markers, paint_document_rulers, paint_editor_background,
     paint_gutter_lines, paint_shaped_editor_cursor, paint_soft_wrap_editor_line,
     paint_soft_wrap_gutter, paint_unwrapped_editor_line, shape_and_paint_editor_cursor,
     shape_cursor_text, soft_wrap_cursor_paint_plan, soft_wrap_highlighted_line_runs,
-    unwrapped_cursor_paint_plan, unwrapped_highlighted_line, unwrapped_render_plan,
+    unwrapped_cursor_paint_plan, unwrapped_highlighted_line,
     update_editor_pointer_selection_at_event,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -993,16 +993,9 @@ impl Element for DocumentElement {
                 return;
             }
 
-            let unwrapped_plan = unwrapped_render_plan(UnwrappedRenderPlanParams {
-                text: text.slice(..),
-                line_viewport,
-                bounds,
-                gutter_columns: gutter_width,
-                cell_width: after_layout.cell_width,
-                line_height: after_layout.line_height,
-                scroll_line_offset,
-                cursor_line: cursor_line_num,
-            });
+            let Some(unwrapped_plan) = frame.unwrapped_render_plan.as_ref() else {
+                return;
+            };
             let next_unwrapped_line_y_offset = unwrapped_plan.next_line_y_offset;
             let unwrapped_paint_plans = unwrapped_plan.line_paint_plans();
 

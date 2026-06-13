@@ -12,8 +12,9 @@ use helix_view::{
 use crate::{
     DiagnosticOverlaySpans, DiagnosticSeverityByLine, DocumentSoftWrapRenderPlanParams,
     EditorCursorPresentation, EditorCursorPresentationParams, EditorRenderSnapshot,
-    SoftWrapRenderPlan, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_render_snapshot, document_soft_wrap_render_plan, editor_cursor_presentation,
+    SoftWrapRenderPlan, UnwrappedRenderPlan, UnwrappedRenderPlanParams, diagnostic_overlay_spans,
+    diagnostic_severity_by_line, document_render_snapshot, document_soft_wrap_render_plan,
+    editor_cursor_presentation, unwrapped_render_plan,
 };
 
 pub struct EditorDocumentFrameParams<'a> {
@@ -55,6 +56,7 @@ pub struct EditorDocumentFrame {
     pub diagnostic_overlay_spans: Option<DiagnosticOverlaySpans>,
     pub diagnostic_severity_by_line: DiagnosticSeverityByLine,
     pub soft_wrap_render_plan: Option<SoftWrapRenderPlan>,
+    pub unwrapped_render_plan: Option<UnwrappedRenderPlan>,
 }
 
 pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDocumentFrame {
@@ -92,6 +94,18 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
             minimum_columns: params.soft_wrap_minimum_columns,
         })
     });
+    let unwrapped_render_plan = (!params.soft_wrap_enabled).then(|| {
+        unwrapped_render_plan(UnwrappedRenderPlanParams {
+            text: text.slice(..),
+            line_viewport: render_snapshot.line_viewport,
+            bounds: params.bounds,
+            gutter_columns: gutter_width,
+            cell_width: params.cell_width,
+            line_height: params.line_height,
+            scroll_line_offset: params.scroll_line_offset,
+            cursor_line: render_snapshot.cursor_line,
+        })
+    });
 
     EditorDocumentFrame {
         gutter_width,
@@ -108,6 +122,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         diagnostic_overlay_spans: diagnostic_overlay_spans(params.document, params.theme),
         diagnostic_severity_by_line: diagnostic_severity_by_line(params.document),
         soft_wrap_render_plan,
+        unwrapped_render_plan,
     }
 }
 
@@ -171,5 +186,57 @@ mod tests {
         assert_eq!(frame.editor_rulers, vec![80]);
         assert!(frame.cursorline_enabled);
         assert!(frame.soft_wrap_render_plan.is_some());
+        assert!(frame.unwrapped_render_plan.is_none());
+    }
+
+    #[test]
+    fn frame_collects_unwrapped_render_plan_when_soft_wrap_disabled() {
+        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        let syntax_loader = syntax::Loader::default();
+        let syntax_loader_swap = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let mut document = Document::from(
+            Rope::from("one\ntwo\nthree\n"),
+            None,
+            config,
+            syntax_loader_swap,
+        );
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        document.ensure_view_init(view.id);
+        document.set_selection(view.id, Selection::single(5, 5));
+        let theme = ThemeLoader::new(&[]).default_theme(true);
+
+        let frame = editor_document_frame(EditorDocumentFrameParams {
+            document: &document,
+            view: &view,
+            view_id: view.id,
+            theme: &theme,
+            syntax_loader: &syntax_loader,
+            first_row: 0,
+            last_row_from_scroll: 3,
+            soft_wrap_enabled: false,
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            scroll_line_offset: px(5.0),
+            soft_wrap_minimum_columns: 10,
+            editor_mode: Mode::Normal,
+            cursor_kind: CursorKind::Block,
+            cursor_style: Style::default(),
+            cursor_shape: CursorShapeConfig::default(),
+            editor_rulers: vec![80],
+            cursorline_enabled: true,
+            is_focused: true,
+        });
+
+        let unwrapped = frame
+            .unwrapped_render_plan
+            .as_ref()
+            .expect("unwrapped plan should be built when soft wrap is disabled");
+
+        assert!(frame.soft_wrap_render_plan.is_none());
+        assert_eq!(unwrapped.visible_lines.len(), 3);
+        assert_eq!(unwrapped.visible_lines[0].line_idx, 0);
+        assert_eq!(unwrapped.visible_lines[0].y_offset, px(-5.0));
+        assert_eq!(unwrapped.cursor_line, frame.render_snapshot.cursor_line);
     }
 }
