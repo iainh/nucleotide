@@ -2030,11 +2030,12 @@ impl Element for DocumentElement {
 
                     // Paint the line text (only for non-empty lines)
                     if !line_str.is_empty() {
-                        let shaped_line = window.text_system().shape_line(
+                        let shaped_line = line_cache.shape_line_cached(
+                            window.text_system().as_ref(),
                             SharedString::from(line_str.clone()),
                             self.style.font_size.to_pixels(px(16.0)),
+                            bounds.size.width,
                             &line_runs,
-                            None,
                         );
 
                         paint_line_backgrounds(
