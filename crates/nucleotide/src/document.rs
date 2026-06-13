@@ -16,7 +16,7 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     DiagnosticGutterMarkersPaintParams, DocumentRulerPaintParams, DocumentSoftWrapRenderPlanParams,
-    EditorCursorPresentationParams, EditorCursorTextPaintParams, EditorLayout,
+    EditorCursorTextPaintParams, EditorDocumentFrameParams, EditorLayout,
     EditorLineBackgroundStyle, EditorLineHighlightContext, EditorScrollbarState,
     EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics,
     EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout,
@@ -25,10 +25,9 @@ use nucleotide_editor::{
     SoftWrapHighlightedLineRunsParams, UnwrappedCursorPaintPlanParams,
     UnwrappedEditorLinePaintParams, UnwrappedHighlightedLineParams, UnwrappedRenderPlanParams,
     begin_editor_pointer_selection_at_event, build_gutter_lines, cursor_document_line,
-    cursor_style_for_mode, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_render_snapshot, document_soft_wrap_render_plan, editor_cursor_presentation,
-    gpui_hsla_to_helix_color, paint_diagnostic_gutter_markers, paint_document_rulers,
-    paint_editor_background, paint_gutter_lines, paint_shaped_editor_cursor,
+    cursor_style_for_mode, diagnostic_severity_by_line, document_soft_wrap_render_plan,
+    editor_document_frame, gpui_hsla_to_helix_color, paint_diagnostic_gutter_markers,
+    paint_document_rulers, paint_editor_background, paint_gutter_lines, paint_shaped_editor_cursor,
     paint_soft_wrap_editor_line, paint_soft_wrap_gutter, paint_unwrapped_editor_line,
     shape_and_paint_editor_cursor, shape_cursor_text, soft_wrap_cursor_paint_plan,
     soft_wrap_highlighted_line_runs, unwrapped_cursor_paint_plan, unwrapped_highlighted_line,
@@ -642,31 +641,8 @@ impl Element for DocumentElement {
                 None => return,
             };
             let _viewport = view.area;
-            // Check if cursorline is enabled and view is focused
-            // Use the effective config value which includes runtime overrides
-            let config_cursorline = editor.config().cursorline;
-            let cursorline_enabled = config_cursorline && is_focused;
-            debug!(
-                "Cursorline check - config value: {}, focused: {}, enabled: {}",
-                config_cursorline, is_focused, cursorline_enabled
-            );
-
-            // Get cursorline style
-            let cursorline_style = if cursorline_enabled {
-                let style = cx.theme_style("ui.cursorline.primary");
-                debug!(
-                    "Cursorline style found: bg={:?}, fg={:?}",
-                    style.bg, style.fg
-                );
-                style.bg.and_then(color_to_hsla)
-            } else {
-                None
-            };
             let tokens = cx.theme().tokens;
             let bg_color = tokens.editor.background;
-            // Get mode-specific cursor theme like terminal version
-            let mode = editor.mode();
-            let cursor_style = cursor_style_for_mode(mode, |key| cx.theme_style(key));
             let fg_color = tokens.editor.text_primary;
             let default_text_style = helix_view::graphics::Style {
                 fg: gpui_hsla_to_helix_color(tokens.editor.text_primary),
@@ -679,57 +655,73 @@ impl Element for DocumentElement {
                 None => return,
             };
             let text = document.text();
-
+            let editor_config = editor.config();
+            let editor_mode = editor.mode();
             let (_, cursor_kind) = editor.cursor();
-            let primary_idx = document
-                .selection(self.view_id)
-                .primary()
-                .cursor(text.slice(..));
-            let gutter_width = view.gutter_offset(document);
-
-            let line = text.char_to_line(primary_idx);
-            let line_start = text.line_to_char(line);
-            let col_in_line = primary_idx - line_start;
-            debug!(
-                "Cursor position - line: {line}, col_in_line: {col_in_line}, primary_idx: {primary_idx}, gutter_width: {gutter_width}"
-            );
-            let gutter_overflow = gutter_width == 0;
-            if !gutter_overflow {
-                debug!("need to render gutter {gutter_width}");
-            }
-
-            let total_lines = text.len_lines();
 
             // Use scroll manager to determine visible lines
             let (first_row, last_row_from_scroll) = self.viewport.visible_visual_range();
             let scroll_line_offset = self.viewport.offset_within_row();
 
-            let render_snapshot =
-                document_render_snapshot(document, self.view_id, first_row, last_row_from_scroll);
+            // Get mode-specific cursor theme like terminal version
+            let cursor_style = cursor_style_for_mode(editor_mode, |key| cx.theme_style(key));
             let loader = editor.syn_loader.load();
-            let cursor_presentation = editor_cursor_presentation(EditorCursorPresentationParams {
+            let frame = editor_document_frame(EditorDocumentFrameParams {
                 document,
+                view,
                 view_id: self.view_id,
-                kind: cursor_kind,
-                cursor_style,
                 theme: &theme,
                 syntax_loader: &loader,
+                first_row,
+                last_row_from_scroll,
+                editor_mode,
+                cursor_kind,
+                cursor_style,
+                cursor_shape: editor_config.cursor_shape.clone(),
+                editor_rulers: editor_config.rulers.clone(),
+                cursorline_enabled: editor_config.cursorline && is_focused,
                 is_focused: self.is_focused,
             });
-            let cursor_char_idx = cursor_presentation.cursor_char_idx;
-            let cursor_line_num = render_snapshot.cursor_line;
+            debug!(
+                "Cursorline check - config value: {}, focused: {}, enabled: {}",
+                editor_config.cursorline, is_focused, frame.cursorline_enabled
+            );
+
+            let cursorline_style = if frame.cursorline_enabled {
+                let style = cx.theme_style("ui.cursorline.primary");
+                debug!(
+                    "Cursorline style found: bg={:?}, fg={:?}",
+                    style.bg, style.fg
+                );
+                style.bg.and_then(color_to_hsla)
+            } else {
+                None
+            };
+
+            let gutter_width = frame.gutter_width;
+            let cursor_char_idx = frame.cursor_presentation.cursor_char_idx;
+            let cursor_line_num = frame.render_snapshot.cursor_line;
             debug!(
                 "Cursor position: line={}, char_idx={}",
                 cursor_line_num, cursor_char_idx
             );
+            debug!(
+                "Cursor position - line: {}, col_in_line: {}, primary_idx: {}, gutter_width: {}",
+                frame.primary_cursor_line,
+                frame.primary_cursor_col,
+                frame.primary_cursor_idx,
+                gutter_width
+            );
+            if gutter_width != 0 {
+                debug!("need to render gutter {gutter_width}");
+            }
 
-            let cursors = render_snapshot.cursor_lines;
-            let line_viewport = render_snapshot.line_viewport;
-            let last_row = render_snapshot.last_row;
+            let line_viewport = frame.render_snapshot.line_viewport;
+            let last_row = frame.render_snapshot.last_row;
             let cursor_at_end = line_viewport.cursor_at_end;
             let file_ends_with_newline = line_viewport.file_ends_with_newline;
-            let cursor_doc_line = render_snapshot.cursor_doc_line;
-            let cursor_viewport_pos = render_snapshot.cursor_viewport_position;
+            let cursor_doc_line = frame.render_snapshot.cursor_doc_line;
+            let cursor_viewport_pos = frame.render_snapshot.cursor_viewport_position;
 
             debug!(
                 "End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}",
@@ -747,7 +739,8 @@ impl Element for DocumentElement {
             if cursor_at_end && file_ends_with_newline {
                 let cursor_line = text.char_to_line(cursor_char_idx.saturating_sub(1));
                 debug!(
-                    "Cursor at EOF with newline - cursor_line: {cursor_line}, last_row: {last_row}, total_lines: {total_lines}"
+                    "Cursor at EOF with newline - cursor_line: {cursor_line}, last_row: {last_row}, total_lines: {}",
+                    frame.total_lines
                 );
             }
 
@@ -759,7 +752,6 @@ impl Element for DocumentElement {
                 cx.ui_theme().tokens.chrome.border_default
             });
 
-            let editor_config = editor.config();
             let ruler_geometry =
                 EditorSurfaceGeometry::new(bounds, gutter_width, after_layout.cell_width);
             paint_document_rulers(
@@ -767,7 +759,7 @@ impl Element for DocumentElement {
                 DocumentRulerPaintParams {
                     document,
                     view_id: view.id,
-                    editor_rulers: &editor_config.rulers,
+                    editor_rulers: &frame.editor_rulers,
                     geometry: ruler_geometry,
                     color: ruler_color,
                 },
@@ -775,8 +767,7 @@ impl Element for DocumentElement {
 
             // Extract necessary values before the loop to avoid borrowing issues
             let _editor_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-            let editor_mode = editor.mode();
-            let cursor_shape = editor.config().cursor_shape.clone();
+            let cursor_shape = frame.cursor_shape.clone();
             let syn_loader = editor.syn_loader.clone();
 
             // Clone text to avoid borrowing issues
@@ -789,11 +780,11 @@ impl Element for DocumentElement {
             // Shape cursor text before dropping core borrow and keep its length
             let cursor_text_shape = shape_cursor_text(
                 window.text_system().as_ref(),
-                cursor_presentation.block_text.clone(),
+                frame.cursor_presentation.block_text.clone(),
                 &self.style.font(),
                 self.style.font_size.to_pixels(px(16.0)),
-                &cursor_presentation.text_style_at_cursor,
-                cursor_presentation.block_text_color(bg_color),
+                &frame.cursor_presentation.text_style_at_cursor,
+                frame.cursor_presentation.block_text_color(bg_color),
                 bg_color,
             );
 
@@ -801,7 +792,7 @@ impl Element for DocumentElement {
             // core goes out of scope here
 
             let text = doc_text.slice(..);
-            let diag_overlay_spans = diagnostic_overlay_spans(document, cx.helix_theme());
+            let diag_overlay_spans = frame.diagnostic_overlay_spans.as_ref();
 
             // Update the shared line layouts for mouse interaction
             if soft_wrap_enabled {
@@ -875,7 +866,7 @@ impl Element for DocumentElement {
                                 font: self.style.font(),
                                 default_text_style,
                                 default_bg: bg_color,
-                                diagnostic_overlay_spans: diag_overlay_spans.as_ref(),
+                                diagnostic_overlay_spans: diag_overlay_spans,
                             },
                             visual,
                             wrap_indicator_color,
@@ -948,7 +939,7 @@ impl Element for DocumentElement {
                             vertical_offset: view_offset.vertical_offset,
                             line_height: after_layout.line_height,
                             scroll_line_offset,
-                            cursor_lines: cursors.as_ref(),
+                            cursor_lines: &frame.render_snapshot.cursor_lines,
                             origin: gutter_origin,
                             gutter_color,
                             gutter_selected_color,
@@ -982,7 +973,7 @@ impl Element for DocumentElement {
                             text,
                             text_format,
                             anchor: view_offset.anchor,
-                            cursor_char_idx: cursor_presentation.cursor_char_idx,
+                            cursor_char_idx: frame.cursor_presentation.cursor_char_idx,
                             geometry: EditorSurfaceGeometry::new(
                                 bounds,
                                 gutter_width,
@@ -1001,10 +992,10 @@ impl Element for DocumentElement {
                         cx,
                         EditorCursorTextPaintParams {
                             paint_position: cursor_paint_position,
-                            kind: cursor_presentation.kind,
-                            cursor_style: &cursor_presentation.cursor_style,
-                            text_style_at_cursor: &cursor_presentation.text_style_at_cursor,
-                            cursor_text: cursor_presentation.block_text.clone(),
+                            kind: frame.cursor_presentation.kind,
+                            cursor_style: &frame.cursor_presentation.cursor_style,
+                            text_style_at_cursor: &frame.cursor_presentation.text_style_at_cursor,
+                            cursor_text: frame.cursor_presentation.block_text.clone(),
                             font: &self.style.font(),
                             font_size: self.style.font_size.to_pixels(px(16.0)),
                             fallback_fg: fg_color,
@@ -1076,7 +1067,7 @@ impl Element for DocumentElement {
                             font: self.style.font(),
                             default_text_style,
                             default_bg: bg_color,
-                            diagnostic_overlay_spans: diag_overlay_spans.as_ref(),
+                            diagnostic_overlay_spans: diag_overlay_spans,
                         },
                         text,
                         line: line_plan,
@@ -1213,9 +1204,11 @@ impl Element for DocumentElement {
                                 cx,
                                 ShapedEditorCursorPaintParams {
                                     paint_position: cursor_paint_position,
-                                    kind: cursor_presentation.kind,
-                                    cursor_style: &cursor_presentation.cursor_style,
-                                    text_style_at_cursor: &cursor_presentation.text_style_at_cursor,
+                                    kind: frame.cursor_presentation.kind,
+                                    cursor_style: &frame.cursor_presentation.cursor_style,
+                                    text_style_at_cursor: &frame
+                                        .cursor_presentation
+                                        .text_style_at_cursor,
                                     cursor_text_shape: cursor_text_shape.clone(),
                                     fallback_fg: fg_color,
                                     fallback_width: after_layout.cell_width,

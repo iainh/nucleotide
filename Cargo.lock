@@ -5345,6 +5345,7 @@ dependencies = [
 name = "nucleotide-editor"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "criterion",
  "gpui",
  "helix-core",

@@ -4,6 +4,7 @@
 pub mod cursor;
 pub mod cursor_style;
 pub mod diagnostics;
+pub mod document_frame;
 pub mod document_metrics;
 pub mod document_renderer;
 pub mod editor_view;
@@ -48,6 +49,7 @@ pub use diagnostics::{
     diagnostic_severity_by_line, diagnostic_severity_color, diagnostic_severity_theme_key,
     paint_diagnostic_gutter_markers, paint_diagnostic_marker,
 };
+pub use document_frame::{EditorDocumentFrame, EditorDocumentFrameParams, editor_document_frame};
 pub use document_metrics::{
     EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,
 };
