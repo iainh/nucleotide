@@ -27,8 +27,9 @@ use nucleotide_editor::{
     decorate_soft_wrap_line_runs, diagnostic_marker_paint_style, diagnostic_marker_plan,
     diagnostic_overlay_spans, diagnostic_severity_by_line, document_text_format_for_surface,
     gpui_hsla_to_helix_color, highlight_line, hit_test_document_position, line_viewport_plan,
-    paint_diagnostic_marker, paint_editor_line, phantom_line_cursor_paint_position,
-    shape_cursor_text, shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
+    paint_diagnostic_marker, paint_editor_background, paint_editor_line,
+    phantom_line_cursor_paint_position, shape_cursor_text,
+    shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
     soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
     text_style_at_position, unwrapped_cursor_paint_position, unwrapped_line_paint_plans,
@@ -634,7 +635,7 @@ impl Element for DocumentElement {
         {
             let tokens = cx.theme().tokens;
             let bgc = tokens.editor.background;
-            let _ = gpui::fill(bounds, bgc);
+            paint_editor_background(window, bounds, bgc);
         }
 
         // Sync scroll position back to Helix only if scrollbar changed it
@@ -775,7 +776,6 @@ impl Element for DocumentElement {
             // Get mode-specific cursor theme like terminal version
             let mode = editor.mode();
             let cursor_style = cursor_style_for_mode(mode, |key| cx.theme_style(key));
-            let _bg = fill(bounds, bg_color);
             let fg_color = tokens.editor.text_primary;
             let default_text_style = helix_view::graphics::Style {
                 fg: gpui_hsla_to_helix_color(tokens.editor.text_primary),
