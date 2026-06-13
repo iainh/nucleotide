@@ -5031,7 +5031,10 @@ pub fn init_editor(
 
     editor.set_theme(theme);
 
-    let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
+    let native_keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
+        &config.keys
+    }));
+    let terminal_keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
         &config.keys
     }));
     let compositor = Compositor::new(Rect {
@@ -5040,8 +5043,9 @@ pub fn init_editor(
         width: 80,
         height: 25,
     });
-    let keymaps = Keymaps::new(keys);
-    let editor_input = EditorInputBridge::new(keymaps);
+    let native_keymaps = Keymaps::new(native_keys);
+    let terminal_keymaps = Keymaps::new(terminal_keys);
+    let editor_input = EditorInputBridge::new(native_keymaps, terminal_keymaps);
     let jobs = Jobs::new();
 
     // Initialize completion coordinator - but we need to do this after Application is created
