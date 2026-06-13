@@ -19,16 +19,16 @@ use nucleotide_editor::{
     EditorLayout, EditorLineBackgroundStyle, EditorScrollbarState, EditorSelectionDragState,
     EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent,
     EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout, GutterLineParams,
-    HighlightLineParams, LineLayout, LineLayoutCache, SoftWrapCursorPaintPlanParams,
-    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams, UnwrappedRenderPlanParams,
-    begin_editor_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
-    build_soft_wrap_gutter_lines, cursor_background_color, cursor_document_line,
-    cursor_foreground_color, cursor_has_reversed_modifier, cursor_overlay_plan,
-    cursor_style_for_mode, decorate_soft_wrap_line_runs, diagnostic_gutter_marker_paint_plan,
-    diagnostic_overlay_spans, diagnostic_severity_by_line, diagnostic_severity_color,
-    document_render_snapshot, document_soft_wrap_render_plan, gpui_hsla_to_helix_color,
-    highlight_line, paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
-    paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines,
+    HighlightLineParams, LineLayoutCache, SoftWrapCursorPaintPlanParams,
+    SoftWrapEditorLinePaintParams, UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams,
+    UnwrappedRenderPlanParams, begin_editor_pointer_selection_at_event, block_cursor_text,
+    build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
+    cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
+    cursor_overlay_plan, cursor_style_for_mode, decorate_soft_wrap_line_runs,
+    diagnostic_gutter_marker_paint_plan, diagnostic_overlay_spans, diagnostic_severity_by_line,
+    diagnostic_severity_color, document_render_snapshot, document_soft_wrap_render_plan,
+    gpui_hsla_to_helix_color, highlight_line, paint_diagnostic_marker, paint_editor_background,
+    paint_gutter_lines, paint_soft_wrap_editor_line, paint_soft_wrap_gutter_lines,
     paint_unwrapped_editor_line, paint_visible_rulers, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_plan,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, text_style_at_position,
@@ -920,53 +920,29 @@ impl Element for DocumentElement {
                         wrap_indicator_color,
                     );
 
-                    // Paint cursorline background before any run highlights so empty lines still render it
-                    if soft_wrap_plan.is_cursor_visual_line
-                        && let Some(cursorline_bg) = cursorline_style
-                    {
-                        paint_cursorline_background(
-                            window,
-                            soft_wrap_plan.cursorline_bounds,
-                            cursorline_bg,
-                        );
-                    }
-
-                    // Paint the line text (only for non-empty lines)
-                    if !visual.text.is_empty() {
-                        let shaped_line = line_cache.shape_line_cached(
-                            window.text_system().as_ref(),
-                            SharedString::from(visual.text.clone()),
-                            self.style.font_size.to_pixels(px(16.0)),
-                            bounds.size.width,
-                            &line_runs,
-                        );
-
-                        if let Err(e) = paint_editor_line(
-                            window,
-                            cx,
-                            &shaped_line,
-                            &line_runs,
-                            soft_wrap_plan.text_origin,
-                            after_layout.line_height,
-                            EditorLineBackgroundStyle {
+                    match paint_soft_wrap_editor_line(
+                        window,
+                        cx,
+                        SoftWrapEditorLinePaintParams {
+                            plan: soft_wrap_plan,
+                            line_runs: &line_runs,
+                            line_cache: &line_cache,
+                            font_size: self.style.font_size.to_pixels(px(16.0)),
+                            viewport_width: bounds.size.width,
+                            line_height: after_layout.line_height,
+                            cursorline_color: cursorline_style,
+                            background_style: EditorLineBackgroundStyle {
                                 only_selection_backgrounds: soft_wrap_plan.is_cursor_visual_line,
                                 selection_primary: tokens.editor.selection_primary,
                                 selection_secondary: tokens.editor.selection_secondary,
                             },
-                        ) {
+                        },
+                    ) {
+                        Ok(Some(layout)) => line_cache.push(layout),
+                        Ok(None) => {}
+                        Err(e) => {
                             error!(error = ?e, "Failed to paint text");
                         }
-
-                        if visual.is_phantom_line {
-                            continue;
-                        }
-
-                        let layout = LineLayout::from_soft_wrap_visual(
-                            visual,
-                            shaped_line,
-                            soft_wrap_plan.y_offset,
-                        );
-                        line_cache.push(layout);
                     }
                 }
 

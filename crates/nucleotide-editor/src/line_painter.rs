@@ -9,6 +9,7 @@ use gpui::{
 use crate::{
     line_cache::{LineLayout, LineLayoutCache},
     line_plan::UnwrappedLinePaintPlan,
+    soft_wrap::SoftWrapLinePaintPlan,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -124,6 +125,68 @@ pub fn paint_unwrapped_editor_line(
     Ok(LineLayout::from_visible_line(params.plan.line, shaped_line))
 }
 
+pub struct SoftWrapEditorLinePaintParams<'a, 'b> {
+    pub plan: SoftWrapLinePaintPlan<'a>,
+    pub line_runs: &'b [TextRun],
+    pub line_cache: &'b LineLayoutCache,
+    pub font_size: Pixels,
+    pub viewport_width: Pixels,
+    pub line_height: Pixels,
+    pub cursorline_color: Option<Hsla>,
+    pub background_style: EditorLineBackgroundStyle,
+}
+
+pub fn paint_soft_wrap_editor_line(
+    window: &mut Window,
+    cx: &mut App,
+    params: SoftWrapEditorLinePaintParams<'_, '_>,
+) -> Result<Option<LineLayout>> {
+    if params.plan.is_cursor_visual_line
+        && let Some(cursorline_color) = params.cursorline_color
+    {
+        paint_cursorline_background(window, params.plan.cursorline_bounds, cursorline_color);
+    }
+
+    if params.plan.visual.text.is_empty() {
+        return Ok(None);
+    }
+
+    let text_system = window.text_system().clone();
+    let shaped_line = params.line_cache.shape_line_cached(
+        text_system.as_ref(),
+        SharedString::from(params.plan.visual.text.clone()),
+        params.font_size,
+        params.viewport_width,
+        params.line_runs,
+    );
+    paint_editor_line(
+        window,
+        cx,
+        &shaped_line,
+        params.line_runs,
+        params.plan.text_origin,
+        params.line_height,
+        params.background_style,
+    )?;
+
+    Ok(soft_wrap_layout_for_painted_line(params.plan, shaped_line))
+}
+
+fn soft_wrap_layout_for_painted_line(
+    plan: SoftWrapLinePaintPlan<'_>,
+    shaped_line: ShapedLine,
+) -> Option<LineLayout> {
+    if plan.visual.text.is_empty() || plan.visual.is_phantom_line {
+        return None;
+    }
+
+    Some(LineLayout::from_soft_wrap_visual(
+        plan.visual,
+        shaped_line,
+        plan.y_offset,
+    ))
+}
+
 fn should_paint_background(bg_color: Hsla, style: EditorLineBackgroundStyle) -> bool {
     !style.only_selection_backgrounds
         || approx_hsla_eq(bg_color, style.selection_primary)
@@ -140,9 +203,10 @@ fn approx_hsla_eq(a: Hsla, b: Hsla) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use gpui::rgb;
+    use gpui::{Bounds, ShapedLine, point, px, rgb, size};
 
     use super::*;
+    use crate::{SoftWrapLinePaintPlan, SoftWrapVisualLine};
 
     fn style(only_selection_backgrounds: bool) -> EditorLineBackgroundStyle {
         EditorLineBackgroundStyle {
@@ -176,5 +240,64 @@ mod tests {
         nearly_primary.l += 0.001;
 
         assert!(should_paint_background(nearly_primary, style(true)));
+    }
+
+    fn soft_wrap_visual(text: &str, is_phantom_line: bool) -> SoftWrapVisualLine {
+        SoftWrapVisualLine {
+            visual_line: 3,
+            doc_line: 11,
+            text: text.to_string(),
+            line_start_col: 0,
+            wrap_indicator_len: 0,
+            line_start_char: Some(30),
+            line_end_char: Some(30 + text.chars().count()),
+            segment_char_offset: 30,
+            text_start_byte_offset: 0,
+            is_phantom_line,
+        }
+    }
+
+    fn soft_wrap_plan(visual: &SoftWrapVisualLine) -> SoftWrapLinePaintPlan<'_> {
+        SoftWrapLinePaintPlan {
+            visual,
+            y_offset: px(72.0),
+            line_y: px(112.0),
+            text_origin: point(px(132.0), px(112.0)),
+            cursorline_bounds: Bounds::new(point(px(100.0), px(112.0)), size(px(500.0), px(20.0))),
+            is_cursor_visual_line: true,
+        }
+    }
+
+    #[test]
+    fn soft_wrap_layout_tracks_painted_visual_line_metadata() {
+        let visual = soft_wrap_visual("wrapped", false);
+        let layout =
+            soft_wrap_layout_for_painted_line(soft_wrap_plan(&visual), ShapedLine::default())
+                .unwrap();
+
+        assert_eq!(layout.line_idx, 11);
+        assert_eq!(layout.origin, point(px(0.0), px(72.0)));
+        assert_eq!(layout.segment_char_offset, 30);
+        assert_eq!(layout.text_start_byte_offset, 0);
+    }
+
+    #[test]
+    fn soft_wrap_layout_skips_phantom_visual_lines() {
+        let visual = soft_wrap_visual("phantom", true);
+
+        assert!(
+            soft_wrap_layout_for_painted_line(soft_wrap_plan(&visual), ShapedLine::default())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn soft_wrap_layout_skips_empty_visual_lines() {
+        let visual = soft_wrap_visual("", false);
+
+        assert!(
+            soft_wrap_layout_for_painted_line(soft_wrap_plan(&visual), ShapedLine::default())
+                .is_none()
+        );
     }
 }
