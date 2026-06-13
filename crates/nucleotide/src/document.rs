@@ -689,18 +689,9 @@ impl Element for DocumentElement {
                 None => return, // Document was closed
             };
 
-            // total_lines already updated above from document line count
-
-            // Sync scroll position from Helix to ensure we reflect auto-scroll
-            // This is important for keeping cursor visible during editing
-            let view_offset = doc.view_offset(self.view_id);
-            let text = doc.text();
-            let anchor_line = text.char_to_line(view_offset.anchor);
-            // Mirror Helix viewport: include vertical_offset (visual rows) for wrapped/non-wrapped
-            let top_visual = anchor_line.saturating_add(view_offset.vertical_offset);
-            // Preserve local sub-line wheel motion when Helix reports the same
-            // top line, but snap to Helix when commands/cursor movement change it.
-            self.viewport.sync_from_helix_top_visual_row(top_visual);
+            // Mirror Helix viewport while preserving local sub-line wheel motion
+            // when Helix reports the same top line.
+            self.viewport.sync_from_helix_view(doc, self.view_id);
 
             view.gutter_offset(doc)
         };

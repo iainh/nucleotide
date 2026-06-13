@@ -52,4 +52,6 @@ pub use soft_wrap::{
     SoftWrapVisualLine, SoftWrapVisualPosition, soft_wrap_visual_lines, soft_wrap_visual_position,
 };
 pub use surface::{EditorSurface, EditorSurfacePointerEvent};
-pub use viewport::{EditorViewport, ViewportScrollUpdate};
+pub use viewport::{
+    EditorViewport, HelixViewportSnapshot, ViewportScrollUpdate, helix_viewport_snapshot,
+};
