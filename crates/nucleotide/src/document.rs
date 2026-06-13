@@ -27,9 +27,9 @@ use helix_stdx::rope::RopeSliceExt;
 use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
     EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    LineLayoutCache, diagnostic_severity_by_line, document_text_format_for_surface,
-    hit_test_document_position, paint_line_backgrounds, soft_wrap_visual_lines,
-    soft_wrap_visual_position,
+    LineLayoutCache, cursor_has_reversed_modifier, cursor_style_for_mode,
+    diagnostic_severity_by_line, document_text_format_for_surface, hit_test_document_position,
+    paint_line_backgrounds, soft_wrap_visual_lines, soft_wrap_visual_position,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
@@ -1245,40 +1245,7 @@ impl Element for DocumentElement {
             let bg_color = tokens.editor.background;
             // Get mode-specific cursor theme like terminal version
             let mode = editor.mode();
-            let base_cursor_style = cx.theme_style("ui.cursor");
-            let base_primary_cursor_style = cx.theme_style("ui.cursor.primary");
-
-            // Try to get mode-specific cursor style, fallback to base
-            // Important: we need to patch styles to combine colors with modifiers
-            let cursor_style = match mode {
-                helix_view::document::Mode::Insert => {
-                    let style = cx.theme_style("ui.cursor.primary.insert");
-                    if style.fg.is_some() || style.bg.is_some() {
-                        // Patch with base cursor to get modifiers
-                        base_cursor_style.patch(style)
-                    } else {
-                        base_cursor_style.patch(base_primary_cursor_style)
-                    }
-                }
-                helix_view::document::Mode::Select => {
-                    let style = cx.theme_style("ui.cursor.primary.select");
-                    if style.fg.is_some() || style.bg.is_some() {
-                        // Patch with base cursor to get modifiers
-                        base_cursor_style.patch(style)
-                    } else {
-                        base_cursor_style.patch(base_primary_cursor_style)
-                    }
-                }
-                helix_view::document::Mode::Normal => {
-                    let style = cx.theme_style("ui.cursor.primary.normal");
-                    if style.fg.is_some() || style.bg.is_some() {
-                        // Patch with base cursor to get modifiers
-                        base_cursor_style.patch(style)
-                    } else {
-                        base_cursor_style.patch(base_primary_cursor_style)
-                    }
-                }
-            };
+            let cursor_style = cursor_style_for_mode(mode, |key| cx.theme_style(key));
             let _bg = fill(bounds, bg_color);
             let fg_color = tokens.editor.text_primary;
 
@@ -1349,12 +1316,7 @@ impl Element for DocumentElement {
 
                     if !char_str.is_empty() {
                         // Check if cursor has reversed modifier
-                        let has_reversed = cursor_style
-                            .add_modifier
-                            .contains(helix_view::graphics::Modifier::REVERSED)
-                            && !cursor_style
-                                .sub_modifier
-                                .contains(helix_view::graphics::Modifier::REVERSED);
+                        let has_reversed = cursor_has_reversed_modifier(&cursor_style);
 
                         // For block cursor, determine text color based on reversed state
                         let text_color = if has_reversed {
@@ -2048,40 +2010,9 @@ impl Element for DocumentElement {
                                     None
                                 };
 
-                            // Get cursor style
                             let mode = editor.mode();
-                            let base_cursor_style = cx.theme_style("ui.cursor");
-                            let base_primary_cursor_style = cx.theme_style("ui.cursor.primary");
-                            // Important: we need to patch styles to combine colors with modifiers
-                            let cursor_style = match mode {
-                                helix_view::document::Mode::Insert => {
-                                    let style = cx.theme_style("ui.cursor.primary.insert");
-                                    if style.fg.is_some() || style.bg.is_some() {
-                                        // Patch with base cursor to get modifiers
-                                        base_cursor_style.patch(style)
-                                    } else {
-                                        base_cursor_style.patch(base_primary_cursor_style)
-                                    }
-                                }
-                                helix_view::document::Mode::Select => {
-                                    let style = cx.theme_style("ui.cursor.primary.select");
-                                    if style.fg.is_some() || style.bg.is_some() {
-                                        // Patch with base cursor to get modifiers
-                                        base_cursor_style.patch(style)
-                                    } else {
-                                        base_cursor_style.patch(base_primary_cursor_style)
-                                    }
-                                }
-                                helix_view::document::Mode::Normal => {
-                                    let style = cx.theme_style("ui.cursor.primary.normal");
-                                    if style.fg.is_some() || style.bg.is_some() {
-                                        // Patch with base cursor to get modifiers
-                                        base_cursor_style.patch(style)
-                                    } else {
-                                        base_cursor_style.patch(base_primary_cursor_style)
-                                    }
-                                }
-                            };
+                            let cursor_style =
+                                cursor_style_for_mode(mode, |key| cx.theme_style(key));
 
                             // Get text style at cursor for reversed modifier
                             let text_style_at_cursor = Self::get_text_style_at_position(
@@ -2139,12 +2070,7 @@ impl Element for DocumentElement {
                             + (after_layout.cell_width * visual_col_in_viewport);
 
                         // Check if cursor has reversed modifier
-                        let has_reversed = cursor_style
-                            .add_modifier
-                            .contains(helix_view::graphics::Modifier::REVERSED)
-                            && !cursor_style
-                                .sub_modifier
-                                .contains(helix_view::graphics::Modifier::REVERSED);
+                        let has_reversed = cursor_has_reversed_modifier(&cursor_style);
 
                         let cursor_color = if has_reversed {
                             // For reversed cursor: use the text color at cursor position as cursor background
@@ -2666,12 +2592,7 @@ impl Element for DocumentElement {
                             );
 
                             // Check if cursor has reversed modifier
-                            let has_reversed = cursor_style
-                                .add_modifier
-                                .contains(helix_view::graphics::Modifier::REVERSED)
-                                && !cursor_style
-                                    .sub_modifier
-                                    .contains(helix_view::graphics::Modifier::REVERSED);
+                            let has_reversed = cursor_has_reversed_modifier(&cursor_style);
 
                             // For reversed cursor, we need to get the text style at cursor position
                             let cursor_color = if has_reversed {
@@ -2760,12 +2681,7 @@ impl Element for DocumentElement {
                                 let cursor_y = phantom_text_bounds.origin.y + y_offset; // At the phantom line position
 
                                 // Check if cursor has reversed modifier (same logic as normal cursor)
-                                let has_reversed = cursor_style
-                                    .add_modifier
-                                    .contains(helix_view::graphics::Modifier::REVERSED)
-                                    && !cursor_style
-                                        .sub_modifier
-                                        .contains(helix_view::graphics::Modifier::REVERSED);
+                                let has_reversed = cursor_has_reversed_modifier(&cursor_style);
 
                                 // For reversed cursor, we need to get the text style at cursor position
                                 let cursor_color = if has_reversed {
