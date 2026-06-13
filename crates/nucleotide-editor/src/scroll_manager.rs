@@ -1,36 +1,26 @@
-// ABOUTME: Manages scroll state synchronization between Helix editor and GPUI UI
-// ABOUTME: Converts between pixel-based scrolling (GPUI) and line-based anchors (Helix)
+// ABOUTME: Native pixel scroll state for the GPUI editor viewport
+// ABOUTME: Tracks visual-row positions and sub-row offsets for smooth scrolling
 
 use gpui::{Pixels, Point, Size, point, px, size};
-use helix_view::Document;
 use nucleotide_logging::debug;
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// ViewOffset represents the scroll position of a view in the document
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ViewOffset {
-    pub anchor: usize,
-    pub horizontal_offset: usize,
-    pub vertical_offset: usize,
-}
-
-/// Manages scroll state for a document view, synchronizing between
-/// GPUI's pixel-based scrolling and Helix's line-based viewport
+/// Manages native scroll state for a document viewport.
 #[derive(Clone, Debug)]
 pub struct ScrollManager {
     /// Unique ID for debugging
     id: usize,
     /// Cached line height in pixels
-    pub line_height: Rc<Cell<Pixels>>,
+    line_height: Rc<Cell<Pixels>>,
     /// Total number of lines in the document
-    pub total_lines: Rc<Cell<usize>>,
+    total_lines: Rc<Cell<usize>>,
     /// Current scroll position in pixels (positive when scrolled down/right)
-    pub scroll_position: Rc<Cell<Point<Pixels>>>,
+    scroll_position: Rc<Cell<Point<Pixels>>>,
     /// Viewport size in pixels
-    pub viewport_size: Rc<Cell<Size<Pixels>>>,
+    viewport_size: Rc<Cell<Size<Pixels>>>,
     /// Track if native viewport scroll changed and needs sync to Helix
-    pub pending_view_sync: Rc<Cell<bool>>,
+    pending_view_sync: Rc<Cell<bool>>,
 }
 
 impl ScrollManager {
@@ -48,18 +38,38 @@ impl ScrollManager {
         }
     }
 
+    pub(crate) fn line_height(&self) -> Pixels {
+        self.line_height.get()
+    }
+
+    pub(crate) fn total_lines(&self) -> usize {
+        self.total_lines.get()
+    }
+
+    pub(crate) fn viewport_size(&self) -> Size<Pixels> {
+        self.viewport_size.get()
+    }
+
+    pub(crate) fn has_pending_view_sync(&self) -> bool {
+        self.pending_view_sync.get()
+    }
+
+    pub(crate) fn clear_pending_view_sync(&self) {
+        self.pending_view_sync.set(false);
+    }
+
     /// Update the total number of lines in the document
-    pub fn set_total_lines(&mut self, total_lines: usize) {
+    pub(crate) fn set_total_lines(&mut self, total_lines: usize) {
         self.total_lines.set(total_lines);
     }
 
     /// Update the viewport size
-    pub fn set_viewport_size(&mut self, size: Size<Pixels>) {
+    pub(crate) fn set_viewport_size(&mut self, size: Size<Pixels>) {
         self.viewport_size.set(size);
     }
 
     /// Update the line height
-    pub fn set_line_height(&mut self, line_height: Pixels) {
+    pub(crate) fn set_line_height(&mut self, line_height: Pixels) {
         self.line_height.set(line_height);
     }
 
@@ -87,24 +97,14 @@ impl ScrollManager {
 
     /// Set the scroll position in pixels from native interaction (positive when scrolled down/right)
     /// This marks the position as needing sync back to Helix
-    pub fn set_scroll_position(&self, position: Point<Pixels>) {
+    pub(crate) fn set_scroll_position(&self, position: Point<Pixels>) {
         self.set_scroll_position_internal(position, true);
     }
 
     /// Set the scroll offset in pixels from native interaction (negative when scrolled down/right)
     /// This marks the position as needing sync back to Helix
-    pub fn set_scroll_offset(&self, offset: Point<Pixels>) {
+    pub(crate) fn set_scroll_offset(&self, offset: Point<Pixels>) {
         self.set_scroll_offset_internal(offset, true);
-    }
-
-    /// Set the scroll position from Helix sync (doesn't mark as scrollbar-changed)
-    pub fn set_scroll_position_from_helix(&self, position: Point<Pixels>) {
-        self.set_scroll_position_internal(position, false);
-    }
-
-    /// Set the scroll offset from Helix sync (doesn't mark as scrollbar-changed)
-    pub fn set_scroll_offset_from_helix(&self, offset: Point<Pixels>) {
-        self.set_scroll_offset_internal(offset, false);
     }
 
     fn set_scroll_offset_internal(&self, offset: Point<Pixels>, from_native_view: bool) {
@@ -118,7 +118,7 @@ impl ScrollManager {
     /// scroll position crossed. Wheel scrolling uses this to keep fractional
     /// pixel movement local while letting the GUI viewport decide when to sync
     /// the visible visual row back to Helix.
-    pub fn scroll_by_delta(&self, delta: Point<Pixels>) -> (bool, isize) {
+    pub(crate) fn scroll_by_delta(&self, delta: Point<Pixels>) -> (bool, isize) {
         let old_position = self.scroll_position.get();
         let old_line = self.pixels_to_anchor(old_position.y);
         let next_offset = self.scroll_offset() + delta;
@@ -135,9 +135,9 @@ impl ScrollManager {
         (old_position != new_position, crossed_lines)
     }
 
-    /// Set the scroll position from Helix while retaining a local sub-line
-    /// pixel offset if both positions point at the same top line.
-    pub fn set_scroll_position_from_helix_preserving_intra_line_offset(
+    /// Set the scroll position from an external view sync while retaining a
+    /// local sub-row pixel offset if both positions point at the same top row.
+    pub(crate) fn set_scroll_position_from_view_sync_preserving_subrow_offset(
         &self,
         position: Point<Pixels>,
     ) {
@@ -154,7 +154,7 @@ impl ScrollManager {
     }
 
     /// Pixel distance scrolled within the current top line.
-    pub fn vertical_offset_within_line(&self) -> Pixels {
+    pub(crate) fn vertical_offset_within_line(&self) -> Pixels {
         let position_y = self.scroll_position.get().y;
         let top_line = self.pixels_to_anchor(position_y);
         (position_y - self.anchor_to_pixels(top_line)).max(px(0.0))
@@ -186,7 +186,7 @@ impl ScrollManager {
     }
 
     /// Convert a pixel scroll offset to a Helix viewport anchor (line number)
-    pub fn pixels_to_anchor(&self, y: Pixels) -> usize {
+    pub(crate) fn pixels_to_anchor(&self, y: Pixels) -> usize {
         let line_height = self.line_height.get();
         let total_lines = self.total_lines.get();
         let line = (y / line_height).floor() as usize;
@@ -194,99 +194,10 @@ impl ScrollManager {
     }
 
     /// Convert a Helix viewport anchor (line number) to pixel scroll offset
-    pub fn anchor_to_pixels(&self, anchor: usize) -> Pixels {
+    pub(crate) fn anchor_to_pixels(&self, anchor: usize) -> Pixels {
         let line_height = self.line_height.get();
         line_height * (anchor as f32)
     }
-
-    /// Update scroll position from Helix's ViewOffset
-    pub fn sync_from_helix(&mut self, view_offset: &ViewOffset, document: &Document) {
-        // ViewOffset.anchor is a character position, convert to line
-        let text = document.text();
-        let anchor_line = text.char_to_line(view_offset.anchor);
-        let y = self.anchor_to_pixels(anchor_line);
-        // Zed convention: positive position when scrolled down
-        let new_position = point(px(0.0), y);
-
-        // Update scroll position without marking as scrollbar-changed
-        // This is a sync FROM Helix, not a scrollbar action
-        self.set_scroll_position_from_helix(new_position);
-    }
-
-    /// Update Helix's ViewOffset from current scroll position
-    pub fn sync_to_helix(&self, document: &Document) -> ViewOffset {
-        let y = self.scroll_position.get().y;
-        // Zed convention: position.y is positive when scrolled down
-        let anchor_line = self.pixels_to_anchor(y);
-        let text = document.text();
-        let anchor = text.line_to_char(anchor_line);
-
-        ViewOffset {
-            anchor,
-            horizontal_offset: 0,
-            vertical_offset: 0,
-        }
-    }
-
-    /// Get the visible line range for the current scroll position
-    pub fn visible_line_range(&self) -> (usize, usize) {
-        let position = self.scroll_position.get();
-        let viewport = self.viewport_size.get();
-
-        // Zed convention: position.y is positive when scrolled down
-        let first_line = self.pixels_to_anchor(position.y);
-        let last_line = self.pixels_to_anchor(position.y + viewport.height) + 1;
-
-        let total_lines = self.total_lines.get();
-        let result = (first_line, last_line.min(total_lines));
-        debug!(
-            scroll_manager_id = self.id,
-            position = ?position,
-            viewport = ?viewport,
-            line_range = ?result,
-            "ScrollManager visible line range calculated"
-        );
-        result
-    }
-
-    /// Check if a line is visible in the current viewport
-    pub fn is_line_visible(&self, line: usize) -> bool {
-        let (first, last) = self.visible_line_range();
-        line >= first && line < last
-    }
-
-    /// Scroll to make a specific line visible
-    pub fn scroll_to_line(&mut self, line: usize, strategy: ScrollStrategy) {
-        let viewport_height = self.viewport_size.get().height;
-        let line_height = self.line_height.get();
-        let ratio = viewport_height / line_height;
-        let lines_per_viewport = (ratio as usize).max(1);
-
-        let target_y = match strategy {
-            ScrollStrategy::Top => self.anchor_to_pixels(line),
-            ScrollStrategy::Center => {
-                let center_offset = lines_per_viewport / 2;
-                self.anchor_to_pixels(line.saturating_sub(center_offset))
-            }
-            ScrollStrategy::Bottom => {
-                self.anchor_to_pixels(line.saturating_sub(lines_per_viewport - 1))
-            }
-        };
-
-        // Zed convention: positive position when scrolled down
-        self.set_scroll_position(point(px(0.0), target_y));
-    }
-}
-
-/// Strategy for scrolling to a specific line
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollStrategy {
-    /// Position the line at the top of the viewport
-    Top,
-    /// Position the line at the center of the viewport
-    Center,
-    /// Position the line at the bottom of the viewport
-    Bottom,
 }
 
 #[cfg(test)]
@@ -298,10 +209,10 @@ mod scroll_manager_tests {
         let line_height = px(20.0);
         let manager = ScrollManager::new(line_height);
 
-        assert_eq!(manager.line_height.get(), line_height);
-        assert_eq!(manager.total_lines.get(), 1);
+        assert_eq!(manager.line_height(), line_height);
+        assert_eq!(manager.total_lines(), 1);
         assert_eq!(manager.scroll_position(), point(px(0.0), px(0.0)));
-        assert!(!manager.pending_view_sync.get());
+        assert!(!manager.has_pending_view_sync());
     }
 
     #[test]
@@ -337,17 +248,17 @@ mod scroll_manager_tests {
         assert_eq!(crossed_lines, 0);
         assert_eq!(manager.scroll_position(), point(px(0.0), px(5.0)));
         assert_eq!(manager.vertical_offset_within_line(), px(5.0));
-        assert!(!manager.pending_view_sync.get());
+        assert!(!manager.has_pending_view_sync());
 
         let (_, crossed_lines) = manager.scroll_by_delta(point(px(0.0), px(-15.0)));
         assert_eq!(crossed_lines, 1);
         assert_eq!(manager.scroll_position(), point(px(0.0), px(20.0)));
         assert_eq!(manager.vertical_offset_within_line(), px(0.0));
-        assert!(manager.pending_view_sync.get());
+        assert!(manager.has_pending_view_sync());
     }
 
     #[test]
-    fn test_helix_sync_preserves_intra_line_offset_for_same_top_line() {
+    fn test_view_sync_preserves_subrow_offset_for_same_top_row() {
         let mut manager = ScrollManager::new(px(20.0));
         manager.set_total_lines(100);
         manager.set_viewport_size(size(px(800.0), px(400.0)));
@@ -357,12 +268,12 @@ mod scroll_manager_tests {
         assert_eq!(manager.vertical_offset_within_line(), px(5.0));
 
         manager
-            .set_scroll_position_from_helix_preserving_intra_line_offset(point(px(0.0), px(20.0)));
+            .set_scroll_position_from_view_sync_preserving_subrow_offset(point(px(0.0), px(20.0)));
         assert_eq!(manager.scroll_position(), point(px(0.0), px(25.0)));
         assert_eq!(manager.vertical_offset_within_line(), px(5.0));
 
         manager
-            .set_scroll_position_from_helix_preserving_intra_line_offset(point(px(0.0), px(40.0)));
+            .set_scroll_position_from_view_sync_preserving_subrow_offset(point(px(0.0), px(40.0)));
         assert_eq!(manager.scroll_position(), point(px(0.0), px(40.0)));
         assert_eq!(manager.vertical_offset_within_line(), px(0.0));
     }
@@ -470,159 +381,36 @@ mod scroll_manager_tests {
         manager.set_viewport_size(size(px(800.0), px(400.0))); // Set viewport size
 
         // Initial state
-        assert!(!manager.pending_view_sync.get());
+        assert!(!manager.has_pending_view_sync());
 
         // Setting position from a native interaction should set the flag
         manager.set_scroll_position(point(px(0.0), px(50.0)));
-        assert!(manager.pending_view_sync.get());
+        assert!(manager.has_pending_view_sync());
 
         // Reset flag manually
-        manager.pending_view_sync.set(false);
-        assert!(!manager.pending_view_sync.get());
+        manager.clear_pending_view_sync();
+        assert!(!manager.has_pending_view_sync());
 
-        // Setting position from Helix should NOT set the flag
-        manager.set_scroll_position_from_helix(point(px(0.0), px(100.0)));
-        assert!(!manager.pending_view_sync.get());
+        // Setting position from view sync should NOT set the flag
+        manager
+            .set_scroll_position_from_view_sync_preserving_subrow_offset(point(px(0.0), px(100.0)));
+        assert!(!manager.has_pending_view_sync());
 
         // Setting offset from a native interaction should set the flag
         manager.set_scroll_offset(point(px(0.0), px(-150.0)));
-        assert!(manager.pending_view_sync.get());
-
-        // Reset and test offset from Helix
-        manager.pending_view_sync.set(false);
-        manager.set_scroll_offset_from_helix(point(px(0.0), px(-200.0)));
-        assert!(!manager.pending_view_sync.get());
+        assert!(manager.has_pending_view_sync());
     }
 
     #[test]
-    fn test_visible_line_range_calculation() {
-        let mut manager = ScrollManager::new(px(20.0));
-        manager.set_total_lines(100);
-        manager.set_viewport_size(size(px(800.0), px(400.0))); // 400px / 20px = 20 lines visible
-
-        // Test at top of document
-        manager.set_scroll_position(point(px(0.0), px(0.0)));
-        let (first, last) = manager.visible_line_range();
-        assert_eq!(first, 0);
-        assert_eq!(last, 21); // 20 lines + 1 for partial visibility
-
-        // Test scrolled down
-        manager.set_scroll_position(point(px(0.0), px(100.0))); // 5 lines down
-        let (first, last) = manager.visible_line_range();
-        assert_eq!(first, 5);
-        assert_eq!(last, 26); // 5 + 20 + 1
-
-        // Test near end of document
-        manager.set_scroll_position(point(px(0.0), px(1600.0))); // 80 lines down
-        let (first, last) = manager.visible_line_range();
-        assert_eq!(first, 80);
-        assert_eq!(last, 100); // Should clamp to total_lines (100)
-    }
-
-    #[test]
-    fn test_is_line_visible() {
-        let mut manager = ScrollManager::new(px(20.0));
-        manager.set_total_lines(100);
-        manager.set_viewport_size(size(px(800.0), px(400.0))); // 20 lines visible
-
-        // At top of document (lines 0-20 visible)
-        manager.set_scroll_position(point(px(0.0), px(0.0)));
-        assert!(manager.is_line_visible(0));
-        assert!(manager.is_line_visible(10));
-        assert!(manager.is_line_visible(20));
-        assert!(!manager.is_line_visible(21));
-        assert!(!manager.is_line_visible(50));
-
-        // Scrolled to middle (lines 25-45 visible)
-        manager.set_scroll_position(point(px(0.0), px(500.0))); // 25 lines down
-        assert!(!manager.is_line_visible(24));
-        assert!(manager.is_line_visible(25));
-        assert!(manager.is_line_visible(35));
-        assert!(manager.is_line_visible(45));
-        assert!(!manager.is_line_visible(46));
-    }
-
-    #[test]
-    fn test_scroll_to_line_strategies() {
-        let mut manager = ScrollManager::new(px(20.0));
-        manager.set_total_lines(100);
-        manager.set_viewport_size(size(px(800.0), px(400.0))); // 20 lines visible
-
-        // Test scroll to top
-        manager.scroll_to_line(25, ScrollStrategy::Top);
-        assert_eq!(manager.scroll_position().y, px(500.0)); // 25 * 20px = 500px
-
-        // Test scroll to center
-        manager.scroll_to_line(25, ScrollStrategy::Center);
-        // Center strategy: line - (viewport_lines / 2) = 25 - 10 = 15
-        assert_eq!(manager.scroll_position().y, px(300.0)); // 15 * 20px = 300px
-
-        // Test scroll to bottom
-        manager.scroll_to_line(25, ScrollStrategy::Bottom);
-        // Bottom strategy: line - (viewport_lines - 1) = 25 - 19 = 6
-        assert_eq!(manager.scroll_position().y, px(120.0)); // 6 * 20px = 120px
-    }
-
-    #[test]
-    fn test_scroll_to_line_edge_cases() {
-        let mut manager = ScrollManager::new(px(20.0));
-        manager.set_total_lines(100);
-        manager.set_viewport_size(size(px(800.0), px(400.0))); // 20 lines visible
-
-        // Start from a non-zero position to ensure the flag gets set
-        manager.set_scroll_position(point(px(0.0), px(100.0)));
-        manager.pending_view_sync.set(false); // Reset flag
-
-        // Test scroll to line 0 with center strategy
-        manager.scroll_to_line(0, ScrollStrategy::Center);
-        // Should handle underflow: 0 - 10 = 0 (clamped by saturating_sub)
-        assert_eq!(manager.scroll_position().y, px(0.0));
-
-        // Test pending sync flag is set (position changed from 100px to 0px)
-        assert!(manager.pending_view_sync.get());
-
-        // Reset flag and test another edge case
-        manager.pending_view_sync.set(false);
-        manager.scroll_to_line(5, ScrollStrategy::Bottom);
-        // Should handle underflow: 5 - 19 = 0 (clamped by saturating_sub)
-        assert_eq!(manager.scroll_position().y, px(0.0));
-
-        // Flag should not be set since position didn't change (already at 0)
-        assert!(!manager.pending_view_sync.get());
-    }
-
-    #[test]
-    fn test_scroll_to_line_bottom_with_zero_height_viewport() {
-        let mut manager = ScrollManager::new(px(20.0));
-        manager.set_total_lines(100);
-        manager.set_viewport_size(size(px(800.0), px(0.0)));
-
-        manager.scroll_to_line(25, ScrollStrategy::Bottom);
-
-        assert_eq!(manager.scroll_position().y, px(500.0));
-    }
-
-    #[test]
-    fn test_basic_helix_sync_conversion() {
-        // Test basic conversion between pixels and anchors without Document dependency
+    fn test_basic_visual_row_conversion() {
         let mut manager = ScrollManager::new(px(20.0));
         manager.set_total_lines(50);
 
-        // Test pixels to anchor conversion that would be used in sync_to_helix
         let scroll_position_y = px(200.0); // 10 lines down
         let anchor_line = manager.pixels_to_anchor(scroll_position_y);
         assert_eq!(anchor_line, 10);
 
-        // Test anchor to pixels conversion that would be used in sync_from_helix
         let pixels = manager.anchor_to_pixels(15);
         assert_eq!(pixels, px(300.0)); // 15 * 20px = 300px
-
-        // Test that sync operations don't change pending native sync state inappropriately
-        manager.set_scroll_position_from_helix(point(px(0.0), px(100.0)));
-        assert!(!manager.pending_view_sync.get());
-
-        manager.set_scroll_offset_from_helix(point(px(0.0), px(-200.0)));
-        assert!(!manager.pending_view_sync.get());
-        assert_eq!(manager.scroll_position().y, px(200.0));
     }
 }
