@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use gpui::prelude::FluentBuilder;
 use gpui::size;
@@ -171,11 +171,75 @@ fn handle_editor_mouse_down(
     core: &Entity<Core>,
     doc_id: DocumentId,
     view_id: ViewId,
+    drag_anchor: &Cell<Option<usize>>,
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
+    if let Some(hit_test) = hit_test_editor_pointer(core, doc_id, view_id, event, cx) {
+        let target_pos = apply_editor_selection(
+            core,
+            doc_id,
+            view_id,
+            hit_test.char_idx,
+            hit_test.char_idx,
+            cx,
+        );
+
+        if let Some(target_pos) = target_pos {
+            drag_anchor.set(Some(target_pos));
+            debug!(
+                line_idx = hit_test.line_idx,
+                char_offset = hit_test.char_offset,
+                target_pos,
+                "Applied editor click selection"
+            );
+        }
+    } else {
+        drag_anchor.set(None);
+        debug!(
+            window_pos = ?event.position,
+            bounds = ?event.bounds,
+            line_height = %event.line_height,
+            "Click hit test did not find a rendered line"
+        );
+    }
+}
+
+fn handle_editor_mouse_drag(
+    core: &Entity<Core>,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    drag_anchor: &Cell<Option<usize>>,
+    event: EditorSurfacePointerEvent,
+    cx: &mut App,
+) {
+    let Some(anchor) = drag_anchor.get() else {
+        return;
+    };
+
+    if let Some(hit_test) = hit_test_editor_pointer(core, doc_id, view_id, event, cx)
+        && let Some(target_pos) =
+            apply_editor_selection(core, doc_id, view_id, anchor, hit_test.char_idx, cx)
+    {
+        debug!(
+            line_idx = hit_test.line_idx,
+            char_offset = hit_test.char_offset,
+            anchor,
+            target_pos,
+            "Applied editor drag selection"
+        );
+    }
+}
+
+fn hit_test_editor_pointer(
+    core: &Entity<Core>,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    event: EditorSurfacePointerEvent,
+    cx: &mut App,
+) -> Option<nucleotide_editor::EditorHitTestResult> {
     let line_cache = cx.global::<LineLayoutCache>();
-    let hit_test = {
+    {
         let core = core.read(cx);
         let editor = &core.editor;
         if let (Some(document), Some(view)) =
@@ -184,37 +248,34 @@ fn handle_editor_mouse_down(
             hit_test_document_position(event, view.gutter_offset(document), line_cache, document)
         } else {
             debug!("Could not get document/view for coordinate transformation");
-            return;
+            None
         }
-    };
-
-    if let Some(hit_test) = hit_test {
-        core.update(cx, |core, cx| {
-            let editor = &mut core.editor;
-            if let Some(document) = editor.document_mut(doc_id) {
-                let target_pos = hit_test.char_idx.min(document.text().len_chars());
-                let range = helix_core::Range::new(target_pos, target_pos);
-                let selection = helix_core::Selection::new(helix_core::SmallVec::from([range]), 0);
-                document.set_selection(view_id, selection);
-
-                debug!(
-                    line_idx = hit_test.line_idx,
-                    char_offset = hit_test.char_offset,
-                    target_pos,
-                    "Applied editor click selection"
-                );
-
-                cx.notify();
-            }
-        });
-    } else {
-        debug!(
-            window_pos = ?event.position,
-            bounds = ?event.bounds,
-            line_height = %event.line_height,
-            "Click hit test did not find a rendered line"
-        );
     }
+}
+
+fn apply_editor_selection(
+    core: &Entity<Core>,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    anchor: usize,
+    head: usize,
+    cx: &mut App,
+) -> Option<usize> {
+    let mut applied_head = None;
+    core.update(cx, |core, cx| {
+        let editor = &mut core.editor;
+        if let Some(document) = editor.document_mut(doc_id) {
+            let text_len = document.text().len_chars();
+            let anchor = anchor.min(text_len);
+            let head = head.min(text_len);
+            let range = helix_core::Range::new(anchor, head);
+            let selection = helix_core::Selection::new(helix_core::SmallVec::from([range]), 0);
+            document.set_selection(view_id, selection);
+            applied_head = Some(head);
+            cx.notify();
+        }
+    });
+    applied_head
 }
 
 pub struct DocumentView {
@@ -226,6 +287,7 @@ pub struct DocumentView {
     viewport: EditorViewport,
     scrollbar_state: ScrollbarState,
     line_height: Pixels,
+    drag_anchor: Rc<Cell<Option<usize>>>,
     /// Last cursor position in window coordinates (for completion positioning)
     last_cursor_position: Option<gpui::Point<Pixels>>,
     /// Last cursor dimensions (for completion positioning)  
@@ -257,6 +319,7 @@ impl DocumentView {
             viewport,
             scrollbar_state,
             line_height,
+            drag_anchor: Rc::new(Cell::new(None)),
             last_cursor_position: None,
             last_cursor_size: None,
         }
@@ -452,13 +515,28 @@ impl Render for DocumentView {
         .on_mouse_down({
             let core = self.core.clone();
             let view_id = self.view_id;
+            let drag_anchor = self.drag_anchor.clone();
 
             move |event: EditorSurfacePointerEvent, cx| {
-                handle_editor_mouse_down(&core, doc_id, view_id, event, cx);
+                handle_editor_mouse_down(&core, doc_id, view_id, &drag_anchor, event, cx);
             }
         })
-        .on_mouse_up(|event: EditorSurfacePointerEvent, _cx| {
-            debug!(position = ?event.position, "Mouse up event - click completed");
+        .on_mouse_drag({
+            let core = self.core.clone();
+            let view_id = self.view_id;
+            let drag_anchor = self.drag_anchor.clone();
+
+            move |event: EditorSurfacePointerEvent, cx| {
+                handle_editor_mouse_drag(&core, doc_id, view_id, &drag_anchor, event, cx);
+            }
+        })
+        .on_mouse_up({
+            let drag_anchor = self.drag_anchor.clone();
+
+            move |event: EditorSurfacePointerEvent, _cx| {
+                drag_anchor.set(None);
+                debug!(position = ?event.position, "Mouse up event - click completed");
+            }
         });
 
         // Create the scrollbar
@@ -740,8 +818,6 @@ impl Element for DocumentElement {
             cache
         };
         line_cache.clear(); // Clear previous layouts
-
-        // TODO: Add drag selection through EditorSurface once native pointer state is in place.
 
         let is_focused = self.is_focused;
 
