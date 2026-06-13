@@ -9,10 +9,10 @@ use gpui::{
     TextStyle, Window, div, fill, px, relative, white,
 };
 use gpui::{TextRun, point, size};
-use helix_core::{Uri, graphemes::next_grapheme_boundary, ropey::RopeSlice};
+use helix_core::Uri;
 use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
-use helix_view::{DocumentId, Theme, ViewId, graphics::CursorKind};
+use helix_view::{DocumentId, Theme, ViewId};
 use nucleotide_logging::{debug, error};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
@@ -21,10 +21,11 @@ use crate::Core;
 use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
     EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    GutterLineParams, HighlightLineParams, LineLayoutCache, build_gutter_lines,
-    cursor_has_reversed_modifier, cursor_style_for_mode, cursor_text_run, diagnostic_overlay_spans,
-    diagnostic_severity_by_line, document_text_format_for_surface, gpui_hsla_to_helix_color,
-    highlight_line, hit_test_document_position, paint_line_backgrounds, soft_wrap_visual_lines,
+    GutterLineParams, HighlightLineParams, LineLayoutCache, block_cursor_text, build_gutter_lines,
+    cursor_background_color, cursor_foreground_color, cursor_has_reversed_modifier,
+    cursor_style_for_mode, diagnostic_overlay_spans, diagnostic_severity_by_line,
+    document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
+    hit_test_document_position, paint_line_backgrounds, shape_cursor_text, soft_wrap_visual_lines,
     soft_wrap_visual_position, text_style_at_position,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
@@ -549,15 +550,6 @@ impl DocumentElement {
     }
 }
 
-struct RopeWrapper<'a>(RopeSlice<'a>);
-
-impl<'a> From<RopeWrapper<'a>> for SharedString {
-    fn from(val: RopeWrapper<'a>) -> Self {
-        let cow: Cow<'_, str> = val.0.into();
-        cow.to_string().into() // this is crazy
-    }
-}
-
 impl Element for DocumentElement {
     type RequestLayoutState = ();
 
@@ -841,68 +833,25 @@ impl Element for DocumentElement {
             let (first_row, last_row_from_scroll) = self.viewport.visible_visual_range();
             let scroll_line_offset = self.viewport.offset_within_row();
 
-            // Get the character under the cursor for block cursor mode
-            let cursor_text = if matches!(cursor_kind, CursorKind::Block) && self.is_focused {
-                // Get the actual cursor position in the document
-                let cursor_char_idx = document
-                    .selection(self.view_id)
-                    .primary()
-                    .cursor(text.slice(..));
-
-                if cursor_char_idx < text.len_chars() {
-                    // Use grapheme boundary for proper character extraction
-                    let grapheme_end = next_grapheme_boundary(text.slice(..), cursor_char_idx);
-                    let char_slice = text.slice(cursor_char_idx..grapheme_end);
-                    let char_str: SharedString = RopeWrapper(char_slice).into();
-
-                    // Don't show visible characters for newlines in cursor
-                    let char_str = if char_str == "\n" || char_str == "\r\n" || char_str == "\r" {
-                        " ".into() // Use space for newlines so cursor is visible but no symbol
-                    } else {
-                        char_str
-                    };
-
-                    if !char_str.is_empty() {
-                        // Check if cursor has reversed modifier
-                        let has_reversed = cursor_has_reversed_modifier(&cursor_style);
-
-                        // For block cursor, determine text color based on reversed state
-                        let text_color = if has_reversed {
-                            // For reversed cursor: text should use the document background for contrast
-                            // since the cursor is now using the text's foreground color
-                            bg_color
-                        } else if let Some(fg) = cursor_style.fg {
-                            // Normal cursor with explicit foreground
-                            color_to_hsla(fg).unwrap_or(white())
-                        } else {
-                            // No cursor.fg defined, use white as default text color
-                            white()
-                        };
-
-                        let _run = TextRun {
-                            len: char_str.len(),
-                            font: self.style.font(),
-                            color: text_color,
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-
-                        Some((char_str, text_color))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
             // Extract cursor position early to check for phantom line
             let cursor_char_idx = document
                 .selection(self.view_id)
                 .primary()
                 .cursor(text.slice(..));
+            let cursor_text = block_cursor_text(
+                text.slice(..),
+                cursor_char_idx,
+                cursor_kind,
+                self.is_focused,
+            )
+            .map(|char_str| {
+                let text_color = cursor_foreground_color(
+                    &cursor_style,
+                    cursor_has_reversed_modifier(&cursor_style),
+                    bg_color,
+                );
+                (char_str, text_color)
+            });
             // Get the line number where the cursor is located
             let cursor_line_num = text.char_to_line(cursor_char_idx);
             debug!(
@@ -1020,45 +969,33 @@ impl Element for DocumentElement {
             let _tab_width = document.tab_width() as u16;
 
             // Shape cursor text before dropping core borrow and keep its length
-            let (cursor_text_shaped, cursor_text_len) = cursor_text
-                .map(|(char_str, text_color)| {
-                    let text_len = char_str.len();
-                    // Derive the original text style at the cursor to preserve italics/bold/underline
-                    let text_style_at_cursor = {
-                        let core = self.core.read(cx);
-                        let editor = &core.editor;
-                        if let Some(doc) = editor.document(self.doc_id) {
-                            let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                            let loader = editor.syn_loader.load();
-                            text_style_at_position(
-                                doc,
-                                self.view_id,
-                                theme,
-                                &loader,
-                                cursor_char_idx,
-                            )
-                        } else {
-                            helix_view::graphics::Style::default()
-                        }
-                    };
+            let (cursor_text_shape, cursor_text_style) = {
+                let text_style_at_cursor = {
+                    let core = self.core.read(cx);
+                    let editor = &core.editor;
+                    if let Some(doc) = editor.document(self.doc_id) {
+                        let theme = cx.global::<crate::ThemeManager>().helix_theme();
+                        let loader = editor.syn_loader.load();
+                        text_style_at_position(doc, self.view_id, theme, &loader, cursor_char_idx)
+                    } else {
+                        helix_view::graphics::Style::default()
+                    }
+                };
 
-                    let run = cursor_text_run(
-                        &self.style.font(),
-                        text_len,
-                        &text_style_at_cursor,
-                        text_color,
-                        bg_color,
-                    );
+                let (cursor_text, text_color) =
+                    cursor_text.map_or((None, white()), |(text, color)| (Some(text), color));
+                let cursor_text_shape = shape_cursor_text(
+                    window.text_system().as_ref(),
+                    cursor_text,
+                    &self.style.font(),
+                    self.style.font_size.to_pixels(px(16.0)),
+                    &text_style_at_cursor,
+                    text_color,
+                    bg_color,
+                );
 
-                    let shaped = window.text_system().shape_line(
-                        char_str,
-                        self.style.font_size.to_pixels(px(16.0)),
-                        &[run],
-                        None,
-                    );
-                    (Some(shaped), text_len)
-                })
-                .unwrap_or((None, 0));
+                (cursor_text_shape, text_style_at_cursor)
+            };
 
             // Drop the core borrow before the loop
             // core goes out of scope here
@@ -1535,32 +1472,12 @@ impl Element for DocumentElement {
                             let cursor_char_idx = selection.primary().cursor(text);
                             let (_, cursor_kind) = editor.cursor();
 
-                            // Get the character under the cursor for block cursor mode
-                            let cursor_text =
-                                if matches!(cursor_kind, CursorKind::Block) && self.is_focused {
-                                    if cursor_char_idx < text.len_chars() {
-                                        let grapheme_end =
-                                            next_grapheme_boundary(text, cursor_char_idx);
-                                        let char_slice = text.slice(cursor_char_idx..grapheme_end);
-                                        let char_str: SharedString = RopeWrapper(char_slice).into();
-
-                                        // Don't show visible characters for newlines in cursor
-                                        let char_str = if char_str == "\n"
-                                            || char_str == "\r\n"
-                                            || char_str == "\r"
-                                        {
-                                            " ".into() // Use space for newlines so cursor is visible but no symbol
-                                        } else {
-                                            char_str
-                                        };
-
-                                        Some(char_str)
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                };
+                            let cursor_text = block_cursor_text(
+                                text,
+                                cursor_char_idx,
+                                cursor_kind,
+                                self.is_focused,
+                            );
 
                             let mode = editor.mode();
                             let cursor_style =
@@ -1622,65 +1539,21 @@ impl Element for DocumentElement {
                         let cursor_x = text_bounds.origin.x
                             + (after_layout.cell_width * visual_col_in_viewport);
 
-                        // Check if cursor has reversed modifier
                         let has_reversed = cursor_has_reversed_modifier(&cursor_style);
-
-                        let cursor_color = if has_reversed {
-                            // For reversed cursor: use the text color at cursor position as cursor background
-                            // Use the pre-calculated text style
-                            text_style_at_cursor
-                                .fg
-                                .and_then(color_to_hsla)
-                                .unwrap_or(fg_color)
-                        } else {
-                            // Normal cursor: use cursor's background color
-                            cursor_style
-                                .bg
-                                .and_then(color_to_hsla)
-                                .or_else(|| cursor_style.fg.and_then(color_to_hsla))
-                                .unwrap_or(fg_color)
-                        };
-
-                        // Shape cursor text if available and calculate its width
-                        let (cursor_text_shaped, cursor_text_len) = cursor_text
-                            .map(|char_str| {
-                                let text_len = char_str.len();
-                                // For block cursor, text should contrast with cursor background
-                                let text_color = if has_reversed {
-                                    bg_color
-                                } else if let Some(fg) = cursor_style.fg {
-                                    color_to_hsla(fg).unwrap_or(white())
-                                } else {
-                                    white()
-                                };
-
-                                let run = cursor_text_run(
-                                    &self.style.font(),
-                                    text_len,
-                                    &text_style_at_cursor,
-                                    text_color,
-                                    bg_color,
-                                );
-
-                                let shaped = window.text_system().shape_line(
-                                    char_str,
-                                    self.style.font_size.to_pixels(px(16.0)),
-                                    &[run],
-                                    None,
-                                );
-                                (Some(shaped), text_len)
-                            })
-                            .unwrap_or((None, 0));
-
-                        // Calculate cursor width based on the actual character width
-                        let cursor_width = if let Some(ref shaped_text) = cursor_text_shaped {
-                            // Get the width of the shaped text by measuring to the end
-                            // x_for_index gives us the x position at the end of the text
-                            shaped_text.x_for_index(cursor_text_len)
-                        } else {
-                            // Default to cell width for empty cursor
-                            after_layout.cell_width
-                        };
+                        let cursor_color =
+                            cursor_background_color(&cursor_style, &text_style_at_cursor, fg_color);
+                        let cursor_text_color =
+                            cursor_foreground_color(&cursor_style, has_reversed, bg_color);
+                        let cursor_text_shape = shape_cursor_text(
+                            window.text_system().as_ref(),
+                            cursor_text,
+                            &self.style.font(),
+                            self.style.font_size.to_pixels(px(16.0)),
+                            &text_style_at_cursor,
+                            cursor_text_color,
+                            bg_color,
+                        );
+                        let cursor_width = cursor_text_shape.width_or(after_layout.cell_width);
 
                         // Create and paint cursor
                         let mut cursor = EditorCursor {
@@ -1689,7 +1562,7 @@ impl Element for DocumentElement {
                             color: cursor_color,
                             block_width: cursor_width,
                             line_height: after_layout.line_height,
-                            text: cursor_text_shaped,
+                            text: cursor_text_shape.into_shaped_line(),
                         };
 
                         // Store cursor position for overlay positioning
@@ -2147,55 +2020,12 @@ impl Element for DocumentElement {
                                 relative_cursor_y, // Relative Y coordinate (line-relative)
                             );
 
-                            // Check if cursor has reversed modifier
-                            let has_reversed = cursor_has_reversed_modifier(&cursor_style);
-
-                            // For reversed cursor, we need to get the text style at cursor position
-                            let cursor_color = if has_reversed {
-                                // Get the styled text color at cursor position
-                                // We need to access core again to get the document
-                                let text_style_at_cursor = {
-                                    let core = self.core.read(cx);
-                                    let editor = &core.editor;
-                                    let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                                    if let Some(doc) = editor.document(self.doc_id) {
-                                        let loader = editor.syn_loader.load();
-                                        text_style_at_position(
-                                            doc,
-                                            self.view_id,
-                                            theme,
-                                            &loader,
-                                            cursor_char_idx,
-                                        )
-                                    } else {
-                                        // Default style if document not found
-                                        helix_view::graphics::Style::default()
-                                    }
-                                };
-
-                                // Use the text's foreground color as cursor background
-                                text_style_at_cursor
-                                    .fg
-                                    .and_then(color_to_hsla)
-                                    .unwrap_or(fg_color)
-                            } else {
-                                // Normal cursor: use cursor's background color
-                                cursor_style
-                                    .bg
-                                    .and_then(color_to_hsla)
-                                    .or_else(|| cursor_style.fg.and_then(color_to_hsla))
-                                    .unwrap_or(fg_color)
-                            };
-
-                            // Calculate cursor width based on the actual character width
-                            let cursor_width = if let Some(ref shaped_text) = cursor_text_shaped {
-                                // Get the width of the shaped text by measuring to the end
-                                // x_for_index gives us the x position at the end of the text
-                                shaped_text.x_for_index(cursor_text_len)
-                            } else {
-                                // Default to cell width for empty cursor
-                                after_layout.cell_width
-                            };
+                            let cursor_color = cursor_background_color(
+                                &cursor_style,
+                                &cursor_text_style,
+                                fg_color,
+                            );
+                            let cursor_width = cursor_text_shape.width_or(after_layout.cell_width);
 
                             let mut cursor = EditorCursor {
                                 origin: cursor_origin,
@@ -2203,7 +2033,7 @@ impl Element for DocumentElement {
                                 color: cursor_color,
                                 block_width: cursor_width,
                                 line_height: after_layout.line_height,
-                                text: cursor_text_shaped,
+                                text: cursor_text_shape.clone().into_shaped_line(),
                             };
 
                             // Paint cursor at absolute window coordinates
@@ -2237,47 +2067,11 @@ impl Element for DocumentElement {
                                 let cursor_x = phantom_text_bounds.origin.x; // Start of line
                                 let cursor_y = phantom_text_bounds.origin.y + y_offset; // At the phantom line position
 
-                                // Check if cursor has reversed modifier (same logic as normal cursor)
-                                let has_reversed = cursor_has_reversed_modifier(&cursor_style);
-
-                                // For reversed cursor, we need to get the text style at cursor position
-                                let cursor_color = if has_reversed {
-                                    // Get the styled text color at cursor position
-                                    let text_style_at_cursor = {
-                                        let core = self.core.read(cx);
-                                        let editor = &core.editor;
-                                        let theme =
-                                            cx.global::<crate::ThemeManager>().helix_theme();
-                                        if let Some(doc) = editor.document(self.doc_id) {
-                                            let loader = editor.syn_loader.load();
-                                            text_style_at_position(
-                                                doc,
-                                                self.view_id,
-                                                theme,
-                                                &loader,
-                                                cursor_char_idx,
-                                            )
-                                        } else {
-                                            // Default style if document not found
-                                            helix_view::graphics::Style::default()
-                                        }
-                                    };
-
-                                    // Use the text's foreground color as cursor background
-                                    text_style_at_cursor
-                                        .fg
-                                        .and_then(color_to_hsla)
-                                        .unwrap_or(fg_color)
-                                } else {
-                                    // Normal cursor: use cursor's background color
-                                    cursor_style
-                                        .bg
-                                        .and_then(color_to_hsla)
-                                        .or_else(|| cursor_style.fg.and_then(color_to_hsla))
-                                        .unwrap_or(fg_color)
-                                };
-
-                                // Use default cursor width
+                                let cursor_color = cursor_background_color(
+                                    &cursor_style,
+                                    &cursor_text_style,
+                                    fg_color,
+                                );
                                 let cursor_width = after_layout.cell_width;
 
                                 let mut cursor = EditorCursor {
@@ -2286,7 +2080,7 @@ impl Element for DocumentElement {
                                     color: cursor_color,
                                     block_width: cursor_width,
                                     line_height: after_layout.line_height,
-                                    text: cursor_text_shaped,
+                                    text: cursor_text_shape.into_shaped_line(),
                                 };
 
                                 // Store cursor position for overlay positioning
