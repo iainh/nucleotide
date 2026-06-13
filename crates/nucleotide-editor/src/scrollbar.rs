@@ -3,10 +3,10 @@
 
 use std::{cell::Cell, rc::Rc};
 
+use gpui::InteractiveElement as _;
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, EntityId, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Style, Window, fill, hsla, px, relative,
+    App, Bounds, Component, EntityId, Hsla, IntoElement, MouseButton, ParentElement as _, Pixels,
+    RenderOnce, Styled as _, Window, div, hsla, px,
 };
 
 use crate::{EditorViewport, ViewportScrollUpdate};
@@ -118,175 +118,140 @@ impl EditorScrollbar {
 }
 
 impl IntoElement for EditorScrollbar {
-    type Element = Self;
+    type Element = Component<Self>;
 
     fn into_element(self) -> Self::Element {
-        self
+        Component::new(self)
     }
 }
 
-impl Element for EditorScrollbar {
-    type RequestLayoutState = ();
-    type PrepaintState = Option<Hitbox>;
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.size.width = if self.is_visible() {
-            TRACK_WIDTH.into()
-        } else {
-            px(0.0).into()
-        };
-        style.size.height = relative(1.0).into();
-        (window.request_layout(style, None, cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        _cx: &mut App,
-    ) -> Self::PrepaintState {
-        if bounds.size.width <= px(0.0) || thumb_for_bounds(&self.viewport, bounds).is_none() {
+impl RenderOnce for EditorScrollbar {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        if !self.is_visible() {
             self.state.set_track_bounds(None);
-            return None;
+            return empty_scrollbar_track();
         }
 
-        self.state.set_track_bounds(Some(bounds));
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            Some(window.insert_hitbox(bounds, HitboxBehavior::Normal))
-        })
-    }
+        let state = self.state.clone();
+        let viewport = self.viewport.clone();
+        let on_scroll = self.on_scroll.clone();
+        let view_entity_id = self.view_entity_id;
+        let mut track = div()
+            .relative()
+            .size_full()
+            .bg(self.track_color)
+            .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
+                let Some(bounds) = state.track_bounds() else {
+                    return;
+                };
+                if !bounds.contains(&event.position) {
+                    return;
+                }
 
-    fn paint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        hitbox: &mut Self::PrepaintState,
-        window: &mut Window,
-        _cx: &mut App,
-    ) {
-        let Some(_hitbox) = hitbox else {
-            return;
-        };
-        let Some(thumb) = thumb_for_bounds(&self.viewport, bounds) else {
-            self.state.set_track_bounds(None);
-            return;
-        };
+                let Some(thumb) = thumb_for_bounds(&viewport, bounds) else {
+                    return;
+                };
+                let pointer_y = event.position.y - bounds.origin.y;
+                let drag_offset = if pointer_y >= thumb.top && pointer_y <= thumb.top + thumb.height
+                {
+                    pointer_y - thumb.top
+                } else {
+                    thumb.height / 2.0
+                };
+                state.set_drag_offset(drag_offset);
 
-        self.state.set_track_bounds(Some(bounds));
-        window.paint_quad(fill(bounds, self.track_color));
-        window.paint_quad(fill(thumb_bounds(bounds, thumb), self.thumb_color));
+                apply_scrollbar_pointer(
+                    &viewport,
+                    on_scroll.as_ref(),
+                    view_entity_id,
+                    cx,
+                    ScrollbarPointerGeometry {
+                        bounds,
+                        thumb,
+                        pointer_y,
+                        drag_offset,
+                    },
+                );
+            });
 
         let state = self.state.clone();
         let viewport = self.viewport.clone();
         let on_scroll = self.on_scroll.clone();
         let view_entity_id = self.view_entity_id;
-        window.on_mouse_event(move |event: &MouseDownEvent, phase, _window, cx| {
-            if !phase.bubble() || event.button != MouseButton::Left {
-                return;
+        track = track.on_mouse_move(move |event, _window, cx| {
+            if event.dragging() {
+                let Some(drag_offset) = state.drag_offset() else {
+                    return;
+                };
+                let Some(bounds) = state.track_bounds() else {
+                    return;
+                };
+                let Some(thumb) = thumb_for_bounds(&viewport, bounds) else {
+                    return;
+                };
+
+                apply_scrollbar_pointer(
+                    &viewport,
+                    on_scroll.as_ref(),
+                    view_entity_id,
+                    cx,
+                    ScrollbarPointerGeometry {
+                        bounds,
+                        thumb,
+                        pointer_y: event.position.y - bounds.origin.y,
+                        drag_offset,
+                    },
+                );
             }
-
-            let Some(bounds) = state.track_bounds() else {
-                return;
-            };
-            if !bounds.contains(&event.position) {
-                return;
-            }
-
-            let Some(thumb) = thumb_for_bounds(&viewport, bounds) else {
-                return;
-            };
-            let pointer_y = event.position.y - bounds.origin.y;
-            let drag_offset = if pointer_y >= thumb.top && pointer_y <= thumb.top + thumb.height {
-                pointer_y - thumb.top
-            } else {
-                thumb.height / 2.0
-            };
-            state.set_drag_offset(drag_offset);
-
-            apply_scrollbar_pointer(
-                &viewport,
-                on_scroll.as_ref(),
-                view_entity_id,
-                cx,
-                ScrollbarPointerGeometry {
-                    bounds,
-                    thumb,
-                    pointer_y,
-                    drag_offset,
-                },
-            );
         });
 
         let state = self.state.clone();
-        let viewport = self.viewport.clone();
-        let on_scroll = self.on_scroll.clone();
-        let view_entity_id = self.view_entity_id;
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
-            if !phase.capture() || !event.dragging() {
-                return;
-            }
-            let Some(drag_offset) = state.drag_offset() else {
-                return;
-            };
-            let Some(bounds) = state.track_bounds() else {
-                return;
-            };
-            let Some(thumb) = thumb_for_bounds(&viewport, bounds) else {
-                return;
-            };
-
-            apply_scrollbar_pointer(
-                &viewport,
-                on_scroll.as_ref(),
-                view_entity_id,
-                cx,
-                ScrollbarPointerGeometry {
-                    bounds,
-                    thumb,
-                    pointer_y: event.position.y - bounds.origin.y,
-                    drag_offset,
-                },
-            );
-        });
-
-        let state = self.state.clone();
-        window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
-            if event.button != MouseButton::Left {
-                return;
-            }
-            if phase.capture() && state.drag_offset().is_some() {
+        track = track.on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
+            if state.drag_offset().is_some() {
                 state.clear_drag();
                 cx.stop_propagation();
             }
         });
+
+        let track_height = self
+            .state
+            .track_bounds()
+            .map(|bounds| bounds.size.height)
+            .unwrap_or_else(|| self.viewport.viewport_bounds().size.height);
+        if let Some(thumb) = editor_scrollbar_thumb(
+            track_height,
+            self.viewport.viewport_bounds().size.height,
+            self.viewport.max_scroll_offset().height,
+            self.viewport.scroll_position().y,
+        ) {
+            track = track.child(
+                div()
+                    .absolute()
+                    .left(THUMB_INSET)
+                    .top(thumb.top)
+                    .w(TRACK_WIDTH - (THUMB_INSET * 2.0))
+                    .h(thumb.height)
+                    .bg(self.thumb_color),
+            );
+        }
+
+        scrollbar_track()
+            .on_children_prepainted({
+                let state = self.state.clone();
+                move |bounds, _window, _cx| {
+                    state.set_track_bounds(bounds.into_iter().next());
+                }
+            })
+            .child(track)
     }
 }
 
-fn thumb_bounds(bounds: Bounds<Pixels>, thumb: EditorScrollbarThumb) -> Bounds<Pixels> {
-    Bounds::new(
-        gpui::point(bounds.origin.x + THUMB_INSET, bounds.origin.y + thumb.top),
-        gpui::size(TRACK_WIDTH - (THUMB_INSET * 2.0), thumb.height),
-    )
+fn empty_scrollbar_track() -> gpui::Div {
+    scrollbar_track()
+}
+
+fn scrollbar_track() -> gpui::Div {
+    div().relative().flex_shrink_0().w(TRACK_WIDTH).h_full()
 }
 
 fn apply_scrollbar_pointer(

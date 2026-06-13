@@ -277,8 +277,6 @@ impl LineLayoutCache {
     }
 }
 
-impl gpui::Global for LineLayoutCache {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
