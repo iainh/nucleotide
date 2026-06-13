@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 
 use gpui::{
-    App, Bounds, Font, Hsla, Pixels, Point, ShapedLine, SharedString, TextRun, Window,
+    App, Bounds, Font, Hsla, Pixels, Point, ShapedLine, SharedString, Size, TextRun, Window,
     WindowTextSystem, fill, point, px, size, white,
 };
 use helix_core::{RopeSlice, doc_formatter::TextFormat, graphemes::next_grapheme_boundary};
@@ -30,6 +30,24 @@ pub struct EditorCursor {
 }
 
 impl EditorCursor {
+    pub fn from_paint_position(
+        paint_position: CursorPaintPosition,
+        kind: CursorKind,
+        color: Hsla,
+        block_width: Pixels,
+        line_height: Pixels,
+        text: Option<ShapedLine>,
+    ) -> Self {
+        Self {
+            origin: paint_position.cursor_origin,
+            kind,
+            color,
+            block_width,
+            line_height,
+            text,
+        }
+    }
+
     pub fn bounds(&self, origin: Point<Pixels>) -> Bounds<Pixels> {
         match self.kind {
             CursorKind::Bar => Bounds {
@@ -88,6 +106,23 @@ pub struct CursorPaintPosition {
 impl CursorPaintPosition {
     pub fn cursor_point(&self) -> Point<Pixels> {
         self.paint_origin + self.cursor_origin
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CursorOverlayPlan {
+    pub cursor_position: Point<Pixels>,
+    pub cursor_size: Size<Pixels>,
+}
+
+pub fn cursor_overlay_plan(
+    paint_position: CursorPaintPosition,
+    cursor_width: Pixels,
+    line_height: Pixels,
+) -> CursorOverlayPlan {
+    CursorOverlayPlan {
+        cursor_position: paint_position.cursor_point(),
+        cursor_size: size(cursor_width, line_height),
     }
 }
 
@@ -492,6 +527,42 @@ mod tests {
                 size: size(px(8.0), px(2.0)),
             }
         );
+    }
+
+    #[test]
+    fn cursor_from_paint_position_uses_relative_cursor_origin() {
+        let paint_position = CursorPaintPosition {
+            paint_origin: point(px(10.0), px(20.0)),
+            cursor_origin: point(px(3.0), px(5.0)),
+        };
+
+        let cursor = EditorCursor::from_paint_position(
+            paint_position,
+            CursorKind::Block,
+            black(),
+            px(8.0),
+            px(20.0),
+            None,
+        );
+
+        assert_eq!(cursor.origin, point(px(3.0), px(5.0)));
+        assert_eq!(
+            cursor.bounds(paint_position.paint_origin).origin,
+            point(px(13.0), px(25.0))
+        );
+    }
+
+    #[test]
+    fn cursor_overlay_plan_uses_absolute_cursor_point() {
+        let paint_position = CursorPaintPosition {
+            paint_origin: point(px(10.0), px(20.0)),
+            cursor_origin: point(px(3.0), px(5.0)),
+        };
+
+        let overlay = cursor_overlay_plan(paint_position, px(8.0), px(20.0));
+
+        assert_eq!(overlay.cursor_position, point(px(13.0), px(25.0)));
+        assert_eq!(overlay.cursor_size, size(px(8.0), px(20.0)));
     }
 
     #[test]
