@@ -602,10 +602,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         update
     });
     if defer_core_redraw {
-        let core_entity_id = core.entity_id();
-        cx.defer(move |cx| {
-            cx.notify(core_entity_id);
-        });
+        helix_event::request_redraw();
     }
     let Some(viewport_update) = viewport_update else {
         return;
