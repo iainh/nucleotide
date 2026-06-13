@@ -14,7 +14,6 @@ use helix_core::{
     doc_formatter::{DocumentFormatter, TextFormat},
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     ropey::RopeSlice,
-    softwrapped_dimensions,
     syntax::{self, Highlight, HighlightEvent, OverlayHighlights},
     text_annotations::TextAnnotations,
 };
@@ -28,8 +27,9 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_editor::{
-    EditorLayout, EditorSurface, EditorSurfaceGeometry, EditorSurfacePointerEvent,
-    EditorTextMetrics, EditorViewport, LineLayoutCache, hit_test_document_position,
+    EditorDocumentMetrics, EditorLayout, EditorSurface, EditorSurfaceGeometry,
+    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, LineLayoutCache,
+    document_text_format_for_surface, hit_test_document_position,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
@@ -732,17 +732,6 @@ impl DocumentElement {
             underline_color,
         )
     }
-    /// Get the TextFormat for soft wrap support
-    #[allow(dead_code)]
-    fn get_text_format(
-        &self,
-        document: &Document,
-        viewport_width: u16,
-        theme: &Theme,
-    ) -> TextFormat {
-        document.text_format(viewport_width, Some(theme))
-    }
-
     /// Render lines with soft wrap support using DocumentFormatter
     #[allow(dead_code)]
     fn render_with_softwrap(
@@ -1344,24 +1333,16 @@ impl Element for DocumentElement {
                 None => return,
             };
 
-            let surface_geometry = EditorSurfaceGeometry::new(
+            let theme = cx.global::<crate::ThemeManager>().helix_theme();
+            EditorDocumentMetrics::resolve(
+                doc,
+                Some(theme),
                 bounds,
                 view.gutter_offset(doc),
                 after_layout.cell_width,
-            );
-            let columns = surface_geometry.viewport_columns(1);
-
-            // Check soft-wrap setting from Helix for this document/view
-            // Build TextFormat to read soft_wrap flag; viewport_width expects u16 columns
-            let theme = cx.global::<crate::ThemeManager>().helix_theme();
-            let tf = doc.text_format(columns, Some(theme));
-            let soft_wrap_enabled = tf.soft_wrap;
-
-            if soft_wrap_enabled {
-                softwrapped_dimensions(doc.text().slice(..), &tf).0.max(1)
-            } else {
-                doc.text().len_lines().max(1)
-            }
+                1,
+            )
+            .visual_rows
         };
 
         self.viewport.set_content_visual_rows(visual_total_lines);
@@ -1403,11 +1384,14 @@ impl Element for DocumentElement {
                     let gutter_offset = view.gutter_offset(document);
                     let theme = cx.global::<crate::ThemeManager>().helix_theme();
 
-                    let surface_geometry =
-                        EditorSurfaceGeometry::new(bounds, gutter_offset, after_layout.cell_width);
-                    let viewport_width = surface_geometry.viewport_columns(10);
-
-                    let text_format = document.text_format(viewport_width, Some(theme));
+                    let (_, text_format) = document_text_format_for_surface(
+                        document,
+                        Some(theme),
+                        bounds,
+                        gutter_offset,
+                        after_layout.cell_width,
+                        10,
+                    );
                     text_format.soft_wrap
                 } else {
                     false
@@ -1802,11 +1786,14 @@ impl Element for DocumentElement {
                     let view_offset = document.view_offset(self.view_id);
                     let gutter_offset = view.gutter_offset(document);
 
-                    let surface_geometry =
-                        EditorSurfaceGeometry::new(bounds, gutter_offset, after_layout.cell_width);
-                    let viewport_width = surface_geometry.viewport_columns(10);
-
-                    let text_format = document.text_format(viewport_width, Some(&theme));
+                    let (_, text_format) = document_text_format_for_surface(
+                        document,
+                        Some(&theme),
+                        bounds,
+                        gutter_offset,
+                        after_layout.cell_width,
+                        10,
+                    );
                     (text_format, view_offset, gutter_offset)
                 };
 
