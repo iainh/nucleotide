@@ -1,8 +1,7 @@
 use gpui::{
-    App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, GlobalElementId, InspectorElementId, InteractiveElement, IntoElement,
-    LayoutId, ParentElement, Pixels, Render, SharedString, Style, Styled, TextStyle, Window, div,
-    px, relative,
+    App, Bounds, Context, DefiniteLength, DismissEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
+    Styled, TextStyle, Window, div, px,
 };
 use helix_core::Uri;
 use helix_lsp::lsp::Diagnostic;
@@ -14,10 +13,10 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    DocumentFramePaintParams, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
-    EditorLayout, EditorScrollbarState, EditorSelectionDragState, EditorSurface,
-    EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    EditorViewportContentLayout, EditorViewportSurfaceLayout, LineLayoutCache,
+    DocumentFramePaintParams, EditorDocumentElement, EditorDocumentFrameGutterParams,
+    EditorDocumentFrameParams, EditorLayout, EditorScrollbarState, EditorSelectionDragState,
+    EditorSurface, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
+    EditorViewport, EditorViewportContentLayout, EditorViewportSurfaceLayout, LineLayoutCache,
     begin_editor_pointer_selection_at_event, cursor_document_line, cursor_style_for_mode,
     editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame, paint_editor_background,
     shape_cursor_text, update_editor_pointer_selection_at_event,
@@ -328,7 +327,7 @@ impl EventEmitter<DismissEvent> for DocumentView {}
 
 impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // DocumentView render creates the DocumentElement for actual painting
+        // DocumentView render creates the native editor element for actual painting.
         let doc_id = {
             let editor = &self.core.read(cx).editor;
             match editor.tree.try_get(self.view_id) {
@@ -376,17 +375,31 @@ impl Render for DocumentView {
             }
         }
 
-        // Create the DocumentElement that will handle the actual rendering
-        // Pass the same viewport and scrollbar state to ensure state is shared
-        let document_element = DocumentElement {
-            core: self.core.clone(),
-            doc_id,
-            view_id: self.view_id,
-            style: self.style.clone(),
-            focus: self.focus.clone(),
-            is_focused: self.is_focused,
-            viewport: self.viewport.clone(),
-            surface_metrics: surface_metrics.clone(),
+        let document_element = {
+            let core = self.core.clone();
+            let view_id = self.view_id;
+            let style = self.style.clone();
+            let focus = self.focus.clone();
+            let is_focused = self.is_focused;
+            let mut viewport = self.viewport.clone();
+            let surface_metrics = surface_metrics.clone();
+
+            EditorDocumentElement::new(style.clone(), move |bounds, after_layout, window, cx| {
+                paint_document_content(DocumentPaintParams {
+                    core: &core,
+                    doc_id,
+                    view_id,
+                    style: &style,
+                    focus: &focus,
+                    is_focused,
+                    viewport: &mut viewport,
+                    surface_metrics: &surface_metrics,
+                    bounds,
+                    layout: after_layout,
+                    window,
+                    cx,
+                });
+            })
         };
 
         let editor_surface = EditorSurface::new(
@@ -501,347 +514,274 @@ impl Focusable for DocumentView {
     }
 }
 
-pub struct DocumentElement {
-    core: Entity<Core>,
+struct DocumentPaintParams<'a> {
+    core: &'a Entity<Core>,
     doc_id: DocumentId,
     view_id: ViewId,
-    style: TextStyle,
-    focus: FocusHandle,
+    style: &'a TextStyle,
+    focus: &'a FocusHandle,
     is_focused: bool,
-    viewport: EditorViewport,
-    surface_metrics: EditorSurfaceMetrics,
+    viewport: &'a mut EditorViewport,
+    surface_metrics: &'a EditorSurfaceMetrics,
+    bounds: Bounds<Pixels>,
+    layout: &'a mut EditorLayout,
+    window: &'a mut Window,
+    cx: &'a mut App,
 }
 
-impl IntoElement for DocumentElement {
-    type Element = Self;
+fn paint_document_content(params: DocumentPaintParams<'_>) {
+    let DocumentPaintParams {
+        core,
+        doc_id,
+        view_id,
+        style,
+        focus,
+        is_focused,
+        viewport,
+        surface_metrics,
+        bounds,
+        layout,
+        window,
+        cx,
+    } = params;
 
-    fn into_element(self) -> Self {
-        self
-    }
-}
+    let _focus = focus.clone();
+    let cell_width = layout.cell_width;
+    let line_height = layout.line_height;
 
-impl Element for DocumentElement {
-    type RequestLayoutState = ();
+    surface_metrics.set(line_height, cell_width);
 
-    type PrepaintState = EditorLayout;
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.size.width = relative(1.).into();
-        style.size.height = relative(1.).into();
-        let layout_id = window.request_layout(style, None, cx);
-        (layout_id, ())
+    {
+        let tokens = cx.theme().tokens;
+        let bgc = tokens.editor.background;
+        paint_editor_background(window, bounds, bgc);
     }
 
-    fn prepaint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _before_layout: &mut Self::RequestLayoutState,
-        _window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        debug!(bounds = ?bounds, size = ?bounds.size, "Editor bounds for prepaint");
-
-        // Check if bounds are valid
-        if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
-            debug!(
-                "INVALID BOUNDS: width={}, height={}",
-                bounds.size.width, bounds.size.height
-            );
-        }
-
-        EditorTextMetrics::resolve(cx.text_system(), &self.style).layout_for_bounds(bounds)
-    }
-
-    fn paint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        after_layout: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        // Note: GPUI may call paint() multiple times per frame for the same element
-        // This can cause visual accumulation of overlapping elements like tildes
-        let _focus = self.focus.clone();
-        let core = self.core.clone();
-        let view_id = self.view_id;
-        let cell_width = after_layout.cell_width;
-        let line_height = after_layout.line_height;
-
-        // Update scroll manager with current layout info
-        self.surface_metrics.set(line_height, cell_width);
-
-        // Fill editor background from design tokens
-        {
-            let tokens = cx.theme().tokens;
-            let bgc = tokens.editor.background;
-            paint_editor_background(window, bounds, bgc);
-        }
-
-        let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-        let viewport_update = core.update(cx, |core, cx| {
-            let update = self.viewport.sync_surface_layout(
-                &mut core.editor,
-                self.doc_id,
-                view_id,
-                EditorViewportSurfaceLayout {
-                    theme: Some(&theme),
-                    bounds,
-                    cell_width: after_layout.cell_width,
-                    line_height: after_layout.line_height,
-                    minimum_columns: 1,
-                },
-            );
-
-            if update
-                .as_ref()
-                .is_some_and(|update| update.helix_view_synced)
-            {
-                cx.notify();
-            }
-
-            update
-        });
-        let Some(viewport_update) = viewport_update else {
-            return;
-        };
-        let gutter_width_cells = viewport_update.gutter_columns;
-        let _gutter_width_px = cell_width * f32::from(gutter_width_cells);
-
-        let soft_wrap_enabled = viewport_update.soft_wrap;
-
-        // Store line layouts in the native surface cache for mouse interaction.
-        let line_cache = self.surface_metrics.line_cache();
-        line_cache.clear(); // Clear previous layouts
-
-        let is_focused = self.is_focused;
-
-        {
-            let core = self.core.read(cx);
-            let editor = &core.editor;
-
-            let view = match editor.tree.try_get(self.view_id) {
-                Some(v) => v,
-                None => return,
-            };
-            let _viewport = view.area;
-            let tokens = cx.theme().tokens;
-            let bg_color = tokens.editor.background;
-            let fg_color = tokens.editor.text_primary;
-            let default_text_style = helix_view::graphics::Style {
-                fg: gpui_hsla_to_helix_color(tokens.editor.text_primary),
-                bg: gpui_hsla_to_helix_color(tokens.editor.background),
-                ..Default::default()
-            };
-
-            let document = match editor.document(self.doc_id) {
-                Some(doc) => doc,
-                None => return,
-            };
-            let text = document.text();
-            let editor_config = editor.config();
-            let editor_mode = editor.mode();
-            let (_, cursor_kind) = editor.cursor();
-
-            // Use scroll manager to determine visible lines
-            let (first_row, last_row_from_scroll) = self.viewport.visible_visual_range();
-            let scroll_line_offset = self.viewport.offset_within_row();
-
-            // Get mode-specific cursor theme like terminal version
-            let cursor_style = cursor_style_for_mode(editor_mode, |key| cx.theme_style(key));
-            let wrap_indicator_color = cx.theme_style("ui.virtual.wrap").fg.and_then(color_to_hsla);
-            const THEME_KEY_VIRTUAL_RULER: &str = "ui.virtual.ruler";
-            let ruler_style = cx.theme_style(THEME_KEY_VIRTUAL_RULER);
-            let ruler_color = ruler_style.bg.and_then(color_to_hsla).unwrap_or_else(|| {
-                // Use UI theme's border color from tokens
-                cx.ui_theme().tokens.chrome.border_default
-            });
-            let loader = editor.syn_loader.load();
-            let frame = editor_document_frame(EditorDocumentFrameParams {
-                document,
-                view,
-                view_id: self.view_id,
-                theme: &theme,
-                syntax_loader: &loader,
-                first_row,
-                last_row_from_scroll,
-                soft_wrap_enabled,
-                unwrapped_gutter: Some(EditorDocumentFrameGutterParams {
-                    editor,
-                    layout: after_layout,
-                }),
+    let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+    let viewport_update = core.update(cx, |core, cx| {
+        let update = viewport.sync_surface_layout(
+            &mut core.editor,
+            doc_id,
+            view_id,
+            EditorViewportSurfaceLayout {
+                theme: Some(&theme),
                 bounds,
-                cell_width: after_layout.cell_width,
-                line_height: after_layout.line_height,
-                scroll_line_offset,
-                soft_wrap_minimum_columns: 10,
-                fg_color,
-                font: self.style.font(),
-                default_text_style,
-                default_bg: bg_color,
-                wrap_indicator_color,
-                ruler_color,
-                editor_mode,
-                cursor_kind,
-                cursor_style,
-                cursor_shape: editor_config.cursor_shape.clone(),
-                editor_rulers: editor_config.rulers.clone(),
-                cursorline_enabled: editor_config.cursorline && is_focused,
-                is_focused: self.is_focused,
-            });
-            debug!(
-                "Cursorline check - config value: {}, focused: {}, enabled: {}",
-                editor_config.cursorline, is_focused, frame.cursorline_enabled
-            );
+                cell_width: layout.cell_width,
+                line_height: layout.line_height,
+                minimum_columns: 1,
+            },
+        );
 
-            let cursorline_style = if frame.cursorline_enabled {
-                let style = cx.theme_style("ui.cursorline.primary");
-                debug!(
-                    "Cursorline style found: bg={:?}, fg={:?}",
-                    style.bg, style.fg
-                );
-                style.bg.and_then(color_to_hsla)
+        if update
+            .as_ref()
+            .is_some_and(|update| update.helix_view_synced)
+        {
+            cx.notify();
+        }
+
+        update
+    });
+    let Some(viewport_update) = viewport_update else {
+        return;
+    };
+    let gutter_width_cells = viewport_update.gutter_columns;
+    let _gutter_width_px = cell_width * f32::from(gutter_width_cells);
+
+    let soft_wrap_enabled = viewport_update.soft_wrap;
+
+    let line_cache = surface_metrics.line_cache();
+    line_cache.clear();
+
+    {
+        let core = core.read(cx);
+        let editor = &core.editor;
+
+        let view = match editor.tree.try_get(view_id) {
+            Some(v) => v,
+            None => return,
+        };
+        let _viewport = view.area;
+        let tokens = cx.theme().tokens;
+        let bg_color = tokens.editor.background;
+        let fg_color = tokens.editor.text_primary;
+        let default_text_style = helix_view::graphics::Style {
+            fg: gpui_hsla_to_helix_color(tokens.editor.text_primary),
+            bg: gpui_hsla_to_helix_color(tokens.editor.background),
+            ..Default::default()
+        };
+
+        let document = match editor.document(doc_id) {
+            Some(doc) => doc,
+            None => return,
+        };
+        let text = document.text();
+        let editor_config = editor.config();
+        let editor_mode = editor.mode();
+        let (_, cursor_kind) = editor.cursor();
+
+        let (first_row, last_row_from_scroll) = viewport.visible_visual_range();
+        let scroll_line_offset = viewport.offset_within_row();
+
+        let cursor_style = cursor_style_for_mode(editor_mode, |key| cx.theme_style(key));
+        let wrap_indicator_color = cx.theme_style("ui.virtual.wrap").fg.and_then(color_to_hsla);
+        const THEME_KEY_VIRTUAL_RULER: &str = "ui.virtual.ruler";
+        let ruler_style = cx.theme_style(THEME_KEY_VIRTUAL_RULER);
+        let ruler_color = ruler_style.bg.and_then(color_to_hsla).unwrap_or_else(|| {
+            // Use UI theme's border color from tokens
+            cx.ui_theme().tokens.chrome.border_default
+        });
+        let loader = editor.syn_loader.load();
+        let frame = editor_document_frame(EditorDocumentFrameParams {
+            document,
+            view,
+            view_id,
+            theme: &theme,
+            syntax_loader: &loader,
+            first_row,
+            last_row_from_scroll,
+            soft_wrap_enabled,
+            unwrapped_gutter: Some(EditorDocumentFrameGutterParams { editor, layout }),
+            bounds,
+            cell_width: layout.cell_width,
+            line_height: layout.line_height,
+            scroll_line_offset,
+            soft_wrap_minimum_columns: 10,
+            fg_color,
+            font: style.font(),
+            default_text_style,
+            default_bg: bg_color,
+            wrap_indicator_color,
+            ruler_color,
+            editor_mode,
+            cursor_kind,
+            cursor_style,
+            cursor_shape: editor_config.cursor_shape.clone(),
+            editor_rulers: editor_config.rulers.clone(),
+            cursorline_enabled: editor_config.cursorline && is_focused,
+            is_focused,
+        });
+        debug!(
+            "Cursorline check - config value: {}, focused: {}, enabled: {}",
+            editor_config.cursorline, is_focused, frame.cursorline_enabled
+        );
+
+        let cursorline_style = if frame.cursorline_enabled {
+            let style = cx.theme_style("ui.cursorline.primary");
+            debug!(
+                "Cursorline style found: bg={:?}, fg={:?}",
+                style.bg, style.fg
+            );
+            style.bg.and_then(color_to_hsla)
+        } else {
+            None
+        };
+
+        let gutter_width = frame.gutter_width;
+        let cursor_char_idx = frame.cursor_presentation.cursor_char_idx;
+        let cursor_line_num = frame.render_snapshot.cursor_line;
+        debug!(
+            "Cursor position: line={}, char_idx={}",
+            cursor_line_num, cursor_char_idx
+        );
+        debug!(
+            "Cursor position - line: {}, col_in_line: {}, primary_idx: {}, gutter_width: {}",
+            frame.primary_cursor_line,
+            frame.primary_cursor_col,
+            frame.primary_cursor_idx,
+            gutter_width
+        );
+        if gutter_width != 0 {
+            debug!("need to render gutter {gutter_width}");
+        }
+
+        let line_viewport = frame.render_snapshot.line_viewport;
+        let last_row = frame.render_snapshot.last_row;
+        let cursor_at_end = line_viewport.cursor_at_end;
+        let file_ends_with_newline = line_viewport.file_ends_with_newline;
+
+        debug!(
+            "End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}",
+            cursor_char_idx,
+            text.len_chars(),
+            if text.len_chars() > 0 {
+                Some(text.char(text.len_chars() - 1))
             } else {
                 None
-            };
+            },
+            cursor_at_end,
+            file_ends_with_newline
+        );
 
-            let gutter_width = frame.gutter_width;
-            let cursor_char_idx = frame.cursor_presentation.cursor_char_idx;
-            let cursor_line_num = frame.render_snapshot.cursor_line;
+        if cursor_at_end && file_ends_with_newline {
+            let cursor_line = text.char_to_line(cursor_char_idx.saturating_sub(1));
             debug!(
-                "Cursor position: line={}, char_idx={}",
-                cursor_line_num, cursor_char_idx
+                "Cursor at EOF with newline - cursor_line: {cursor_line}, last_row: {last_row}, total_lines: {}",
+                frame.total_lines
             );
-            debug!(
-                "Cursor position - line: {}, col_in_line: {}, primary_idx: {}, gutter_width: {}",
-                frame.primary_cursor_line,
-                frame.primary_cursor_col,
-                frame.primary_cursor_idx,
-                gutter_width
-            );
-            if gutter_width != 0 {
-                debug!("need to render gutter {gutter_width}");
-            }
+        }
 
-            let line_viewport = frame.render_snapshot.line_viewport;
-            let last_row = frame.render_snapshot.last_row;
-            let cursor_at_end = line_viewport.cursor_at_end;
-            let file_ends_with_newline = line_viewport.file_ends_with_newline;
+        let diagnostic_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+        let doc_text = document.text().clone();
+        let _tab_width = document.tab_width() as u16;
 
-            debug!(
-                "End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}",
-                cursor_char_idx,
-                text.len_chars(),
-                if text.len_chars() > 0 {
-                    Some(text.char(text.len_chars() - 1))
-                } else {
-                    None
-                },
-                cursor_at_end,
-                file_ends_with_newline
-            );
+        let cursor_text_shape = shape_cursor_text(
+            window.text_system().as_ref(),
+            frame.cursor_presentation.block_text.clone(),
+            &style.font(),
+            style.font_size.to_pixels(px(16.0)),
+            &frame.cursor_presentation.text_style_at_cursor,
+            frame.cursor_presentation.block_text_color(bg_color),
+            bg_color,
+        );
 
-            if cursor_at_end && file_ends_with_newline {
-                let cursor_line = text.char_to_line(cursor_char_idx.saturating_sub(1));
-                debug!(
-                    "Cursor at EOF with newline - cursor_line: {cursor_line}, last_row: {last_row}, total_lines: {}",
-                    frame.total_lines
-                );
-            }
+        let text = doc_text.slice(..);
 
-            // Extract necessary values before the loop to avoid borrowing issues
-            let diagnostic_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-
-            // Clone text to avoid borrowing issues
-            let doc_text = document.text().clone();
-
-            // Extract cursor-related data before dropping core
-            // cursor_char_idx was already extracted earlier for phantom line check
-            let _tab_width = document.tab_width() as u16;
-
-            // Shape cursor text before dropping core borrow and keep its length
-            let cursor_text_shape = shape_cursor_text(
-                window.text_system().as_ref(),
-                frame.cursor_presentation.block_text.clone(),
-                &self.style.font(),
-                self.style.font_size.to_pixels(px(16.0)),
-                &frame.cursor_presentation.text_style_at_cursor,
-                frame.cursor_presentation.block_text_color(bg_color),
-                bg_color,
-            );
-
-            // Drop the core borrow before the loop
-            // core goes out of scope here
-
-            let text = doc_text.slice(..);
-
-            // Update the shared line layouts for mouse interaction
-            let gutter_style = cx.theme_style("ui.linenr");
-            let gutter_selected_style = cx.theme_style("ui.linenr.selected");
-            let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
-            let gutter_color = gutter_style
-                .fg
-                .and_then(crate::utils::color_to_hsla)
-                .unwrap_or(default_gutter_color);
-            let gutter_selected_color = gutter_selected_style
-                .fg
-                .and_then(crate::utils::color_to_hsla)
-                .unwrap_or(default_gutter_color);
-            let gutter_bg = cx
-                .theme_style("ui.gutter")
-                .bg
-                .and_then(crate::utils::color_to_hsla);
-            let element_focused = self.focus.is_focused(window);
-            if let Some(overlay_plan) = paint_document_frame(
-                window,
-                cx,
-                DocumentFramePaintParams {
-                    frame: &frame,
-                    text,
-                    bounds,
-                    layout: after_layout,
-                    text_style: &self.style,
-                    line_cache: &line_cache,
-                    font_size: self.style.font_size.to_pixels(px(16.0)),
-                    fg_color,
-                    default_bg: bg_color,
-                    cursorline_color: cursorline_style,
-                    cursor_text_shape: &cursor_text_shape,
-                    is_focused: self.is_focused,
-                    element_focused,
-                    selection_primary: tokens.editor.selection_primary,
-                    selection_secondary: tokens.editor.selection_secondary,
-                    gutter_color,
-                    gutter_selected_color,
-                    diagnostic_theme: &diagnostic_theme,
-                    diagnostic_highlight_base: cx.theme().tokens.chrome.text_on_chrome,
-                    gutter_bg,
-                    scroll_line_offset,
-                },
-            ) {
-                let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
-                layout_info.cursor_position = Some(overlay_plan.cursor_position);
-                layout_info.cursor_size = Some(overlay_plan.cursor_size);
-            }
+        let gutter_style = cx.theme_style("ui.linenr");
+        let gutter_selected_style = cx.theme_style("ui.linenr.selected");
+        let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
+        let gutter_color = gutter_style
+            .fg
+            .and_then(crate::utils::color_to_hsla)
+            .unwrap_or(default_gutter_color);
+        let gutter_selected_color = gutter_selected_style
+            .fg
+            .and_then(crate::utils::color_to_hsla)
+            .unwrap_or(default_gutter_color);
+        let gutter_bg = cx
+            .theme_style("ui.gutter")
+            .bg
+            .and_then(crate::utils::color_to_hsla);
+        let element_focused = focus.is_focused(window);
+        if let Some(overlay_plan) = paint_document_frame(
+            window,
+            cx,
+            DocumentFramePaintParams {
+                frame: &frame,
+                text,
+                bounds,
+                layout,
+                text_style: style,
+                line_cache: &line_cache,
+                font_size: style.font_size.to_pixels(px(16.0)),
+                fg_color,
+                default_bg: bg_color,
+                cursorline_color: cursorline_style,
+                cursor_text_shape: &cursor_text_shape,
+                is_focused,
+                element_focused,
+                selection_primary: tokens.editor.selection_primary,
+                selection_secondary: tokens.editor.selection_secondary,
+                gutter_color,
+                gutter_selected_color,
+                diagnostic_theme: &diagnostic_theme,
+                diagnostic_highlight_base: cx.theme().tokens.chrome.text_on_chrome,
+                gutter_bg,
+                scroll_line_offset,
+            },
+        ) {
+            let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+            layout_info.cursor_position = Some(overlay_plan.cursor_position);
+            layout_info.cursor_size = Some(overlay_plan.cursor_size);
         }
     }
 }
