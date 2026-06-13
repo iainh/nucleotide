@@ -19,16 +19,13 @@ use nucleotide_editor::{
     EditorDocumentFrameGutterParams, EditorDocumentFrameParams, EditorLayout,
     EditorLineBackgroundStyle, EditorScrollbarState, EditorSelectionDragState, EditorSurface,
     EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
-    EditorViewport, EditorViewportSurfaceLayout, LineLayoutCache, ShapedEditorCursorPaintParams,
-    SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams,
-    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams,
-    begin_editor_pointer_selection_at_event, build_gutter_lines_from_plans, cursor_document_line,
-    cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color,
-    paint_diagnostic_gutter_markers, paint_editor_background, paint_gutter_lines,
-    paint_shaped_editor_cursor, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
-    paint_unwrapped_editor_line, paint_visible_rulers, shape_and_paint_editor_cursor,
-    shape_cursor_text, soft_wrap_cursor_paint_plan, unwrapped_cursor_paint_plan,
-    update_editor_pointer_selection_at_event,
+    EditorViewport, EditorViewportSurfaceLayout, LineLayoutCache, SoftWrapCursorPaintPlanParams,
+    SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams, UnwrappedDocumentFramePaintParams,
+    begin_editor_pointer_selection_at_event, cursor_document_line, cursor_style_for_mode,
+    editor_document_frame, gpui_hsla_to_helix_color, paint_diagnostic_gutter_markers,
+    paint_editor_background, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
+    paint_unwrapped_document_frame, paint_visible_rulers, shape_and_paint_editor_cursor,
+    shape_cursor_text, soft_wrap_cursor_paint_plan, update_editor_pointer_selection_at_event,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -740,8 +737,6 @@ impl Element for DocumentElement {
             let last_row = frame.render_snapshot.last_row;
             let cursor_at_end = line_viewport.cursor_at_end;
             let file_ends_with_newline = line_viewport.file_ends_with_newline;
-            let cursor_doc_line = frame.render_snapshot.cursor_doc_line;
-            let cursor_viewport_pos = frame.render_snapshot.cursor_viewport_position;
 
             debug!(
                 "End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}",
@@ -952,198 +947,30 @@ impl Element for DocumentElement {
                 return;
             }
 
-            let Some(unwrapped_plan) = frame.unwrapped_render_plan.as_ref() else {
-                return;
-            };
-            let next_unwrapped_line_y_offset = unwrapped_plan.next_line_y_offset;
-            let unwrapped_paint_plans = unwrapped_plan.line_paint_plans();
-
-            // Original rendering loop (without soft wrap)
-            for (unwrapped_plan, highlighted_line) in unwrapped_paint_plans
-                .into_iter()
-                .zip(frame.unwrapped_highlighted_lines.iter())
-            {
-                let line_plan = unwrapped_plan.line;
-                let line_idx = line_plan.line_idx;
-                let y_offset = line_plan.y_offset;
-                let line_text = highlighted_line.line_text.clone();
-                let line_runs = &highlighted_line.line_runs;
-
-                // Drop core before painting
-                // core goes out of scope here
-
-                if unwrapped_plan.is_cursor_line && cursorline_style.is_some() {
-                    debug!(
-                        "Painting cursorline for line {} (cursor at line {})",
-                        line_idx, cursor_line_num
-                    );
-                }
-
-                let layout = match paint_unwrapped_editor_line(
-                    window,
-                    cx,
-                    UnwrappedEditorLinePaintParams {
-                        plan: unwrapped_plan,
-                        line_text,
-                        line_runs,
-                        line_cache: &line_cache,
-                        font_size: self.style.font_size.to_pixels(px(16.0)),
-                        viewport_width: bounds.size.width,
-                        line_height: after_layout.line_height,
-                        cursorline_color: cursorline_style,
-                        background_style: EditorLineBackgroundStyle {
-                            only_selection_backgrounds: unwrapped_plan.is_cursor_line,
-                            selection_primary: tokens.editor.selection_primary,
-                            selection_secondary: tokens.editor.selection_secondary,
-                        },
-                    },
-                ) {
-                    Ok(layout) => layout,
-                    Err(e) => {
-                        error!(error = ?e, "Failed to paint text");
-                        continue;
-                    }
-                };
-
-                // Debug: log line layout creation
-                debug!(
-                    "💾 LINE LAYOUT CACHED: line_idx={}, y_offset={:?}, is_phantom={}",
-                    line_idx, y_offset, false
-                );
-
-                line_cache.push(layout);
-            }
-
-            // Note: Tilde rendering is handled by the gutter for consistency with Helix
-            // The gutter shows "~" for phantom lines in the line number area
-
-            // draw cursor
             let element_focused = self.focus.is_focused(window);
-            debug!(
-                "Cursor rendering check - is_focused: {}, element_focused: {}, cursor_viewport_pos: {:?}",
-                self.is_focused, element_focused, cursor_viewport_pos
-            );
-
-            // Debug: Log cursor position info
-            debug!(
-                "Cursor char idx: {}, line: {}",
-                frame.render_snapshot.cursor_char_idx, frame.render_snapshot.cursor_line
-            );
-
-            // Check both is_focused flag and actual focus state
-            if self.is_focused || element_focused {
-                if let Some(cursor_viewport_pos) = cursor_viewport_pos {
-                    let cursor_line = cursor_viewport_pos.line;
-
-                    debug!(
-                        "Looking for cursor line {cursor_line} in range {first_row}..{last_row}"
-                    );
-
-                    let line_layout = line_cache.find_line_by_index(cursor_line);
-                    let cursor_paint_plan =
-                        unwrapped_cursor_paint_plan(UnwrappedCursorPaintPlanParams {
-                            text: text.slice(..),
-                            geometry: EditorSurfaceGeometry::new(
-                                bounds,
-                                gutter_width,
-                                after_layout.cell_width,
-                            ),
-                            cursor_char_idx,
-                            cursor_at_trailing_newline: cursor_at_end && file_ends_with_newline,
-                            cursor_viewport_position: Some(cursor_viewport_pos),
-                            line_layout: line_layout.as_ref(),
-                            next_line_y_offset: next_unwrapped_line_y_offset,
-                        });
-
-                    match cursor_paint_plan {
-                        Some(cursor_paint_plan) => {
-                            let cursor_paint_position = cursor_paint_plan.paint_position;
-
-                            if let Some(line_position) = &cursor_paint_plan.line_position {
-                                debug!(
-                                    "Cursor rendering - line: {}, char_offset: {}, byte_offset: {}, x_relative: {:?}, x_absolute: {:?}, viewport_row: {}",
-                                    line_position.line,
-                                    line_position.cursor_char_offset,
-                                    line_position.cursor_byte_offset,
-                                    cursor_paint_position.cursor_origin.x,
-                                    cursor_paint_position.cursor_point().x,
-                                    cursor_viewport_pos.viewport_row
-                                );
-                            } else {
-                                debug!(
-                                    "Cursor rendering - source: {:?}, x_absolute: {:?}, viewport_row: {}",
-                                    cursor_paint_plan.source,
-                                    cursor_paint_position.cursor_point().x,
-                                    cursor_viewport_pos.viewport_row
-                                );
-                            }
-
-                            debug!("Cursor paint plan selected: {:?}", cursor_paint_plan.source);
-
-                            let overlay_plan = paint_shaped_editor_cursor(
-                                window,
-                                cx,
-                                ShapedEditorCursorPaintParams {
-                                    paint_position: cursor_paint_position,
-                                    kind: frame.cursor_presentation.kind,
-                                    cursor_style: &frame.cursor_presentation.cursor_style,
-                                    text_style_at_cursor: &frame
-                                        .cursor_presentation
-                                        .text_style_at_cursor,
-                                    cursor_text_shape: cursor_text_shape.clone(),
-                                    fallback_fg: fg_color,
-                                    fallback_width: after_layout.cell_width,
-                                    line_height: after_layout.line_height,
-                                },
-                            );
-                            let layout_info =
-                                cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
-                            layout_info.cursor_position = Some(overlay_plan.cursor_position);
-                            layout_info.cursor_size = Some(overlay_plan.cursor_size);
-                        }
-                        None => {
-                            debug!(
-                                "Cursor paint plan unavailable for visible line {} (at_eof: {})",
-                                cursor_line,
-                                cursor_at_end && file_ends_with_newline
-                            );
-                        }
-                    }
-                } else {
-                    debug!(
-                        "Cursor line {cursor_doc_line} is outside rendered range {first_row}..{last_row}"
-                    );
-                }
-            } else {
-                debug!(
-                    "Cursor rendering skipped - is_focused: {}, element_focused: {}",
-                    self.is_focused, element_focused
-                );
-            }
-            // draw gutter
-            {
-                let gutter_lines = build_gutter_lines_from_plans(
-                    window.text_system().clone(),
-                    &self.style,
-                    after_layout.font_size,
-                    &frame.unwrapped_gutter_line_plans,
-                );
-
-                paint_gutter_lines(
-                    window,
-                    cx,
-                    &gutter_lines,
-                    after_layout.line_height,
-                    |result| {
-                        let Err(e) = result else {
-                            return;
-                        };
-                        error!(error = ?e, "Failed to paint gutter line");
-                    },
-                );
-
-                // Note: In non-soft-wrap mode, we rely on Helix's built-in sign gutters.
-                // Custom diagnostic indicators (circle/triangle/square) are only drawn in soft-wrap mode.
+            if let Some(overlay_plan) = paint_unwrapped_document_frame(
+                window,
+                cx,
+                UnwrappedDocumentFramePaintParams {
+                    frame: &frame,
+                    text,
+                    bounds,
+                    layout: after_layout,
+                    text_style: &self.style,
+                    line_cache: &line_cache,
+                    font_size: self.style.font_size.to_pixels(px(16.0)),
+                    fg_color,
+                    cursorline_color: cursorline_style,
+                    cursor_text_shape: &cursor_text_shape,
+                    is_focused: self.is_focused,
+                    element_focused,
+                    selection_primary: tokens.editor.selection_primary,
+                    selection_secondary: tokens.editor.selection_secondary,
+                },
+            ) {
+                let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+                layout_info.cursor_position = Some(overlay_plan.cursor_position);
+                layout_info.cursor_size = Some(overlay_plan.cursor_size);
             }
         }
     }

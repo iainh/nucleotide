@@ -5,6 +5,7 @@ pub mod cursor;
 pub mod cursor_style;
 pub mod diagnostics;
 pub mod document_frame;
+pub mod document_frame_painter;
 pub mod document_metrics;
 pub mod document_renderer;
 pub mod editor_view;
@@ -52,6 +53,9 @@ pub use diagnostics::{
 pub use document_frame::{
     EditorDocumentFrame, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
     editor_document_frame,
+};
+pub use document_frame_painter::{
+    UnwrappedDocumentFramePaintParams, paint_unwrapped_document_frame,
 };
 pub use document_metrics::{
     EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,
