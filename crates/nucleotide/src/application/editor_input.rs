@@ -729,6 +729,7 @@ fn native_command_supported(command: &MappableCommand) -> bool {
         || native_history_command(command)
         || native_register_edit_command(command)
         || native_selection_transform_command(command)
+        || native_search_command(command)
         || name.starts_with("move_")
         || name.starts_with("extend_")
         || matches!(
@@ -767,8 +768,6 @@ fn native_command_supported(command: &MappableCommand) -> bool {
                 | "remove_primary_selection"
                 | "scroll_down"
                 | "scroll_up"
-                | "search_next"
-                | "search_prev"
                 | "select_all"
                 | "select_line_above"
                 | "select_line_below"
@@ -802,6 +801,18 @@ fn native_picker_command(command: &MappableCommand) -> Option<NativePickerReques
 
 fn native_history_command(command: &MappableCommand) -> bool {
     matches!(command.name(), "undo" | "redo")
+}
+
+fn native_search_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "search_next"
+            | "search_prev"
+            | "extend_search_next"
+            | "extend_search_prev"
+            | "search_selection"
+            | "search_selection_detect_word_boundaries"
+    )
 }
 
 fn native_register_edit_command(command: &MappableCommand) -> bool {
@@ -1075,6 +1086,10 @@ mod tests {
         assert!(native_command_supported(
             &MappableCommand::extend_search_prev
         ));
+        assert!(native_command_supported(&MappableCommand::search_selection));
+        assert!(native_command_supported(
+            &MappableCommand::search_selection_detect_word_boundaries
+        ));
         assert!(!native_command_supported(&MappableCommand::global_search));
     }
 
@@ -1196,6 +1211,22 @@ mod tests {
         assert!(!native_history_command(&MappableCommand::earlier));
         assert!(!native_history_command(&MappableCommand::later));
         assert!(!native_history_command(&MappableCommand::normal_mode));
+    }
+
+    #[test]
+    fn search_commands_are_classified_separately() {
+        assert!(native_search_command(&MappableCommand::search_next));
+        assert!(native_search_command(&MappableCommand::search_prev));
+        assert!(native_search_command(&MappableCommand::extend_search_next));
+        assert!(native_search_command(&MappableCommand::extend_search_prev));
+        assert!(native_search_command(&MappableCommand::search_selection));
+        assert!(native_search_command(
+            &MappableCommand::search_selection_detect_word_boundaries
+        ));
+        assert!(!native_search_command(&MappableCommand::search));
+        assert!(!native_search_command(&MappableCommand::rsearch));
+        assert!(!native_search_command(&MappableCommand::global_search));
+        assert!(!native_search_command(&MappableCommand::select_regex));
     }
 
     #[test]
