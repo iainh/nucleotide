@@ -2852,34 +2852,18 @@ impl Element for DocumentElement {
                 // core goes out of scope here
 
                 let font_size_px = self.style.font_size.to_pixels(px(16.0));
-                let cache_viewport_width = f32::from(bounds.size.width) as u32;
                 let text_origin = point(text_origin_x, bounds.origin.y + px(1.) + y_offset);
-                let line_runs_hash = nucleotide_editor::text_runs_hash(&line_runs);
                 // Defer painting of cursorline until after per-run backgrounds are drawn
 
                 // Always create a shaped line, even for empty lines (needed for cursor positioning)
                 let shaped_line = if !line_str.is_empty() {
-                    // Try to get cached shaped line first
-                    let cache_key = nucleotide_editor::ShapedLineKey {
-                        line_text: line_str.to_string(),
-                        font_size: f32::from(font_size_px) as u32,
-                        viewport_width: cache_viewport_width,
-                        runs_hash: line_runs_hash,
-                    };
-
-                    let shaped = if let Some(cached) = line_cache.get_shaped_line(&cache_key) {
-                        cached
-                    } else {
-                        // Shape and cache the line
-                        let shaped = window.text_system().shape_line(
-                            line_str.clone(),
-                            font_size_px,
-                            &line_runs,
-                            None,
-                        );
-                        line_cache.store_shaped_line(cache_key, shaped.clone());
-                        shaped
-                    };
+                    let shaped = line_cache.shape_line_cached(
+                        window.text_system().as_ref(),
+                        line_str.clone(),
+                        font_size_px,
+                        bounds.size.width,
+                        &line_runs,
+                    );
 
                     // Paint cursorline background BEFORE run backgrounds so selections render on top
                     if line_idx == cursor_line_num
@@ -2915,24 +2899,13 @@ impl Element for DocumentElement {
                     }
                     shaped
                 } else {
-                    // Create an empty shaped line for cursor positioning
-                    let cache_key = nucleotide_editor::ShapedLineKey {
-                        line_text: String::new(),
-                        font_size: f32::from(font_size_px) as u32,
-                        viewport_width: cache_viewport_width,
-                        runs_hash: 0,
-                    };
-
-                    if let Some(cached) = line_cache.get_shaped_line(&cache_key) {
-                        cached
-                    } else {
-                        let shaped =
-                            window
-                                .text_system()
-                                .shape_line("".into(), font_size_px, &[], None);
-                        line_cache.store_shaped_line(cache_key, shaped.clone());
-                        shaped
-                    }
+                    line_cache.shape_line_cached(
+                        window.text_system().as_ref(),
+                        "".into(),
+                        font_size_px,
+                        bounds.size.width,
+                        &[],
+                    )
                 };
 
                 // COORDINATE SYSTEM CONVERSION FOR LINE CACHE:
