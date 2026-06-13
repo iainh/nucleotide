@@ -2058,6 +2058,7 @@ impl Application {
                     None
                 };
 
+                let mut selection_changed = false;
                 let is_handled = self
                     .compositor
                     .handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
@@ -2083,6 +2084,7 @@ impl Application {
                     if let Some((before_pos, before_line)) = before_cursor
                         && (before_line != line || before_pos != cursor_pos)
                     {
+                        selection_changed = true;
                         debug!(
                             "Cursor moved from pos {} (line {}) to pos {} (line {})",
                             before_pos, before_line, cursor_pos, line
@@ -2090,10 +2092,10 @@ impl Application {
                     }
                 }
 
-                // Ensure cursor is visible after keyboard navigation
-                // Check if the view exists before trying to ensure cursor visibility
-                if comp_ctx.editor.tree.contains(view_id) {
-                    comp_ctx.editor.ensure_cursor_in_view(view_id);
+                if selection_changed {
+                    cx.emit(crate::Update::Event(AppEvent::Core(
+                        CoreEvent::SelectionChanged { doc_id, view_id },
+                    )));
                 }
 
                 // Emit overlays after key handling, passing the key that was just processed

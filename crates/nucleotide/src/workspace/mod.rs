@@ -2978,6 +2978,12 @@ impl Workspace {
         // Selection/cursor moved - update status and specific view
         info!("Selection changed in doc {:?}, view {:?}", doc_id, view_id);
         self.update_specific_document_view(doc_id, cx);
+        if let Some(view_entity) = self.view_manager.get_document_view(&view_id) {
+            view_entity.update(cx, |view, cx| {
+                view.request_cursor_reveal();
+                cx.notify();
+            });
+        }
         cx.notify();
     }
 

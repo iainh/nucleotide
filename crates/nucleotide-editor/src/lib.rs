@@ -122,5 +122,6 @@ pub use surface::{
 pub use viewport::{
     EditorViewport, EditorViewportContentLayout, EditorViewportContentUpdate,
     EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate, HelixViewportSnapshot,
-    ViewportScrollUpdate, editor_viewport_size_for_bounds, helix_viewport_snapshot,
+    ViewportScrollUpdate, document_cursor_visual_row, editor_viewport_size_for_bounds,
+    helix_viewport_snapshot,
 };
