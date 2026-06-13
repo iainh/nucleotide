@@ -5,14 +5,14 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
-    IntoElement, LayoutId, ParentElement, Pixels, Point, Render, ShapedLine, SharedString, Size,
-    Style, Styled, TextStyle, Window, WindowTextSystem, black, div, fill, px, relative, white,
+    IntoElement, LayoutId, ParentElement, Pixels, Point, Render, SharedString, Size, Style, Styled,
+    TextStyle, Window, div, fill, px, relative, white,
 };
 use gpui::{TextRun, point, size};
 use helix_core::{Uri, graphemes::next_grapheme_boundary, ropey::RopeSlice};
 use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
-use helix_view::{Document, DocumentId, Editor, Theme, View, ViewId, graphics::CursorKind};
+use helix_view::{DocumentId, Theme, ViewId, graphics::CursorKind};
 use nucleotide_logging::{debug, error};
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
@@ -21,16 +21,13 @@ use crate::Core;
 use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
     EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    HighlightLineParams, LineLayoutCache, cursor_has_reversed_modifier, cursor_style_for_mode,
-    cursor_text_run, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
-    hit_test_document_position, paint_line_backgrounds, soft_wrap_visual_lines,
+    GutterLineParams, HighlightLineParams, LineLayoutCache, build_gutter_lines,
+    cursor_has_reversed_modifier, cursor_style_for_mode, cursor_text_run, diagnostic_overlay_spans,
+    diagnostic_severity_by_line, document_text_format_for_surface, gpui_hsla_to_helix_color,
+    highlight_line, hit_test_document_position, paint_line_backgrounds, soft_wrap_visual_lines,
     soft_wrap_visual_position, text_style_at_position,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
-use nucleotide_ui::style_utils::{
-    apply_color_modifiers, apply_font_modifiers, create_styled_text_run,
-};
 use nucleotide_ui::theme_utils::color_to_hsla;
 
 // Removed unused debug helper: test_synthetic_click_accuracy
@@ -2348,42 +2345,27 @@ impl Element for DocumentElement {
                     };
                     let theme = cx.global::<crate::ThemeManager>().helix_theme();
 
-                    // Prepare gutter lines (no wrapping assumed here)
-                    let text_system = window.text_system().clone();
-                    let style = self.style.clone();
-                    let gutter_last_row = last_row;
-                    let mut lines = Vec::new();
-                    for (current_visual_line, doc_line) in (first_row..gutter_last_row).enumerate()
-                    {
-                        lines.push(LinePos {
-                            first_visual_line: true,
-                            doc_line,
-                            visual_line: current_visual_line as u16,
-                            start_char_idx: 0,
-                        });
-                    }
-                    let lines = lines.into_iter();
-
-                    let mut gutter = Gutter {
-                        after_layout,
-                        text_system,
-                        lines: Vec::new(),
-                        style,
+                    build_gutter_lines(GutterLineParams {
+                        layout: after_layout,
+                        text_system: window.text_system().clone(),
+                        text_style: self.style.clone(),
                         origin: gutter_origin,
-                    };
-                    let mut gutters = Vec::new();
-                    Gutter::init_gutter(editor, document, view, theme, is_focused, &mut gutters);
-                    for line in lines {
-                        for gut in &mut gutters {
-                            gut(line, &mut gutter)
-                        }
-                    }
-                    gutter.lines
+                        first_row,
+                        last_row,
+                        editor,
+                        document,
+                        view,
+                        theme,
+                        is_focused,
+                    })
                 };
 
                 // Now paint the gutter lines
-                for (origin, line) in gutter_lines {
-                    if let Err(e) = line.paint(origin, after_layout.line_height, window, cx) {
+                for line in gutter_lines {
+                    if let Err(e) =
+                        line.shaped_line
+                            .paint(line.origin, after_layout.line_height, window, cx)
+                    {
                         error!(error = ?e, "Failed to paint gutter line");
                     }
                 }
@@ -2393,153 +2375,6 @@ impl Element for DocumentElement {
             }
         }
     }
-}
-
-struct Gutter<'a> {
-    after_layout: &'a EditorLayout,
-    text_system: std::sync::Arc<WindowTextSystem>,
-    lines: Vec<(Point<Pixels>, ShapedLine)>,
-    style: TextStyle,
-    origin: Point<Pixels>,
-}
-
-impl<'a> Gutter<'a> {
-    fn init_gutter<'d>(
-        editor: &'d Editor,
-        doc: &'d Document,
-        view: &'d View,
-        theme: &Theme,
-        is_focused: bool,
-        gutters: &mut Vec<GutterDecoration<'d, Self>>,
-    ) {
-        let text = doc.text().slice(..);
-        let cursors: std::rc::Rc<[_]> = doc
-            .selection(view.id)
-            .iter()
-            .map(|range| range.cursor_line(text))
-            .collect();
-
-        let mut offset = 0;
-
-        let gutter_style = theme.get("ui.gutter");
-        let gutter_selected_style = theme.get("ui.gutter.selected");
-        let gutter_style_virtual = theme.get("ui.gutter.virtual");
-        let gutter_selected_style_virtual = theme.get("ui.gutter.selected.virtual");
-
-        for gutter_type in view.gutters() {
-            let mut gutter = gutter_type.style(editor, doc, view, theme, is_focused);
-            let width = gutter_type.width(view, doc);
-            // avoid lots of small allocations by reusing a text buffer for each line
-            let mut text = String::with_capacity(width);
-            let cursors = cursors.clone();
-            let gutter_decoration = move |pos: LinePos, renderer: &mut Self| {
-                // SOFTWRAP GUTTER HANDLING:
-                // Currently assumes each document line = one visual line
-                // When true softwrap is implemented, this needs to:
-                // 1. Show line numbers only on first visual line of wrapped lines
-                // 2. Show appropriate wrap indicators on continuation lines
-                // 3. Handle gutter width for wrapped line numbers
-                let selected = cursors.contains(&pos.doc_line);
-                let x = offset;
-                let y = pos.visual_line;
-
-                let gutter_style = match (selected, pos.first_visual_line) {
-                    (false, true) => gutter_style,
-                    (true, true) => gutter_selected_style,
-                    (false, false) => gutter_style_virtual,
-                    (true, false) => gutter_selected_style_virtual,
-                };
-
-                if let Some(style) =
-                    gutter(pos.doc_line, selected, pos.first_visual_line, &mut text)
-                {
-                    renderer.render(x, y, width, gutter_style.patch(style), Some(&text));
-                } else {
-                    renderer.render(x, y, width, gutter_style, None);
-                }
-                text.clear();
-            };
-            gutters.push(Box::new(gutter_decoration));
-
-            offset += width as u16;
-        }
-    }
-}
-
-impl<'a> GutterRenderer for Gutter<'a> {
-    fn render(
-        &mut self,
-        x: u16,
-        y: u16,
-        _width: usize,
-        style: helix_view::graphics::Style,
-        text: Option<&str>,
-    ) {
-        let origin_y = self.origin.y + self.after_layout.line_height * f32::from(y);
-        let origin_x = self.origin.x + self.after_layout.cell_width * f32::from(x);
-
-        let base_fg = style.fg.and_then(color_to_hsla).unwrap_or(white()); // Use white as a reasonable fallback for gutter text
-        let base_bg = style.bg.and_then(color_to_hsla);
-
-        if let Some(text) = text {
-            // Apply modifiers to font and colors
-            let font = apply_font_modifiers(&self.style.font(), &style);
-            let default_bg = black(); // Default background for gutters
-            let (fg_color, bg_color) = apply_color_modifiers(base_fg, base_bg, &style, default_bg);
-
-            let run = create_styled_text_run(
-                text.len(),
-                &font,
-                &style,
-                fg_color,
-                bg_color,
-                default_bg,
-                None, // No underline for gutter text
-            );
-            let shaped = self.text_system.shape_line(
-                text.to_string().into(),
-                self.after_layout.font_size,
-                &[run],
-                None,
-            );
-            self.lines.push((
-                Point {
-                    x: origin_x,
-                    y: origin_y,
-                },
-                shaped,
-            ));
-        }
-    }
-}
-
-type GutterDecoration<'a, T> = Box<dyn FnMut(LinePos, &mut T) + 'a>;
-
-trait GutterRenderer {
-    fn render(
-        &mut self,
-        x: u16,
-        y: u16,
-        width: usize,
-        style: helix_view::graphics::Style,
-        text: Option<&str>,
-    );
-}
-
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-struct LinePos {
-    /// Indicates whether the given visual line
-    /// is the first visual line of the given document line
-    pub first_visual_line: bool,
-    /// The line index of the document line that contains the given visual line
-    pub doc_line: usize,
-    /// Vertical offset from the top of the inner view area
-    pub visual_line: u16,
-    /// The first char index of this visual line.
-    /// Note that if the visual line is entirely filled by
-    /// a very long inline virtual text then this index will point
-    /// at the next (non-virtual) char after this visual line
-    pub start_char_idx: usize,
 }
 
 // Removed DiagnosticView - diagnostics are now handled through events and document highlights

@@ -8,6 +8,7 @@ pub mod document_metrics;
 pub mod document_renderer;
 pub mod editor_view;
 pub mod geometry;
+pub mod gutter;
 pub mod highlight;
 pub mod hit_test;
 pub mod line_cache;
@@ -16,6 +17,7 @@ pub mod metrics;
 pub mod scroll_manager;
 pub mod scroll_state;
 pub mod soft_wrap;
+mod style;
 pub mod surface;
 pub mod viewport;
 
@@ -28,6 +30,7 @@ pub use document_metrics::{
 pub use document_renderer::DocumentRenderer;
 pub use editor_view::EditorView;
 pub use geometry::{EditorLayout, EditorSurfaceGeometry};
+pub use gutter::{GutterLine, GutterLineParams, build_gutter_lines};
 pub use highlight::{
     DiagnosticOverlaySpans, HighlightLineParams, cursor_text_run, diagnostic_overlay_spans,
     gpui_hsla_to_helix_color, highlight_line, text_style_at_position,
