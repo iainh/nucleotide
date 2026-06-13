@@ -29,7 +29,7 @@ use nucleotide_editor::{
     phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_visual_lines, soft_wrap_visual_position, text_style_at_position,
-    unwrapped_cursor_paint_position, unwrapped_visible_line_plans,
+    unwrapped_cursor_paint_position, unwrapped_visible_line_plans, visible_ruler_bounds,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -906,24 +906,12 @@ impl Element for DocumentElement {
 
             // Get horizontal scroll offset from view
             let view_offset = document.view_offset(view.id);
-            let horizontal_offset = view_offset.horizontal_offset as f32;
-
-            // Render each ruler as a vertical line
-            for &ruler_col in rulers {
-                // Calculate x position based on column (account for horizontal scroll)
-                // Rulers are at absolute column positions in the text, not including the gutter
-                // We need to account for 0-based vs 1-based column indexing
-                let ruler_x = text_origin_x
-                    + (after_layout.cell_width * (f32::from(ruler_col - 1) - horizontal_offset));
-
-                // Only render if the ruler is within our visible bounds
-                if ruler_x >= text_origin_x && ruler_x < bounds.origin.x + bounds.size.width {
-                    let ruler_bounds = Bounds {
-                        origin: point(ruler_x, bounds.origin.y),
-                        size: size(px(1.0), bounds.size.height),
-                    };
-                    window.paint_quad(fill(ruler_bounds, ruler_color));
-                }
+            let ruler_geometry =
+                EditorSurfaceGeometry::new(bounds, gutter_width, after_layout.cell_width);
+            for ruler_bounds in
+                visible_ruler_bounds(ruler_geometry, rulers, view_offset.horizontal_offset)
+            {
+                window.paint_quad(fill(ruler_bounds, ruler_color));
             }
 
             // Extract necessary values before the loop to avoid borrowing issues
