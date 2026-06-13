@@ -1,5 +1,3 @@
-use std::{cell::Cell, rc::Rc};
-
 use gpui::size;
 use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
@@ -18,22 +16,23 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle,
-    EditorScrollbarState, EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics,
-    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, GutterLineParams,
-    HighlightLineParams, LineLayout, LineLayoutCache, block_cursor_text, build_gutter_lines,
-    build_soft_wrap_gutter_lines, cursor_background_color, cursor_document_line,
-    cursor_foreground_color, cursor_has_reversed_modifier, cursor_line_position,
-    cursor_style_for_mode, cursor_viewport_position, decorate_soft_wrap_line_runs,
-    diagnostic_marker_paint_style, diagnostic_marker_plan, diagnostic_overlay_spans,
-    diagnostic_severity_by_line, document_text_format_for_surface, gpui_hsla_to_helix_color,
-    highlight_line, hit_test_document_position, line_viewport_plan, paint_cursorline_background,
-    paint_diagnostic_marker, paint_editor_background, paint_editor_line, paint_gutter_lines,
-    paint_soft_wrap_gutter_lines, paint_visible_rulers, phantom_line_cursor_paint_position,
-    shape_cursor_text, shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
+    EditorScrollbarState, EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry,
+    EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
+    GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache, begin_pointer_selection,
+    block_cursor_text, build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
+    cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
+    cursor_line_position, cursor_style_for_mode, cursor_viewport_position,
+    decorate_soft_wrap_line_runs, diagnostic_marker_paint_style, diagnostic_marker_plan,
+    diagnostic_overlay_spans, diagnostic_severity_by_line, document_text_format_for_surface,
+    gpui_hsla_to_helix_color, highlight_line, hit_test_document_position, line_viewport_plan,
+    paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
+    paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines, paint_visible_rulers,
+    phantom_line_cursor_paint_position, shape_cursor_text,
+    shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
     soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
     text_style_at_position, unwrapped_cursor_paint_position, unwrapped_line_paint_plans,
-    unwrapped_visible_line_plans, visible_ruler_paint_plans,
+    unwrapped_visible_line_plans, update_pointer_selection, visible_ruler_paint_plans,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -107,31 +106,36 @@ fn handle_editor_mouse_down(
     core: &Entity<Core>,
     doc_id: DocumentId,
     view_id: ViewId,
-    drag_anchor: &Cell<Option<usize>>,
+    drag_state: &EditorSelectionDragState,
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
     if let Some(hit_test) = hit_test_editor_pointer(core, doc_id, view_id, event, cx) {
-        let anchor = if event.modifiers.shift {
-            primary_selection_anchor(core, doc_id, view_id, cx).unwrap_or(hit_test.char_idx)
-        } else {
-            hit_test.char_idx
-        };
-        let target_pos =
-            apply_editor_selection(core, doc_id, view_id, anchor, hit_test.char_idx, cx);
+        let mut selection_update = None;
+        core.update(cx, |core, cx| {
+            if let Some(document) = core.editor.document_mut(doc_id) {
+                selection_update = Some(begin_pointer_selection(
+                    document,
+                    view_id,
+                    drag_state,
+                    hit_test.char_idx,
+                    event.modifiers.shift,
+                ));
+                cx.notify();
+            }
+        });
 
-        if let Some(target_pos) = target_pos {
-            drag_anchor.set(Some(anchor));
+        if let Some(selection_update) = selection_update {
             debug!(
                 line_idx = hit_test.line_idx,
                 char_offset = hit_test.char_offset,
-                anchor,
-                target_pos,
+                anchor = selection_update.anchor,
+                target_pos = selection_update.head,
                 "Applied editor click selection"
             );
         }
     } else {
-        drag_anchor.set(None);
+        drag_state.clear();
         debug!(
             window_pos = ?event.position,
             bounds = ?event.bounds,
@@ -145,23 +149,31 @@ fn handle_editor_mouse_drag(
     core: &Entity<Core>,
     doc_id: DocumentId,
     view_id: ViewId,
-    drag_anchor: &Cell<Option<usize>>,
+    drag_state: &EditorSelectionDragState,
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
-    let Some(anchor) = drag_anchor.get() else {
-        return;
-    };
+    if let Some(hit_test) = hit_test_editor_pointer(core, doc_id, view_id, event, cx) {
+        let mut selection_update = None;
+        core.update(cx, |core, cx| {
+            if let Some(document) = core.editor.document_mut(doc_id) {
+                selection_update =
+                    update_pointer_selection(document, view_id, drag_state, hit_test.char_idx);
+                if selection_update.is_some() {
+                    cx.notify();
+                }
+            }
+        });
 
-    if let Some(hit_test) = hit_test_editor_pointer(core, doc_id, view_id, event, cx)
-        && let Some(target_pos) =
-            apply_editor_selection(core, doc_id, view_id, anchor, hit_test.char_idx, cx)
-    {
+        let Some(selection_update) = selection_update else {
+            return;
+        };
+
         debug!(
             line_idx = hit_test.line_idx,
             char_offset = hit_test.char_offset,
-            anchor,
-            target_pos,
+            anchor = selection_update.anchor,
+            target_pos = selection_update.head,
             "Applied editor drag selection"
         );
     }
@@ -189,43 +201,6 @@ fn hit_test_editor_pointer(
     }
 }
 
-fn primary_selection_anchor(
-    core: &Entity<Core>,
-    doc_id: DocumentId,
-    view_id: ViewId,
-    cx: &mut App,
-) -> Option<usize> {
-    let core = core.read(cx);
-    let editor = &core.editor;
-    let document = editor.document(doc_id)?;
-    Some(document.selection(view_id).primary().anchor)
-}
-
-fn apply_editor_selection(
-    core: &Entity<Core>,
-    doc_id: DocumentId,
-    view_id: ViewId,
-    anchor: usize,
-    head: usize,
-    cx: &mut App,
-) -> Option<usize> {
-    let mut applied_head = None;
-    core.update(cx, |core, cx| {
-        let editor = &mut core.editor;
-        if let Some(document) = editor.document_mut(doc_id) {
-            let text_len = document.text().len_chars();
-            let anchor = anchor.min(text_len);
-            let head = head.min(text_len);
-            let range = helix_core::Range::new(anchor, head);
-            let selection = helix_core::Selection::new(helix_core::SmallVec::from([range]), 0);
-            document.set_selection(view_id, selection);
-            applied_head = Some(head);
-            cx.notify();
-        }
-    });
-    applied_head
-}
-
 pub struct DocumentView {
     core: Entity<Core>,
     view_id: ViewId,
@@ -235,7 +210,7 @@ pub struct DocumentView {
     viewport: EditorViewport,
     scrollbar_state: EditorScrollbarState,
     line_height: Pixels,
-    drag_anchor: Rc<Cell<Option<usize>>>,
+    selection_drag_state: EditorSelectionDragState,
     /// Last cursor position in window coordinates (for completion positioning)
     last_cursor_position: Option<gpui::Point<Pixels>>,
     /// Last cursor dimensions (for completion positioning)  
@@ -263,7 +238,7 @@ impl DocumentView {
             viewport,
             scrollbar_state: EditorScrollbarState::default(),
             line_height,
-            drag_anchor: Rc::new(Cell::new(None)),
+            selection_drag_state: EditorSelectionDragState::default(),
             last_cursor_position: None,
             last_cursor_size: None,
         }
@@ -460,26 +435,26 @@ impl Render for DocumentView {
         .on_mouse_down({
             let core = self.core.clone();
             let view_id = self.view_id;
-            let drag_anchor = self.drag_anchor.clone();
+            let selection_drag_state = self.selection_drag_state.clone();
 
             move |event: EditorSurfacePointerEvent, cx| {
-                handle_editor_mouse_down(&core, doc_id, view_id, &drag_anchor, event, cx);
+                handle_editor_mouse_down(&core, doc_id, view_id, &selection_drag_state, event, cx);
             }
         })
         .on_mouse_drag({
             let core = self.core.clone();
             let view_id = self.view_id;
-            let drag_anchor = self.drag_anchor.clone();
+            let selection_drag_state = self.selection_drag_state.clone();
 
             move |event: EditorSurfacePointerEvent, cx| {
-                handle_editor_mouse_drag(&core, doc_id, view_id, &drag_anchor, event, cx);
+                handle_editor_mouse_drag(&core, doc_id, view_id, &selection_drag_state, event, cx);
             }
         })
         .on_mouse_up({
-            let drag_anchor = self.drag_anchor.clone();
+            let selection_drag_state = self.selection_drag_state.clone();
 
             move |event: EditorSurfacePointerEvent, _cx| {
-                drag_anchor.set(None);
+                selection_drag_state.clear();
                 debug!(position = ?event.position, "Mouse up event - click completed");
             }
         });
