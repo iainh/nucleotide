@@ -23,10 +23,10 @@ use nucleotide_editor::{
     EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
     GutterLineParams, HighlightLineParams, LineLayoutCache, block_cursor_text, build_gutter_lines,
     cursor_background_color, cursor_foreground_color, cursor_has_reversed_modifier,
-    cursor_style_for_mode, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
-    hit_test_document_position, line_viewport_plan, paint_line_backgrounds, shape_cursor_text,
-    soft_wrap_visual_lines, soft_wrap_visual_position, text_style_at_position,
+    cursor_line_position, cursor_style_for_mode, diagnostic_overlay_spans,
+    diagnostic_severity_by_line, document_text_format_for_surface, gpui_hsla_to_helix_color,
+    highlight_line, hit_test_document_position, line_viewport_plan, paint_line_backgrounds,
+    shape_cursor_text, soft_wrap_visual_lines, soft_wrap_visual_position, text_style_at_position,
     unwrapped_visible_line_plans,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
@@ -1826,45 +1826,15 @@ impl Element for DocumentElement {
                                 line_layout.line_idx, line_layout.origin.y, layout_line_idx
                             );
 
-                            // Get cursor position within the line
-                            let line_start = text.line_to_char(cursor_line);
-                            let cursor_char_offset = if cursor_at_end && file_ends_with_newline {
-                                // When cursor is at EOF with newline, position at end of last real line
-                                let line_end = if cursor_line + 1 < text.len_lines() {
-                                    text.line_to_char(cursor_line + 1)
-                                } else {
-                                    text.len_chars()
-                                };
-                                let line_text = text.slice(line_start..line_end).to_string();
-                                line_text
-                                    .trim_end_matches(&['\n', '\r'][..])
-                                    .chars()
-                                    .count()
-                            } else {
-                                cursor_char_idx.saturating_sub(line_start)
-                            };
-
-                            // Get the line text for debugging
-                            let line_end = if cursor_line + 1 < text.len_lines() {
-                                text.line_to_char(cursor_line + 1)
-                            } else {
-                                text.len_chars()
-                            };
-                            let mut line_text = text.slice(line_start..line_end).to_string();
-                            // Remove trailing newlines to match how the line was shaped
-                            while line_text.ends_with('\n') || line_text.ends_with('\r') {
-                                line_text.pop();
-                            }
-                            // Clamp cursor offset to line character count (without newline)
-                            let cursor_char_offset =
-                                cursor_char_offset.min(line_text.chars().count());
-
-                            // Convert char offset to byte offset for GPUI's x_for_index
-                            let cursor_byte_offset = line_text
-                                .chars()
-                                .take(cursor_char_offset)
-                                .map(char::len_utf8)
-                                .sum::<usize>();
+                            let cursor_position = cursor_line_position(
+                                text.slice(..),
+                                cursor_line,
+                                cursor_char_idx,
+                                cursor_at_end && file_ends_with_newline,
+                            );
+                            let line_text = cursor_position.line_text;
+                            let cursor_char_offset = cursor_position.cursor_char_offset;
+                            let cursor_byte_offset = cursor_position.cursor_byte_offset;
 
                             // Get the x position from the shaped line using byte offset
                             let cursor_x_relative_to_line =

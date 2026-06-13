@@ -23,8 +23,8 @@ pub mod surface;
 pub mod viewport;
 
 pub use cursor::{
-    CursorTextShape, EditorCursor, block_cursor_text, cursor_background_color,
-    cursor_foreground_color, cursor_text_run, shape_cursor_text,
+    CursorLinePosition, CursorTextShape, EditorCursor, block_cursor_text, cursor_background_color,
+    cursor_foreground_color, cursor_line_position, cursor_text_run, shape_cursor_text,
 };
 pub use cursor_style::{cursor_has_reversed_modifier, cursor_style_for_mode};
 pub use diagnostics::{DiagnosticSeverityByLine, diagnostic_severity_by_line};
