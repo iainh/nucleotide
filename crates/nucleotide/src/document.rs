@@ -3,7 +3,7 @@ use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, GlobalElementId, InspectorElementId, InteractiveElement, IntoElement,
     LayoutId, ParentElement, Pixels, Render, SharedString, Style, Styled, TextStyle, Window, div,
-    px, relative, white,
+    px, relative,
 };
 use helix_core::Uri;
 use helix_lsp::lsp::Diagnostic;
@@ -16,22 +16,22 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     DiagnosticGutterMarkersPaintParams, DocumentRulerPaintParams, DocumentSoftWrapRenderPlanParams,
-    EditorCursorTextPaintParams, EditorLayout, EditorLineBackgroundStyle,
-    EditorLineHighlightContext, EditorScrollbarState, EditorSelectionDragState, EditorSurface,
-    EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
-    EditorViewport, EditorViewportSurfaceLayout, GutterLineParams, LineLayoutCache,
-    ShapedEditorCursorPaintParams, SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams,
-    SoftWrapGutterPaintParams, SoftWrapHighlightedLineRunsParams, UnwrappedCursorPaintPlanParams,
+    EditorCursorPresentationParams, EditorCursorTextPaintParams, EditorLayout,
+    EditorLineBackgroundStyle, EditorLineHighlightContext, EditorScrollbarState,
+    EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics,
+    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout,
+    GutterLineParams, LineLayoutCache, ShapedEditorCursorPaintParams,
+    SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams,
+    SoftWrapHighlightedLineRunsParams, UnwrappedCursorPaintPlanParams,
     UnwrappedEditorLinePaintParams, UnwrappedHighlightedLineParams, UnwrappedRenderPlanParams,
-    begin_editor_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
-    cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
+    begin_editor_pointer_selection_at_event, build_gutter_lines, cursor_document_line,
     cursor_style_for_mode, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_render_snapshot, document_soft_wrap_render_plan, gpui_hsla_to_helix_color,
-    paint_diagnostic_gutter_markers, paint_document_rulers, paint_editor_background,
-    paint_gutter_lines, paint_shaped_editor_cursor, paint_soft_wrap_editor_line,
-    paint_soft_wrap_gutter, paint_unwrapped_editor_line, shape_and_paint_editor_cursor,
-    shape_cursor_text, soft_wrap_cursor_paint_plan, soft_wrap_highlighted_line_runs,
-    text_style_at_position, unwrapped_cursor_paint_plan, unwrapped_highlighted_line,
+    document_render_snapshot, document_soft_wrap_render_plan, editor_cursor_presentation,
+    gpui_hsla_to_helix_color, paint_diagnostic_gutter_markers, paint_document_rulers,
+    paint_editor_background, paint_gutter_lines, paint_shaped_editor_cursor,
+    paint_soft_wrap_editor_line, paint_soft_wrap_gutter, paint_unwrapped_editor_line,
+    shape_and_paint_editor_cursor, shape_cursor_text, soft_wrap_cursor_paint_plan,
+    soft_wrap_highlighted_line_runs, unwrapped_cursor_paint_plan, unwrapped_highlighted_line,
     unwrapped_render_plan, update_editor_pointer_selection_at_event,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -706,21 +706,17 @@ impl Element for DocumentElement {
 
             let render_snapshot =
                 document_render_snapshot(document, self.view_id, first_row, last_row_from_scroll);
-            let cursor_char_idx = render_snapshot.cursor_char_idx;
-            let cursor_text = block_cursor_text(
-                text.slice(..),
-                cursor_char_idx,
-                cursor_kind,
-                self.is_focused,
-            )
-            .map(|char_str| {
-                let text_color = cursor_foreground_color(
-                    &cursor_style,
-                    cursor_has_reversed_modifier(&cursor_style),
-                    bg_color,
-                );
-                (char_str, text_color)
+            let loader = editor.syn_loader.load();
+            let cursor_presentation = editor_cursor_presentation(EditorCursorPresentationParams {
+                document,
+                view_id: self.view_id,
+                kind: cursor_kind,
+                cursor_style,
+                theme: &theme,
+                syntax_loader: &loader,
+                is_focused: self.is_focused,
             });
+            let cursor_char_idx = cursor_presentation.cursor_char_idx;
             let cursor_line_num = render_snapshot.cursor_line;
             debug!(
                 "Cursor position: line={}, char_idx={}",
@@ -791,33 +787,15 @@ impl Element for DocumentElement {
             let _tab_width = document.tab_width() as u16;
 
             // Shape cursor text before dropping core borrow and keep its length
-            let (cursor_text_shape, cursor_text_style) = {
-                let text_style_at_cursor = {
-                    let core = self.core.read(cx);
-                    let editor = &core.editor;
-                    if let Some(doc) = editor.document(self.doc_id) {
-                        let theme = cx.global::<crate::ThemeManager>().helix_theme();
-                        let loader = editor.syn_loader.load();
-                        text_style_at_position(doc, self.view_id, theme, &loader, cursor_char_idx)
-                    } else {
-                        helix_view::graphics::Style::default()
-                    }
-                };
-
-                let (cursor_text, text_color) =
-                    cursor_text.map_or((None, white()), |(text, color)| (Some(text), color));
-                let cursor_text_shape = shape_cursor_text(
-                    window.text_system().as_ref(),
-                    cursor_text,
-                    &self.style.font(),
-                    self.style.font_size.to_pixels(px(16.0)),
-                    &text_style_at_cursor,
-                    text_color,
-                    bg_color,
-                );
-
-                (cursor_text_shape, text_style_at_cursor)
-            };
+            let cursor_text_shape = shape_cursor_text(
+                window.text_system().as_ref(),
+                cursor_presentation.block_text.clone(),
+                &self.style.font(),
+                self.style.font_size.to_pixels(px(16.0)),
+                &cursor_presentation.text_style_at_cursor,
+                cursor_presentation.block_text_color(bg_color),
+                bg_color,
+            );
 
             // Drop the core borrow before the loop
             // core goes out of scope here
@@ -998,61 +976,13 @@ impl Element for DocumentElement {
 
                 // Render cursor for soft wrap mode
                 let element_focused = self.focus.is_focused(window);
-                if self.is_focused || element_focused {
-                    // Get cursor position and text under cursor for block mode
-                    let (
-                        cursor_char_idx,
-                        cursor_style,
-                        cursor_kind,
-                        cursor_text,
-                        text_style_at_cursor,
-                    ) = {
-                        let core = self.core.read(cx);
-                        let editor = &core.editor;
-                        if let Some(document) = editor.document(self.doc_id) {
-                            let selection = document.selection(self.view_id);
-                            let cursor_char_idx = selection.primary().cursor(text);
-                            let (_, cursor_kind) = editor.cursor();
-
-                            let cursor_text = block_cursor_text(
-                                text,
-                                cursor_char_idx,
-                                cursor_kind,
-                                self.is_focused,
-                            );
-
-                            let mode = editor.mode();
-                            let cursor_style =
-                                cursor_style_for_mode(mode, |key| cx.theme_style(key));
-
-                            // Get text style at cursor for reversed modifier
-                            let loader = editor.syn_loader.load();
-                            let text_style_at_cursor = text_style_at_position(
-                                document,
-                                self.view_id,
-                                &theme,
-                                &loader,
-                                cursor_char_idx,
-                            );
-
-                            (
-                                cursor_char_idx,
-                                cursor_style,
-                                cursor_kind,
-                                cursor_text,
-                                text_style_at_cursor,
-                            )
-                        } else {
-                            return;
-                        }
-                    };
-
-                    if let Some(cursor_paint_plan) =
+                if (self.is_focused || element_focused)
+                    && let Some(cursor_paint_plan) =
                         soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
                             text,
                             text_format,
                             anchor: view_offset.anchor,
-                            cursor_char_idx,
+                            cursor_char_idx: cursor_presentation.cursor_char_idx,
                             geometry: EditorSurfaceGeometry::new(
                                 bounds,
                                 gutter_width,
@@ -1064,29 +994,28 @@ impl Element for DocumentElement {
                             viewport_height,
                             horizontal_offset: view_offset.horizontal_offset,
                         })
-                    {
-                        let cursor_paint_position = cursor_paint_plan.paint_position;
-                        let overlay_plan = shape_and_paint_editor_cursor(
-                            window,
-                            cx,
-                            EditorCursorTextPaintParams {
-                                paint_position: cursor_paint_position,
-                                kind: cursor_kind,
-                                cursor_style: &cursor_style,
-                                text_style_at_cursor: &text_style_at_cursor,
-                                cursor_text,
-                                font: &self.style.font(),
-                                font_size: self.style.font_size.to_pixels(px(16.0)),
-                                fallback_fg: fg_color,
-                                default_bg: bg_color,
-                                fallback_width: after_layout.cell_width,
-                                line_height: after_layout.line_height,
-                            },
-                        );
-                        let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
-                        layout_info.cursor_position = Some(overlay_plan.cursor_position);
-                        layout_info.cursor_size = Some(overlay_plan.cursor_size);
-                    }
+                {
+                    let cursor_paint_position = cursor_paint_plan.paint_position;
+                    let overlay_plan = shape_and_paint_editor_cursor(
+                        window,
+                        cx,
+                        EditorCursorTextPaintParams {
+                            paint_position: cursor_paint_position,
+                            kind: cursor_presentation.kind,
+                            cursor_style: &cursor_presentation.cursor_style,
+                            text_style_at_cursor: &cursor_presentation.text_style_at_cursor,
+                            cursor_text: cursor_presentation.block_text.clone(),
+                            font: &self.style.font(),
+                            font_size: self.style.font_size.to_pixels(px(16.0)),
+                            fallback_fg: fg_color,
+                            default_bg: bg_color,
+                            fallback_width: after_layout.cell_width,
+                            line_height: after_layout.line_height,
+                        },
+                    );
+                    let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+                    layout_info.cursor_position = Some(overlay_plan.cursor_position);
+                    layout_info.cursor_size = Some(overlay_plan.cursor_size);
                 }
 
                 // Render tilde lines for empty viewport space (soft-wrap mode)
@@ -1284,9 +1213,9 @@ impl Element for DocumentElement {
                                 cx,
                                 ShapedEditorCursorPaintParams {
                                     paint_position: cursor_paint_position,
-                                    kind: cursor_kind,
-                                    cursor_style: &cursor_style,
-                                    text_style_at_cursor: &cursor_text_style,
+                                    kind: cursor_presentation.kind,
+                                    cursor_style: &cursor_presentation.cursor_style,
+                                    text_style_at_cursor: &cursor_presentation.text_style_at_cursor,
                                     cursor_text_shape: cursor_text_shape.clone(),
                                     fallback_fg: fg_color,
                                     fallback_width: after_layout.cell_width,

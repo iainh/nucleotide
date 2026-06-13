@@ -8,12 +8,16 @@ use gpui::{
     WindowTextSystem, fill, point, px, size, white,
 };
 use helix_core::{RopeSlice, doc_formatter::TextFormat, graphemes::next_grapheme_boundary};
-use helix_view::graphics::{CursorKind, Style};
+use helix_view::{
+    Document, Theme, ViewId,
+    graphics::{CursorKind, Style},
+};
 use nucleotide_logging::error;
 
 use crate::{
     cursor_has_reversed_modifier,
     geometry::EditorSurfaceGeometry,
+    highlight::text_style_at_position,
     line_cache::LineLayout,
     line_text::{byte_offset_for_char_offset, line_text_without_trailing_newline},
     soft_wrap::{SoftWrapVisualPosition, soft_wrap_visual_position},
@@ -166,6 +170,62 @@ pub struct EditorCursorTextPaintParams<'a> {
     pub default_bg: Hsla,
     pub fallback_width: Pixels,
     pub line_height: Pixels,
+}
+
+#[derive(Debug, Clone)]
+pub struct EditorCursorPresentation {
+    pub cursor_char_idx: usize,
+    pub kind: CursorKind,
+    pub cursor_style: Style,
+    pub text_style_at_cursor: Style,
+    pub block_text: Option<SharedString>,
+}
+
+pub struct EditorCursorPresentationParams<'a> {
+    pub document: &'a Document,
+    pub view_id: ViewId,
+    pub kind: CursorKind,
+    pub cursor_style: Style,
+    pub theme: &'a Theme,
+    pub syntax_loader: &'a helix_core::syntax::Loader,
+    pub is_focused: bool,
+}
+
+pub fn editor_cursor_presentation(
+    params: EditorCursorPresentationParams<'_>,
+) -> EditorCursorPresentation {
+    let text = params.document.text().slice(..);
+    let cursor_char_idx = params
+        .document
+        .selection(params.view_id)
+        .primary()
+        .cursor(text);
+    let text_style_at_cursor = text_style_at_position(
+        params.document,
+        params.view_id,
+        params.theme,
+        params.syntax_loader,
+        cursor_char_idx,
+    );
+    let block_text = block_cursor_text(text, cursor_char_idx, params.kind, params.is_focused);
+
+    EditorCursorPresentation {
+        cursor_char_idx,
+        kind: params.kind,
+        cursor_style: params.cursor_style,
+        text_style_at_cursor,
+        block_text,
+    }
+}
+
+impl EditorCursorPresentation {
+    pub fn block_text_color(&self, default_bg: Hsla) -> Hsla {
+        cursor_foreground_color(
+            &self.cursor_style,
+            cursor_has_reversed_modifier(&self.cursor_style),
+            default_bg,
+        )
+    }
 }
 
 pub fn shaped_editor_cursor_plan(
@@ -1076,6 +1136,20 @@ mod tests {
         let bg = hsla(0.2, 0.3, 0.4, 1.0);
 
         assert_eq!(cursor_foreground_color(&Style::default(), true, bg), bg);
+    }
+
+    #[test]
+    fn cursor_presentation_block_text_color_respects_reversed_style() {
+        let bg = hsla(0.2, 0.3, 0.4, 1.0);
+        let presentation = EditorCursorPresentation {
+            cursor_char_idx: 0,
+            kind: CursorKind::Block,
+            cursor_style: Style::default().add_modifier(Modifier::REVERSED),
+            text_style_at_cursor: Style::default(),
+            block_text: Some("x".into()),
+        };
+
+        assert_eq!(presentation.block_text_color(bg), bg);
     }
 
     #[test]
