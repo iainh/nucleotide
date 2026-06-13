@@ -9,23 +9,20 @@ use helix_core::Uri;
 use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
 use helix_view::{DocumentId, ViewId};
-use nucleotide_logging::{debug, error};
+use nucleotide_logging::debug;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams,
-    EditorDocumentFrameGutterParams, EditorDocumentFrameParams, EditorLayout,
-    EditorLineBackgroundStyle, EditorScrollbarState, EditorSelectionDragState, EditorSurface,
-    EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
-    EditorViewport, EditorViewportSurfaceLayout, LineLayoutCache, SoftWrapCursorPaintPlanParams,
-    SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams, UnwrappedDocumentFramePaintParams,
+    EditorDocumentFrameGutterParams, EditorDocumentFrameParams, EditorLayout, EditorScrollbarState,
+    EditorSelectionDragState, EditorSurface, EditorSurfaceMetrics, EditorSurfacePointerEvent,
+    EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout, LineLayoutCache,
+    SoftWrapDocumentFramePaintParams, UnwrappedDocumentFramePaintParams,
     begin_editor_pointer_selection_at_event, cursor_document_line, cursor_style_for_mode,
-    editor_document_frame, gpui_hsla_to_helix_color, paint_diagnostic_gutter_markers,
-    paint_editor_background, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
-    paint_unwrapped_document_frame, paint_visible_rulers, shape_and_paint_editor_cursor,
-    shape_cursor_text, soft_wrap_cursor_paint_plan, update_editor_pointer_selection_at_event,
+    editor_document_frame, gpui_hsla_to_helix_color, paint_editor_background,
+    paint_soft_wrap_document_frame, paint_unwrapped_document_frame, paint_visible_rulers,
+    shape_cursor_text, update_editor_pointer_selection_at_event,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -762,7 +759,7 @@ impl Element for DocumentElement {
             paint_visible_rulers(window, &frame.ruler_paint_plans);
 
             // Extract necessary values before the loop to avoid borrowing issues
-            let _editor_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+            let diagnostic_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
 
             // Clone text to avoid borrowing issues
             let doc_text = document.text().clone();
@@ -789,156 +786,52 @@ impl Element for DocumentElement {
 
             // Update the shared line layouts for mouse interaction
             if soft_wrap_enabled {
-                let Some(soft_wrap_plan) = frame.soft_wrap_render_plan.as_ref() else {
-                    return;
-                };
-
-                let text_format = &soft_wrap_plan.text_format;
-                let view_offset = soft_wrap_plan.view_offset;
-                let viewport_height = soft_wrap_plan.viewport_height;
-                let soft_wrap_lines = &soft_wrap_plan.visual_lines;
-                let soft_wrap_paint_plans = soft_wrap_plan.line_paint_plans(
-                    after_layout.line_height,
-                    scroll_line_offset,
-                    cursor_line_num,
-                );
-
-                for (soft_wrap_plan, line_runs) in soft_wrap_paint_plans
-                    .into_iter()
-                    .zip(frame.soft_wrap_line_runs.iter())
-                {
-                    match paint_soft_wrap_editor_line(
-                        window,
-                        cx,
-                        SoftWrapEditorLinePaintParams {
-                            plan: soft_wrap_plan,
-                            line_runs,
-                            line_cache: &line_cache,
-                            font_size: self.style.font_size.to_pixels(px(16.0)),
-                            viewport_width: bounds.size.width,
-                            line_height: after_layout.line_height,
-                            cursorline_color: cursorline_style,
-                            background_style: EditorLineBackgroundStyle {
-                                only_selection_backgrounds: soft_wrap_plan.is_cursor_visual_line,
-                                selection_primary: tokens.editor.selection_primary,
-                                selection_secondary: tokens.editor.selection_secondary,
-                            },
-                        },
-                    ) {
-                        Ok(Some(layout)) => line_cache.push(layout),
-                        Ok(None) => {}
-                        Err(e) => {
-                            error!(error = ?e, "Failed to paint text");
-                        }
-                    }
-                }
-
-                // Render gutter for soft wrap mode from the same visual rows as text painting.
-                {
-                    let mut gutter_origin = bounds.origin;
-                    gutter_origin.x += px(2.);
-                    gutter_origin.y += px(1.);
-
-                    // Now render the line numbers with highlighting for current line
-                    let gutter_style = cx.theme_style("ui.linenr");
-                    let gutter_selected_style = cx.theme_style("ui.linenr.selected");
-                    let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
-                    let gutter_color = gutter_style
-                        .fg
-                        .and_then(crate::utils::color_to_hsla)
-                        .unwrap_or(default_gutter_color);
-                    let gutter_selected_color = gutter_selected_style
-                        .fg
-                        .and_then(crate::utils::color_to_hsla)
-                        .unwrap_or(default_gutter_color);
-                    let gutter_text_system = window.text_system().clone();
-                    let gutter_lines = paint_soft_wrap_gutter(
-                        window,
-                        cx,
-                        SoftWrapGutterPaintParams {
-                            text_system: gutter_text_system,
-                            text_style: &self.style,
-                            font_size: self.style.font_size.to_pixels(px(16.0)),
-                            visual_lines: soft_wrap_lines,
-                            vertical_offset: view_offset.vertical_offset,
-                            line_height: after_layout.line_height,
-                            scroll_line_offset,
-                            cursor_lines: &frame.render_snapshot.cursor_lines,
-                            origin: gutter_origin,
-                            gutter_color,
-                            gutter_selected_color,
-                        },
-                        |_| {},
-                    );
-
-                    let gutter_bg = cx
-                        .theme_style("ui.gutter")
-                        .bg
-                        .and_then(crate::utils::color_to_hsla);
-                    paint_diagnostic_gutter_markers(
-                        window,
-                        DiagnosticGutterMarkersPaintParams {
-                            severity_by_line: &frame.diagnostic_severity_by_line,
-                            gutter_lines: &gutter_lines,
-                            theme: cx.helix_theme(),
-                            gutter_origin,
-                            line_height: after_layout.line_height,
-                            highlight_base: cx.theme().tokens.chrome.text_on_chrome,
-                            gutter_bg,
-                        },
-                    );
-                }
-
-                // Render cursor for soft wrap mode
+                let gutter_style = cx.theme_style("ui.linenr");
+                let gutter_selected_style = cx.theme_style("ui.linenr.selected");
+                let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
+                let gutter_color = gutter_style
+                    .fg
+                    .and_then(crate::utils::color_to_hsla)
+                    .unwrap_or(default_gutter_color);
+                let gutter_selected_color = gutter_selected_style
+                    .fg
+                    .and_then(crate::utils::color_to_hsla)
+                    .unwrap_or(default_gutter_color);
+                let gutter_bg = cx
+                    .theme_style("ui.gutter")
+                    .bg
+                    .and_then(crate::utils::color_to_hsla);
                 let element_focused = self.focus.is_focused(window);
-                if (self.is_focused || element_focused)
-                    && let Some(cursor_paint_plan) =
-                        soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
-                            text,
-                            text_format,
-                            anchor: view_offset.anchor,
-                            cursor_char_idx: frame.cursor_presentation.cursor_char_idx,
-                            geometry: EditorSurfaceGeometry::new(
-                                bounds,
-                                gutter_width,
-                                after_layout.cell_width,
-                            ),
-                            line_height: after_layout.line_height,
-                            cell_width: after_layout.cell_width,
-                            vertical_offset: view_offset.vertical_offset,
-                            viewport_height,
-                            horizontal_offset: view_offset.horizontal_offset,
-                        })
-                {
-                    let cursor_paint_position = cursor_paint_plan.paint_position;
-                    let overlay_plan = shape_and_paint_editor_cursor(
-                        window,
-                        cx,
-                        EditorCursorTextPaintParams {
-                            paint_position: cursor_paint_position,
-                            kind: frame.cursor_presentation.kind,
-                            cursor_style: &frame.cursor_presentation.cursor_style,
-                            text_style_at_cursor: &frame.cursor_presentation.text_style_at_cursor,
-                            cursor_text: frame.cursor_presentation.block_text.clone(),
-                            font: &self.style.font(),
-                            font_size: self.style.font_size.to_pixels(px(16.0)),
-                            fallback_fg: fg_color,
-                            default_bg: bg_color,
-                            fallback_width: after_layout.cell_width,
-                            line_height: after_layout.line_height,
-                        },
-                    );
+                if let Some(overlay_plan) = paint_soft_wrap_document_frame(
+                    window,
+                    cx,
+                    SoftWrapDocumentFramePaintParams {
+                        frame: &frame,
+                        text,
+                        bounds,
+                        layout: after_layout,
+                        text_style: &self.style,
+                        line_cache: &line_cache,
+                        font_size: self.style.font_size.to_pixels(px(16.0)),
+                        fg_color,
+                        default_bg: bg_color,
+                        cursorline_color: cursorline_style,
+                        is_focused: self.is_focused,
+                        element_focused,
+                        selection_primary: tokens.editor.selection_primary,
+                        selection_secondary: tokens.editor.selection_secondary,
+                        gutter_color,
+                        gutter_selected_color,
+                        diagnostic_theme: &diagnostic_theme,
+                        diagnostic_highlight_base: cx.theme().tokens.chrome.text_on_chrome,
+                        gutter_bg,
+                        scroll_line_offset,
+                    },
+                ) {
                     let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
                     layout_info.cursor_position = Some(overlay_plan.cursor_position);
                     layout_info.cursor_size = Some(overlay_plan.cursor_size);
                 }
-
-                // Render tilde lines for empty viewport space (soft-wrap mode)
-                // Calculate how many visual lines we've rendered vs viewport capacity
-                let _visual_lines_rendered = soft_wrap_lines.len();
-                let viewport_height_in_lines =
-                    (bounds.size.height - px(2.0)) / after_layout.line_height;
-                let _viewport_capacity = viewport_height_in_lines as usize;
 
                 // Note: Tilde rendering is handled by the gutter for consistency with Helix
                 // The gutter shows "~" for phantom lines in the line number area
