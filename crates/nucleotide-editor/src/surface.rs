@@ -234,15 +234,15 @@ impl Element for EditorSurface {
         window: &mut Window,
         cx: &mut App,
     ) {
+        self.paint_scroll_listener(prepaint.content_bounds, window);
+        self.paint_pointer_listeners(prepaint.content_bounds, window);
+
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             self.child.paint(window, cx);
             if let Some(scrollbar) = prepaint.scrollbar.as_mut() {
                 scrollbar.paint(window, cx);
             }
         });
-
-        self.paint_scroll_listener(prepaint.content_bounds, window);
-        self.paint_pointer_listeners(prepaint.content_bounds, window);
     }
 }
 
