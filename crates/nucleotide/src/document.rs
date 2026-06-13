@@ -15,14 +15,15 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams, EditorDocumentFrameParams,
-    EditorLayout, EditorLineBackgroundStyle, EditorScrollbarState, EditorSelectionDragState,
-    EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent,
-    EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout, GutterLineParams,
-    LineLayoutCache, ShapedEditorCursorPaintParams, SoftWrapCursorPaintPlanParams,
-    SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams, UnwrappedCursorPaintPlanParams,
-    UnwrappedEditorLinePaintParams, begin_editor_pointer_selection_at_event, build_gutter_lines,
-    cursor_document_line, cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color,
+    DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams,
+    EditorDocumentFrameGutterParams, EditorDocumentFrameParams, EditorLayout,
+    EditorLineBackgroundStyle, EditorScrollbarState, EditorSelectionDragState, EditorSurface,
+    EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
+    EditorViewport, EditorViewportSurfaceLayout, LineLayoutCache, ShapedEditorCursorPaintParams,
+    SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams,
+    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams,
+    begin_editor_pointer_selection_at_event, build_gutter_lines_from_plans, cursor_document_line,
+    cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color,
     paint_diagnostic_gutter_markers, paint_editor_background, paint_gutter_lines,
     paint_shaped_editor_cursor, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
     paint_unwrapped_editor_line, paint_visible_rulers, shape_and_paint_editor_cursor,
@@ -678,6 +679,10 @@ impl Element for DocumentElement {
                 first_row,
                 last_row_from_scroll,
                 soft_wrap_enabled,
+                unwrapped_gutter: Some(EditorDocumentFrameGutterParams {
+                    editor,
+                    layout: after_layout,
+                }),
                 bounds,
                 cell_width: after_layout.cell_width,
                 line_height: after_layout.line_height,
@@ -1020,22 +1025,10 @@ impl Element for DocumentElement {
             );
 
             // Debug: Log cursor position info
-            {
-                let core = self.core.read(cx);
-                let editor = &core.editor;
-                if let Some(doc) = editor.document(self.doc_id)
-                    && let Some(_view) = editor.tree.try_get(self.view_id)
-                {
-                    let sel = doc.selection(self.view_id);
-                    let cursor_char = sel.primary().cursor(text);
-                    debug!(
-                        "Cursor char idx: {}, line: {}, selection: {:?}",
-                        cursor_char,
-                        text.char_to_line(cursor_char),
-                        sel
-                    );
-                }
-            }
+            debug!(
+                "Cursor char idx: {}, line: {}",
+                frame.render_snapshot.cursor_char_idx, frame.render_snapshot.cursor_line
+            );
 
             // Check both is_focused flag and actual focus state
             if self.is_focused || element_focused {
@@ -1129,38 +1122,12 @@ impl Element for DocumentElement {
             }
             // draw gutter
             {
-                let mut gutter_origin = bounds.origin;
-                gutter_origin.x += px(2.);
-                gutter_origin.y += px(1.) - scroll_line_offset;
-
-                // Build gutter lines inside a limited borrow scope, then paint
-                let gutter_lines = {
-                    let core = self.core.read(cx);
-                    let editor = &core.editor;
-                    let view = match editor.tree.try_get(self.view_id) {
-                        Some(v) => v,
-                        None => return,
-                    };
-                    let document = match editor.document(self.doc_id) {
-                        Some(doc) => doc,
-                        None => return,
-                    };
-                    let theme = cx.global::<crate::ThemeManager>().helix_theme();
-
-                    build_gutter_lines(GutterLineParams {
-                        layout: after_layout,
-                        text_system: window.text_system().clone(),
-                        text_style: self.style.clone(),
-                        origin: gutter_origin,
-                        first_row,
-                        last_row,
-                        editor,
-                        document,
-                        view,
-                        theme,
-                        is_focused,
-                    })
-                };
+                let gutter_lines = build_gutter_lines_from_plans(
+                    window.text_system().clone(),
+                    &self.style,
+                    after_layout.font_size,
+                    &frame.unwrapped_gutter_line_plans,
+                );
 
                 paint_gutter_lines(
                     window,

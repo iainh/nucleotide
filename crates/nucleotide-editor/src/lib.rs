@@ -49,7 +49,10 @@ pub use diagnostics::{
     diagnostic_severity_by_line, diagnostic_severity_color, diagnostic_severity_theme_key,
     paint_diagnostic_gutter_markers, paint_diagnostic_marker,
 };
-pub use document_frame::{EditorDocumentFrame, EditorDocumentFrameParams, editor_document_frame};
+pub use document_frame::{
+    EditorDocumentFrame, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
+    editor_document_frame,
+};
 pub use document_metrics::{
     EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,
 };
@@ -57,10 +60,12 @@ pub use document_renderer::DocumentRenderer;
 pub use editor_view::EditorView;
 pub use geometry::{EditorLayout, EditorSurfaceGeometry};
 pub use gutter::{
-    GutterLine, GutterLineParams, SoftWrapGutterLinePaintPlan, SoftWrapGutterLinePlan,
-    SoftWrapGutterPaintParams, build_gutter_lines, build_soft_wrap_gutter_for_visual_lines,
-    build_soft_wrap_gutter_lines, paint_gutter_lines, paint_soft_wrap_gutter,
-    paint_soft_wrap_gutter_lines, soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans,
+    GutterLine, GutterLineParams, GutterLinePlan, GutterLinePlanParams,
+    SoftWrapGutterLinePaintPlan, SoftWrapGutterLinePlan, SoftWrapGutterPaintParams,
+    build_gutter_line_plans, build_gutter_lines, build_gutter_lines_from_plans,
+    build_soft_wrap_gutter_for_visual_lines, build_soft_wrap_gutter_lines, paint_gutter_lines,
+    paint_soft_wrap_gutter, paint_soft_wrap_gutter_lines, soft_wrap_gutter_line_paint_plans,
+    soft_wrap_gutter_line_plans,
 };
 pub use highlight::{
     DiagnosticOverlaySpans, EditorLineHighlightContext, HighlightLineParams,

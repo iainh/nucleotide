@@ -7,7 +7,7 @@ use gpui::{
     App, Hsla, Pixels, Point, Result, ShapedLine, TextRun, TextStyle, Window, WindowTextSystem,
     black, point, white,
 };
-use helix_view::{Document, Editor, Theme, View};
+use helix_view::{Document, Editor, Theme, View, graphics::Style};
 
 use crate::{
     EditorLayout, SoftWrapVisualLine,
@@ -17,6 +17,13 @@ use crate::{
 pub struct GutterLine {
     pub origin: Point<Pixels>,
     pub shaped_line: ShapedLine,
+}
+
+#[derive(Debug, Clone)]
+pub struct GutterLinePlan {
+    pub origin: Point<Pixels>,
+    pub text: String,
+    pub style: Style,
 }
 
 pub struct SoftWrapGutterLine {
@@ -29,6 +36,18 @@ pub struct GutterLineParams<'a> {
     pub layout: &'a EditorLayout,
     pub text_system: Arc<WindowTextSystem>,
     pub text_style: TextStyle,
+    pub origin: Point<Pixels>,
+    pub first_row: usize,
+    pub last_row: usize,
+    pub editor: &'a Editor,
+    pub document: &'a Document,
+    pub view: &'a View,
+    pub theme: &'a Theme,
+    pub is_focused: bool,
+}
+
+pub struct GutterLinePlanParams<'a> {
+    pub layout: &'a EditorLayout,
     pub origin: Point<Pixels>,
     pub first_row: usize,
     pub last_row: usize,
@@ -70,16 +89,33 @@ pub struct SoftWrapGutterPaintParams<'a> {
 }
 
 pub fn build_gutter_lines(params: GutterLineParams<'_>) -> Vec<GutterLine> {
-    let mut gutter = Gutter {
+    let font_size = params.layout.font_size;
+    let text_system = params.text_system;
+    let text_style = params.text_style;
+    let plans = build_gutter_line_plans(GutterLinePlanParams {
         layout: params.layout,
-        text_system: params.text_system,
+        origin: params.origin,
+        first_row: params.first_row,
+        last_row: params.last_row,
+        editor: params.editor,
+        document: params.document,
+        view: params.view,
+        theme: params.theme,
+        is_focused: params.is_focused,
+    });
+
+    build_gutter_lines_from_plans(text_system, &text_style, font_size, &plans)
+}
+
+pub fn build_gutter_line_plans(params: GutterLinePlanParams<'_>) -> Vec<GutterLinePlan> {
+    let mut gutter = GutterPlan {
+        layout: params.layout,
         lines: Vec::new(),
-        text_style: params.text_style,
         origin: params.origin,
     };
 
     let mut gutters = Vec::new();
-    Gutter::init_gutter(
+    GutterPlan::init_gutter(
         params.editor,
         params.document,
         params.view,
@@ -95,6 +131,41 @@ pub fn build_gutter_lines(params: GutterLineParams<'_>) -> Vec<GutterLine> {
     }
 
     gutter.lines
+}
+
+pub fn build_gutter_lines_from_plans(
+    text_system: Arc<WindowTextSystem>,
+    text_style: &TextStyle,
+    font_size: Pixels,
+    plans: &[GutterLinePlan],
+) -> Vec<GutterLine> {
+    plans
+        .iter()
+        .map(|plan| {
+            let base_fg = plan
+                .style
+                .fg
+                .and_then(helix_color_to_hsla)
+                .unwrap_or(white());
+            let base_bg = plan.style.bg.and_then(helix_color_to_hsla);
+            let base_font = text_style.font();
+            let run = create_styled_text_run(
+                plan.text.len(),
+                &base_font,
+                &plan.style,
+                base_fg,
+                base_bg,
+                black(),
+                None,
+            );
+            let shaped = text_system.shape_line(plan.text.clone().into(), font_size, &[run], None);
+
+            GutterLine {
+                origin: plan.origin,
+                shaped_line: shaped,
+            }
+        })
+        .collect()
 }
 
 pub fn paint_gutter_lines(
@@ -252,15 +323,13 @@ fn soft_wrap_gutter_label(doc_line: usize, is_phantom_line: bool) -> String {
     }
 }
 
-struct Gutter<'a> {
+struct GutterPlan<'a> {
     layout: &'a EditorLayout,
-    text_system: Arc<WindowTextSystem>,
-    lines: Vec<GutterLine>,
-    text_style: TextStyle,
+    lines: Vec<GutterLinePlan>,
     origin: Point<Pixels>,
 }
 
-impl<'a> Gutter<'a> {
+impl<'a> GutterPlan<'a> {
     fn init_gutter<'d>(
         editor: &'d Editor,
         doc: &'d Document,
@@ -316,7 +385,7 @@ impl<'a> Gutter<'a> {
     }
 }
 
-impl GutterRenderer for Gutter<'_> {
+impl GutterRenderer for GutterPlan<'_> {
     fn render(&mut self, x: u16, y: u16, style: helix_view::graphics::Style, text: Option<&str>) {
         let origin_y = self.origin.y + self.layout.line_height * f32::from(y);
         let origin_x = self.origin.x + self.layout.cell_width * f32::from(x);
@@ -325,31 +394,13 @@ impl GutterRenderer for Gutter<'_> {
             return;
         };
 
-        let base_fg = style.fg.and_then(helix_color_to_hsla).unwrap_or(white());
-        let base_bg = style.bg.and_then(helix_color_to_hsla);
-        let base_font = self.text_style.font();
-        let run = create_styled_text_run(
-            text.len(),
-            &base_font,
-            &style,
-            base_fg,
-            base_bg,
-            black(),
-            None,
-        );
-        let shaped = self.text_system.shape_line(
-            text.to_string().into(),
-            self.layout.font_size,
-            &[run],
-            None,
-        );
-
-        self.lines.push(GutterLine {
+        self.lines.push(GutterLinePlan {
             origin: Point {
                 x: origin_x,
                 y: origin_y,
             },
-            shaped_line: shaped,
+            text: text.to_string(),
+            style,
         });
     }
 }
