@@ -20,8 +20,8 @@ use crate::Core;
 use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
     EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    GutterLineParams, HighlightLineParams, LineLayoutCache, block_cursor_text, build_gutter_lines,
-    cursor_background_color, cursor_document_line, cursor_foreground_color,
+    GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache, block_cursor_text,
+    build_gutter_lines, cursor_background_color, cursor_document_line, cursor_foreground_color,
     cursor_has_reversed_modifier, cursor_line_position, cursor_style_for_mode,
     cursor_viewport_position, diagnostic_overlay_spans, diagnostic_severity_by_line,
     document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
@@ -1146,20 +1146,13 @@ impl Element for DocumentElement {
                             continue;
                         }
 
-                        // Store line layout for mouse interaction
-                        // FIXED: Store in text-area coordinates (gutter excluded)
-                        // Use y_offset directly to match coordinate system used by mouse handler
-                        let text_area_origin = point(
-                            px(0.0),  // Line starts at x=0 in text-area coordinates
-                            y_offset, // Use y_offset directly (no px(1.) like non-wrap mode)
-                        );
-                        let layout = nucleotide_editor::LineLayout {
-                            line_idx: visual.doc_line,
+                        let layout = LineLayout::wrapped(
+                            visual.doc_line,
                             shaped_line,
-                            origin: text_area_origin,
-                            segment_char_offset: visual.segment_char_offset,
-                            text_start_byte_offset: visual.text_start_byte_offset,
-                        };
+                            y_offset,
+                            visual.segment_char_offset,
+                            visual.text_start_byte_offset,
+                        );
                         line_cache.push(layout);
                     }
                 }
@@ -1681,30 +1674,7 @@ impl Element for DocumentElement {
                     )
                 };
 
-                // COORDINATE SYSTEM CONVERSION FOR LINE CACHE:
-                // Convert from global coordinates to element-local coordinates
-                //
-                // COORDINATE SPACES EXPLAINED:
-                // - text_origin: Global screen coordinates where the line is painted
-                // - bounds.origin: Global screen coordinates of the DocumentElement's top-left
-                // - local_origin: Element-local coordinates (relative to DocumentElement)
-                //
-                // This conversion ensures that:
-                // 1. Line cache stores positions in the same coordinate space as mouse events
-                // 2. Mouse position lookup works without additional coordinate conversion
-                // FIXED: Store in text-area coordinates (gutter excluded)
-                // Remove the px(1.) top padding to avoid double-adding it during cursor positioning
-                let text_area_origin = point(
-                    px(0.0),  // Line starts at x=0 in text-area coordinates
-                    y_offset, // Use y_offset directly (without the px(1.) padding)
-                );
-                let layout = nucleotide_editor::LineLayout {
-                    line_idx,
-                    shaped_line,
-                    origin: text_area_origin,
-                    segment_char_offset: 0, // Non-wrapped lines always start at beginning
-                    text_start_byte_offset: 0, // No wrap indicators in non-wrapped lines
-                };
+                let layout = LineLayout::unwrapped(line_idx, shaped_line, y_offset);
 
                 // Debug: log line layout creation
                 debug!(

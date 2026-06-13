@@ -1,7 +1,7 @@
 // ABOUTME: Line layout cache for mouse interaction in document view
 // ABOUTME: Stores line layouts in element-local coordinates (text-area relative) for fast mouse hit testing
 
-use gpui::{Bounds, Pixels, ShapedLine, SharedString, TextRun, WindowTextSystem, size};
+use gpui::{Bounds, Pixels, ShapedLine, SharedString, TextRun, WindowTextSystem, point, px, size};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -23,6 +23,28 @@ pub struct LineLayout {
     /// For wrapped lines: byte offset where real text starts within the shaped line (after wrap indicators).
     /// For non-wrapped lines: always 0.
     pub text_start_byte_offset: usize,
+}
+
+impl LineLayout {
+    pub fn unwrapped(line_idx: usize, shaped_line: ShapedLine, y_offset: Pixels) -> Self {
+        Self::wrapped(line_idx, shaped_line, y_offset, 0, 0)
+    }
+
+    pub fn wrapped(
+        line_idx: usize,
+        shaped_line: ShapedLine,
+        y_offset: Pixels,
+        segment_char_offset: usize,
+        text_start_byte_offset: usize,
+    ) -> Self {
+        Self {
+            line_idx,
+            shaped_line,
+            origin: point(px(0.0), y_offset),
+            segment_char_offset,
+            text_start_byte_offset,
+        }
+    }
 }
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone)]
@@ -291,6 +313,26 @@ mod tests {
         highlighted.background_color = Some(gpui::white());
 
         assert_ne!(text_runs_hash(&[normal]), text_runs_hash(&[highlighted]));
+    }
+
+    #[test]
+    fn unwrapped_layout_uses_text_area_origin() {
+        let layout = LineLayout::unwrapped(7, create_test_shaped_line(), px(42.0));
+
+        assert_eq!(layout.line_idx, 7);
+        assert_eq!(layout.origin, point(px(0.0), px(42.0)));
+        assert_eq!(layout.segment_char_offset, 0);
+        assert_eq!(layout.text_start_byte_offset, 0);
+    }
+
+    #[test]
+    fn wrapped_layout_stores_segment_metadata() {
+        let layout = LineLayout::wrapped(7, create_test_shaped_line(), px(42.0), 12, 2);
+
+        assert_eq!(layout.line_idx, 7);
+        assert_eq!(layout.origin, point(px(0.0), px(42.0)));
+        assert_eq!(layout.segment_char_offset, 12);
+        assert_eq!(layout.text_start_byte_offset, 2);
     }
 
     #[test]
