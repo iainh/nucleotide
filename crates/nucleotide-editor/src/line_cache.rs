@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
+use crate::{line_plan::VisibleLinePlan, soft_wrap::SoftWrapVisualLine};
+
 /// Layout information for a single line in the document
 ///
 /// COORDINATE SYSTEM: All positions stored in element-local coordinates
@@ -30,6 +32,10 @@ impl LineLayout {
         Self::wrapped(line_idx, shaped_line, y_offset, 0, 0)
     }
 
+    pub fn from_visible_line(line: &VisibleLinePlan, shaped_line: ShapedLine) -> Self {
+        Self::unwrapped(line.line_idx, shaped_line, line.y_offset)
+    }
+
     pub fn wrapped(
         line_idx: usize,
         shaped_line: ShapedLine,
@@ -44,6 +50,20 @@ impl LineLayout {
             segment_char_offset,
             text_start_byte_offset,
         }
+    }
+
+    pub fn from_soft_wrap_visual(
+        visual: &SoftWrapVisualLine,
+        shaped_line: ShapedLine,
+        y_offset: Pixels,
+    ) -> Self {
+        Self::wrapped(
+            visual.doc_line,
+            shaped_line,
+            y_offset,
+            visual.segment_char_offset,
+            visual.text_start_byte_offset,
+        )
     }
 }
 
@@ -262,6 +282,7 @@ impl gpui::Global for LineLayoutCache {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{line_plan::VisibleLinePlan, soft_wrap::SoftWrapVisualLine};
     use gpui::{FontWeight, TextRun, font, point, px};
 
     fn create_test_shaped_line() -> ShapedLine {
@@ -333,6 +354,47 @@ mod tests {
         assert_eq!(layout.origin, point(px(0.0), px(42.0)));
         assert_eq!(layout.segment_char_offset, 12);
         assert_eq!(layout.text_start_byte_offset, 2);
+    }
+
+    #[test]
+    fn layout_from_visible_line_uses_unwrapped_plan_metadata() {
+        let visible = VisibleLinePlan {
+            line_idx: 9,
+            line_start: 90,
+            line_end: 120,
+            y_offset: px(36.0),
+        };
+
+        let layout = LineLayout::from_visible_line(&visible, create_test_shaped_line());
+
+        assert_eq!(layout.line_idx, 9);
+        assert_eq!(layout.origin, point(px(0.0), px(36.0)));
+        assert_eq!(layout.segment_char_offset, 0);
+        assert_eq!(layout.text_start_byte_offset, 0);
+    }
+
+    #[test]
+    fn layout_from_soft_wrap_visual_uses_segment_metadata() {
+        let visual = SoftWrapVisualLine {
+            visual_line: 3,
+            doc_line: 11,
+            text: ".wrapped".to_string(),
+            line_start_col: 0,
+            wrap_indicator_len: 1,
+            line_start_char: Some(30),
+            line_end_char: Some(38),
+            segment_char_offset: 30,
+            text_start_byte_offset: 1,
+            is_phantom_line: false,
+        };
+
+        let layout =
+            LineLayout::from_soft_wrap_visual(&visual, create_test_shaped_line(), px(72.0));
+
+        assert_eq!(layout.line_idx, 11);
+        assert_eq!(layout.origin, point(px(0.0), px(72.0)));
+        assert_eq!(layout.segment_char_offset, 30);
+        assert_eq!(layout.text_start_byte_offset, 1);
     }
 
     #[test]

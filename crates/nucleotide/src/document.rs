@@ -960,12 +960,10 @@ impl Element for DocumentElement {
                             continue;
                         }
 
-                        let layout = LineLayout::wrapped(
-                            visual.doc_line,
+                        let layout = LineLayout::from_soft_wrap_visual(
+                            visual,
                             shaped_line,
                             soft_wrap_plan.y_offset,
-                            visual.segment_char_offset,
-                            visual.text_start_byte_offset,
                         );
                         line_cache.push(layout);
                     }
@@ -1297,7 +1295,7 @@ impl Element for DocumentElement {
                     )
                 };
 
-                let layout = LineLayout::unwrapped(line_idx, shaped_line, y_offset);
+                let layout = LineLayout::from_visible_line(line_plan, shaped_line);
 
                 // Debug: log line layout creation
                 debug!(
