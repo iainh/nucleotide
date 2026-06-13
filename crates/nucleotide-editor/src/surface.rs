@@ -4,9 +4,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, Window,
-    point, px,
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior,
+    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
+    Point, ScrollWheelEvent, Window, point, px,
 };
 
 use crate::{EditorViewport, ViewportScrollUpdate};
@@ -30,6 +30,10 @@ pub struct EditorSurface {
     on_scroll: Option<ScrollCallback>,
     on_mouse_down: Option<PointerCallback>,
     on_mouse_up: Option<PointerCallback>,
+}
+
+pub struct EditorSurfacePrepaintState {
+    hitbox: Hitbox,
 }
 
 impl EditorSurface {
@@ -85,7 +89,7 @@ impl IntoElement for EditorSurface {
 
 impl Element for EditorSurface {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = ();
+    type PrepaintState = EditorSurfacePrepaintState;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -114,21 +118,24 @@ impl Element for EditorSurface {
         &mut self,
         _global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
         child.prepaint(window, cx);
+        EditorSurfacePrepaintState {
+            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        }
     }
 
     fn paint(
         &mut self,
         _global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
-        _prepaint: &mut Self::PrepaintState,
+        prepaint: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -137,9 +144,10 @@ impl Element for EditorSurface {
             let line_height = self.line_height;
             let on_scroll = self.on_scroll.clone();
             let view_entity_id = window.current_view();
+            let hitbox = prepaint.hitbox.clone();
 
-            move |event: &ScrollWheelEvent, phase, _window, cx| {
-                if !(bounds.contains(&event.position) && phase.bubble()) {
+            move |event: &ScrollWheelEvent, phase, window, cx| {
+                if !(phase.bubble() && hitbox.should_handle_scroll(window)) {
                     return;
                 }
 
@@ -165,10 +173,11 @@ impl Element for EditorSurface {
             let cell_width = self.cell_width;
             let on_mouse_down = self.on_mouse_down.clone();
             let view_entity_id = window.current_view();
+            let hitbox = prepaint.hitbox.clone();
 
-            move |event: &MouseDownEvent, phase, _window, cx| {
+            move |event: &MouseDownEvent, phase, window, cx| {
                 if event.button != MouseButton::Left
-                    || !(bounds.contains(&event.position) && phase.bubble())
+                    || !(phase.bubble() && hitbox.is_hovered(window))
                 {
                     return;
                 }
@@ -177,7 +186,7 @@ impl Element for EditorSurface {
                     on_mouse_down(
                         EditorSurfacePointerEvent {
                             position: event.position,
-                            bounds,
+                            bounds: hitbox.bounds,
                             line_height,
                             cell_width,
                         },
@@ -195,10 +204,11 @@ impl Element for EditorSurface {
             let cell_width = self.cell_width;
             let on_mouse_up = self.on_mouse_up.clone();
             let view_entity_id = window.current_view();
+            let hitbox = prepaint.hitbox.clone();
 
-            move |event: &MouseUpEvent, phase, _window, cx| {
+            move |event: &MouseUpEvent, phase, window, cx| {
                 if event.button != MouseButton::Left
-                    || !(bounds.contains(&event.position) && phase.bubble())
+                    || !(phase.bubble() && hitbox.is_hovered(window))
                 {
                     return;
                 }
@@ -207,7 +217,7 @@ impl Element for EditorSurface {
                     on_mouse_up(
                         EditorSurfacePointerEvent {
                             position: event.position,
-                            bounds,
+                            bounds: hitbox.bounds,
                             line_height,
                             cell_width,
                         },
