@@ -1,6 +1,7 @@
 // ABOUTME: Per-frame document/view facts for native editor rendering
 // ABOUTME: Builds owned render state from Helix document and view inputs
 
+use gpui::{Bounds, Pixels};
 use helix_view::{
     Document, Theme, View, ViewId,
     document::Mode,
@@ -9,9 +10,10 @@ use helix_view::{
 };
 
 use crate::{
-    DiagnosticOverlaySpans, EditorCursorPresentation, EditorCursorPresentationParams,
-    EditorRenderSnapshot, diagnostic_overlay_spans, document_render_snapshot,
-    editor_cursor_presentation,
+    DiagnosticOverlaySpans, DiagnosticSeverityByLine, DocumentSoftWrapRenderPlanParams,
+    EditorCursorPresentation, EditorCursorPresentationParams, EditorRenderSnapshot,
+    SoftWrapRenderPlan, diagnostic_overlay_spans, diagnostic_severity_by_line,
+    document_render_snapshot, document_soft_wrap_render_plan, editor_cursor_presentation,
 };
 
 pub struct EditorDocumentFrameParams<'a> {
@@ -22,6 +24,12 @@ pub struct EditorDocumentFrameParams<'a> {
     pub syntax_loader: &'a helix_core::syntax::Loader,
     pub first_row: usize,
     pub last_row_from_scroll: usize,
+    pub soft_wrap_enabled: bool,
+    pub bounds: Bounds<Pixels>,
+    pub cell_width: Pixels,
+    pub line_height: Pixels,
+    pub scroll_line_offset: Pixels,
+    pub soft_wrap_minimum_columns: u16,
     pub editor_mode: Mode,
     pub cursor_kind: CursorKind,
     pub cursor_style: Style,
@@ -45,6 +53,8 @@ pub struct EditorDocumentFrame {
     pub render_snapshot: EditorRenderSnapshot,
     pub cursor_presentation: EditorCursorPresentation,
     pub diagnostic_overlay_spans: Option<DiagnosticOverlaySpans>,
+    pub diagnostic_severity_by_line: DiagnosticSeverityByLine,
+    pub soft_wrap_render_plan: Option<SoftWrapRenderPlan>,
 }
 
 pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDocumentFrame {
@@ -68,9 +78,23 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
     let primary_cursor_line = text.char_to_line(primary_cursor_idx);
     let line_start = text.line_to_char(primary_cursor_line);
     let primary_cursor_col = primary_cursor_idx - line_start;
+    let gutter_width = params.view.gutter_offset(params.document);
+    let soft_wrap_render_plan = params.soft_wrap_enabled.then(|| {
+        document_soft_wrap_render_plan(DocumentSoftWrapRenderPlanParams {
+            document: params.document,
+            theme: Some(params.theme),
+            view_id: params.view_id,
+            bounds: params.bounds,
+            gutter_columns: gutter_width,
+            cell_width: params.cell_width,
+            line_height: params.line_height,
+            scroll_line_offset: params.scroll_line_offset,
+            minimum_columns: params.soft_wrap_minimum_columns,
+        })
+    });
 
     EditorDocumentFrame {
-        gutter_width: params.view.gutter_offset(params.document),
+        gutter_width,
         primary_cursor_idx,
         primary_cursor_line,
         primary_cursor_col,
@@ -82,6 +106,8 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         render_snapshot,
         cursor_presentation,
         diagnostic_overlay_spans: diagnostic_overlay_spans(params.document, params.theme),
+        diagnostic_severity_by_line: diagnostic_severity_by_line(params.document),
+        soft_wrap_render_plan,
     }
 }
 
@@ -90,6 +116,7 @@ mod tests {
     use std::sync::Arc;
 
     use arc_swap::ArcSwap;
+    use gpui::{Bounds, point, px, size};
     use helix_core::{Rope, Selection, syntax};
     use helix_view::{
         Document, DocumentId, View,
@@ -120,6 +147,12 @@ mod tests {
             syntax_loader: &syntax_loader,
             first_row: 0,
             last_row_from_scroll: 2,
+            soft_wrap_enabled: true,
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            scroll_line_offset: px(0.0),
+            soft_wrap_minimum_columns: 10,
             editor_mode: Mode::Normal,
             cursor_kind: CursorKind::Block,
             cursor_style: Style::default(),
@@ -137,5 +170,6 @@ mod tests {
         assert_eq!(frame.cursor_presentation.cursor_char_idx, 5);
         assert_eq!(frame.editor_rulers, vec![80]);
         assert!(frame.cursorline_enabled);
+        assert!(frame.soft_wrap_render_plan.is_some());
     }
 }
