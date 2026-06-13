@@ -61,8 +61,9 @@ pub use line_painter::{
     paint_line_backgrounds,
 };
 pub use line_plan::{
-    LineViewportPlan, UnwrappedLinePaintPlan, VisibleLinePlan, line_viewport_plan,
-    unwrapped_line_paint_plans, unwrapped_visible_line_plans,
+    LineViewportPlan, UnwrappedLinePaintPlan, UnwrappedRenderPlan, UnwrappedRenderPlanParams,
+    VisibleLinePlan, line_viewport_plan, unwrapped_line_paint_plans, unwrapped_render_plan,
+    unwrapped_visible_line_plans,
 };
 pub use line_text::{
     byte_offset_for_char_offset, line_text_without_trailing_newline,

@@ -32,6 +32,40 @@ pub struct UnwrappedLinePaintPlan<'a> {
     pub is_cursor_line: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UnwrappedRenderPlanParams<'a> {
+    pub text: RopeSlice<'a>,
+    pub line_viewport: LineViewportPlan,
+    pub bounds: Bounds<Pixels>,
+    pub gutter_columns: u16,
+    pub cell_width: Pixels,
+    pub line_height: Pixels,
+    pub scroll_line_offset: Pixels,
+    pub cursor_line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnwrappedRenderPlan {
+    pub line_viewport: LineViewportPlan,
+    pub geometry: EditorSurfaceGeometry,
+    pub line_height: Pixels,
+    pub scroll_line_offset: Pixels,
+    pub cursor_line: usize,
+    pub visible_lines: Vec<VisibleLinePlan>,
+    pub next_line_y_offset: Pixels,
+}
+
+impl UnwrappedRenderPlan {
+    pub fn line_paint_plans(&self) -> Vec<UnwrappedLinePaintPlan<'_>> {
+        unwrapped_line_paint_plans(
+            &self.visible_lines,
+            self.geometry,
+            self.line_height,
+            self.cursor_line,
+        )
+    }
+}
+
 pub fn line_viewport_plan(
     text: RopeSlice<'_>,
     first_row: usize,
@@ -60,6 +94,34 @@ pub fn line_viewport_plan(
         end_char,
         cursor_at_end,
         file_ends_with_newline,
+    }
+}
+
+pub fn unwrapped_render_plan(params: UnwrappedRenderPlanParams<'_>) -> UnwrappedRenderPlan {
+    let visible_lines = unwrapped_visible_line_plans(
+        params.text,
+        params.line_viewport,
+        params.line_height,
+        params.scroll_line_offset,
+    );
+    let next_line_y_offset = visible_lines
+        .last()
+        .map_or(-params.scroll_line_offset, |line| {
+            line.y_offset + params.line_height
+        });
+
+    UnwrappedRenderPlan {
+        line_viewport: params.line_viewport,
+        geometry: EditorSurfaceGeometry::new(
+            params.bounds,
+            params.gutter_columns,
+            params.cell_width,
+        ),
+        line_height: params.line_height,
+        scroll_line_offset: params.scroll_line_offset,
+        cursor_line: params.cursor_line,
+        visible_lines,
+        next_line_y_offset,
     }
 }
 
@@ -158,8 +220,8 @@ fn is_phantom_line(text: RopeSlice<'_>, line_idx: usize, viewport: LineViewportP
 #[cfg(test)]
 mod tests {
     use super::{
-        VisibleLinePlan, line_viewport_plan, unwrapped_line_paint_plans,
-        unwrapped_visible_line_plans,
+        UnwrappedRenderPlanParams, VisibleLinePlan, line_viewport_plan, unwrapped_line_paint_plans,
+        unwrapped_render_plan, unwrapped_visible_line_plans,
     };
     use crate::EditorSurfaceGeometry;
     use gpui::{Bounds, point, px, size};
@@ -255,5 +317,61 @@ mod tests {
             Bounds::new(point(px(100.0), px(61.0)), size(px(500.0), px(20.0)))
         );
         assert!(plans[1].is_cursor_line);
+    }
+
+    #[test]
+    fn render_plan_collects_unwrapped_lines_and_paint_geometry() {
+        let text = "alpha\nbeta\ngamma";
+        let line_viewport = line_viewport_plan(text.into(), 0, 3, 6);
+        let bounds = Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0)));
+
+        let plan = unwrapped_render_plan(UnwrappedRenderPlanParams {
+            text: text.into(),
+            line_viewport,
+            bounds,
+            gutter_columns: 4,
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            scroll_line_offset: px(5.0),
+            cursor_line: 1,
+        });
+
+        assert_eq!(plan.line_viewport, line_viewport);
+        assert_eq!(
+            plan.geometry,
+            EditorSurfaceGeometry::new(bounds, 4, px(8.0))
+        );
+        assert_eq!(plan.visible_lines.len(), 3);
+        assert_eq!(plan.visible_lines[0].line_idx, 0);
+        assert_eq!(plan.visible_lines[0].y_offset, px(-5.0));
+        assert_eq!(plan.next_line_y_offset, px(55.0));
+
+        let paint_plans = plan.line_paint_plans();
+
+        assert_eq!(paint_plans.len(), 3);
+        assert_eq!(paint_plans[0].text_origin, point(px(132.0), px(36.0)));
+        assert!(!paint_plans[0].is_cursor_line);
+        assert!(paint_plans[1].is_cursor_line);
+    }
+
+    #[test]
+    fn render_plan_fallback_y_offset_uses_scroll_offset() {
+        let text = "alpha\n";
+        let line_viewport = line_viewport_plan(text.into(), 1, 1, 0);
+        let bounds = Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0)));
+
+        let plan = unwrapped_render_plan(UnwrappedRenderPlanParams {
+            text: text.into(),
+            line_viewport,
+            bounds,
+            gutter_columns: 4,
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            scroll_line_offset: px(7.0),
+            cursor_line: 0,
+        });
+
+        assert!(plan.visible_lines.is_empty());
+        assert_eq!(plan.next_line_y_offset, px(-7.0));
     }
 }
