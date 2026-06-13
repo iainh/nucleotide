@@ -22,12 +22,12 @@ use nucleotide_editor::{
     begin_editor_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
     build_soft_wrap_gutter_lines, cursor_background_color, cursor_document_line,
     cursor_foreground_color, cursor_has_reversed_modifier, cursor_line_position,
-    cursor_style_for_mode, cursor_viewport_position, decorate_soft_wrap_line_runs,
-    diagnostic_marker_paint_style, diagnostic_marker_plan, diagnostic_overlay_spans,
-    diagnostic_severity_by_line, document_text_format_for_surface, gpui_hsla_to_helix_color,
-    highlight_line, line_viewport_plan, paint_cursorline_background, paint_diagnostic_marker,
-    paint_editor_background, paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines,
-    paint_visible_rulers, phantom_line_cursor_paint_position, shape_cursor_text,
+    cursor_style_for_mode, decorate_soft_wrap_line_runs, diagnostic_marker_paint_style,
+    diagnostic_marker_plan, diagnostic_overlay_spans, diagnostic_severity_by_line,
+    document_render_snapshot, document_text_format_for_surface, gpui_hsla_to_helix_color,
+    highlight_line, paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
+    paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines, paint_visible_rulers,
+    phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
     soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
@@ -722,11 +722,9 @@ impl Element for DocumentElement {
             let (first_row, last_row_from_scroll) = self.viewport.visible_visual_range();
             let scroll_line_offset = self.viewport.offset_within_row();
 
-            // Extract cursor position early to check for phantom line
-            let cursor_char_idx = document
-                .selection(self.view_id)
-                .primary()
-                .cursor(text.slice(..));
+            let render_snapshot =
+                document_render_snapshot(document, self.view_id, first_row, last_row_from_scroll);
+            let cursor_char_idx = render_snapshot.cursor_char_idx;
             let cursor_text = block_cursor_text(
                 text.slice(..),
                 cursor_char_idx,
@@ -741,36 +739,19 @@ impl Element for DocumentElement {
                 );
                 (char_str, text_color)
             });
-            // Get the line number where the cursor is located
-            let cursor_line_num = text.char_to_line(cursor_char_idx);
+            let cursor_line_num = render_snapshot.cursor_line;
             debug!(
                 "Cursor position: line={}, char_idx={}",
                 cursor_line_num, cursor_char_idx
             );
 
-            // Get all cursor lines for gutter highlighting (same as regular gutter implementation)
-            let cursors: std::rc::Rc<[_]> = document
-                .selection(self.view_id)
-                .iter()
-                .map(|range| range.cursor_line(text.slice(..)))
-                .collect();
-
-            let line_viewport = line_viewport_plan(
-                text.slice(..),
-                first_row,
-                last_row_from_scroll,
-                cursor_char_idx,
-            );
-            let last_row = line_viewport.last_row;
+            let cursors = render_snapshot.cursor_lines;
+            let line_viewport = render_snapshot.line_viewport;
+            let last_row = render_snapshot.last_row;
             let cursor_at_end = line_viewport.cursor_at_end;
             let file_ends_with_newline = line_viewport.file_ends_with_newline;
-            let cursor_doc_line = cursor_document_line(
-                text.slice(..),
-                cursor_char_idx,
-                cursor_at_end && file_ends_with_newline,
-            );
-            let cursor_viewport_pos =
-                cursor_viewport_position(cursor_doc_line, first_row, last_row);
+            let cursor_doc_line = render_snapshot.cursor_doc_line;
+            let cursor_viewport_pos = render_snapshot.cursor_viewport_position;
 
             debug!(
                 "End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}",
