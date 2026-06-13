@@ -487,6 +487,6 @@ mod tests {
         );
 
         assert!(viewport.scroll_position().y > px(0.0));
-        assert!(viewport.has_pending_scrollbar_sync());
+        assert!(viewport.has_pending_view_sync());
     }
 }

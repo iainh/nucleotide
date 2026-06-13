@@ -383,24 +383,13 @@ impl Render for DocumentView {
             document_element,
         )
         .on_scroll({
-            let core = self.core.clone();
-            let view_id = self.view_id;
-
-            move |viewport, scroll_update, cx| {
+            move |_viewport, scroll_update, _cx| {
                 debug!(
                     crossed_lines = scroll_update.crossed_visual_rows,
                     top_visual_row = scroll_update.top_visual_row,
                     offset_within_row = %scroll_update.offset_within_row,
                     "Scroll wheel event handled by editor surface"
                 );
-
-                if scroll_update.crossed_visual_rows != 0 {
-                    core.update(cx, |core, cx| {
-                        if viewport.sync_to_helix_view(&mut core.editor, doc_id, view_id) {
-                            cx.notify();
-                        }
-                    });
-                }
             }
         })
         .on_mouse_down({
