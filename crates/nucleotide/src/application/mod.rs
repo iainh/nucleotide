@@ -2012,6 +2012,17 @@ impl Application {
                     self.trigger_completion_manual(request.doc_id, request.view_id);
                 }
 
+                if let Some(request) = outcome.picker_requested {
+                    match request {
+                        editor_input::NativePickerRequest::File => {
+                            cx.emit(crate::Update::ShowFilePicker);
+                        }
+                        editor_input::NativePickerRequest::Buffer => {
+                            cx.emit(crate::Update::ShowBufferPicker);
+                        }
+                    }
+                }
+
                 // Emit overlays after key handling, passing the key that was just processed
                 self.emit_overlays(Some(key), cx);
 

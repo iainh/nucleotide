@@ -27,12 +27,19 @@ pub struct EditorInputOutcome {
     pub handled_by_native_command: bool,
     pub handled_by_terminal_editor: bool,
     pub completion_requested: Option<NativeCompletionRequest>,
+    pub picker_requested: Option<NativePickerRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeCompletionRequest {
     pub doc_id: DocumentId,
     pub view_id: ViewId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativePickerRequest {
+    File,
+    Buffer,
 }
 
 pub struct EditorInputBridge {
@@ -86,6 +93,7 @@ impl EditorInputBridge {
         let mut handled_by_native_command = false;
         let mut handled_by_terminal_editor = false;
         let mut completion_requested = None;
+        let mut picker_requested = None;
         if !handled_by_compositor {
             let mode_before_fallback = context.editor.mode();
             match self
@@ -94,9 +102,11 @@ impl EditorInputBridge {
             {
                 NativeInputResult::Handled {
                     completion_requested: request,
+                    picker_requested: picker_request,
                 } => {
                     handled_by_native_command = true;
                     completion_requested = request;
+                    picker_requested = picker_request;
                 }
                 NativeInputResult::Fallback(keys) => {
                     for key in &keys {
@@ -145,6 +155,7 @@ impl EditorInputBridge {
             handled_by_native_command,
             handled_by_terminal_editor,
             completion_requested,
+            picker_requested,
         }
     }
 
@@ -175,6 +186,7 @@ struct NativeCommandInput {
 enum NativeInputResult {
     Handled {
         completion_requested: Option<NativeCompletionRequest>,
+        picker_requested: Option<NativePickerRequest>,
     },
     Fallback(Vec<KeyEvent>),
 }
@@ -184,6 +196,10 @@ enum NativeCommandResult {
     RequestCompletion {
         callbacks: Vec<compositor::Callback>,
         request: Option<NativeCompletionRequest>,
+    },
+    RequestPicker {
+        callbacks: Vec<compositor::Callback>,
+        request: NativePickerRequest,
     },
     ReplayInsert {
         keys: Vec<KeyEvent>,
@@ -282,6 +298,7 @@ impl NativeCommandInput {
                 self.finish_insert_replay_if_needed(mode_before, editor.mode());
                 NativeInputResult::Handled {
                     completion_requested: None,
+                    picker_requested: None,
                 }
             }
             NativeCommandResult::RequestCompletion { callbacks, request } => {
@@ -289,6 +306,15 @@ impl NativeCommandInput {
                 self.finish_insert_replay_if_needed(mode_before, editor.mode());
                 NativeInputResult::Handled {
                     completion_requested: request,
+                    picker_requested: None,
+                }
+            }
+            NativeCommandResult::RequestPicker { callbacks, request } => {
+                finalize_native_command(editor, jobs, compositor, callbacks);
+                self.finish_insert_replay_if_needed(mode_before, editor.mode());
+                NativeInputResult::Handled {
+                    completion_requested: None,
+                    picker_requested: Some(request),
                 }
             }
             NativeCommandResult::ReplayInsert { keys, count } => {
@@ -304,6 +330,7 @@ impl NativeCommandInput {
                 }
                 NativeInputResult::Handled {
                     completion_requested: None,
+                    picker_requested: None,
                 }
             }
             NativeCommandResult::Fallback(keys) => NativeInputResult::Fallback(keys),
@@ -490,6 +517,17 @@ impl NativeCommandInput {
                 }
                 NativeCommandResult::Handled(Vec::new())
             }
+            KeymapDispatch::RequestPicker(request) => {
+                if self.keymaps.pending().is_empty() {
+                    context.editor.count = None;
+                } else {
+                    context.editor.selected_register = context.register.take();
+                }
+                NativeCommandResult::RequestPicker {
+                    callbacks: Vec::new(),
+                    request,
+                }
+            }
             KeymapDispatch::Pending => {
                 context.editor.selected_register = context.register.take();
                 NativeCommandResult::Handled(Vec::new())
@@ -524,6 +562,10 @@ impl NativeCommandInput {
 
         match &key_result {
             KeymapResult::Matched(command) => {
+                if let Some(request) = native_picker_command(command) {
+                    return KeymapDispatch::RequestPicker(request);
+                }
+
                 if !native_command_supported(command) {
                     return KeymapDispatch::Fallback;
                 }
@@ -535,10 +577,16 @@ impl NativeCommandInput {
                 KeymapDispatch::Pending
             }
             KeymapResult::MatchedSequence(commands) => {
-                if !commands.iter().all(native_command_supported) {
+                if !commands.iter().all(|command| {
+                    native_command_supported(command) || native_picker_command(command).is_some()
+                }) {
                     return KeymapDispatch::Fallback;
                 }
+
                 for command in commands {
+                    if let Some(request) = native_picker_command(command) {
+                        return KeymapDispatch::RequestPicker(request);
+                    }
                     execute_native_command(command, context, &mut last_mode);
                 }
                 KeymapDispatch::Handled
@@ -576,6 +624,7 @@ impl NativeCommandInput {
 
 enum KeymapDispatch {
     Handled,
+    RequestPicker(NativePickerRequest),
     Pending,
     Fallback,
 }
@@ -602,6 +651,13 @@ impl NativeCommandResultExt for NativeCommandResult {
             NativeCommandResult::RequestCompletion { request, .. } => {
                 *on_next_key = context.on_next_key_callback.take();
                 NativeCommandResult::RequestCompletion {
+                    callbacks: std::mem::take(&mut context.callback),
+                    request,
+                }
+            }
+            NativeCommandResult::RequestPicker { request, .. } => {
+                *on_next_key = context.on_next_key_callback.take();
+                NativeCommandResult::RequestPicker {
                     callbacks: std::mem::take(&mut context.callback),
                     request,
                 }
@@ -719,6 +775,14 @@ fn native_insert_entry_command(command: &MappableCommand) -> bool {
 
 fn native_prompt_command(command: &MappableCommand) -> bool {
     matches!(command.name(), "command_mode" | "search" | "rsearch")
+}
+
+fn native_picker_command(command: &MappableCommand) -> Option<NativePickerRequest> {
+    match command.name() {
+        "file_picker" => Some(NativePickerRequest::File),
+        "buffer_picker" => Some(NativePickerRequest::Buffer),
+        _ => None,
+    }
 }
 
 fn native_insert_command_supported(command: &MappableCommand) -> bool {
@@ -953,6 +1017,28 @@ mod tests {
         assert!(!native_prompt_command(&MappableCommand::buffer_picker));
         assert!(!native_prompt_command(&MappableCommand::insert_mode));
         assert!(!native_prompt_command(&MappableCommand::normal_mode));
+    }
+
+    #[test]
+    fn picker_commands_are_classified_separately() {
+        assert_eq!(
+            native_picker_command(&MappableCommand::file_picker),
+            Some(NativePickerRequest::File)
+        );
+        assert_eq!(
+            native_picker_command(&MappableCommand::buffer_picker),
+            Some(NativePickerRequest::Buffer)
+        );
+        assert_eq!(
+            native_picker_command(&MappableCommand::file_picker_in_current_directory),
+            None
+        );
+        assert_eq!(
+            native_picker_command(&MappableCommand::file_picker_in_current_buffer_directory),
+            None
+        );
+        assert_eq!(native_picker_command(&MappableCommand::command_mode), None);
+        assert_eq!(native_picker_command(&MappableCommand::normal_mode), None);
     }
 
     #[test]
