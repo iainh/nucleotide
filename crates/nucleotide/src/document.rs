@@ -20,7 +20,7 @@ use nucleotide_editor::{
     EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent,
     EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout, GutterLineParams,
     HighlightLineParams, LineLayout, LineLayoutCache, SoftWrapCursorPaintPlanParams,
-    UnwrappedCursorPaintPlanParams, UnwrappedRenderPlanParams,
+    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams, UnwrappedRenderPlanParams,
     begin_editor_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
     build_soft_wrap_gutter_lines, cursor_background_color, cursor_document_line,
     cursor_foreground_color, cursor_has_reversed_modifier, cursor_overlay_plan,
@@ -28,8 +28,9 @@ use nucleotide_editor::{
     diagnostic_overlay_spans, diagnostic_severity_by_line, diagnostic_severity_color,
     document_render_snapshot, document_soft_wrap_render_plan, gpui_hsla_to_helix_color,
     highlight_line, paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
-    paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines, paint_visible_rulers,
-    shape_cursor_text, shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_plan,
+    paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines,
+    paint_unwrapped_editor_line, paint_visible_rulers, shape_cursor_text,
+    shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_plan,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, text_style_at_position,
     unwrapped_cursor_paint_plan, unwrapped_render_plan, update_editor_pointer_selection_at_event,
     visible_ruler_paint_plans,
@@ -1236,60 +1237,38 @@ impl Element for DocumentElement {
                 // Drop core before painting
                 // core goes out of scope here
 
-                let font_size_px = self.style.font_size.to_pixels(px(16.0));
-                let text_origin = unwrapped_plan.text_origin;
-
-                if unwrapped_plan.is_cursor_line
-                    && let Some(cursorline_bg) = cursorline_style
-                {
+                if unwrapped_plan.is_cursor_line && cursorline_style.is_some() {
                     debug!(
                         "Painting cursorline for line {} (cursor at line {})",
                         line_idx, cursor_line_num
                     );
-                    paint_cursorline_background(
-                        window,
-                        unwrapped_plan.cursorline_bounds,
-                        cursorline_bg,
-                    );
                 }
 
-                // Always create a shaped line, even for empty lines (needed for cursor positioning)
-                let shaped_line = if !line_str.is_empty() {
-                    let shaped = line_cache.shape_line_cached(
-                        window.text_system().as_ref(),
-                        line_str.clone(),
-                        font_size_px,
-                        bounds.size.width,
-                        &line_runs,
-                    );
-
-                    if let Err(e) = paint_editor_line(
-                        window,
-                        cx,
-                        &shaped,
-                        &line_runs,
-                        text_origin,
-                        after_layout.line_height,
-                        EditorLineBackgroundStyle {
+                let layout = match paint_unwrapped_editor_line(
+                    window,
+                    cx,
+                    UnwrappedEditorLinePaintParams {
+                        plan: unwrapped_plan,
+                        line_text: line_str,
+                        line_runs: &line_runs,
+                        line_cache: &line_cache,
+                        font_size: self.style.font_size.to_pixels(px(16.0)),
+                        viewport_width: bounds.size.width,
+                        line_height: after_layout.line_height,
+                        cursorline_color: cursorline_style,
+                        background_style: EditorLineBackgroundStyle {
                             only_selection_backgrounds: unwrapped_plan.is_cursor_line,
                             selection_primary: tokens.editor.selection_primary,
                             selection_secondary: tokens.editor.selection_secondary,
                         },
-                    ) {
+                    },
+                ) {
+                    Ok(layout) => layout,
+                    Err(e) => {
                         error!(error = ?e, "Failed to paint text");
+                        continue;
                     }
-                    shaped
-                } else {
-                    line_cache.shape_line_cached(
-                        window.text_system().as_ref(),
-                        "".into(),
-                        font_size_px,
-                        bounds.size.width,
-                        &[],
-                    )
                 };
-
-                let layout = LineLayout::from_visible_line(line_plan, shaped_line);
 
                 // Debug: log line layout creation
                 debug!(

@@ -2,7 +2,13 @@
 // ABOUTME: Paints shaped-line backgrounds shared by wrapped and unwrapped render paths
 
 use gpui::{
-    App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, TextRun, Window, fill, point, size,
+    App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, SharedString, TextRun, Window, fill,
+    point, size,
+};
+
+use crate::{
+    line_cache::{LineLayout, LineLayoutCache},
+    line_plan::UnwrappedLinePaintPlan,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +67,61 @@ pub fn paint_editor_line(
         background_style,
     );
     shaped_line.paint(origin, line_height, window, cx)
+}
+
+pub struct UnwrappedEditorLinePaintParams<'a, 'b> {
+    pub plan: UnwrappedLinePaintPlan<'a>,
+    pub line_text: SharedString,
+    pub line_runs: &'b [TextRun],
+    pub line_cache: &'b LineLayoutCache,
+    pub font_size: Pixels,
+    pub viewport_width: Pixels,
+    pub line_height: Pixels,
+    pub cursorline_color: Option<Hsla>,
+    pub background_style: EditorLineBackgroundStyle,
+}
+
+pub fn paint_unwrapped_editor_line(
+    window: &mut Window,
+    cx: &mut App,
+    params: UnwrappedEditorLinePaintParams<'_, '_>,
+) -> Result<LineLayout> {
+    if params.plan.is_cursor_line
+        && let Some(cursorline_color) = params.cursorline_color
+    {
+        paint_cursorline_background(window, params.plan.cursorline_bounds, cursorline_color);
+    }
+
+    let text_system = window.text_system().clone();
+    let shaped_line = if params.line_text.is_empty() {
+        params.line_cache.shape_line_cached(
+            text_system.as_ref(),
+            SharedString::from(""),
+            params.font_size,
+            params.viewport_width,
+            &[],
+        )
+    } else {
+        let shaped_line = params.line_cache.shape_line_cached(
+            text_system.as_ref(),
+            params.line_text,
+            params.font_size,
+            params.viewport_width,
+            params.line_runs,
+        );
+        paint_editor_line(
+            window,
+            cx,
+            &shaped_line,
+            params.line_runs,
+            params.plan.text_origin,
+            params.line_height,
+            params.background_style,
+        )?;
+        shaped_line
+    };
+
+    Ok(LineLayout::from_visible_line(params.plan.line, shaped_line))
 }
 
 fn should_paint_background(bg_color: Hsla, style: EditorLineBackgroundStyle) -> bool {
