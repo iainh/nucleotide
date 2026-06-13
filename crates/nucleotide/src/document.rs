@@ -11,11 +11,9 @@ use gpui::{
 use gpui::{TextRun, point, size};
 use helix_core::{
     Uri,
-    doc_formatter::{DocumentFormatter, TextFormat},
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     ropey::RopeSlice,
     syntax::{self, Highlight, HighlightEvent, OverlayHighlights},
-    text_annotations::TextAnnotations,
 };
 use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
@@ -30,7 +28,8 @@ use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
     EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
     LineLayoutCache, diagnostic_severity_by_line, document_text_format_for_surface,
-    hit_test_document_position, paint_line_backgrounds,
+    hit_test_document_position, paint_line_backgrounds, soft_wrap_visual_lines,
+    soft_wrap_visual_position,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::style_utils::{
@@ -164,19 +163,6 @@ impl ScrollableHandle for DocumentScrollHandle {
     fn viewport(&self) -> Bounds<Pixels> {
         self.viewport.viewport_bounds()
     }
-}
-
-/// Parameters for render_with_softwrap
-#[allow(dead_code)]
-struct SoftwrapRenderParams<'a> {
-    document: &'a Document,
-    view: &'a View,
-    text_format: &'a TextFormat,
-    viewport_height: usize,
-    bounds: Bounds<Pixels>,
-    cell_width: Pixels,
-    line_height: Pixels,
-    window: &'a mut Window,
 }
 
 /// Parameters for create_shaped_line
@@ -733,116 +719,6 @@ impl DocumentElement {
             underline_color,
         )
     }
-    /// Render lines with soft wrap support using DocumentFormatter
-    #[allow(dead_code)]
-    fn render_with_softwrap(
-        &self,
-        params: SoftwrapRenderParams,
-        _cx: &mut App,
-    ) -> Vec<nucleotide_editor::LineLayout> {
-        let mut line_layouts = Vec::new();
-        let text = params.document.text().slice(..);
-        let view_offset = params.document.view_offset(self.view_id);
-
-        // Create text annotations (empty for now, can be extended later)
-        let annotations = TextAnnotations::default();
-
-        // Create DocumentFormatter starting at the viewport anchor
-        let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
-            text,
-            params.text_format,
-            &annotations,
-            view_offset.anchor,
-        );
-
-        let mut visual_line = 0;
-        let mut current_doc_line = text.char_to_line(view_offset.anchor);
-        let mut line_graphemes = Vec::new();
-
-        // Skip lines before the viewport
-        for _ in 0..view_offset.vertical_offset {
-            if let Some(grapheme) = formatter.next()
-                && grapheme.visual_pos.row > visual_line
-            {
-                visual_line = grapheme.visual_pos.row;
-            }
-        }
-
-        let _text_origin_x = params.bounds.origin.x
-            + (f32::from(params.view.gutter_offset(params.document)) * params.cell_width);
-        let mut y_offset = px(0.0);
-
-        // Render visible lines
-        while visual_line < view_offset.vertical_offset + params.viewport_height {
-            line_graphemes.clear();
-            let line_y = params.bounds.origin.y + px(1.0) + y_offset;
-
-            // Collect all graphemes for this visual line
-            for grapheme in formatter.by_ref() {
-                if grapheme.visual_pos.row > visual_line {
-                    // We've moved to the next visual line
-                    break;
-                }
-                line_graphemes.push(grapheme);
-            }
-
-            if line_graphemes.is_empty() {
-                // End of document
-                break;
-            }
-
-            // Build the line string from graphemes
-            let mut line_str = String::new();
-            for grapheme in &line_graphemes {
-                if !grapheme.is_virtual() {
-                    // Handle the Grapheme enum properly
-                    match &grapheme.raw {
-                        helix_core::graphemes::Grapheme::Tab { .. } => line_str.push('\t'),
-                        helix_core::graphemes::Grapheme::Other { g } => line_str.push_str(g),
-                        helix_core::graphemes::Grapheme::Newline => {} // Skip newlines in visual lines
-                    }
-                }
-            }
-
-            // Create shaped line for this visual line
-            let shaped_line = params.window.text_system().shape_line(
-                SharedString::from(line_str),
-                self.style.font_size.to_pixels(px(16.0)),
-                &[],
-                None,
-            );
-
-            // Store line layout for interaction
-            // FIXED: Store in text-area coordinates (gutter already excluded by text_bounds calculation)
-            // text_origin_x already includes gutter, but we want text-area relative coordinates
-            let text_area_origin = point(
-                px(0.0), // Line starts at x=0 in text-area coordinates (gutter excluded)
-                line_y - params.bounds.origin.y,
-            );
-            let layout = nucleotide_editor::LineLayout {
-                line_idx: current_doc_line,
-                shaped_line,
-                origin: text_area_origin,
-                segment_char_offset: 0, // TODO: Calculate properly for wrapped segments
-                text_start_byte_offset: 0, // TODO: Calculate properly for wrapped segments
-            };
-            line_layouts.push(layout);
-
-            // Update document line if we've crossed a line boundary
-            if let Some(last_grapheme) = line_graphemes.last() {
-                let new_doc_line = last_grapheme.line_idx;
-                if new_doc_line != current_doc_line {
-                    current_doc_line = new_doc_line;
-                }
-            }
-
-            visual_line += 1;
-            y_offset += params.line_height;
-        }
-
-        line_layouts
-    }
-
     /// Create a shaped line for a specific line, used for cursor positioning and mouse interaction
     #[allow(dead_code)]
     fn create_shaped_line(&self, params: ShapedLineParams) -> Option<ShapedLine> {
@@ -1763,9 +1639,6 @@ impl Element for DocumentElement {
 
             // Update the shared line layouts for mouse interaction
             if soft_wrap_enabled {
-                // Use DocumentFormatter for soft wrap rendering
-
-                // Get text format and create DocumentFormatter
                 let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
 
                 // Extract wrap indicator color early to avoid borrow conflicts later
@@ -1798,22 +1671,9 @@ impl Element for DocumentElement {
                     (text_format, view_offset, gutter_offset)
                 };
 
-                let annotations = TextAnnotations::default();
-
-                // Create DocumentFormatter starting at the viewport anchor
-                let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
-                    text,
-                    &text_format,
-                    &annotations,
-                    view_offset.anchor,
-                );
-
                 let text_origin_x =
                     EditorSurfaceGeometry::new(bounds, gutter_offset, after_layout.cell_width)
                         .text_origin_x();
-                let mut y_offset = -scroll_line_offset;
-                let mut visual_line = 0;
-                let mut current_doc_line = text.char_to_line(view_offset.anchor);
                 // Account for padding in viewport height calculation - match EditorViewport exactly
                 let effective_height = bounds.size.height - px(2.0); // Account for padding
                 let calculated_height = (effective_height / after_layout.line_height) as usize;
@@ -1822,158 +1682,47 @@ impl Element for DocumentElement {
                 let viewport_height =
                     calculated_height + usize::from(f32::from(scroll_line_offset) > 0.0);
 
-                // Skip lines before the viewport - need to consume all graphemes for skipped lines
-                // Skip lines before viewport if needed
-                let mut pending_grapheme = None;
-                while visual_line < view_offset.vertical_offset {
-                    for grapheme in formatter.by_ref() {
-                        if grapheme.visual_pos.row > visual_line {
-                            // We've moved to the next visual line
-                            visual_line = grapheme.visual_pos.row;
-                            if visual_line >= view_offset.vertical_offset {
-                                // This grapheme is part of the first visible line
-                                pending_grapheme = Some(grapheme);
-                                break;
-                            }
-                        }
-                    }
-                    if visual_line < view_offset.vertical_offset {
-                        // Move to next line if we haven't reached viewport yet
-                        visual_line += 1;
-                    }
-                }
+                let soft_wrap_lines = soft_wrap_visual_lines(
+                    text,
+                    &text_format,
+                    view_offset.anchor,
+                    view_offset.vertical_offset,
+                    viewport_height,
+                );
 
-                // Render visible lines with DocumentFormatter
-                while visual_line < view_offset.vertical_offset + viewport_height {
-                    let mut line_graphemes = Vec::new();
+                for visual in &soft_wrap_lines {
+                    let y_offset = -scroll_line_offset
+                        + after_layout.line_height
+                            * visual.relative_row(view_offset.vertical_offset) as f32;
                     let line_y = bounds.origin.y + px(1.0) + y_offset;
 
-                    // Add any pending grapheme from previous iteration
-                    if let Some(grapheme) = pending_grapheme.take() {
-                        if grapheme.visual_pos.row == visual_line {
-                            line_graphemes.push(grapheme);
-                        } else if grapheme.visual_pos.row > visual_line {
-                            // This grapheme is for a future line, put it back
-                            pending_grapheme = Some(grapheme);
-                            // This visual line is empty, but we still need to render it
-                        }
-                        // If grapheme.visual_pos.row < visual_line, we've somehow skipped it (shouldn't happen)
-                    }
-
-                    // Collect all graphemes for this visual line
-                    let mut has_content = !line_graphemes.is_empty();
-                    for grapheme in formatter.by_ref() {
-                        if grapheme.visual_pos.row > visual_line {
-                            // This grapheme belongs to the next visual line
-                            pending_grapheme = Some(grapheme);
-                            break;
-                        } else if grapheme.visual_pos.row == visual_line {
-                            line_graphemes.push(grapheme);
-                            has_content = true;
-                        }
-                        // If grapheme.visual_pos.row < visual_line, skip it (shouldn't happen)
-                    }
-
-                    // Check if this might be an empty line that needs rendering
-                    // Empty lines still need to be displayed even if they have no graphemes
-                    if !has_content && line_graphemes.is_empty() {
-                        if let Some(ref pending) = pending_grapheme {
-                            // We have a pending grapheme - check if it's for a future line
-                            // If so, this current visual line is empty and should be rendered
-                            if pending.visual_pos.row > visual_line {
-                                // This is an empty visual line - render it
-                            }
-                        } else {
-                            // No more content - end of document
-                            break;
-                        }
-                    }
-
-                    // Build the line string from graphemes including wrap indicators and indentation
-                    let mut line_str = String::new();
-                    let mut wrap_indicator_len = 0usize; // Track wrap indicator byte length
-
-                    // Track the starting column position for wrapped lines with indentation
-                    let line_start_col = line_graphemes
-                        .first()
-                        .map(|g| g.visual_pos.col)
-                        .unwrap_or(0);
-
-                    // If the line starts at a column > 0, we need to add leading spaces
-                    // This happens for wrapped lines with indentation carry-over
-                    if line_start_col > 0 {
-                        // Add spaces for the indentation
-                        for _ in 0..line_start_col {
-                            line_str.push(' ');
-                        }
-                    }
-
-                    // Process graphemes
-                    for grapheme in &line_graphemes {
-                        if grapheme.is_virtual() {
-                            // This is virtual text (likely wrap indicator)
-                            if let helix_core::graphemes::Grapheme::Other { g } = &grapheme.raw {
-                                wrap_indicator_len += g.len(); // Track byte length
-                                line_str.push_str(g);
-                            }
-                        } else {
-                            // Real text content
-                            match &grapheme.raw {
-                                helix_core::graphemes::Grapheme::Tab { .. } => line_str.push('\t'),
-                                helix_core::graphemes::Grapheme::Other { g } => {
-                                    line_str.push_str(g)
-                                }
-                                helix_core::graphemes::Grapheme::Newline => {} // Skip newlines in visual lines
-                            }
-                        }
-                    }
-
-                    // Get highlights for this line
-                    let mut line_runs = if let Some(first_grapheme) =
-                        line_graphemes.iter().find(|g| !g.is_virtual())
+                    let mut line_runs = if let (Some(line_start), Some(line_end)) =
+                        (visual.line_start_char, visual.line_end_char)
                     {
-                        // Use the first non-virtual grapheme for the start position
-                        let line_start = first_grapheme.char_idx;
-                        let last_non_virtual =
-                            line_graphemes.iter().rev().find(|g| !g.is_virtual());
-                        let mut line_end = last_non_virtual
-                            .map(|g| g.char_idx + g.doc_chars())
-                            .unwrap_or(line_start);
-
-                        // GPUI expects TextRun lengths to match the rendered string length. We omit newline
-                        // graphemes from `line_str`, so ensure the highlighted range does too.
-                        if let Some(last_grapheme) = last_non_virtual
-                            && matches!(last_grapheme.raw, helix_core::graphemes::Grapheme::Newline)
-                        {
-                            line_end = last_grapheme.char_idx;
-                        }
-
-                        {
-                            let core = self.core.read(cx);
-                            let editor = &core.editor;
-                            let document = match editor.document(self.doc_id) {
-                                Some(doc) => doc,
-                                None => return,
-                            };
-                            let view = match editor.tree.try_get(self.view_id) {
-                                Some(v) => v,
-                                None => return,
-                            };
-                            Self::highlight_line_with_params(HighlightLineParams {
-                                doc: document,
-                                view,
-                                cx,
-                                editor_mode,
-                                cursor_shape: &cursor_shape,
-                                syn_loader: &syn_loader,
-                                is_view_focused: self.is_focused,
-                                line_start,
-                                line_end,
-                                fg_color,
-                                font: self.style.font(),
-                                diag_overlay_spans: diag_overlay_spans.clone(),
-                            })
-                        }
+                        let core = self.core.read(cx);
+                        let editor = &core.editor;
+                        let document = match editor.document(self.doc_id) {
+                            Some(doc) => doc,
+                            None => return,
+                        };
+                        let view = match editor.tree.try_get(self.view_id) {
+                            Some(v) => v,
+                            None => return,
+                        };
+                        Self::highlight_line_with_params(HighlightLineParams {
+                            doc: document,
+                            view,
+                            cx,
+                            editor_mode,
+                            cursor_shape: &cursor_shape,
+                            syn_loader: &syn_loader,
+                            is_view_focused: self.is_focused,
+                            line_start,
+                            line_end,
+                            fg_color,
+                            font: self.style.font(),
+                            diag_overlay_spans: diag_overlay_spans.clone(),
+                        })
                     } else {
                         Vec::new()
                     };
@@ -1981,10 +1730,10 @@ impl Element for DocumentElement {
                     // Adjust text runs to account for leading spaces and wrap indicator
                     if !line_runs.is_empty() {
                         // Handle indentation spaces separately from wrap indicators
-                        if line_start_col > 0 {
+                        if visual.line_start_col > 0 {
                             // Add run for indentation spaces using normal text color
                             let indent_run = TextRun {
-                                len: line_start_col,
+                                len: visual.line_start_col,
                                 font: self.style.font(),
                                 color: fg_color,
                                 background_color: None,
@@ -1994,30 +1743,25 @@ impl Element for DocumentElement {
                             line_runs.insert(0, indent_run);
                         }
 
-                        if wrap_indicator_len > 0 {
+                        if visual.wrap_indicator_len > 0 {
                             // Use pre-extracted wrap indicator color
                             let wrap_color = wrap_indicator_color.unwrap_or(fg_color); // Fallback to normal text color
                             // Add run for wrap indicator using ui.virtual.wrap theme color
                             let wrap_run = TextRun {
-                                len: wrap_indicator_len,
+                                len: visual.wrap_indicator_len,
                                 font: self.style.font(),
                                 color: wrap_color,
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
                             };
-                            line_runs.insert(if line_start_col > 0 { 1 } else { 0 }, wrap_run);
+                            line_runs
+                                .insert(if visual.line_start_col > 0 { 1 } else { 0 }, wrap_run);
                         }
                     }
 
                     // Determine whether this visual line corresponds to the cursor's document line
-                    let is_cursor_visual_line = {
-                        if let Some(first_grapheme) = line_graphemes.first() {
-                            first_grapheme.line_idx == cursor_line_num
-                        } else {
-                            current_doc_line == cursor_line_num
-                        }
-                    };
+                    let is_cursor_visual_line = visual.doc_line == cursor_line_num;
 
                     // Paint cursorline background before any run highlights so empty lines still render it
                     if is_cursor_visual_line && let Some(cursorline_bg) = cursorline_style {
@@ -2029,10 +1773,10 @@ impl Element for DocumentElement {
                     }
 
                     // Paint the line text (only for non-empty lines)
-                    if !line_str.is_empty() {
+                    if !visual.text.is_empty() {
                         let shaped_line = line_cache.shape_line_cached(
                             window.text_system().as_ref(),
-                            SharedString::from(line_str.clone()),
+                            SharedString::from(visual.text.clone()),
                             self.style.font_size.to_pixels(px(16.0)),
                             bounds.size.width,
                             &line_runs,
@@ -2060,25 +1804,7 @@ impl Element for DocumentElement {
                             error!(error = ?e, "Failed to paint text");
                         }
 
-                        // FIXED: Update document line BEFORE storing layout to prevent off-by-one error
-                        if let Some(first_grapheme) = line_graphemes.first() {
-                            current_doc_line = first_grapheme.line_idx;
-                        }
-
-                        // Skip phantom lines in soft-wrap mode - they shouldn't take up visual space
-                        let line_start = text.line_to_char(current_doc_line);
-                        let line_end = if current_doc_line + 1 < text.len_lines() {
-                            text.line_to_char(current_doc_line + 1)
-                        } else {
-                            text.len_chars()
-                        };
-                        let is_phantom_line = line_start >= line_end;
-
-                        if is_phantom_line {
-                            // Phantom lines should still increment visual position for UI elements (gutter, cursorline)
-                            // but don't need text layout since they have no content
-                            visual_line += 1;
-                            y_offset += after_layout.line_height;
+                        if visual.is_phantom_line {
                             continue;
                         }
 
@@ -2089,146 +1815,37 @@ impl Element for DocumentElement {
                             px(0.0),  // Line starts at x=0 in text-area coordinates
                             y_offset, // Use y_offset directly (no px(1.) like non-wrap mode)
                         );
-                        // Calculate segment character offset for wrapped lines
-                        let segment_char_offset = if let Some(first_grapheme) =
-                            line_graphemes.iter().find(|g| !g.is_virtual())
-                        {
-                            let line_start = text.line_to_char(current_doc_line);
-                            first_grapheme.char_idx.saturating_sub(line_start)
-                        } else {
-                            0 // No real content in this segment
-                        };
-
-                        // Calculate where the real text starts in the shaped line (after wrap indicators)
-                        let text_start_byte_offset = line_start_col + wrap_indicator_len;
                         let layout = nucleotide_editor::LineLayout {
-                            line_idx: current_doc_line,
+                            line_idx: visual.doc_line,
                             shaped_line,
                             origin: text_area_origin,
-                            segment_char_offset,
-                            text_start_byte_offset,
+                            segment_char_offset: visual.segment_char_offset,
+                            text_start_byte_offset: visual.text_start_byte_offset,
                         };
                         line_cache.push(layout);
                     }
-
-                    // Always move to the next visual line
-                    // We should never skip visual lines, even if they're empty
-                    visual_line += 1;
-                    y_offset += after_layout.line_height;
                 }
 
-                // Render gutter for soft wrap mode
-                // We need a different approach for the gutter - we'll track actual document lines
-                // and match them with visual lines
+                // Render gutter for soft wrap mode from the same visual rows as text painting.
                 {
                     let mut gutter_origin = bounds.origin;
                     gutter_origin.x += px(2.);
                     gutter_origin.y += px(1.);
 
-                    // Calculate viewport dimensions
-                    let _viewport_height_in_lines =
-                        (bounds.size.height / after_layout.line_height) as usize;
-
-                    // We need to figure out the mapping between document lines and visual lines
-                    // For now, let's use a simpler approach: render line numbers based on
-                    // the actual document lines we rendered in the main loop
-
-                    // Track which document lines we've seen and at what visual positions
                     let mut doc_line_positions = Vec::new();
-                    let mut current_y = -scroll_line_offset;
-
-                    // Re-create formatter to match what we did in the main rendering loop
-                    let mut formatter = DocumentFormatter::new_at_prev_checkpoint(
-                        text,
-                        &text_format,
-                        &annotations,
-                        view_offset.anchor,
-                    );
-
-                    // Compute gutter width in pixels to reserve space for diagnostic markers
-                    let _gutter_width_px = {
-                        let core = self.core.read(cx);
-                        let editor = &core.editor;
-                        let document = match editor.document(self.doc_id) {
-                            Some(d) => d,
-                            None => return,
-                        };
-                        let view = match editor.tree.try_get(self.view_id) {
-                            Some(v) => v,
-                            None => return,
-                        };
-                        let gutter_cells = view.gutter_offset(document);
-                        f32::from(gutter_cells) * after_layout.cell_width
-                    };
-
-                    // Skip to viewport (same as main loop)
-                    let mut visual_line = 0;
-                    let mut pending_grapheme = None;
-                    while visual_line < view_offset.vertical_offset {
-                        for grapheme in formatter.by_ref() {
-                            if grapheme.visual_pos.row > visual_line {
-                                visual_line = grapheme.visual_pos.row;
-                                if visual_line >= view_offset.vertical_offset {
-                                    pending_grapheme = Some(grapheme);
-                                    break;
-                                }
-                            }
-                        }
-                        if visual_line < view_offset.vertical_offset {
-                            visual_line += 1;
-                        }
-                    }
-
-                    // Track document lines as we iterate through visual lines
                     let mut last_doc_line = None;
-                    while visual_line < view_offset.vertical_offset + viewport_height {
-                        let mut line_graphemes = Vec::new();
-
-                        // Add pending grapheme
-                        if let Some(grapheme) = pending_grapheme.take() {
-                            if grapheme.visual_pos.row == visual_line {
-                                line_graphemes.push(grapheme);
-                            } else if grapheme.visual_pos.row > visual_line {
-                                pending_grapheme = Some(grapheme);
-                            }
+                    for visual in &soft_wrap_lines {
+                        if last_doc_line != Some(visual.doc_line) {
+                            let y_pos = -scroll_line_offset
+                                + after_layout.line_height
+                                    * visual.relative_row(view_offset.vertical_offset) as f32;
+                            doc_line_positions.push((
+                                visual.doc_line,
+                                visual.is_phantom_line,
+                                y_pos,
+                            ));
+                            last_doc_line = Some(visual.doc_line);
                         }
-
-                        // Collect graphemes for this visual line
-                        for grapheme in formatter.by_ref() {
-                            if grapheme.visual_pos.row > visual_line {
-                                pending_grapheme = Some(grapheme);
-                                break;
-                            } else if grapheme.visual_pos.row == visual_line {
-                                line_graphemes.push(grapheme);
-                            }
-                        }
-
-                        // Determine the document line for this visual line
-                        if let Some(first_grapheme) = line_graphemes.first() {
-                            let doc_line = first_grapheme.line_idx;
-                            // Only add line number for the first visual line of each document line
-                            if last_doc_line != Some(doc_line) {
-                                doc_line_positions.push((doc_line, current_y));
-                                last_doc_line = Some(doc_line);
-                            }
-                        } else if line_graphemes.is_empty() && pending_grapheme.is_none() {
-                            // End of document
-                            break;
-                        } else if line_graphemes.is_empty() {
-                            // Empty line - we need to figure out its document line number
-                            // This is tricky because DocumentFormatter doesn't give us empty lines
-                            // For now, increment the line number if we have a gap
-                            if let Some(last) = last_doc_line {
-                                let next_line = last + 1;
-                                if next_line < text.len_lines() {
-                                    doc_line_positions.push((next_line, current_y));
-                                    last_doc_line = Some(next_line);
-                                }
-                            }
-                        }
-
-                        visual_line += 1;
-                        current_y += after_layout.line_height;
                     }
 
                     // Build a map of line -> highest diagnostic severity for quick lookup
@@ -2246,16 +1863,7 @@ impl Element for DocumentElement {
                     let gutter_style = cx.theme_style("ui.linenr");
                     let gutter_selected_style = cx.theme_style("ui.linenr.selected");
 
-                    for (doc_line, y_pos) in doc_line_positions {
-                        // Check if this is a phantom line (empty lines at EOF with trailing newline)
-                        let line_start = text.line_to_char(doc_line);
-                        let line_end = if doc_line + 1 < text.len_lines() {
-                            text.line_to_char(doc_line + 1)
-                        } else {
-                            text.len_chars()
-                        };
-                        let is_phantom_line = line_start >= line_end;
-
+                    for (doc_line, is_phantom_line, y_pos) in doc_line_positions {
                         let line_num_str = if is_phantom_line {
                             "   ~ ".to_string() // Match the format: right-aligned with space
                         } else {
@@ -2578,47 +2186,18 @@ impl Element for DocumentElement {
                         }
                     };
 
-                    // Find the cursor position in the visual lines
-                    // We need to re-create the formatter to find the cursor
-                    let formatter = DocumentFormatter::new_at_prev_checkpoint(
+                    let cursor_visual_position = soft_wrap_visual_position(
                         text,
                         &text_format,
-                        &annotations,
                         view_offset.anchor,
+                        cursor_char_idx,
                     );
 
-                    let mut _visual_line = 0;
-                    let mut cursor_visual_line = None;
-                    let mut cursor_visual_col = 0;
-
-                    // Iterate through graphemes to find cursor position (following Helix's approach)
-                    for grapheme in formatter {
-                        // Check if the cursor position is before the next grapheme
-                        // This matches Helix's logic: formatter.next_char_pos() > pos
-                        let next_char_pos = grapheme.char_idx + grapheme.doc_chars();
-                        if next_char_pos > cursor_char_idx {
-                            // Cursor is at this grapheme's visual position
-                            // The DocumentFormatter already accounts for wrap indicators in visual_pos.col
-                            cursor_visual_line = Some(grapheme.visual_pos.row);
-                            cursor_visual_col = grapheme.visual_pos.col;
-                            break;
-                        }
-                        _visual_line = grapheme.visual_pos.row;
-                    }
-
-                    // Handle EOF phantom line case - if cursor wasn't found in formatter but is at EOF
-                    if cursor_visual_line.is_none() && cursor_char_idx >= text.len_chars() {
-                        // Cursor is at EOF phantom line - position at first tilde line
-                        // Since phantom line layouts are skipped, the cursor should be at _visual_line + 1
-                        // but the cursorline is showing at the right position, so let's match it
-                        cursor_visual_line = Some(_visual_line);
-                        cursor_visual_col = 0; // Phantom line starts at column 0
-                    }
-
                     // If cursor is in viewport, render it
-                    if let Some(cursor_line) = cursor_visual_line
-                        && cursor_line >= view_offset.vertical_offset
-                        && cursor_line < view_offset.vertical_offset + viewport_height
+                    if let Some(cursor_position) = cursor_visual_position
+                        && cursor_position.visual_line >= view_offset.vertical_offset
+                        && cursor_position.visual_line
+                            < view_offset.vertical_offset + viewport_height
                     {
                         // Do not auto-scroll here; rely on Helix ensure_cursor_in_view.
                         // Calculate cursor position - FIXED: Use text_bounds coordinate system to match mouse clicks
@@ -2631,12 +2210,13 @@ impl Element for DocumentElement {
                         )
                         .text_bounds();
 
-                        let relative_line = cursor_line - view_offset.vertical_offset;
+                        let relative_line =
+                            cursor_position.visual_line - view_offset.vertical_offset;
                         let cursor_y = text_bounds.origin.y
                             + (after_layout.line_height * relative_line as f32);
                         // Account for horizontal scrolling when calculating cursor X position
-                        let visual_col_in_viewport =
-                            cursor_visual_col as f32 - view_offset.horizontal_offset as f32;
+                        let visual_col_in_viewport = cursor_position.visual_col as f32
+                            - view_offset.horizontal_offset as f32;
                         let cursor_x = text_bounds.origin.x
                             + (after_layout.cell_width * visual_col_in_viewport);
 
@@ -2735,7 +2315,7 @@ impl Element for DocumentElement {
 
                 // Render tilde lines for empty viewport space (soft-wrap mode)
                 // Calculate how many visual lines we've rendered vs viewport capacity
-                let _visual_lines_rendered = visual_line - view_offset.vertical_offset;
+                let _visual_lines_rendered = soft_wrap_lines.len();
                 let viewport_height_in_lines =
                     (bounds.size.height - px(2.0)) / after_layout.line_height;
                 let _viewport_capacity = viewport_height_in_lines as usize;

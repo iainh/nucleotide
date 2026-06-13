@@ -13,6 +13,7 @@ pub mod line_painter;
 pub mod metrics;
 pub mod scroll_manager;
 pub mod scroll_state;
+pub mod soft_wrap;
 pub mod surface;
 pub mod viewport;
 
@@ -30,5 +31,8 @@ pub use line_painter::{EditorLineBackgroundStyle, paint_line_backgrounds};
 pub use metrics::EditorTextMetrics;
 pub use scroll_manager::ScrollManager;
 pub use scroll_state::ScrollState;
+pub use soft_wrap::{
+    SoftWrapVisualLine, SoftWrapVisualPosition, soft_wrap_visual_lines, soft_wrap_visual_position,
+};
 pub use surface::{EditorSurface, EditorSurfacePointerEvent};
 pub use viewport::{EditorViewport, ViewportScrollUpdate};
