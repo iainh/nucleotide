@@ -1,17 +1,16 @@
 //! Scrollbar component for GPUI based on Zed's implementation
 //! Provides vertical and horizontal scrollbars for scrollable content
 
-use std::{any::Any, cell::Cell, cell::RefCell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
+use std::{any::Any, cell::Cell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
 
+use gpui::prelude::{InteractiveElement, ParentElement, StatefulInteractiveElement, Styled};
 use gpui::{
-    Along, App, Axis, BorderStyle, Bounds, ContentMask, Corners, CursorStyle, Edges, Element,
-    ElementId, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, IsZero,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollHandle, ScrollWheelEvent, Size, Style, UniformListScrollHandle, Window, hsla, px, quad,
-    relative,
+    Along, App, Axis, Bounds, Div, IntoElement, IsZero, MouseButton, Pixels, Point, RenderOnce,
+    ScrollHandle, Size, UniformListScrollHandle, Window, div, hsla, px,
 };
 
 /// A scrollbar component that can be attached to scrollable content
+#[derive(IntoElement)]
 pub struct Scrollbar {
     thumb: Range<f32>,
     state: ScrollbarState,
@@ -98,44 +97,24 @@ impl ScrollableHandle for UniformListScrollHandle {
     }
 }
 
-/// Animated values for smooth scrollbar transitions
-#[derive(Debug, Clone)]
-struct AnimatedValues {
-    /// Current interpolated thumb width ratio (0.0 to 1.0)
-    width_ratio: f32,
-    /// Current interpolated alpha (0.0 to 1.0)
-    alpha: f32,
-}
-
-impl Default for AnimatedValues {
-    fn default() -> Self {
-        Self {
-            width_ratio: 0.35, // Start at inactive width
-            alpha: 0.25,       // Start at inactive alpha
-        }
-    }
-}
-
 /// Scrollbar state that should be persisted across frames
 #[derive(Clone, Debug)]
 pub struct ScrollbarState {
     thumb_state: Rc<Cell<ThumbState>>,
     track_hovered: Rc<Cell<bool>>,
-    animated: Rc<RefCell<AnimatedValues>>,
+    track_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     scroll_handle: Arc<dyn ScrollableHandle>,
 }
 
-/// Animation speed factor (higher = faster animation)
-const ANIMATION_SPEED: f32 = 0.5;
-/// Threshold for considering animation complete
-const ANIMATION_THRESHOLD: f32 = 0.01;
+const SCROLLBAR_THICKNESS: Pixels = px(12.);
+const EXTRA_PADDING: Pixels = px(2.);
 
 impl ScrollbarState {
     pub fn new(scroll: impl ScrollableHandle) -> Self {
         Self {
             thumb_state: Rc::default(),
             track_hovered: Rc::default(),
-            animated: Rc::default(),
+            track_bounds: Rc::default(),
             scroll_handle: Arc::new(scroll),
         }
     }
@@ -169,6 +148,14 @@ impl ScrollbarState {
         self.track_hovered.set(hovered);
     }
 
+    fn set_track_bounds(&self, bounds: Option<Bounds<Pixels>>) {
+        self.track_bounds.set(bounds);
+    }
+
+    fn track_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.track_bounds.get()
+    }
+
     fn is_expanded(&self) -> bool {
         self.track_hovered.get() || self.thumb_state.get().is_active()
     }
@@ -190,38 +177,6 @@ impl ScrollbarState {
         };
 
         (target_width, target_alpha)
-    }
-
-    /// Animate values toward targets, returns true if animation is still in progress
-    fn animate(&self) -> bool {
-        let (target_width, target_alpha) = self.target_values();
-        let mut animated = self.animated.borrow_mut();
-
-        // Lerp toward targets
-        let width_diff = target_width - animated.width_ratio;
-        let alpha_diff = target_alpha - animated.alpha;
-
-        animated.width_ratio += width_diff * ANIMATION_SPEED;
-        animated.alpha += alpha_diff * ANIMATION_SPEED;
-
-        // Check if we're close enough to snap to final values
-        let width_animating = width_diff.abs() > ANIMATION_THRESHOLD;
-        let alpha_animating = alpha_diff.abs() > ANIMATION_THRESHOLD;
-
-        if !width_animating {
-            animated.width_ratio = target_width;
-        }
-        if !alpha_animating {
-            animated.alpha = target_alpha;
-        }
-
-        width_animating || alpha_animating
-    }
-
-    /// Get current animated values
-    fn current_values(&self) -> (f32, f32) {
-        let animated = self.animated.borrow();
-        (animated.width_ratio, animated.alpha)
     }
 
     fn thumb_range(&self, axis: Axis) -> Option<Range<f32>> {
@@ -285,319 +240,314 @@ impl Scrollbar {
     }
 }
 
-impl Element for Scrollbar {
-    type RequestLayoutState = ();
-    type PrepaintState = Hitbox;
+impl RenderOnce for Scrollbar {
+    fn render(mut self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Some(thumb) = self.state.thumb_range(self.axis) else {
+            self.state.set_track_bounds(None);
+            return empty_scrollbar_track(self.axis);
+        };
+        self.thumb = thumb;
 
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        let style = if self.axis == Axis::Vertical {
-            Style {
-                flex_grow: 0.,
-                flex_shrink: 0.,
-                size: Size {
-                    width: px(12.).into(), // Scrollbar width
-                    height: relative(1.).into(),
-                },
-                ..Default::default()
-            }
+        let (width_ratio, alpha) = self.state.target_values();
+        let (thumb_bg, gutter_bg) = if let Some(theme) = cx.try_global::<crate::Theme>() {
+            let chrome = &theme.tokens.chrome;
+            (
+                crate::styling::ColorTheory::with_alpha(chrome.text_on_chrome, alpha),
+                crate::styling::ColorTheory::with_alpha(chrome.separator_color, 0.0),
+            )
         } else {
-            Style {
-                flex_grow: 0.,
-                flex_shrink: 0.,
-                size: Size {
-                    width: relative(1.).into(),
-                    height: px(12.).into(), // Scrollbar height
-                },
-                ..Default::default()
-            }
+            (hsla(0.0, 0.0, 0.8, alpha), hsla(0.0, 0.0, 0.0, 0.0))
         };
 
-        (window.request_layout(style, None, cx), ())
-    }
+        let track_len = self
+            .state
+            .track_bounds()
+            .map(|bounds| bounds.size.along(self.axis))
+            .unwrap_or_else(|| self.state.scroll_handle().viewport().size.along(self.axis))
+            .max(px(0.0));
+        let visual = scrollbar_visual(self.thumb.clone(), track_len, width_ratio);
+        let state = self.state.clone();
+        let axis = self.axis;
+        let state_id = Rc::as_ptr(&self.state.track_hovered) as usize;
 
-    fn prepaint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        _: &mut App,
-    ) -> Self::PrepaintState {
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            window.insert_hitbox(bounds, HitboxBehavior::Normal)
-        })
-    }
-
-    fn paint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        hitbox: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        const EXTRA_PADDING: Pixels = px(2.0); // Padding for scrollbar track
-
-        // If content fits entirely in the viewport, don't paint the scrollbar.
-        let maybe_thumb = self.state.thumb_range(self.axis);
-        if maybe_thumb.is_none() {
-            // No scrolling required; skip painting and event wiring.
-            return;
-        }
-        // Recalculate thumb position every paint to reflect current scroll state
-        self.thumb = maybe_thumb.unwrap();
-
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            let axis = self.axis;
-
-            // Animate toward target values and request refresh if still animating
-            let is_animating = self.state.animate();
-            if is_animating {
-                window.refresh();
-            }
-
-            // Get current animated values
-            let (current_width_ratio, current_alpha) = self.state.current_values();
-
-            // Use chrome tokens to ensure visibility in file tree/editor contexts
-            let (thumb_bg, gutter_bg) = if let Some(theme) = cx.try_global::<crate::Theme>() {
-                let chrome = &theme.tokens.chrome;
-                // Base the thumb on readable text-on-chrome color for contrast
-                let base_thumb = chrome.text_on_chrome;
-                // Use animated alpha value
-                let thumb = crate::styling::ColorTheory::with_alpha(base_thumb, current_alpha);
-                // Make the scrollbar track (gutter) transparent
-                let track = crate::styling::ColorTheory::with_alpha(chrome.separator_color, 0.0);
-                (thumb, track)
-            } else {
-                (
-                    hsla(0.0, 0.0, 0.8, current_alpha), // thumb with animated alpha
-                    hsla(0.0, 0.0, 0.0, 0.0),           // gutter transparent
-                )
-            };
-
-            let padded_bounds = Bounds::from_corners(
-                bounds
-                    .origin
-                    .apply_along(axis, |origin| origin + EXTRA_PADDING),
-                bounds
-                    .bottom_right()
-                    .apply_along(axis, |track_end| track_end - EXTRA_PADDING),
-            );
-
-            // Paint gutter behind the thumb
-            window.paint_quad(quad(
-                padded_bounds,
-                Corners::all(px(6.0)),
-                gutter_bg,
-                Edges::default(),
-                hsla(0.0, 0.0, 0.0, 0.0),
-                BorderStyle::default(),
-            ));
-
-            let thumb_offset = self.thumb.start * padded_bounds.size.along(axis);
-            let thumb_end = self.thumb.end * padded_bounds.size.along(axis);
-
-            // Use animated width ratio for smooth expansion
-            let thumb_width = padded_bounds.size.along(axis.invert()) * current_width_ratio;
-            let thumb_center_offset = (padded_bounds.size.along(axis.invert()) - thumb_width) / 2.0;
-
-            let thumb_bounds = Bounds::new(
-                padded_bounds
-                    .origin
-                    .apply_along(axis, |origin| origin + thumb_offset)
-                    .apply_along(axis.invert(), |origin| origin + thumb_center_offset),
-                padded_bounds
-                    .size
-                    .apply_along(axis, |_| thumb_end - thumb_offset)
-                    .apply_along(axis.invert(), |_| thumb_width),
-            );
-
-            let corners = Corners::all(thumb_bounds.size.along(axis.invert()) / 2.0);
-
-            // Paint the thumb
-            window.paint_quad(quad(
-                thumb_bounds,
-                corners,
-                thumb_bg,
-                Edges::default(),
-                hsla(0.0, 0.0, 0.0, 0.0),
-                BorderStyle::default(),
-            ));
-
-            // Always use arrow cursor for scrollbar
-            window.set_cursor_style(CursorStyle::Arrow, hitbox);
-
-            enum ScrollbarMouseEvent {
-                GutterClick,
-                ThumbDrag(Pixels),
-            }
-
-            // Store the actual thumb dimensions for use in event handlers
-            let actual_thumb_bounds = thumb_bounds;
-
-            let compute_click_offset =
-                move |event_position: Point<Pixels>,
-                      max_offset: Size<Pixels>,
-                      event_type: ScrollbarMouseEvent| {
-                    let viewport_size = padded_bounds.size.along(axis);
-                    let thumb_size = actual_thumb_bounds.size.along(axis);
-
-                    let thumb_offset = match event_type {
-                        ScrollbarMouseEvent::GutterClick => thumb_size / 2.,
-                        ScrollbarMouseEvent::ThumbDrag(thumb_offset) => thumb_offset,
+        let mut track = scrollbar_track(self.axis)
+            .id(("scrollbar-track", state_id))
+            .bg(gutter_bg)
+            .cursor_pointer()
+            .on_hover({
+                let state = state.clone();
+                move |hovered, window, _cx| {
+                    state.set_track_hovered(*hovered);
+                    if !*hovered && !state.is_dragging() {
+                        state.set_thumb_hovered(false);
+                    }
+                    window.refresh();
+                }
+            })
+            .on_mouse_down(MouseButton::Left, {
+                let state = state.clone();
+                move |event, window, cx| {
+                    let Some(bounds) = state.track_bounds() else {
+                        return;
+                    };
+                    let Some(thumb_bounds) = thumb_bounds_for_track(&state, axis, bounds) else {
+                        return;
                     };
 
-                    let thumb_start = (event_position.along(axis)
-                        - padded_bounds.origin.along(axis)
-                        - thumb_offset)
-                        .clamp(px(0.), viewport_size - thumb_size);
-
-                    let max_offset = max_offset.along(axis);
-                    let percentage = if viewport_size > thumb_size {
-                        thumb_start / (viewport_size - thumb_size)
+                    if thumb_bounds.contains(&event.position) {
+                        let offset = event.position.along(axis) - thumb_bounds.origin.along(axis);
+                        state.set_dragging(offset);
                     } else {
-                        0.
+                        let scroll_handle = state.scroll_handle();
+                        let click_offset = scroll_offset_for_pointer(
+                            axis,
+                            bounds,
+                            thumb_bounds,
+                            scroll_handle.max_offset(),
+                            event.position,
+                            thumb_bounds.size.along(axis) / 2.0,
+                        );
+                        scroll_handle
+                            .set_offset(scroll_handle.offset().apply_along(axis, |_| click_offset));
+                    }
+
+                    window.refresh();
+                    cx.stop_propagation();
+                }
+            })
+            .on_mouse_move({
+                let state = state.clone();
+                move |event, window, cx| {
+                    let Some(bounds) = state.track_bounds() else {
+                        return;
+                    };
+                    let Some(thumb_bounds) = thumb_bounds_for_track(&state, axis, bounds) else {
+                        return;
                     };
 
-                    -max_offset * percentage
-                };
-
-            // Mouse down events - capture them before they reach the editor
-            window.on_mouse_event({
-                let state = self.state.clone();
-                move |event: &MouseDownEvent, phase, window, _| {
-                    if event.button != MouseButton::Left {
-                        return;
-                    }
-
-                    // Only handle events within scrollbar bounds
-                    if !bounds.contains(&event.position) {
-                        return;
-                    }
-
-                    // Handle during capture phase to prevent editor selection
-                    if phase.capture() {
-                        if actual_thumb_bounds.contains(&event.position) {
-                            let offset =
-                                event.position.along(axis) - actual_thumb_bounds.origin.along(axis);
-                            state.set_dragging(offset);
-                        } else {
-                            let scroll_handle = state.scroll_handle();
-                            let click_offset = compute_click_offset(
-                                event.position,
-                                scroll_handle.max_offset(),
-                                ScrollbarMouseEvent::GutterClick,
-                            );
-                            scroll_handle.set_offset(
-                                scroll_handle.offset().apply_along(axis, |_| click_offset),
-                            );
-                            window.refresh();
-                        }
-                        // Event is consumed by handling it in capture phase
-                    }
-                }
-            });
-
-            // Scroll wheel events
-            window.on_mouse_event({
-                let scroll_handle = self.state.scroll_handle().clone();
-                move |event: &ScrollWheelEvent, phase, window, _| {
-                    if phase.bubble() && bounds.contains(&event.position) {
-                        let current_offset = scroll_handle.offset();
-                        scroll_handle.set_offset(
-                            current_offset + event.delta.pixel_delta(window.line_height()),
-                        );
-                        window.refresh();
-                    }
-                }
-            });
-
-            // Mouse move events
-            window.on_mouse_event({
-                let state = self.state.clone();
-                move |event: &MouseMoveEvent, phase, window, _| {
-                    // Handle dragging in capture phase to prevent text selection
-                    if phase.capture() && state.thumb_state.get().is_dragging() && event.dragging()
+                    if state.thumb_state.get().is_dragging()
+                        && event.dragging()
+                        && let ThumbState::Dragging(drag_offset) = state.thumb_state.get()
                     {
                         let scroll_handle = state.scroll_handle();
-                        if let ThumbState::Dragging(drag_state) = state.thumb_state.get() {
-                            let drag_offset = compute_click_offset(
-                                event.position,
-                                scroll_handle.max_offset(),
-                                ScrollbarMouseEvent::ThumbDrag(drag_state),
-                            );
-                            scroll_handle.set_offset(
-                                scroll_handle.offset().apply_along(axis, |_| drag_offset),
-                            );
-                            window.refresh();
-                            // Event is consumed by handling it in capture phase
-                        }
-                    } else if phase.bubble() && event.pressed_button.is_none() {
-                        // Track hover over entire scrollbar track for expansion effect
-                        let over_track = bounds.contains(&event.position);
-                        let was_track_hovered = state.track_hovered.get();
-                        state.set_track_hovered(over_track);
+                        let pointer_offset = scroll_offset_for_pointer(
+                            axis,
+                            bounds,
+                            thumb_bounds,
+                            scroll_handle.max_offset(),
+                            event.position,
+                            drag_offset,
+                        );
+                        scroll_handle.set_offset(
+                            scroll_handle.offset().apply_along(axis, |_| pointer_offset),
+                        );
+                        window.refresh();
+                        cx.stop_propagation();
+                        return;
+                    }
 
-                        // Track hover over thumb for thumb-specific styling
-                        let over_thumb = actual_thumb_bounds.contains(&event.position);
+                    if event.pressed_button.is_none() {
+                        let over_thumb = thumb_bounds.contains(&event.position);
                         let was_thumb_hover = matches!(state.thumb_state.get(), ThumbState::Hover);
                         state.set_thumb_hovered(over_thumb);
-
-                        // Refresh if any hover state changed
-                        if over_track != was_track_hovered
-                            || over_thumb != was_thumb_hover
-                            || was_thumb_hover
-                        {
+                        if over_thumb != was_thumb_hover {
                             window.refresh();
                         }
                     }
                 }
-            });
-
-            // Mouse up events
-            window.on_mouse_event({
-                let state = self.state.clone();
-                move |event: &MouseUpEvent, phase, window, _| {
-                    // Handle in capture phase if we were dragging
-                    if phase.capture() && state.is_dragging() {
+            })
+            .on_mouse_up(MouseButton::Left, {
+                let state = state.clone();
+                move |event, window, cx| {
+                    if state.is_dragging() {
                         state.scroll_handle().drag_ended();
-                        state.set_track_hovered(bounds.contains(&event.position));
-                        state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position));
-                        window.refresh();
-                    } else if phase.bubble() && !state.is_dragging() {
-                        // Update hover state for non-drag releases
-                        state.set_track_hovered(bounds.contains(&event.position));
-                        state.set_thumb_hovered(actual_thumb_bounds.contains(&event.position));
-                        window.refresh();
                     }
+
+                    if let Some(bounds) = state.track_bounds() {
+                        state.set_track_hovered(bounds.contains(&event.position));
+                        let over_thumb = thumb_bounds_for_track(&state, axis, bounds)
+                            .is_some_and(|thumb_bounds| thumb_bounds.contains(&event.position));
+                        state.set_thumb_hovered(over_thumb);
+                    } else {
+                        state.set_track_hovered(false);
+                        state.set_thumb_hovered(false);
+                    }
+
+                    window.refresh();
+                    cx.stop_propagation();
+                }
+            })
+            .on_mouse_up_out(MouseButton::Left, {
+                let state = state.clone();
+                move |_event, window, cx| {
+                    if state.is_dragging() {
+                        state.scroll_handle().drag_ended();
+                    }
+
+                    state.set_track_hovered(false);
+                    state.set_thumb_hovered(false);
+                    window.refresh();
+                    cx.stop_propagation();
+                }
+            })
+            .on_scroll_wheel({
+                let scroll_handle = self.state.scroll_handle().clone();
+                move |event, window, cx| {
+                    let current_offset = scroll_handle.offset();
+                    scroll_handle
+                        .set_offset(current_offset + event.delta.pixel_delta(window.line_height()));
+                    window.refresh();
+                    cx.stop_propagation();
                 }
             });
-        })
+
+        if self.axis == Axis::Vertical {
+            track = track.child(
+                div()
+                    .absolute()
+                    .top(visual.along_offset)
+                    .left(visual.cross_offset)
+                    .w(visual.cross_size)
+                    .h(visual.along_size)
+                    .rounded(visual.cross_size / 2.0)
+                    .bg(thumb_bg),
+            );
+        } else {
+            track = track.child(
+                div()
+                    .absolute()
+                    .left(visual.along_offset)
+                    .top(visual.cross_offset)
+                    .w(visual.along_size)
+                    .h(visual.cross_size)
+                    .rounded(visual.cross_size / 2.0)
+                    .bg(thumb_bg),
+            );
+        }
+
+        scrollbar_track(self.axis)
+            .on_children_prepainted({
+                let state = self.state.clone();
+                move |bounds, _window, _cx| {
+                    state.set_track_bounds(bounds.into_iter().next());
+                }
+            })
+            .child(track)
     }
 }
 
-impl IntoElement for Scrollbar {
-    type Element = Self;
+struct ScrollbarVisual {
+    along_offset: Pixels,
+    along_size: Pixels,
+    cross_offset: Pixels,
+    cross_size: Pixels,
+}
 
-    fn into_element(self) -> Self::Element {
-        self
+fn empty_scrollbar_track(axis: Axis) -> Div {
+    scrollbar_track(axis)
+}
+
+fn scrollbar_track(axis: Axis) -> Div {
+    let base = div().relative().flex_shrink_0();
+    if axis == Axis::Vertical {
+        base.w(SCROLLBAR_THICKNESS).h_full()
+    } else {
+        base.w_full().h(SCROLLBAR_THICKNESS)
+    }
+}
+
+fn scrollbar_visual(thumb: Range<f32>, track_len: Pixels, width_ratio: f32) -> ScrollbarVisual {
+    let padded_len = (track_len - EXTRA_PADDING * 2.0).max(px(0.0));
+    let along_offset = EXTRA_PADDING + thumb.start * padded_len;
+    let along_size = ((thumb.end - thumb.start) * padded_len).max(px(0.0));
+    let cross_len = SCROLLBAR_THICKNESS;
+    let cross_size = cross_len * width_ratio;
+    let cross_offset = (cross_len - cross_size) / 2.0;
+
+    ScrollbarVisual {
+        along_offset,
+        along_size,
+        cross_offset,
+        cross_size,
+    }
+}
+
+fn thumb_bounds_for_track(
+    state: &ScrollbarState,
+    axis: Axis,
+    bounds: Bounds<Pixels>,
+) -> Option<Bounds<Pixels>> {
+    let thumb = state.thumb_range(axis)?;
+    let (width_ratio, _) = state.target_values();
+    let visual = scrollbar_visual(thumb, bounds.size.along(axis), width_ratio);
+
+    Some(Bounds::new(
+        bounds
+            .origin
+            .apply_along(axis, |origin| origin + visual.along_offset)
+            .apply_along(axis.invert(), |origin| origin + visual.cross_offset),
+        bounds
+            .size
+            .apply_along(axis, |_| visual.along_size)
+            .apply_along(axis.invert(), |_| visual.cross_size),
+    ))
+}
+
+fn scroll_offset_for_pointer(
+    axis: Axis,
+    track_bounds: Bounds<Pixels>,
+    thumb_bounds: Bounds<Pixels>,
+    max_offset: Size<Pixels>,
+    event_position: Point<Pixels>,
+    thumb_offset: Pixels,
+) -> Pixels {
+    let viewport_size = (track_bounds.size.along(axis) - EXTRA_PADDING * 2.0).max(px(0.0));
+    let thumb_size = thumb_bounds.size.along(axis);
+    let max_thumb_start = (viewport_size - thumb_size).max(px(0.0));
+    let thumb_start = (event_position.along(axis)
+        - track_bounds.origin.along(axis)
+        - EXTRA_PADDING
+        - thumb_offset)
+        .clamp(px(0.), max_thumb_start);
+    let percentage = if max_thumb_start > px(0.0) {
+        thumb_start / max_thumb_start
+    } else {
+        0.0
+    };
+
+    -max_offset.along(axis) * percentage
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{point, size};
+
+    use super::*;
+
+    #[test]
+    fn scrollbar_visual_applies_track_padding() {
+        let visual = scrollbar_visual(0.25..0.75, px(104.0), 0.5);
+
+        assert_eq!(visual.along_offset, px(27.0));
+        assert_eq!(visual.along_size, px(50.0));
+        assert_eq!(visual.cross_offset, px(3.0));
+        assert_eq!(visual.cross_size, px(6.0));
+    }
+
+    #[test]
+    fn scroll_offset_for_pointer_uses_negative_gpui_offsets() {
+        let track_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(12.0), px(104.0)));
+        let thumb_bounds = Bounds::new(point(px(3.0), px(2.0)), size(px(6.0), px(20.0)));
+
+        let offset = scroll_offset_for_pointer(
+            Axis::Vertical,
+            track_bounds,
+            thumb_bounds,
+            size(px(0.0), px(200.0)),
+            point(px(6.0), px(52.0)),
+            px(10.0),
+        );
+
+        assert_eq!(offset, px(-100.0));
     }
 }
