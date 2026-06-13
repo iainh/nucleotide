@@ -103,28 +103,6 @@ pub fn text_style_at_position(
     syntax_hl.style
 }
 
-pub fn cursor_text_run(
-    base_font: &Font,
-    text_len: usize,
-    text_style_at_cursor: &Style,
-    text_color: Hsla,
-    default_bg: Hsla,
-) -> TextRun {
-    let underline_color = text_style_at_cursor
-        .underline_color
-        .and_then(helix_color_to_hsla);
-
-    create_styled_text_run(
-        text_len,
-        base_font,
-        text_style_at_cursor,
-        text_color,
-        None,
-        default_bg,
-        underline_color,
-    )
-}
-
 pub fn highlight_line(params: HighlightLineParams<'_>) -> Vec<TextRun> {
     let text = params.doc.text().slice(..);
     let anchor = params.doc.view_offset(params.view.id).anchor;

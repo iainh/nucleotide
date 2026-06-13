@@ -21,7 +21,10 @@ mod style;
 pub mod surface;
 pub mod viewport;
 
-pub use cursor::EditorCursor;
+pub use cursor::{
+    CursorTextShape, EditorCursor, block_cursor_text, cursor_background_color,
+    cursor_foreground_color, cursor_text_run, shape_cursor_text,
+};
 pub use cursor_style::{cursor_has_reversed_modifier, cursor_style_for_mode};
 pub use diagnostics::{DiagnosticSeverityByLine, diagnostic_severity_by_line};
 pub use document_metrics::{
@@ -32,7 +35,7 @@ pub use editor_view::EditorView;
 pub use geometry::{EditorLayout, EditorSurfaceGeometry};
 pub use gutter::{GutterLine, GutterLineParams, build_gutter_lines};
 pub use highlight::{
-    DiagnosticOverlaySpans, HighlightLineParams, cursor_text_run, diagnostic_overlay_spans,
+    DiagnosticOverlaySpans, HighlightLineParams, diagnostic_overlay_spans,
     gpui_hsla_to_helix_color, highlight_line, text_style_at_position,
 };
 pub use hit_test::{EditorHitTestResult, hit_test_document_position};
