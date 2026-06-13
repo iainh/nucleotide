@@ -126,6 +126,128 @@ pub fn cursor_overlay_plan(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShapedEditorCursorPlan {
+    pub color: Hsla,
+    pub width: Pixels,
+    pub overlay: CursorOverlayPlan,
+}
+
+pub struct ShapedEditorCursorPlanParams<'a> {
+    pub paint_position: CursorPaintPosition,
+    pub cursor_style: &'a Style,
+    pub text_style_at_cursor: &'a Style,
+    pub cursor_text_shape: &'a CursorTextShape,
+    pub fallback_fg: Hsla,
+    pub fallback_width: Pixels,
+    pub line_height: Pixels,
+}
+
+pub struct ShapedEditorCursorPaintParams<'a> {
+    pub paint_position: CursorPaintPosition,
+    pub kind: CursorKind,
+    pub cursor_style: &'a Style,
+    pub text_style_at_cursor: &'a Style,
+    pub cursor_text_shape: CursorTextShape,
+    pub fallback_fg: Hsla,
+    pub fallback_width: Pixels,
+    pub line_height: Pixels,
+}
+
+pub struct EditorCursorTextPaintParams<'a> {
+    pub paint_position: CursorPaintPosition,
+    pub kind: CursorKind,
+    pub cursor_style: &'a Style,
+    pub text_style_at_cursor: &'a Style,
+    pub cursor_text: Option<SharedString>,
+    pub font: &'a Font,
+    pub font_size: Pixels,
+    pub fallback_fg: Hsla,
+    pub default_bg: Hsla,
+    pub fallback_width: Pixels,
+    pub line_height: Pixels,
+}
+
+pub fn shaped_editor_cursor_plan(
+    params: ShapedEditorCursorPlanParams<'_>,
+) -> ShapedEditorCursorPlan {
+    let color = cursor_background_color(
+        params.cursor_style,
+        params.text_style_at_cursor,
+        params.fallback_fg,
+    );
+    let width = params.cursor_text_shape.width_or(params.fallback_width);
+
+    ShapedEditorCursorPlan {
+        color,
+        width,
+        overlay: cursor_overlay_plan(params.paint_position, width, params.line_height),
+    }
+}
+
+pub fn paint_shaped_editor_cursor(
+    window: &mut Window,
+    cx: &mut App,
+    params: ShapedEditorCursorPaintParams<'_>,
+) -> CursorOverlayPlan {
+    let plan = shaped_editor_cursor_plan(ShapedEditorCursorPlanParams {
+        paint_position: params.paint_position,
+        cursor_style: params.cursor_style,
+        text_style_at_cursor: params.text_style_at_cursor,
+        cursor_text_shape: &params.cursor_text_shape,
+        fallback_fg: params.fallback_fg,
+        fallback_width: params.fallback_width,
+        line_height: params.line_height,
+    });
+
+    let mut cursor = EditorCursor::from_paint_position(
+        params.paint_position,
+        params.kind,
+        plan.color,
+        plan.width,
+        params.line_height,
+        params.cursor_text_shape.into_shaped_line(),
+    );
+    cursor.paint(params.paint_position.paint_origin, window, cx);
+
+    plan.overlay
+}
+
+pub fn shape_and_paint_editor_cursor(
+    window: &mut Window,
+    cx: &mut App,
+    params: EditorCursorTextPaintParams<'_>,
+) -> CursorOverlayPlan {
+    let has_reversed = cursor_has_reversed_modifier(params.cursor_style);
+    let cursor_text_color =
+        cursor_foreground_color(params.cursor_style, has_reversed, params.default_bg);
+    let text_system = window.text_system().clone();
+    let cursor_text_shape = shape_cursor_text(
+        text_system.as_ref(),
+        params.cursor_text,
+        params.font,
+        params.font_size,
+        params.text_style_at_cursor,
+        cursor_text_color,
+        params.default_bg,
+    );
+
+    paint_shaped_editor_cursor(
+        window,
+        cx,
+        ShapedEditorCursorPaintParams {
+            paint_position: params.paint_position,
+            kind: params.kind,
+            cursor_style: params.cursor_style,
+            text_style_at_cursor: params.text_style_at_cursor,
+            cursor_text_shape,
+            fallback_fg: params.fallback_fg,
+            fallback_width: params.fallback_width,
+            line_height: params.line_height,
+        },
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnwrappedCursorPaintPlanSource {
     LineLayout,
@@ -563,6 +685,33 @@ mod tests {
 
         assert_eq!(overlay.cursor_position, point(px(13.0), px(25.0)));
         assert_eq!(overlay.cursor_size, size(px(8.0), px(20.0)));
+    }
+
+    #[test]
+    fn shaped_editor_cursor_plan_uses_fallback_width_and_overlay() {
+        let paint_position = CursorPaintPosition {
+            paint_origin: point(px(10.0), px(20.0)),
+            cursor_origin: point(px(3.0), px(5.0)),
+        };
+        let cursor_text_shape = CursorTextShape {
+            shaped_line: None,
+            len: 0,
+        };
+
+        let plan = shaped_editor_cursor_plan(ShapedEditorCursorPlanParams {
+            paint_position,
+            cursor_style: &Style::default(),
+            text_style_at_cursor: &Style::default(),
+            cursor_text_shape: &cursor_text_shape,
+            fallback_fg: black(),
+            fallback_width: px(8.0),
+            line_height: px(20.0),
+        });
+
+        assert_eq!(plan.color, black());
+        assert_eq!(plan.width, px(8.0));
+        assert_eq!(plan.overlay.cursor_position, point(px(13.0), px(25.0)));
+        assert_eq!(plan.overlay.cursor_size, size(px(8.0), px(20.0)));
     }
 
     #[test]
