@@ -8,7 +8,9 @@ use gpui::{
     transparent_black,
 };
 use helix_core::diagnostic::Severity;
-use helix_view::Document;
+use helix_view::{Document, Theme};
+
+use crate::style::helix_color_to_hsla;
 
 pub type DiagnosticSeverityByLine = BTreeMap<usize, Severity>;
 
@@ -51,6 +53,24 @@ pub struct DiagnosticMarkerPaintStyle {
     pub highlight_base: Hsla,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiagnosticGutterMarkerPaintPlan {
+    pub marker: DiagnosticMarkerPlan,
+    pub style: DiagnosticMarkerPaintStyle,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DiagnosticGutterMarkerPaintPlanParams<'a> {
+    pub severity_by_line: &'a DiagnosticSeverityByLine,
+    pub doc_line: usize,
+    pub row_y: Pixels,
+    pub gutter_origin: Point<Pixels>,
+    pub line_height: Pixels,
+    pub marker_color: Hsla,
+    pub highlight_base: Hsla,
+    pub gutter_bg: Option<Hsla>,
+}
+
 pub fn diagnostic_severity_by_line(document: &Document) -> DiagnosticSeverityByLine {
     let text = document.text();
     let text_len = text.len_chars();
@@ -75,6 +95,42 @@ pub fn diagnostic_severity_by_line(document: &Document) -> DiagnosticSeverityByL
     }
 
     severities
+}
+
+pub fn diagnostic_severity_theme_key(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "diagnostic.error",
+        Severity::Warning => "diagnostic.warning",
+        Severity::Info => "diagnostic.info",
+        Severity::Hint => "diagnostic.hint",
+    }
+}
+
+pub fn diagnostic_severity_color(theme: &Theme, severity: Severity) -> Option<Hsla> {
+    let style = theme.get(diagnostic_severity_theme_key(severity));
+    style
+        .underline_color
+        .or(style.fg)
+        .and_then(helix_color_to_hsla)
+}
+
+pub fn diagnostic_gutter_marker_paint_plan(
+    params: DiagnosticGutterMarkerPaintPlanParams<'_>,
+) -> Option<DiagnosticGutterMarkerPaintPlan> {
+    let severity = params.severity_by_line.get(&params.doc_line).copied()?;
+    Some(DiagnosticGutterMarkerPaintPlan {
+        marker: diagnostic_marker_plan(
+            params.gutter_origin,
+            params.row_y,
+            params.line_height,
+            severity,
+        ),
+        style: diagnostic_marker_paint_style(
+            params.marker_color,
+            params.highlight_base,
+            params.gutter_bg,
+        ),
+    })
 }
 
 pub fn diagnostic_marker_plan(
@@ -292,6 +348,71 @@ mod tests {
         assert!(severity_rank(Severity::Error) < severity_rank(Severity::Warning));
         assert!(severity_rank(Severity::Warning) < severity_rank(Severity::Info));
         assert!(severity_rank(Severity::Info) < severity_rank(Severity::Hint));
+    }
+
+    #[test]
+    fn severity_theme_keys_match_helix_diagnostic_scopes() {
+        assert_eq!(
+            diagnostic_severity_theme_key(Severity::Error),
+            "diagnostic.error"
+        );
+        assert_eq!(
+            diagnostic_severity_theme_key(Severity::Warning),
+            "diagnostic.warning"
+        );
+        assert_eq!(
+            diagnostic_severity_theme_key(Severity::Info),
+            "diagnostic.info"
+        );
+        assert_eq!(
+            diagnostic_severity_theme_key(Severity::Hint),
+            "diagnostic.hint"
+        );
+    }
+
+    #[test]
+    fn gutter_marker_paint_plan_uses_line_severity() {
+        let mut severities = DiagnosticSeverityByLine::new();
+        severities.insert(4, Severity::Warning);
+        let marker_color = hsla(0.1, 0.8, 0.6, 1.0);
+        let highlight_base = hsla(0.0, 0.0, 1.0, 1.0);
+        let gutter_bg = Some(hsla(0.2, 0.3, 0.4, 1.0));
+
+        let plan = diagnostic_gutter_marker_paint_plan(DiagnosticGutterMarkerPaintPlanParams {
+            severity_by_line: &severities,
+            doc_line: 4,
+            row_y: px(40.0),
+            gutter_origin: point(px(10.0), px(0.0)),
+            line_height: px(20.0),
+            marker_color,
+            highlight_base,
+            gutter_bg,
+        })
+        .expect("diagnostic marker plan");
+
+        assert_eq!(plan.marker.severity, Severity::Warning);
+        assert_eq!(plan.style.strip_fill, gutter_bg);
+        assert_eq!(plan.style.marker_fill, hsla(0.1, 0.8, 0.6, 0.85));
+        assert_eq!(plan.style.highlight_base, highlight_base);
+    }
+
+    #[test]
+    fn gutter_marker_paint_plan_rejects_lines_without_diagnostics() {
+        let severities = DiagnosticSeverityByLine::new();
+
+        assert!(
+            diagnostic_gutter_marker_paint_plan(DiagnosticGutterMarkerPaintPlanParams {
+                severity_by_line: &severities,
+                doc_line: 4,
+                row_y: px(40.0),
+                gutter_origin: point(px(10.0), px(0.0)),
+                line_height: px(20.0),
+                marker_color: hsla(0.1, 0.8, 0.6, 1.0),
+                highlight_base: hsla(0.0, 0.0, 1.0, 1.0),
+                gutter_bg: None,
+            })
+            .is_none()
+        );
     }
 
     #[test]
