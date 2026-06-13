@@ -15,6 +15,39 @@ type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)
 type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditorSurfaceMetricSnapshot {
+    pub line_height: Pixels,
+    pub cell_width: Pixels,
+}
+
+#[derive(Clone)]
+pub struct EditorSurfaceMetrics {
+    current: Rc<Cell<EditorSurfaceMetricSnapshot>>,
+}
+
+impl EditorSurfaceMetrics {
+    pub fn new(line_height: Pixels, cell_width: Pixels) -> Self {
+        Self {
+            current: Rc::new(Cell::new(EditorSurfaceMetricSnapshot {
+                line_height,
+                cell_width,
+            })),
+        }
+    }
+
+    pub fn set(&self, line_height: Pixels, cell_width: Pixels) {
+        self.current.set(EditorSurfaceMetricSnapshot {
+            line_height,
+            cell_width,
+        });
+    }
+
+    pub fn get(&self) -> EditorSurfaceMetricSnapshot {
+        self.current.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EditorSurfacePointerEvent {
     pub position: Point<Pixels>,
     pub bounds: Bounds<Pixels>,
@@ -25,8 +58,7 @@ pub struct EditorSurfacePointerEvent {
 pub struct EditorSurface {
     view_entity_id: EntityId,
     viewport: EditorViewport,
-    line_height: Pixels,
-    cell_width: Pixels,
+    metrics: EditorSurfaceMetrics,
     child: AnyElement,
     on_scroll: Option<ScrollCallback>,
     on_mouse_down: Option<PointerCallback>,
@@ -41,15 +73,13 @@ impl EditorSurface {
     pub fn new(
         view_entity_id: EntityId,
         viewport: EditorViewport,
-        line_height: Pixels,
-        cell_width: Pixels,
+        metrics: EditorSurfaceMetrics,
         child: impl IntoElement,
     ) -> Self {
         Self {
             view_entity_id,
             viewport,
-            line_height,
-            cell_width,
+            metrics,
             child: child.into_any_element(),
             on_scroll: None,
             on_mouse_down: None,
@@ -101,10 +131,11 @@ impl IntoElement for EditorSurface {
 
         if let Some(on_scroll) = self.on_scroll {
             let viewport = self.viewport.clone();
-            let line_height = self.line_height;
+            let metrics = self.metrics.clone();
             let view_entity_id = self.view_entity_id;
 
             element = element.on_scroll_wheel(move |event, _window, cx| {
+                let line_height = metrics.get().line_height;
                 let raw_delta = event.delta.pixel_delta(line_height);
                 let delta = point(px(0.0), raw_delta.y);
                 let scroll_update = viewport.scroll_by_delta(delta);
@@ -121,19 +152,19 @@ impl IntoElement for EditorSurface {
         }
 
         if let Some(on_mouse_down) = self.on_mouse_down {
-            let line_height = self.line_height;
-            let cell_width = self.cell_width;
+            let metrics = self.metrics.clone();
             let view_entity_id = self.view_entity_id;
             let child_bounds = Rc::clone(&child_bounds);
 
             element = element.on_mouse_down(MouseButton::Left, move |event, _window, cx| {
                 if let Some(bounds) = child_bounds.get() {
+                    let metrics = metrics.get();
                     on_mouse_down(
                         EditorSurfacePointerEvent {
                             position: event.position,
                             bounds,
-                            line_height,
-                            cell_width,
+                            line_height: metrics.line_height,
+                            cell_width: metrics.cell_width,
                         },
                         cx,
                     );
@@ -145,19 +176,19 @@ impl IntoElement for EditorSurface {
         }
 
         if let Some(on_mouse_up) = self.on_mouse_up {
-            let line_height = self.line_height;
-            let cell_width = self.cell_width;
+            let metrics = self.metrics.clone();
             let view_entity_id = self.view_entity_id;
             let child_bounds = Rc::clone(&child_bounds);
 
             element = element.on_mouse_up(MouseButton::Left, move |event, _window, cx| {
                 if let Some(bounds) = child_bounds.get() {
+                    let metrics = metrics.get();
                     on_mouse_up(
                         EditorSurfacePointerEvent {
                             position: event.position,
                             bounds,
-                            line_height,
-                            cell_width,
+                            line_height: metrics.line_height,
+                            cell_width: metrics.cell_width,
                         },
                         cx,
                     );
@@ -169,5 +200,24 @@ impl IntoElement for EditorSurface {
         }
 
         element
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::px;
+
+    use super::EditorSurfaceMetrics;
+
+    #[test]
+    fn shared_surface_metrics_reflect_updates_across_clones() {
+        let metrics = EditorSurfaceMetrics::new(px(20.0), px(8.0));
+        let clone = metrics.clone();
+
+        metrics.set(px(24.0), px(9.0));
+
+        let snapshot = clone.get();
+        assert_eq!(snapshot.line_height, px(24.0));
+        assert_eq!(snapshot.cell_width, px(9.0));
     }
 }
