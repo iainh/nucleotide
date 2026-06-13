@@ -726,6 +726,7 @@ fn native_command_supported(command: &MappableCommand) -> bool {
     name == "normal_mode"
         || native_insert_entry_command(command)
         || native_prompt_command(command)
+        || native_history_command(command)
         || name.starts_with("move_")
         || name.starts_with("extend_")
         || matches!(
@@ -785,9 +786,14 @@ fn native_picker_command(command: &MappableCommand) -> Option<NativePickerReques
     }
 }
 
+fn native_history_command(command: &MappableCommand) -> bool {
+    matches!(command.name(), "undo" | "redo")
+}
+
 fn native_insert_command_supported(command: &MappableCommand) -> bool {
     (!native_insert_entry_command(command)
         && !native_prompt_command(command)
+        && !native_history_command(command)
         && native_command_supported(command))
         || native_insert_edit_command(command)
         || native_insert_interactive_command(command)
@@ -946,6 +952,8 @@ mod tests {
         assert!(native_command_supported(&MappableCommand::command_mode));
         assert!(native_command_supported(&MappableCommand::search));
         assert!(native_command_supported(&MappableCommand::rsearch));
+        assert!(native_command_supported(&MappableCommand::undo));
+        assert!(native_command_supported(&MappableCommand::redo));
         assert!(!native_command_supported(&MappableCommand::goto_definition));
     }
 
@@ -987,6 +995,8 @@ mod tests {
         assert!(!native_insert_command_supported(
             &MappableCommand::append_mode
         ));
+        assert!(!native_insert_command_supported(&MappableCommand::undo));
+        assert!(!native_insert_command_supported(&MappableCommand::redo));
     }
 
     #[test]
@@ -1039,6 +1049,15 @@ mod tests {
         );
         assert_eq!(native_picker_command(&MappableCommand::command_mode), None);
         assert_eq!(native_picker_command(&MappableCommand::normal_mode), None);
+    }
+
+    #[test]
+    fn history_commands_are_classified_separately() {
+        assert!(native_history_command(&MappableCommand::undo));
+        assert!(native_history_command(&MappableCommand::redo));
+        assert!(!native_history_command(&MappableCommand::earlier));
+        assert!(!native_history_command(&MappableCommand::later));
+        assert!(!native_history_command(&MappableCommand::normal_mode));
     }
 
     #[test]
