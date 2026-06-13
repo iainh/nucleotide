@@ -42,8 +42,8 @@ pub use document_renderer::DocumentRenderer;
 pub use editor_view::EditorView;
 pub use geometry::{EditorLayout, EditorSurfaceGeometry};
 pub use gutter::{
-    GutterLine, GutterLineParams, SoftWrapGutterLinePlan, build_gutter_lines,
-    soft_wrap_gutter_line_plans,
+    GutterLine, GutterLineParams, SoftWrapGutterLinePaintPlan, SoftWrapGutterLinePlan,
+    build_gutter_lines, soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans,
 };
 pub use highlight::{
     DiagnosticOverlaySpans, HighlightLineParams, diagnostic_overlay_spans,

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use gpui::{Pixels, Point, ShapedLine, TextStyle, WindowTextSystem, black, white};
+use gpui::{Hsla, Pixels, Point, ShapedLine, TextStyle, WindowTextSystem, black, point, white};
 use helix_view::{Document, Editor, Theme, View};
 
 use crate::{
@@ -37,6 +37,13 @@ pub struct SoftWrapGutterLinePlan {
     pub y_offset: Pixels,
     pub text: String,
     pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoftWrapGutterLinePaintPlan<'a> {
+    pub line: &'a SoftWrapGutterLinePlan,
+    pub origin: Point<Pixels>,
+    pub color: Hsla,
 }
 
 pub fn build_gutter_lines(params: GutterLineParams<'_>) -> Vec<GutterLine> {
@@ -95,6 +102,26 @@ pub fn soft_wrap_gutter_line_plans(
     }
 
     plans
+}
+
+pub fn soft_wrap_gutter_line_paint_plans<'a>(
+    lines: &'a [SoftWrapGutterLinePlan],
+    origin: Point<Pixels>,
+    gutter_color: Hsla,
+    gutter_selected_color: Hsla,
+) -> Vec<SoftWrapGutterLinePaintPlan<'a>> {
+    lines
+        .iter()
+        .map(|line| SoftWrapGutterLinePaintPlan {
+            line,
+            origin: point(origin.x, origin.y + line.y_offset),
+            color: if !line.is_phantom_line && line.selected {
+                gutter_selected_color
+            } else {
+                gutter_color
+            },
+        })
+        .collect()
 }
 
 fn soft_wrap_gutter_label(doc_line: usize, is_phantom_line: bool) -> String {
@@ -235,11 +262,11 @@ fn gutter_line_positions(
 
 #[cfg(test)]
 mod tests {
-    use gpui::px;
+    use gpui::{point, px, rgb};
 
     use super::{
         GutterLinePosition, SoftWrapGutterLinePlan, gutter_line_positions,
-        soft_wrap_gutter_line_plans,
+        soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans,
     };
     use crate::SoftWrapVisualLine;
 
@@ -340,5 +367,52 @@ mod tests {
                 selected: false,
             }]
         );
+    }
+
+    #[test]
+    fn soft_wrap_gutter_paint_plans_choose_origin_and_color() {
+        let lines = vec![
+            SoftWrapGutterLinePlan {
+                doc_line: 0,
+                is_phantom_line: false,
+                y_offset: px(0.0),
+                text: "   1 ".to_string(),
+                selected: false,
+            },
+            SoftWrapGutterLinePlan {
+                doc_line: 1,
+                is_phantom_line: false,
+                y_offset: px(20.0),
+                text: "   2 ".to_string(),
+                selected: true,
+            },
+            SoftWrapGutterLinePlan {
+                doc_line: 2,
+                is_phantom_line: true,
+                y_offset: px(40.0),
+                text: "   ~ ".to_string(),
+                selected: true,
+            },
+        ];
+        let gutter_color = rgb(0x667788).into();
+        let gutter_selected_color = rgb(0xaabbcc).into();
+
+        let plans = soft_wrap_gutter_line_paint_plans(
+            &lines,
+            point(px(8.0), px(12.0)),
+            gutter_color,
+            gutter_selected_color,
+        );
+
+        assert_eq!(plans.len(), 3);
+        assert_eq!(plans[0].line, &lines[0]);
+        assert_eq!(plans[0].origin, point(px(8.0), px(12.0)));
+        assert_eq!(plans[0].color, gutter_color);
+        assert_eq!(plans[1].line, &lines[1]);
+        assert_eq!(plans[1].origin, point(px(8.0), px(32.0)));
+        assert_eq!(plans[1].color, gutter_selected_color);
+        assert_eq!(plans[2].line, &lines[2]);
+        assert_eq!(plans[2].origin, point(px(8.0), px(52.0)));
+        assert_eq!(plans[2].color, gutter_color);
     }
 }
