@@ -28,8 +28,9 @@ use nucleotide_editor::{
     hit_test_document_position, line_viewport_plan, paint_line_backgrounds,
     phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
-    soft_wrap_visual_lines, soft_wrap_visual_position, text_style_at_position,
-    unwrapped_cursor_paint_position, unwrapped_visible_line_plans, visible_ruler_bounds,
+    soft_wrap_gutter_line_plans, soft_wrap_visual_lines, soft_wrap_visual_position,
+    text_style_at_position, unwrapped_cursor_paint_position, unwrapped_visible_line_plans,
+    visible_ruler_bounds,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -1153,22 +1154,6 @@ impl Element for DocumentElement {
                     gutter_origin.x += px(2.);
                     gutter_origin.y += px(1.);
 
-                    let mut doc_line_positions = Vec::new();
-                    let mut last_doc_line = None;
-                    for visual in &soft_wrap_lines {
-                        if last_doc_line != Some(visual.doc_line) {
-                            let y_pos = -scroll_line_offset
-                                + after_layout.line_height
-                                    * visual.relative_row(view_offset.vertical_offset) as f32;
-                            doc_line_positions.push((
-                                visual.doc_line,
-                                visual.is_phantom_line,
-                                y_pos,
-                            ));
-                            last_doc_line = Some(visual.doc_line);
-                        }
-                    }
-
                     // Build a map of line -> highest diagnostic severity for quick lookup
                     let diag_line_severity = {
                         let core = self.core.read(cx);
@@ -1184,18 +1169,19 @@ impl Element for DocumentElement {
                     let gutter_style = cx.theme_style("ui.linenr");
                     let gutter_selected_style = cx.theme_style("ui.linenr.selected");
 
-                    for (doc_line, is_phantom_line, y_pos) in doc_line_positions {
-                        let line_num_str = if is_phantom_line {
-                            "   ~ ".to_string() // Match the format: right-aligned with space
-                        } else {
-                            format!("{:>4} ", doc_line + 1)
-                        };
-                        let y = gutter_origin.y + y_pos;
+                    let gutter_plans = soft_wrap_gutter_line_plans(
+                        &soft_wrap_lines,
+                        view_offset.vertical_offset,
+                        after_layout.line_height,
+                        scroll_line_offset,
+                        cursors.as_ref(),
+                    );
+                    for gutter_plan in gutter_plans {
+                        let y = gutter_origin.y + gutter_plan.y_offset;
 
                         // Choose color based on whether this line contains a cursor (same logic as regular gutter)
                         // Use UI theme tokens for gutter fallback color
                         let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
-                        let selected = cursors.contains(&doc_line);
 
                         let gutter_color = gutter_style
                             .fg
@@ -1206,10 +1192,10 @@ impl Element for DocumentElement {
                             .and_then(crate::utils::color_to_hsla)
                             .unwrap_or(default_gutter_color);
 
-                        let line_color = if is_phantom_line {
+                        let line_color = if gutter_plan.is_phantom_line {
                             // Phantom lines (tildes) always use regular gutter color, never selected
                             gutter_color
-                        } else if selected {
+                        } else if gutter_plan.selected {
                             // Current line - use selected gutter style
                             gutter_selected_color
                         } else {
@@ -1218,7 +1204,7 @@ impl Element for DocumentElement {
                         };
 
                         let run = TextRun {
-                            len: line_num_str.len(),
+                            len: gutter_plan.text.len(),
                             font: self.style.font(),
                             color: line_color,
                             background_color: None,
@@ -1227,7 +1213,7 @@ impl Element for DocumentElement {
                         };
 
                         let shaped = window.text_system().shape_line(
-                            line_num_str.into(),
+                            gutter_plan.text.into(),
                             self.style.font_size.to_pixels(px(16.0)),
                             &[run],
                             None,
@@ -1241,7 +1227,7 @@ impl Element for DocumentElement {
                         );
 
                         // Paint a small diagnostic marker in the gutter if this line has diagnostics
-                        if let Some(sev) = diag_line_severity.get(&doc_line).copied()
+                        if let Some(sev) = diag_line_severity.get(&gutter_plan.doc_line).copied()
                             && let Some(color) = Self::severity_color(cx.helix_theme(), sev)
                         {
                             use nucleotide_ui::tokens::utils;

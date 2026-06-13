@@ -38,7 +38,10 @@ pub use document_metrics::{
 pub use document_renderer::DocumentRenderer;
 pub use editor_view::EditorView;
 pub use geometry::{EditorLayout, EditorSurfaceGeometry};
-pub use gutter::{GutterLine, GutterLineParams, build_gutter_lines};
+pub use gutter::{
+    GutterLine, GutterLineParams, SoftWrapGutterLinePlan, build_gutter_lines,
+    soft_wrap_gutter_line_plans,
+};
 pub use highlight::{
     DiagnosticOverlaySpans, HighlightLineParams, diagnostic_overlay_spans,
     gpui_hsla_to_helix_color, highlight_line, text_style_at_position,
