@@ -26,6 +26,7 @@ helix-view = { workspace = true }
 nucleotide-logging = { workspace = true }
 
 [dev-dependencies]
+arc-swap.workspace = true
 criterion = "0.8"
 rand = "0.10"
 
