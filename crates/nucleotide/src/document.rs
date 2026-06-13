@@ -15,25 +15,24 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    DiagnosticGutterMarkerPaintPlanParams, DocumentSoftWrapRenderPlanParams,
+    DiagnosticGutterMarkersPaintParams, DocumentSoftWrapRenderPlanParams,
     EditorCursorTextPaintParams, EditorLayout, EditorLineBackgroundStyle, EditorScrollbarState,
     EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics,
     EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout,
     GutterLineParams, HighlightLineParams, LineLayoutCache, ShapedEditorCursorPaintParams,
-    SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, UnwrappedCursorPaintPlanParams,
-    UnwrappedEditorLinePaintParams, UnwrappedRenderPlanParams,
+    SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams,
+    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams, UnwrappedRenderPlanParams,
     begin_editor_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
-    build_soft_wrap_gutter_lines, cursor_document_line, cursor_foreground_color,
-    cursor_has_reversed_modifier, cursor_style_for_mode, decorate_soft_wrap_line_runs,
-    diagnostic_gutter_marker_paint_plan, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    diagnostic_severity_color, document_render_snapshot, document_soft_wrap_render_plan,
-    gpui_hsla_to_helix_color, highlight_line, paint_diagnostic_marker, paint_editor_background,
-    paint_gutter_lines, paint_shaped_editor_cursor, paint_soft_wrap_editor_line,
-    paint_soft_wrap_gutter_lines, paint_unwrapped_editor_line, paint_visible_rulers,
-    shape_and_paint_editor_cursor, shape_cursor_text, shared_line_text_without_trailing_newline,
-    soft_wrap_cursor_paint_plan, soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans,
-    text_style_at_position, unwrapped_cursor_paint_plan, unwrapped_render_plan,
-    update_editor_pointer_selection_at_event, visible_ruler_paint_plans,
+    cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
+    cursor_style_for_mode, decorate_soft_wrap_line_runs, diagnostic_overlay_spans,
+    diagnostic_severity_by_line, document_render_snapshot, document_soft_wrap_render_plan,
+    gpui_hsla_to_helix_color, highlight_line, paint_diagnostic_gutter_markers,
+    paint_editor_background, paint_gutter_lines, paint_shaped_editor_cursor,
+    paint_soft_wrap_editor_line, paint_soft_wrap_gutter, paint_unwrapped_editor_line,
+    paint_visible_rulers, shape_and_paint_editor_cursor, shape_cursor_text,
+    shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_plan, text_style_at_position,
+    unwrapped_cursor_paint_plan, unwrapped_render_plan, update_editor_pointer_selection_at_event,
+    visible_ruler_paint_plans,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -952,28 +951,19 @@ impl Element for DocumentElement {
                     gutter_origin.x += px(2.);
                     gutter_origin.y += px(1.);
 
-                    // Build a map of line -> highest diagnostic severity for quick lookup
                     let diag_line_severity = {
                         let core = self.core.read(cx);
                         let editor = &core.editor;
                         if let Some(document) = editor.document(self.doc_id) {
                             diagnostic_severity_by_line(document)
                         } else {
-                            std::collections::BTreeMap::new()
+                            Default::default()
                         }
                     };
 
                     // Now render the line numbers with highlighting for current line
                     let gutter_style = cx.theme_style("ui.linenr");
                     let gutter_selected_style = cx.theme_style("ui.linenr.selected");
-
-                    let gutter_plans = soft_wrap_gutter_line_plans(
-                        soft_wrap_lines,
-                        view_offset.vertical_offset,
-                        after_layout.line_height,
-                        scroll_line_offset,
-                        cursors.as_ref(),
-                    );
                     let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
                     let gutter_color = gutter_style
                         .fg
@@ -983,51 +973,42 @@ impl Element for DocumentElement {
                         .fg
                         .and_then(crate::utils::color_to_hsla)
                         .unwrap_or(default_gutter_color);
-                    let gutter_paint_plans = soft_wrap_gutter_line_paint_plans(
-                        &gutter_plans,
-                        gutter_origin,
-                        gutter_color,
-                        gutter_selected_color,
-                    );
-                    let gutter_lines = build_soft_wrap_gutter_lines(
-                        window.text_system().clone(),
-                        &self.style,
-                        self.style.font_size.to_pixels(px(16.0)),
-                        &gutter_paint_plans,
-                    );
-                    paint_soft_wrap_gutter_lines(
+                    let gutter_text_system = window.text_system().clone();
+                    let gutter_lines = paint_soft_wrap_gutter(
                         window,
                         cx,
-                        &gutter_lines,
-                        after_layout.line_height,
+                        SoftWrapGutterPaintParams {
+                            text_system: gutter_text_system,
+                            text_style: &self.style,
+                            font_size: self.style.font_size.to_pixels(px(16.0)),
+                            visual_lines: soft_wrap_lines,
+                            vertical_offset: view_offset.vertical_offset,
+                            line_height: after_layout.line_height,
+                            scroll_line_offset,
+                            cursor_lines: cursors.as_ref(),
+                            origin: gutter_origin,
+                            gutter_color,
+                            gutter_selected_color,
+                        },
                         |_| {},
                     );
-                    for gutter_line in gutter_lines {
-                        // Paint a small diagnostic marker in the gutter if this line has diagnostics
-                        if let Some(sev) = diag_line_severity.get(&gutter_line.doc_line).copied()
-                            && let Some(color) = diagnostic_severity_color(cx.helix_theme(), sev)
-                        {
-                            let gutter_bg = cx
-                                .theme_style("ui.gutter")
-                                .bg
-                                .and_then(crate::utils::color_to_hsla);
-                            let Some(marker_plan) = diagnostic_gutter_marker_paint_plan(
-                                DiagnosticGutterMarkerPaintPlanParams {
-                                    severity_by_line: &diag_line_severity,
-                                    doc_line: gutter_line.doc_line,
-                                    row_y: gutter_line.origin.y,
-                                    gutter_origin,
-                                    line_height: after_layout.line_height,
-                                    marker_color: color,
-                                    highlight_base: cx.theme().tokens.chrome.text_on_chrome,
-                                    gutter_bg,
-                                },
-                            ) else {
-                                continue;
-                            };
-                            paint_diagnostic_marker(window, &marker_plan.marker, marker_plan.style);
-                        }
-                    }
+
+                    let gutter_bg = cx
+                        .theme_style("ui.gutter")
+                        .bg
+                        .and_then(crate::utils::color_to_hsla);
+                    paint_diagnostic_gutter_markers(
+                        window,
+                        DiagnosticGutterMarkersPaintParams {
+                            severity_by_line: &diag_line_severity,
+                            gutter_lines: &gutter_lines,
+                            theme: cx.helix_theme(),
+                            gutter_origin,
+                            line_height: after_layout.line_height,
+                            highlight_base: cx.theme().tokens.chrome.text_on_chrome,
+                            gutter_bg,
+                        },
+                    );
                 }
 
                 // Render cursor for soft wrap mode

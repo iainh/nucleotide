@@ -55,6 +55,20 @@ pub struct SoftWrapGutterLinePaintPlan<'a> {
     pub color: Hsla,
 }
 
+pub struct SoftWrapGutterPaintParams<'a> {
+    pub text_system: Arc<WindowTextSystem>,
+    pub text_style: &'a TextStyle,
+    pub font_size: Pixels,
+    pub visual_lines: &'a [SoftWrapVisualLine],
+    pub vertical_offset: usize,
+    pub line_height: Pixels,
+    pub scroll_line_offset: Pixels,
+    pub cursor_lines: &'a [usize],
+    pub origin: Point<Pixels>,
+    pub gutter_color: Hsla,
+    pub gutter_selected_color: Hsla,
+}
+
 pub fn build_gutter_lines(params: GutterLineParams<'_>) -> Vec<GutterLine> {
     let mut gutter = Gutter {
         layout: params.layout,
@@ -176,6 +190,43 @@ pub fn build_soft_wrap_gutter_lines(
             }
         })
         .collect()
+}
+
+pub fn build_soft_wrap_gutter_for_visual_lines(
+    params: SoftWrapGutterPaintParams<'_>,
+) -> Vec<SoftWrapGutterLine> {
+    let gutter_plans = soft_wrap_gutter_line_plans(
+        params.visual_lines,
+        params.vertical_offset,
+        params.line_height,
+        params.scroll_line_offset,
+        params.cursor_lines,
+    );
+    let gutter_paint_plans = soft_wrap_gutter_line_paint_plans(
+        &gutter_plans,
+        params.origin,
+        params.gutter_color,
+        params.gutter_selected_color,
+    );
+
+    build_soft_wrap_gutter_lines(
+        params.text_system,
+        params.text_style,
+        params.font_size,
+        &gutter_paint_plans,
+    )
+}
+
+pub fn paint_soft_wrap_gutter(
+    window: &mut Window,
+    cx: &mut App,
+    params: SoftWrapGutterPaintParams<'_>,
+    on_error: impl FnMut(Result<()>),
+) -> Vec<SoftWrapGutterLine> {
+    let line_height = params.line_height;
+    let gutter_lines = build_soft_wrap_gutter_for_visual_lines(params);
+    paint_soft_wrap_gutter_lines(window, cx, &gutter_lines, line_height, on_error);
+    gutter_lines
 }
 
 pub fn paint_soft_wrap_gutter_lines(

@@ -10,7 +10,7 @@ use gpui::{
 use helix_core::diagnostic::Severity;
 use helix_view::{Document, Theme};
 
-use crate::style::helix_color_to_hsla;
+use crate::{gutter::SoftWrapGutterLine, style::helix_color_to_hsla};
 
 pub type DiagnosticSeverityByLine = BTreeMap<usize, Severity>;
 
@@ -67,6 +67,16 @@ pub struct DiagnosticGutterMarkerPaintPlanParams<'a> {
     pub gutter_origin: Point<Pixels>,
     pub line_height: Pixels,
     pub marker_color: Hsla,
+    pub highlight_base: Hsla,
+    pub gutter_bg: Option<Hsla>,
+}
+
+pub struct DiagnosticGutterMarkersPaintParams<'a> {
+    pub severity_by_line: &'a DiagnosticSeverityByLine,
+    pub gutter_lines: &'a [SoftWrapGutterLine],
+    pub theme: &'a Theme,
+    pub gutter_origin: Point<Pixels>,
+    pub line_height: Pixels,
     pub highlight_base: Hsla,
     pub gutter_bg: Option<Hsla>,
 }
@@ -131,6 +141,36 @@ pub fn diagnostic_gutter_marker_paint_plan(
             params.gutter_bg,
         ),
     })
+}
+
+pub fn paint_diagnostic_gutter_markers(
+    window: &mut Window,
+    params: DiagnosticGutterMarkersPaintParams<'_>,
+) {
+    for gutter_line in params.gutter_lines {
+        let Some(severity) = params.severity_by_line.get(&gutter_line.doc_line).copied() else {
+            continue;
+        };
+        let Some(marker_color) = diagnostic_severity_color(params.theme, severity) else {
+            continue;
+        };
+        let Some(marker_plan) =
+            diagnostic_gutter_marker_paint_plan(DiagnosticGutterMarkerPaintPlanParams {
+                severity_by_line: params.severity_by_line,
+                doc_line: gutter_line.doc_line,
+                row_y: gutter_line.origin.y,
+                gutter_origin: params.gutter_origin,
+                line_height: params.line_height,
+                marker_color,
+                highlight_base: params.highlight_base,
+                gutter_bg: params.gutter_bg,
+            })
+        else {
+            continue;
+        };
+
+        paint_diagnostic_marker(window, &marker_plan.marker, marker_plan.style);
+    }
 }
 
 pub fn diagnostic_marker_plan(
