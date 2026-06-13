@@ -747,6 +747,10 @@ fn native_command_supported(command: &MappableCommand) -> bool {
                 | "goto_window_bottom"
                 | "goto_window_center"
                 | "goto_window_top"
+                | "half_page_down"
+                | "half_page_up"
+                | "page_down"
+                | "page_up"
                 | "keep_primary_selection"
                 | "page_cursor_up"
                 | "page_cursor_down"
@@ -757,6 +761,8 @@ fn native_command_supported(command: &MappableCommand) -> bool {
                 | "page_cursor_half_up_select"
                 | "page_cursor_half_down_select"
                 | "remove_primary_selection"
+                | "scroll_down"
+                | "scroll_up"
                 | "select_all"
                 | "select_line_above"
                 | "select_line_below"
@@ -1031,6 +1037,16 @@ mod tests {
         assert!(native_command_supported(&MappableCommand::join_selections));
         assert!(native_command_supported(&MappableCommand::trim_selections));
         assert!(!native_command_supported(&MappableCommand::goto_definition));
+    }
+
+    #[test]
+    fn native_command_supports_view_scroll_commands() {
+        assert!(native_command_supported(&MappableCommand::scroll_up));
+        assert!(native_command_supported(&MappableCommand::scroll_down));
+        assert!(native_command_supported(&MappableCommand::page_up));
+        assert!(native_command_supported(&MappableCommand::page_down));
+        assert!(native_command_supported(&MappableCommand::half_page_up));
+        assert!(native_command_supported(&MappableCommand::half_page_down));
     }
 
     #[test]
