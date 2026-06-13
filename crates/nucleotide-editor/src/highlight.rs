@@ -70,6 +70,7 @@ pub struct UnwrappedHighlightedLineParams<'a> {
     pub line: &'a VisibleLinePlan,
 }
 
+#[derive(Debug, Clone)]
 pub struct UnwrappedHighlightedLine {
     pub line_text: SharedString,
     pub line_runs: Vec<TextRun>,
