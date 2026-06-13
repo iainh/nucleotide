@@ -15,9 +15,9 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle,
-    EditorScrollbarState, EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry,
-    EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
+    EditorCursor, EditorLayout, EditorLineBackgroundStyle, EditorScrollbarState,
+    EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics,
+    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout,
     GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache,
     begin_editor_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
     build_soft_wrap_gutter_lines, cursor_background_color, cursor_document_line,
@@ -596,13 +596,7 @@ impl Element for DocumentElement {
         let line_height = after_layout.line_height;
 
         // Update scroll manager with current layout info
-        self.viewport.set_line_height(line_height);
         self.surface_metrics.set(line_height, cell_width);
-
-        // Set scroll manager viewport to the actual text-area height (exclude top padding)
-        let text_area_height = bounds.size.height - px(1.0);
-        let effective_viewport_size = size(bounds.size.width, text_area_height);
-        self.viewport.set_viewport_size(effective_viewport_size);
 
         // Fill editor background from design tokens
         {
@@ -611,93 +605,37 @@ impl Element for DocumentElement {
             paint_editor_background(window, bounds, bgc);
         }
 
-        // Sync scroll position back to Helix only if scrollbar changed it
-        // This prevents overriding Helix's auto-scroll behavior
-        if self.viewport.has_pending_scrollbar_sync() {
-            core.update(cx, |core, cx| {
-                if self
-                    .viewport
-                    .sync_to_helix_view(&mut core.editor, self.doc_id, view_id)
-                {
-                    cx.notify();
-                }
-            });
-            // Clear the flag after syncing
-            self.viewport.clear_pending_scrollbar_sync();
-        }
+        let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+        let viewport_update = core.update(cx, |core, cx| {
+            let update = self.viewport.sync_surface_layout(
+                &mut core.editor,
+                self.doc_id,
+                view_id,
+                EditorViewportSurfaceLayout {
+                    theme: Some(&theme),
+                    bounds,
+                    cell_width: after_layout.cell_width,
+                    line_height: after_layout.line_height,
+                    minimum_columns: 1,
+                },
+            );
 
-        // Determine total content height in "visual" lines for correct scrolling
-        // This ensures the scrollbar range matches the wrapped content height.
-        let visual_total_lines = {
-            let core = self.core.read(cx);
-            let editor = &core.editor;
-            let view = match editor.tree.try_get(view_id) {
-                Some(v) => v,
-                None => return,
-            };
-            let doc = match editor.document(self.doc_id) {
-                Some(doc) => doc,
-                None => return,
-            };
+            if update
+                .as_ref()
+                .is_some_and(|update| update.helix_view_synced)
+            {
+                cx.notify();
+            }
 
-            let theme = cx.global::<crate::ThemeManager>().helix_theme();
-            EditorDocumentMetrics::resolve(
-                doc,
-                Some(theme),
-                bounds,
-                view.gutter_offset(doc),
-                after_layout.cell_width,
-                1,
-            )
-            .visual_rows
+            update
+        });
+        let Some(viewport_update) = viewport_update else {
+            return;
         };
-
-        self.viewport.set_content_visual_rows(visual_total_lines);
-
-        let gutter_width_cells = {
-            let editor = &core.read(cx).editor;
-            let view = match editor.tree.try_get(view_id) {
-                Some(v) => v,
-                None => return,
-            };
-            let doc = match editor.document(self.doc_id) {
-                Some(doc) => doc,
-                None => return, // Document was closed
-            };
-
-            // Mirror Helix viewport while preserving local sub-line wheel motion
-            // when Helix reports the same top line.
-            self.viewport.sync_from_helix_view(doc, self.view_id);
-
-            view.gutter_offset(doc)
-        };
+        let gutter_width_cells = viewport_update.gutter_columns;
         let _gutter_width_px = cell_width * f32::from(gutter_width_cells);
 
-        // Check if soft wrap is enabled early for mouse handlers
-        let soft_wrap_enabled = {
-            let core = self.core.read(cx);
-            let editor = &core.editor;
-            if let Some(document) = editor.document(self.doc_id) {
-                if let Some(view) = editor.tree.try_get(self.view_id) {
-                    let gutter_offset = view.gutter_offset(document);
-                    let theme = cx.global::<crate::ThemeManager>().helix_theme();
-
-                    let (_, text_format) = document_text_format_for_surface(
-                        document,
-                        Some(theme),
-                        bounds,
-                        gutter_offset,
-                        after_layout.cell_width,
-                        10,
-                    );
-                    text_format.soft_wrap
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        };
+        let soft_wrap_enabled = viewport_update.soft_wrap;
 
         // Store line layouts in element state for mouse interaction
         // Using LineLayoutCache instead of RefCell for thread safety

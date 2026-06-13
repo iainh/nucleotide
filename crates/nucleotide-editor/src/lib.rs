@@ -94,5 +94,7 @@ pub use surface::{
     paint_editor_background,
 };
 pub use viewport::{
-    EditorViewport, HelixViewportSnapshot, ViewportScrollUpdate, helix_viewport_snapshot,
+    EditorViewport, EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate,
+    HelixViewportSnapshot, ViewportScrollUpdate, editor_viewport_size_for_bounds,
+    helix_viewport_snapshot,
 };
