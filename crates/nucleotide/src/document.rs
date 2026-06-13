@@ -176,20 +176,20 @@ fn handle_editor_mouse_down(
     cx: &mut App,
 ) {
     if let Some(hit_test) = hit_test_editor_pointer(core, doc_id, view_id, event, cx) {
-        let target_pos = apply_editor_selection(
-            core,
-            doc_id,
-            view_id,
-            hit_test.char_idx,
-            hit_test.char_idx,
-            cx,
-        );
+        let anchor = if event.modifiers.shift {
+            primary_selection_anchor(core, doc_id, view_id, cx).unwrap_or(hit_test.char_idx)
+        } else {
+            hit_test.char_idx
+        };
+        let target_pos =
+            apply_editor_selection(core, doc_id, view_id, anchor, hit_test.char_idx, cx);
 
         if let Some(target_pos) = target_pos {
-            drag_anchor.set(Some(target_pos));
+            drag_anchor.set(Some(anchor));
             debug!(
                 line_idx = hit_test.line_idx,
                 char_offset = hit_test.char_offset,
+                anchor,
                 target_pos,
                 "Applied editor click selection"
             );
@@ -251,6 +251,18 @@ fn hit_test_editor_pointer(
             None
         }
     }
+}
+
+fn primary_selection_anchor(
+    core: &Entity<Core>,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    cx: &mut App,
+) -> Option<usize> {
+    let core = core.read(cx);
+    let editor = &core.editor;
+    let document = editor.document(doc_id)?;
+    Some(document.selection(view_id).primary().anchor)
 }
 
 fn apply_editor_selection(

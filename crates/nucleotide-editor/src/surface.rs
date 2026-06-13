@@ -5,8 +5,8 @@ use std::{cell::Cell, rc::Rc};
 
 use gpui::prelude::{InteractiveElement, IntoElement, ParentElement, Styled};
 use gpui::{
-    AnyElement, App, Bounds, Div, EntityId, Hsla, MouseButton, Pixels, Point, Window, div, fill,
-    point, px,
+    AnyElement, App, Bounds, Div, EntityId, Hsla, Modifiers, MouseButton, Pixels, Point, Window,
+    div, fill, point, px,
 };
 
 use crate::{EditorViewport, ViewportScrollUpdate};
@@ -50,6 +50,7 @@ impl EditorSurfaceMetrics {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EditorSurfacePointerEvent {
     pub position: Point<Pixels>,
+    pub modifiers: Modifiers,
     pub bounds: Bounds<Pixels>,
     pub line_height: Pixels,
     pub cell_width: Pixels,
@@ -172,6 +173,7 @@ impl IntoElement for EditorSurface {
                     on_mouse_down(
                         EditorSurfacePointerEvent {
                             position: event.position,
+                            modifiers: event.modifiers,
                             bounds,
                             line_height: metrics.line_height,
                             cell_width: metrics.cell_width,
@@ -200,6 +202,7 @@ impl IntoElement for EditorSurface {
                     on_mouse_drag(
                         EditorSurfacePointerEvent {
                             position: event.position,
+                            modifiers: event.modifiers,
                             bounds,
                             line_height: metrics.line_height,
                             cell_width: metrics.cell_width,
@@ -224,6 +227,7 @@ impl IntoElement for EditorSurface {
                     on_mouse_up(
                         EditorSurfacePointerEvent {
                             position: event.position,
+                            modifiers: event.modifiers,
                             bounds,
                             line_height: metrics.line_height,
                             cell_width: metrics.cell_width,
