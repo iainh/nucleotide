@@ -96,10 +96,10 @@ fn handle_editor_mouse_down(
     doc_id: DocumentId,
     view_id: ViewId,
     drag_state: &EditorSelectionDragState,
+    line_cache: &LineLayoutCache,
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
-    let line_cache = cx.global::<LineLayoutCache>().clone();
     let mut pointer_update = None;
 
     core.update(cx, |core, cx| {
@@ -107,7 +107,7 @@ fn handle_editor_mouse_down(
             &mut core.editor,
             doc_id,
             view_id,
-            &line_cache,
+            line_cache,
             drag_state,
             event,
         );
@@ -140,10 +140,10 @@ fn handle_editor_mouse_drag(
     doc_id: DocumentId,
     view_id: ViewId,
     drag_state: &EditorSelectionDragState,
+    line_cache: &LineLayoutCache,
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
-    let line_cache = cx.global::<LineLayoutCache>().clone();
     let mut pointer_update = None;
 
     core.update(cx, |core, cx| {
@@ -151,7 +151,7 @@ fn handle_editor_mouse_drag(
             &mut core.editor,
             doc_id,
             view_id,
-            &line_cache,
+            line_cache,
             drag_state,
             event,
         );
@@ -180,6 +180,7 @@ pub struct DocumentView {
     is_focused: bool,
     viewport: EditorViewport,
     scrollbar_state: EditorScrollbarState,
+    surface_metrics: EditorSurfaceMetrics,
     line_height: Pixels,
     selection_drag_state: EditorSelectionDragState,
     /// Last cursor position in window coordinates (for completion positioning)
@@ -199,6 +200,7 @@ impl DocumentView {
         // Create viewport with placeholder document metrics (updated during render/paint).
         let line_height = px(20.0); // Default, will be updated
         let viewport = EditorViewport::new(line_height);
+        let surface_metrics = EditorSurfaceMetrics::new(line_height, px(8.0));
 
         Self {
             core,
@@ -208,6 +210,7 @@ impl DocumentView {
             is_focused,
             viewport,
             scrollbar_state: EditorScrollbarState::default(),
+            surface_metrics,
             line_height,
             selection_drag_state: EditorSelectionDragState::default(),
             last_cursor_position: None,
@@ -225,6 +228,11 @@ impl DocumentView {
         let font_size = style.font_size.to_pixels(px(16.0));
         self.line_height = style.line_height_in_pixels(font_size);
         self.style = style;
+        self.surface_metrics.line_cache().clear_shaped_lines();
+    }
+
+    pub fn clear_shaped_lines_cache(&self) {
+        self.surface_metrics.line_cache().clear_shaped_lines();
     }
 
     /// Convert a Helix anchor (character position) to scroll pixels
@@ -335,7 +343,9 @@ impl Render for DocumentView {
 
         let metrics = EditorTextMetrics::resolve(cx.text_system(), &self.style);
         self.line_height = metrics.line_height;
-        let surface_metrics = EditorSurfaceMetrics::new(metrics.line_height, metrics.cell_width);
+        self.surface_metrics
+            .set(metrics.line_height, metrics.cell_width);
+        let surface_metrics = self.surface_metrics.clone();
 
         // Update viewport with document info
         {
@@ -378,7 +388,7 @@ impl Render for DocumentView {
         let editor_surface = EditorSurface::new(
             cx.entity_id(),
             self.viewport.clone(),
-            surface_metrics,
+            surface_metrics.clone(),
             self.scrollbar_state.clone(),
             document_element,
         )
@@ -396,18 +406,36 @@ impl Render for DocumentView {
             let core = self.core.clone();
             let view_id = self.view_id;
             let selection_drag_state = self.selection_drag_state.clone();
+            let line_cache = surface_metrics.line_cache();
 
             move |event: EditorSurfacePointerEvent, cx| {
-                handle_editor_mouse_down(&core, doc_id, view_id, &selection_drag_state, event, cx);
+                handle_editor_mouse_down(
+                    &core,
+                    doc_id,
+                    view_id,
+                    &selection_drag_state,
+                    &line_cache,
+                    event,
+                    cx,
+                );
             }
         })
         .on_mouse_drag({
             let core = self.core.clone();
             let view_id = self.view_id;
             let selection_drag_state = self.selection_drag_state.clone();
+            let line_cache = surface_metrics.line_cache();
 
             move |event: EditorSurfacePointerEvent, cx| {
-                handle_editor_mouse_drag(&core, doc_id, view_id, &selection_drag_state, event, cx);
+                handle_editor_mouse_drag(
+                    &core,
+                    doc_id,
+                    view_id,
+                    &selection_drag_state,
+                    &line_cache,
+                    event,
+                    cx,
+                );
             }
         })
         .on_mouse_up({
@@ -597,16 +625,8 @@ impl Element for DocumentElement {
 
         let soft_wrap_enabled = viewport_update.soft_wrap;
 
-        // Store line layouts in element state for mouse interaction
-        // Using LineLayoutCache instead of RefCell for thread safety
-        // Get or create the LineLayoutCache
-        let line_cache = if let Some(cache) = cx.try_global::<LineLayoutCache>() {
-            cache.clone()
-        } else {
-            let cache = LineLayoutCache::new();
-            cx.set_global(cache.clone());
-            cache
-        };
+        // Store line layouts in the native surface cache for mouse interaction.
+        let line_cache = self.surface_metrics.line_cache();
         line_cache.clear(); // Clear previous layouts
 
         let is_focused = self.is_focused;

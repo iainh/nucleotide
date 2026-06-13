@@ -2844,9 +2844,11 @@ impl Workspace {
         // and calling [window setAppearance:nil]
     }
 
-    fn clear_shaped_lines_cache(&self, cx: &Context<Self>) {
-        if let Some(line_cache) = cx.try_global::<nucleotide_editor::LineLayoutCache>() {
-            line_cache.clear_shaped_lines();
+    fn clear_shaped_lines_cache(&self, cx: &mut Context<Self>) {
+        for view in self.view_manager.document_views().values() {
+            view.update(cx, |view, _cx| {
+                view.clear_shaped_lines_cache();
+            });
         }
     }
 
@@ -2931,9 +2933,7 @@ impl Workspace {
 
     fn handle_redraw(&mut self, cx: &mut Context<Self>) {
         // Clear the shaped lines cache to force re-rendering with updated config
-        if let Some(line_cache) = cx.try_global::<nucleotide_editor::LineLayoutCache>() {
-            line_cache.clear_shaped_lines();
-        }
+        self.clear_shaped_lines_cache(cx);
 
         // Minimal redraw - most updates now come through specific events
         if let Some(view) = self

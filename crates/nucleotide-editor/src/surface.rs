@@ -3,15 +3,15 @@
 
 use std::{cell::Cell, rc::Rc};
 
+use gpui::InteractiveElement as _;
 use gpui::{
-    AnyElement, App, Bounds, ContentMask, Element, ElementId, EntityId, GlobalElementId, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Modifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, Style, Window, fill, point, px,
-    relative, size,
+    AnyElement, App, Bounds, Component, EntityId, Hsla, IntoElement, Modifiers, MouseButton,
+    ParentElement as _, Pixels, Point, RenderOnce, ScrollWheelEvent, Styled as _, Window, div,
+    fill, point, px,
 };
 
 use crate::{
-    EditorScrollbar, EditorScrollbarState, EditorViewport, ViewportScrollUpdate,
+    EditorScrollbar, EditorScrollbarState, EditorViewport, LineLayoutCache, ViewportScrollUpdate,
     scrollbar::editor_scrollbar_width,
 };
 
@@ -27,6 +27,7 @@ pub struct EditorSurfaceMetricSnapshot {
 #[derive(Clone)]
 pub struct EditorSurfaceMetrics {
     current: Rc<Cell<EditorSurfaceMetricSnapshot>>,
+    line_cache: LineLayoutCache,
 }
 
 impl EditorSurfaceMetrics {
@@ -36,6 +37,7 @@ impl EditorSurfaceMetrics {
                 line_height,
                 cell_width,
             })),
+            line_cache: LineLayoutCache::new(),
         }
     }
 
@@ -48,6 +50,10 @@ impl EditorSurfaceMetrics {
 
     pub fn get(&self) -> EditorSurfaceMetricSnapshot {
         self.current.get()
+    }
+
+    pub fn line_cache(&self) -> LineLayoutCache {
+        self.line_cache.clone()
     }
 }
 
@@ -147,102 +153,10 @@ impl EditorSurface {
 }
 
 impl IntoElement for EditorSurface {
-    type Element = Self;
+    type Element = Component<Self>;
 
     fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-pub struct EditorSurfacePrepaintState {
-    content_bounds: Bounds<Pixels>,
-    scrollbar: Option<AnyElement>,
-}
-
-impl Element for EditorSurface {
-    type RequestLayoutState = ();
-    type PrepaintState = EditorSurfacePrepaintState;
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.size.width = relative(1.0).into();
-        style.size.height = relative(1.0).into();
-        (window.request_layout(style, None, cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        let scrollbar_width = editor_scrollbar_width(&self.viewport).min(bounds.size.width);
-        let content_width = (bounds.size.width - scrollbar_width).max(px(0.0));
-        let content_bounds = Bounds::new(bounds.origin, size(content_width, bounds.size.height));
-
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            self.child
-                .layout_as_root(content_bounds.size.into(), window, cx);
-            self.child.prepaint_at(content_bounds.origin, window, cx);
-        });
-
-        let scrollbar = if scrollbar_width > px(0.0) {
-            let scrollbar_bounds = Bounds::new(
-                point(bounds.origin.x + content_width, bounds.origin.y),
-                size(scrollbar_width, bounds.size.height),
-            );
-            let mut scrollbar = self.scrollbar().into_any_element();
-            window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                scrollbar.layout_as_root(scrollbar_bounds.size.into(), window, cx);
-                scrollbar.prepaint_at(scrollbar_bounds.origin, window, cx);
-            });
-            Some(scrollbar)
-        } else {
-            None
-        };
-
-        EditorSurfacePrepaintState {
-            content_bounds,
-            scrollbar,
-        }
-    }
-
-    fn paint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        prepaint: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.paint_scroll_listener(prepaint.content_bounds, window);
-        self.paint_pointer_listeners(prepaint.content_bounds, window);
-
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            self.child.paint(window, cx);
-            if let Some(scrollbar) = prepaint.scrollbar.as_mut() {
-                scrollbar.paint(window, cx);
-            }
-        });
+        Component::new(self)
     }
 }
 
@@ -262,56 +176,68 @@ impl EditorSurface {
             cell_width: metrics.cell_width,
         }
     }
+}
 
-    fn paint_scroll_listener(&self, content_bounds: Bounds<Pixels>, window: &mut Window) {
-        let Some(on_scroll) = self.on_scroll.clone() else {
-            return;
+impl RenderOnce for EditorSurface {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let scrollbar = if editor_scrollbar_width(&self.viewport) > px(0.0) {
+            Some(self.scrollbar())
+        } else {
+            None
         };
+        let content_bounds = Rc::new(Cell::new(None::<Bounds<Pixels>>));
+        let mut content = div()
+            .flex_1()
+            .min_w(px(0.0))
+            .h_full()
+            .overflow_hidden()
+            .child(self.child);
 
-        let viewport = self.viewport.clone();
-        let metrics = self.metrics.clone();
-        let view_entity_id = self.view_entity_id;
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _window, cx| {
-            if !phase.bubble() || !content_bounds.contains(&event.position) {
-                return;
-            }
+        if let Some(on_scroll) = self.on_scroll.clone() {
+            let viewport = self.viewport.clone();
+            let metrics = self.metrics.clone();
+            let view_entity_id = self.view_entity_id;
+            let content_bounds = Rc::clone(&content_bounds);
 
-            let line_height = metrics.get().line_height;
-            let raw_delta = event.delta.pixel_delta(line_height);
-            let delta = point(px(0.0), raw_delta.y);
-            let scroll_update = viewport.scroll_by_delta(delta);
+            content = content.on_scroll_wheel(move |event: &ScrollWheelEvent, _window, cx| {
+                let Some(bounds) = content_bounds.get() else {
+                    return;
+                };
+                if !bounds.contains(&event.position) {
+                    return;
+                }
 
-            if !scroll_update.changed {
-                return;
-            }
+                let line_height = metrics.get().line_height;
+                let raw_delta = event.delta.pixel_delta(line_height);
+                let delta = point(px(0.0), raw_delta.y);
+                let scroll_update = viewport.scroll_by_delta(delta);
 
-            on_scroll(&viewport, scroll_update, cx);
+                if !scroll_update.changed {
+                    return;
+                }
 
-            cx.notify(view_entity_id);
-            cx.stop_propagation();
-        });
-    }
+                on_scroll(&viewport, scroll_update, cx);
 
-    fn paint_pointer_listeners(&self, content_bounds: Bounds<Pixels>, window: &mut Window) {
+                cx.notify(view_entity_id);
+                cx.stop_propagation();
+            });
+        }
+
         if let Some(on_mouse_down) = self.on_mouse_down.clone() {
             let metrics = self.metrics.clone();
             let view_entity_id = self.view_entity_id;
+            let content_bounds = Rc::clone(&content_bounds);
 
-            window.on_mouse_event(move |event: &MouseDownEvent, phase, _window, cx| {
-                if !phase.bubble()
-                    || event.button != MouseButton::Left
-                    || !content_bounds.contains(&event.position)
-                {
+            content = content.on_mouse_down(MouseButton::Left, move |event, _window, cx| {
+                let Some(bounds) = content_bounds.get() else {
+                    return;
+                };
+                if !bounds.contains(&event.position) {
                     return;
                 }
 
                 on_mouse_down(
-                    Self::surface_event(
-                        metrics.clone(),
-                        content_bounds,
-                        event.position,
-                        event.modifiers,
-                    ),
+                    Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
                     cx,
                 );
 
@@ -323,22 +249,21 @@ impl EditorSurface {
         if let Some(on_mouse_drag) = self.on_mouse_drag.clone() {
             let metrics = self.metrics.clone();
             let view_entity_id = self.view_entity_id;
+            let content_bounds = Rc::clone(&content_bounds);
 
-            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
-                if !phase.capture()
-                    || !event.dragging()
-                    || !content_bounds.contains(&event.position)
-                {
+            content = content.on_mouse_move(move |event, _window, cx| {
+                if !event.dragging() {
+                    return;
+                }
+                let Some(bounds) = content_bounds.get() else {
+                    return;
+                };
+                if !bounds.contains(&event.position) {
                     return;
                 }
 
                 on_mouse_drag(
-                    Self::surface_event(
-                        metrics.clone(),
-                        content_bounds,
-                        event.position,
-                        event.modifiers,
-                    ),
+                    Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
                     cx,
                 );
 
@@ -350,22 +275,18 @@ impl EditorSurface {
         if let Some(on_mouse_up) = self.on_mouse_up.clone() {
             let metrics = self.metrics.clone();
             let view_entity_id = self.view_entity_id;
+            let content_bounds = Rc::clone(&content_bounds);
 
-            window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
-                if !phase.capture()
-                    || event.button != MouseButton::Left
-                    || !content_bounds.contains(&event.position)
-                {
+            content = content.on_mouse_up(MouseButton::Left, move |event, _window, cx| {
+                let Some(bounds) = content_bounds.get() else {
+                    return;
+                };
+                if !bounds.contains(&event.position) {
                     return;
                 }
 
                 on_mouse_up(
-                    Self::surface_event(
-                        metrics.clone(),
-                        content_bounds,
-                        event.position,
-                        event.modifiers,
-                    ),
+                    Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
                     cx,
                 );
 
@@ -373,6 +294,23 @@ impl EditorSurface {
                 cx.stop_propagation();
             });
         }
+
+        let mut surface = div()
+            .flex()
+            .size_full()
+            .on_children_prepainted({
+                let content_bounds = Rc::clone(&content_bounds);
+                move |bounds, _window, _cx| {
+                    content_bounds.set(bounds.into_iter().next());
+                }
+            })
+            .child(content);
+
+        if let Some(scrollbar) = scrollbar {
+            surface = surface.child(scrollbar);
+        }
+
+        surface
     }
 }
 
@@ -386,7 +324,7 @@ mod tests {
     };
 
     use super::{EditorSurface, EditorSurfaceMetrics};
-    use crate::{EditorScrollbarState, EditorViewport};
+    use crate::{EditorScrollbarState, EditorViewport, LineLayout};
 
     #[test]
     fn shared_surface_metrics_reflect_updates_across_clones() {
@@ -398,6 +336,19 @@ mod tests {
         let snapshot = clone.get();
         assert_eq!(snapshot.line_height, px(24.0));
         assert_eq!(snapshot.cell_width, px(9.0));
+    }
+
+    #[test]
+    fn shared_surface_metrics_share_line_cache() {
+        let metrics = EditorSurfaceMetrics::new(px(20.0), px(8.0));
+        let clone = metrics.clone();
+
+        metrics.line_cache().clear();
+        metrics
+            .line_cache()
+            .push(LineLayout::unwrapped(7, Default::default(), px(12.0)));
+
+        assert!(clone.line_cache().find_line_by_index(7).is_some());
     }
 
     #[gpui::test]
