@@ -2,8 +2,8 @@
 // ABOUTME: Owns GUI scroll state before it is synced into Helix view offsets
 
 use gpui::{Bounds, Pixels, Point, Size, point, px};
-use helix_core::char_idx_at_visual_offset;
-use helix_view::{DocumentId, Editor, ViewId};
+use helix_core::{RopeSlice, char_idx_at_visual_offset};
+use helix_view::{Document, DocumentId, Editor, ViewId, view::ViewPosition};
 use nucleotide_logging::debug;
 
 use crate::ScrollManager;
@@ -14,6 +14,13 @@ pub struct ViewportScrollUpdate {
     pub crossed_visual_rows: isize,
     pub top_visual_row: usize,
     pub offset_within_row: Pixels,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HelixViewportSnapshot {
+    pub anchor_line: usize,
+    pub vertical_offset: usize,
+    pub top_visual_row: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +111,17 @@ impl EditorViewport {
             .set_scroll_position_from_helix_preserving_intra_line_offset(point(px(0.0), y));
     }
 
+    pub fn sync_from_helix_view(
+        &self,
+        document: &Document,
+        view_id: ViewId,
+    ) -> HelixViewportSnapshot {
+        let snapshot =
+            helix_viewport_snapshot(document.text().slice(..), document.view_offset(view_id));
+        self.sync_from_helix_top_visual_row(snapshot.top_visual_row);
+        snapshot
+    }
+
     pub fn sync_to_helix_view(
         &self,
         editor: &mut Editor,
@@ -175,9 +193,25 @@ impl EditorViewport {
     }
 }
 
+pub fn helix_viewport_snapshot(
+    text: RopeSlice<'_>,
+    view_offset: ViewPosition,
+) -> HelixViewportSnapshot {
+    let anchor = view_offset.anchor.min(text.len_chars());
+    let anchor_line = text.char_to_line(anchor);
+    let top_visual_row = anchor_line.saturating_add(view_offset.vertical_offset);
+
+    HelixViewportSnapshot {
+        anchor_line,
+        vertical_offset: view_offset.vertical_offset,
+        top_visual_row,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use gpui::{point, px, size};
+    use helix_view::view::ViewPosition;
 
     use super::*;
 
@@ -226,5 +260,43 @@ mod tests {
 
         assert_eq!(viewport.content_visual_rows(), 30);
         assert_eq!(viewport.max_scroll_offset().height, px(500.0));
+    }
+
+    #[test]
+    fn helix_viewport_snapshot_reports_top_visual_row() {
+        let text = "one\ntwo\nthree";
+        let snapshot = helix_viewport_snapshot(
+            text.into(),
+            ViewPosition {
+                anchor: 4,
+                vertical_offset: 2,
+                horizontal_offset: 7,
+            },
+        );
+
+        assert_eq!(
+            snapshot,
+            HelixViewportSnapshot {
+                anchor_line: 1,
+                vertical_offset: 2,
+                top_visual_row: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn helix_viewport_snapshot_clamps_stale_anchor() {
+        let text = "one\ntwo";
+        let snapshot = helix_viewport_snapshot(
+            text.into(),
+            ViewPosition {
+                anchor: 1_000,
+                vertical_offset: 0,
+                horizontal_offset: 0,
+            },
+        );
+
+        assert_eq!(snapshot.anchor_line, 1);
+        assert_eq!(snapshot.top_visual_row, 1);
     }
 }
