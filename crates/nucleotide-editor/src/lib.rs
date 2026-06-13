@@ -55,7 +55,8 @@ pub use document_frame::{
     editor_document_frame,
 };
 pub use document_frame_painter::{
-    UnwrappedDocumentFramePaintParams, paint_unwrapped_document_frame,
+    SoftWrapDocumentFramePaintParams, UnwrappedDocumentFramePaintParams,
+    paint_soft_wrap_document_frame, paint_unwrapped_document_frame,
 };
 pub use document_metrics::{
     EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,
