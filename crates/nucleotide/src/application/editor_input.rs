@@ -156,8 +156,8 @@ impl EditorInputBridge {
 struct NativeCommandInput {
     keymaps: Keymaps,
     on_next_key: Option<(OnKeyCallback, OnKeyCallbackKind)>,
-    current_insert_replay: Vec<KeyEvent>,
-    last_insert_replay: Option<Vec<KeyEvent>>,
+    current_insert_replay: InsertReplay,
+    last_insert_replay: Option<InsertReplay>,
 }
 
 enum NativeInputResult {
@@ -167,7 +167,47 @@ enum NativeInputResult {
 
 enum NativeCommandResult {
     Handled(Vec<compositor::Callback>),
+    ReplayInsert { keys: Vec<KeyEvent>, count: usize },
     Fallback(Vec<KeyEvent>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InsertReplay {
+    keys: Vec<KeyEvent>,
+    native: bool,
+}
+
+impl Default for InsertReplay {
+    fn default() -> Self {
+        Self {
+            keys: Vec::new(),
+            native: true,
+        }
+    }
+}
+
+impl InsertReplay {
+    fn native(keys: &[KeyEvent]) -> Self {
+        Self {
+            keys: keys.to_vec(),
+            native: true,
+        }
+    }
+
+    fn terminal(keys: &[KeyEvent]) -> Self {
+        Self {
+            keys: keys.to_vec(),
+            native: false,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    fn mark_terminal(&mut self) {
+        self.native = false;
+    }
 }
 
 impl NativeCommandInput {
@@ -175,7 +215,7 @@ impl NativeCommandInput {
         Self {
             keymaps,
             on_next_key: None,
-            current_insert_replay: Vec::new(),
+            current_insert_replay: InsertReplay::default(),
             last_insert_replay: None,
         }
     }
@@ -220,6 +260,19 @@ impl NativeCommandInput {
                 self.finish_insert_replay_if_needed(mode_before, editor.mode());
                 NativeInputResult::Handled
             }
+            NativeCommandResult::ReplayInsert { keys, count } => {
+                for _ in 0..count {
+                    for replay_key in keys.iter().copied() {
+                        match self.handle_key(replay_key, compositor, editor, jobs) {
+                            NativeInputResult::Handled => {}
+                            NativeInputResult::Fallback(fallback_keys) => {
+                                return NativeInputResult::Fallback(fallback_keys);
+                            }
+                        }
+                    }
+                }
+                NativeInputResult::Handled
+            }
             NativeCommandResult::Fallback(keys) => NativeInputResult::Fallback(keys),
         }
     }
@@ -231,13 +284,15 @@ impl NativeCommandInput {
         fallback_keys: &[KeyEvent],
     ) {
         if mode_before != Mode::Insert && mode_after == Mode::Insert {
-            self.current_insert_replay.clear();
-            self.current_insert_replay.extend_from_slice(fallback_keys);
+            self.current_insert_replay = InsertReplay::terminal(fallback_keys);
             return;
         }
 
         if mode_before == Mode::Insert {
-            self.current_insert_replay.extend_from_slice(fallback_keys);
+            self.current_insert_replay.mark_terminal();
+            self.current_insert_replay
+                .keys
+                .extend_from_slice(fallback_keys);
             self.finish_insert_replay_if_needed(mode_before, mode_after);
         }
     }
@@ -272,7 +327,7 @@ impl NativeCommandInput {
                 }
                 let mut last_mode = mode;
                 execute_native_command(command, context, &mut last_mode);
-                self.current_insert_replay.extend(fallback_keys);
+                self.current_insert_replay.keys.extend(fallback_keys);
                 NativeCommandResult::Handled(Vec::new())
             }
             KeymapResult::Pending(node) => {
@@ -287,7 +342,7 @@ impl NativeCommandInput {
                 for command in commands {
                     execute_native_command(command, context, &mut last_mode);
                 }
-                self.current_insert_replay.extend(fallback_keys);
+                self.current_insert_replay.keys.extend(fallback_keys);
                 NativeCommandResult::Handled(Vec::new())
             }
             KeymapResult::NotFound => {
@@ -296,13 +351,13 @@ impl NativeCommandInput {
                 }
 
                 if self.run_on_next_key(OnKeyCallbackKind::Fallback, context, key) {
-                    self.current_insert_replay.push(key);
+                    self.current_insert_replay.keys.push(key);
                     return NativeCommandResult::Handled(Vec::new());
                 }
 
                 if let Some(ch) = key.char() {
                     commands::insert::insert_char(context, ch);
-                    self.current_insert_replay.push(key);
+                    self.current_insert_replay.keys.push(key);
                     NativeCommandResult::Handled(Vec::new())
                 } else {
                     NativeCommandResult::Fallback(fallback_keys)
@@ -338,8 +393,17 @@ impl NativeCommandInput {
         }
 
         if is_repeat_last_insert_key(key) && self.keymaps.pending().is_empty() {
-            if let Some(keys) = self.last_insert_replay.clone() {
-                return NativeCommandResult::Fallback(keys);
+            if let Some(replay) = self.last_insert_replay.clone() {
+                if replay.native {
+                    let count = context.editor.count.map_or(1, NonZeroUsize::get);
+                    context.editor.count = None;
+                    return NativeCommandResult::ReplayInsert {
+                        keys: replay.keys,
+                        count,
+                    };
+                }
+
+                return NativeCommandResult::Fallback(replay.keys);
             }
             return NativeCommandResult::Fallback(vec![key]);
         }
@@ -381,8 +445,7 @@ impl NativeCommandInput {
         replay_keys: &[KeyEvent],
     ) {
         if mode_before != Mode::Insert && mode_after == Mode::Insert {
-            self.current_insert_replay.clear();
-            self.current_insert_replay.extend_from_slice(replay_keys);
+            self.current_insert_replay = InsertReplay::native(replay_keys);
         }
     }
 
@@ -820,11 +883,12 @@ mod tests {
             code: KeyCode::Char('x'),
             modifiers: KeyModifiers::empty(),
         };
-        input.current_insert_replay.push(existing);
+        input.current_insert_replay.keys.push(existing);
 
         input.seed_insert_replay_if_needed(Mode::Normal, Mode::Insert, &[enter_insert]);
 
-        assert_eq!(input.current_insert_replay, vec![enter_insert]);
+        assert_eq!(input.current_insert_replay.keys, vec![enter_insert]);
+        assert!(input.current_insert_replay.native);
         assert_eq!(input.last_insert_replay, None);
     }
 
@@ -838,6 +902,63 @@ mod tests {
 
         input.seed_insert_replay_if_needed(Mode::Normal, Mode::Normal, &[movement]);
 
+        assert!(input.current_insert_replay.is_empty());
+    }
+
+    #[test]
+    fn terminal_fallback_marks_insert_replay_non_native() {
+        let mut input = NativeCommandInput::new(Keymaps::default());
+        let enter_insert = KeyEvent {
+            code: KeyCode::Char('i'),
+            modifiers: KeyModifiers::empty(),
+        };
+        let inserted = KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::empty(),
+        };
+
+        input.observe_terminal_fallback(Mode::Normal, Mode::Insert, &[enter_insert]);
+        input.observe_terminal_fallback(Mode::Insert, Mode::Insert, &[inserted]);
+
+        assert_eq!(
+            input.current_insert_replay.keys,
+            vec![enter_insert, inserted]
+        );
+        assert!(!input.current_insert_replay.native);
+    }
+
+    #[test]
+    fn native_insert_replay_finishes_as_native() {
+        let mut input = NativeCommandInput::new(Keymaps::default());
+        let enter_insert = KeyEvent {
+            code: KeyCode::Char('i'),
+            modifiers: KeyModifiers::empty(),
+        };
+        let inserted = KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::empty(),
+        };
+        let escape = KeyEvent {
+            code: KeyCode::Esc,
+            modifiers: KeyModifiers::empty(),
+        };
+
+        input.seed_insert_replay_if_needed(Mode::Normal, Mode::Insert, &[enter_insert]);
+        input.current_insert_replay.keys.push(inserted);
+        input.current_insert_replay.keys.push(escape);
+        input.finish_insert_replay_if_needed(Mode::Insert, Mode::Normal);
+
+        assert_eq!(
+            input.last_insert_replay.as_ref().map(|replay| &replay.keys),
+            Some(&vec![enter_insert, inserted, escape])
+        );
+        assert_eq!(
+            input
+                .last_insert_replay
+                .as_ref()
+                .map(|replay| replay.native),
+            Some(true)
+        );
         assert!(input.current_insert_replay.is_empty());
     }
 
@@ -880,8 +1001,15 @@ mod tests {
         input.observe_terminal_fallback(Mode::Insert, Mode::Normal, &[escape]);
 
         assert_eq!(
-            input.last_insert_replay,
-            Some(vec![enter_insert, inserted, escape])
+            input.last_insert_replay.as_ref().map(|replay| &replay.keys),
+            Some(&vec![enter_insert, inserted, escape])
+        );
+        assert_eq!(
+            input
+                .last_insert_replay
+                .as_ref()
+                .map(|replay| replay.native),
+            Some(false)
         );
         assert!(input.current_insert_replay.is_empty());
     }
