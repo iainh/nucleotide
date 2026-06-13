@@ -53,7 +53,10 @@ pub use highlight::{
 };
 pub use hit_test::{EditorHitTestResult, hit_test_document_position};
 pub use line_cache::{LineLayout, LineLayoutCache};
-pub use line_painter::{EditorLineBackgroundStyle, paint_editor_line, paint_line_backgrounds};
+pub use line_painter::{
+    EditorLineBackgroundStyle, paint_cursorline_background, paint_editor_line,
+    paint_line_backgrounds,
+};
 pub use line_plan::{
     LineViewportPlan, UnwrappedLinePaintPlan, VisibleLinePlan, line_viewport_plan,
     unwrapped_line_paint_plans, unwrapped_visible_line_plans,

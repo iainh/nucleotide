@@ -27,8 +27,8 @@ use nucleotide_editor::{
     decorate_soft_wrap_line_runs, diagnostic_marker_paint_style, diagnostic_marker_plan,
     diagnostic_overlay_spans, diagnostic_severity_by_line, document_text_format_for_surface,
     gpui_hsla_to_helix_color, highlight_line, hit_test_document_position, line_viewport_plan,
-    paint_diagnostic_marker, paint_editor_background, paint_editor_line,
-    phantom_line_cursor_paint_position, shape_cursor_text,
+    paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
+    paint_editor_line, phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
     soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
@@ -1061,7 +1061,11 @@ impl Element for DocumentElement {
                     if soft_wrap_plan.is_cursor_visual_line
                         && let Some(cursorline_bg) = cursorline_style
                     {
-                        window.paint_quad(fill(soft_wrap_plan.cursorline_bounds, cursorline_bg));
+                        paint_cursorline_background(
+                            window,
+                            soft_wrap_plan.cursorline_bounds,
+                            cursorline_bg,
+                        );
                     }
 
                     // Paint the line text (only for non-empty lines)
@@ -1384,7 +1388,20 @@ impl Element for DocumentElement {
 
                 let font_size_px = self.style.font_size.to_pixels(px(16.0));
                 let text_origin = unwrapped_plan.text_origin;
-                // Defer painting of cursorline until after per-run backgrounds are drawn
+
+                if unwrapped_plan.is_cursor_line
+                    && let Some(cursorline_bg) = cursorline_style
+                {
+                    debug!(
+                        "Painting cursorline for line {} (cursor at line {})",
+                        line_idx, cursor_line_num
+                    );
+                    paint_cursorline_background(
+                        window,
+                        unwrapped_plan.cursorline_bounds,
+                        cursorline_bg,
+                    );
+                }
 
                 // Always create a shaped line, even for empty lines (needed for cursor positioning)
                 let shaped_line = if !line_str.is_empty() {
@@ -1395,17 +1412,6 @@ impl Element for DocumentElement {
                         bounds.size.width,
                         &line_runs,
                     );
-
-                    // Paint cursorline background BEFORE run backgrounds so selections render on top
-                    if unwrapped_plan.is_cursor_line
-                        && let Some(cursorline_bg) = cursorline_style
-                    {
-                        debug!(
-                            "Painting cursorline for line {} (cursor at line {})",
-                            line_idx, cursor_line_num
-                        );
-                        window.paint_quad(fill(unwrapped_plan.cursorline_bounds, cursorline_bg));
-                    }
 
                     if let Err(e) = paint_editor_line(
                         window,
