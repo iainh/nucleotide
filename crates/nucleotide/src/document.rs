@@ -15,13 +15,13 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    DocumentFramePaintParams, EditorDocumentElement, EditorDocumentFrameGutterParams,
-    EditorDocumentFrameParams, EditorLayout, EditorScrollbarState, EditorSelectionDragState,
-    EditorSurface, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
-    EditorViewport, EditorViewportContentLayout, EditorViewportSurfaceLayout, LineLayoutCache,
-    begin_editor_pointer_selection_at_event, cursor_document_line, cursor_style_for_mode,
-    editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame, paint_editor_background,
-    shape_cursor_text, update_editor_pointer_selection_at_event,
+    DocumentFramePaintParams, EditorCursorReveal, EditorDocumentElement,
+    EditorDocumentFrameGutterParams, EditorDocumentFrameParams, EditorLayout, EditorScrollbarState,
+    EditorSelectionDragState, EditorSurface, EditorSurfaceMetrics, EditorSurfacePointerEvent,
+    EditorTextMetrics, EditorViewport, EditorViewportContentLayout, EditorViewportSurfaceLayout,
+    LineLayoutCache, begin_editor_pointer_selection_at_event, cursor_document_line,
+    cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame,
+    paint_editor_background, shape_cursor_text, update_editor_pointer_selection_at_event,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -181,7 +181,7 @@ pub struct DocumentView {
     viewport: EditorViewport,
     scrollbar_state: EditorScrollbarState,
     surface_metrics: EditorSurfaceMetrics,
-    cursor_reveal_requested: Rc<Cell<bool>>,
+    cursor_reveal_requested: Rc<Cell<Option<EditorCursorReveal>>>,
     line_height: Pixels,
     selection_drag_state: EditorSelectionDragState,
     /// Last cursor position in window coordinates (for completion positioning)
@@ -212,7 +212,7 @@ impl DocumentView {
             viewport,
             scrollbar_state: EditorScrollbarState::default(),
             surface_metrics,
-            cursor_reveal_requested: Rc::new(Cell::new(false)),
+            cursor_reveal_requested: Rc::new(Cell::new(None)),
             line_height,
             selection_drag_state: EditorSelectionDragState::default(),
             last_cursor_position: None,
@@ -238,7 +238,13 @@ impl DocumentView {
     }
 
     pub fn request_cursor_reveal(&self) {
-        self.cursor_reveal_requested.set(true);
+        self.cursor_reveal_requested
+            .set(Some(EditorCursorReveal::Scrolloff));
+    }
+
+    pub fn request_cursor_center(&self) {
+        self.cursor_reveal_requested
+            .set(Some(EditorCursorReveal::Center));
     }
 
     /// Convert a Helix anchor (character position) to scroll pixels
@@ -533,7 +539,7 @@ struct DocumentPaintParams<'a> {
     is_focused: bool,
     viewport: &'a mut EditorViewport,
     surface_metrics: &'a EditorSurfaceMetrics,
-    cursor_reveal_requested: &'a Cell<bool>,
+    cursor_reveal_requested: &'a Cell<Option<EditorCursorReveal>>,
     bounds: Bounds<Pixels>,
     layout: &'a mut EditorLayout,
     window: &'a mut Window,
@@ -581,7 +587,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
                 cell_width: layout.cell_width,
                 line_height: layout.line_height,
                 minimum_columns: 1,
-                reveal_cursor: cursor_reveal_requested.replace(false),
+                cursor_reveal: cursor_reveal_requested.replace(None),
             },
         );
 
