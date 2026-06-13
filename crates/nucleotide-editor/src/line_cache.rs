@@ -1,7 +1,7 @@
 // ABOUTME: Line layout cache for mouse interaction in document view
 // ABOUTME: Stores line layouts in element-local coordinates (text-area relative) for fast mouse hit testing
 
-use gpui::{Bounds, Pixels, ShapedLine, TextRun, size};
+use gpui::{Bounds, Pixels, ShapedLine, SharedString, TextRun, WindowTextSystem, size};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -25,16 +25,15 @@ pub struct LineLayout {
     pub text_start_byte_offset: usize,
 }
 
-/// Key for caching shaped lines
 #[derive(Debug, Hash, Eq, PartialEq, Clone)]
-pub struct ShapedLineKey {
-    pub line_text: String,
-    pub font_size: u32,      // Store as integer to avoid float comparison issues
-    pub viewport_width: u32, // Store as integer pixels
-    pub runs_hash: u64,      // TextRun styling affects how GPUI paints the shaped line
+struct ShapedLineKey {
+    line_text: String,
+    font_size: u32,
+    viewport_width: u32,
+    runs_hash: u64,
 }
 
-pub fn text_runs_hash(runs: &[TextRun]) -> u64 {
+fn text_runs_hash(runs: &[TextRun]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     runs.len().hash(&mut hasher);
     for run in runs {
@@ -46,6 +45,20 @@ pub fn text_runs_hash(runs: &[TextRun]) -> u64 {
         run.strikethrough.hash(&mut hasher);
     }
     hasher.finish()
+}
+
+fn shaped_line_key(
+    line_text: &SharedString,
+    font_size: Pixels,
+    viewport_width: Pixels,
+    runs: &[TextRun],
+) -> ShapedLineKey {
+    ShapedLineKey {
+        line_text: line_text.to_string(),
+        font_size: f32::from(font_size) as u32,
+        viewport_width: f32::from(viewport_width) as u32,
+        runs_hash: text_runs_hash(runs),
+    }
 }
 
 #[derive(Default)]
@@ -184,8 +197,26 @@ impl LineLayoutCache {
         }
     }
 
-    /// Get a cached shaped line or None if not cached
-    pub fn get_shaped_line(&self, key: &ShapedLineKey) -> Option<ShapedLine> {
+    pub fn shape_line_cached(
+        &self,
+        text_system: &WindowTextSystem,
+        line_text: SharedString,
+        font_size: Pixels,
+        viewport_width: Pixels,
+        runs: &[TextRun],
+    ) -> ShapedLine {
+        let key = shaped_line_key(&line_text, font_size, viewport_width, runs);
+
+        if let Some(cached) = self.get_shaped_line(&key) {
+            return cached;
+        }
+
+        let shaped_line = text_system.shape_line(line_text, font_size, runs, None);
+        self.store_shaped_line(key, shaped_line.clone());
+        shaped_line
+    }
+
+    fn get_shaped_line(&self, key: &ShapedLineKey) -> Option<ShapedLine> {
         if let Ok(shaped) = self.shaped_lines.lock() {
             shaped.get(key).cloned()
         } else {
@@ -193,8 +224,7 @@ impl LineLayoutCache {
         }
     }
 
-    /// Store a shaped line in the cache
-    pub fn store_shaped_line(&self, key: ShapedLineKey, shaped_line: ShapedLine) {
+    fn store_shaped_line(&self, key: ShapedLineKey, shaped_line: ShapedLine) {
         if let Ok(mut shaped) = self.shaped_lines.lock() {
             // Limit cache size to prevent unbounded growth
             if shaped.len() > 1000 {

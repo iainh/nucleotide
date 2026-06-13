@@ -25,7 +25,7 @@ pub use document_renderer::DocumentRenderer;
 pub use editor_view::EditorView;
 pub use geometry::{EditorLayout, EditorSurfaceGeometry};
 pub use hit_test::{EditorHitTestResult, hit_test_document_position};
-pub use line_cache::{LineLayout, LineLayoutCache, ShapedLineKey, text_runs_hash};
+pub use line_cache::{LineLayout, LineLayoutCache};
 pub use line_painter::{EditorLineBackgroundStyle, paint_line_backgrounds};
 pub use metrics::EditorTextMetrics;
 pub use scroll_manager::ScrollManager;
