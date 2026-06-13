@@ -9,7 +9,7 @@ use gpui::{
     div, fill, point, px,
 };
 
-use crate::{EditorViewport, ViewportScrollUpdate};
+use crate::{EditorScrollbar, EditorScrollbarState, EditorViewport, ViewportScrollUpdate};
 
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
 type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
@@ -60,6 +60,7 @@ pub struct EditorSurface {
     view_entity_id: EntityId,
     viewport: EditorViewport,
     metrics: EditorSurfaceMetrics,
+    scrollbar_state: EditorScrollbarState,
     child: AnyElement,
     on_scroll: Option<ScrollCallback>,
     on_mouse_down: Option<PointerCallback>,
@@ -76,12 +77,14 @@ impl EditorSurface {
         view_entity_id: EntityId,
         viewport: EditorViewport,
         metrics: EditorSurfaceMetrics,
+        scrollbar_state: EditorScrollbarState,
         child: impl IntoElement,
     ) -> Self {
         Self {
             view_entity_id,
             viewport,
             metrics,
+            scrollbar_state,
             child: child.into_any_element(),
             on_scroll: None,
             on_mouse_down: None,
@@ -128,9 +131,22 @@ impl IntoElement for EditorSurface {
 
     fn into_element(self) -> Div {
         let child_bounds = Rc::new(Cell::new(None));
+        let scrollbar_on_scroll = self.on_scroll.clone();
+        let mut scrollbar = EditorScrollbar::new(
+            self.view_entity_id,
+            self.viewport.clone(),
+            self.scrollbar_state.clone(),
+        );
+        if let Some(on_scroll) = scrollbar_on_scroll {
+            scrollbar = scrollbar.on_scroll(move |viewport, update, cx| {
+                on_scroll(viewport, update, cx);
+            });
+        }
+
         let mut element = div()
             .w_full()
             .h_full()
+            .flex()
             .on_children_prepainted({
                 let child_bounds = Rc::clone(&child_bounds);
 
@@ -138,7 +154,8 @@ impl IntoElement for EditorSurface {
                     child_bounds.set(bounds.into_iter().next());
                 }
             })
-            .child(self.child);
+            .child(div().w_full().h_full().flex_1().child(self.child))
+            .child(scrollbar);
 
         if let Some(on_scroll) = self.on_scroll {
             let viewport = self.viewport.clone();
