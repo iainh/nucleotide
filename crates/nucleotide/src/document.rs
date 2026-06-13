@@ -21,12 +21,13 @@ use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
     EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
     GutterLineParams, HighlightLineParams, LineLayoutCache, block_cursor_text, build_gutter_lines,
-    cursor_background_color, cursor_foreground_color, cursor_has_reversed_modifier,
-    cursor_line_position, cursor_style_for_mode, diagnostic_overlay_spans,
-    diagnostic_severity_by_line, document_text_format_for_surface, gpui_hsla_to_helix_color,
-    highlight_line, hit_test_document_position, line_viewport_plan, paint_line_backgrounds,
-    shape_cursor_text, shared_line_text_without_trailing_newline, soft_wrap_visual_lines,
-    soft_wrap_visual_position, text_style_at_position, unwrapped_visible_line_plans,
+    cursor_background_color, cursor_document_line, cursor_foreground_color,
+    cursor_has_reversed_modifier, cursor_line_position, cursor_style_for_mode,
+    cursor_viewport_position, diagnostic_overlay_spans, diagnostic_severity_by_line,
+    document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
+    hit_test_document_position, line_viewport_plan, paint_line_backgrounds, shape_cursor_text,
+    shared_line_text_without_trailing_newline, soft_wrap_visual_lines, soft_wrap_visual_position,
+    text_style_at_position, unwrapped_visible_line_plans,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -290,7 +291,7 @@ impl DocumentView {
         let core = self.core.read(cx);
         let editor = &core.editor;
 
-        let (cursor_pos, doc_id, first_row) = {
+        let (cursor_line, doc_id) = {
             let view = match editor.tree.try_get(self.view_id) {
                 Some(v) => v,
                 None => return Vec::new(),
@@ -306,15 +307,13 @@ impl DocumentView {
                 .selection(self.view_id)
                 .primary()
                 .cursor(text.slice(..));
-            let cursor_pos = view.screen_coords_at_pos(document, text.slice(..), primary_idx);
-
-            let doc_view_offset = document.view_offset(self.view_id);
-            let anchor = doc_view_offset.anchor;
-            let first_row = text.char_to_line(anchor.min(text.len_chars()));
-            (cursor_pos, doc_id, first_row)
-        };
-        let Some(cursor_pos) = cursor_pos else {
-            return Vec::new();
+            let cursor_at_trailing_newline = primary_idx == text.len_chars()
+                && text.len_chars() > 0
+                && text.char(text.len_chars() - 1) == '\n';
+            (
+                cursor_document_line(text.slice(..), primary_idx, cursor_at_trailing_newline),
+                doc_id,
+            )
         };
 
         let mut diags = Vec::new();
@@ -324,8 +323,7 @@ impl DocumentView {
                 for (diag, _) in diagnostics.iter().filter(|(diag, _)| {
                     let (start_line, end_line) =
                         (diag.range.start.line as usize, diag.range.end.line as usize);
-                    let row = cursor_pos.row + first_row;
-                    start_line <= row && row <= end_line
+                    start_line <= cursor_line && cursor_line <= end_line
                 }) {
                     diags.push(diag.clone());
                 }
@@ -791,33 +789,19 @@ impl Element for DocumentElement {
                 .selection(self.view_id)
                 .primary()
                 .cursor(text.slice(..));
-            let cursor_pos = view.screen_coords_at_pos(document, text.slice(..), primary_idx);
             let gutter_width = view.gutter_offset(document);
 
-            if let Some(pos) = cursor_pos {
-                debug!(
-                    "Cursor position - row: {}, col: {}, primary_idx: {}, gutter_width: {}",
-                    pos.row, pos.col, primary_idx, gutter_width
-                );
-
-                // Additional debug: check what line and column we're actually at
-                let line = text.char_to_line(primary_idx);
-                let line_start = text.line_to_char(line);
-                let col_in_line = primary_idx - line_start;
-                debug!(
-                    "Actual position - line: {line}, col_in_line: {col_in_line}, line_start: {line_start}"
-                );
-            } else {
-                debug!(
-                    "Warning: screen_coords_at_pos returned None for cursor position {primary_idx}"
-                );
-            }
+            let line = text.char_to_line(primary_idx);
+            let line_start = text.line_to_char(line);
+            let col_in_line = primary_idx - line_start;
+            debug!(
+                "Cursor position - line: {line}, col_in_line: {col_in_line}, primary_idx: {primary_idx}, gutter_width: {gutter_width}"
+            );
             let gutter_overflow = gutter_width == 0;
             if !gutter_overflow {
                 debug!("need to render gutter {gutter_width}");
             }
 
-            let _cursor_row = cursor_pos.map(|p| p.row);
             let total_lines = text.len_lines();
 
             // Use scroll manager to determine visible lines
@@ -866,6 +850,13 @@ impl Element for DocumentElement {
             let last_row = line_viewport.last_row;
             let cursor_at_end = line_viewport.cursor_at_end;
             let file_ends_with_newline = line_viewport.file_ends_with_newline;
+            let cursor_doc_line = cursor_document_line(
+                text.slice(..),
+                cursor_char_idx,
+                cursor_at_end && file_ends_with_newline,
+            );
+            let cursor_viewport_pos =
+                cursor_viewport_position(cursor_doc_line, first_row, last_row);
 
             debug!(
                 "End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}",
@@ -1730,8 +1721,8 @@ impl Element for DocumentElement {
             // draw cursor
             let element_focused = self.focus.is_focused(window);
             debug!(
-                "Cursor rendering check - is_focused: {}, element_focused: {}, cursor_pos: {:?}",
-                self.is_focused, element_focused, cursor_pos
+                "Cursor rendering check - is_focused: {}, element_focused: {}, cursor_viewport_pos: {:?}",
+                self.is_focused, element_focused, cursor_viewport_pos
             );
 
             // Debug: Log cursor position info
@@ -1754,49 +1745,15 @@ impl Element for DocumentElement {
 
             // Check both is_focused flag and actual focus state
             if self.is_focused || element_focused {
-                // Try to render cursor even if screen_coords_at_pos failed
-                let position = cursor_pos.or_else(|| {
-                    // Fallback: calculate position manually if screen_coords_at_pos failed
-                    let cursor_line = text.char_to_line(cursor_char_idx);
-
-                    // Use the cursor line directly
-                    let effective_cursor_line = cursor_line;
-
-                    if effective_cursor_line >= first_row && effective_cursor_line < last_row {
-                        let viewport_row = effective_cursor_line.saturating_sub(first_row);
-                        Some(helix_core::Position {
-                            row: viewport_row,
-                            col: 0, // We'll calculate actual column from shaped line
-                        })
-                    } else {
-                        None
-                    }
-                });
-
-                if let Some(position) = position {
-                    // The position from screen_coords_at_pos is already viewport-relative
-                    let helix_core::Position {
-                        row: viewport_row,
-                        col: _,
-                    } = position;
-
-                    // Get the line containing the cursor
-                    // Since we skip phantom lines, cursor at EOF should position on the last real line
-                    let cursor_line = if cursor_at_end && file_ends_with_newline {
-                        (total_lines - 1).min(text.len_lines().saturating_sub(1)) // Last real line, not phantom
-                    } else {
-                        text.char_to_line(cursor_char_idx)
-                    };
+                if let Some(cursor_viewport_pos) = cursor_viewport_pos {
+                    let viewport_row = cursor_viewport_pos.viewport_row;
+                    let cursor_line = cursor_viewport_pos.line;
 
                     debug!(
                         "Looking for cursor line {cursor_line} in range {first_row}..{last_row}"
                     );
 
-                    // Check if cursor line is in the rendered range
-                    // For phantom line, use the effective cursor line
-                    let effective_cursor_line = cursor_line;
-
-                    if effective_cursor_line >= first_row && effective_cursor_line < last_row {
+                    {
                         // Debug: line layouts are now stored in LineLayoutCache
 
                         // Use the cursor line directly as the layout index
@@ -1973,13 +1930,11 @@ impl Element for DocumentElement {
                                 );
                             }
                         }
-                    } else {
-                        debug!(
-                            "Cursor line {cursor_line} is outside rendered range {first_row}..{last_row}"
-                        );
                     }
                 } else {
-                    debug!("Cursor rendering skipped - no cursor_pos from screen_coords_at_pos");
+                    debug!(
+                        "Cursor line {cursor_doc_line} is outside rendered range {first_row}..{last_row}"
+                    );
                 }
             } else {
                 debug!(
