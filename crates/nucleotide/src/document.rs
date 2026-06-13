@@ -19,9 +19,9 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
-    EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache, block_cursor_text,
-    build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
+    EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
+    EditorViewport, GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache,
+    block_cursor_text, build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
     cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
     cursor_line_position, cursor_style_for_mode, cursor_viewport_position,
     decorate_soft_wrap_line_runs, diagnostic_marker_paint_style, diagnostic_marker_plan,
@@ -382,6 +382,7 @@ impl Render for DocumentView {
 
         let metrics = EditorTextMetrics::resolve(cx.text_system(), &self.style);
         self.line_height = metrics.line_height;
+        let surface_metrics = EditorSurfaceMetrics::new(metrics.line_height, metrics.cell_width);
 
         // Update viewport with document info
         {
@@ -418,13 +419,13 @@ impl Render for DocumentView {
             focus: self.focus.clone(),
             is_focused: self.is_focused,
             viewport: self.viewport.clone(),
+            surface_metrics: surface_metrics.clone(),
         };
 
         let editor_surface = EditorSurface::new(
             cx.entity_id(),
             self.viewport.clone(),
-            metrics.line_height,
-            metrics.cell_width,
+            surface_metrics,
             document_element,
         )
         .on_scroll({
@@ -529,6 +530,7 @@ pub struct DocumentElement {
     focus: FocusHandle,
     is_focused: bool,
     viewport: EditorViewport,
+    surface_metrics: EditorSurfaceMetrics,
 }
 
 impl IntoElement for DocumentElement {
@@ -625,13 +627,12 @@ impl Element for DocumentElement {
 
         // Update scroll manager with current layout info
         self.viewport.set_line_height(line_height);
+        self.surface_metrics.set(line_height, cell_width);
 
         // Set scroll manager viewport to the actual text-area height (exclude top padding)
         let text_area_height = bounds.size.height - px(1.0);
         let effective_viewport_size = size(bounds.size.width, text_area_height);
         self.viewport.set_viewport_size(effective_viewport_size);
-
-        // TODO: Update shared cell_width for mouse handlers (requires structural change to pass between prepaint/paint)
 
         // Fill editor background from design tokens
         {
