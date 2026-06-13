@@ -16,6 +16,7 @@ pub mod line_painter;
 pub mod line_plan;
 pub mod line_text;
 pub mod metrics;
+pub mod ruler;
 pub mod scroll_manager;
 pub mod scroll_state;
 pub mod soft_wrap;
@@ -53,6 +54,7 @@ pub use line_text::{
     shared_line_text_without_trailing_newline,
 };
 pub use metrics::EditorTextMetrics;
+pub use ruler::visible_ruler_bounds;
 pub use scroll_manager::ScrollManager;
 pub use scroll_state::ScrollState;
 pub use soft_wrap::{
