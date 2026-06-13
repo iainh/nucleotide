@@ -3,7 +3,10 @@
 
 use std::collections::BTreeMap;
 
-use gpui::{Bounds, Pixels, Point, point, px, size};
+use gpui::{
+    BorderStyle, Bounds, Hsla, Pixels, Point, Window, fill, point, px, quad, size,
+    transparent_black,
+};
 use helix_core::diagnostic::Severity;
 use helix_view::Document;
 
@@ -38,6 +41,14 @@ pub struct DiagnosticMarkerPlan {
     pub marker_bounds: Bounds<Pixels>,
     pub shape: DiagnosticMarkerShape,
     pub highlights: Vec<DiagnosticMarkerHighlight>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DiagnosticMarkerPaintStyle {
+    pub strip_fill: Option<Hsla>,
+    pub marker_fill: Hsla,
+    pub marker_border: Hsla,
+    pub highlight_base: Hsla,
 }
 
 pub fn diagnostic_severity_by_line(document: &Document) -> DiagnosticSeverityByLine {
@@ -158,6 +169,77 @@ pub fn diagnostic_marker_plan(
     }
 }
 
+pub fn diagnostic_marker_paint_style(
+    marker_color: Hsla,
+    highlight_base: Hsla,
+    strip_fill: Option<Hsla>,
+) -> DiagnosticMarkerPaintStyle {
+    DiagnosticMarkerPaintStyle {
+        strip_fill,
+        marker_fill: with_alpha(marker_color, 0.85),
+        marker_border: with_alpha(darken(marker_color, 0.15), 0.9),
+        highlight_base,
+    }
+}
+
+pub fn paint_diagnostic_marker(
+    window: &mut Window,
+    plan: &DiagnosticMarkerPlan,
+    style: DiagnosticMarkerPaintStyle,
+) {
+    if let Some(strip_fill) = style.strip_fill {
+        window.paint_quad(fill(plan.strip_bounds, strip_fill));
+    }
+
+    match plan.shape {
+        DiagnosticMarkerShape::Square { corner_radius } => {
+            window.paint_quad(quad(
+                plan.marker_bounds,
+                corner_radius,
+                style.marker_fill,
+                px(1.0),
+                style.marker_border,
+                BorderStyle::default(),
+            ));
+        }
+        DiagnosticMarkerShape::Triangle {
+            top,
+            bottom_left,
+            bottom_right,
+        } => {
+            let mut path = gpui::PathBuilder::fill();
+            path.move_to(top);
+            path.line_to(bottom_left);
+            path.line_to(bottom_right);
+            path.close();
+            if let Ok(path) = path.build() {
+                window.paint_path(path, style.marker_fill);
+            }
+        }
+        DiagnosticMarkerShape::Circle { radius } => {
+            window.paint_quad(quad(
+                plan.marker_bounds,
+                radius,
+                style.marker_fill,
+                px(1.0),
+                style.marker_border,
+                BorderStyle::default(),
+            ));
+        }
+    }
+
+    for highlight in &plan.highlights {
+        window.paint_quad(quad(
+            highlight.bounds,
+            highlight.radius,
+            with_alpha(style.highlight_base, highlight.alpha),
+            0.0,
+            transparent_black(),
+            BorderStyle::default(),
+        ));
+    }
+}
+
 fn strongest_severity(current: Severity, candidate: Severity) -> Severity {
     if severity_rank(candidate) < severity_rank(current) {
         candidate
@@ -175,9 +257,20 @@ fn severity_rank(severity: Severity) -> u8 {
     }
 }
 
+fn with_alpha(color: Hsla, alpha: f32) -> Hsla {
+    Hsla { a: alpha, ..color }
+}
+
+fn darken(color: Hsla, amount: f32) -> Hsla {
+    Hsla {
+        l: (color.l - amount).max(0.0),
+        ..color
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use gpui::{Bounds, point, px, size};
+    use gpui::{Bounds, hsla, point, px, size};
     use helix_core::diagnostic::Severity;
 
     use super::*;
@@ -269,5 +362,33 @@ mod tests {
             diagnostic_marker_plan(point(px(10.0), px(0.0)), px(40.0), px(1.0), Severity::Hint);
 
         assert_eq!(plan.marker_bounds.size, size(px(2.0), px(2.0)));
+    }
+
+    #[test]
+    fn marker_paint_style_derives_fill_border_and_highlight() {
+        let marker = hsla(0.5, 0.6, 0.7, 1.0);
+        let highlight = hsla(0.0, 0.0, 1.0, 1.0);
+        let strip = hsla(0.2, 0.3, 0.4, 1.0);
+
+        let style = diagnostic_marker_paint_style(marker, highlight, Some(strip));
+
+        assert_eq!(style.strip_fill, Some(strip));
+        assert_eq!(style.marker_fill, hsla(0.5, 0.6, 0.7, 0.85));
+        assert_eq!(style.marker_border.h, 0.5);
+        assert_eq!(style.marker_border.s, 0.6);
+        assert!((style.marker_border.l - 0.55).abs() < f32::EPSILON);
+        assert_eq!(style.marker_border.a, 0.9);
+        assert_eq!(style.highlight_base, highlight);
+    }
+
+    #[test]
+    fn marker_paint_style_clamps_darkened_border_lightness() {
+        let style = diagnostic_marker_paint_style(
+            hsla(0.5, 0.6, 0.05, 1.0),
+            hsla(0.0, 0.0, 1.0, 1.0),
+            None,
+        );
+
+        assert_eq!(style.marker_border.l, 0.0);
     }
 }

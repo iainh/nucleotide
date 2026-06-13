@@ -18,16 +18,16 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    DiagnosticMarkerShape, EditorCursor, EditorDocumentMetrics, EditorLayout,
-    EditorLineBackgroundStyle, EditorSurface, EditorSurfaceGeometry, EditorSurfacePointerEvent,
-    EditorTextMetrics, EditorViewport, GutterLineParams, HighlightLineParams, LineLayout,
-    LineLayoutCache, block_cursor_text, build_gutter_lines, cursor_background_color,
-    cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
-    cursor_line_position, cursor_style_for_mode, cursor_viewport_position,
-    decorate_soft_wrap_line_runs, diagnostic_marker_plan, diagnostic_overlay_spans,
-    diagnostic_severity_by_line, document_text_format_for_surface, gpui_hsla_to_helix_color,
-    highlight_line, hit_test_document_position, line_viewport_plan, paint_line_backgrounds,
-    phantom_line_cursor_paint_position, shape_cursor_text,
+    EditorCursor, EditorDocumentMetrics, EditorLayout, EditorLineBackgroundStyle, EditorSurface,
+    EditorSurfaceGeometry, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
+    GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache, block_cursor_text,
+    build_gutter_lines, cursor_background_color, cursor_document_line, cursor_foreground_color,
+    cursor_has_reversed_modifier, cursor_line_position, cursor_style_for_mode,
+    cursor_viewport_position, decorate_soft_wrap_line_runs, diagnostic_marker_paint_style,
+    diagnostic_marker_plan, diagnostic_overlay_spans, diagnostic_severity_by_line,
+    document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
+    hit_test_document_position, line_viewport_plan, paint_diagnostic_marker,
+    paint_line_backgrounds, phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
     soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
@@ -1183,77 +1183,22 @@ impl Element for DocumentElement {
                         if let Some(sev) = diag_line_severity.get(&gutter_plan.doc_line).copied()
                             && let Some(color) = Self::severity_color(cx.helix_theme(), sev)
                         {
-                            use nucleotide_ui::tokens::utils;
                             let marker_plan = diagnostic_marker_plan(
                                 gutter_origin,
                                 gutter_paint_plan.origin.y,
                                 after_layout.line_height,
                                 sev,
                             );
-                            if let Some(gutter_bg) = cx
+                            let gutter_bg = cx
                                 .theme_style("ui.gutter")
                                 .bg
-                                .and_then(crate::utils::color_to_hsla)
-                            {
-                                window.paint_quad(fill(marker_plan.strip_bounds, gutter_bg));
-                            }
-
-                            // Derived colors with slight transparency + subtle border for 3D effect
-                            let base_fill = utils::with_alpha(color, 0.85);
-                            let border_col = utils::with_alpha(utils::darken(color, 0.15), 0.9);
-
-                            // Draw shape by severity: Info/Hint=Sphere, Warning=Triangle, Error=Square
-                            match marker_plan.shape {
-                                DiagnosticMarkerShape::Square { corner_radius } => {
-                                    window.paint_quad(gpui::quad(
-                                        marker_plan.marker_bounds,
-                                        corner_radius,
-                                        base_fill,
-                                        px(1.0),
-                                        border_col,
-                                        gpui::BorderStyle::default(),
-                                    ));
-                                }
-                                DiagnosticMarkerShape::Triangle {
-                                    top,
-                                    bottom_left,
-                                    bottom_right,
-                                } => {
-                                    let mut pb = gpui::PathBuilder::fill();
-                                    pb.move_to(top);
-                                    pb.line_to(bottom_left);
-                                    pb.line_to(bottom_right);
-                                    pb.close();
-                                    if let Ok(path) = pb.build() {
-                                        window.paint_path(path, base_fill);
-                                    }
-                                }
-                                DiagnosticMarkerShape::Circle { radius } => {
-                                    window.paint_quad(gpui::quad(
-                                        marker_plan.marker_bounds,
-                                        radius,
-                                        base_fill,
-                                        px(1.0),
-                                        border_col,
-                                        gpui::BorderStyle::default(),
-                                    ));
-                                }
-                            }
-
-                            for highlight in marker_plan.highlights {
-                                let highlight_color = utils::with_alpha(
-                                    cx.theme().tokens.chrome.text_on_chrome,
-                                    highlight.alpha,
-                                );
-                                window.paint_quad(gpui::quad(
-                                    highlight.bounds,
-                                    highlight.radius,
-                                    highlight_color,
-                                    0.0,
-                                    gpui::transparent_black(),
-                                    gpui::BorderStyle::default(),
-                                ));
-                            }
+                                .and_then(crate::utils::color_to_hsla);
+                            let marker_style = diagnostic_marker_paint_style(
+                                color,
+                                cx.theme().tokens.chrome.text_on_chrome,
+                                gutter_bg,
+                            );
+                            paint_diagnostic_marker(window, &marker_plan, marker_style);
                         }
                     }
                 }
