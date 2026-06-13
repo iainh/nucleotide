@@ -576,7 +576,8 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
     }
 
     let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-    let viewport_update = core.update(cx, |core, cx| {
+    let mut defer_core_redraw = false;
+    let viewport_update = core.update(cx, |core, _cx| {
         let update = viewport.sync_surface_layout(
             &mut core.editor,
             doc_id,
@@ -595,11 +596,17 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
             .as_ref()
             .is_some_and(|update| update.helix_view_synced || update.cursor_revealed)
         {
-            cx.notify();
+            defer_core_redraw = true;
         }
 
         update
     });
+    if defer_core_redraw {
+        let core_entity_id = core.entity_id();
+        cx.defer(move |cx| {
+            cx.notify(core_entity_id);
+        });
+    }
     let Some(viewport_update) = viewport_update else {
         return;
     };
