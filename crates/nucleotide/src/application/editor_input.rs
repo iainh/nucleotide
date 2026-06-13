@@ -728,6 +728,7 @@ fn native_command_supported(command: &MappableCommand) -> bool {
         || native_prompt_command(command)
         || native_history_command(command)
         || native_register_edit_command(command)
+        || native_selection_transform_command(command)
         || name.starts_with("move_")
         || name.starts_with("extend_")
         || matches!(
@@ -818,11 +819,47 @@ fn native_register_edit_command(command: &MappableCommand) -> bool {
     )
 }
 
+fn native_selection_transform_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "copy_selection_on_prev_line"
+            | "copy_selection_on_next_line"
+            | "split_selection_on_newline"
+            | "merge_selections"
+            | "merge_consecutive_selections"
+            | "shrink_to_line_bounds"
+            | "ensure_selections_forward"
+            | "trim_selections"
+            | "align_selections"
+            | "indent"
+            | "unindent"
+            | "join_selections"
+            | "join_selections_space"
+            | "switch_case"
+            | "switch_to_lowercase"
+            | "switch_to_uppercase"
+            | "rotate_selections_forward"
+            | "rotate_selections_backward"
+            | "rotate_selections_first"
+            | "rotate_selections_last"
+            | "rotate_selection_contents_forward"
+            | "rotate_selection_contents_backward"
+            | "reverse_selection_contents"
+            | "expand_selection"
+            | "shrink_selection"
+            | "select_next_sibling"
+            | "select_prev_sibling"
+            | "select_all_siblings"
+            | "select_all_children"
+    )
+}
+
 fn native_insert_command_supported(command: &MappableCommand) -> bool {
     (!native_insert_entry_command(command)
         && !native_prompt_command(command)
         && !native_history_command(command)
         && !native_register_edit_command(command)
+        && !native_selection_transform_command(command)
         && native_command_supported(command))
         || native_insert_edit_command(command)
         || native_insert_interactive_command(command)
@@ -990,6 +1027,9 @@ mod tests {
         assert!(native_command_supported(
             &MappableCommand::replace_with_yanked
         ));
+        assert!(native_command_supported(&MappableCommand::indent));
+        assert!(native_command_supported(&MappableCommand::join_selections));
+        assert!(native_command_supported(&MappableCommand::trim_selections));
         assert!(!native_command_supported(&MappableCommand::goto_definition));
     }
 
@@ -1042,6 +1082,13 @@ mod tests {
         assert!(!native_insert_command_supported(&MappableCommand::yank));
         assert!(!native_insert_command_supported(
             &MappableCommand::paste_after
+        ));
+        assert!(!native_insert_command_supported(&MappableCommand::indent));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::join_selections
+        ));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::trim_selections
         ));
     }
 
@@ -1167,6 +1214,113 @@ mod tests {
         assert!(!native_register_edit_command(&MappableCommand::normal_mode));
         assert!(!native_register_edit_command(
             &MappableCommand::goto_definition
+        ));
+    }
+
+    #[test]
+    fn selection_transform_commands_are_classified_separately() {
+        assert!(native_selection_transform_command(
+            &MappableCommand::copy_selection_on_prev_line
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::copy_selection_on_next_line
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::split_selection_on_newline
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::merge_selections
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::merge_consecutive_selections
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::shrink_to_line_bounds
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::ensure_selections_forward
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::trim_selections
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::align_selections
+        ));
+        assert!(native_selection_transform_command(&MappableCommand::indent));
+        assert!(native_selection_transform_command(
+            &MappableCommand::unindent
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::join_selections
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::join_selections_space
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::switch_case
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::switch_to_lowercase
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::switch_to_uppercase
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::rotate_selections_forward
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::rotate_selections_backward
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::rotate_selections_first
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::rotate_selections_last
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::rotate_selection_contents_forward
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::rotate_selection_contents_backward
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::reverse_selection_contents
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::expand_selection
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::shrink_selection
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::select_next_sibling
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::select_prev_sibling
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::select_all_siblings
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::select_all_children
+        ));
+        assert!(!native_selection_transform_command(
+            &MappableCommand::split_selection
+        ));
+        assert!(!native_selection_transform_command(
+            &MappableCommand::select_regex
+        ));
+        assert!(!native_selection_transform_command(
+            &MappableCommand::format_selections
+        ));
+        assert!(!native_selection_transform_command(
+            &MappableCommand::keep_selections
+        ));
+        assert!(!native_selection_transform_command(
+            &MappableCommand::remove_selections
+        ));
+        assert!(!native_selection_transform_command(
+            &MappableCommand::normal_mode
         ));
     }
 
