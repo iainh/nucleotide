@@ -105,6 +105,23 @@ impl EditorViewport {
         }
     }
 
+    pub fn scroll_to_vertical_position_from_scrollbar(&self, y: Pixels) -> ViewportScrollUpdate {
+        let old_position = self.scroll_position();
+        let old_top_visual_row = self.top_visual_row();
+
+        self.scroll.set_scroll_position(point(px(0.0), y));
+
+        let new_position = self.scroll_position();
+        let new_top_visual_row = self.top_visual_row();
+
+        ViewportScrollUpdate {
+            changed: old_position != new_position,
+            crossed_visual_rows: new_top_visual_row as isize - old_top_visual_row as isize,
+            top_visual_row: new_top_visual_row,
+            offset_within_row: self.offset_within_row(),
+        }
+    }
+
     pub fn sync_from_helix_top_visual_row(&self, top_visual_row: usize) {
         let y = self.scroll.anchor_to_pixels(top_visual_row);
         self.scroll
@@ -239,6 +256,32 @@ mod tests {
         assert_eq!(update.crossed_visual_rows, 1);
         assert_eq!(update.top_visual_row, 1);
         assert_eq!(update.offset_within_row, px(5.0));
+    }
+
+    #[test]
+    fn viewport_reports_scrollbar_position_changes() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(800.0), px(400.0)), 100);
+
+        let update = viewport.scroll_to_vertical_position_from_scrollbar(px(65.0));
+
+        assert!(update.changed);
+        assert_eq!(update.crossed_visual_rows, 3);
+        assert_eq!(update.top_visual_row, 3);
+        assert_eq!(update.offset_within_row, px(5.0));
+        assert!(viewport.has_pending_scrollbar_sync());
+    }
+
+    #[test]
+    fn viewport_clamps_scrollbar_position() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(800.0), px(100.0)), 10);
+
+        let update = viewport.scroll_to_vertical_position_from_scrollbar(px(500.0));
+
+        assert!(update.changed);
+        assert_eq!(viewport.scroll_position().y, px(100.0));
+        assert_eq!(update.top_visual_row, 5);
     }
 
     #[test]

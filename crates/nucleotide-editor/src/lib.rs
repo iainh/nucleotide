@@ -19,6 +19,7 @@ pub mod metrics;
 pub mod ruler;
 pub mod scroll_manager;
 pub mod scroll_state;
+pub mod scrollbar;
 pub mod soft_wrap;
 mod style;
 pub mod surface;
@@ -71,6 +72,10 @@ pub use ruler::{
 };
 pub use scroll_manager::ScrollManager;
 pub use scroll_state::ScrollState;
+pub use scrollbar::{
+    EditorScrollbar, EditorScrollbarState, EditorScrollbarThumb, editor_scrollbar_thumb,
+    scroll_position_for_scrollbar_pointer,
+};
 pub use soft_wrap::{
     SoftWrapLinePaintPlan, SoftWrapVisualLine, SoftWrapVisualPosition,
     decorate_soft_wrap_line_runs, soft_wrap_line_paint_plans, soft_wrap_viewport_height,
