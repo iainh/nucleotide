@@ -3856,6 +3856,7 @@ impl Workspace {
     ) {
         // Open the specified file in the editor
         info!("Workspace: Received OpenFile update for: {path:?}");
+        let mut reveal_opened_view = None;
         self.core.update(cx, |core, cx| {
             let _guard = self.handle.enter();
 
@@ -3965,13 +3966,13 @@ impl Workspace {
                                 .switch(doc_id, helix_view::editor::Action::Replace);
                         }
 
-                        // Set the selection and ensure cursor is in view
-                        core.editor.ensure_cursor_in_view(view_id);
+                        // Set the selection to the start; the native document view
+                        // will reveal it after views are refreshed below.
                         if let Some(doc) = core.editor.document_mut(doc_id) {
                             let pos = Selection::point(0);
                             doc.set_selection(view_id, pos);
+                            reveal_opened_view = Some(view_id);
                         }
-                        core.editor.ensure_cursor_in_view(view_id);
                     }
                 }
             }
@@ -3986,6 +3987,14 @@ impl Workspace {
 
         // Update document views after opening file
         self.update_document_views(cx);
+        if let Some(view_id) = reveal_opened_view
+            && let Some(view_entity) = self.view_manager.get_document_view(&view_id)
+        {
+            view_entity.update(cx, |view, cx| {
+                view.request_cursor_reveal();
+                cx.notify();
+            });
+        }
 
         // Try to trigger the same flow as initialization
         // by focusing the view and requesting a redraw
