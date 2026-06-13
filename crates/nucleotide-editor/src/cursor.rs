@@ -13,6 +13,7 @@ use nucleotide_logging::error;
 
 use crate::{
     cursor_has_reversed_modifier,
+    line_text::{byte_offset_for_char_offset, line_text_without_trailing_newline},
     style::{create_styled_text_run, helix_color_to_hsla},
 };
 
@@ -146,7 +147,7 @@ pub fn cursor_line_position(
     } else {
         text.len_chars()
     };
-    let line_text = line_text_without_newline(text.slice(line_start..line_end));
+    let line_text = line_text_without_trailing_newline(text.slice(line_start..line_end));
     let line_char_count = line_text.chars().count();
     let cursor_char_offset = if cursor_at_trailing_newline {
         line_char_count
@@ -164,20 +165,6 @@ pub fn cursor_line_position(
         cursor_char_offset,
         cursor_byte_offset,
     }
-}
-
-fn line_text_without_newline(line: RopeSlice<'_>) -> String {
-    let mut line_text = line.to_string();
-    while line_text.ends_with('\n') || line_text.ends_with('\r') {
-        line_text.pop();
-    }
-    line_text
-}
-
-fn byte_offset_for_char_offset(text: &str, char_offset: usize) -> usize {
-    text.char_indices()
-        .nth(char_offset)
-        .map_or(text.len(), |(byte_idx, _)| byte_idx)
 }
 
 pub fn cursor_foreground_color(cursor_style: &Style, has_reversed: bool, default_bg: Hsla) -> Hsla {

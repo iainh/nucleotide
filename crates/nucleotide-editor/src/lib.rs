@@ -14,6 +14,7 @@ pub mod hit_test;
 pub mod line_cache;
 pub mod line_painter;
 pub mod line_plan;
+pub mod line_text;
 pub mod metrics;
 pub mod scroll_manager;
 pub mod scroll_state;
@@ -44,6 +45,10 @@ pub use line_cache::{LineLayout, LineLayoutCache};
 pub use line_painter::{EditorLineBackgroundStyle, paint_line_backgrounds};
 pub use line_plan::{
     LineViewportPlan, VisibleLinePlan, line_viewport_plan, unwrapped_visible_line_plans,
+};
+pub use line_text::{
+    byte_offset_for_char_offset, line_text_without_trailing_newline,
+    shared_line_text_without_trailing_newline,
 };
 pub use metrics::EditorTextMetrics;
 pub use scroll_manager::ScrollManager;

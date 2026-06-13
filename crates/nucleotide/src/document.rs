@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
@@ -26,8 +25,8 @@ use nucleotide_editor::{
     cursor_line_position, cursor_style_for_mode, diagnostic_overlay_spans,
     diagnostic_severity_by_line, document_text_format_for_surface, gpui_hsla_to_helix_color,
     highlight_line, hit_test_document_position, line_viewport_plan, paint_line_backgrounds,
-    shape_cursor_text, soft_wrap_visual_lines, soft_wrap_visual_position, text_style_at_position,
-    unwrapped_visible_line_plans,
+    shape_cursor_text, shared_line_text_without_trailing_newline, soft_wrap_visual_lines,
+    soft_wrap_visual_position, text_style_at_position, unwrapped_visible_line_plans,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -1596,16 +1595,7 @@ impl Element for DocumentElement {
 
                 let (line_str, line_runs) = {
                     let line_slice = text.slice(line_start..line_end);
-                    // Convert to string and remove any trailing newlines
-                    let line_str = {
-                        let cow: Cow<'_, str> = line_slice.into();
-                        let mut s = cow.into_owned();
-                        // Remove any trailing newline characters to prevent GPUI panic
-                        while s.ends_with('\n') || s.ends_with('\r') {
-                            s.pop();
-                        }
-                        SharedString::from(s)
-                    };
+                    let line_str = shared_line_text_without_trailing_newline(line_slice);
 
                     let line_runs = {
                         let core = self.core.read(cx);
