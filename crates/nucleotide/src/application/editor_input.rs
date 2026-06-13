@@ -350,9 +350,12 @@ impl NativeCommandInput {
         let pending_keys = self.keymaps.pending().to_vec();
         let mut fallback_keys = pending_keys;
         fallback_keys.push(key);
+        let replay_keys = fallback_keys.clone();
 
         match self.handle_keymap_event(mode, context, key) {
             KeymapDispatch::Handled => {
+                self.seed_insert_replay_if_needed(mode, context.editor.mode(), &replay_keys);
+
                 if self.keymaps.pending().is_empty() {
                     context.editor.count = None;
                 } else {
@@ -368,6 +371,18 @@ impl NativeCommandInput {
                 context.editor.selected_register = context.register.take();
                 NativeCommandResult::Fallback(fallback_keys)
             }
+        }
+    }
+
+    fn seed_insert_replay_if_needed(
+        &mut self,
+        mode_before: Mode,
+        mode_after: Mode,
+        replay_keys: &[KeyEvent],
+    ) {
+        if mode_before != Mode::Insert && mode_after == Mode::Insert {
+            self.current_insert_replay.clear();
+            self.current_insert_replay.extend_from_slice(replay_keys);
         }
     }
 
@@ -512,6 +527,7 @@ fn native_command_supported(command: &MappableCommand) -> bool {
     let name = command.name();
 
     name == "normal_mode"
+        || native_insert_entry_command(command)
         || name.starts_with("move_")
         || name.starts_with("extend_")
         || matches!(
@@ -547,8 +563,20 @@ fn native_command_supported(command: &MappableCommand) -> bool {
         )
 }
 
+fn native_insert_entry_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "insert_mode"
+            | "append_mode"
+            | "insert_at_line_start"
+            | "insert_at_line_end"
+            | "open_below"
+            | "open_above"
+    )
+}
+
 fn native_insert_command_supported(command: &MappableCommand) -> bool {
-    native_command_supported(command)
+    !native_insert_entry_command(command) && native_command_supported(command)
 }
 
 fn canonicalize_key(key: &mut KeyEvent) {
@@ -664,12 +692,20 @@ mod tests {
     }
 
     #[test]
-    fn native_command_supports_movement_but_not_insert_entry() {
+    fn native_command_supports_movement_and_insert_entry() {
         assert!(native_command_supported(&MappableCommand::move_line_down));
         assert!(native_command_supported(&MappableCommand::goto_line_start));
+        assert!(native_command_supported(&MappableCommand::insert_mode));
+        assert!(native_command_supported(&MappableCommand::append_mode));
+        assert!(native_command_supported(
+            &MappableCommand::insert_at_line_start
+        ));
+        assert!(native_command_supported(
+            &MappableCommand::insert_at_line_end
+        ));
+        assert!(native_command_supported(&MappableCommand::open_below));
+        assert!(native_command_supported(&MappableCommand::open_above));
         assert!(!native_command_supported(&MappableCommand::goto_definition));
-        assert!(!native_command_supported(&MappableCommand::insert_mode));
-        assert!(!native_command_supported(&MappableCommand::append_mode));
     }
 
     #[test]
@@ -686,6 +722,62 @@ mod tests {
         assert!(!native_insert_command_supported(
             &MappableCommand::completion
         ));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::insert_mode
+        ));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::append_mode
+        ));
+    }
+
+    #[test]
+    fn insert_entry_commands_are_classified_separately() {
+        assert!(native_insert_entry_command(&MappableCommand::insert_mode));
+        assert!(native_insert_entry_command(&MappableCommand::append_mode));
+        assert!(native_insert_entry_command(
+            &MappableCommand::insert_at_line_start
+        ));
+        assert!(native_insert_entry_command(
+            &MappableCommand::insert_at_line_end
+        ));
+        assert!(native_insert_entry_command(&MappableCommand::open_below));
+        assert!(native_insert_entry_command(&MappableCommand::open_above));
+        assert!(!native_insert_entry_command(
+            &MappableCommand::move_char_left
+        ));
+        assert!(!native_insert_entry_command(&MappableCommand::normal_mode));
+    }
+
+    #[test]
+    fn native_insert_entry_starts_insert_replay() {
+        let mut input = NativeCommandInput::new(Keymaps::default());
+        let enter_insert = KeyEvent {
+            code: KeyCode::Char('i'),
+            modifiers: KeyModifiers::empty(),
+        };
+        let existing = KeyEvent {
+            code: KeyCode::Char('x'),
+            modifiers: KeyModifiers::empty(),
+        };
+        input.current_insert_replay.push(existing);
+
+        input.seed_insert_replay_if_needed(Mode::Normal, Mode::Insert, &[enter_insert]);
+
+        assert_eq!(input.current_insert_replay, vec![enter_insert]);
+        assert_eq!(input.last_insert_replay, None);
+    }
+
+    #[test]
+    fn non_insert_entry_commands_do_not_seed_insert_replay() {
+        let mut input = NativeCommandInput::new(Keymaps::default());
+        let movement = KeyEvent {
+            code: KeyCode::Char('j'),
+            modifiers: KeyModifiers::empty(),
+        };
+
+        input.seed_insert_replay_if_needed(Mode::Normal, Mode::Normal, &[movement]);
+
+        assert!(input.current_insert_replay.is_empty());
     }
 
     #[test]
