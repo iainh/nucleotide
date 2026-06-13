@@ -13,6 +13,7 @@ pub mod highlight;
 pub mod hit_test;
 pub mod line_cache;
 pub mod line_painter;
+pub mod line_plan;
 pub mod metrics;
 pub mod scroll_manager;
 pub mod scroll_state;
@@ -41,6 +42,9 @@ pub use highlight::{
 pub use hit_test::{EditorHitTestResult, hit_test_document_position};
 pub use line_cache::{LineLayout, LineLayoutCache};
 pub use line_painter::{EditorLineBackgroundStyle, paint_line_backgrounds};
+pub use line_plan::{
+    LineViewportPlan, VisibleLinePlan, line_viewport_plan, unwrapped_visible_line_plans,
+};
 pub use metrics::EditorTextMetrics;
 pub use scroll_manager::ScrollManager;
 pub use scroll_state::ScrollState;

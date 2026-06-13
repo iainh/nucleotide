@@ -25,8 +25,9 @@ use nucleotide_editor::{
     cursor_background_color, cursor_foreground_color, cursor_has_reversed_modifier,
     cursor_style_for_mode, diagnostic_overlay_spans, diagnostic_severity_by_line,
     document_text_format_for_surface, gpui_hsla_to_helix_color, highlight_line,
-    hit_test_document_position, paint_line_backgrounds, shape_cursor_text, soft_wrap_visual_lines,
-    soft_wrap_visual_position, text_style_at_position,
+    hit_test_document_position, line_viewport_plan, paint_line_backgrounds, shape_cursor_text,
+    soft_wrap_visual_lines, soft_wrap_visual_position, text_style_at_position,
+    unwrapped_visible_line_plans,
 };
 use nucleotide_ui::scrollbar::{ScrollableHandle, Scrollbar, ScrollbarState};
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -866,13 +867,15 @@ impl Element for DocumentElement {
                 .map(|range| range.cursor_line(text.slice(..)))
                 .collect();
 
-            // Use the last row from scroll manager
-            let mut last_row = last_row_from_scroll;
-
-            // Check if cursor is at the very end of the file (phantom line)
-            let cursor_at_end = cursor_char_idx == text.len_chars();
-            let file_ends_with_newline =
-                text.len_chars() > 0 && text.char(text.len_chars() - 1) == '\n';
+            let line_viewport = line_viewport_plan(
+                text.slice(..),
+                first_row,
+                last_row_from_scroll,
+                cursor_char_idx,
+            );
+            let last_row = line_viewport.last_row;
+            let cursor_at_end = line_viewport.cursor_at_end;
+            let file_ends_with_newline = line_viewport.file_ends_with_newline;
 
             debug!(
                 "End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}",
@@ -887,29 +890,14 @@ impl Element for DocumentElement {
                 file_ends_with_newline
             );
 
-            // If cursor is at end of file with trailing newline, we need to render the phantom line
-            // For a file ending with \n, Rope counts the empty line after it, so we don't need to add 1
             if cursor_at_end && file_ends_with_newline {
                 let cursor_line = text.char_to_line(cursor_char_idx.saturating_sub(1));
                 debug!(
-                    "Cursor at EOF with newline - cursor_line: {cursor_line}, last_row before: {last_row}, total_lines: {total_lines}"
+                    "Cursor at EOF with newline - cursor_line: {cursor_line}, last_row: {last_row}, total_lines: {total_lines}"
                 );
-
-                // Ensure last_row includes the phantom line (which is at index total_lines - 1)
-                last_row = last_row.max(total_lines);
-                debug!("last_row after adjustment: {last_row}");
             }
 
-            // println!("first row is {first_row} last row is {last_row}");
-            // When rendering phantom line, end_char should be beyond the document end
-            let end_char = if last_row > total_lines {
-                text.len_chars() + 1 // Allow phantom line to be rendered
-            } else {
-                text.line_to_char(std::cmp::min(last_row, total_lines))
-            };
-
             // Render text line by line to avoid newline issues
-            let mut y_offset = -scroll_line_offset;
             // COORDINATE SYSTEM ANALYSIS: The original version stored in GLOBAL coordinates
             // but current version converts to LOCAL coordinates before storage
             // The px(2.) was part of the global calculation, but since we now convert to local,
@@ -1597,64 +1585,23 @@ impl Element for DocumentElement {
                 return;
             }
 
+            let line_plans = unwrapped_visible_line_plans(
+                text.slice(..),
+                line_viewport,
+                after_layout.line_height,
+                scroll_line_offset,
+            );
+            let next_unwrapped_line_y_offset =
+                line_plans.last().map_or(-scroll_line_offset, |line| {
+                    line.y_offset + after_layout.line_height
+                });
+
             // Original rendering loop (without soft wrap)
-            for line_idx in first_row..last_row {
-                // Handle phantom line (empty line at EOF when file ends with newline)
-                // For a file ending with \n, the last line is empty and is the phantom line
-                // Also treat any empty line at the end as phantom line
-                let line_start_char = if line_idx < total_lines {
-                    text.line_to_char(line_idx)
-                } else {
-                    text.len_chars()
-                };
-                let line_end_char = if line_idx + 1 < total_lines {
-                    text.line_to_char(line_idx + 1).saturating_sub(1)
-                } else {
-                    text.len_chars()
-                };
-                let line_is_empty = line_start_char >= line_end_char;
-                let is_phantom_line =
-                    (cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1)
-                        || (line_idx >= total_lines)
-                        || (line_idx == total_lines - 1 && line_is_empty && total_lines > 1);
-
-                // Skip phantom lines entirely - they shouldn't take up visual space
-                if is_phantom_line {
-                    debug!(
-                        "Skipping phantom line layout creation for line_idx={}",
-                        line_idx
-                    );
-                    continue;
-                }
-
-                let (line_start, line_end) = {
-                    // Normal line - get actual line boundaries
-                    let line_start = text.line_to_char(line_idx);
-                    let line_end = if line_idx + 1 < total_lines {
-                        text.line_to_char(line_idx + 1).saturating_sub(1) // Exclude newline
-                    } else {
-                        text.len_chars()
-                    };
-                    (line_start, line_end)
-                };
-
-                // Skip lines outside our view
-                let anchor_char = text.line_to_char(first_row);
-                if line_start >= end_char || line_end < anchor_char {
-                    y_offset += after_layout.line_height;
-                    continue;
-                }
-
-                // Adjust line bounds to our view
-                let line_start = line_start.max(anchor_char);
-                let line_end = line_end.min(end_char);
-
-                // For empty lines, line_start may equal line_end, which is valid
-                // We still need to render them for cursor positioning
-                if line_start > line_end {
-                    y_offset += after_layout.line_height;
-                    continue;
-                }
+            for line_plan in line_plans {
+                let line_idx = line_plan.line_idx;
+                let line_start = line_plan.line_start;
+                let line_end = line_plan.line_end;
+                let y_offset = line_plan.y_offset;
 
                 let (line_str, line_runs) = {
                     let line_slice = text.slice(line_start..line_end);
@@ -1794,38 +1741,7 @@ impl Element for DocumentElement {
                 );
 
                 line_cache.push(layout);
-
-                y_offset += after_layout.line_height;
             }
-
-            // Render tilde lines for empty viewport space (like Helix/Vim)
-            // Calculate how many lines we've rendered vs viewport capacity
-            // Since we skip phantom lines, we need to count actual rendered lines, not just last_row - first_row
-            // Count lines by iterating through the range and checking which ones weren't skipped
-            let mut _actual_lines_rendered = 0;
-            for line_idx in first_row..last_row {
-                let line_start_char = if line_idx < total_lines {
-                    text.line_to_char(line_idx)
-                } else {
-                    text.len_chars()
-                };
-                let line_end_char = if line_idx + 1 < total_lines {
-                    text.line_to_char(line_idx + 1).saturating_sub(1)
-                } else {
-                    text.len_chars()
-                };
-                let line_is_empty = line_start_char >= line_end_char;
-                let is_phantom_line =
-                    (cursor_at_end && file_ends_with_newline && line_idx == total_lines - 1)
-                        || (line_idx >= total_lines)
-                        || (line_idx == total_lines - 1 && line_is_empty && total_lines > 1);
-                if !is_phantom_line {
-                    _actual_lines_rendered += 1;
-                }
-            }
-            let viewport_height_in_lines =
-                (bounds.size.height - px(2.0)) / after_layout.line_height;
-            let _viewport_capacity = viewport_height_in_lines as usize;
 
             // Note: Tilde rendering is handled by the gutter for consistency with Helix
             // The gutter shows "~" for phantom lines in the line number area
@@ -2065,7 +1981,8 @@ impl Element for DocumentElement {
                                 // Calculate cursor position at the first tilde line
                                 // Use the y_offset from the main loop (where the next line would be)
                                 let cursor_x = phantom_text_bounds.origin.x; // Start of line
-                                let cursor_y = phantom_text_bounds.origin.y + y_offset; // At the phantom line position
+                                let cursor_y =
+                                    phantom_text_bounds.origin.y + next_unwrapped_line_y_offset; // At the phantom line position
 
                                 let cursor_color = cursor_background_color(
                                     &cursor_style,
