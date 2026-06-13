@@ -371,10 +371,8 @@ impl EditorViewport {
             };
             let scroll_update = self.reveal_visual_row(cursor_visual_row, cursor_reveal, scrolloff);
 
-            if scroll_update.changed {
-                helix_view_synced |=
-                    self.sync_to_helix_view(editor, doc_id, view_id, &metrics.text_format);
-            }
+            helix_view_synced |=
+                self.sync_to_helix_view(editor, doc_id, view_id, &metrics.text_format);
 
             scroll_update.changed
         } else {
@@ -481,14 +479,19 @@ pub fn document_cursor_visual_row(
 mod tests {
     use std::sync::Arc;
 
-    use arc_swap::ArcSwap;
+    use arc_swap::{ArcSwap, access::Map};
     use gpui::{Bounds, point, px, size};
     use helix_core::{
-        Rope, Selection, doc_formatter::TextFormat, syntax, text_annotations::TextAnnotations,
+        Rope, Selection, Transaction, doc_formatter::TextFormat, syntax,
+        text_annotations::TextAnnotations,
     };
     use helix_view::{
-        Document, DocumentId, View,
+        Document, DocumentId, Editor, View,
+        editor::Action,
         editor::{Config, GutterConfig},
+        graphics::Rect,
+        handlers::Handlers,
+        theme,
         view::ViewPosition,
     };
 
@@ -506,6 +509,41 @@ mod tests {
         document.ensure_view_init(view.id);
 
         (document, view)
+    }
+
+    fn test_handlers() -> Handlers {
+        let (completion_tx, _) = tokio::sync::mpsc::channel(1);
+        let (signature_tx, _) = tokio::sync::mpsc::channel(1);
+        let (auto_save_tx, _) = tokio::sync::mpsc::channel(1);
+        let (doc_colors_tx, _) = tokio::sync::mpsc::channel(1);
+
+        Handlers {
+            completions: helix_view::handlers::completion::CompletionHandler::new(completion_tx),
+            signature_hints: signature_tx,
+            auto_save: auto_save_tx,
+            document_colors: doc_colors_tx,
+            word_index: helix_view::handlers::word_index::Handler::spawn(),
+        }
+    }
+
+    fn test_editor_with_text(text: &str) -> (Editor, DocumentId, ViewId) {
+        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let theme_loader = Arc::new(theme::Loader::new(&[]));
+        let mut editor = Editor::new(
+            Rect::new(0, 0, 80, 24),
+            theme_loader,
+            syntax_loader,
+            Arc::new(Map::new(Arc::clone(&config), |config: &Config| config)),
+            test_handlers(),
+        );
+        let doc_id = editor.new_file(Action::VerticalSplit);
+        let view_id = editor.tree.focus;
+        let doc = editor.document_mut(doc_id).unwrap();
+        let transaction = Transaction::change(doc.text(), [(0, 0, Some(text.into()))].into_iter());
+        doc.apply(&transaction, view_id);
+
+        (editor, doc_id, view_id)
     }
 
     #[test]
@@ -682,6 +720,56 @@ mod tests {
         assert_eq!(update.visual_rows, expected.visual_rows);
         assert_eq!(update.soft_wrap, expected.soft_wrap);
         assert_eq!(viewport.content_visual_rows(), expected.visual_rows);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cursor_reveal_keeps_native_scroll_authoritative_when_helix_offset_is_stale() {
+        let text = (0..50)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        let (mut editor, doc_id, view_id) = test_editor_with_text(&text);
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(240.0), px(100.0)), 50);
+        viewport.sync_from_helix_top_visual_row(10);
+
+        {
+            let doc = editor.document_mut(doc_id).unwrap();
+            let cursor = doc.text().line_to_char(12);
+            doc.set_selection(view_id, Selection::point(cursor));
+            let stale_anchor = doc.text().line_to_char(20);
+            doc.set_view_offset(
+                view_id,
+                ViewPosition {
+                    anchor: stale_anchor,
+                    vertical_offset: 0,
+                    horizontal_offset: 0,
+                },
+            );
+        }
+
+        let update = viewport
+            .sync_surface_layout(
+                &mut editor,
+                doc_id,
+                view_id,
+                EditorViewportSurfaceLayout {
+                    theme: None,
+                    bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(101.0))),
+                    cell_width: px(8.0),
+                    line_height: px(20.0),
+                    minimum_columns: 1,
+                    cursor_reveal: Some(EditorCursorReveal::Scrolloff),
+                },
+            )
+            .unwrap();
+
+        assert!(!update.cursor_revealed);
+        assert!(update.helix_view_synced);
+        assert_eq!(viewport.top_visual_row(), 10);
+        assert_eq!(update.helix_snapshot.top_visual_row, 10);
+
+        let doc = editor.document(doc_id).unwrap();
+        assert_eq!(doc.text().char_to_line(doc.view_offset(view_id).anchor), 10);
     }
 
     #[test]
