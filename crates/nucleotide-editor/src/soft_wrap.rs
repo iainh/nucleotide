@@ -8,8 +8,9 @@ use helix_core::{
     graphemes::Grapheme,
     text_annotations::TextAnnotations,
 };
+use helix_view::{Document, Theme, ViewId, view::ViewPosition};
 
-use crate::EditorSurfaceGeometry;
+use crate::{EditorSurfaceGeometry, document_text_format_for_surface};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoftWrapVisualLine {
@@ -45,6 +46,104 @@ pub struct SoftWrapLinePaintPlan<'a> {
     pub text_origin: Point<Pixels>,
     pub cursorline_bounds: Bounds<Pixels>,
     pub is_cursor_visual_line: bool,
+}
+
+pub struct SoftWrapRenderPlanParams<'a> {
+    pub text: RopeSlice<'a>,
+    pub text_format: TextFormat,
+    pub view_offset: ViewPosition,
+    pub bounds: Bounds<Pixels>,
+    pub gutter_columns: u16,
+    pub cell_width: Pixels,
+    pub line_height: Pixels,
+    pub scroll_line_offset: Pixels,
+}
+
+pub struct DocumentSoftWrapRenderPlanParams<'a> {
+    pub document: &'a Document,
+    pub theme: Option<&'a Theme>,
+    pub view_id: ViewId,
+    pub bounds: Bounds<Pixels>,
+    pub gutter_columns: u16,
+    pub cell_width: Pixels,
+    pub line_height: Pixels,
+    pub scroll_line_offset: Pixels,
+    pub minimum_columns: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct SoftWrapRenderPlan {
+    pub text_format: TextFormat,
+    pub view_offset: ViewPosition,
+    pub gutter_columns: u16,
+    pub geometry: EditorSurfaceGeometry,
+    pub viewport_height: usize,
+    pub visual_lines: Vec<SoftWrapVisualLine>,
+}
+
+impl SoftWrapRenderPlan {
+    pub fn line_paint_plans(
+        &self,
+        line_height: Pixels,
+        scroll_line_offset: Pixels,
+        cursor_line: usize,
+    ) -> Vec<SoftWrapLinePaintPlan<'_>> {
+        soft_wrap_line_paint_plans(
+            &self.visual_lines,
+            self.geometry,
+            line_height,
+            scroll_line_offset,
+            self.view_offset.vertical_offset,
+            cursor_line,
+        )
+    }
+}
+
+pub fn document_soft_wrap_render_plan(
+    params: DocumentSoftWrapRenderPlanParams<'_>,
+) -> SoftWrapRenderPlan {
+    let (_, text_format) = document_text_format_for_surface(
+        params.document,
+        params.theme,
+        params.bounds,
+        params.gutter_columns,
+        params.cell_width,
+        params.minimum_columns,
+    );
+
+    soft_wrap_render_plan(SoftWrapRenderPlanParams {
+        text: params.document.text().slice(..),
+        text_format,
+        view_offset: params.document.view_offset(params.view_id),
+        bounds: params.bounds,
+        gutter_columns: params.gutter_columns,
+        cell_width: params.cell_width,
+        line_height: params.line_height,
+        scroll_line_offset: params.scroll_line_offset,
+    })
+}
+
+pub fn soft_wrap_render_plan(params: SoftWrapRenderPlanParams<'_>) -> SoftWrapRenderPlan {
+    let geometry =
+        EditorSurfaceGeometry::new(params.bounds, params.gutter_columns, params.cell_width);
+    let viewport_height =
+        soft_wrap_viewport_height(params.bounds, params.line_height, params.scroll_line_offset);
+    let visual_lines = soft_wrap_visual_lines(
+        params.text,
+        &params.text_format,
+        params.view_offset.anchor,
+        params.view_offset.vertical_offset,
+        viewport_height,
+    );
+
+    SoftWrapRenderPlan {
+        text_format: params.text_format,
+        view_offset: params.view_offset,
+        gutter_columns: params.gutter_columns,
+        geometry,
+        viewport_height,
+        visual_lines,
+    }
 }
 
 pub fn soft_wrap_visual_lines(
@@ -312,10 +411,12 @@ fn build_visual_line(
 mod tests {
     use gpui::{Bounds, Font, Hsla, TextRun, black, blue, font, point, px, size, white};
     use helix_core::doc_formatter::TextFormat;
+    use helix_view::view::ViewPosition;
 
     use super::{
-        SoftWrapVisualLine, decorate_soft_wrap_line_runs, soft_wrap_line_paint_plans,
-        soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
+        SoftWrapRenderPlanParams, SoftWrapVisualLine, decorate_soft_wrap_line_runs,
+        soft_wrap_line_paint_plans, soft_wrap_render_plan, soft_wrap_viewport_height,
+        soft_wrap_visual_lines, soft_wrap_visual_position,
     };
     use crate::EditorSurfaceGeometry;
 
@@ -513,5 +614,45 @@ mod tests {
         assert_eq!(plans[1].line_y, px(56.0));
         assert_eq!(plans[1].text_origin, point(px(132.0), px(56.0)));
         assert!(plans[1].is_cursor_visual_line);
+    }
+
+    #[test]
+    fn render_plan_collects_viewport_geometry_and_lines() {
+        let text = "foo ".repeat(10);
+        let bounds = Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(102.0)));
+        let view_offset = ViewPosition {
+            anchor: 0,
+            vertical_offset: 1,
+            horizontal_offset: 3,
+        };
+
+        let plan = soft_wrap_render_plan(SoftWrapRenderPlanParams {
+            text: text.as_str().into(),
+            text_format: text_format(),
+            view_offset,
+            bounds,
+            gutter_columns: 4,
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            scroll_line_offset: px(5.0),
+        });
+
+        assert_eq!(plan.view_offset, view_offset);
+        assert_eq!(plan.gutter_columns, 4);
+        assert_eq!(
+            plan.geometry,
+            EditorSurfaceGeometry::new(bounds, 4, px(8.0))
+        );
+        assert_eq!(plan.viewport_height, 6);
+        assert_eq!(plan.visual_lines.len(), 2);
+        assert_eq!(plan.visual_lines[0].visual_line, 1);
+
+        let paint_plans = plan.line_paint_plans(px(20.0), px(5.0), 0);
+
+        assert_eq!(paint_plans.len(), 2);
+        assert_eq!(paint_plans[0].visual.visual_line, 1);
+        assert_eq!(paint_plans[0].y_offset, px(-5.0));
+        assert_eq!(paint_plans[0].text_origin, point(px(132.0), px(36.0)));
+        assert!(paint_plans[0].is_cursor_visual_line);
     }
 }

@@ -89,9 +89,11 @@ pub use selection::{
     update_pointer_selection_at_event,
 };
 pub use soft_wrap::{
-    SoftWrapLinePaintPlan, SoftWrapVisualLine, SoftWrapVisualPosition,
-    decorate_soft_wrap_line_runs, soft_wrap_line_paint_plans, soft_wrap_viewport_height,
-    soft_wrap_visual_lines, soft_wrap_visual_position,
+    DocumentSoftWrapRenderPlanParams, SoftWrapLinePaintPlan, SoftWrapRenderPlan,
+    SoftWrapRenderPlanParams, SoftWrapVisualLine, SoftWrapVisualPosition,
+    decorate_soft_wrap_line_runs, document_soft_wrap_render_plan, soft_wrap_line_paint_plans,
+    soft_wrap_render_plan, soft_wrap_viewport_height, soft_wrap_visual_lines,
+    soft_wrap_visual_position,
 };
 pub use surface::{
     EditorSurface, EditorSurfaceMetricSnapshot, EditorSurfaceMetrics, EditorSurfacePointerEvent,
