@@ -7,7 +7,7 @@ use gpui::{
     App, Bounds, Font, Hsla, Pixels, Point, ShapedLine, SharedString, TextRun, Window,
     WindowTextSystem, fill, point, px, size, white,
 };
-use helix_core::{RopeSlice, graphemes::next_grapheme_boundary};
+use helix_core::{RopeSlice, doc_formatter::TextFormat, graphemes::next_grapheme_boundary};
 use helix_view::graphics::{CursorKind, Style};
 use nucleotide_logging::error;
 
@@ -16,7 +16,7 @@ use crate::{
     geometry::EditorSurfaceGeometry,
     line_cache::LineLayout,
     line_text::{byte_offset_for_char_offset, line_text_without_trailing_newline},
-    soft_wrap::SoftWrapVisualPosition,
+    soft_wrap::{SoftWrapVisualPosition, soft_wrap_visual_position},
     style::{create_styled_text_run, helix_color_to_hsla},
 };
 
@@ -112,6 +112,25 @@ pub struct UnwrappedCursorPaintPlanParams<'a> {
     pub cursor_viewport_position: Option<CursorViewportPosition>,
     pub line_layout: Option<&'a LineLayout>,
     pub next_line_y_offset: Pixels,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoftWrapCursorPaintPlan {
+    pub visual_position: SoftWrapVisualPosition,
+    pub paint_position: CursorPaintPosition,
+}
+
+pub struct SoftWrapCursorPaintPlanParams<'a> {
+    pub text: RopeSlice<'a>,
+    pub text_format: &'a TextFormat,
+    pub anchor: usize,
+    pub cursor_char_idx: usize,
+    pub geometry: EditorSurfaceGeometry,
+    pub line_height: Pixels,
+    pub cell_width: Pixels,
+    pub vertical_offset: usize,
+    pub viewport_height: usize,
+    pub horizontal_offset: usize,
 }
 
 #[derive(Clone)]
@@ -330,6 +349,31 @@ pub fn soft_wrap_cursor_paint_position(
     })
 }
 
+pub fn soft_wrap_cursor_paint_plan(
+    params: SoftWrapCursorPaintPlanParams<'_>,
+) -> Option<SoftWrapCursorPaintPlan> {
+    let visual_position = soft_wrap_visual_position(
+        params.text,
+        params.text_format,
+        params.anchor,
+        params.cursor_char_idx,
+    )?;
+    let paint_position = soft_wrap_cursor_paint_position(
+        params.geometry,
+        params.line_height,
+        params.cell_width,
+        visual_position.clone(),
+        params.vertical_offset,
+        params.viewport_height,
+        params.horizontal_offset,
+    )?;
+
+    Some(SoftWrapCursorPaintPlan {
+        visual_position,
+        paint_position,
+    })
+}
+
 pub fn cursor_foreground_color(cursor_style: &Style, has_reversed: bool, default_bg: Hsla) -> Hsla {
     if has_reversed {
         default_bg
@@ -388,6 +432,7 @@ pub fn shape_cursor_text(
 #[cfg(test)]
 mod tests {
     use gpui::{black, hsla, point, px, size};
+    use helix_core::doc_formatter::TextFormat;
     use helix_view::graphics::{Color, Modifier};
 
     use super::*;
@@ -400,6 +445,19 @@ mod tests {
             block_width: px(8.0),
             line_height: px(20.0),
             text: None,
+        }
+    }
+
+    fn soft_wrap_text_format() -> TextFormat {
+        TextFormat {
+            soft_wrap: true,
+            tab_width: 2,
+            max_wrap: 3,
+            max_indent_retain: 4,
+            wrap_indicator: ".".into(),
+            wrap_indicator_highlight: None,
+            viewport_width: 17,
+            soft_wrap_at_text_width: false,
         }
     }
 
@@ -541,6 +599,67 @@ mod tests {
     fn cursor_viewport_position_rejects_rows_outside_range() {
         assert_eq!(cursor_viewport_position(4, 5, 10), None);
         assert_eq!(cursor_viewport_position(10, 5, 10), None);
+    }
+
+    #[test]
+    fn soft_wrap_cursor_paint_plan_maps_visible_visual_position() {
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            4,
+            px(8.0),
+        );
+        let text = "foo ".repeat(10);
+        let text_format = soft_wrap_text_format();
+        let plan = soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
+            text: text.as_str().into(),
+            text_format: &text_format,
+            anchor: 0,
+            cursor_char_idx: 16,
+            geometry,
+            line_height: px(20.0),
+            cell_width: px(8.0),
+            vertical_offset: 1,
+            viewport_height: 4,
+            horizontal_offset: 0,
+        })
+        .expect("visible cursor plan");
+
+        assert_eq!(
+            plan.visual_position,
+            SoftWrapVisualPosition {
+                visual_line: 1,
+                visual_col: 1,
+            }
+        );
+        assert_eq!(plan.paint_position.paint_origin, point(px(140.0), px(41.0)));
+        assert_eq!(plan.paint_position.cursor_origin, point(px(0.0), px(0.0)));
+    }
+
+    #[test]
+    fn soft_wrap_cursor_paint_plan_rejects_cursor_outside_viewport() {
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            4,
+            px(8.0),
+        );
+        let text = "foo ".repeat(10);
+        let text_format = soft_wrap_text_format();
+
+        assert!(
+            soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
+                text: text.as_str().into(),
+                text_format: &text_format,
+                anchor: 0,
+                cursor_char_idx: 16,
+                geometry,
+                line_height: px(20.0),
+                cell_width: px(8.0),
+                vertical_offset: 2,
+                viewport_height: 4,
+                horizontal_offset: 0,
+            })
+            .is_none()
+        );
     }
 
     #[test]
