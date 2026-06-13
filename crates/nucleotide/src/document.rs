@@ -27,7 +27,7 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use helix_stdx::rope::RopeSliceExt;
 use nucleotide_editor::{
-    EditorDocumentMetrics, EditorLayout, EditorSurface, EditorSurfaceGeometry,
+    EditorCursor, EditorDocumentMetrics, EditorLayout, EditorSurface, EditorSurfaceGeometry,
     EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, LineLayoutCache,
     document_text_format_for_surface, hit_test_document_position,
 };
@@ -2754,7 +2754,7 @@ impl Element for DocumentElement {
                         };
 
                         // Create and paint cursor
-                        let mut cursor = Cursor {
+                        let mut cursor = EditorCursor {
                             origin: point(px(0.0), px(0.0)), // No offset needed, will be applied in paint
                             kind: cursor_kind,
                             color: cursor_color,
@@ -3321,7 +3321,7 @@ impl Element for DocumentElement {
                                 after_layout.cell_width
                             };
 
-                            let mut cursor = Cursor {
+                            let mut cursor = EditorCursor {
                                 origin: cursor_origin,
                                 kind: cursor_kind,
                                 color: cursor_color,
@@ -3408,7 +3408,7 @@ impl Element for DocumentElement {
                                 // Use default cursor width
                                 let cursor_width = after_layout.cell_width;
 
-                                let mut cursor = Cursor {
+                                let mut cursor = EditorCursor {
                                     origin: point(px(0.0), px(0.0)),
                                     kind: cursor_kind,
                                     color: cursor_color,
@@ -3662,57 +3662,6 @@ impl<'a> GutterRenderer for Gutter<'a> {
                 },
                 shaped,
             ));
-        }
-    }
-}
-
-struct Cursor {
-    origin: gpui::Point<Pixels>,
-    kind: CursorKind,
-    color: Hsla,
-    block_width: Pixels,
-    line_height: Pixels,
-    text: Option<ShapedLine>,
-}
-
-impl Cursor {
-    fn bounds(&self, origin: gpui::Point<Pixels>) -> Bounds<Pixels> {
-        match self.kind {
-            CursorKind::Bar => Bounds {
-                origin: self.origin + origin,
-                size: size(px(2.0), self.line_height),
-            },
-            CursorKind::Block => Bounds {
-                origin: self.origin + origin,
-                size: size(self.block_width, self.line_height),
-            },
-            CursorKind::Underline => Bounds {
-                origin: self.origin
-                    + origin
-                    + gpui::Point::new(Pixels::ZERO, self.line_height - px(2.0)),
-                size: size(self.block_width, px(2.0)),
-            },
-            CursorKind::Hidden => Bounds {
-                origin: self.origin + origin,
-                size: size(px(0.0), px(0.0)),
-            },
-        }
-    }
-
-    pub fn paint(&mut self, origin: gpui::Point<Pixels>, window: &mut Window, cx: &mut App) {
-        let bounds = self.bounds(origin);
-
-        // Paint the cursor quad first
-        window.paint_quad(fill(bounds, self.color));
-
-        // Then paint text on top of the cursor block
-        if let Some(text) = &self.text {
-            // For block cursor, text should be painted at the cursor position
-            // Use the bounds origin to ensure text aligns with the cursor block
-            let text_origin = bounds.origin;
-            if let Err(e) = text.paint(text_origin, self.line_height, window, cx) {
-                error!(error = ?e, "Failed to paint cursor text");
-            }
         }
     }
 }

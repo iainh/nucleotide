@@ -1,6 +1,7 @@
 // ABOUTME: Editor view crate that renders documents without circular dependencies
 // ABOUTME: Uses capability traits to depend on abstractions rather than concrete types
 
+pub mod cursor;
 pub mod document_metrics;
 pub mod document_renderer;
 pub mod editor_view;
@@ -13,6 +14,7 @@ pub mod scroll_state;
 pub mod surface;
 pub mod viewport;
 
+pub use cursor::EditorCursor;
 pub use document_metrics::{
     EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,
 };
