@@ -60,8 +60,10 @@ pub use gutter::{
     paint_soft_wrap_gutter_lines, soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans,
 };
 pub use highlight::{
-    DiagnosticOverlaySpans, HighlightLineParams, diagnostic_overlay_spans,
-    gpui_hsla_to_helix_color, highlight_line, text_style_at_position,
+    DiagnosticOverlaySpans, EditorLineHighlightContext, HighlightLineParams,
+    SoftWrapHighlightedLineRunsParams, UnwrappedHighlightedLine, UnwrappedHighlightedLineParams,
+    diagnostic_overlay_spans, gpui_hsla_to_helix_color, highlight_line,
+    soft_wrap_highlighted_line_runs, text_style_at_position, unwrapped_highlighted_line,
 };
 pub use hit_test::{EditorHitTestResult, hit_test_document_position};
 pub use line_cache::{LineLayout, LineLayoutCache};
