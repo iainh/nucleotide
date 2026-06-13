@@ -727,6 +727,7 @@ fn native_command_supported(command: &MappableCommand) -> bool {
         || native_insert_entry_command(command)
         || native_prompt_command(command)
         || native_history_command(command)
+        || native_register_edit_command(command)
         || name.starts_with("move_")
         || name.starts_with("extend_")
         || matches!(
@@ -790,10 +791,38 @@ fn native_history_command(command: &MappableCommand) -> bool {
     matches!(command.name(), "undo" | "redo")
 }
 
+fn native_register_edit_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "delete_selection"
+            | "delete_selection_noyank"
+            | "change_selection"
+            | "change_selection_noyank"
+            | "yank"
+            | "yank_to_clipboard"
+            | "yank_to_primary_clipboard"
+            | "yank_joined"
+            | "yank_joined_to_clipboard"
+            | "yank_joined_to_primary_clipboard"
+            | "yank_main_selection_to_clipboard"
+            | "yank_main_selection_to_primary_clipboard"
+            | "paste_after"
+            | "paste_before"
+            | "paste_clipboard_after"
+            | "paste_clipboard_before"
+            | "paste_primary_clipboard_after"
+            | "paste_primary_clipboard_before"
+            | "replace_with_yanked"
+            | "replace_selections_with_clipboard"
+            | "replace_selections_with_primary_clipboard"
+    )
+}
+
 fn native_insert_command_supported(command: &MappableCommand) -> bool {
     (!native_insert_entry_command(command)
         && !native_prompt_command(command)
         && !native_history_command(command)
+        && !native_register_edit_command(command)
         && native_command_supported(command))
         || native_insert_edit_command(command)
         || native_insert_interactive_command(command)
@@ -954,6 +983,13 @@ mod tests {
         assert!(native_command_supported(&MappableCommand::rsearch));
         assert!(native_command_supported(&MappableCommand::undo));
         assert!(native_command_supported(&MappableCommand::redo));
+        assert!(native_command_supported(&MappableCommand::delete_selection));
+        assert!(native_command_supported(&MappableCommand::change_selection));
+        assert!(native_command_supported(&MappableCommand::yank));
+        assert!(native_command_supported(&MappableCommand::paste_after));
+        assert!(native_command_supported(
+            &MappableCommand::replace_with_yanked
+        ));
         assert!(!native_command_supported(&MappableCommand::goto_definition));
     }
 
@@ -997,6 +1033,16 @@ mod tests {
         ));
         assert!(!native_insert_command_supported(&MappableCommand::undo));
         assert!(!native_insert_command_supported(&MappableCommand::redo));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::delete_selection
+        ));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::change_selection
+        ));
+        assert!(!native_insert_command_supported(&MappableCommand::yank));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::paste_after
+        ));
     }
 
     #[test]
@@ -1058,6 +1104,70 @@ mod tests {
         assert!(!native_history_command(&MappableCommand::earlier));
         assert!(!native_history_command(&MappableCommand::later));
         assert!(!native_history_command(&MappableCommand::normal_mode));
+    }
+
+    #[test]
+    fn register_edit_commands_are_classified_separately() {
+        assert!(native_register_edit_command(
+            &MappableCommand::delete_selection
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::delete_selection_noyank
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::change_selection
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::change_selection_noyank
+        ));
+        assert!(native_register_edit_command(&MappableCommand::yank));
+        assert!(native_register_edit_command(
+            &MappableCommand::yank_to_clipboard
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::yank_to_primary_clipboard
+        ));
+        assert!(native_register_edit_command(&MappableCommand::yank_joined));
+        assert!(native_register_edit_command(
+            &MappableCommand::yank_joined_to_clipboard
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::yank_joined_to_primary_clipboard
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::yank_main_selection_to_clipboard
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::yank_main_selection_to_primary_clipboard
+        ));
+        assert!(native_register_edit_command(&MappableCommand::paste_after));
+        assert!(native_register_edit_command(&MappableCommand::paste_before));
+        assert!(native_register_edit_command(
+            &MappableCommand::paste_clipboard_after
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::paste_clipboard_before
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::paste_primary_clipboard_after
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::paste_primary_clipboard_before
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::replace_with_yanked
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::replace_selections_with_clipboard
+        ));
+        assert!(native_register_edit_command(
+            &MappableCommand::replace_selections_with_primary_clipboard
+        ));
+        assert!(!native_register_edit_command(&MappableCommand::undo));
+        assert!(!native_register_edit_command(&MappableCommand::normal_mode));
+        assert!(!native_register_edit_command(
+            &MappableCommand::goto_definition
+        ));
     }
 
     #[test]
