@@ -15,22 +15,21 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    EditorCursor, EditorLayout, EditorLineBackgroundStyle, EditorScrollbarState,
-    EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics,
-    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout,
-    GutterLineParams, HighlightLineParams, LineLayout, LineLayoutCache,
-    begin_editor_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
-    build_soft_wrap_gutter_lines, cursor_background_color, cursor_document_line,
-    cursor_foreground_color, cursor_has_reversed_modifier, cursor_line_position,
-    cursor_style_for_mode, decorate_soft_wrap_line_runs, diagnostic_marker_paint_style,
-    diagnostic_marker_plan, diagnostic_overlay_spans, diagnostic_severity_by_line,
-    document_render_snapshot, document_text_format_for_surface, gpui_hsla_to_helix_color,
-    highlight_line, paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
-    paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines, paint_visible_rulers,
-    phantom_line_cursor_paint_position, shape_cursor_text,
+    DocumentSoftWrapRenderPlanParams, EditorCursor, EditorLayout, EditorLineBackgroundStyle,
+    EditorScrollbarState, EditorSelectionDragState, EditorSurface, EditorSurfaceGeometry,
+    EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
+    EditorViewportSurfaceLayout, GutterLineParams, HighlightLineParams, LineLayout,
+    LineLayoutCache, begin_editor_pointer_selection_at_event, block_cursor_text,
+    build_gutter_lines, build_soft_wrap_gutter_lines, cursor_background_color,
+    cursor_document_line, cursor_foreground_color, cursor_has_reversed_modifier,
+    cursor_line_position, cursor_style_for_mode, decorate_soft_wrap_line_runs,
+    diagnostic_marker_paint_style, diagnostic_marker_plan, diagnostic_overlay_spans,
+    diagnostic_severity_by_line, document_render_snapshot, document_soft_wrap_render_plan,
+    gpui_hsla_to_helix_color, highlight_line, paint_cursorline_background, paint_diagnostic_marker,
+    paint_editor_background, paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines,
+    paint_visible_rulers, phantom_line_cursor_paint_position, shape_cursor_text,
     shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_position,
-    soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_line_paint_plans,
-    soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
+    soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, soft_wrap_visual_position,
     text_style_at_position, unwrapped_cursor_paint_position, unwrapped_line_paint_plans,
     unwrapped_visible_line_plans, update_editor_pointer_selection_at_event,
     visible_ruler_paint_plans,
@@ -856,8 +855,7 @@ impl Element for DocumentElement {
                 let wrap_indicator_color =
                     cx.theme_style("ui.virtual.wrap").fg.and_then(color_to_hsla);
 
-                // Re-read core to get document and view - extract what we need and drop the borrow
-                let (text_format, view_offset, gutter_offset) = {
+                let soft_wrap_plan = {
                     let core = self.core.read(cx);
                     let editor = &core.editor;
                     let document = match editor.document(self.doc_id) {
@@ -868,38 +866,28 @@ impl Element for DocumentElement {
                         Some(v) => v,
                         None => return,
                     };
-                    let view_offset = document.view_offset(self.view_id);
                     let gutter_offset = view.gutter_offset(document);
 
-                    let (_, text_format) = document_text_format_for_surface(
+                    document_soft_wrap_render_plan(DocumentSoftWrapRenderPlanParams {
                         document,
-                        Some(&theme),
+                        theme: Some(&theme),
+                        view_id: self.view_id,
                         bounds,
-                        gutter_offset,
-                        after_layout.cell_width,
-                        10,
-                    );
-                    (text_format, view_offset, gutter_offset)
+                        gutter_columns: gutter_offset,
+                        cell_width: after_layout.cell_width,
+                        line_height: after_layout.line_height,
+                        scroll_line_offset,
+                        minimum_columns: 10,
+                    })
                 };
 
-                let soft_wrap_geometry =
-                    EditorSurfaceGeometry::new(bounds, gutter_offset, after_layout.cell_width);
-                let viewport_height =
-                    soft_wrap_viewport_height(bounds, after_layout.line_height, scroll_line_offset);
-
-                let soft_wrap_lines = soft_wrap_visual_lines(
-                    text,
-                    &text_format,
-                    view_offset.anchor,
-                    view_offset.vertical_offset,
-                    viewport_height,
-                );
-                let soft_wrap_paint_plans = soft_wrap_line_paint_plans(
-                    &soft_wrap_lines,
-                    soft_wrap_geometry,
+                let text_format = &soft_wrap_plan.text_format;
+                let view_offset = soft_wrap_plan.view_offset;
+                let viewport_height = soft_wrap_plan.viewport_height;
+                let soft_wrap_lines = &soft_wrap_plan.visual_lines;
+                let soft_wrap_paint_plans = soft_wrap_plan.line_paint_plans(
                     after_layout.line_height,
                     scroll_line_offset,
-                    view_offset.vertical_offset,
                     cursor_line_num,
                 );
 
@@ -1022,7 +1010,7 @@ impl Element for DocumentElement {
                     let gutter_selected_style = cx.theme_style("ui.linenr.selected");
 
                     let gutter_plans = soft_wrap_gutter_line_plans(
-                        &soft_wrap_lines,
+                        soft_wrap_lines,
                         view_offset.vertical_offset,
                         after_layout.line_height,
                         scroll_line_offset,
@@ -1134,7 +1122,7 @@ impl Element for DocumentElement {
 
                     let cursor_visual_position = soft_wrap_visual_position(
                         text,
-                        &text_format,
+                        text_format,
                         view_offset.anchor,
                         cursor_char_idx,
                     );
