@@ -5,6 +5,7 @@ pub mod app_core;
 pub mod completion_handler;
 pub mod document_handler;
 pub mod editor_handler;
+pub mod editor_input;
 pub mod lsp_handler;
 #[cfg(feature = "terminal-emulator")]
 pub mod terminal_handler;
@@ -79,14 +80,7 @@ impl nucleotide_lsp::EnvironmentProvider for ProjectEnvironmentProvider {
 }
 
 use gpui::{App, AppContext};
-use helix_term::{
-    args::Args,
-    compositor::{self, Compositor},
-    config::Config,
-    job::Jobs,
-    keymap::Keymaps,
-    ui::EditorView,
-};
+use helix_term::{args::Args, compositor::Compositor, config::Config, job::Jobs, keymap::Keymaps};
 use helix_view::DocumentId;
 use helix_view::document::DocumentSavedEventResult;
 use helix_view::{Editor, doc_mut, graphics::Rect, handlers::Handlers};
@@ -145,13 +139,14 @@ use nucleotide_lsp::lsp_state::DiagnosticInfo;
 
 use crate::types::{AppEvent, CoreEvent, Update};
 // ApplicationCore already imported above via pub use
+use editor_input::EditorInputBridge;
 use gpui::EventEmitter;
 use tokio_stream::StreamExt;
 
 pub struct Application {
     pub editor: Editor,
     pub compositor: Compositor,
-    pub view: EditorView,
+    pub editor_input: EditorInputBridge,
     pub jobs: Jobs,
     pub lsp_progress: LspProgressMap,
     pub lsp_state: Option<gpui::Entity<nucleotide_lsp::LspState>>,
@@ -1991,101 +1986,25 @@ impl Application {
         handle: tokio::runtime::Handle,
     ) {
         let _guard = handle.enter();
-        use helix_term::compositor::{Component, EventResult};
-
-        let mut comp_ctx = compositor::Context {
-            editor: &mut self.editor,
-            scroll: None,
-            jobs: &mut self.jobs,
-        };
         match event {
             InputEvent::Key(key) => {
                 nucleotide_logging::info!(key = ?key, "DEBUG: Handling key event in Application");
 
-                // Log cursor position before key handling
-                let view_id = comp_ctx.editor.tree.focus;
-                let doc_id = comp_ctx
-                    .editor
-                    .tree
-                    .try_get(view_id)
-                    .map(|view| view.doc)
-                    .unwrap_or_default();
+                let outcome = self.editor_input.handle_key(
+                    key,
+                    &mut self.compositor,
+                    &mut self.editor,
+                    &mut self.jobs,
+                );
 
-                // Extra debug for ctrl-x - after doc_id is available
-                if key
-                    .modifiers
-                    .contains(helix_view::keyboard::KeyModifiers::CONTROL)
-                    && matches!(key.code, helix_view::keyboard::KeyCode::Char('x'))
+                if outcome.selection_changed
+                    && let Some(doc_id) = outcome.focused_doc_id
                 {
-                    let doc = comp_ctx.editor.document(doc_id);
-                    let language_server_count = comp_ctx.editor.language_servers.incoming.len();
-                    let file_path = doc
-                        .and_then(|d| d.path())
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "no file".to_string());
-                    let language = doc
-                        .and_then(|d| d.language_config())
-                        .map(|l| l.language_id.clone())
-                        .unwrap_or_else(|| "no language".to_string());
-
-                    nucleotide_logging::info!(
-                        editor_mode = ?comp_ctx.editor.mode(),
-                        language_servers = language_server_count,
-                        file_path = %file_path,
-                        language = %language,
-                        "DEBUG: CTRL-X received - editor state for completion"
-                    );
-                }
-
-                // Store before position
-                let before_cursor = if let Some(doc) = comp_ctx.editor.document(doc_id) {
-                    let sel = doc.selection(view_id);
-                    let text = doc.text();
-                    let cursor_pos = sel.primary().cursor(text.slice(..));
-                    let line = text.char_to_line(cursor_pos);
-                    debug!("Before key - cursor pos: {cursor_pos}, line: {line}");
-                    Some((cursor_pos, line))
-                } else {
-                    None
-                };
-
-                let mut selection_changed = false;
-                let is_handled = self
-                    .compositor
-                    .handle_event(&helix_view::input::Event::Key(key), &mut comp_ctx);
-                if !is_handled {
-                    let event = &helix_view::input::Event::Key(key);
-
-                    let res = self.view.handle_event(event, &mut comp_ctx);
-
-                    if let EventResult::Consumed(Some(cb)) = res {
-                        cb(&mut self.compositor, &mut comp_ctx);
-                    }
-                }
-
-                // Log cursor position after key handling
-                if let Some(doc) = comp_ctx.editor.document(doc_id) {
-                    let sel = doc.selection(view_id);
-                    let text = doc.text();
-                    let cursor_pos = sel.primary().cursor(text.slice(..));
-                    let line = text.char_to_line(cursor_pos);
-                    debug!("After key - cursor pos: {cursor_pos}, line: {line}");
-
-                    // Check if we moved lines
-                    if let Some((before_pos, before_line)) = before_cursor
-                        && (before_line != line || before_pos != cursor_pos)
-                    {
-                        selection_changed = true;
-                        debug!(
-                            "Cursor moved from pos {} (line {}) to pos {} (line {})",
-                            before_pos, before_line, cursor_pos, line
-                        );
-                    }
-                }
-
-                if selection_changed {
                     cx.emit(crate::Update::Event(AppEvent::Core(
-                        CoreEvent::SelectionChanged { doc_id, view_id },
+                        CoreEvent::SelectionChanged {
+                            doc_id,
+                            view_id: outcome.focused_view_id,
+                        },
                     )));
                 }
 
@@ -5135,7 +5054,7 @@ pub fn init_editor(
         height: 25,
     });
     let keymaps = Keymaps::new(keys);
-    let view = EditorView::new(keymaps);
+    let editor_input = EditorInputBridge::new(keymaps);
     let jobs = Jobs::new();
 
     // Initialize completion coordinator - but we need to do this after Application is created
@@ -5188,7 +5107,7 @@ pub fn init_editor(
     Ok(Application {
         editor,
         compositor,
-        view,
+        editor_input,
         jobs,
         lsp_progress: LspProgressMap::new(),
         lsp_state: None, // Will be initialized when Application is wrapped in a GPUI entity
