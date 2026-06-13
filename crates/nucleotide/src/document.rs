@@ -312,19 +312,22 @@ impl DocumentView {
         diags
     }
 
-    /// Get the current cursor position in window coordinates
-    /// Returns None if cursor is not visible or cannot be calculated
-    /// TODO: Implement this method once we figure out the correct Helix API usage
-    #[allow(dead_code)]
     /// Get the actual line height used by this DocumentView
     pub fn get_line_height(&self) -> Pixels {
         self.line_height
     }
 
+    /// Get the cursor's last painted top-left position and size in window coordinates.
+    pub fn get_cursor_overlay_bounds(&self) -> Option<(Point<Pixels>, Size<Pixels>)> {
+        self.last_cursor_position
+            .get()
+            .zip(self.last_cursor_size.get())
+    }
+
     /// Get the last cursor position and size in window coordinates
     /// Returns (position, size) where position is bottom-left corner for completion positioning
     pub fn get_cursor_coordinates(&self) -> Option<(Point<Pixels>, Size<Pixels>)> {
-        cursor_completion_anchor(self.last_cursor_position.get(), self.last_cursor_size.get())
+        cursor_completion_anchor(self.get_cursor_overlay_bounds())
     }
 }
 
@@ -343,10 +346,9 @@ fn set_cursor_overlay_cells(
 }
 
 fn cursor_completion_anchor(
-    cursor_position: Option<Point<Pixels>>,
-    cursor_size: Option<Size<Pixels>>,
+    cursor_overlay_bounds: Option<(Point<Pixels>, Size<Pixels>)>,
 ) -> Option<(Point<Pixels>, Size<Pixels>)> {
-    let (position, size) = cursor_position.zip(cursor_size)?;
+    let (position, size) = cursor_overlay_bounds?;
     Some((
         Point {
             x: position.x,
@@ -857,8 +859,7 @@ mod tests {
         let position = point(px(12.0), px(34.0));
         let size = size(px(8.0), px(20.0));
 
-        let Some((anchor, returned_size)) = cursor_completion_anchor(Some(position), Some(size))
-        else {
+        let Some((anchor, returned_size)) = cursor_completion_anchor(Some((position, size))) else {
             panic!("expected cursor anchor");
         };
 
@@ -867,13 +868,8 @@ mod tests {
     }
 
     #[test]
-    fn cursor_completion_anchor_requires_position_and_size() {
-        let position = point(px(12.0), px(34.0));
-        let size = size(px(8.0), px(20.0));
-
-        assert!(cursor_completion_anchor(Some(position), None).is_none());
-        assert!(cursor_completion_anchor(None, Some(size)).is_none());
-        assert!(cursor_completion_anchor(None, None).is_none());
+    fn cursor_completion_anchor_requires_overlay_bounds() {
+        assert!(cursor_completion_anchor(None).is_none());
     }
 
     #[test]

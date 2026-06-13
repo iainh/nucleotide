@@ -17,8 +17,9 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, BorrowAppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Render, StatefulInteractiveElement, Styled,
-    TextStyle, Window, WindowAppearance, WindowBackgroundAppearance, black, div, px, white,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, Size,
+    StatefulInteractiveElement, Styled, TextStyle, Window, WindowAppearance,
+    WindowBackgroundAppearance, black, div, px, white,
 };
 use helix_core::Selection;
 use helix_core::syntax::config::LanguageServerFeature;
@@ -6447,8 +6448,9 @@ impl Workspace {
             px(0.0) // No file tree width if hidden
         };
 
-        // Get font metrics from the focused DocumentView if available
-        let (line_height, char_width) = self.get_font_metrics_from_focused_view(cx);
+        // Get font and cursor metrics from the focused DocumentView if available
+        let (line_height, char_width, cursor_position, cursor_size) =
+            self.get_focused_document_view_layout(cx);
 
         let layout_info = WorkspaceLayoutInfo {
             file_tree_width,
@@ -6457,8 +6459,8 @@ impl Workspace {
             title_bar_height: px(30.0), // Much smaller - just window controls
             line_height,
             char_width,
-            cursor_position: None, // Will be filled by DocumentView during cursor rendering
-            cursor_size: None,     // Will be filled by DocumentView during cursor rendering
+            cursor_position,
+            cursor_size,
         };
 
         // Set as global state so overlay can access it
@@ -6514,11 +6516,11 @@ impl Workspace {
         )
     }
 
-    /// Get font metrics (line height, char width) from the focused DocumentView
-    fn get_font_metrics_from_focused_view(
+    /// Get layout metrics from the focused DocumentView.
+    fn get_focused_document_view_layout(
         &mut self,
         cx: &mut Context<Self>,
-    ) -> (gpui::Pixels, gpui::Pixels) {
+    ) -> (Pixels, Pixels, Option<Point<Pixels>>, Option<Size<Pixels>>) {
         let (fallback_line_h, cached_char_w) = self.resolve_editor_font_metrics(cx);
         // Try to get the focused DocumentView
         if let Some(focused_view_id) = self.view_manager.focused_view_id()
@@ -6531,13 +6533,18 @@ impl Workspace {
 
                 // Use cached character width derived from font metrics
                 let char_width = px(cached_char_w);
+                let (cursor_position, cursor_size) = doc_view
+                    .get_cursor_overlay_bounds()
+                    .map_or((None, None), |(position, size)| {
+                        (Some(position), Some(size))
+                    });
 
-                (line_height, char_width)
+                (line_height, char_width, cursor_position, cursor_size)
             });
         }
 
         // Fallback to cached metrics if no focused view exists
-        (px(fallback_line_h), px(cached_char_w))
+        (px(fallback_line_h), px(cached_char_w), None, None)
     }
 
     fn sync_embedded_terminal_size(
@@ -7404,7 +7411,7 @@ impl Render for Workspace {
                 let editor_w_px = (viewport_w_px - file_tree_w_px).max(0.0);
                 let editor_h_px = editor_h.max(0.0);
 
-                let (line_h_px, char_w_px) = self.get_font_metrics_from_focused_view(cx);
+                let (line_h_px, char_w_px, _, _) = self.get_focused_document_view_layout(cx);
                 let line_h_value = f32::from(line_h_px);
                 let char_w_value = f32::from(char_w_px);
                 self.sync_embedded_terminal_size(
