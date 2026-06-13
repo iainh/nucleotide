@@ -20,14 +20,14 @@ use nucleotide_editor::{
     EditorSurface, EditorSurfaceGeometry, EditorSurfaceMetrics, EditorSurfacePointerEvent,
     EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout, GutterLineParams,
     HighlightLineParams, LineLayout, LineLayoutCache, SoftWrapCursorPaintPlanParams,
-    UnwrappedCursorPaintPlanParams, UnwrappedCursorPaintPlanSource, UnwrappedRenderPlanParams,
+    UnwrappedCursorPaintPlanParams, UnwrappedRenderPlanParams,
     begin_editor_pointer_selection_at_event, block_cursor_text, build_gutter_lines,
     build_soft_wrap_gutter_lines, cursor_background_color, cursor_document_line,
-    cursor_foreground_color, cursor_has_reversed_modifier, cursor_style_for_mode,
-    decorate_soft_wrap_line_runs, diagnostic_gutter_marker_paint_plan, diagnostic_overlay_spans,
-    diagnostic_severity_by_line, diagnostic_severity_color, document_render_snapshot,
-    document_soft_wrap_render_plan, gpui_hsla_to_helix_color, highlight_line,
-    paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
+    cursor_foreground_color, cursor_has_reversed_modifier, cursor_overlay_plan,
+    cursor_style_for_mode, decorate_soft_wrap_line_runs, diagnostic_gutter_marker_paint_plan,
+    diagnostic_overlay_spans, diagnostic_severity_by_line, diagnostic_severity_color,
+    document_render_snapshot, document_soft_wrap_render_plan, gpui_hsla_to_helix_color,
+    highlight_line, paint_cursorline_background, paint_diagnostic_marker, paint_editor_background,
     paint_editor_line, paint_gutter_lines, paint_soft_wrap_gutter_lines, paint_visible_rulers,
     shape_cursor_text, shared_line_text_without_trailing_newline, soft_wrap_cursor_paint_plan,
     soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, text_style_at_position,
@@ -1139,29 +1139,23 @@ impl Element for DocumentElement {
                         );
                         let cursor_width = cursor_text_shape.width_or(after_layout.cell_width);
 
-                        // Create and paint cursor
-                        let mut cursor = EditorCursor {
-                            origin: cursor_paint_position.cursor_origin,
-                            kind: cursor_kind,
-                            color: cursor_color,
-                            block_width: cursor_width,
-                            line_height: after_layout.line_height,
-                            text: cursor_text_shape.into_shaped_line(),
-                        };
+                        let mut cursor = EditorCursor::from_paint_position(
+                            cursor_paint_position,
+                            cursor_kind,
+                            cursor_color,
+                            cursor_width,
+                            after_layout.line_height,
+                            cursor_text_shape.into_shaped_line(),
+                        );
 
-                        // Store cursor position for overlay positioning
-                        let cursor_point = cursor_paint_position.cursor_point();
-
-                        // Update the global WorkspaceLayoutInfo with exact cursor coordinates
-                        {
-                            let layout_info =
-                                cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
-                            layout_info.cursor_position = Some(cursor_point);
-                            layout_info.cursor_size = Some(gpui::Size {
-                                width: cursor_width,
-                                height: after_layout.line_height,
-                            });
-                        }
+                        let overlay_plan = cursor_overlay_plan(
+                            cursor_paint_position,
+                            cursor_width,
+                            after_layout.line_height,
+                        );
+                        let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+                        layout_info.cursor_position = Some(overlay_plan.cursor_position);
+                        layout_info.cursor_size = Some(overlay_plan.cursor_size);
 
                         cursor.paint(cursor_paint_position.paint_origin, window, cx);
                     }
@@ -1391,27 +1385,24 @@ impl Element for DocumentElement {
                             );
                             let cursor_width = cursor_text_shape.width_or(after_layout.cell_width);
 
-                            let mut cursor = EditorCursor {
-                                origin: cursor_paint_position.cursor_origin,
-                                kind: cursor_kind,
-                                color: cursor_color,
-                                block_width: cursor_width,
-                                line_height: after_layout.line_height,
-                                text: cursor_text_shape.clone().into_shaped_line(),
-                            };
+                            let mut cursor = EditorCursor::from_paint_position(
+                                cursor_paint_position,
+                                cursor_kind,
+                                cursor_color,
+                                cursor_width,
+                                after_layout.line_height,
+                                cursor_text_shape.clone().into_shaped_line(),
+                            );
 
-                            if cursor_paint_plan.source
-                                == UnwrappedCursorPaintPlanSource::PhantomTrailingNewline
-                            {
-                                let cursor_point = cursor_paint_position.cursor_point();
-                                let layout_info =
-                                    cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
-                                layout_info.cursor_position = Some(cursor_point);
-                                layout_info.cursor_size = Some(gpui::Size {
-                                    width: cursor_width,
-                                    height: after_layout.line_height,
-                                });
-                            }
+                            let overlay_plan = cursor_overlay_plan(
+                                cursor_paint_position,
+                                cursor_width,
+                                after_layout.line_height,
+                            );
+                            let layout_info =
+                                cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+                            layout_info.cursor_position = Some(overlay_plan.cursor_position);
+                            layout_info.cursor_size = Some(overlay_plan.cursor_size);
 
                             cursor.paint(cursor_paint_position.paint_origin, window, cx);
                         }
