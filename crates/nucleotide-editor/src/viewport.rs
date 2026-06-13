@@ -6,7 +6,7 @@ use helix_core::{
     RopeSlice, char_idx_at_visual_offset, doc_formatter::TextFormat,
     text_annotations::TextAnnotations, visual_offset_from_block,
 };
-use helix_view::{Document, DocumentId, Editor, Theme, ViewId, view::ViewPosition};
+use helix_view::{Document, DocumentId, Editor, Theme, ViewId, graphics::Rect, view::ViewPosition};
 use nucleotide_logging::debug;
 
 use crate::{EditorDocumentMetrics, ScrollManager};
@@ -353,6 +353,13 @@ impl EditorViewport {
             },
         );
         self.set_content_visual_rows(metrics.visual_rows);
+        sync_helix_view_area(
+            editor,
+            view_id,
+            gutter_columns,
+            metrics.viewport_columns,
+            self.visible_visual_rows(),
+        );
 
         let mut helix_view_synced = if self.has_pending_view_sync() {
             let synced = self.sync_to_helix_view(editor, doc_id, view_id, &metrics.text_format);
@@ -432,6 +439,44 @@ fn editor_viewport_content_metrics(
     );
 
     (gutter_columns, metrics)
+}
+
+fn sync_helix_view_area(
+    editor: &mut Editor,
+    view_id: ViewId,
+    gutter_columns: u16,
+    viewport_columns: u16,
+    visible_rows: usize,
+) -> bool {
+    let target_area = helix_view_area_for_surface(gutter_columns, viewport_columns, visible_rows);
+    let Some(current_area) = editor.tree.try_get(view_id).map(|view| view.area) else {
+        return false;
+    };
+    if current_area == target_area {
+        return false;
+    }
+
+    debug!(
+        view_id = ?view_id,
+        old_area = ?current_area,
+        new_area = ?target_area,
+        "Syncing native viewport dimensions to Helix view area"
+    );
+    editor.tree.get_mut(view_id).area = target_area;
+    true
+}
+
+fn helix_view_area_for_surface(
+    gutter_columns: u16,
+    viewport_columns: u16,
+    visible_rows: usize,
+) -> Rect {
+    let width = gutter_columns.saturating_add(viewport_columns).max(1);
+    let height = u16::try_from(visible_rows.saturating_add(1))
+        .unwrap_or(u16::MAX)
+        .max(1);
+
+    Rect::new(0, 0, width, height)
 }
 
 pub fn editor_viewport_size_for_bounds(bounds: Bounds<Pixels>) -> Size<Pixels> {
@@ -720,6 +765,60 @@ mod tests {
         assert_eq!(update.visual_rows, expected.visual_rows);
         assert_eq!(update.soft_wrap, expected.soft_wrap);
         assert_eq!(viewport.content_visual_rows(), expected.visual_rows);
+    }
+
+    #[test]
+    fn helix_view_area_includes_gutter_and_status_row() {
+        assert_eq!(
+            helix_view_area_for_surface(4, 20, 5),
+            Rect::new(0, 0, 24, 6)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn surface_layout_sync_updates_helix_view_area_from_native_cells() {
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo\nthree\n");
+        let mut viewport = EditorViewport::new(px(20.0));
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(101.0)));
+
+        let update = viewport
+            .sync_surface_layout(
+                &mut editor,
+                doc_id,
+                view_id,
+                EditorViewportSurfaceLayout {
+                    theme: None,
+                    bounds,
+                    cell_width: px(8.0),
+                    line_height: px(20.0),
+                    minimum_columns: 1,
+                    cursor_reveal: None,
+                },
+            )
+            .unwrap();
+
+        let document = editor.document(doc_id).unwrap();
+        let expected = EditorDocumentMetrics::resolve(
+            document,
+            None,
+            bounds,
+            update.gutter_columns,
+            px(8.0),
+            1,
+        );
+        let view = editor.tree.get(view_id);
+
+        assert_eq!(view.gutter_offset(document), update.gutter_columns);
+        assert_eq!(view.inner_width(document), expected.viewport_columns);
+        assert_eq!(view.inner_height(), viewport.visible_visual_rows());
+        assert_eq!(
+            view.area,
+            helix_view_area_for_surface(
+                update.gutter_columns,
+                expected.viewport_columns,
+                viewport.visible_visual_rows()
+            )
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
