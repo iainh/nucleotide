@@ -1,9 +1,15 @@
 // ABOUTME: Native editor virtual ruler geometry helpers
 // ABOUTME: Converts configured ruler columns into visible GPUI paint bounds
 
-use gpui::{Bounds, Pixels, point, px, size};
+use gpui::{Bounds, Hsla, Pixels, Window, fill, point, px, size};
 
 use crate::EditorSurfaceGeometry;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RulerPaintPlan {
+    pub bounds: Bounds<Pixels>,
+    pub color: Hsla,
+}
 
 pub fn visible_ruler_bounds(
     geometry: EditorSurfaceGeometry,
@@ -31,9 +37,27 @@ pub fn visible_ruler_bounds(
         .collect()
 }
 
+pub fn visible_ruler_paint_plans(
+    geometry: EditorSurfaceGeometry,
+    ruler_columns: &[u16],
+    horizontal_offset: usize,
+    color: Hsla,
+) -> Vec<RulerPaintPlan> {
+    visible_ruler_bounds(geometry, ruler_columns, horizontal_offset)
+        .into_iter()
+        .map(|bounds| RulerPaintPlan { bounds, color })
+        .collect()
+}
+
+pub fn paint_visible_rulers(window: &mut Window, plans: &[RulerPaintPlan]) {
+    for plan in plans {
+        window.paint_quad(fill(plan.bounds, plan.color));
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use gpui::{Bounds, point, px, size};
+    use gpui::{Bounds, point, px, rgb, size};
 
     use super::*;
 
@@ -81,6 +105,26 @@ mod tests {
                 point(px(132.0), px(40.0)),
                 size(px(1.0), px(300.0)),
             )]
+        );
+    }
+
+    #[test]
+    fn paint_plans_attach_color_to_visible_rulers() {
+        let color = rgb(0x336699).into();
+        let plans = visible_ruler_paint_plans(geometry(), &[1, 4, 80], 0, color);
+
+        assert_eq!(
+            plans,
+            vec![
+                RulerPaintPlan {
+                    bounds: Bounds::new(point(px(132.0), px(40.0)), size(px(1.0), px(300.0))),
+                    color,
+                },
+                RulerPaintPlan {
+                    bounds: Bounds::new(point(px(156.0), px(40.0)), size(px(1.0), px(300.0))),
+                    color,
+                },
+            ]
         );
     }
 }

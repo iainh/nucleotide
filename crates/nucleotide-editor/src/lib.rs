@@ -66,7 +66,9 @@ pub use line_text::{
     shared_line_text_without_trailing_newline,
 };
 pub use metrics::EditorTextMetrics;
-pub use ruler::visible_ruler_bounds;
+pub use ruler::{
+    RulerPaintPlan, paint_visible_rulers, visible_ruler_bounds, visible_ruler_paint_plans,
+};
 pub use scroll_manager::ScrollManager;
 pub use scroll_state::ScrollState;
 pub use soft_wrap::{
