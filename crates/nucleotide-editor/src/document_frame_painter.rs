@@ -14,11 +14,35 @@ use crate::{
     UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams, build_gutter_lines_from_plans,
     gutter::SoftWrapGutterLine, paint_diagnostic_gutter_markers, paint_gutter_lines,
     paint_shaped_editor_cursor, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
-    paint_unwrapped_editor_line, shape_and_paint_editor_cursor, soft_wrap_cursor_paint_plan,
-    unwrapped_cursor_paint_plan,
+    paint_unwrapped_editor_line, paint_visible_rulers, shape_and_paint_editor_cursor,
+    soft_wrap_cursor_paint_plan, unwrapped_cursor_paint_plan,
 };
 
-pub struct UnwrappedDocumentFramePaintParams<'a> {
+pub struct DocumentFramePaintParams<'a> {
+    pub frame: &'a EditorDocumentFrame,
+    pub text: RopeSlice<'a>,
+    pub bounds: Bounds<Pixels>,
+    pub layout: &'a EditorLayout,
+    pub text_style: &'a TextStyle,
+    pub line_cache: &'a LineLayoutCache,
+    pub font_size: Pixels,
+    pub fg_color: Hsla,
+    pub default_bg: Hsla,
+    pub cursorline_color: Option<Hsla>,
+    pub cursor_text_shape: &'a CursorTextShape,
+    pub is_focused: bool,
+    pub element_focused: bool,
+    pub selection_primary: Hsla,
+    pub selection_secondary: Hsla,
+    pub gutter_color: Hsla,
+    pub gutter_selected_color: Hsla,
+    pub diagnostic_theme: &'a Theme,
+    pub diagnostic_highlight_base: Hsla,
+    pub gutter_bg: Option<Hsla>,
+    pub scroll_line_offset: Pixels,
+}
+
+struct UnwrappedDocumentFramePaintParams<'a> {
     pub frame: &'a EditorDocumentFrame,
     pub text: RopeSlice<'a>,
     pub bounds: Bounds<Pixels>,
@@ -35,7 +59,7 @@ pub struct UnwrappedDocumentFramePaintParams<'a> {
     pub selection_secondary: Hsla,
 }
 
-pub struct SoftWrapDocumentFramePaintParams<'a> {
+struct SoftWrapDocumentFramePaintParams<'a> {
     pub frame: &'a EditorDocumentFrame,
     pub text: RopeSlice<'a>,
     pub bounds: Bounds<Pixels>,
@@ -58,7 +82,65 @@ pub struct SoftWrapDocumentFramePaintParams<'a> {
     pub scroll_line_offset: Pixels,
 }
 
-pub fn paint_soft_wrap_document_frame(
+pub fn paint_document_frame(
+    window: &mut Window,
+    cx: &mut App,
+    params: DocumentFramePaintParams<'_>,
+) -> Option<CursorOverlayPlan> {
+    paint_visible_rulers(window, &params.frame.ruler_paint_plans);
+
+    if params.frame.soft_wrap_render_plan.is_some() {
+        return paint_soft_wrap_document_frame(
+            window,
+            cx,
+            SoftWrapDocumentFramePaintParams {
+                frame: params.frame,
+                text: params.text,
+                bounds: params.bounds,
+                layout: params.layout,
+                text_style: params.text_style,
+                line_cache: params.line_cache,
+                font_size: params.font_size,
+                fg_color: params.fg_color,
+                default_bg: params.default_bg,
+                cursorline_color: params.cursorline_color,
+                is_focused: params.is_focused,
+                element_focused: params.element_focused,
+                selection_primary: params.selection_primary,
+                selection_secondary: params.selection_secondary,
+                gutter_color: params.gutter_color,
+                gutter_selected_color: params.gutter_selected_color,
+                diagnostic_theme: params.diagnostic_theme,
+                diagnostic_highlight_base: params.diagnostic_highlight_base,
+                gutter_bg: params.gutter_bg,
+                scroll_line_offset: params.scroll_line_offset,
+            },
+        );
+    }
+
+    paint_unwrapped_document_frame(
+        window,
+        cx,
+        UnwrappedDocumentFramePaintParams {
+            frame: params.frame,
+            text: params.text,
+            bounds: params.bounds,
+            layout: params.layout,
+            text_style: params.text_style,
+            line_cache: params.line_cache,
+            font_size: params.font_size,
+            fg_color: params.fg_color,
+            cursorline_color: params.cursorline_color,
+            cursor_text_shape: params.cursor_text_shape,
+            is_focused: params.is_focused,
+            element_focused: params.element_focused,
+            selection_primary: params.selection_primary,
+            selection_secondary: params.selection_secondary,
+        },
+    )
+}
+
+fn paint_soft_wrap_document_frame(
     window: &mut Window,
     cx: &mut App,
     params: SoftWrapDocumentFramePaintParams<'_>,
@@ -119,7 +201,7 @@ pub fn paint_soft_wrap_document_frame(
     paint_soft_wrap_cursor(window, cx, &params)
 }
 
-pub fn paint_unwrapped_document_frame(
+fn paint_unwrapped_document_frame(
     window: &mut Window,
     cx: &mut App,
     params: UnwrappedDocumentFramePaintParams<'_>,

@@ -15,14 +15,13 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    EditorDocumentFrameGutterParams, EditorDocumentFrameParams, EditorLayout, EditorScrollbarState,
-    EditorSelectionDragState, EditorSurface, EditorSurfaceMetrics, EditorSurfacePointerEvent,
-    EditorTextMetrics, EditorViewport, EditorViewportSurfaceLayout, LineLayoutCache,
-    SoftWrapDocumentFramePaintParams, UnwrappedDocumentFramePaintParams,
-    begin_editor_pointer_selection_at_event, cursor_document_line, cursor_style_for_mode,
-    editor_document_frame, gpui_hsla_to_helix_color, paint_editor_background,
-    paint_soft_wrap_document_frame, paint_unwrapped_document_frame, paint_visible_rulers,
-    shape_cursor_text, update_editor_pointer_selection_at_event,
+    DocumentFramePaintParams, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
+    EditorLayout, EditorScrollbarState, EditorSelectionDragState, EditorSurface,
+    EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
+    EditorViewportSurfaceLayout, LineLayoutCache, begin_editor_pointer_selection_at_event,
+    cursor_document_line, cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color,
+    paint_document_frame, paint_editor_background, shape_cursor_text,
+    update_editor_pointer_selection_at_event,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -756,8 +755,6 @@ impl Element for DocumentElement {
                 );
             }
 
-            paint_visible_rulers(window, &frame.ruler_paint_plans);
-
             // Extract necessary values before the loop to avoid borrowing issues
             let diagnostic_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
 
@@ -785,66 +782,26 @@ impl Element for DocumentElement {
             let text = doc_text.slice(..);
 
             // Update the shared line layouts for mouse interaction
-            if soft_wrap_enabled {
-                let gutter_style = cx.theme_style("ui.linenr");
-                let gutter_selected_style = cx.theme_style("ui.linenr.selected");
-                let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
-                let gutter_color = gutter_style
-                    .fg
-                    .and_then(crate::utils::color_to_hsla)
-                    .unwrap_or(default_gutter_color);
-                let gutter_selected_color = gutter_selected_style
-                    .fg
-                    .and_then(crate::utils::color_to_hsla)
-                    .unwrap_or(default_gutter_color);
-                let gutter_bg = cx
-                    .theme_style("ui.gutter")
-                    .bg
-                    .and_then(crate::utils::color_to_hsla);
-                let element_focused = self.focus.is_focused(window);
-                if let Some(overlay_plan) = paint_soft_wrap_document_frame(
-                    window,
-                    cx,
-                    SoftWrapDocumentFramePaintParams {
-                        frame: &frame,
-                        text,
-                        bounds,
-                        layout: after_layout,
-                        text_style: &self.style,
-                        line_cache: &line_cache,
-                        font_size: self.style.font_size.to_pixels(px(16.0)),
-                        fg_color,
-                        default_bg: bg_color,
-                        cursorline_color: cursorline_style,
-                        is_focused: self.is_focused,
-                        element_focused,
-                        selection_primary: tokens.editor.selection_primary,
-                        selection_secondary: tokens.editor.selection_secondary,
-                        gutter_color,
-                        gutter_selected_color,
-                        diagnostic_theme: &diagnostic_theme,
-                        diagnostic_highlight_base: cx.theme().tokens.chrome.text_on_chrome,
-                        gutter_bg,
-                        scroll_line_offset,
-                    },
-                ) {
-                    let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
-                    layout_info.cursor_position = Some(overlay_plan.cursor_position);
-                    layout_info.cursor_size = Some(overlay_plan.cursor_size);
-                }
-
-                // Note: Tilde rendering is handled by the gutter for consistency with Helix
-                // The gutter shows "~" for phantom lines in the line number area
-
-                // Skip the regular rendering loop when soft wrap is enabled
-                return;
-            }
-
+            let gutter_style = cx.theme_style("ui.linenr");
+            let gutter_selected_style = cx.theme_style("ui.linenr.selected");
+            let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
+            let gutter_color = gutter_style
+                .fg
+                .and_then(crate::utils::color_to_hsla)
+                .unwrap_or(default_gutter_color);
+            let gutter_selected_color = gutter_selected_style
+                .fg
+                .and_then(crate::utils::color_to_hsla)
+                .unwrap_or(default_gutter_color);
+            let gutter_bg = cx
+                .theme_style("ui.gutter")
+                .bg
+                .and_then(crate::utils::color_to_hsla);
             let element_focused = self.focus.is_focused(window);
-            if let Some(overlay_plan) = paint_unwrapped_document_frame(
+            if let Some(overlay_plan) = paint_document_frame(
                 window,
                 cx,
-                UnwrappedDocumentFramePaintParams {
+                DocumentFramePaintParams {
                     frame: &frame,
                     text,
                     bounds,
@@ -853,12 +810,19 @@ impl Element for DocumentElement {
                     line_cache: &line_cache,
                     font_size: self.style.font_size.to_pixels(px(16.0)),
                     fg_color,
+                    default_bg: bg_color,
                     cursorline_color: cursorline_style,
                     cursor_text_shape: &cursor_text_shape,
                     is_focused: self.is_focused,
                     element_focused,
                     selection_primary: tokens.editor.selection_primary,
                     selection_secondary: tokens.editor.selection_secondary,
+                    gutter_color,
+                    gutter_selected_color,
+                    diagnostic_theme: &diagnostic_theme,
+                    diagnostic_highlight_base: cx.theme().tokens.chrome.text_on_chrome,
+                    gutter_bg,
+                    scroll_line_offset,
                 },
             ) {
                 let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
