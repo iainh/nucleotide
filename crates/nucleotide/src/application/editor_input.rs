@@ -40,6 +40,7 @@ pub struct EditorInputOutcome {
     pub prompt_requested: Option<NativePromptRequest>,
     pub lsp_navigation_requested: Option<NativeLspNavigationRequest>,
     pub workspace_requested: Option<NativeWorkspaceRequest>,
+    pub viewport_scroll_requested: Option<nucleotide_editor::EditorViewportScrollRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +141,7 @@ impl EditorInputBridge {
         let mut prompt_requested = None;
         let mut lsp_navigation_requested = None;
         let mut workspace_requested = None;
+        let mut viewport_scroll_requested = None;
         if !handled_by_compositor {
             let mode_before_fallback = context.editor.mode();
             match self
@@ -163,6 +165,10 @@ impl EditorInputBridge {
                 NativeInputResult::RequestWorkspace(request) => {
                     handled_by_native_command = true;
                     workspace_requested = Some(request);
+                }
+                NativeInputResult::RequestViewportScroll(request) => {
+                    handled_by_native_command = true;
+                    viewport_scroll_requested = Some(request);
                 }
                 NativeInputResult::Fallback(keys) => {
                     for key in &keys {
@@ -215,6 +221,7 @@ impl EditorInputBridge {
             prompt_requested,
             lsp_navigation_requested,
             workspace_requested,
+            viewport_scroll_requested,
         }
     }
 
@@ -250,6 +257,7 @@ enum NativeInputResult {
     },
     RequestLspNavigation(NativeLspNavigationRequest),
     RequestWorkspace(NativeWorkspaceRequest),
+    RequestViewportScroll(nucleotide_editor::EditorViewportScrollRequest),
     Fallback(Vec<KeyEvent>),
 }
 
@@ -274,6 +282,10 @@ enum NativeCommandResult {
     RequestWorkspace {
         callbacks: Vec<compositor::Callback>,
         request: NativeWorkspaceRequest,
+    },
+    RequestViewportScroll {
+        callbacks: Vec<compositor::Callback>,
+        request: nucleotide_editor::EditorViewportScrollRequest,
     },
     ReplayInsert {
         keys: Vec<KeyEvent>,
@@ -413,6 +425,11 @@ impl NativeCommandInput {
                 self.finish_insert_replay_if_needed(mode_before, editor.mode());
                 NativeInputResult::RequestWorkspace(request)
             }
+            NativeCommandResult::RequestViewportScroll { callbacks, request } => {
+                finalize_native_command(editor, jobs, compositor, callbacks);
+                self.finish_insert_replay_if_needed(mode_before, editor.mode());
+                NativeInputResult::RequestViewportScroll(request)
+            }
             NativeCommandResult::ReplayInsert { keys, count } => {
                 for _ in 0..count {
                     for replay_key in keys.iter().copied() {
@@ -423,6 +440,9 @@ impl NativeCommandInput {
                             }
                             NativeInputResult::RequestWorkspace(request) => {
                                 return NativeInputResult::RequestWorkspace(request);
+                            }
+                            NativeInputResult::RequestViewportScroll(request) => {
+                                return NativeInputResult::RequestViewportScroll(request);
                             }
                             NativeInputResult::Fallback(fallback_keys) => {
                                 return NativeInputResult::Fallback(fallback_keys);
@@ -653,6 +673,17 @@ impl NativeCommandInput {
                     request,
                 }
             }
+            KeymapDispatch::RequestViewportScroll(request) => {
+                if self.keymaps.pending().is_empty() {
+                    context.editor.count = None;
+                } else {
+                    context.editor.selected_register = context.register.take();
+                }
+                NativeCommandResult::RequestViewportScroll {
+                    callbacks: Vec::new(),
+                    request,
+                }
+            }
             KeymapDispatch::Pending => {
                 context.editor.selected_register = context.register.take();
                 NativeCommandResult::Handled(Vec::new())
@@ -710,6 +741,10 @@ impl NativeCommandInput {
                     return KeymapDispatch::RequestLspNavigation(request);
                 }
 
+                if let Some(request) = native_viewport_scroll_command(command, context.count) {
+                    return KeymapDispatch::RequestViewportScroll(request);
+                }
+
                 if !native_command_supported(command) {
                     return KeymapDispatch::Fallback;
                 }
@@ -726,6 +761,7 @@ impl NativeCommandInput {
                         || native_picker_command(command).is_some()
                         || native_prompt_command(command).is_some()
                         || native_lsp_navigation_command(command).is_some()
+                        || native_viewport_scroll_command(command, None).is_some()
                 }) {
                     return KeymapDispatch::Fallback;
                 }
@@ -742,6 +778,9 @@ impl NativeCommandInput {
                     }
                     if let Some(request) = native_lsp_navigation_command(command) {
                         return KeymapDispatch::RequestLspNavigation(request);
+                    }
+                    if let Some(request) = native_viewport_scroll_command(command, context.count) {
+                        return KeymapDispatch::RequestViewportScroll(request);
                     }
                     execute_native_command(command, context, &mut last_mode);
                 }
@@ -783,6 +822,7 @@ enum KeymapDispatch {
     RequestPicker(NativePickerRequest),
     RequestPrompt(NativePromptRequest),
     RequestLspNavigation(NativeLspNavigationRequest),
+    RequestViewportScroll(nucleotide_editor::EditorViewportScrollRequest),
     Pending,
     Fallback,
 }
@@ -830,6 +870,13 @@ impl NativeCommandResultExt for NativeCommandResult {
             NativeCommandResult::RequestWorkspace { request, .. } => {
                 *on_next_key = context.on_next_key_callback.take();
                 NativeCommandResult::RequestWorkspace {
+                    callbacks: std::mem::take(&mut context.callback),
+                    request,
+                }
+            }
+            NativeCommandResult::RequestViewportScroll { request, .. } => {
+                *on_next_key = context.on_next_key_callback.take();
+                NativeCommandResult::RequestViewportScroll {
                     callbacks: std::mem::take(&mut context.callback),
                     request,
                 }
@@ -1027,6 +1074,24 @@ fn native_lsp_navigation_command(command: &MappableCommand) -> Option<NativeLspN
         "goto_type_definition" => Some(NativeLspNavigationRequest::GotoTypeDefinition),
         "goto_implementation" => Some(NativeLspNavigationRequest::GotoImplementation),
         "goto_reference" => Some(NativeLspNavigationRequest::GotoReference),
+        _ => None,
+    }
+}
+
+fn native_viewport_scroll_command(
+    command: &MappableCommand,
+    count: Option<NonZeroUsize>,
+) -> Option<nucleotide_editor::EditorViewportScrollRequest> {
+    let rows = count.map_or(1, NonZeroUsize::get);
+    let rows = isize::try_from(rows).unwrap_or(isize::MAX);
+
+    match command.name() {
+        "scroll_down" => Some(nucleotide_editor::EditorViewportScrollRequest::VisualRows(
+            rows,
+        )),
+        "scroll_up" => Some(nucleotide_editor::EditorViewportScrollRequest::VisualRows(
+            rows.saturating_neg(),
+        )),
         _ => None,
     }
 }
@@ -1600,6 +1665,32 @@ mod tests {
         assert!(native_command_supported(&MappableCommand::page_down));
         assert!(native_command_supported(&MappableCommand::half_page_up));
         assert!(native_command_supported(&MappableCommand::half_page_down));
+    }
+
+    #[test]
+    fn native_viewport_scroll_command_uses_counted_visual_rows() {
+        assert_eq!(
+            native_viewport_scroll_command(&MappableCommand::scroll_down, None),
+            Some(nucleotide_editor::EditorViewportScrollRequest::VisualRows(
+                1
+            ))
+        );
+        assert_eq!(
+            native_viewport_scroll_command(&MappableCommand::scroll_down, NonZeroUsize::new(4)),
+            Some(nucleotide_editor::EditorViewportScrollRequest::VisualRows(
+                4
+            ))
+        );
+        assert_eq!(
+            native_viewport_scroll_command(&MappableCommand::scroll_up, NonZeroUsize::new(3)),
+            Some(nucleotide_editor::EditorViewportScrollRequest::VisualRows(
+                -3
+            ))
+        );
+        assert_eq!(
+            native_viewport_scroll_command(&MappableCommand::page_down, None),
+            None
+        );
     }
 
     #[test]
@@ -2309,6 +2400,78 @@ mod tests {
         assert!(!outcome.handled_by_terminal_editor);
         assert_eq!(outcome.picker_requested, None);
         assert_eq!(outcome.lsp_navigation_requested, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_native_viewport_scroll() {
+        for (keys, request) in [
+            (
+                ["z", "j"],
+                nucleotide_editor::EditorViewportScrollRequest::VisualRows(1),
+            ),
+            (
+                ["z", "k"],
+                nucleotide_editor::EditorViewportScrollRequest::VisualRows(-1),
+            ),
+        ] {
+            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut editor = test_editor_with_text("one\ntwo\nthree\n");
+            let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let mut jobs = Jobs::new();
+
+            let pending = handle_key_str(
+                &mut bridge,
+                &mut editor,
+                &mut compositor,
+                &mut jobs,
+                keys[0],
+            );
+            assert!(pending.handled_by_native_command);
+            assert!(!pending.handled_by_terminal_editor);
+            assert_eq!(pending.viewport_scroll_requested, None);
+
+            let outcome = handle_key_str(
+                &mut bridge,
+                &mut editor,
+                &mut compositor,
+                &mut jobs,
+                keys[1],
+            );
+
+            assert!(outcome.handled_by_native_command);
+            assert!(!outcome.handled_by_terminal_editor);
+            assert_eq!(outcome.viewport_scroll_requested, Some(request));
+            assert!(!outcome.selection_changed);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_counted_native_viewport_scroll() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text("one\ntwo\nthree\n");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let count = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "3");
+        assert!(count.handled_by_native_command);
+        assert_eq!(count.viewport_scroll_requested, None);
+
+        let pending = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "z");
+        assert!(pending.handled_by_native_command);
+        assert!(!pending.handled_by_terminal_editor);
+        assert_eq!(pending.viewport_scroll_requested, None);
+
+        let scroll = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "j");
+
+        assert!(scroll.handled_by_native_command);
+        assert!(!scroll.handled_by_terminal_editor);
+        assert_eq!(
+            scroll.viewport_scroll_requested,
+            Some(nucleotide_editor::EditorViewportScrollRequest::VisualRows(
+                3
+            ))
+        );
+        assert!(!scroll.selection_changed);
     }
 
     #[tokio::test(flavor = "current_thread")]

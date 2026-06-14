@@ -2123,6 +2123,13 @@ impl Application {
                     }
                 }
 
+                if let Some(request) = outcome.viewport_scroll_requested {
+                    cx.emit(crate::Update::ViewportScroll {
+                        view_id: outcome.focused_view_id,
+                        request,
+                    });
+                }
+
                 if let Some(request) = outcome.prompt_requested {
                     cx.emit(crate::Update::Prompt(Self::create_native_prompt(request)));
                 }

@@ -11,8 +11,9 @@ use crate::{
     EditorPointerSelectionPhase, EditorPointerSelectionUpdate, EditorScrollbarState,
     EditorSelectionDragState, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
     EditorViewport, EditorViewportContentLayout, EditorViewportContentUpdate,
-    EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate, LineLayoutCache,
-    begin_editor_pointer_selection_at_event, update_editor_pointer_selection_at_event,
+    EditorViewportScrollRequest, EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate,
+    LineLayoutCache, ViewportScrollUpdate, begin_editor_pointer_selection_at_event,
+    update_editor_pointer_selection_at_event,
 };
 
 #[derive(Clone)]
@@ -103,6 +104,13 @@ impl EditorViewState {
 
     pub fn request_cursor_reveal(&self, reveal: EditorCursorReveal) {
         self.viewport.request_cursor_reveal(reveal);
+    }
+
+    pub fn apply_viewport_scroll(
+        &self,
+        request: EditorViewportScrollRequest,
+    ) -> ViewportScrollUpdate {
+        self.viewport.apply_scroll_request(request)
     }
 
     pub fn sync_content_layout(
@@ -551,6 +559,20 @@ mod tests {
             state.viewport().take_cursor_reveal_request(),
             Some(EditorCursorReveal::Center)
         );
+    }
+
+    #[test]
+    fn view_state_applies_viewport_scroll_requests() {
+        let mut state = EditorViewState::new(px(20.0), px(8.0));
+        state
+            .viewport_mut()
+            .set_layout(px(20.0), size(px(100.0), px(100.0)), 50);
+
+        let update = state.apply_viewport_scroll(EditorViewportScrollRequest::VisualRows(4));
+
+        assert!(update.changed);
+        assert_eq!(state.viewport().top_visual_row(), 4);
+        assert!(state.viewport().has_pending_view_sync());
     }
 
     #[test]
