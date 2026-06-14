@@ -40,10 +40,18 @@ pub struct EditorViewportViewPositionPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorViewportViewAreaPlan {
+    pub previous_area: Rect,
+    pub target_area: Rect,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditorViewportSurfaceUpdate {
     pub gutter_columns: u16,
     pub visual_rows: usize,
     pub soft_wrap: bool,
+    pub view_area_plan: EditorViewportViewAreaPlan,
     pub view_position: ViewPosition,
     pub view_position_plan: EditorViewportViewPositionPlan,
     pub helix_view_synced: bool,
@@ -537,13 +545,13 @@ impl EditorViewport {
             },
         );
         self.set_content_visual_rows(metrics.visual_rows);
-        sync_helix_view_area(
-            editor,
-            view_id,
+        let view_area_plan = helix_view_area_plan_for_surface(
+            view.area,
             gutter_columns,
             metrics.viewport_columns,
             self.visible_visual_rows(),
         );
+        apply_helix_view_area_plan(editor, view_id, view_area_plan);
 
         let mut helix_view_synced = if self.has_pending_view_sync() {
             let synced = self.sync_to_helix_view(editor, doc_id, view_id, &metrics.text_format);
@@ -582,6 +590,7 @@ impl EditorViewport {
             gutter_columns,
             visual_rows: metrics.visual_rows,
             soft_wrap: metrics.soft_wrap,
+            view_area_plan,
             view_position,
             view_position_plan,
             helix_view_synced,
@@ -647,29 +656,38 @@ fn editor_viewport_content_metrics(
     (gutter_columns, metrics)
 }
 
-fn sync_helix_view_area(
+fn apply_helix_view_area_plan(
     editor: &mut Editor,
     view_id: ViewId,
-    gutter_columns: u16,
-    viewport_columns: u16,
-    visible_rows: usize,
+    plan: EditorViewportViewAreaPlan,
 ) -> bool {
-    let target_area = helix_view_area_for_surface(gutter_columns, viewport_columns, visible_rows);
-    let Some(current_area) = editor.tree.try_get(view_id).map(|view| view.area) else {
-        return false;
-    };
-    if current_area == target_area {
+    if !plan.changed {
         return false;
     }
 
     debug!(
         view_id = ?view_id,
-        old_area = ?current_area,
-        new_area = ?target_area,
+        old_area = ?plan.previous_area,
+        new_area = ?plan.target_area,
         "Syncing native viewport dimensions to Helix view area"
     );
-    editor.tree.get_mut(view_id).area = target_area;
+    editor.tree.get_mut(view_id).area = plan.target_area;
     true
+}
+
+pub fn helix_view_area_plan_for_surface(
+    previous_area: Rect,
+    gutter_columns: u16,
+    viewport_columns: u16,
+    visible_rows: usize,
+) -> EditorViewportViewAreaPlan {
+    let target_area = helix_view_area_for_surface(gutter_columns, viewport_columns, visible_rows);
+
+    EditorViewportViewAreaPlan {
+        previous_area,
+        target_area,
+        changed: previous_area != target_area,
+    }
 }
 
 fn helix_view_area_for_surface(
@@ -1299,6 +1317,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn helix_view_area_plan_reports_target_and_change() {
+        let previous_area = Rect::new(0, 0, 10, 4);
+
+        let plan = helix_view_area_plan_for_surface(previous_area, 4, 20, 5);
+
+        assert!(plan.changed);
+        assert_eq!(plan.previous_area, previous_area);
+        assert_eq!(plan.target_area, Rect::new(0, 0, 24, 6));
+    }
+
+    #[test]
+    fn helix_view_area_plan_reports_noop_for_matching_area() {
+        let previous_area = Rect::new(0, 0, 24, 6);
+
+        let plan = helix_view_area_plan_for_surface(previous_area, 4, 20, 5);
+
+        assert!(!plan.changed);
+        assert_eq!(plan.previous_area, previous_area);
+        assert_eq!(plan.target_area, previous_area);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn surface_layout_sync_updates_helix_view_area_from_native_cells() {
         let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo\nthree\n");
@@ -1335,6 +1375,8 @@ mod tests {
         assert_eq!(view.gutter_offset(document), update.gutter_columns);
         assert_eq!(view.inner_width(document), expected.viewport_columns);
         assert_eq!(view.inner_height(), viewport.visible_visual_rows());
+        assert_eq!(update.view_area_plan.target_area, view.area);
+        assert!(update.view_area_plan.changed);
         assert_eq!(
             view.area,
             helix_view_area_for_surface(
