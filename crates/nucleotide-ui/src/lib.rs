@@ -43,6 +43,10 @@ pub mod traits;
 pub mod utils;
 pub mod vcs_icon;
 
+pub mod gpui_widgets {
+    pub use ::gpui_component::{list, scroll, sidebar};
+}
+
 #[cfg(test)]
 mod integration_tests;
 
