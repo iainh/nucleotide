@@ -1,6 +1,8 @@
 // ABOUTME: Native GPUI editor viewport state for pixel and visual-row scrolling
 // ABOUTME: Owns GUI scroll state before it is synced into Helix view offsets
 
+use std::{cell::Cell, rc::Rc};
+
 use gpui::{Bounds, Pixels, Point, Size, point, px, size};
 use helix_core::{
     RopeSlice, char_idx_at_visual_offset, doc_formatter::TextFormat,
@@ -104,12 +106,14 @@ impl<'a> EditorViewportSurfaceLayout<'a> {
 #[derive(Clone, Debug)]
 pub struct EditorViewport {
     scroll: ScrollManager,
+    cursor_reveal_request: Rc<Cell<Option<EditorCursorReveal>>>,
 }
 
 impl EditorViewport {
     pub fn new(line_height: Pixels) -> Self {
         Self {
             scroll: ScrollManager::new(line_height),
+            cursor_reveal_request: Rc::new(Cell::new(None)),
         }
     }
 
@@ -198,6 +202,18 @@ impl EditorViewport {
             top_visual_row: new_top_visual_row,
             offset_within_row: self.offset_within_row(),
         }
+    }
+
+    pub fn request_cursor_reveal(&self, reveal: EditorCursorReveal) {
+        self.cursor_reveal_request.set(Some(reveal));
+    }
+
+    pub fn pending_cursor_reveal_request(&self) -> Option<EditorCursorReveal> {
+        self.cursor_reveal_request.get()
+    }
+
+    pub fn take_cursor_reveal_request(&self) -> Option<EditorCursorReveal> {
+        self.cursor_reveal_request.replace(None)
     }
 
     pub fn ensure_visual_row_visible(
@@ -677,6 +693,38 @@ mod tests {
         assert!(update.changed);
         assert_eq!(viewport.scroll_position().y, px(100.0));
         assert_eq!(update.top_visual_row, 5);
+    }
+
+    #[test]
+    fn viewport_cursor_reveal_requests_are_shared_across_clones() {
+        let viewport = EditorViewport::new(px(20.0));
+        let clone = viewport.clone();
+
+        viewport.request_cursor_reveal(EditorCursorReveal::Scrolloff);
+
+        assert_eq!(
+            clone.pending_cursor_reveal_request(),
+            Some(EditorCursorReveal::Scrolloff)
+        );
+        assert_eq!(
+            clone.take_cursor_reveal_request(),
+            Some(EditorCursorReveal::Scrolloff)
+        );
+        assert_eq!(viewport.pending_cursor_reveal_request(), None);
+    }
+
+    #[test]
+    fn viewport_cursor_reveal_requests_use_latest_request() {
+        let viewport = EditorViewport::new(px(20.0));
+
+        viewport.request_cursor_reveal(EditorCursorReveal::Scrolloff);
+        viewport.request_cursor_reveal(EditorCursorReveal::Center);
+
+        assert_eq!(
+            viewport.take_cursor_reveal_request(),
+            Some(EditorCursorReveal::Center)
+        );
+        assert_eq!(viewport.take_cursor_reveal_request(), None);
     }
 
     #[test]
