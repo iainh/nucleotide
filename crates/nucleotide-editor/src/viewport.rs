@@ -11,7 +11,10 @@ use helix_core::{
 use helix_view::{Document, DocumentId, Editor, Theme, ViewId, graphics::Rect, view::ViewPosition};
 use nucleotide_logging::debug;
 
-use crate::{EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorDocumentMetrics, ScrollManager};
+use crate::{
+    EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorDocumentMetrics, ScrollManager,
+    soft_wrap_visual_position,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ViewportScrollUpdate {
@@ -564,6 +567,20 @@ pub fn document_cursor_visual_row(
 ) -> usize {
     let text = document.text().slice(..);
     let cursor_char_idx = document.selection(view_id).primary().cursor(text);
+    let cursor_at_trailing_newline = cursor_char_idx == text.len_chars()
+        && text.len_chars() > 0
+        && text.char(text.len_chars() - 1) == '\n';
+
+    if cursor_at_trailing_newline {
+        return if text_format.soft_wrap {
+            soft_wrap_visual_position(text, text_format, 0, cursor_char_idx)
+                .map(|position| position.visual_line)
+                .unwrap_or_else(|| text.len_lines().saturating_sub(1))
+        } else {
+            text.len_lines().saturating_sub(1)
+        };
+    }
+
     let annotations = view.text_annotations(document, None);
     visual_offset_from_block(text, 0, cursor_char_idx, text_format, &annotations)
         .0
@@ -1000,6 +1017,39 @@ mod tests {
         assert_eq!(update.helix_snapshot.top_visual_row, eof_row);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn cursor_reveal_uses_trailing_newline_eof_visual_row() {
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo\n");
+        let mut viewport = EditorViewport::new(px(20.0));
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(21.0)));
+        {
+            let doc = editor.document_mut(doc_id).unwrap();
+            doc.set_selection(view_id, Selection::point(doc.text().len_chars()));
+        }
+
+        let update = viewport
+            .sync_surface_layout(
+                &mut editor,
+                doc_id,
+                view_id,
+                EditorViewportSurfaceLayout {
+                    theme: None,
+                    bounds,
+                    cell_width: px(8.0),
+                    line_height: px(20.0),
+                    minimum_columns: 1,
+                    cursor_reveal: Some(EditorCursorReveal::Scrolloff),
+                },
+            )
+            .unwrap();
+
+        let eof_row = viewport.content_visual_rows().saturating_sub(1);
+        assert!(update.cursor_revealed);
+        assert!(update.helix_view_synced);
+        assert_eq!(viewport.top_visual_row(), eof_row);
+        assert_eq!(update.helix_snapshot.top_visual_row, eof_row);
+    }
+
     #[test]
     fn surface_viewport_size_uses_text_area_height() {
         let bounds = Bounds::new(point(px(10.0), px(20.0)), size(px(300.0), px(101.0)));
@@ -1118,6 +1168,16 @@ mod tests {
     fn document_cursor_visual_row_matches_unwrapped_line() {
         let (mut document, view) = test_document_and_view("one\ntwo\nthree");
         document.set_selection(view.id, Selection::single(5, 5));
+
+        let row = document_cursor_visual_row(&document, &view, view.id, &TextFormat::default());
+
+        assert_eq!(row, 1);
+    }
+
+    #[test]
+    fn document_cursor_visual_row_uses_final_empty_line_at_trailing_newline_eof() {
+        let (mut document, view) = test_document_and_view("one\n");
+        document.set_selection(view.id, Selection::single(4, 4));
 
         let row = document_cursor_visual_row(&document, &view, view.id, &TextFormat::default());
 
