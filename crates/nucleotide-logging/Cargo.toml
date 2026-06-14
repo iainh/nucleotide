@@ -9,7 +9,7 @@ homepage.workspace = true
 publish = false
 description = "Centralized logging infrastructure for Nucleotide editor"
 categories = ["text-editors", "development-tools"]
-rust-version = "1.88"
+rust-version = "1.95"
 
 [dependencies]
 # Core tracing infrastructure

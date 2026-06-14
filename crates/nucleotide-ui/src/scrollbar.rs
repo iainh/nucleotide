@@ -63,7 +63,7 @@ pub trait ScrollableHandle: Any + Debug {
 
 impl ScrollableHandle for ScrollHandle {
     fn max_offset(&self) -> Size<Pixels> {
-        self.max_offset()
+        self.max_offset().into()
     }
 
     fn set_offset(&self, point: Point<Pixels>) {
@@ -81,7 +81,7 @@ impl ScrollableHandle for ScrollHandle {
 
 impl ScrollableHandle for UniformListScrollHandle {
     fn max_offset(&self) -> Size<Pixels> {
-        self.0.borrow().base_handle.max_offset()
+        self.0.borrow().base_handle.max_offset().into()
     }
 
     fn set_offset(&self, point: Point<Pixels>) {

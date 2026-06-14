@@ -198,9 +198,10 @@ impl CompletionItemElement {
             });
 
         // Icon section - using Lucide SVG icons with design tokens
-        let with_icon = if self.show_icon && self.item.kind.is_some() {
+        let with_icon = if self.show_icon
+            && let Some(kind) = self.item.kind.as_ref()
+        {
             let icon_tokens = tokens.chrome.completion_icon_tokens(&tokens.editor);
-            let kind = self.item.kind.as_ref().unwrap();
             let svg = crate::completion_icons::get_completion_icon_svg(kind);
             let icon_color = crate::completion_icons::get_completion_icon_color(kind, theme);
 

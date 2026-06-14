@@ -576,7 +576,7 @@ impl Render for TerminalRowView {
         let mut line = div()
             .flex()
             .flex_row()
-            .flex_shrink()
+            .flex_shrink(1.0)
             .whitespace_nowrap()
             .line_height(line_height_px)
             .text_size(gpui::px(editor_font.size));

@@ -129,7 +129,7 @@ impl RenderOnce for PromptElement {
                 };
 
                 let text = text_with_style.clone().into_styled_text(&default_style);
-                self.focus.focus(window);
+                self.focus.focus(window, cx);
 
                 div()
                     .track_focus(&self.focus)

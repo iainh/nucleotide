@@ -282,7 +282,7 @@ impl RenderOnce for TabBar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         // Keep documents in the order they were opened
         let mut documents = self.documents.clone();
-        documents.sort_by(|a, b| a.order.cmp(&b.order));
+        documents.sort_by_key(|doc| doc.order);
 
         // Calculate overflow if available width is specified
         let (visible_tabs, overflow_documents) = if let Some(available_width) = self.available_width

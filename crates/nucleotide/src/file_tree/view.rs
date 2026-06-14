@@ -16,7 +16,6 @@ use nucleotide_types::VcsStatus;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::{
     Theme, VcsIcon, VcsIconRenderer,
-    gpui_widgets::list::ListItem as GpuiListItem,
     scrollbar::{Scrollbar, ScrollbarState},
 };
 use nucleotide_vcs::VcsServiceHandle;
@@ -57,7 +56,7 @@ impl FileTreeView {
         let scroll_handle = UniformListScrollHandle::new();
         let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
         let focus_handle = cx.focus_handle();
-        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_file_tree_focus(focus_handle.clone());
         }
 
@@ -120,7 +119,7 @@ impl FileTreeView {
         let scroll_handle = UniformListScrollHandle::new();
         let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
         let focus_handle = cx.focus_handle();
-        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_file_tree_focus(focus_handle.clone());
         }
 
@@ -255,7 +254,7 @@ impl FileTreeView {
 
                 // Update the UI on the main thread
                 if let Some(this) = this.upgrade() {
-                    let _ = this.update(cx, |view, cx| {
+                    this.update(cx, |view, cx| {
                         match entries {
                             Ok(entries) => {
                                 if let Err(e) =
@@ -658,7 +657,6 @@ impl FileTreeView {
 
                     cx.notify();
                 })
-                .ok();
             }
         })
         .detach();
@@ -767,7 +765,7 @@ impl FileTreeView {
             cx.spawn(async move |this, cx| {
                 while let Some(event) = watcher.next_event().await {
                     if let Some(this) = this.upgrade() {
-                        let _ = this.update(cx, |view, cx| {
+                        this.update(cx, |view, cx| {
                             view.queue_file_system_event(event, cx);
                         });
                     } else {
@@ -809,7 +807,7 @@ impl FileTreeView {
                     .await;
 
                 if let Some(this) = this.upgrade() {
-                    let _ = this.update(cx, |view, cx| {
+                    this.update(cx, |view, cx| {
                         view.process_pending_events(cx);
                     });
                 }
@@ -1083,7 +1081,7 @@ impl FileTreeView {
         }
     }
 
-    /// Render a single file tree entry using gpui-component rows with wrapped GPUI behavior.
+    /// Render a single file tree entry with wrapped GPUI behavior.
     fn render_entry(
         &self,
         entry: &FileTreeEntry,
@@ -1102,7 +1100,7 @@ impl FileTreeView {
                 cx.listener(move |view, _event, window, cx| {
                     // Focus the tree view when any entry is clicked
                     debug!("File tree entry clicked, focusing tree view");
-                    view.focus_handle.focus(window);
+                    view.focus_handle.focus(window, cx);
                     view.select_path(Some(path.clone()), cx);
 
                     if is_dir {
@@ -1117,7 +1115,7 @@ impl FileTreeView {
                 let path = path.clone();
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                     // Focus and select the item under cursor, then request context menu
-                    view.focus_handle.focus(window);
+                    view.focus_handle.focus(window, cx);
                     view.select_path(Some(path.clone()), cx);
                     // Emit context menu request with screen coordinates
                     cx.emit(FileTreeEvent::ContextMenuRequested {
@@ -1146,8 +1144,8 @@ impl FileTreeView {
             file_tree_tokens.item_text
         };
 
-        GpuiListItem::new(("file-tree-entry", entry.id.0))
-            .disabled(true)
+        div()
+            .id(("file-tree-entry", entry.id.0))
             .w_full()
             .h(px(30.0))
             .px(px(0.0))
@@ -1351,10 +1349,10 @@ impl Render for FileTreeView {
             .flex_col()
             .track_focus(&self.focus_handle)
             // Header removed; render list below
-            .on_click(cx.listener(|view, _event, window, _cx| {
+            .on_click(cx.listener(|view, _event, window, cx| {
                 // Focus the tree view when clicked anywhere on it
                 debug!("File tree container clicked, focusing");
-                view.focus_handle.focus(window);
+                view.focus_handle.focus(window, cx);
             }))
             // Handle FileTree actions
             .on_action(cx.listener(
@@ -1411,7 +1409,7 @@ impl Render for FileTreeView {
                             .with_horizontal_sizing_behavior(
                                 gpui::ListHorizontalSizingBehavior::FitList,
                             )
-                            .track_scroll(self.scroll_handle.clone())
+                            .track_scroll(&self.scroll_handle)
                             .h_full();
                             div().flex_1().h_full().min_h(px(0.0)).child(list)
                         })

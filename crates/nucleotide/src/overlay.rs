@@ -617,7 +617,7 @@ impl OverlayView {
                                     .timer(std::time::Duration::from_millis(20))
                                     .await;
                                 if let Some(core) = core2.upgrade() {
-                                    let _ = core.update(cx, |app, _cx| {
+                                    core.update(cx, |app, _cx| {
                                         // Find document by path
                                         if let Some(doc_id) =
                                             app.editor.documents.iter().find_map(|(id, doc)| {
@@ -1326,40 +1326,33 @@ impl OverlayView {
                     };
 
                     // Open the native directory picker
-                    let result = cx.update(|cx| cx.prompt_for_paths(options)).ok();
+                    let receiver = cx.update(|cx| cx.prompt_for_paths(options));
 
-                    if let Some(receiver) = result {
-                        // Wait for the user to select a directory
-                        if let Ok(Ok(Some(paths))) = receiver.await {
-                            if let Some(path) = paths.first() {
-                                // Emit the selected directory through the core entity
-                                if let Some(core) = core_weak.upgrade() {
-                                    cx.update(|cx| {
-                                        core.update(cx, |_core, cx| {
-                                            cx.emit(crate::Update::OpenDirectory(path.clone()));
-                                        });
-                                    })
-                                    .ok();
-                                }
-                                // Dismiss the overlay
+                    // Wait for the user to select a directory
+                    if let Ok(Ok(Some(paths))) = receiver.await {
+                        if let Some(path) = paths.first() {
+                            // Emit the selected directory through the core entity
+                            if let Some(core) = core_weak.upgrade() {
                                 cx.update(|cx| {
-                                    this.update(cx, |_this, cx| {
-                                        cx.emit(DismissEvent);
-                                    })
-                                    .ok();
-                                })
-                                .ok();
+                                    core.update(cx, |_core, cx| {
+                                        cx.emit(crate::Update::OpenDirectory(path.clone()));
+                                    });
+                                });
                             }
-                        } else {
-                            // User cancelled - just dismiss
+                            // Dismiss the overlay
                             cx.update(|cx| {
-                                this.update(cx, |_this, cx| {
+                                let _ = this.update(cx, |_this, cx| {
                                     cx.emit(DismissEvent);
-                                })
-                                .ok();
-                            })
-                            .ok();
+                                });
+                            });
                         }
+                    } else {
+                        // User cancelled - just dismiss
+                        cx.update(|cx| {
+                            let _ = this.update(cx, |_this, cx| {
+                                cx.emit(DismissEvent);
+                            });
+                        });
                     }
                 })
                 .detach();
@@ -1738,9 +1731,12 @@ impl Render for OverlayView {
                         window.disable_focus();
                         this.native_picker_view = None;
                         cx.emit(DismissEvent);
-                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                        if let Some(coord) =
+                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+                        {
                             let _ = coord.focus_first(
                                 window,
+                                cx,
                                 &[
                                     nucleotide_ui::FocusRole::Editor,
                                     nucleotide_ui::FocusRole::FileTree,
@@ -1784,9 +1780,12 @@ impl Render for OverlayView {
                         window.disable_focus();
                         this.native_prompt_view = None;
                         cx.emit(DismissEvent);
-                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                        if let Some(coord) =
+                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+                        {
                             let _ = coord.focus_first(
                                 window,
+                                cx,
                                 &[
                                     nucleotide_ui::FocusRole::Editor,
                                     nucleotide_ui::FocusRole::FileTree,
@@ -1831,9 +1830,12 @@ impl Render for OverlayView {
                         this.diagnostics_panel = None;
                         cx.emit(DismissEvent);
                         // Try immediate focus restoration via coordinator for responsiveness
-                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                        if let Some(coord) =
+                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+                        {
                             let _ = coord.focus_first(
                                 window,
+                                cx,
                                 &[
                                     nucleotide_ui::FocusRole::Editor,
                                     nucleotide_ui::FocusRole::FileTree,
@@ -1859,7 +1861,7 @@ impl Render for OverlayView {
 
         if let Some(state) = self.hover_popup.as_ref() {
             nucleotide_logging::info!("Render overlay branch: hover popup");
-            use gpui::{Corner, anchored, point};
+            use gpui::{Anchor, anchored, point};
 
             let (cursor_x, cursor_y) = self.calculate_completion_position(cx);
             let theme = cx.theme();
@@ -1884,7 +1886,7 @@ impl Render for OverlayView {
                 .child(
                     anchored()
                         .position(point(cursor_x, cursor_y))
-                        .anchor(Corner::TopLeft)
+                        .anchor(Anchor::TopLeft)
                         .offset(point(px(0.0), px(4.0)))
                         .snap_to_window_with_margin(px(8.0))
                         .child(
@@ -1898,7 +1900,7 @@ impl Render for OverlayView {
 
         if let Some(completion_view) = &self.completion_view {
             nucleotide_logging::info!("DIAG: Render overlay branch: completion");
-            use gpui::{Corner, anchored, point};
+            use gpui::{Anchor, anchored, point};
 
             // Calculate proper completion position based on cursor location
             let (cursor_x, cursor_y) = self.calculate_completion_position(cx);
@@ -1922,9 +1924,12 @@ impl Render for OverlayView {
                         window.disable_focus();
                         this.completion_view = None;
                         cx.emit(DismissEvent);
-                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                        if let Some(coord) =
+                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+                        {
                             let _ = coord.focus_first(
                                 window,
+                                cx,
                                 &[
                                     nucleotide_ui::FocusRole::Editor,
                                     nucleotide_ui::FocusRole::FileTree,
@@ -1937,7 +1942,7 @@ impl Render for OverlayView {
                 .child(
                     anchored()
                         .position(point(cursor_x, cursor_y))
-                        .anchor(Corner::TopLeft) // Anchor top-left of completion to cursor position
+                        .anchor(Anchor::TopLeft) // Anchor top-left of completion to cursor position
                         .offset(point(px(0.0), px(2.0))) // Small offset below cursor
                         .snap_to_window_with_margin(px(8.0))
                         // Consume clicks inside the popup so they don't dismiss

@@ -9,7 +9,7 @@ homepage.workspace = true
 publish = false
 description = "Testing LSP server for Nucleotide completion testing across all languages"
 categories = ["text-editors", "development-tools::testing"]
-rust-version = "1.88"
+rust-version = "1.95"
 
 [[bin]]
 name = "nucleotide-test-lsp"

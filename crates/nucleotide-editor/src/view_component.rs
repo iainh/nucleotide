@@ -422,7 +422,7 @@ mod tests {
         });
 
         window
-            .update(cx, |host, window, _cx| window.focus(&host.focus))
+            .update(cx, |host, window, cx| window.focus(&host.focus, cx))
             .unwrap();
 
         cx.dispatch_keystroke(*window, Keystroke::parse("a").unwrap());

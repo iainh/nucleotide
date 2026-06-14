@@ -9,7 +9,7 @@ homepage.workspace = true
 publish = false
 description = "Terminal session and PTY management for Nucleotide (Layer 3)"
 categories = ["text-editors", "gui"]
-rust-version = "1.88"
+rust-version = "1.95"
 
 [dependencies]
 nucleotide-events.workspace = true

@@ -43,10 +43,6 @@ pub mod traits;
 pub mod utils;
 pub mod vcs_icon;
 
-pub mod gpui_widgets {
-    pub use ::gpui_component::{list, scroll, sidebar};
-}
-
 #[cfg(test)]
 mod integration_tests;
 
@@ -283,9 +279,6 @@ impl gpui::Global for ComponentRegistry {}
 /// the configuration but won't cause any issues.
 pub fn init(cx: &mut App, config: Option<UIConfig>) {
     let config = config.unwrap_or_default();
-
-    // Initialize gpui-component so shared widgets (e.g., TextView) are registered
-    gpui_component::init(cx);
 
     // Setup global theme
     cx.set_global(config.default_theme.clone());

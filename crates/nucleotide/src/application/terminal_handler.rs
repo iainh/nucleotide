@@ -94,11 +94,7 @@ impl TerminalRuntimeHandler {
         // Spawn a blocking thread to consume frames, coalescing bursts to the latest
         let exit_bus = self.event_bus.clone();
         let handle = std::thread::spawn(move || {
-            loop {
-                // Wait for at least one frame
-                let Some(mut frame) = futures_executor::block_on(rx.recv()) else {
-                    break;
-                };
+            while let Some(mut frame) = futures_executor::block_on(rx.recv()) {
                 // Drain any queued frames to coalesce updates
                 while let Ok(next) = rx.try_recv() {
                     frame = next;

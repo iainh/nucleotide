@@ -724,7 +724,7 @@ impl CompletionView {
         }
 
         // Sort by score descending (highest scores first) and limit to max_items
-        filtered_matches.sort_by(|a, b| b.score.cmp(&a.score));
+        filtered_matches.sort_by_key(|candidate| std::cmp::Reverse(candidate.score));
         filtered_matches.truncate(max_items);
 
         nucleotide_logging::info!(

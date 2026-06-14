@@ -2,8 +2,8 @@
 // ABOUTME: Paints shaped-line backgrounds shared by wrapped and unwrapped render paths
 
 use gpui::{
-    App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, SharedString, TextRun, Window, fill,
-    point, size,
+    App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, SharedString, TextAlign, TextRun, Window,
+    fill, point, size,
 };
 
 use crate::{
@@ -67,7 +67,7 @@ pub fn paint_editor_line(
         line_height,
         background_style,
     );
-    shaped_line.paint(origin, line_height, window, cx)
+    shaped_line.paint(origin, line_height, TextAlign::Left, None, window, cx)
 }
 
 pub struct UnwrappedEditorLinePaintParams<'a, 'b> {

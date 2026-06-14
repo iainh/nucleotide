@@ -443,6 +443,7 @@ fn window_options(
         window_background,
         window_decorations: Some(window_decorations),
         window_min_size: Some(gpui::size(px(400.0), px(300.0))),
+        icon: None,
         tabbing_identifier: None,
     }
 }
@@ -520,6 +521,7 @@ fn app_menus() -> Vec<Menu> {
     vec![
         Menu {
             name: "Nucleotide".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action("About", About),
                 MenuItem::action("Settings...", OpenSettings),
@@ -533,6 +535,7 @@ fn app_menus() -> Vec<Menu> {
         },
         Menu {
             name: "File".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action("Open...", OpenFile),
                 MenuItem::action("Open Directory", OpenDirectory),
@@ -540,6 +543,7 @@ fn app_menus() -> Vec<Menu> {
         },
         Menu {
             name: "Edit".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action("Undo", Undo),
                 MenuItem::action("Redo", Redo),
@@ -550,10 +554,12 @@ fn app_menus() -> Vec<Menu> {
         },
         Menu {
             name: "View".into(),
+            disabled: false,
             items: vec![MenuItem::action("Toggle File Tree", ToggleFileTree)],
         },
         Menu {
             name: "Window".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action("Minimize", Minimize),
                 MenuItem::action("Zoom", Zoom),
@@ -561,6 +567,7 @@ fn app_menus() -> Vec<Menu> {
         },
         Menu {
             name: "Help".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action("Tutorial", OpenTutorial),
                 MenuItem::action("Test Prompt", TestPrompt),
@@ -585,7 +592,7 @@ fn gui_main(
     // Store a channel for sending file open requests from macOS
     let (file_open_tx, mut file_open_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
 
-    let gpui_app = gpui::Application::new().with_assets(nucleotide_ui::Assets);
+    let gpui_app = gpui_platform::application().with_assets(nucleotide_ui::Assets);
 
     // Register handler for macOS file open events (dock drops and Finder "Open With")
     gpui_app.on_open_urls({
@@ -772,7 +779,7 @@ fn gui_main(
                                 .timer(Duration::from_millis(80)) // Match helix spinner interval
                                 .await;
 
-                            if let Err(e) = cx.update(|cx| {
+                            cx.update(|cx| {
                                 lsp_state_clone.update(cx, |state, cx| {
                                     // Update LSP indicator - shows static when idle, animated when busy
                                     let old_message = state.status_message.clone();
@@ -791,9 +798,7 @@ fn gui_main(
                                         cx.notify();
                                     }
                                 });
-                            }) {
-                                warn!(error = ?e, "Failed to update LSP indicator");
-                            }
+                            });
                         }
                     })
                     .detach();
@@ -839,7 +844,7 @@ fn gui_main(
                                 }
                                 // Continue as long as there are views
                                 app.editor.tree.views().count() > 0
-                            }).unwrap_or(false);
+                            });
 
                             if !should_continue {
                                 break;
@@ -868,7 +873,7 @@ fn gui_main(
                             let should_continue = app_entity.update(cx, |app, cx| {
                                 app.handle_periodic_maintenance(cx, handle_for_timer.clone());
                                 app.editor.tree.views().count() > 0
-                            }).unwrap_or(false);
+                            });
 
                             if !should_continue {
                                 break;
@@ -1180,7 +1185,7 @@ fn gui_main(
                                         results.view_id,
                                         cx
                                     );
-                                }).ok();
+                                });
                             } else {
                                 nucleotide_logging::warn!("🔗 Workspace entity no longer available for completion display");
                                 break;
@@ -1232,7 +1237,7 @@ fn gui_main(
                                     info!(directory = ?dir, "Changed working directory");
 
                                     // Update the core's project directory and emit OpenDirectory event
-                                    if let Err(e) = cx.update(|cx| {
+                                    cx.update(|cx| {
                                         workspace_clone.update(cx, |workspace, cx| {
                                             workspace.set_project_directory(dir.clone(), cx);
                                             info!(directory = ?dir, "Updated project directory");
@@ -1246,10 +1251,8 @@ fn gui_main(
                                                     },
                                                 ),
                                             ));
-                                        })
-                                    }) {
-                                        error!(error = %e, "Failed to update project directory");
-                                    }
+                                        });
+                                    });
                                 }
                             }
 
@@ -1257,7 +1260,7 @@ fn gui_main(
                         for path in paths {
                             if path.exists() {
                                 // Send OpenFile update to the workspace
-                                if let Err(e) = cx.update(|cx| {
+                                cx.update(|cx| {
                                     workspace_clone.update(cx, |_workspace, cx| {
                                         cx.emit(Update::Event(
                                             nucleotide::types::AppEvent::Workspace(
@@ -1268,10 +1271,8 @@ fn gui_main(
                                                 },
                                             ),
                                         ));
-                                    })
-                                }) {
-                                    error!(file = %path.display(), error = %e, "Failed to open file");
-                                }
+                                    });
+                                });
                             } else {
                                 warn!(file = %path.display(), "File does not exist");
                             }

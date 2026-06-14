@@ -1805,7 +1805,7 @@ impl Application {
         }
 
         // Sort by MRU (Most Recently Used) - most recent first
-        buffer_metas.sort_by(|a, b| b.focused_at.cmp(&a.focused_at));
+        buffer_metas.sort_by_key(|meta| std::cmp::Reverse(meta.focused_at));
 
         // Create picker items with terminal-like formatting
         let mut items = Vec::new();
@@ -5191,7 +5191,7 @@ impl Application {
             }
 
             if let Some(core) = core.upgrade() {
-                let _ = core.update(cx, move |core, cx| {
+                core.update(cx, move |core, cx| {
                     core.finish_lsp_navigation(title, empty_message, locations, cx);
                 });
             }
@@ -5295,7 +5295,7 @@ impl Application {
             }
 
             if let Some(core) = core.upgrade() {
-                let _ = core.update(cx, move |core, cx| {
+                core.update(cx, move |core, cx| {
                     core.finish_native_symbol_picker(&title, symbols, cx);
                 });
             }
@@ -5343,7 +5343,7 @@ impl Application {
                 .await;
 
             if let Some(core) = core.upgrade() {
-                let _ = core.update(cx, move |core, cx| {
+                core.update(cx, move |core, cx| {
                     let mut symbols = open_symbols;
                     match workspace_symbols {
                         Ok(mut workspace_symbols) => {

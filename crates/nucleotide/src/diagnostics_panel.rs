@@ -54,7 +54,7 @@ impl DiagnosticsPanel {
     ) -> Self {
         nucleotide_logging::info!("DIAG: DiagnosticsPanel created");
         let focus_handle = cx.focus_handle();
-        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_diagnostics_focus(focus_handle.clone());
         }
         Self {
@@ -408,7 +408,7 @@ impl DiagnosticsPanel {
             .child(
                 div()
                     .flex_1()
-                    .flex_grow()
+                    .flex_grow(1.0)
                     .whitespace_normal()
                     .child(Self::soft_wrap(&primary)),
             );
@@ -463,7 +463,7 @@ impl FocusableModal for DiagnosticsPanel {}
 impl Render for DiagnosticsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Ensure the panel obtains focus to capture keyboard input
-        self.ensure_focus(window, &self.focus);
+        self.ensure_focus(window, cx, &self.focus);
         let lsp_state = self.lsp_state.clone();
         let filter = self.filter.clone();
         let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();

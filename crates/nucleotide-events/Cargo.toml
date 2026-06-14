@@ -9,7 +9,7 @@ homepage.workspace = true
 publish = false
 description = "Event system definitions for Nucleotide editor (Layer 2)"
 categories = ["text-editors", "gui"]
-rust-version = "1.88"
+rust-version = "1.95"
 
 [dependencies]
 # External dependencies
