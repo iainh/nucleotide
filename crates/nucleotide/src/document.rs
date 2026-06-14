@@ -14,7 +14,8 @@ use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
     EditorSurfacePointerEvent, EditorViewContentPrepareParams, EditorViewLayoutSnapshot,
     EditorViewState, NativeEditorFramePalette, NativeEditorFrameRenderParams,
-    NativeEditorFrameThemeStyles, NativeEditorView, render_native_editor_frame,
+    NativeEditorFrameThemeStyles, NativeEditorView, log_pointer_selection_outcome,
+    render_native_editor_frame,
 };
 
 fn handle_editor_pointer_selection(
@@ -26,10 +27,8 @@ fn handle_editor_pointer_selection(
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
-    let mut pointer_update = None;
-
-    core.update(cx, |core, cx| {
-        pointer_update = editor_state.handle_pointer_selection_at_event(
+    let outcome = core.update(cx, |core, cx| {
+        let outcome = editor_state.handle_pointer_selection_outcome(
             &mut core.editor,
             doc_id,
             view_id,
@@ -37,31 +36,14 @@ fn handle_editor_pointer_selection(
             event,
         );
 
-        if pointer_update.is_some() {
+        if outcome.changed() {
             cx.notify();
         }
+
+        outcome
     });
 
-    if let Some(pointer_update) = pointer_update {
-        debug!(
-            phase = ?phase,
-            line_idx = pointer_update.hit_test.line_idx,
-            char_offset = pointer_update.hit_test.char_offset,
-            anchor = pointer_update.selection.anchor,
-            target_pos = pointer_update.selection.head,
-            "Applied editor pointer selection"
-        );
-    } else if matches!(phase, EditorPointerSelectionPhase::End) {
-        debug!(position = ?event.position, "Mouse up event - pointer selection ended");
-    } else {
-        debug!(
-            phase = ?phase,
-            window_pos = ?event.position,
-            bounds = ?event.bounds,
-            line_height = %event.line_height,
-            "Pointer hit test did not find a rendered line"
-        );
-    }
+    log_pointer_selection_outcome(outcome);
 }
 
 pub struct DocumentView {

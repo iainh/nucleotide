@@ -5,12 +5,12 @@ use gpui::{Pixels, Point, Size, TextStyle, TextSystem, px};
 use helix_view::{DocumentId, Editor, Theme, ViewId};
 
 use crate::{
-    CursorOverlayPlan, EditorCursorReveal, EditorOverlayState, EditorPointerSelectionPhase,
-    EditorPointerSelectionUpdate, EditorScrollbarState, EditorSelectionDragState,
-    EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
-    EditorViewportContentLayout, EditorViewportContentUpdate, EditorViewportSurfaceLayout,
-    EditorViewportSurfaceUpdate, LineLayoutCache, begin_editor_pointer_selection_at_event,
-    update_editor_pointer_selection_at_event,
+    CursorOverlayPlan, EditorCursorReveal, EditorOverlayState, EditorPointerSelectionOutcome,
+    EditorPointerSelectionPhase, EditorPointerSelectionUpdate, EditorScrollbarState,
+    EditorSelectionDragState, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
+    EditorViewport, EditorViewportContentLayout, EditorViewportContentUpdate,
+    EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate, LineLayoutCache,
+    begin_editor_pointer_selection_at_event, update_editor_pointer_selection_at_event,
 };
 
 #[derive(Clone)]
@@ -252,16 +252,34 @@ impl EditorViewState {
         phase: EditorPointerSelectionPhase,
         event: EditorSurfacePointerEvent,
     ) -> Option<EditorPointerSelectionUpdate> {
+        self.handle_pointer_selection_outcome(editor, doc_id, view_id, phase, event)
+            .update()
+    }
+
+    pub fn handle_pointer_selection_outcome(
+        &self,
+        editor: &mut Editor,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        phase: EditorPointerSelectionPhase,
+        event: EditorSurfacePointerEvent,
+    ) -> EditorPointerSelectionOutcome {
         match phase {
-            EditorPointerSelectionPhase::Begin => {
-                self.begin_pointer_selection_at_event(editor, doc_id, view_id, event)
-            }
-            EditorPointerSelectionPhase::Extend => {
-                self.update_pointer_selection_at_event(editor, doc_id, view_id, event)
-            }
+            EditorPointerSelectionPhase::Begin => self
+                .begin_pointer_selection_at_event(editor, doc_id, view_id, event)
+                .map_or(
+                    EditorPointerSelectionOutcome::Missed { phase, event },
+                    |update| EditorPointerSelectionOutcome::Applied { phase, update },
+                ),
+            EditorPointerSelectionPhase::Extend => self
+                .update_pointer_selection_at_event(editor, doc_id, view_id, event)
+                .map_or(
+                    EditorPointerSelectionOutcome::Missed { phase, event },
+                    |update| EditorPointerSelectionOutcome::Applied { phase, update },
+                ),
             EditorPointerSelectionPhase::End => {
                 self.clear_pointer_selection();
-                None
+                EditorPointerSelectionOutcome::Ended { event }
             }
         }
     }
@@ -554,6 +572,33 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn view_state_pointer_phase_begin_reports_missed_outcome() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        state.selection_drag_state().set_anchor(7);
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
+        let event = pointer_event();
+
+        let outcome = state.handle_pointer_selection_outcome(
+            &mut editor,
+            doc_id,
+            view_id,
+            EditorPointerSelectionPhase::Begin,
+            event,
+        );
+
+        assert_eq!(
+            outcome,
+            EditorPointerSelectionOutcome::Missed {
+                phase: EditorPointerSelectionPhase::Begin,
+                event
+            }
+        );
+        assert!(!outcome.changed());
+        assert_eq!(outcome.update(), None);
+        assert_eq!(state.selection_drag_state().anchor(), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn view_state_pointer_phase_extend_uses_owned_cache() {
         let state = EditorViewState::new(px(20.0), px(8.0));
         state.selection_drag_state().set_anchor(0);
@@ -586,6 +631,27 @@ mod tests {
         );
 
         assert!(update.is_none());
+        assert_eq!(state.selection_drag_state().anchor(), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_pointer_phase_end_reports_ended_outcome() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        state.selection_drag_state().set_anchor(7);
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
+        let event = pointer_event();
+
+        let outcome = state.handle_pointer_selection_outcome(
+            &mut editor,
+            doc_id,
+            view_id,
+            EditorPointerSelectionPhase::End,
+            event,
+        );
+
+        assert_eq!(outcome, EditorPointerSelectionOutcome::Ended { event });
+        assert!(!outcome.changed());
+        assert_eq!(outcome.update(), None);
         assert_eq!(state.selection_drag_state().anchor(), None);
     }
 
