@@ -2,12 +2,16 @@
 // ABOUTME: Bundles viewport, metrics, overlay, scrollbar, and selection state
 
 use gpui::{Pixels, TextStyle, px};
+use helix_view::{DocumentId, Editor, ViewId};
 
 use crate::{
-    EditorCursorReveal, EditorOverlayState, EditorScrollbarState, EditorSelectionDragState,
-    EditorSurfaceMetrics, EditorTextMetrics, EditorViewport,
+    EditorCursorReveal, EditorOverlayState, EditorPointerSelectionUpdate, EditorScrollbarState,
+    EditorSelectionDragState, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
+    EditorViewport, begin_editor_pointer_selection_at_event,
+    update_editor_pointer_selection_at_event,
 };
 
+#[derive(Clone)]
 pub struct EditorViewState {
     viewport: EditorViewport,
     surface_metrics: EditorSurfaceMetrics,
@@ -54,6 +58,46 @@ impl EditorViewState {
         self.viewport.request_cursor_reveal(reveal);
     }
 
+    pub fn begin_pointer_selection_at_event(
+        &self,
+        editor: &mut Editor,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        event: EditorSurfacePointerEvent,
+    ) -> Option<EditorPointerSelectionUpdate> {
+        let line_cache = self.surface_metrics.line_cache();
+        begin_editor_pointer_selection_at_event(
+            editor,
+            doc_id,
+            view_id,
+            &line_cache,
+            &self.selection_drag_state,
+            event,
+        )
+    }
+
+    pub fn update_pointer_selection_at_event(
+        &self,
+        editor: &mut Editor,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        event: EditorSurfacePointerEvent,
+    ) -> Option<EditorPointerSelectionUpdate> {
+        let line_cache = self.surface_metrics.line_cache();
+        update_editor_pointer_selection_at_event(
+            editor,
+            doc_id,
+            view_id,
+            &line_cache,
+            &self.selection_drag_state,
+            event,
+        )
+    }
+
+    pub fn clear_pointer_selection(&self) {
+        self.selection_drag_state.clear();
+    }
+
     pub fn line_height(&self) -> Pixels {
         self.line_height
     }
@@ -85,7 +129,18 @@ impl EditorViewState {
 
 #[cfg(test)]
 mod tests {
-    use gpui::px;
+    use std::sync::Arc;
+
+    use arc_swap::{ArcSwap, access::Map};
+    use gpui::{Bounds, point, px, size};
+    use helix_core::{Transaction, syntax};
+    use helix_view::{
+        DocumentId, Editor,
+        editor::{Action, Config},
+        graphics::Rect,
+        handlers::Handlers,
+        theme,
+    };
 
     use super::*;
 
@@ -95,6 +150,51 @@ mod tests {
             line_height,
             em_width: cell_width,
             cell_width,
+        }
+    }
+
+    fn test_handlers() -> Handlers {
+        let (completion_tx, _) = tokio::sync::mpsc::channel(1);
+        let (signature_tx, _) = tokio::sync::mpsc::channel(1);
+        let (auto_save_tx, _) = tokio::sync::mpsc::channel(1);
+        let (doc_colors_tx, _) = tokio::sync::mpsc::channel(1);
+
+        Handlers {
+            completions: helix_view::handlers::completion::CompletionHandler::new(completion_tx),
+            signature_hints: signature_tx,
+            auto_save: auto_save_tx,
+            document_colors: doc_colors_tx,
+            word_index: helix_view::handlers::word_index::Handler::spawn(),
+        }
+    }
+
+    fn test_editor_with_text(text: &str) -> (Editor, DocumentId, ViewId) {
+        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let theme_loader = Arc::new(theme::Loader::new(&[]));
+        let mut editor = Editor::new(
+            Rect::new(0, 0, 80, 24),
+            theme_loader,
+            syntax_loader,
+            Arc::new(Map::new(Arc::clone(&config), |config: &Config| config)),
+            test_handlers(),
+        );
+        let doc_id = editor.new_file(Action::VerticalSplit);
+        let view_id = editor.tree.focus;
+        let doc = editor.document_mut(doc_id).unwrap();
+        let transaction = Transaction::change(doc.text(), [(0, 0, Some(text.into()))].into_iter());
+        doc.apply(&transaction, view_id);
+
+        (editor, doc_id, view_id)
+    }
+
+    fn pointer_event() -> EditorSurfacePointerEvent {
+        EditorSurfacePointerEvent {
+            position: point(px(4.0), px(4.0)),
+            modifiers: gpui::Modifiers::none(),
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(80.0), px(20.0))),
+            line_height: px(20.0),
+            cell_width: px(8.0),
         }
     }
 
@@ -131,5 +231,41 @@ mod tests {
             state.viewport().take_cursor_reveal_request(),
             Some(EditorCursorReveal::Center)
         );
+    }
+
+    #[test]
+    fn view_state_clears_owned_pointer_selection_state() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        state.selection_drag_state().set_anchor(7);
+
+        state.clear_pointer_selection();
+
+        assert_eq!(state.selection_drag_state().anchor(), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_begin_pointer_selection_uses_owned_cache_and_drag_state() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        state.selection_drag_state().set_anchor(7);
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
+
+        let update =
+            state.begin_pointer_selection_at_event(&mut editor, doc_id, view_id, pointer_event());
+
+        assert!(update.is_none());
+        assert_eq!(state.selection_drag_state().anchor(), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_update_pointer_selection_uses_owned_cache() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        state.selection_drag_state().set_anchor(0);
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
+
+        let update =
+            state.update_pointer_selection_at_event(&mut editor, doc_id, view_id, pointer_event());
+
+        assert!(update.is_none());
+        assert_eq!(state.selection_drag_state().anchor(), Some(0));
     }
 }
