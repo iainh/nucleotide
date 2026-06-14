@@ -240,7 +240,6 @@ fn paint_document_content(
     } = params;
 
     let helix_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-    let element_focused = focus.is_focused(window);
     core.update(cx, |core, cx| {
         let tokens = cx.theme().tokens;
         let ui_tokens = cx.ui_theme().tokens;
@@ -259,7 +258,7 @@ fn paint_document_content(
                 text_style: style,
                 font_size: style.font_size.to_pixels(px(16.0)),
                 is_focused,
-                element_focused,
+                focus,
                 soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
                 theme_styles,
                 palette: NativeEditorFramePalette {

@@ -1,7 +1,7 @@
 // ABOUTME: Paint helpers for frame-owned native editor render state
 // ABOUTME: Converts EditorDocumentFrame plans into GPUI paint calls
 
-use gpui::{App, Bounds, Hsla, Pixels, TextStyle, Window, px};
+use gpui::{App, Bounds, FocusHandle, Hsla, Pixels, TextStyle, Window, px};
 use helix_core::{Rope, RopeSlice};
 use helix_view::{Document, DocumentId, Editor, Theme, View, ViewId, graphics::Style};
 use nucleotide_logging::{debug, error};
@@ -247,7 +247,7 @@ pub struct NativeEditorFrameRenderParams<'a> {
     pub text_style: &'a TextStyle,
     pub font_size: Pixels,
     pub is_focused: bool,
-    pub element_focused: bool,
+    pub focus: &'a FocusHandle,
     pub soft_wrap_minimum_columns: u16,
     pub theme_styles: NativeEditorFrameThemeStyles,
     pub palette: NativeEditorFramePalette,
@@ -358,7 +358,7 @@ pub fn render_native_editor_frame(
         text_style,
         font_size,
         is_focused,
-        element_focused,
+        focus,
         soft_wrap_minimum_columns,
         theme_styles,
         palette,
@@ -390,7 +390,7 @@ pub fn render_native_editor_frame(
             layout,
             text_style,
             diagnostic_theme: theme,
-            element_focused,
+            element_focused: focus.is_focused(window),
         },
     )
 }
