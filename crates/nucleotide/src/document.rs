@@ -1,7 +1,7 @@
 use gpui::{
     App, Bounds, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, Styled,
-    TextStyle, Window, div, px,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, SharedString,
+    Styled, TextStyle, Window, div, px,
 };
 // Import helix's syntax highlighting system
 use helix_view::{DocumentId, ViewId};
@@ -9,7 +9,7 @@ use nucleotide_logging::debug;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 
-use crate::Core;
+use crate::{Core, Input, InputEvent};
 use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
     EditorSurfacePointerEvent, EditorViewContentPrepareParams, EditorViewLayoutSnapshot,
@@ -48,6 +48,7 @@ fn handle_editor_pointer_selection(
 
 pub struct DocumentView {
     core: Entity<Core>,
+    input: Option<Entity<Input>>,
     view_id: ViewId,
     style: TextStyle,
     focus: FocusHandle,
@@ -58,6 +59,7 @@ pub struct DocumentView {
 impl DocumentView {
     pub fn new(
         core: Entity<Core>,
+        input: Option<Entity<Input>>,
         view_id: ViewId,
         style: TextStyle,
         focus: &FocusHandle,
@@ -69,6 +71,7 @@ impl DocumentView {
 
         Self {
             core,
+            input,
             view_id,
             style,
             focus: focus.clone(),
@@ -194,6 +197,17 @@ impl Render for DocumentView {
 
         div()
             .id(SharedString::from(format!("doc-view-{:?}", self.view_id)))
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|view, ev: &KeyDownEvent, _window, cx| {
+                let Some(input) = &view.input else {
+                    return;
+                };
+                let key = crate::utils::translate_key(&ev.keystroke);
+                input.update(cx, |_, cx| {
+                    cx.emit(InputEvent::Key(key));
+                });
+                cx.stop_propagation();
+            }))
             .w_full()
             .h_full()
             .flex()
