@@ -524,20 +524,37 @@ impl EditorViewport {
         view_id: ViewId,
         layout: EditorViewportSurfaceLayout<'_>,
     ) -> Option<EditorViewportSurfaceUpdate> {
+        let mut view = editor.tree.try_get(view_id)?.clone();
+        let update = {
+            let document = editor.document_mut(doc_id)?;
+            self.sync_surface_layout_for_view(document, &mut view, view_id, layout)
+        };
+        editor.tree.get_mut(view_id).area = view.area;
+
+        Some(update)
+    }
+
+    pub fn sync_surface_layout_for_view(
+        &mut self,
+        document: &mut Document,
+        view: &mut helix_view::View,
+        view_id: ViewId,
+        layout: EditorViewportSurfaceLayout<'_>,
+    ) -> EditorViewportSurfaceUpdate {
         self.set_line_height(layout.line_height);
         self.set_viewport_size(editor_viewport_size_for_bounds(layout.bounds));
 
-        let view = editor.tree.try_get(view_id)?;
-        let document = editor.document(doc_id)?;
-        let (gutter_columns, metrics) = editor_viewport_content_metrics(
+        let content_layout = EditorViewportContentLayout {
+            theme: layout.theme,
+            bounds: layout.bounds,
+            cell_width: layout.cell_width,
+            minimum_columns: layout.minimum_columns,
+        };
+        let (gutter_columns, metrics) = editor_viewport_surface_metrics(
             document,
             view,
-            EditorViewportContentLayout {
-                theme: layout.theme,
-                bounds: layout.bounds,
-                cell_width: layout.cell_width,
-                minimum_columns: layout.minimum_columns,
-            },
+            content_layout,
+            self.visible_visual_rows(),
         );
         self.set_content_visual_rows(metrics.visual_rows);
         let view_area_plan = helix_view_area_plan_for_surface(
@@ -546,12 +563,10 @@ impl EditorViewport {
             metrics.viewport_columns,
             self.visible_visual_rows(),
         );
-        apply_helix_view_area_plan(editor.tree.get_mut(view_id), view_area_plan);
+        apply_helix_view_area_plan(view, view_area_plan);
 
         let mut helix_view_synced = if self.has_pending_view_sync() {
-            let view = editor.tree.try_get(view_id)?.clone();
-            let document = editor.document_mut(doc_id)?;
-            let synced = self.sync_view_position(document, &view, view_id, &metrics.text_format);
+            let synced = self.sync_view_position(document, view, view_id, &metrics.text_format);
             self.clear_pending_view_sync();
             synced
         } else {
@@ -559,33 +574,26 @@ impl EditorViewport {
         };
 
         let cursor_revealed = if let Some(cursor_reveal) = layout.cursor_reveal {
-            let cursor_visual_row = {
-                let view = editor.tree.try_get(view_id)?;
-                let document = editor.document(doc_id)?;
-                document_cursor_visual_row(document, view, view_id, &metrics.text_format)
-            };
+            let cursor_visual_row =
+                { document_cursor_visual_row(document, view, view_id, &metrics.text_format) };
             let scroll_update =
                 self.reveal_visual_row(cursor_visual_row, cursor_reveal, layout.scrolloff);
 
-            let view = editor.tree.try_get(view_id)?.clone();
-            let document = editor.document_mut(doc_id)?;
             helix_view_synced |=
-                self.sync_view_position(document, &view, view_id, &metrics.text_format);
+                self.sync_view_position(document, view, view_id, &metrics.text_format);
 
             scroll_update.changed
         } else {
             false
         };
 
-        let view = editor.tree.try_get(view_id)?;
-        let document = editor.document(doc_id)?;
         let helix_snapshot =
             self.sync_from_helix_view(document, view, view_id, &metrics.text_format);
         let view_position_plan =
             self.plan_view_position(document, view, view_id, &metrics.text_format);
         let view_position = view_position_plan.view_position;
 
-        Some(EditorViewportSurfaceUpdate {
+        EditorViewportSurfaceUpdate {
             gutter_columns,
             visual_rows: metrics.visual_rows,
             soft_wrap: metrics.soft_wrap,
@@ -595,7 +603,7 @@ impl EditorViewport {
             helix_view_synced,
             cursor_revealed,
             helix_snapshot,
-        })
+        }
     }
 
     pub fn plan_view_position(
@@ -653,6 +661,35 @@ fn editor_viewport_content_metrics(
     );
 
     (gutter_columns, metrics)
+}
+
+fn editor_viewport_surface_metrics(
+    document: &Document,
+    view: &helix_view::View,
+    layout: EditorViewportContentLayout<'_>,
+    visible_rows: usize,
+) -> (u16, EditorDocumentMetrics) {
+    let (current_gutter_columns, current_metrics) =
+        editor_viewport_content_metrics(document, view, layout);
+    let mut surface_view = view.clone();
+    surface_view.area =
+        helix_view_area_for_surface(0, current_metrics.viewport_columns, visible_rows);
+    let surface_gutter_columns = surface_view.gutter_offset(document);
+
+    if surface_gutter_columns == current_gutter_columns {
+        return (current_gutter_columns, current_metrics);
+    }
+
+    let metrics = EditorDocumentMetrics::resolve(
+        document,
+        layout.theme,
+        layout.bounds,
+        surface_gutter_columns,
+        layout.cell_width,
+        layout.minimum_columns,
+    );
+
+    (surface_gutter_columns, metrics)
 }
 
 fn apply_helix_view_area_plan(
@@ -1383,6 +1420,33 @@ mod tests {
                 viewport.visible_visual_rows()
             )
         );
+    }
+
+    #[test]
+    fn surface_layout_sync_for_view_updates_native_and_helix_layout() {
+        let (mut document, mut view) = test_document_and_view("one\ntwo\nthree\n");
+        let view_id = view.id;
+        let mut viewport = EditorViewport::new(px(20.0));
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(101.0)));
+
+        let update = viewport.sync_surface_layout_for_view(
+            &mut document,
+            &mut view,
+            view_id,
+            EditorViewportSurfaceLayout {
+                theme: None,
+                bounds,
+                cell_width: px(8.0),
+                line_height: px(20.0),
+                minimum_columns: 1,
+                scrolloff: Config::default().scrolloff,
+                cursor_reveal: None,
+            },
+        );
+
+        assert_eq!(view.area, update.view_area_plan.target_area);
+        assert_eq!(update.gutter_columns, view.gutter_offset(&document));
+        assert_eq!(viewport.content_visual_rows(), update.visual_rows);
     }
 
     #[tokio::test(flavor = "current_thread")]
