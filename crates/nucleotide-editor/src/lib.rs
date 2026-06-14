@@ -32,6 +32,7 @@ pub mod selection;
 pub mod soft_wrap;
 mod style;
 pub mod surface;
+pub mod view_state;
 pub mod viewport;
 
 pub use cursor::{
@@ -127,6 +128,7 @@ pub use surface::{
     EditorSurface, EditorSurfaceMetricSnapshot, EditorSurfaceMetrics, EditorSurfacePointerEvent,
     paint_editor_background,
 };
+pub use view_state::EditorViewState;
 pub use viewport::{
     EditorCursorReveal, EditorViewport, EditorViewportContentLayout, EditorViewportContentUpdate,
     EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate, HelixViewportSnapshot,

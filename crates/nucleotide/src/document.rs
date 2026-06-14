@@ -15,8 +15,8 @@ use crate::Core;
 use nucleotide_editor::{
     DocumentFramePaintParams, EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal,
     EditorDocumentElement, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
-    EditorLayout, EditorOverlayState, EditorScrollbarState, EditorSelectionDragState,
-    EditorSurface, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
+    EditorLayout, EditorOverlayState, EditorSelectionDragState, EditorSurface,
+    EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState,
     EditorViewport, EditorViewportContentLayout, EditorViewportSurfaceLayout, LineLayoutCache,
     begin_editor_pointer_selection_at_event, cursor_document_line, cursor_style_for_mode,
     editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame, paint_editor_background,
@@ -177,12 +177,7 @@ pub struct DocumentView {
     style: TextStyle,
     focus: FocusHandle,
     is_focused: bool,
-    viewport: EditorViewport,
-    scrollbar_state: EditorScrollbarState,
-    surface_metrics: EditorSurfaceMetrics,
-    line_height: Pixels,
-    selection_drag_state: EditorSelectionDragState,
-    overlay_state: EditorOverlayState,
+    editor_state: EditorViewState,
 }
 
 impl DocumentView {
@@ -195,8 +190,7 @@ impl DocumentView {
     ) -> Self {
         // Create viewport with placeholder document metrics (updated during render/paint).
         let line_height = px(20.0); // Default, will be updated
-        let viewport = EditorViewport::new(line_height);
-        let surface_metrics = EditorSurfaceMetrics::new(line_height, px(8.0));
+        let editor_state = EditorViewState::new(line_height, px(8.0));
 
         Self {
             core,
@@ -204,12 +198,7 @@ impl DocumentView {
             style,
             focus: focus.clone(),
             is_focused,
-            viewport,
-            scrollbar_state: EditorScrollbarState::default(),
-            surface_metrics,
-            line_height,
-            selection_drag_state: EditorSelectionDragState::default(),
-            overlay_state: EditorOverlayState::new(),
+            editor_state,
         }
     }
 
@@ -220,23 +209,22 @@ impl DocumentView {
     pub fn update_text_style(&mut self, style: TextStyle) {
         // Recalculate line height with new font size
         // Use the actual font size as rem base for proper line height calculation
-        let font_size = style.font_size.to_pixels(px(16.0));
-        self.line_height = style.line_height_in_pixels(font_size);
+        self.editor_state.update_line_height_from_text_style(&style);
         self.style = style;
-        self.surface_metrics.line_cache().clear_shaped_lines();
+        self.editor_state.clear_shaped_lines_cache();
     }
 
     pub fn clear_shaped_lines_cache(&self) {
-        self.surface_metrics.line_cache().clear_shaped_lines();
+        self.editor_state.clear_shaped_lines_cache();
     }
 
     pub fn request_cursor_reveal(&self) {
-        self.viewport
+        self.editor_state
             .request_cursor_reveal(EditorCursorReveal::Scrolloff);
     }
 
     pub fn request_cursor_center(&self) {
-        self.viewport
+        self.editor_state
             .request_cursor_reveal(EditorCursorReveal::Center);
     }
 
@@ -244,13 +232,13 @@ impl DocumentView {
     #[allow(dead_code)]
     fn anchor_to_scroll_px(&self, anchor_char: usize, document: &helix_view::Document) -> Pixels {
         let row = document.text().char_to_line(anchor_char);
-        self.line_height * (row as f32)
+        self.editor_state.line_height() * (row as f32)
     }
 
     /// Convert scroll pixels to a Helix anchor (character position)
     #[allow(dead_code)]
     fn scroll_px_to_anchor(&self, y: Pixels, document: &helix_view::Document) -> usize {
-        let row = (y / self.line_height).floor() as usize;
+        let row = (y / self.editor_state.line_height()).floor() as usize;
         let text = document.text();
         let clamped_row = row.min(text.len_lines().saturating_sub(1));
         text.line_to_char(clamped_row)
@@ -307,23 +295,23 @@ impl DocumentView {
 
     /// Get the actual line height used by this DocumentView
     pub fn get_line_height(&self) -> Pixels {
-        self.line_height
+        self.editor_state.line_height()
     }
 
     /// Get the last painted gutter width in window pixels.
     pub fn get_gutter_width(&self) -> Pixels {
-        self.overlay_state.gutter_width()
+        self.editor_state.overlay_state().gutter_width()
     }
 
     /// Get the cursor's last painted top-left position and size in window coordinates.
     pub fn get_cursor_overlay_bounds(&self) -> Option<(Point<Pixels>, Size<Pixels>)> {
-        self.overlay_state.cursor_overlay_bounds()
+        self.editor_state.overlay_state().cursor_overlay_bounds()
     }
 
     /// Get the last cursor position and size in window coordinates
     /// Returns (position, size) where position is bottom-left corner for completion positioning
     pub fn get_cursor_coordinates(&self) -> Option<(Point<Pixels>, Size<Pixels>)> {
-        self.overlay_state.cursor_completion_anchor()
+        self.editor_state.overlay_state().cursor_completion_anchor()
     }
 }
 
@@ -344,10 +332,8 @@ impl Render for DocumentView {
         };
 
         let metrics = EditorTextMetrics::resolve(cx.text_system(), &self.style);
-        self.line_height = metrics.line_height;
-        self.surface_metrics
-            .set(metrics.line_height, metrics.cell_width);
-        let surface_metrics = self.surface_metrics.clone();
+        self.editor_state.apply_text_metrics(metrics);
+        let surface_metrics = self.editor_state.surface_metrics().clone();
 
         // Prime viewport content metrics from the latest known native surface size.
         {
@@ -356,10 +342,9 @@ impl Render for DocumentView {
             if let Some(view) = editor.tree.try_get(self.view_id)
                 && let Some(document) = editor.document(doc_id)
             {
-                self.viewport.set_line_height(metrics.line_height);
                 let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-                let viewport_bounds = self.viewport.viewport_bounds();
-                let content_update = self.viewport.sync_content_layout(
+                let viewport_bounds = self.editor_state.viewport().viewport_bounds();
+                let content_update = self.editor_state.viewport_mut().sync_content_layout(
                     document,
                     view,
                     EditorViewportContentLayout::for_editor(
@@ -384,9 +369,9 @@ impl Render for DocumentView {
             let style = self.style.clone();
             let focus = self.focus.clone();
             let is_focused = self.is_focused;
-            let mut viewport = self.viewport.clone();
+            let mut viewport = self.editor_state.viewport().clone();
             let surface_metrics = surface_metrics.clone();
-            let overlay_state = self.overlay_state.clone();
+            let overlay_state = self.editor_state.overlay_state().clone();
 
             EditorDocumentElement::new(style.clone(), move |bounds, after_layout, window, cx| {
                 paint_document_content(DocumentPaintParams {
@@ -409,9 +394,9 @@ impl Render for DocumentView {
 
         let editor_surface = EditorSurface::new(
             cx.entity_id(),
-            self.viewport.clone(),
+            self.editor_state.viewport().clone(),
             surface_metrics.clone(),
-            self.scrollbar_state.clone(),
+            self.editor_state.scrollbar_state().clone(),
             document_element,
         )
         .on_scroll({
@@ -427,7 +412,7 @@ impl Render for DocumentView {
         .on_mouse_down({
             let core = self.core.clone();
             let view_id = self.view_id;
-            let selection_drag_state = self.selection_drag_state.clone();
+            let selection_drag_state = self.editor_state.selection_drag_state().clone();
             let line_cache = surface_metrics.line_cache();
 
             move |event: EditorSurfacePointerEvent, cx| {
@@ -445,7 +430,7 @@ impl Render for DocumentView {
         .on_mouse_drag({
             let core = self.core.clone();
             let view_id = self.view_id;
-            let selection_drag_state = self.selection_drag_state.clone();
+            let selection_drag_state = self.editor_state.selection_drag_state().clone();
             let line_cache = surface_metrics.line_cache();
 
             move |event: EditorSurfacePointerEvent, cx| {
@@ -461,7 +446,7 @@ impl Render for DocumentView {
             }
         })
         .on_mouse_up({
-            let selection_drag_state = self.selection_drag_state.clone();
+            let selection_drag_state = self.editor_state.selection_drag_state().clone();
 
             move |event: EditorSurfacePointerEvent, _cx| {
                 selection_drag_state.clear();
