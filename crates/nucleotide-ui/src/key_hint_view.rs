@@ -14,6 +14,10 @@ struct HintLine {
     description: String,
 }
 
+const HINT_COLUMN_WIDTH: f32 = 292.0;
+const HINT_COLUMN_GAP: f32 = 14.0;
+const HINT_KEY_SLOT_WIDTH: f32 = 44.0;
+
 #[derive(Debug)]
 pub struct KeyHintView {
     info: Option<Info>,
@@ -129,7 +133,8 @@ impl KeyHintView {
         let tooltip = theme.tokens.tooltip_tokens();
 
         div()
-            .flex_1()
+            .w(px(HINT_COLUMN_WIDTH))
+            .flex_none()
             .min_w(px(0.0))
             .flex()
             .items_center()
@@ -137,9 +142,14 @@ impl KeyHintView {
             .px(px(4.0))
             .py(px(2.0))
             .rounded(px(4.0))
-            .when_some(line.key.as_deref(), |row, key| {
-                row.child(Self::render_key_badge(theme, key_font, key_text_size, key))
-            })
+            .child(
+                div().w(px(HINT_KEY_SLOT_WIDTH)).flex_none().when_some(
+                    line.key.as_deref(),
+                    |slot, key| {
+                        slot.child(Self::render_key_badge(theme, key_font, key_text_size, key))
+                    },
+                ),
+            )
             .child(
                 div()
                     .flex_1()
@@ -158,15 +168,22 @@ impl KeyHintView {
         second: Option<HintLine>,
     ) -> AnyElement {
         let second = second.map_or_else(
-            || div().flex_1().min_w(px(0.0)).into_any_element(),
+            || {
+                div()
+                    .w(px(HINT_COLUMN_WIDTH))
+                    .flex_none()
+                    .min_w(px(0.0))
+                    .into_any_element()
+            },
             |line| Self::render_line(theme, key_font, key_text_size, line),
         );
 
         div()
             .w_full()
             .flex()
-            .items_center()
-            .gap(px(10.0))
+            .items_start()
+            .justify_start()
+            .gap(px(HINT_COLUMN_GAP))
             .child(Self::render_line(theme, key_font, key_text_size, first))
             .child(second)
             .into_any_element()
@@ -194,8 +211,7 @@ impl Render for KeyHintView {
                 .absolute()
                 .bottom_4()
                 .right_4()
-                .min_w(px(540.0))
-                .max_w(px(680.0))
+                .w(px((HINT_COLUMN_WIDTH * 2.0) + HINT_COLUMN_GAP))
                 .bg(tooltip.background)
                 .border_1()
                 .border_color(tooltip.border)
