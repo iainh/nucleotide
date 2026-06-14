@@ -1,10 +1,8 @@
 use gpui::{
-    App, Bounds, Context, DefiniteLength, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, SharedString,
-    Size, Styled, TextStyle, Window, div, px,
+    App, Bounds, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Size,
+    Styled, TextStyle, Window, div, px,
 };
-use helix_core::Uri;
-use helix_lsp::lsp::Diagnostic;
 // Import helix's syntax highlighting system
 use helix_view::{DocumentId, ViewId};
 use nucleotide_logging::debug;
@@ -16,74 +14,8 @@ use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
     EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewportContentLayout,
     NativeEditorFramePaintParams, NativeEditorFramePrepareParams, NativeEditorView,
-    cursor_document_line_for_view, paint_native_editor_frame, prepare_native_editor_frame,
+    paint_native_editor_frame, prepare_native_editor_frame,
 };
-
-// Removed unused debug helper: test_synthetic_click_accuracy
-/*
-#[cfg(test)]
-fn test_synthetic_click_accuracy(
-    line_cache: &nucleotide_editor::LineLayoutCache,
-    target_line_idx: usize,
-    target_char_idx: usize,
-    bounds_width: gpui::Pixels,
-    line_height: gpui::Pixels,
-) -> Option<(usize, usize)> {
-    // Find the target line in the cache
-    if let Some(line_layout) = line_cache.find_line_by_index(target_line_idx) {
-        // Calculate approximate pixel position for the target character
-        // This is a simple approximation - real position would need character metrics
-        let char_width_estimate = f32::from(line_layout.shaped_line.width)
-            / line_layout.shaped_line.len() as f32;
-        let estimated_x =
-            f32::from(line_layout.origin.x) + (target_char_idx as f32 * char_width_estimate);
-        let synthetic_position = gpui::point(gpui::px(estimated_x), line_layout.origin.y);
-
-        // Test if this position would be found correctly
-        if let Some(found_layout) =
-            line_cache.find_line_at_position(synthetic_position, bounds_width, line_height)
-        {
-            // Calculate what character position this would resolve to
-            let relative_x = synthetic_position.x - found_layout.origin.x;
-            let resolved_byte_index = found_layout
-                .shaped_line
-                .index_for_x(relative_x)
-                .unwrap_or(0);
-
-            Some((found_layout.line_idx, resolved_byte_index))
-        } else {
-            None
-        }
-    } else {
-        None
-    }
-}
-
-#[cfg(test)]
-fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, _font_size: f32) {
-    // Test various x positions and see if they map to sensible character indices
-    let width = f32::from(shaped_line.width);
-    let test_positions = vec![
-        0.0,                        // Start of line
-        width * 0.25,               // Quarter way
-        width * 0.5,                // Middle
-        width * 0.75,               // Three quarters
-        width,                      // End of line
-        width + 10.0,               // Beyond end
-    ];
-
-    for x_pos in test_positions.iter() {
-        let px_x = gpui::px(*x_pos);
-        let byte_index = shaped_line.index_for_x(px_x).unwrap_or(0);
-
-        // Convert byte index to character index for validation
-        let _char_index = line_text
-            .char_indices()
-            .take_while(|(byte_idx, _)| *byte_idx < byte_index)
-            .count();
-    }
-}
-*/
 
 fn handle_editor_pointer_selection(
     core: &Entity<Core>,
@@ -189,63 +121,6 @@ impl DocumentView {
             .request_cursor_reveal(EditorCursorReveal::Center);
     }
 
-    /// Convert a Helix anchor (character position) to scroll pixels
-    #[allow(dead_code)]
-    fn anchor_to_scroll_px(&self, anchor_char: usize, document: &helix_view::Document) -> Pixels {
-        let row = document.text().char_to_line(anchor_char);
-        self.editor_state.line_height() * (row as f32)
-    }
-
-    /// Convert scroll pixels to a Helix anchor (character position)
-    #[allow(dead_code)]
-    fn scroll_px_to_anchor(&self, y: Pixels, document: &helix_view::Document) -> usize {
-        let row = (y / self.editor_state.line_height()).floor() as usize;
-        let text = document.text();
-        let clamped_row = row.min(text.len_lines().saturating_sub(1));
-        text.line_to_char(clamped_row)
-    }
-
-    fn get_diagnostics(&self, cx: &mut Context<Self>) -> Vec<Diagnostic> {
-        if !self.is_focused {
-            return Vec::new();
-        }
-
-        let core = self.core.read(cx);
-        let editor = &core.editor;
-
-        let (cursor_line, doc_id) = {
-            let view = match editor.tree.try_get(self.view_id) {
-                Some(v) => v,
-                None => return Vec::new(),
-            };
-            let doc_id = view.doc;
-            let document = match editor.document(doc_id) {
-                Some(doc) => doc,
-                None => return Vec::new(), // Document was closed
-            };
-
-            (
-                cursor_document_line_for_view(document, self.view_id),
-                doc_id,
-            )
-        };
-
-        let mut diags = Vec::new();
-        if let Some(path) = editor.document(doc_id).and_then(|doc| doc.path()).cloned() {
-            let uri = Uri::from(path);
-            if let Some(diagnostics) = editor.diagnostics.get(&uri) {
-                for (diag, _) in diagnostics.iter().filter(|(diag, _)| {
-                    let (start_line, end_line) =
-                        (diag.range.start.line as usize, diag.range.end.line as usize);
-                    start_line <= cursor_line && cursor_line <= end_line
-                }) {
-                    diags.push(diag.clone());
-                }
-            }
-        }
-        diags
-    }
-
     /// Get the actual line height used by this DocumentView
     pub fn get_line_height(&self) -> Pixels {
         self.editor_state.line_height()
@@ -347,19 +222,6 @@ impl Render for DocumentView {
             })
         };
 
-        let diags = {
-            let _theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-
-            self.get_diagnostics(cx).into_iter().map(move |diag| {
-                // DIAGNOSTIC RENDERING:
-                // DiagnosticView is disabled pending implementation of a GPUI-based diagnostic popup
-                // This would need to render diag.message, diag.severity, and position the popup
-                // relative to the diagnostic location in the editor
-                // For now, diagnostics are handled through syntax highlighting in the editor
-                div().id(("diagnostic", diag.range.start.line as usize)) // Unique ID for each diagnostic
-            })
-        };
-
         div()
             .id(SharedString::from(format!("doc-view-{:?}", self.view_id)))
             .w_full()
@@ -367,18 +229,6 @@ impl Render for DocumentView {
             .flex()
             .flex_col()
             .child(editor_content)
-            .child(
-                div()
-                    .flex()
-                    .w(DefiniteLength::Fraction(0.33))
-                    .h(DefiniteLength::Fraction(0.8))
-                    .flex_col()
-                    .absolute()
-                    .top_8()
-                    .right_5()
-                    .gap_4()
-                    .children(diags),
-            )
     }
 }
 
@@ -471,5 +321,3 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         layout_info.cursor_size = None;
     }
 }
-
-// Removed DiagnosticView - diagnostics are now handled through events and document highlights
