@@ -42,6 +42,7 @@ pub enum NativePickerRequest {
     FileCurrentDirectory,
     FileCurrentBufferDirectory,
     Buffer,
+    Diagnostics { workspace: bool },
 }
 
 pub struct EditorInputBridge {
@@ -801,6 +802,10 @@ fn native_picker_command(command: &MappableCommand) -> Option<NativePickerReques
             Some(NativePickerRequest::FileCurrentBufferDirectory)
         }
         "buffer_picker" => Some(NativePickerRequest::Buffer),
+        "diagnostics_picker" => Some(NativePickerRequest::Diagnostics { workspace: false }),
+        "workspace_diagnostics_picker" => {
+            Some(NativePickerRequest::Diagnostics { workspace: true })
+        }
         _ => None,
     }
 }
@@ -1206,6 +1211,14 @@ mod tests {
             native_picker_command(&MappableCommand::buffer_picker),
             Some(NativePickerRequest::Buffer)
         );
+        assert_eq!(
+            native_picker_command(&MappableCommand::diagnostics_picker),
+            Some(NativePickerRequest::Diagnostics { workspace: false })
+        );
+        assert_eq!(
+            native_picker_command(&MappableCommand::workspace_diagnostics_picker),
+            Some(NativePickerRequest::Diagnostics { workspace: true })
+        );
         assert_eq!(native_picker_command(&MappableCommand::command_mode), None);
         assert_eq!(native_picker_command(&MappableCommand::normal_mode), None);
     }
@@ -1255,6 +1268,54 @@ mod tests {
                 );
             }
             _ => panic!("expected SPACE-F to resolve to file_picker_in_current_directory"),
+        }
+    }
+
+    #[test]
+    fn default_space_d_keymap_requests_buffer_diagnostics() {
+        use std::str::FromStr;
+
+        let mut keymaps = Keymaps::default();
+        let space = KeyEvent::from_str("space").unwrap();
+        let d = KeyEvent::from_str("d").unwrap();
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, d) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(
+                    native_picker_command(&command),
+                    Some(NativePickerRequest::Diagnostics { workspace: false })
+                );
+            }
+            _ => panic!("expected SPACE-d to resolve to diagnostics_picker"),
+        }
+    }
+
+    #[test]
+    fn default_space_shift_d_keymap_requests_workspace_diagnostics() {
+        use std::str::FromStr;
+
+        let mut keymaps = Keymaps::default();
+        let space = KeyEvent::from_str("space").unwrap();
+        let shift_d = KeyEvent::from_str("D").unwrap();
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, shift_d) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(
+                    native_picker_command(&command),
+                    Some(NativePickerRequest::Diagnostics { workspace: true })
+                );
+            }
+            _ => panic!("expected SPACE-D to resolve to workspace_diagnostics_picker"),
         }
     }
 
