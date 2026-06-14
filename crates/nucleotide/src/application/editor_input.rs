@@ -889,6 +889,9 @@ fn native_selection_transform_command(command: &MappableCommand) -> bool {
             | "select_prev_sibling"
             | "select_all_siblings"
             | "select_all_children"
+            | "toggle_comments"
+            | "toggle_line_comments"
+            | "toggle_block_comments"
     )
 }
 
@@ -1555,6 +1558,15 @@ mod tests {
         assert!(native_selection_transform_command(
             &MappableCommand::select_all_children
         ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::toggle_comments
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::toggle_line_comments
+        ));
+        assert!(native_selection_transform_command(
+            &MappableCommand::toggle_block_comments
+        ));
         assert!(!native_selection_transform_command(
             &MappableCommand::split_selection
         ));
@@ -1573,6 +1585,72 @@ mod tests {
         assert!(!native_selection_transform_command(
             &MappableCommand::normal_mode
         ));
+    }
+
+    #[test]
+    fn default_space_comment_keymaps_are_native_transforms() {
+        use std::str::FromStr;
+
+        let mut keymaps = Keymaps::default();
+        let space = KeyEvent::from_str("space").unwrap();
+        let c = KeyEvent::from_str("c").unwrap();
+        let shift_c = KeyEvent::from_str("C").unwrap();
+        let alt_c = KeyEvent::from_str("A-c").unwrap();
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, c) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(command, MappableCommand::toggle_comments);
+                assert!(native_command_supported(&command));
+            }
+            _ => panic!("expected SPACE-c to resolve to toggle_comments"),
+        }
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, shift_c) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(command, MappableCommand::toggle_block_comments);
+                assert!(native_command_supported(&command));
+            }
+            _ => panic!("expected SPACE-C to resolve to toggle_block_comments"),
+        }
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, alt_c) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(command, MappableCommand::toggle_line_comments);
+                assert!(native_command_supported(&command));
+            }
+            _ => panic!("expected SPACE-A-c to resolve to toggle_line_comments"),
+        }
+    }
+
+    #[test]
+    fn default_ctrl_c_keymap_is_native_comment_toggle() {
+        use std::str::FromStr;
+
+        let mut keymaps = Keymaps::default();
+        let ctrl_c = KeyEvent::from_str("C-c").unwrap();
+
+        match keymaps.get(Mode::Normal, ctrl_c) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(command, MappableCommand::toggle_comments);
+                assert!(native_command_supported(&command));
+            }
+            _ => panic!("expected C-c to resolve to toggle_comments"),
+        }
     }
 
     #[test]
