@@ -1,6 +1,8 @@
 // ABOUTME: Persistent native editor view state shared by GPUI render phases
 // ABOUTME: Bundles viewport, metrics, overlay, scrollbar, and selection state
 
+use std::{cell::Cell, rc::Rc};
+
 use gpui::{Pixels, Point, Size, TextStyle, TextSystem, px};
 use helix_view::{DocumentId, Editor, Theme, ViewId};
 
@@ -20,7 +22,7 @@ pub struct EditorViewState {
     scrollbar_state: EditorScrollbarState,
     selection_drag_state: EditorSelectionDragState,
     overlay_state: EditorOverlayState,
-    line_height: Pixels,
+    line_height: Rc<Cell<Pixels>>,
 }
 
 pub struct EditorViewFrameState {
@@ -63,12 +65,12 @@ impl EditorViewState {
             scrollbar_state: EditorScrollbarState::default(),
             selection_drag_state: EditorSelectionDragState::default(),
             overlay_state: EditorOverlayState::new(),
-            line_height,
+            line_height: Rc::new(Cell::new(line_height)),
         }
     }
 
     pub fn apply_text_metrics(&mut self, metrics: EditorTextMetrics) {
-        self.line_height = metrics.line_height;
+        self.line_height.set(metrics.line_height);
         self.viewport.set_line_height(metrics.line_height);
         self.surface_metrics
             .set(metrics.line_height, metrics.cell_width);
@@ -86,12 +88,13 @@ impl EditorViewState {
 
     pub fn update_line_height_from_text_style(&mut self, style: &TextStyle) {
         let font_size = style.font_size.to_pixels(px(16.0));
-        self.line_height = style.line_height_in_pixels(font_size);
-        self.viewport.set_line_height(self.line_height);
+        let line_height = style.line_height_in_pixels(font_size);
+        self.line_height.set(line_height);
+        self.viewport.set_line_height(line_height);
 
         let current_metrics = self.surface_metrics.get();
         self.surface_metrics
-            .set(self.line_height, current_metrics.cell_width);
+            .set(line_height, current_metrics.cell_width);
     }
 
     pub fn clear_shaped_lines_cache(&self) {
@@ -166,7 +169,7 @@ impl EditorViewState {
         view_id: ViewId,
         mut layout: EditorViewportSurfaceLayout<'_>,
     ) -> Option<EditorViewFrameState> {
-        self.line_height = layout.line_height;
+        self.line_height.set(layout.line_height);
         self.surface_metrics
             .set(layout.line_height, layout.cell_width);
         layout.cursor_reveal = layout
@@ -200,7 +203,7 @@ impl EditorViewState {
     pub fn layout_snapshot(&self) -> EditorViewLayoutSnapshot {
         let metrics = self.surface_metrics.get();
         EditorViewLayoutSnapshot {
-            line_height: self.line_height,
+            line_height: self.line_height(),
             cell_width: metrics.cell_width,
             gutter_width: self.overlay_state.gutter_width(),
             cursor_overlay_bounds: self.overlay_state.cursor_overlay_bounds(),
@@ -289,7 +292,7 @@ impl EditorViewState {
     }
 
     pub fn line_height(&self) -> Pixels {
-        self.line_height
+        self.line_height.get()
     }
 
     pub fn viewport(&self) -> &EditorViewport {
@@ -418,6 +421,17 @@ mod tests {
         assert_eq!(state.viewport().line_height(), px(24.0));
         assert_eq!(state.surface_metrics().get().line_height, px(24.0));
         assert_eq!(state.surface_metrics().get().cell_width, px(9.0));
+    }
+
+    #[test]
+    fn view_state_clones_share_line_height_updates() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        let mut clone = state.clone();
+
+        clone.apply_text_metrics(metrics(px(24.0), px(9.0)));
+
+        assert_eq!(state.line_height(), px(24.0));
+        assert_eq!(state.layout_snapshot().line_height, px(24.0));
     }
 
     #[gpui::test]
