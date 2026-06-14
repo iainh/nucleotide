@@ -28,12 +28,22 @@ pub struct EditorInputOutcome {
     pub handled_by_terminal_editor: bool,
     pub completion_requested: Option<NativeCompletionRequest>,
     pub picker_requested: Option<NativePickerRequest>,
+    pub lsp_navigation_requested: Option<NativeLspNavigationRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeCompletionRequest {
     pub doc_id: DocumentId,
     pub view_id: ViewId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeLspNavigationRequest {
+    GotoDeclaration,
+    GotoDefinition,
+    GotoTypeDefinition,
+    GotoImplementation,
+    GotoReference,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +109,7 @@ impl EditorInputBridge {
         let mut handled_by_terminal_editor = false;
         let mut completion_requested = None;
         let mut picker_requested = None;
+        let mut lsp_navigation_requested = None;
         if !handled_by_compositor {
             let mode_before_fallback = context.editor.mode();
             match self
@@ -112,6 +123,10 @@ impl EditorInputBridge {
                     handled_by_native_command = true;
                     completion_requested = request;
                     picker_requested = picker_request;
+                }
+                NativeInputResult::RequestLspNavigation(request) => {
+                    handled_by_native_command = true;
+                    lsp_navigation_requested = Some(request);
                 }
                 NativeInputResult::Fallback(keys) => {
                     for key in &keys {
@@ -161,6 +176,7 @@ impl EditorInputBridge {
             handled_by_terminal_editor,
             completion_requested,
             picker_requested,
+            lsp_navigation_requested,
         }
     }
 
@@ -193,6 +209,7 @@ enum NativeInputResult {
         completion_requested: Option<NativeCompletionRequest>,
         picker_requested: Option<NativePickerRequest>,
     },
+    RequestLspNavigation(NativeLspNavigationRequest),
     Fallback(Vec<KeyEvent>),
 }
 
@@ -205,6 +222,10 @@ enum NativeCommandResult {
     RequestPicker {
         callbacks: Vec<compositor::Callback>,
         request: NativePickerRequest,
+    },
+    RequestLspNavigation {
+        callbacks: Vec<compositor::Callback>,
+        request: NativeLspNavigationRequest,
     },
     ReplayInsert {
         keys: Vec<KeyEvent>,
@@ -322,11 +343,19 @@ impl NativeCommandInput {
                     picker_requested: Some(request),
                 }
             }
+            NativeCommandResult::RequestLspNavigation { callbacks, request } => {
+                finalize_native_command(editor, jobs, compositor, callbacks);
+                self.finish_insert_replay_if_needed(mode_before, editor.mode());
+                NativeInputResult::RequestLspNavigation(request)
+            }
             NativeCommandResult::ReplayInsert { keys, count } => {
                 for _ in 0..count {
                     for replay_key in keys.iter().copied() {
                         match self.handle_key(replay_key, compositor, editor, jobs) {
                             NativeInputResult::Handled { .. } => {}
+                            NativeInputResult::RequestLspNavigation(request) => {
+                                return NativeInputResult::RequestLspNavigation(request);
+                            }
                             NativeInputResult::Fallback(fallback_keys) => {
                                 return NativeInputResult::Fallback(fallback_keys);
                             }
@@ -533,6 +562,17 @@ impl NativeCommandInput {
                     request,
                 }
             }
+            KeymapDispatch::RequestLspNavigation(request) => {
+                if self.keymaps.pending().is_empty() {
+                    context.editor.count = None;
+                } else {
+                    context.editor.selected_register = context.register.take();
+                }
+                NativeCommandResult::RequestLspNavigation {
+                    callbacks: Vec::new(),
+                    request,
+                }
+            }
             KeymapDispatch::Pending => {
                 context.editor.selected_register = context.register.take();
                 NativeCommandResult::Handled(Vec::new())
@@ -571,6 +611,10 @@ impl NativeCommandInput {
                     return KeymapDispatch::RequestPicker(request);
                 }
 
+                if let Some(request) = native_lsp_navigation_command(command) {
+                    return KeymapDispatch::RequestLspNavigation(request);
+                }
+
                 if !native_command_supported(command) {
                     return KeymapDispatch::Fallback;
                 }
@@ -583,7 +627,9 @@ impl NativeCommandInput {
             }
             KeymapResult::MatchedSequence(commands) => {
                 if !commands.iter().all(|command| {
-                    native_command_supported(command) || native_picker_command(command).is_some()
+                    native_command_supported(command)
+                        || native_picker_command(command).is_some()
+                        || native_lsp_navigation_command(command).is_some()
                 }) {
                     return KeymapDispatch::Fallback;
                 }
@@ -591,6 +637,9 @@ impl NativeCommandInput {
                 for command in commands {
                     if let Some(request) = native_picker_command(command) {
                         return KeymapDispatch::RequestPicker(request);
+                    }
+                    if let Some(request) = native_lsp_navigation_command(command) {
+                        return KeymapDispatch::RequestLspNavigation(request);
                     }
                     execute_native_command(command, context, &mut last_mode);
                 }
@@ -630,6 +679,7 @@ impl NativeCommandInput {
 enum KeymapDispatch {
     Handled,
     RequestPicker(NativePickerRequest),
+    RequestLspNavigation(NativeLspNavigationRequest),
     Pending,
     Fallback,
 }
@@ -663,6 +713,13 @@ impl NativeCommandResultExt for NativeCommandResult {
             NativeCommandResult::RequestPicker { request, .. } => {
                 *on_next_key = context.on_next_key_callback.take();
                 NativeCommandResult::RequestPicker {
+                    callbacks: std::mem::take(&mut context.callback),
+                    request,
+                }
+            }
+            NativeCommandResult::RequestLspNavigation { request, .. } => {
+                *on_next_key = context.on_next_key_callback.take();
+                NativeCommandResult::RequestLspNavigation {
                     callbacks: std::mem::take(&mut context.callback),
                     request,
                 }
@@ -810,6 +867,17 @@ fn native_picker_command(command: &MappableCommand) -> Option<NativePickerReques
         }
         "code_action" => Some(NativePickerRequest::CodeActions),
         "hover" => Some(NativePickerRequest::HoverDocs),
+        _ => None,
+    }
+}
+
+fn native_lsp_navigation_command(command: &MappableCommand) -> Option<NativeLspNavigationRequest> {
+    match command.name() {
+        "goto_declaration" => Some(NativeLspNavigationRequest::GotoDeclaration),
+        "goto_definition" => Some(NativeLspNavigationRequest::GotoDefinition),
+        "goto_type_definition" => Some(NativeLspNavigationRequest::GotoTypeDefinition),
+        "goto_implementation" => Some(NativeLspNavigationRequest::GotoImplementation),
+        "goto_reference" => Some(NativeLspNavigationRequest::GotoReference),
         _ => None,
     }
 }
@@ -1280,6 +1348,61 @@ mod tests {
     }
 
     #[test]
+    fn lsp_navigation_commands_are_classified_separately() {
+        assert_eq!(
+            native_lsp_navigation_command(&MappableCommand::goto_declaration),
+            Some(NativeLspNavigationRequest::GotoDeclaration)
+        );
+        assert_eq!(
+            native_lsp_navigation_command(&MappableCommand::goto_definition),
+            Some(NativeLspNavigationRequest::GotoDefinition)
+        );
+        assert_eq!(
+            native_lsp_navigation_command(&MappableCommand::goto_type_definition),
+            Some(NativeLspNavigationRequest::GotoTypeDefinition)
+        );
+        assert_eq!(
+            native_lsp_navigation_command(&MappableCommand::goto_implementation),
+            Some(NativeLspNavigationRequest::GotoImplementation)
+        );
+        assert_eq!(
+            native_lsp_navigation_command(&MappableCommand::goto_reference),
+            Some(NativeLspNavigationRequest::GotoReference)
+        );
+        assert_eq!(
+            native_lsp_navigation_command(&MappableCommand::global_search),
+            None
+        );
+        assert!(!native_command_supported(&MappableCommand::goto_definition));
+    }
+
+    #[test]
+    fn default_goto_keymaps_request_native_lsp_navigation() {
+        let mut keymaps = Keymaps::default();
+        let g = KeyEvent::from_str("g").unwrap();
+
+        for (key, request) in [
+            ("d", NativeLspNavigationRequest::GotoDefinition),
+            ("D", NativeLspNavigationRequest::GotoDeclaration),
+            ("y", NativeLspNavigationRequest::GotoTypeDefinition),
+            ("i", NativeLspNavigationRequest::GotoImplementation),
+            ("r", NativeLspNavigationRequest::GotoReference),
+        ] {
+            assert!(matches!(
+                keymaps.get(Mode::Normal, g),
+                KeymapResult::Pending(_)
+            ));
+
+            match keymaps.get(Mode::Normal, KeyEvent::from_str(key).unwrap()) {
+                KeymapResult::Matched(command) => {
+                    assert_eq!(native_lsp_navigation_command(&command), Some(request));
+                }
+                _ => panic!("expected g{key} to resolve to native LSP navigation"),
+            }
+        }
+    }
+
+    #[test]
     fn default_space_f_keymap_requests_file_picker() {
         let mut keymaps = Keymaps::default();
         let space = KeyEvent::from_str("space").unwrap();
@@ -1318,6 +1441,29 @@ mod tests {
         let picker = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
         assert!(picker.handled_by_native_command);
         assert_eq!(picker.picker_requested, Some(NativePickerRequest::File));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_lsp_navigation_for_gd() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text("one\ntwo\n");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let g = KeyEvent::from_str("g").unwrap();
+        let d = KeyEvent::from_str("d").unwrap();
+
+        let pending = bridge.handle_key(g, &mut compositor, &mut editor, &mut jobs);
+        assert!(pending.handled_by_native_command);
+        assert_eq!(pending.lsp_navigation_requested, None);
+
+        let navigation = bridge.handle_key(d, &mut compositor, &mut editor, &mut jobs);
+        assert!(navigation.handled_by_native_command);
+        assert!(!navigation.handled_by_terminal_editor);
+        assert_eq!(
+            navigation.lsp_navigation_requested,
+            Some(NativeLspNavigationRequest::GotoDefinition)
+        );
     }
 
     #[test]

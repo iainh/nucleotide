@@ -41,6 +41,13 @@ pub struct HoverDocEntry {
     pub markdown: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct LspLocation {
+    pub path: std::path::PathBuf,
+    pub range: helix_lsp::lsp::Range,
+    pub offset_encoding: helix_lsp::OffsetEncoding,
+}
+
 // Hybrid Update enum for event system
 // Uses Event(AppEvent) for data-only events and direct variants for complex UI components with behavior
 pub enum Update {
