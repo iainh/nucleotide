@@ -1,6 +1,10 @@
 // ABOUTME: Native editor input boundary for GPUI-driven document views
 // ABOUTME: Isolates the remaining Helix terminal input bridge from Application
 
+use helix_stdx::{
+    path::{self, find_paths},
+    rope::RopeSliceExt,
+};
 use helix_term::{
     commands::{self, MappableCommand, OnKeyCallback, OnKeyCallbackKind},
     compositor::{self, Component, Compositor, EventResult},
@@ -12,13 +16,18 @@ use helix_term::{
 use helix_view::{
     DocumentId, Editor, ViewId,
     document::Mode,
+    editor::Action,
     input::{Event, KeyEvent},
     keyboard::{KeyCode, KeyModifiers},
 };
 use nucleotide_logging::{debug, info};
-use std::num::NonZeroUsize;
+use std::{
+    borrow::Cow,
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorInputOutcome {
     pub focused_view_id: ViewId,
     pub focused_doc_id: Option<DocumentId>,
@@ -46,9 +55,10 @@ pub enum NativeLspNavigationRequest {
     GotoReference,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativePickerRequest {
     File,
+    FileAt(PathBuf),
     FileCurrentDirectory,
     FileCurrentBufferDirectory,
     Buffer,
@@ -613,6 +623,10 @@ impl NativeCommandInput {
                     return KeymapDispatch::RequestPicker(request);
                 }
 
+                if let Some(action) = native_file_navigation_command(command) {
+                    return handle_native_file_navigation(context, action);
+                }
+
                 if let Some(request) = native_lsp_navigation_command(command) {
                     return KeymapDispatch::RequestLspNavigation(request);
                 }
@@ -639,6 +653,9 @@ impl NativeCommandInput {
                 for command in commands {
                     if let Some(request) = native_picker_command(command) {
                         return KeymapDispatch::RequestPicker(request);
+                    }
+                    if let Some(action) = native_file_navigation_command(command) {
+                        return handle_native_file_navigation(context, action);
                     }
                     if let Some(request) = native_lsp_navigation_command(command) {
                         return KeymapDispatch::RequestLspNavigation(request);
@@ -799,6 +816,7 @@ fn native_command_supported(command: &MappableCommand) -> bool {
         || native_diagnostic_navigation_command(command)
         || native_jumplist_navigation_command(command)
         || native_split_navigation_command(command)
+        || native_file_navigation_command(command).is_some()
         || name.starts_with("move_")
         || name.starts_with("extend_")
         || matches!(
@@ -899,6 +917,83 @@ fn native_lsp_navigation_command(command: &MappableCommand) -> Option<NativeLspN
         "goto_reference" => Some(NativeLspNavigationRequest::GotoReference),
         _ => None,
     }
+}
+
+fn native_file_navigation_command(command: &MappableCommand) -> Option<Action> {
+    match command.name() {
+        "goto_file" => Some(Action::Replace),
+        "goto_file_hsplit" => Some(Action::HorizontalSplit),
+        "goto_file_vsplit" => Some(Action::VerticalSplit),
+        _ => None,
+    }
+}
+
+fn handle_native_file_navigation(
+    context: &mut commands::Context<'_>,
+    action: Action,
+) -> KeymapDispatch {
+    let (base_path, targets) = native_file_navigation_targets(context.editor);
+
+    for target in targets {
+        if url::Url::parse(&target).is_ok() {
+            return KeymapDispatch::Fallback;
+        }
+
+        let target_path = path::expand(&target);
+        let target_path = base_path.join(target_path.as_ref());
+
+        if target_path.is_dir() {
+            return KeymapDispatch::RequestPicker(NativePickerRequest::FileAt(target_path));
+        }
+
+        if let Err(err) = context.editor.open(&target_path, action) {
+            context
+                .editor
+                .set_error(format!("Open file failed: {:?}", err));
+        }
+    }
+
+    KeymapDispatch::Handled
+}
+
+fn native_file_navigation_targets(editor: &Editor) -> (PathBuf, Vec<String>) {
+    let (view, doc) = helix_view::current_ref!(editor);
+    let text = doc.text().slice(..);
+    let selections = doc.selection(view.id);
+    let primary = selections.primary();
+    let base_path = doc
+        .relative_path()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+
+    let targets = if selections.len() == 1 && primary.len() == 1 {
+        let lookaround = 1000;
+        let pos = text.char_to_byte(primary.cursor(text));
+        let search_start = text
+            .line_to_byte(text.byte_to_line(pos))
+            .max(text.floor_char_boundary(pos.saturating_sub(lookaround)));
+        let search_end = text
+            .line_to_byte(text.byte_to_line(pos) + 1)
+            .min(text.ceil_char_boundary(pos + lookaround));
+        let search_range = text.byte_slice(search_start..search_end);
+        let target = find_paths(search_range, true)
+            .take_while(|range| search_start + range.start <= pos + 1)
+            .find(|range| pos <= search_start + range.end)
+            .map(|range| Cow::from(search_range.byte_slice(range)))
+            .unwrap_or_else(|| primary.fragment(text))
+            .into_owned();
+
+        vec![target]
+    } else {
+        selections
+            .fragments(text)
+            .map(|selection| selection.trim().to_owned())
+            .filter(|selection| !selection.is_empty())
+            .collect()
+    };
+
+    (base_path, targets)
 }
 
 fn native_history_command(command: &MappableCommand) -> bool {
@@ -1049,6 +1144,7 @@ fn native_insert_command_supported(command: &MappableCommand) -> bool {
         && !native_register_edit_command(command)
         && !native_register_selection_command(command)
         && !native_selection_transform_command(command)
+        && native_file_navigation_command(command).is_none()
         && native_command_supported(command))
         || native_insert_edit_command(command)
         || native_insert_interactive_command(command)
@@ -1167,7 +1263,7 @@ mod tests {
     use std::sync::Arc;
 
     use arc_swap::{ArcSwap, access::Map};
-    use helix_core::{Transaction, syntax};
+    use helix_core::{Selection, Transaction, syntax};
     use helix_view::{editor::Action, editor::Config, graphics::Rect, handlers::Handlers, theme};
 
     fn test_handlers() -> Handlers {
@@ -1203,6 +1299,13 @@ mod tests {
         doc.apply(&transaction, view_id);
 
         editor
+    }
+
+    fn set_test_cursor(editor: &mut Editor, cursor: usize) {
+        let view_id = editor.tree.focus;
+        let doc_id = editor.tree.try_get(view_id).unwrap().doc;
+        let doc = editor.document_mut(doc_id).unwrap();
+        doc.set_selection(view_id, Selection::point(cursor));
     }
 
     #[test]
@@ -1324,6 +1427,16 @@ mod tests {
     }
 
     #[test]
+    fn native_command_supports_file_navigation() {
+        assert!(native_command_supported(&MappableCommand::goto_file));
+        assert!(native_command_supported(&MappableCommand::goto_file_hsplit));
+        assert!(native_command_supported(&MappableCommand::goto_file_vsplit));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::goto_file
+        ));
+    }
+
+    #[test]
     fn native_command_supports_diagnostics_changes_and_matching() {
         assert!(native_command_supported(&MappableCommand::goto_first_diag));
         assert!(native_command_supported(&MappableCommand::goto_last_diag));
@@ -1428,6 +1541,9 @@ mod tests {
         ));
         assert!(!native_insert_command_supported(
             &MappableCommand::trim_selections
+        ));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::goto_file
         ));
     }
 
@@ -1748,6 +1864,89 @@ mod tests {
         assert!(!outcome.handled_by_terminal_editor);
         assert_eq!(outcome.picker_requested, None);
         assert_eq!(outcome.lsp_navigation_requested, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_handles_goto_file_natively() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let target_path = temp_dir.path().join("target.txt");
+        std::fs::write(&target_path, "opened\n").unwrap();
+
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text(&format!("{}\n", target_path.display()));
+        set_test_cursor(&mut editor, 0);
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let g = KeyEvent::from_str("g").unwrap();
+        let f = KeyEvent::from_str("f").unwrap();
+
+        let pending = bridge.handle_key(g, &mut compositor, &mut editor, &mut jobs);
+        assert!(pending.handled_by_native_command);
+        assert!(!pending.handled_by_terminal_editor);
+
+        let outcome = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
+        assert!(outcome.handled_by_native_command);
+        assert!(!outcome.handled_by_terminal_editor);
+        assert_eq!(outcome.picker_requested, None);
+
+        let focused_path = editor
+            .tree
+            .try_get(editor.tree.focus)
+            .and_then(|view| editor.document(view.doc))
+            .and_then(|doc| doc.path())
+            .cloned();
+        assert_eq!(focused_path.as_deref(), Some(target_path.as_path()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_native_picker_for_goto_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text(&format!("{}\n", temp_dir.path().display()));
+        set_test_cursor(&mut editor, 0);
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let g = KeyEvent::from_str("g").unwrap();
+        let f = KeyEvent::from_str("f").unwrap();
+
+        let pending = bridge.handle_key(g, &mut compositor, &mut editor, &mut jobs);
+        assert!(pending.handled_by_native_command);
+        assert!(!pending.handled_by_terminal_editor);
+
+        let outcome = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
+        assert!(outcome.handled_by_native_command);
+        assert!(!outcome.handled_by_terminal_editor);
+        assert_eq!(
+            outcome.picker_requested,
+            Some(NativePickerRequest::FileAt(temp_dir.path().to_path_buf()))
+        );
+    }
+
+    #[test]
+    fn default_gf_keymap_routes_file_navigation_natively() {
+        let mut keymaps = Keymaps::default();
+        let g = KeyEvent::from_str("g").unwrap();
+        let f = KeyEvent::from_str("f").unwrap();
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, g),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, f) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(command, MappableCommand::goto_file);
+                assert!(matches!(
+                    native_file_navigation_command(&command),
+                    Some(Action::Replace)
+                ));
+                assert!(native_command_supported(&command));
+            }
+            _ => panic!("expected gf to resolve to goto_file"),
+        }
     }
 
     #[test]
