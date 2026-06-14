@@ -1036,6 +1036,58 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn surface_layout_resize_clamps_bottom_scroll_and_resyncs_helix() {
+        let text = (0..30)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        let (mut editor, doc_id, view_id) = test_editor_with_text(&text);
+        let mut viewport = EditorViewport::new(px(20.0));
+        let narrow_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(101.0)));
+        let tall_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(201.0)));
+        let narrow_layout = EditorViewportSurfaceLayout {
+            theme: None,
+            bounds: narrow_bounds,
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            minimum_columns: 1,
+            cursor_reveal: None,
+        };
+        let tall_layout = EditorViewportSurfaceLayout {
+            bounds: tall_bounds,
+            ..narrow_layout
+        };
+
+        viewport
+            .sync_surface_layout(&mut editor, doc_id, view_id, narrow_layout)
+            .unwrap();
+        viewport.scroll_to_vertical_position_from_scrollbar(viewport.max_scroll_offset().height);
+        viewport
+            .sync_surface_layout(&mut editor, doc_id, view_id, narrow_layout)
+            .unwrap();
+
+        let update = viewport
+            .sync_surface_layout(&mut editor, doc_id, view_id, tall_layout)
+            .unwrap();
+        let expected_top_visual_row = viewport.top_visual_row();
+
+        assert!(update.helix_view_synced);
+        assert_eq!(
+            viewport.scroll_position().y,
+            viewport.max_scroll_offset().height
+        );
+        assert_eq!(
+            update.helix_snapshot.top_visual_row,
+            expected_top_visual_row
+        );
+
+        let doc = editor.document(doc_id).unwrap();
+        assert_eq!(
+            doc.text().char_to_line(doc.view_offset(view_id).anchor),
+            expected_top_visual_row
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn cursor_reveal_uses_trailing_newline_eof_visual_row() {
         let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo\n");
         let mut viewport = EditorViewport::new(px(20.0));

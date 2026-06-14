@@ -61,16 +61,41 @@ impl ScrollManager {
     /// Update the total number of lines in the document
     pub(crate) fn set_total_lines(&mut self, total_lines: usize) {
         self.total_lines.set(total_lines);
+        self.clamp_scroll_position_after_extent_change();
     }
 
     /// Update the viewport size
     pub(crate) fn set_viewport_size(&mut self, size: Size<Pixels>) {
         self.viewport_size.set(size);
+        self.clamp_scroll_position_after_extent_change();
     }
 
     /// Update the line height
     pub(crate) fn set_line_height(&mut self, line_height: Pixels) {
+        let previous_line_height = self.line_height.get();
+        let previous_position = self.scroll_position.get();
+        let previous_top_line = self.pixels_to_anchor(previous_position.y);
+        let previous_offset = if previous_line_height > px(0.0) {
+            (previous_position.y - previous_line_height * previous_top_line as f32).max(px(0.0))
+        } else {
+            px(0.0)
+        };
+
         self.line_height.set(line_height);
+
+        if previous_line_height > px(0.0) && line_height > px(0.0) {
+            let offset_fraction = (previous_offset / previous_line_height).clamp(0.0, 1.0);
+            let scaled_position = point(
+                previous_position.x,
+                self.anchor_to_pixels(previous_top_line) + (line_height * offset_fraction),
+            );
+            self.set_scroll_position_internal(scaled_position, false);
+            if self.pixels_to_anchor(self.scroll_position.get().y) != previous_top_line {
+                self.pending_view_sync.set(true);
+            }
+        } else {
+            self.clamp_scroll_position_after_extent_change();
+        }
     }
 
     /// Get the maximum scroll offset in pixels
@@ -185,6 +210,21 @@ impl ScrollManager {
         }
     }
 
+    fn clamp_scroll_position_after_extent_change(&self) {
+        let old_position = self.scroll_position.get();
+        let old_top_line = self.pixels_to_anchor(old_position.y);
+
+        self.set_scroll_position_internal(old_position, false);
+
+        let new_position = self.scroll_position.get();
+        if old_position != new_position {
+            let new_top_line = self.pixels_to_anchor(new_position.y);
+            if old_top_line != new_top_line {
+                self.pending_view_sync.set(true);
+            }
+        }
+    }
+
     /// Convert a pixel scroll offset to a Helix viewport anchor (line number)
     pub(crate) fn pixels_to_anchor(&self, y: Pixels) -> usize {
         let line_height = self.line_height.get();
@@ -276,6 +316,54 @@ mod scroll_manager_tests {
             .set_scroll_position_from_view_sync_preserving_subrow_offset(point(px(0.0), px(40.0)));
         assert_eq!(manager.scroll_position(), point(px(0.0), px(40.0)));
         assert_eq!(manager.vertical_offset_within_line(), px(0.0));
+    }
+
+    #[test]
+    fn test_viewport_resize_clamps_bottom_scroll_position() {
+        let mut manager = ScrollManager::new(px(20.0));
+        manager.set_total_lines(100);
+        manager.set_viewport_size(size(px(800.0), px(100.0)));
+        manager.set_scroll_position(point(px(0.0), px(1900.0)));
+        manager.clear_pending_view_sync();
+
+        manager.set_viewport_size(size(px(800.0), px(200.0)));
+
+        assert_eq!(manager.scroll_position(), point(px(0.0), px(1800.0)));
+        assert_eq!(manager.pixels_to_anchor(manager.scroll_position().y), 90);
+        assert_eq!(manager.vertical_offset_within_line(), px(0.0));
+        assert!(manager.has_pending_view_sync());
+    }
+
+    #[test]
+    fn test_content_resize_clamps_bottom_scroll_position() {
+        let mut manager = ScrollManager::new(px(20.0));
+        manager.set_total_lines(100);
+        manager.set_viewport_size(size(px(800.0), px(100.0)));
+        manager.set_scroll_position(point(px(0.0), px(1900.0)));
+        manager.clear_pending_view_sync();
+
+        manager.set_total_lines(20);
+
+        assert_eq!(manager.scroll_position(), point(px(0.0), px(300.0)));
+        assert_eq!(manager.pixels_to_anchor(manager.scroll_position().y), 15);
+        assert_eq!(manager.vertical_offset_within_line(), px(0.0));
+        assert!(manager.has_pending_view_sync());
+    }
+
+    #[test]
+    fn test_line_height_change_preserves_visual_row_and_subrow_offset() {
+        let mut manager = ScrollManager::new(px(20.0));
+        manager.set_total_lines(100);
+        manager.set_viewport_size(size(px(800.0), px(100.0)));
+        manager.set_scroll_position(point(px(0.0), px(105.0)));
+        manager.clear_pending_view_sync();
+
+        manager.set_line_height(px(30.0));
+
+        assert_eq!(manager.scroll_position(), point(px(0.0), px(157.5)));
+        assert_eq!(manager.pixels_to_anchor(manager.scroll_position().y), 5);
+        assert_eq!(manager.vertical_offset_within_line(), px(7.5));
+        assert!(!manager.has_pending_view_sync());
     }
 
     #[test]
