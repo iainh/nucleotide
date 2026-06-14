@@ -2052,6 +2052,9 @@ impl Application {
                         editor_input::NativePickerRequest::CodeActions => {
                             cx.emit(crate::Update::ShowCodeActions);
                         }
+                        editor_input::NativePickerRequest::HoverDocs => {
+                            cx.emit(crate::Update::ShowHoverDocs);
+                        }
                     }
                 }
 
