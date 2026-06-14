@@ -1355,11 +1355,21 @@ impl Workspace {
             }
             "ShowFileFinder" => {
                 info!("Showing file finder");
-                // Implementation will be added later
+                let handle = self.handle.clone();
+                let core = self.core.clone();
+                let overlay = self.overlay.clone();
+                open(core, handle, overlay, cx);
             }
             "ShowCommandPalette" => {
                 info!("Showing command palette");
                 // Implementation will be added later
+            }
+            "ShowBufferPicker" => {
+                info!("Showing buffer picker");
+                let handle = self.handle.clone();
+                let core = self.core.clone();
+                let overlay = self.overlay.clone();
+                show_buffer_picker(core, handle, overlay, cx);
             }
             _ => {
                 warn!(action = %action, "Unknown workspace action");
@@ -1735,7 +1745,10 @@ impl Workspace {
                     });
                     let cwd = helix_stdx::env::current_working_dir();
                     if cwd.exists() {
-                        cx.emit(crate::Update::ShowFilePickerAt(cwd));
+                        let handle = self.handle.clone();
+                        let core = self.core.clone();
+                        let overlay = self.overlay.clone();
+                        open_at(core, handle, overlay, cwd, cx);
                     } else {
                         self.core.update(cx, |core, _cx| {
                             core.editor
@@ -1754,7 +1767,10 @@ impl Workspace {
                         key_hints.set_info(None);
                         cx.notify();
                     });
-                    cx.emit(crate::Update::ShowFilePicker);
+                    let handle = self.handle.clone();
+                    let core = self.core.clone();
+                    let overlay = self.overlay.clone();
+                    open(core, handle, overlay, cx);
                     return;
                 }
                 "b" if self.leader_active => {
@@ -1765,7 +1781,10 @@ impl Workspace {
                         key_hints.set_info(None);
                         cx.notify();
                     });
-                    cx.emit(crate::Update::ShowBufferPicker);
+                    let handle = self.handle.clone();
+                    let core = self.core.clone();
+                    let overlay = self.overlay.clone();
+                    show_buffer_picker(core, handle, overlay, cx);
                     return;
                 }
                 "t" if self.leader_active => {
@@ -6219,7 +6238,10 @@ impl Workspace {
     pub fn open_file_picker(&mut self, cx: &mut Context<Self>) {
         nucleotide_logging::debug!("Opening file picker");
 
-        cx.emit(crate::Update::ShowFilePicker);
+        let handle = self.handle.clone();
+        let core = self.core.clone();
+        let overlay = self.overlay.clone();
+        open(core, handle, overlay, cx);
     }
 
     /// Open command palette  
