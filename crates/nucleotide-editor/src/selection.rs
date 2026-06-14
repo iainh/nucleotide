@@ -5,6 +5,7 @@ use std::{cell::Cell, rc::Rc};
 
 use helix_core::{Range, Selection, SmallVec};
 use helix_view::{Document, DocumentId, Editor, ViewId};
+use nucleotide_logging::debug;
 
 use crate::{
     EditorHitTestResult, EditorSurfacePointerEvent, LineLayoutCache, hit_test_document_position,
@@ -46,6 +47,61 @@ pub enum EditorPointerSelectionPhase {
     Begin,
     Extend,
     End,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EditorPointerSelectionOutcome {
+    Applied {
+        phase: EditorPointerSelectionPhase,
+        update: EditorPointerSelectionUpdate,
+    },
+    Missed {
+        phase: EditorPointerSelectionPhase,
+        event: EditorSurfacePointerEvent,
+    },
+    Ended {
+        event: EditorSurfacePointerEvent,
+    },
+}
+
+impl EditorPointerSelectionOutcome {
+    pub fn changed(self) -> bool {
+        matches!(self, Self::Applied { .. })
+    }
+
+    pub fn update(self) -> Option<EditorPointerSelectionUpdate> {
+        match self {
+            Self::Applied { update, .. } => Some(update),
+            Self::Missed { .. } | Self::Ended { .. } => None,
+        }
+    }
+}
+
+pub fn log_pointer_selection_outcome(outcome: EditorPointerSelectionOutcome) {
+    match outcome {
+        EditorPointerSelectionOutcome::Applied { phase, update } => {
+            debug!(
+                phase = ?phase,
+                line_idx = update.hit_test.line_idx,
+                char_offset = update.hit_test.char_offset,
+                anchor = update.selection.anchor,
+                target_pos = update.selection.head,
+                "Applied editor pointer selection"
+            );
+        }
+        EditorPointerSelectionOutcome::Missed { phase, event } => {
+            debug!(
+                phase = ?phase,
+                window_pos = ?event.position,
+                bounds = ?event.bounds,
+                line_height = %event.line_height,
+                "Pointer hit test did not find a rendered line"
+            );
+        }
+        EditorPointerSelectionOutcome::Ended { event } => {
+            debug!(position = ?event.position, "Mouse up event - pointer selection ended");
+        }
+    }
 }
 
 pub fn pointer_selection_anchor(
