@@ -9,7 +9,7 @@ use helix_core::{
 use helix_view::{Document, DocumentId, Editor, Theme, ViewId, graphics::Rect, view::ViewPosition};
 use nucleotide_logging::debug;
 
-use crate::{EditorDocumentMetrics, ScrollManager};
+use crate::{EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorDocumentMetrics, ScrollManager};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ViewportScrollUpdate {
@@ -57,6 +57,21 @@ pub struct EditorViewportContentLayout<'a> {
     pub minimum_columns: u16,
 }
 
+impl<'a> EditorViewportContentLayout<'a> {
+    pub fn for_editor(
+        theme: Option<&'a Theme>,
+        bounds: Bounds<Pixels>,
+        cell_width: Pixels,
+    ) -> Self {
+        Self {
+            theme,
+            bounds,
+            cell_width,
+            minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct EditorViewportSurfaceLayout<'a> {
     pub theme: Option<&'a Theme>,
@@ -65,6 +80,25 @@ pub struct EditorViewportSurfaceLayout<'a> {
     pub line_height: Pixels,
     pub minimum_columns: u16,
     pub cursor_reveal: Option<EditorCursorReveal>,
+}
+
+impl<'a> EditorViewportSurfaceLayout<'a> {
+    pub fn for_editor(
+        theme: Option<&'a Theme>,
+        bounds: Bounds<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+        cursor_reveal: Option<EditorCursorReveal>,
+    ) -> Self {
+        Self {
+            theme,
+            bounds,
+            cell_width,
+            line_height,
+            minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+            cursor_reveal,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -765,6 +799,24 @@ mod tests {
         assert_eq!(update.visual_rows, expected.visual_rows);
         assert_eq!(update.soft_wrap, expected.soft_wrap);
         assert_eq!(viewport.content_visual_rows(), expected.visual_rows);
+    }
+
+    #[test]
+    fn editor_layout_constructors_use_shared_minimum_columns() {
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(80.0)));
+
+        let content_layout = EditorViewportContentLayout::for_editor(None, bounds, px(8.0));
+        let surface_layout =
+            EditorViewportSurfaceLayout::for_editor(None, bounds, px(8.0), px(20.0), None);
+
+        assert_eq!(
+            content_layout.minimum_columns,
+            EDITOR_MINIMUM_VIEWPORT_COLUMNS
+        );
+        assert_eq!(
+            surface_layout.minimum_columns,
+            EDITOR_MINIMUM_VIEWPORT_COLUMNS
+        );
     }
 
     #[test]

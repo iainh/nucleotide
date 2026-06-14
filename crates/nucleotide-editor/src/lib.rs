@@ -1,6 +1,12 @@
 // ABOUTME: Editor view crate that renders documents without circular dependencies
 // ABOUTME: Uses capability traits to depend on abstractions rather than concrete types
 
+/// Minimum text columns used when computing native editor soft-wrap layout.
+///
+/// The viewport scroll model and frame painter must use the same floor so
+/// visual-row counts match the rows that are actually painted.
+pub const EDITOR_MINIMUM_VIEWPORT_COLUMNS: u16 = 10;
+
 pub mod cursor;
 pub mod cursor_style;
 pub mod diagnostics;
