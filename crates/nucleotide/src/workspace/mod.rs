@@ -4465,6 +4465,11 @@ impl Workspace {
                 let core = self.core.clone();
                 show_hover_docs(core, handle, cx);
             }
+            crate::Update::ToggleFileTree => {
+                info!("Toggling file tree from native editor input");
+                self.show_file_tree = !self.show_file_tree;
+                cx.notify();
+            }
             crate::Update::Info(info) => {
                 self.info_hidden = false;
                 self.info.update(cx, |info_box, info_cx| {

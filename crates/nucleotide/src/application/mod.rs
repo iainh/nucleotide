@@ -2115,6 +2115,14 @@ impl Application {
                     self.trigger_lsp_navigation(request, cx);
                 }
 
+                if let Some(request) = outcome.workspace_requested {
+                    match request {
+                        editor_input::NativeWorkspaceRequest::ToggleFileTree => {
+                            cx.emit(crate::Update::ToggleFileTree);
+                        }
+                    }
+                }
+
                 if let Some(request) = outcome.prompt_requested {
                     cx.emit(crate::Update::Prompt(Self::create_native_prompt(request)));
                 }
