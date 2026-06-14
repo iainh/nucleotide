@@ -23,6 +23,7 @@ pub use view_handler::ViewHandler;
 pub use workspace_handler::WorkspaceHandler;
 
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -2137,6 +2138,9 @@ impl Application {
                                 self.editor.set_status("Jumplist is empty");
                             }
                         }
+                        editor_input::NativePickerRequest::Symbols { workspace } => {
+                            self.trigger_lsp_symbol_picker(workspace, cx);
+                        }
                         editor_input::NativePickerRequest::Diagnostics { workspace } => {
                             self.emit_diagnostics_panel(workspace, cx);
                         }
@@ -3028,6 +3032,129 @@ fn lsp_locations_from_definition_response(
 }
 
 type LspLocationFuture = BoxFuture<'static, anyhow::Result<Vec<crate::types::LspLocation>>>;
+type SymbolItemFuture = BoxFuture<'static, anyhow::Result<Vec<NativeSymbolItem>>>;
+
+#[derive(Debug)]
+struct NativeSymbolItem {
+    name: String,
+    kind: &'static str,
+    container_name: Option<String>,
+    location: crate::types::LspLocation,
+}
+
+fn display_symbol_kind(kind: lsp::SymbolKind) -> &'static str {
+    match kind {
+        lsp::SymbolKind::FILE => "file",
+        lsp::SymbolKind::MODULE => "module",
+        lsp::SymbolKind::NAMESPACE => "namespace",
+        lsp::SymbolKind::PACKAGE => "package",
+        lsp::SymbolKind::CLASS => "class",
+        lsp::SymbolKind::METHOD => "method",
+        lsp::SymbolKind::PROPERTY => "property",
+        lsp::SymbolKind::FIELD => "field",
+        lsp::SymbolKind::CONSTRUCTOR => "constructor",
+        lsp::SymbolKind::ENUM => "enum",
+        lsp::SymbolKind::INTERFACE => "interface",
+        lsp::SymbolKind::FUNCTION => "function",
+        lsp::SymbolKind::VARIABLE => "variable",
+        lsp::SymbolKind::CONSTANT => "constant",
+        lsp::SymbolKind::STRING => "string",
+        lsp::SymbolKind::NUMBER => "number",
+        lsp::SymbolKind::BOOLEAN => "boolean",
+        lsp::SymbolKind::ARRAY => "array",
+        lsp::SymbolKind::OBJECT => "object",
+        lsp::SymbolKind::KEY => "key",
+        lsp::SymbolKind::NULL => "null",
+        lsp::SymbolKind::ENUM_MEMBER => "enum member",
+        lsp::SymbolKind::STRUCT => "struct",
+        lsp::SymbolKind::EVENT => "event",
+        lsp::SymbolKind::OPERATOR => "operator",
+        lsp::SymbolKind::TYPE_PARAMETER => "type parameter",
+        _ => "symbol",
+    }
+}
+
+fn symbol_location_from_path(
+    path: PathBuf,
+    range: lsp::Range,
+    offset_encoding: OffsetEncoding,
+) -> crate::types::LspLocation {
+    crate::types::LspLocation {
+        path,
+        range,
+        offset_encoding,
+    }
+}
+
+fn document_symbol_items_from_response(
+    response: Option<lsp::DocumentSymbolResponse>,
+    path: PathBuf,
+    offset_encoding: OffsetEncoding,
+) -> Vec<NativeSymbolItem> {
+    match response {
+        Some(lsp::DocumentSymbolResponse::Flat(symbols)) => symbols
+            .into_iter()
+            .filter_map(|symbol| {
+                Some(NativeSymbolItem {
+                    name: symbol.name,
+                    kind: display_symbol_kind(symbol.kind),
+                    container_name: symbol.container_name,
+                    location: lsp_location_from_location(symbol.location, offset_encoding)?,
+                })
+            })
+            .collect(),
+        Some(lsp::DocumentSymbolResponse::Nested(symbols)) => {
+            let mut items = Vec::new();
+            for symbol in symbols {
+                push_document_symbol_item(&mut items, symbol, &path, offset_encoding);
+            }
+            items
+        }
+        None => Vec::new(),
+    }
+}
+
+fn push_document_symbol_item(
+    items: &mut Vec<NativeSymbolItem>,
+    symbol: lsp::DocumentSymbol,
+    path: &Path,
+    offset_encoding: OffsetEncoding,
+) {
+    items.push(NativeSymbolItem {
+        name: symbol.name,
+        kind: display_symbol_kind(symbol.kind),
+        container_name: None,
+        location: symbol_location_from_path(
+            path.to_path_buf(),
+            symbol.selection_range,
+            offset_encoding,
+        ),
+    });
+
+    for child in symbol.children.into_iter().flatten() {
+        push_document_symbol_item(items, child, path, offset_encoding);
+    }
+}
+
+fn workspace_symbol_items_from_response(
+    response: Option<lsp::WorkspaceSymbolResponse>,
+    offset_encoding: OffsetEncoding,
+) -> Vec<NativeSymbolItem> {
+    match response {
+        Some(lsp::WorkspaceSymbolResponse::Flat(symbols)) => symbols
+            .into_iter()
+            .filter_map(|symbol| {
+                Some(NativeSymbolItem {
+                    name: symbol.name,
+                    kind: display_symbol_kind(symbol.kind),
+                    container_name: symbol.container_name,
+                    location: lsp_location_from_location(symbol.location, offset_encoding)?,
+                })
+            })
+            .collect(),
+        Some(lsp::WorkspaceSymbolResponse::Nested(_)) | None => Vec::new(),
+    }
+}
 
 fn lsp_location_from_location(
     location: lsp::Location,
@@ -3085,6 +3212,43 @@ fn lsp_locations_picker(
 
     crate::picker::Picker::native(title.to_string(), items, |_index| {
         // LSP location selection is handled by the overlay via typed item data.
+    })
+}
+
+fn lsp_symbol_picker(
+    title: &str,
+    symbols: Vec<NativeSymbolItem>,
+    project_directory: Option<&Path>,
+) -> crate::picker::Picker {
+    use crate::picker_view::PickerItem;
+
+    let items = symbols
+        .into_iter()
+        .map(|symbol| {
+            let path_label = project_directory
+                .and_then(|root| symbol.location.path.strip_prefix(root).ok())
+                .unwrap_or(&symbol.location.path)
+                .display()
+                .to_string();
+            let line = symbol.location.range.start.line + 1;
+            let label = format!("{} {}", symbol.kind, symbol.name);
+            let sublabel = symbol
+                .container_name
+                .filter(|container| !container.is_empty())
+                .map(|container| format!("{container} - {path_label}:{line}"))
+                .unwrap_or_else(|| format!("{path_label}:{line}"));
+
+            PickerItem::with_sublabel_and_path(
+                label,
+                sublabel,
+                symbol.location.path.clone(),
+                Arc::new(symbol.location),
+            )
+        })
+        .collect();
+
+    crate::picker::Picker::native(title.to_string(), items, |_index| {
+        // Symbol selection is handled by the overlay via LspLocation item data.
     })
 }
 
@@ -4791,6 +4955,109 @@ impl Application {
             if let Some(core) = core.upgrade() {
                 let _ = core.update(cx, move |core, cx| {
                     core.finish_lsp_navigation(title, empty_message, locations, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    pub fn trigger_lsp_symbol_picker(
+        &mut self,
+        workspace: bool,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        let feature = if workspace {
+            syntax::config::LanguageServerFeature::WorkspaceSymbols
+        } else {
+            syntax::config::LanguageServerFeature::DocumentSymbols
+        };
+        let mut futures: FuturesOrdered<SymbolItemFuture> = FuturesOrdered::new();
+
+        {
+            let view = self.editor.tree.get(self.editor.tree.focus);
+            let Some(doc) = self.editor.document(view.doc) else {
+                self.editor
+                    .set_error("No active document for symbol picker");
+                return;
+            };
+            let doc_path = doc
+                .uri()
+                .and_then(|uri| uri.as_path().map(Path::to_path_buf));
+            let mut seen_language_servers = HashSet::new();
+
+            for language_server in doc
+                .language_servers_with_feature(feature)
+                .filter(|server| seen_language_servers.insert(server.id()))
+            {
+                let offset_encoding = language_server.offset_encoding();
+                if workspace {
+                    if let Some(future) = language_server.workspace_symbols(String::new()) {
+                        futures.push_back(
+                            async move {
+                                let response = future.await?;
+                                Ok(workspace_symbol_items_from_response(
+                                    response,
+                                    offset_encoding,
+                                ))
+                            }
+                            .boxed(),
+                        );
+                    }
+                } else if let Some(path) = doc_path.clone()
+                    && let Some(future) = language_server.document_symbols(doc.identifier())
+                {
+                    futures.push_back(
+                        async move {
+                            let response = future.await?;
+                            Ok(document_symbol_items_from_response(
+                                response,
+                                path,
+                                offset_encoding,
+                            ))
+                        }
+                        .boxed(),
+                    );
+                }
+            }
+        }
+
+        if futures.is_empty() {
+            self.editor.set_error(if workspace {
+                "No configured language server supports workspace symbols"
+            } else {
+                "No configured language server supports document symbols"
+            });
+            return;
+        }
+
+        let title = if workspace {
+            "Workspace Symbols"
+        } else {
+            "Document Symbols"
+        }
+        .to_string();
+
+        cx.spawn(async move |core, cx| {
+            let mut symbols = Vec::new();
+            while let Some(response) = futures_util::StreamExt::next(&mut futures).await {
+                match response {
+                    Ok(mut response_symbols) => symbols.append(&mut response_symbols),
+                    Err(err) => warn!(error = %err, "LSP symbol request failed"),
+                }
+            }
+
+            if let Some(core) = core.upgrade() {
+                let _ = core.update(cx, move |core, cx| {
+                    if symbols.is_empty() {
+                        core.editor.set_status("No symbols found");
+                    } else {
+                        let picker =
+                            lsp_symbol_picker(&title, symbols, core.project_directory.as_deref());
+                        cx.emit(crate::Update::Picker(picker));
+                    }
+                    cx.emit(crate::Update::Event(AppEvent::Core(
+                        CoreEvent::RedrawRequested,
+                    )));
                 });
             }
         })
