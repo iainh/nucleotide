@@ -1015,6 +1015,47 @@ fn log_completion_key_context(editor: &Editor, key: KeyEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    use arc_swap::{ArcSwap, access::Map};
+    use helix_core::{Transaction, syntax};
+    use helix_view::{editor::Action, editor::Config, graphics::Rect, handlers::Handlers, theme};
+
+    fn test_handlers() -> Handlers {
+        let (completion_tx, _) = tokio::sync::mpsc::channel(1);
+        let (signature_tx, _) = tokio::sync::mpsc::channel(1);
+        let (auto_save_tx, _) = tokio::sync::mpsc::channel(1);
+        let (doc_colors_tx, _) = tokio::sync::mpsc::channel(1);
+
+        Handlers {
+            completions: helix_view::handlers::completion::CompletionHandler::new(completion_tx),
+            signature_hints: signature_tx,
+            auto_save: auto_save_tx,
+            document_colors: doc_colors_tx,
+            word_index: helix_view::handlers::word_index::Handler::spawn(),
+        }
+    }
+
+    fn test_editor_with_text(text: &str) -> Editor {
+        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let theme_loader = Arc::new(theme::Loader::new(&[]));
+        let mut editor = Editor::new(
+            Rect::new(0, 0, 80, 24),
+            theme_loader,
+            syntax_loader,
+            Arc::new(Map::new(Arc::clone(&config), |config: &Config| config)),
+            test_handlers(),
+        );
+        let doc_id = editor.new_file(Action::VerticalSplit);
+        let view_id = editor.tree.focus;
+        let doc = editor.document_mut(doc_id).unwrap();
+        let transaction = Transaction::change(doc.text(), [(0, 0, Some(text.into()))].into_iter());
+        doc.apply(&transaction, view_id);
+
+        editor
+    }
 
     #[test]
     fn selection_delta_requires_before_and_after_snapshots() {
@@ -1240,8 +1281,6 @@ mod tests {
 
     #[test]
     fn default_space_f_keymap_requests_file_picker() {
-        use std::str::FromStr;
-
         let mut keymaps = Keymaps::default();
         let space = KeyEvent::from_str("space").unwrap();
         let f = KeyEvent::from_str("f").unwrap();
@@ -1262,10 +1301,27 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_file_picker_for_space_f() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text("one\ntwo\n");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let space = KeyEvent::from_str("space").unwrap();
+        let f = KeyEvent::from_str("f").unwrap();
+
+        let pending = bridge.handle_key(space, &mut compositor, &mut editor, &mut jobs);
+        assert!(pending.handled_by_native_command);
+        assert_eq!(pending.picker_requested, None);
+
+        let picker = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
+        assert!(picker.handled_by_native_command);
+        assert_eq!(picker.picker_requested, Some(NativePickerRequest::File));
+    }
+
     #[test]
     fn default_space_shift_f_keymap_requests_current_directory_picker() {
-        use std::str::FromStr;
-
         let mut keymaps = Keymaps::default();
         let space = KeyEvent::from_str("space").unwrap();
         let shift_f = KeyEvent::from_str("F").unwrap();
