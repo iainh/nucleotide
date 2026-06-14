@@ -1,10 +1,10 @@
 // ABOUTME: This file implements the KeyHintView component that displays keybinding hints
 // ABOUTME: when a pending keymap state is active (e.g., after pressing space leader)
 
-use crate::{Theme, gpui_widgets::kbd::Kbd, styling::ColorTheory};
+use crate::{Theme, styling::ColorTheory};
 use gpui::{
     AnyElement, Context, EventEmitter, IntoElement, Keystroke, ParentElement, Render, Styled,
-    Window, div, prelude::FluentBuilder, px,
+    Window, div, prelude::FluentBuilder, px, relative,
 };
 use helix_view::info::Info;
 
@@ -16,7 +16,7 @@ struct HintLine {
 
 const HINT_COLUMN_WIDTH: f32 = 292.0;
 const HINT_COLUMN_GAP: f32 = 14.0;
-const HINT_KEY_SLOT_WIDTH: f32 = 44.0;
+const HINT_KEY_SLOT_WIDTH: f32 = 64.0;
 
 #[derive(Debug)]
 pub struct KeyHintView {
@@ -71,45 +71,81 @@ impl KeyHintView {
         Keystroke::parse(&normalized).ok()
     }
 
-    fn render_key_badge(
+    fn key_badge_labels(key: &str) -> Vec<String> {
+        let Some(stroke) = Self::parse_keystroke(key) else {
+            return vec![key.trim().to_string()];
+        };
+
+        let mut labels = Vec::new();
+
+        if stroke.modifiers.control {
+            labels.push("ctrl".to_string());
+        }
+        if stroke.modifiers.alt {
+            labels.push("alt".to_string());
+        }
+        if stroke.modifiers.shift {
+            labels.push("shift".to_string());
+        }
+        if stroke.modifiers.platform {
+            labels.push("cmd".to_string());
+        }
+        labels.push(key_label(stroke.key.as_str()));
+
+        labels
+    }
+
+    fn render_keycap(
+        theme: &Theme,
+        key_font: &gpui::Font,
+        text_size: f32,
+        label: String,
+    ) -> AnyElement {
+        let tokens = &theme.tokens;
+        let tooltip = tokens.tooltip_tokens();
+        let key_bg = ColorTheory::with_alpha(tokens.chrome.surface_hover, 0.65);
+        let is_modifier = matches!(label.as_str(), "ctrl" | "alt" | "shift" | "cmd");
+        let min_width = if is_modifier { 34.0 } else { 18.0 };
+
+        div()
+            .min_w(px(min_width))
+            .h(px(20.0))
+            .px(px(if is_modifier { 5.0 } else { 4.0 }))
+            .border_1()
+            .border_color(tooltip.border)
+            .rounded_sm()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_align(gpui::TextAlign::Center)
+            .font(key_font.clone())
+            .text_size(px((text_size - 2.0).max(9.0)))
+            .line_height(relative(1.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(tooltip.text)
+            .bg(key_bg)
+            .child(label)
+            .into_any_element()
+    }
+
+    fn render_key_badges(
         theme: &Theme,
         key_font: &gpui::Font,
         text_size: f32,
         key: &str,
     ) -> AnyElement {
-        let tokens = &theme.tokens;
-        let tooltip = tokens.tooltip_tokens();
-        let key_bg = ColorTheory::with_alpha(tokens.chrome.surface_hover, 0.65);
-
-        if let Some(stroke) = Self::parse_keystroke(key) {
-            return Kbd::new(stroke)
-                .font(key_font.clone())
-                .text_size(px(text_size))
-                .bg(key_bg)
-                .border_color(tooltip.border)
-                .text_color(tooltip.text)
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .min_w(px(28.0))
-                .px(px(6.0))
-                .py(px(2.0))
-                .into_any_element();
-        }
+        let labels = Self::key_badge_labels(key);
 
         div()
-            .min_w(px(28.0))
-            .px(px(6.0))
-            .py(px(2.0))
-            .border_1()
-            .border_color(tooltip.border)
-            .rounded_sm()
-            .text_xs()
-            .text_align(gpui::TextAlign::Center)
-            .font(key_font.clone())
-            .text_size(px(text_size))
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_color(tooltip.text)
-            .bg(key_bg)
-            .child(key.to_string())
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(3.0))
+            .children(
+                labels
+                    .into_iter()
+                    .map(|label| Self::render_keycap(theme, key_font, text_size, label)),
+            )
             .into_any_element()
     }
 
@@ -142,14 +178,15 @@ impl KeyHintView {
             .px(px(4.0))
             .py(px(2.0))
             .rounded(px(4.0))
-            .child(
-                div().w(px(HINT_KEY_SLOT_WIDTH)).flex_none().when_some(
-                    line.key.as_deref(),
-                    |slot, key| {
-                        slot.child(Self::render_key_badge(theme, key_font, key_text_size, key))
-                    },
-                ),
-            )
+            .child(div().w(px(HINT_KEY_SLOT_WIDTH)).flex_none().when_some(
+                line.key.as_deref(),
+                |slot, key| {
+                    slot.flex()
+                        .items_center()
+                        .justify_end()
+                        .child(Self::render_key_badges(theme, key_font, key_text_size, key))
+                },
+            ))
             .child(
                 div()
                     .flex_1()
@@ -264,6 +301,18 @@ fn normalize_hint_key(key: &str) -> String {
         .replace("<enter>", "enter")
 }
 
+fn key_label(key: &str) -> String {
+    match key {
+        "space" => "space".to_string(),
+        "enter" => "enter".to_string(),
+        "backspace" => "backspace".to_string(),
+        "delete" => "delete".to_string(),
+        "escape" => "esc".to_string(),
+        key if key.len() == 1 => key.to_lowercase(),
+        key => key.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,6 +344,12 @@ mod tests {
         assert_eq!(normalize_hint_key("C-o"), "ctrl-o");
         assert_eq!(normalize_hint_key("D"), "shift-d");
         assert_eq!(normalize_hint_key("<ret>"), "enter");
+    }
+
+    #[test]
+    fn renders_modifiers_before_keycaps() {
+        assert_eq!(KeyHintView::key_badge_labels("G"), vec!["shift", "g"]);
+        assert_eq!(KeyHintView::key_badge_labels("C-o"), vec!["ctrl", "o"]);
     }
 
     #[test]
