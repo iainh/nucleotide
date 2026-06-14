@@ -2046,6 +2046,9 @@ impl Application {
                         editor_input::NativePickerRequest::Buffer => {
                             cx.emit(crate::Update::ShowBufferPicker);
                         }
+                        editor_input::NativePickerRequest::Diagnostics { workspace } => {
+                            self.emit_diagnostics_panel(workspace, cx);
+                        }
                     }
                 }
 
@@ -2056,6 +2059,25 @@ impl Application {
                     CoreEvent::RedrawRequested,
                 )));
             }
+        }
+    }
+
+    fn emit_diagnostics_panel(&self, workspace: bool, cx: &mut gpui::Context<crate::Core>) {
+        info!(
+            workspace = workspace,
+            "DIAG: Diagnostics picker requested - showing panel"
+        );
+
+        if let Some(lsp_state) = &self.lsp_state {
+            let lsp_state = lsp_state.clone();
+            let panel = cx.new(|cx| {
+                crate::DiagnosticsPanel::new(lsp_state, crate::DiagnosticsFilter::default(), cx)
+            });
+            cx.emit(crate::Update::DiagnosticsPanel(panel));
+        } else {
+            nucleotide_logging::warn!(
+                "DIAG: Diagnostics picker requested but no LspState entity available"
+            );
         }
     }
 
@@ -2448,23 +2470,7 @@ impl Application {
                                 }
                             }
                             event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace } => {
-                                info!(workspace = workspace, "DIAG: DiagnosticsPickerRequested received - showing panel");
-                                // Show diagnostics panel overlay using current LspState
-                                if let Some(lsp_state) = &self.lsp_state {
-                                    let lsp_state = lsp_state.clone();
-                                    let panel = cx.new(|cx| {
-                                        crate::DiagnosticsPanel::new(
-                                            lsp_state,
-                                            crate::DiagnosticsFilter::default(),
-                                            cx,
-                                        )
-                                    });
-                                    cx.emit(crate::Update::DiagnosticsPanel(panel));
-                                } else {
-                                    nucleotide_logging::warn!(
-                                        "DIAG: DiagnosticsPickerRequested but no LspState entity available"
-                                    );
-                                }
+                                self.emit_diagnostics_panel(*workspace, cx);
                             }
                             event_bridge::BridgedEvent::FilePickerRequested => {
                                 info!("DIAG: FilePickerRequested received - emitting ShowFilePicker");
