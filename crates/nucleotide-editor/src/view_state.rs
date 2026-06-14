@@ -2,7 +2,7 @@
 // ABOUTME: Bundles viewport, metrics, overlay, scrollbar, and selection state
 
 use gpui::{Pixels, TextStyle, px};
-use helix_view::{DocumentId, Editor, ViewId};
+use helix_view::{DocumentId, Editor, Theme, ViewId};
 
 use crate::{
     CursorOverlayPlan, EditorCursorReveal, EditorOverlayState, EditorPointerSelectionPhase,
@@ -99,6 +99,24 @@ impl EditorViewState {
             update,
             physical_lines: document.text().len_lines(),
         })
+    }
+
+    pub fn sync_content_layout_for_current_viewport(
+        &mut self,
+        editor: &Editor,
+        view_id: ViewId,
+        theme: Option<&Theme>,
+        cell_width: Pixels,
+    ) -> Option<EditorViewContentState> {
+        self.sync_content_layout_for_editor(
+            editor,
+            view_id,
+            EditorViewportContentLayout::for_editor(
+                theme,
+                self.viewport.viewport_bounds(),
+                cell_width,
+            ),
+        )
     }
 
     pub fn sync_frame_layout(
@@ -274,7 +292,14 @@ mod tests {
     }
 
     fn test_editor_with_text(text: &str) -> (Editor, DocumentId, ViewId) {
-        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        test_editor_with_config_and_text(Config::default(), text)
+    }
+
+    fn test_editor_with_config_and_text(
+        config: Config,
+        text: &str,
+    ) -> (Editor, DocumentId, ViewId) {
+        let config = Arc::new(ArcSwap::new(Arc::new(config)));
         let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
         let theme_loader = Arc::new(theme::Loader::new(&[]));
         let mut editor = Editor::new(
@@ -499,6 +524,32 @@ mod tests {
             editor.document(doc_id).unwrap().text().len_lines()
         );
         assert!(content_state.update.visual_rows >= 3);
+        assert_eq!(
+            state.viewport().content_visual_rows(),
+            content_state.update.visual_rows
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_sync_content_layout_uses_current_viewport() {
+        let mut config = Config::default();
+        config.soft_wrap.enable = Some(true);
+        let mut state = EditorViewState::new(px(20.0), px(8.0));
+        let (editor, doc_id, view_id) = test_editor_with_config_and_text(
+            config,
+            "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz",
+        );
+        state
+            .viewport_mut()
+            .set_layout(px(20.0), size(px(160.0), px(101.0)), 1);
+
+        let content_state = state
+            .sync_content_layout_for_current_viewport(&editor, view_id, None, px(8.0))
+            .unwrap();
+
+        assert_eq!(content_state.doc_id, doc_id);
+        assert!(content_state.update.soft_wrap);
+        assert!(content_state.update.visual_rows > content_state.physical_lines);
         assert_eq!(
             state.viewport().content_visual_rows(),
             content_state.update.visual_rows

@@ -12,9 +12,9 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
-    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewportContentLayout,
-    NativeEditorFramePaintParams, NativeEditorFramePrepareParams, NativeEditorView,
-    paint_native_editor_frame, prepare_native_editor_frame,
+    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, NativeEditorFramePaintParams,
+    NativeEditorFramePrepareParams, NativeEditorView, paint_native_editor_frame,
+    prepare_native_editor_frame,
 };
 
 fn handle_editor_pointer_selection(
@@ -155,15 +155,11 @@ impl Render for DocumentView {
             let core = self.core.read(cx);
             let editor = &core.editor;
             let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-            let viewport_bounds = self.editor_state.viewport().viewport_bounds();
-            self.editor_state.sync_content_layout_for_editor(
+            self.editor_state.sync_content_layout_for_current_viewport(
                 editor,
                 self.view_id,
-                EditorViewportContentLayout::for_editor(
-                    Some(&theme),
-                    viewport_bounds,
-                    metrics.cell_width,
-                ),
+                Some(&theme),
+                metrics.cell_width,
             )
         }) else {
             return div().id(SharedString::from(format!("doc-view-{:?}", self.view_id)));
