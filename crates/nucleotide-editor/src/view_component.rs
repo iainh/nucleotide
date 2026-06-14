@@ -4,8 +4,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, Component, EntityId, InteractiveElement as _, IntoElement, ParentElement as _,
-    Pixels, RenderOnce, Styled as _, TextStyle, Window, div,
+    App, Bounds, Component, EntityId, FocusHandle, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ParentElement as _, Pixels, RenderOnce, Styled as _, TextStyle, Window, div,
 };
 
 use crate::{
@@ -19,13 +19,16 @@ type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
 type PointerSelectionCallback =
     Rc<dyn Fn(EditorPointerSelectionPhase, EditorSurfacePointerEvent, &mut App)>;
 type CursorOverlayCallback = Rc<dyn Fn(Option<CursorOverlayPlan>, &mut App)>;
+type KeyDownCallback = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App)>;
 
 pub struct NativeEditorView<P> {
     view_entity_id: EntityId,
     editor_state: EditorViewState,
     text_style: TextStyle,
     paint: P,
+    focus: Option<FocusHandle>,
     on_scroll: Option<ScrollCallback>,
+    on_key_down: Option<KeyDownCallback>,
     on_cursor_overlay: Option<CursorOverlayCallback>,
     on_pointer_selection: Option<PointerSelectionCallback>,
     on_mouse_down: Option<PointerCallback>,
@@ -55,13 +58,28 @@ where
             editor_state,
             text_style,
             paint,
+            focus: None,
             on_scroll: None,
+            on_key_down: None,
             on_cursor_overlay: None,
             on_pointer_selection: None,
             on_mouse_down: None,
             on_mouse_drag: None,
             on_mouse_up: None,
         }
+    }
+
+    pub fn track_focus(mut self, focus: FocusHandle) -> Self {
+        self.focus = Some(focus);
+        self
+    }
+
+    pub fn on_key_down(
+        mut self,
+        callback: impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_key_down = Some(Rc::new(callback));
+        self
     }
 
     pub fn on_scroll(
@@ -148,7 +166,9 @@ where
             editor_state,
             text_style,
             mut paint,
+            focus,
             on_scroll,
+            on_key_down,
             on_cursor_overlay,
             on_pointer_selection,
             on_mouse_down,
@@ -217,14 +237,27 @@ where
             });
         }
 
-        div().id("editor-content").w_full().h_full().flex().child(
-            div()
-                .id("editor-paint-area")
-                .w_full()
-                .h_full()
-                .flex_1()
-                .child(editor_surface),
-        )
+        let mut root = div()
+            .key_context("Editor")
+            .id("editor-content")
+            .w_full()
+            .h_full()
+            .flex();
+
+        if let Some(on_key_down) = on_key_down {
+            root = root.on_key_down(move |event, window, cx| {
+                on_key_down(event, window, cx);
+                cx.stop_propagation();
+            });
+        }
+
+        let mut paint_area = div().id("editor-paint-area").w_full().h_full().flex_1();
+
+        if let Some(focus) = focus {
+            paint_area = paint_area.track_focus(&focus);
+        }
+
+        root.child(paint_area.child(editor_surface))
     }
 }
 
@@ -236,8 +269,8 @@ mod tests {
     };
 
     use gpui::{
-        AppContext as _, Empty, Entity, IntoElement as _, MouseButton, ScrollDelta,
-        ScrollWheelEvent, TestAppContext, TouchPhase, point, px, size,
+        AppContext as _, Empty, Entity, FocusHandle, IntoElement as _, Keystroke, MouseButton,
+        Render, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, px, size,
     };
 
     use super::*;
@@ -347,5 +380,59 @@ mod tests {
                 EditorPointerSelectionPhase::End,
             ]
         );
+    }
+
+    struct KeyDispatchHost {
+        view_entity_id: EntityId,
+        editor_state: EditorViewState,
+        focus: FocusHandle,
+        saw_key: Rc<Cell<bool>>,
+    }
+
+    impl Render for KeyDispatchHost {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            NativeEditorView::new(
+                self.view_entity_id,
+                self.editor_state.clone(),
+                TextStyle::default(),
+                |_state, _bounds, _layout, _window, _cx| None,
+            )
+            .track_focus(self.focus.clone())
+            .on_key_down({
+                let saw_key = Rc::clone(&self.saw_key);
+                move |event, _, _| {
+                    saw_key.set(event.keystroke.key == "a");
+                }
+            })
+        }
+    }
+
+    #[gpui::test]
+    fn native_editor_view_dispatches_key_events_from_focus(cx: &mut TestAppContext) {
+        let saw_key = Rc::new(Cell::new(false));
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                let saw_key = Rc::clone(&saw_key);
+                cx.new(|cx| KeyDispatchHost {
+                    view_entity_id: cx.entity_id(),
+                    editor_state: EditorViewState::new(px(20.0), px(8.0)),
+                    focus: cx.focus_handle(),
+                    saw_key,
+                })
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |host, window, _cx| window.focus(&host.focus))
+            .unwrap();
+
+        cx.dispatch_keystroke(*window, Keystroke::parse("a").unwrap());
+
+        assert!(saw_key.get());
     }
 }
