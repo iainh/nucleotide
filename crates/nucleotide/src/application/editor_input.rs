@@ -4,6 +4,7 @@
 use helix_core::{
     Range, char_idx_at_visual_offset,
     movement::{Direction, Movement, move_vertically_visual},
+    visual_offset_from_block,
 };
 use helix_stdx::{
     path::{self, find_paths},
@@ -780,6 +781,10 @@ impl NativeCommandInput {
                     return KeymapDispatch::RequestViewportCursor(request);
                 }
 
+                if handle_native_align_view_middle(command, context) {
+                    return KeymapDispatch::Handled;
+                }
+
                 if let Some(request) = native_page_cursor_command(command, context) {
                     return KeymapDispatch::RequestViewportScroll(request);
                 }
@@ -826,6 +831,9 @@ impl NativeCommandInput {
                     }
                     if let Some(request) = native_viewport_cursor_command(command, context.count) {
                         return KeymapDispatch::RequestViewportCursor(request);
+                    }
+                    if handle_native_align_view_middle(command, context) {
+                        continue;
                     }
                     if let Some(request) = native_page_cursor_command(command, context) {
                         return KeymapDispatch::RequestViewportScroll(request);
@@ -1201,6 +1209,47 @@ fn native_viewport_cursor_command(
         target,
         count: count.map_or(1, NonZeroUsize::get),
     })
+}
+
+fn handle_native_align_view_middle(
+    command: &MappableCommand,
+    context: &mut commands::Context<'_>,
+) -> bool {
+    if command.name() != "align_view_middle" {
+        return false;
+    }
+
+    let view_id = context.editor.tree.focus;
+    let Some(view) = context.editor.tree.try_get(view_id).cloned() else {
+        return true;
+    };
+    let Some(doc) = context.editor.document_mut(view.doc) else {
+        return true;
+    };
+
+    let inner_width = view.inner_width(doc);
+    let text_format = doc.text_format(inner_width, None);
+    if text_format.soft_wrap {
+        return true;
+    }
+
+    let text = doc.text().slice(..);
+    let cursor = doc.selection(view_id).primary().cursor(text);
+    let cursor_position = visual_offset_from_block(
+        text,
+        doc.view_offset(view_id).anchor,
+        cursor,
+        &text_format,
+        &view.text_annotations(doc, None),
+    )
+    .0;
+
+    let mut view_offset = doc.view_offset(view_id);
+    view_offset.horizontal_offset = cursor_position
+        .col
+        .saturating_sub((view.inner_area(doc).width as usize) / 2);
+    doc.set_view_offset(view_id, view_offset);
+    true
 }
 
 fn native_viewport_scroll_command(
@@ -1867,6 +1916,37 @@ mod tests {
         let text = doc.text().slice(..);
         let cursor = doc.selection(view_id).primary().cursor(text);
         helix_core::coords_at_pos(text, cursor).row
+    }
+
+    fn focused_horizontal_offset(editor: &Editor) -> usize {
+        let view_id = editor.tree.focus;
+        let doc_id = editor.tree.try_get(view_id).unwrap().doc;
+        editor
+            .document(doc_id)
+            .unwrap()
+            .view_offset(view_id)
+            .horizontal_offset
+    }
+
+    fn focused_align_middle_offset(editor: &Editor) -> usize {
+        let view_id = editor.tree.focus;
+        let view = editor.tree.try_get(view_id).unwrap();
+        let doc = editor.document(view.doc).unwrap();
+        let text = doc.text().slice(..);
+        let cursor = doc.selection(view_id).primary().cursor(text);
+        let text_format = doc.text_format(view.inner_width(doc), None);
+        let cursor_position = visual_offset_from_block(
+            text,
+            doc.view_offset(view_id).anchor,
+            cursor,
+            &text_format,
+            &view.text_annotations(doc, None),
+        )
+        .0;
+
+        cursor_position
+            .col
+            .saturating_sub((view.inner_area(doc).width as usize) / 2)
     }
 
     fn set_test_selection(editor: &mut Editor, from: usize, to: usize) {
@@ -3205,6 +3285,30 @@ mod tests {
             assert_eq!(outcome.viewport_scroll_requested, Some(request));
             assert!(!outcome.selection_changed);
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_handles_align_view_middle_natively() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text(&format!("{}\n", "a".repeat(140)));
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+        set_test_cursor(&mut editor, 100);
+
+        let expected_offset = focused_align_middle_offset(&editor);
+        assert!(expected_offset > 0);
+        assert_eq!(focused_horizontal_offset(&editor), 0);
+
+        let pending = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "z");
+        assert!(pending.handled_by_native_command);
+        assert!(!pending.handled_by_terminal_editor);
+
+        let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "m");
+
+        assert!(outcome.handled_by_native_command);
+        assert!(!outcome.handled_by_terminal_editor);
+        assert_eq!(focused_horizontal_offset(&editor), expected_offset);
+        assert!(!outcome.selection_changed);
     }
 
     #[tokio::test(flavor = "current_thread")]
