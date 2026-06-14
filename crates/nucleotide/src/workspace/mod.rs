@@ -4134,6 +4134,7 @@ impl Workspace {
                     info_cx.notify();
                 });
                 self.update_key_hints(cx);
+                self.view_manager.set_needs_focus_restore(true);
                 cx.notify();
             }
             crate::Update::ShouldQuit => {
@@ -6841,13 +6842,12 @@ impl Render for Workspace {
 
         // Handle focus restoration if needed
         if self.view_manager.needs_focus_restore() {
-            // Prefer centralized focus roles when available; fall back to workspace focus
-            if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
-                // Prioritize returning focus to the editor; then terminal, picker, prompt, file tree, completion
+            if self.view_manager.get_focused_document_view().is_some() {
+                self.view_manager.focus_editor_area(cx, window);
+            } else if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
                 let _ = coord.focus_first(
                     window,
                     &[
-                        nucleotide_ui::FocusRole::Editor,
                         nucleotide_ui::FocusRole::Terminal,
                         nucleotide_ui::FocusRole::Picker,
                         nucleotide_ui::FocusRole::Prompt,
