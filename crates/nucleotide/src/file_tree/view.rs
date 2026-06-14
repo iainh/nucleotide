@@ -15,7 +15,8 @@ use nucleotide_logging::{debug, error, warn};
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::{
-    ListItem, ListItemSpacing, ListItemVariant, Theme, VcsIcon, VcsIconRenderer,
+    Theme, VcsIcon, VcsIconRenderer,
+    gpui_widgets::list::ListItem as GpuiListItem,
     scrollbar::{Scrollbar, ScrollbarState},
 };
 use nucleotide_vcs::VcsServiceHandle;
@@ -31,7 +32,7 @@ pub struct FileTreeView {
     focus_handle: FocusHandle,
     /// Scroll handle for the list
     scroll_handle: UniformListScrollHandle,
-    /// Scrollbar state for managing scrollbar UI
+    /// Scrollbar state for managing token-aware scrollbar UI
     scrollbar_state: ScrollbarState,
     /// Tokio runtime handle for async VCS operations
     _tokio_handle: Option<tokio::runtime::Handle>,
@@ -55,7 +56,6 @@ impl FileTreeView {
 
         let scroll_handle = UniformListScrollHandle::new();
         let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
-
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
             coord.set_file_tree_focus(focus_handle.clone());
@@ -119,7 +119,6 @@ impl FileTreeView {
 
         let scroll_handle = UniformListScrollHandle::new();
         let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
-
         let focus_handle = cx.focus_handle();
         if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
             coord.set_file_tree_focus(focus_handle.clone());
@@ -1084,19 +1083,13 @@ impl FileTreeView {
         }
     }
 
-    /// Render a single file tree entry using enhanced ListItem component with wrapped GPUI div
+    /// Render a single file tree entry using gpui-component rows with wrapped GPUI behavior.
     fn render_entry(
         &self,
         entry: &FileTreeEntry,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let is_selected = self.selected_path.as_ref() == Some(&entry.path);
-        // Use provider hooks to get theme
-        let theme =
-            nucleotide_ui::providers::use_provider::<nucleotide_ui::providers::ThemeProvider>()
-                .map(|provider| provider.current_theme().clone())
-                .unwrap_or_else(|| cx.global::<Theme>().clone());
-
         let indentation = px(entry.depth as f32 * 16.0); // 16px per level
         let path = entry.path.clone();
         let is_dir = entry.is_directory();
@@ -1134,58 +1127,62 @@ impl FileTreeView {
                     });
                 })
             })
-            .child(self.build_file_tree_row(&theme, entry, is_selected, indentation, cx))
+            .child(self.build_file_tree_row(entry, is_selected, indentation, cx))
     }
 
-    /// Centralized helper to build a file tree ListItem row with consistent styling and slots.
+    /// Centralized helper to build a file tree row with consistent styling and slots.
     fn build_file_tree_row(
         &self,
-        theme: &Theme,
         entry: &FileTreeEntry,
         is_selected: bool,
         indentation: gpui::Pixels,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let ft_tokens = theme.tokens.file_tree_tokens();
-        ListItem::new(("file-tree-entry", entry.id.0))
-            .variant(ListItemVariant::Ghost)
-            .spacing(ListItemSpacing::Compact)
-            .selected(is_selected)
-            .class("file-tree-entry")
-            .with_listener(move |item| {
-                // Ensure measured height matches visual height (align to Zed ~30px rows)
-                let mut item = item
+        let theme = cx.theme();
+        let file_tree_tokens = theme.tokens.file_tree_tokens();
+        let row_foreground = if is_selected {
+            theme.tokens.editor.text_on_primary
+        } else {
+            file_tree_tokens.item_text
+        };
+
+        GpuiListItem::new(("file-tree-entry", entry.id.0))
+            .disabled(true)
+            .w_full()
+            .h(px(30.0))
+            .px(px(0.0))
+            .py(px(0.0))
+            .rounded(px(4.0))
+            .child(
+                div()
                     .w_full()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
                     .pl(indentation)
                     .pr(px(8.0))
-                    .py(px(0.0))
-                    .h(px(30.0));
-                if is_selected {
-                    item = item.bg(ft_tokens.item_background_selected);
-                } else {
-                    item = item.hover(|s| s.bg(ft_tokens.background));
-                }
-                item
-            })
-            .start_slot(
-                // Reserve space for chevron to align icons
-                div()
-                    .w_3()
-                    .h_3()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(entry.is_directory(), |div| {
-                        div.child(self.render_chevron(entry, cx))
-                    }),
-            )
-            .child(
-                // Icon + filename content
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap_1()
+                    .text_color(row_foreground)
+                    .when(is_selected, |row| {
+                        row.bg(file_tree_tokens.item_background_selected)
+                    })
+                    .when(!is_selected, |row| {
+                        row.hover(move |row| {
+                            row.bg(file_tree_tokens.item_background_hover)
+                                .text_color(file_tree_tokens.item_text)
+                        })
+                    })
+                    .child(
+                        div()
+                            .w(px(14.0))
+                            .h(px(14.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(entry.is_directory(), |div| {
+                                div.child(self.render_chevron(entry, is_selected, cx))
+                            }),
+                    )
                     .child(self.render_icon_with_vcs_status(entry, is_selected, cx))
                     .child(self.render_filename_with_selection(entry, is_selected, cx)),
             )
@@ -1195,13 +1192,23 @@ impl FileTreeView {
     // Removed end-slot indicator per design update
 
     /// Render the chevron for directories using design tokens
-    fn render_chevron(&self, entry: &FileTreeEntry, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chevron(
+        &self,
+        entry: &FileTreeEntry,
+        is_selected: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.theme().clone();
         let file_tree_tokens = theme.tokens.file_tree_tokens();
+        let chevron_color = if is_selected {
+            theme.tokens.editor.text_on_primary
+        } else {
+            file_tree_tokens.item_text_secondary
+        };
 
         chevron_icon(if entry.is_expanded { "down" } else { "right" })
             .size_3()
-            .text_color(file_tree_tokens.item_text_secondary) // Use computed chrome text color
+            .text_color(chevron_color)
     }
 
     /// Render the file/directory icon with VCS status overlay using VcsIcon component
@@ -1212,12 +1219,12 @@ impl FileTreeView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.global::<Theme>();
+        let file_tree_tokens = theme.tokens.file_tree_tokens();
         let selected_text = theme.tokens.editor.text_on_primary;
-        let normal_text = theme.tokens.chrome.text_on_chrome;
         let icon_color = if is_selected {
             selected_text
         } else {
-            normal_text
+            file_tree_tokens.item_text
         };
 
         // Create the appropriate VcsIcon based on the entry type
@@ -1282,13 +1289,21 @@ impl FileTreeView {
         // Use computed chrome text colors for consistency with chrome background
         let mut node = div()
             .flex_1()
+            .min_w(px(0.0))
+            .overflow_hidden()
             .text_size(cx.global::<nucleotide_ui::Theme>().tokens.sizes.text_md) // Themed text size
             .child(filename);
 
         if is_selected {
             node = node.text_color(selected_text);
+        } else if entry.depth == 0 && entry.is_directory() {
+            node = node
+                .text_color(file_tree_tokens.item_text)
+                .font_weight(gpui::FontWeight::MEDIUM);
         } else if entry.is_hidden {
-            node = node.text_color(file_tree_tokens.item_text_secondary);
+            node = node
+                .text_color(file_tree_tokens.item_text_secondary)
+                .hover(move |node| node.text_color(file_tree_tokens.item_text));
         } else {
             node = node.text_color(file_tree_tokens.item_text);
         }
@@ -1373,7 +1388,7 @@ impl Render for FileTreeView {
                 div().flex_1().min_h(px(0.0)).child(
                     div()
                         .flex()
-                        .flex_row() // list and scrollbar side-by-side
+                        .flex_row()
                         .w_full()
                         .h_full()
                         .min_h(px(0.0))
