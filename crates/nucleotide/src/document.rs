@@ -6,7 +6,7 @@ use gpui::{
     Styled, TextStyle, Window, div, px,
 };
 // Import helix's syntax highlighting system
-use helix_view::{DocumentId, ViewId, document::Mode};
+use helix_view::{ViewId, document::Mode};
 use nucleotide_logging::debug;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
@@ -22,7 +22,6 @@ use nucleotide_editor::{
 
 fn handle_editor_pointer_selection(
     core: &Entity<Core>,
-    doc_id: DocumentId,
     view_id: ViewId,
     editor_state: &EditorViewState,
     phase: EditorPointerSelectionPhase,
@@ -30,6 +29,8 @@ fn handle_editor_pointer_selection(
     cx: &mut App,
 ) {
     let outcome = core.update(cx, |core, cx| {
+        let doc_id = core.editor.tree.try_get(view_id).map(|view| view.doc)?;
+
         let outcome = editor_state.handle_pointer_selection_outcome(
             &mut core.editor,
             doc_id,
@@ -42,10 +43,12 @@ fn handle_editor_pointer_selection(
             cx.notify();
         }
 
-        outcome
+        Some(outcome)
     });
 
-    log_pointer_selection_outcome(outcome);
+    if let Some(outcome) = outcome {
+        log_pointer_selection_outcome(outcome);
+    }
 }
 
 fn should_bubble_to_workspace_leader(
@@ -145,32 +148,9 @@ impl EventEmitter<DismissEvent> for DocumentView {}
 
 impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // DocumentView render creates the native editor element for actual painting.
-        let Some(content_state) = ({
-            let core = self.core.read(cx);
-            let editor = &core.editor;
-            let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-            self.editor_state
-                .prepare_content_for_render(EditorViewContentPrepareParams {
-                    editor,
-                    view_id: self.view_id,
-                    theme: Some(&theme),
-                    text_system: cx.text_system(),
-                    text_style: &self.style,
-                })
-        }) else {
-            return div().id(SharedString::from(format!("doc-view-{:?}", self.view_id)));
-        };
-        let doc_id = content_state.doc_id;
-        debug!(
-            physical_lines = content_state.physical_lines,
-            visual_rows = content_state.update.visual_rows,
-            soft_wrap = content_state.update.soft_wrap,
-            "Primed native editor viewport content metrics"
-        );
-
         let editor_content = {
             let core = self.core.clone();
+            let prepare_core = self.core.clone();
             let view_id = self.view_id;
             let style = self.style.clone();
             let focus = self.focus.clone();
@@ -187,7 +167,6 @@ impl Render for DocumentView {
                 move |editor_state, bounds, after_layout, window, cx| {
                     paint_document_content(DocumentPaintParams {
                         core: &core,
-                        doc_id,
                         view_id,
                         style: &style,
                         focus: &paint_focus,
@@ -200,6 +179,30 @@ impl Render for DocumentView {
                     })
                 },
             )
+            .on_prepare_content(move |editor_state, text_style, cx| {
+                let Some(content_state) = ({
+                    let core = prepare_core.read(cx);
+                    let editor = &core.editor;
+                    let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+                    editor_state.prepare_content_for_render(EditorViewContentPrepareParams {
+                        editor,
+                        view_id,
+                        theme: Some(&theme),
+                        text_system: cx.text_system(),
+                        text_style,
+                    })
+                }) else {
+                    return false;
+                };
+
+                debug!(
+                    physical_lines = content_state.physical_lines,
+                    visual_rows = content_state.update.visual_rows,
+                    soft_wrap = content_state.update.soft_wrap,
+                    "Primed native editor viewport content metrics"
+                );
+                true
+            })
             .track_focus(focus.clone());
 
             if let Some(input) = input {
@@ -235,7 +238,6 @@ impl Render for DocumentView {
                     move |phase, event, cx| {
                         handle_editor_pointer_selection(
                             &core,
-                            doc_id,
                             view_id,
                             &editor_state,
                             phase,
@@ -264,7 +266,6 @@ impl Focusable for DocumentView {
 
 struct DocumentPaintParams<'a> {
     core: &'a Entity<Core>,
-    doc_id: DocumentId,
     view_id: ViewId,
     style: &'a TextStyle,
     focus: &'a FocusHandle,
@@ -281,7 +282,6 @@ fn paint_document_content(
 ) -> Option<nucleotide_editor::CursorOverlayPlan> {
     let DocumentPaintParams {
         core,
-        doc_id,
         view_id,
         style,
         focus,
@@ -295,6 +295,7 @@ fn paint_document_content(
 
     let helix_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
     core.update(cx, |core, cx| {
+        let doc_id = core.editor.tree.try_get(view_id)?.doc;
         let tokens = cx.theme().tokens;
         let ui_tokens = cx.ui_theme().tokens;
         let theme_styles = NativeEditorFrameThemeStyles::from_style_fn(|key| cx.theme_style(key));
