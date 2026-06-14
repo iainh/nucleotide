@@ -12,7 +12,7 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
-    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, NativeEditorFramePaintParams,
+    EditorSurfacePointerEvent, EditorViewState, NativeEditorFramePaintParams,
     NativeEditorFramePrepareParams, NativeEditorView, paint_native_editor_frame,
     prepare_native_editor_frame,
 };
@@ -148,8 +148,9 @@ impl EventEmitter<DismissEvent> for DocumentView {}
 impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // DocumentView render creates the native editor element for actual painting.
-        let metrics = EditorTextMetrics::resolve(cx.text_system(), &self.style);
-        self.editor_state.apply_text_metrics(metrics);
+        let metrics = self
+            .editor_state
+            .resolve_and_apply_text_metrics(cx.text_system(), &self.style);
 
         let Some(content_state) = ({
             let core = self.core.read(cx);
