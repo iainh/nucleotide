@@ -8,9 +8,9 @@ use crate::file_tree::{
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, StatefulInteractiveElement,
-    Styled, UniformListScrollHandle, Window, div, px, uniform_list,
+    App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled,
+    UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_types::VcsStatus;
@@ -1143,12 +1143,19 @@ impl FileTreeView {
         let row = ProjectTreeRow::from_entry(entry, is_selected, vcs_status);
         let theme = cx.theme().clone();
         let context_menu_event = row.context_menu_event();
-        let click_row = row.clone();
+        let left_click_row = row.clone();
 
         render_project_tree_row(
             row,
             &theme,
-            |_, _, cx| cx.stop_propagation(),
+            {
+                let left_click_row = left_click_row.clone();
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    let row_event = left_click_row.click_event(event.modifiers.secondary());
+                    view.handle_project_tree_row_event(row_event, Some(event.position), window, cx);
+                    cx.stop_propagation();
+                })
+            },
             {
                 let context_menu_event = context_menu_event.clone();
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
@@ -1161,19 +1168,7 @@ impl FileTreeView {
                     cx.stop_propagation();
                 })
             },
-            {
-                let click_row = click_row.clone();
-                cx.listener(move |view, event: &ClickEvent, window, cx| {
-                    let row_event = click_row.click_event(event.modifiers().secondary());
-                    view.handle_project_tree_row_event(
-                        row_event,
-                        Some(event.position()),
-                        window,
-                        cx,
-                    );
-                    cx.stop_propagation();
-                })
-            },
+            |_, _, cx| cx.stop_propagation(),
         )
     }
 }
