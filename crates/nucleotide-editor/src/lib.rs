@@ -62,7 +62,11 @@ pub use document_frame::{
     EditorDocumentFrame, EditorDocumentFrameFromEditorParams, EditorDocumentFrameGutterParams,
     EditorDocumentFrameParams, editor_document_frame, editor_document_frame_from_editor,
 };
-pub use document_frame_painter::{DocumentFramePaintParams, paint_document_frame};
+pub use document_frame_painter::{
+    DocumentFramePaintParams, NativeEditorFramePaintParams, NativeEditorFramePaintPlan,
+    NativeEditorFramePaintStyle, NativeEditorFramePlanParams, native_editor_frame_paint_plan,
+    paint_document_frame, paint_native_editor_frame,
+};
 pub use document_metrics::{
     EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,
 };
@@ -130,7 +134,7 @@ pub use surface::{
     paint_editor_background,
 };
 pub use view_component::NativeEditorView;
-pub use view_state::EditorViewState;
+pub use view_state::{EditorViewFrameState, EditorViewState};
 pub use viewport::{
     EditorCursorReveal, EditorViewport, EditorViewportContentLayout, EditorViewportContentUpdate,
     EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate, HelixViewportSnapshot,
