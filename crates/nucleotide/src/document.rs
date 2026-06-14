@@ -15,8 +15,7 @@ use crate::Core;
 use nucleotide_editor::{
     DocumentFramePaintParams, EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal,
     EditorDocumentElement, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
-    EditorLayout, EditorOverlayState, EditorSurface, EditorSurfaceMetrics,
-    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewport,
+    EditorLayout, EditorSurface, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState,
     EditorViewportContentLayout, EditorViewportSurfaceLayout, cursor_document_line,
     cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame,
     paint_editor_background,
@@ -333,7 +332,7 @@ impl Render for DocumentView {
             {
                 let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
                 let viewport_bounds = self.editor_state.viewport().viewport_bounds();
-                let content_update = self.editor_state.viewport_mut().sync_content_layout(
+                let content_update = self.editor_state.sync_content_layout(
                     document,
                     view,
                     EditorViewportContentLayout::for_editor(
@@ -358,9 +357,7 @@ impl Render for DocumentView {
             let style = self.style.clone();
             let focus = self.focus.clone();
             let is_focused = self.is_focused;
-            let mut viewport = self.editor_state.viewport().clone();
-            let surface_metrics = surface_metrics.clone();
-            let overlay_state = self.editor_state.overlay_state().clone();
+            let mut editor_state = self.editor_state.clone();
 
             EditorDocumentElement::new(style.clone(), move |bounds, after_layout, window, cx| {
                 paint_document_content(DocumentPaintParams {
@@ -370,9 +367,7 @@ impl Render for DocumentView {
                     style: &style,
                     focus: &focus,
                     is_focused,
-                    viewport: &mut viewport,
-                    surface_metrics: &surface_metrics,
-                    overlay_state: &overlay_state,
+                    editor_state: &mut editor_state,
                     bounds,
                     layout: after_layout,
                     window,
@@ -482,9 +477,7 @@ struct DocumentPaintParams<'a> {
     style: &'a TextStyle,
     focus: &'a FocusHandle,
     is_focused: bool,
-    viewport: &'a mut EditorViewport,
-    surface_metrics: &'a EditorSurfaceMetrics,
-    overlay_state: &'a EditorOverlayState,
+    editor_state: &'a mut EditorViewState,
     bounds: Bounds<Pixels>,
     layout: &'a mut EditorLayout,
     window: &'a mut Window,
@@ -499,9 +492,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         style,
         focus,
         is_focused,
-        viewport,
-        surface_metrics,
-        overlay_state,
+        editor_state,
         bounds,
         layout,
         window,
@@ -509,10 +500,6 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
     } = params;
 
     let _focus = focus.clone();
-    let cell_width = layout.cell_width;
-    let line_height = layout.line_height;
-
-    surface_metrics.set(line_height, cell_width);
 
     {
         let tokens = cx.theme().tokens;
@@ -521,8 +508,8 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
     }
 
     let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-    let viewport_update = core.update(cx, |core, _cx| {
-        viewport.sync_surface_layout(
+    let frame_state = core.update(cx, |core, _cx| {
+        editor_state.sync_frame_layout(
             &mut core.editor,
             doc_id,
             view_id,
@@ -531,20 +518,16 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
                 bounds,
                 layout.cell_width,
                 layout.line_height,
-                viewport.take_cursor_reveal_request(),
+                None,
             ),
         )
     });
-    let Some(viewport_update) = viewport_update else {
+    let Some(frame_state) = frame_state else {
         return;
     };
-    let gutter_width_cells = viewport_update.gutter_columns;
-    overlay_state.set_gutter_width_from_columns(gutter_width_cells, cell_width);
 
-    let soft_wrap_enabled = viewport_update.soft_wrap;
-
-    let line_cache = surface_metrics.line_cache();
-    line_cache.clear();
+    let soft_wrap_enabled = frame_state.viewport_update.soft_wrap;
+    let line_cache = frame_state.line_cache;
 
     {
         let core = core.read(cx);
@@ -573,8 +556,9 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         let editor_mode = editor.mode();
         let (_, cursor_kind) = editor.cursor();
 
-        let (first_row, last_row_from_scroll) = viewport.visible_visual_range();
-        let scroll_line_offset = viewport.offset_within_row();
+        let first_row = frame_state.first_row;
+        let last_row_from_scroll = frame_state.last_row_from_scroll;
+        let scroll_line_offset = frame_state.scroll_line_offset;
 
         let cursor_style = cursor_style_for_mode(editor_mode, |key| cx.theme_style(key));
         let wrap_indicator_color = cx.theme_style("ui.virtual.wrap").fg.and_then(color_to_hsla);
@@ -722,7 +706,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
                 scroll_line_offset,
             },
         );
-        overlay_state.apply_cursor_overlay_plan(overlay_plan);
+        editor_state.apply_cursor_overlay_plan(overlay_plan);
 
         let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
         if let Some(overlay_plan) = overlay_plan {

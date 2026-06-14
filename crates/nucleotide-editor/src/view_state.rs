@@ -5,9 +5,11 @@ use gpui::{Pixels, TextStyle, px};
 use helix_view::{DocumentId, Editor, ViewId};
 
 use crate::{
-    EditorCursorReveal, EditorOverlayState, EditorPointerSelectionUpdate, EditorScrollbarState,
-    EditorSelectionDragState, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
-    EditorViewport, begin_editor_pointer_selection_at_event,
+    CursorOverlayPlan, EditorCursorReveal, EditorOverlayState, EditorPointerSelectionUpdate,
+    EditorScrollbarState, EditorSelectionDragState, EditorSurfaceMetrics,
+    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, EditorViewportContentLayout,
+    EditorViewportContentUpdate, EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate,
+    LineLayoutCache, begin_editor_pointer_selection_at_event,
     update_editor_pointer_selection_at_event,
 };
 
@@ -19,6 +21,14 @@ pub struct EditorViewState {
     selection_drag_state: EditorSelectionDragState,
     overlay_state: EditorOverlayState,
     line_height: Pixels,
+}
+
+pub struct EditorViewFrameState {
+    pub viewport_update: EditorViewportSurfaceUpdate,
+    pub line_cache: LineLayoutCache,
+    pub first_row: usize,
+    pub last_row_from_scroll: usize,
+    pub scroll_line_offset: Pixels,
 }
 
 impl EditorViewState {
@@ -56,6 +66,53 @@ impl EditorViewState {
 
     pub fn request_cursor_reveal(&self, reveal: EditorCursorReveal) {
         self.viewport.request_cursor_reveal(reveal);
+    }
+
+    pub fn sync_content_layout(
+        &mut self,
+        document: &helix_view::Document,
+        view: &helix_view::View,
+        layout: EditorViewportContentLayout<'_>,
+    ) -> EditorViewportContentUpdate {
+        self.viewport.sync_content_layout(document, view, layout)
+    }
+
+    pub fn sync_frame_layout(
+        &mut self,
+        editor: &mut Editor,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        mut layout: EditorViewportSurfaceLayout<'_>,
+    ) -> Option<EditorViewFrameState> {
+        self.line_height = layout.line_height;
+        self.surface_metrics
+            .set(layout.line_height, layout.cell_width);
+        layout.cursor_reveal = layout
+            .cursor_reveal
+            .or_else(|| self.viewport.take_cursor_reveal_request());
+
+        let viewport_update = self
+            .viewport
+            .sync_surface_layout(editor, doc_id, view_id, layout)?;
+
+        self.overlay_state
+            .set_gutter_width_from_columns(viewport_update.gutter_columns, layout.cell_width);
+
+        let line_cache = self.surface_metrics.line_cache();
+        line_cache.clear();
+        let (first_row, last_row_from_scroll) = self.viewport.visible_visual_range();
+
+        Some(EditorViewFrameState {
+            viewport_update,
+            line_cache,
+            first_row,
+            last_row_from_scroll,
+            scroll_line_offset: self.viewport.offset_within_row(),
+        })
+    }
+
+    pub fn apply_cursor_overlay_plan(&self, overlay_plan: Option<CursorOverlayPlan>) {
+        self.overlay_state.apply_cursor_overlay_plan(overlay_plan);
     }
 
     pub fn begin_pointer_selection_at_event(
@@ -141,6 +198,8 @@ mod tests {
         handlers::Handlers,
         theme,
     };
+
+    use crate::LineLayout;
 
     use super::*;
 
@@ -267,5 +326,52 @@ mod tests {
 
         assert!(update.is_none());
         assert_eq!(state.selection_drag_state().anchor(), Some(0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_sync_frame_layout_updates_frame_state() {
+        let mut state = EditorViewState::new(px(20.0), px(8.0));
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo\nthree\n");
+        state
+            .surface_metrics()
+            .line_cache()
+            .push(LineLayout::unwrapped(7, Default::default(), px(12.0)));
+
+        let frame_state = state
+            .sync_frame_layout(
+                &mut editor,
+                doc_id,
+                view_id,
+                EditorViewportSurfaceLayout {
+                    theme: None,
+                    bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(101.0))),
+                    cell_width: px(8.0),
+                    line_height: px(20.0),
+                    minimum_columns: 1,
+                    cursor_reveal: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(state.surface_metrics().get().line_height, px(20.0));
+        assert_eq!(state.surface_metrics().get().cell_width, px(8.0));
+        assert_eq!(
+            state.overlay_state().gutter_width(),
+            px(f32::from(frame_state.viewport_update.gutter_columns) * 8.0)
+        );
+        assert!(frame_state.viewport_update.visual_rows >= 3);
+        assert_eq!(
+            frame_state.first_row,
+            state.viewport().visible_visual_range().0
+        );
+        assert_eq!(
+            frame_state.last_row_from_scroll,
+            state.viewport().visible_visual_range().1
+        );
+        assert_eq!(
+            frame_state.scroll_line_offset,
+            state.viewport().offset_within_row()
+        );
+        assert!(frame_state.line_cache.find_line_by_index(7).is_none());
     }
 }
