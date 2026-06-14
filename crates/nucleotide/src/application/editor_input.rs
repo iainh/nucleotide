@@ -868,6 +868,7 @@ fn native_command_supported(command: &MappableCommand) -> bool {
         || native_search_command(command)
         || native_buffer_navigation_command(command)
         || native_diagnostic_navigation_command(command)
+        || native_syntax_object_navigation_command(command)
         || native_jumplist_navigation_command(command)
         || native_split_navigation_command(command)
         || native_file_navigation_command(command).is_some()
@@ -1141,6 +1142,26 @@ fn native_diagnostic_navigation_command(command: &MappableCommand) -> bool {
     )
 }
 
+fn native_syntax_object_navigation_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "goto_next_function"
+            | "goto_prev_function"
+            | "goto_next_class"
+            | "goto_prev_class"
+            | "goto_next_parameter"
+            | "goto_prev_parameter"
+            | "goto_next_comment"
+            | "goto_prev_comment"
+            | "goto_next_test"
+            | "goto_prev_test"
+            | "goto_next_xml_element"
+            | "goto_prev_xml_element"
+            | "goto_next_entry"
+            | "goto_prev_entry"
+    )
+}
+
 fn native_jumplist_navigation_command(command: &MappableCommand) -> bool {
     matches!(
         command.name(),
@@ -1232,6 +1253,7 @@ fn native_insert_command_supported(command: &MappableCommand) -> bool {
         && !native_selection_transform_command(command)
         && !native_textobject_command(command)
         && !native_surround_command(command)
+        && !native_syntax_object_navigation_command(command)
         && native_file_navigation_command(command).is_none()
         && native_command_supported(command))
         || native_insert_edit_command(command)
@@ -1581,6 +1603,37 @@ mod tests {
         assert!(native_command_supported(&MappableCommand::goto_next_change));
         assert!(native_command_supported(&MappableCommand::goto_prev_change));
         assert!(native_command_supported(&MappableCommand::match_brackets));
+    }
+
+    #[test]
+    fn native_command_supports_syntax_object_navigation() {
+        for command in [
+            MappableCommand::goto_next_function,
+            MappableCommand::goto_prev_function,
+            MappableCommand::goto_next_class,
+            MappableCommand::goto_prev_class,
+            MappableCommand::goto_next_parameter,
+            MappableCommand::goto_prev_parameter,
+            MappableCommand::goto_next_comment,
+            MappableCommand::goto_prev_comment,
+            MappableCommand::goto_next_test,
+            MappableCommand::goto_prev_test,
+            MappableCommand::goto_next_xml_element,
+            MappableCommand::goto_prev_xml_element,
+            MappableCommand::goto_next_entry,
+            MappableCommand::goto_prev_entry,
+        ] {
+            assert!(native_command_supported(&command));
+            assert!(native_syntax_object_navigation_command(&command));
+            assert!(!native_insert_command_supported(&command));
+        }
+
+        assert!(!native_syntax_object_navigation_command(
+            &MappableCommand::goto_next_diag
+        ));
+        assert!(!native_syntax_object_navigation_command(
+            &MappableCommand::normal_mode
+        ));
     }
 
     #[test]
@@ -2143,6 +2196,25 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_handles_syntax_object_navigation_natively() {
+        for sequence in [["]", "f"], ["[", "t"]] {
+            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut editor = test_editor_with_text("fn main() {}\n");
+            let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let mut jobs = Jobs::new();
+
+            for key in sequence {
+                let outcome =
+                    handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, key);
+                assert!(outcome.handled_by_native_command);
+                assert!(!outcome.handled_by_terminal_editor);
+            }
+
+            assert!(editor.status_msg.is_some());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_handles_textobject_selection_natively() {
         let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
         let mut editor = test_editor_with_text("one two\n");
@@ -2685,6 +2757,44 @@ mod tests {
         assert!(!native_insert_command_supported(
             &MappableCommand::surround_add
         ));
+    }
+
+    #[test]
+    fn default_bracket_syntax_object_keymaps_are_native() {
+        for (prefix, key, expected) in [
+            ("[", "f", MappableCommand::goto_prev_function),
+            ("[", "t", MappableCommand::goto_prev_class),
+            ("[", "a", MappableCommand::goto_prev_parameter),
+            ("[", "c", MappableCommand::goto_prev_comment),
+            ("[", "e", MappableCommand::goto_prev_entry),
+            ("[", "T", MappableCommand::goto_prev_test),
+            ("[", "x", MappableCommand::goto_prev_xml_element),
+            ("]", "f", MappableCommand::goto_next_function),
+            ("]", "t", MappableCommand::goto_next_class),
+            ("]", "a", MappableCommand::goto_next_parameter),
+            ("]", "c", MappableCommand::goto_next_comment),
+            ("]", "e", MappableCommand::goto_next_entry),
+            ("]", "T", MappableCommand::goto_next_test),
+            ("]", "x", MappableCommand::goto_next_xml_element),
+        ] {
+            let mut keymaps = Keymaps::default();
+            let prefix = KeyEvent::from_str(prefix).unwrap();
+            let key = KeyEvent::from_str(key).unwrap();
+
+            assert!(matches!(
+                keymaps.get(Mode::Normal, prefix),
+                KeymapResult::Pending(_)
+            ));
+
+            match keymaps.get(Mode::Normal, key) {
+                KeymapResult::Matched(command) => {
+                    assert_eq!(command, expected);
+                    assert!(native_command_supported(&command));
+                    assert!(native_syntax_object_navigation_command(&command));
+                }
+                _ => panic!("expected bracket syntax-object keymap to resolve"),
+            }
+        }
     }
 
     #[test]
