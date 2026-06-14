@@ -1,5 +1,3 @@
-use std::{cell::Cell, rc::Rc};
-
 use gpui::{
     App, Bounds, Context, DefiniteLength, DismissEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, SharedString,
@@ -182,7 +180,6 @@ pub struct DocumentView {
     viewport: EditorViewport,
     scrollbar_state: EditorScrollbarState,
     surface_metrics: EditorSurfaceMetrics,
-    cursor_reveal_requested: Rc<Cell<Option<EditorCursorReveal>>>,
     line_height: Pixels,
     selection_drag_state: EditorSelectionDragState,
     overlay_state: EditorOverlayState,
@@ -210,7 +207,6 @@ impl DocumentView {
             viewport,
             scrollbar_state: EditorScrollbarState::default(),
             surface_metrics,
-            cursor_reveal_requested: Rc::new(Cell::new(None)),
             line_height,
             selection_drag_state: EditorSelectionDragState::default(),
             overlay_state: EditorOverlayState::new(),
@@ -235,13 +231,13 @@ impl DocumentView {
     }
 
     pub fn request_cursor_reveal(&self) {
-        self.cursor_reveal_requested
-            .set(Some(EditorCursorReveal::Scrolloff));
+        self.viewport
+            .request_cursor_reveal(EditorCursorReveal::Scrolloff);
     }
 
     pub fn request_cursor_center(&self) {
-        self.cursor_reveal_requested
-            .set(Some(EditorCursorReveal::Center));
+        self.viewport
+            .request_cursor_reveal(EditorCursorReveal::Center);
     }
 
     /// Convert a Helix anchor (character position) to scroll pixels
@@ -390,7 +386,6 @@ impl Render for DocumentView {
             let is_focused = self.is_focused;
             let mut viewport = self.viewport.clone();
             let surface_metrics = surface_metrics.clone();
-            let cursor_reveal_requested = Rc::clone(&self.cursor_reveal_requested);
             let overlay_state = self.overlay_state.clone();
 
             EditorDocumentElement::new(style.clone(), move |bounds, after_layout, window, cx| {
@@ -403,7 +398,6 @@ impl Render for DocumentView {
                     is_focused,
                     viewport: &mut viewport,
                     surface_metrics: &surface_metrics,
-                    cursor_reveal_requested: cursor_reveal_requested.as_ref(),
                     overlay_state: &overlay_state,
                     bounds,
                     layout: after_layout,
@@ -534,7 +528,6 @@ struct DocumentPaintParams<'a> {
     is_focused: bool,
     viewport: &'a mut EditorViewport,
     surface_metrics: &'a EditorSurfaceMetrics,
-    cursor_reveal_requested: &'a Cell<Option<EditorCursorReveal>>,
     overlay_state: &'a EditorOverlayState,
     bounds: Bounds<Pixels>,
     layout: &'a mut EditorLayout,
@@ -552,7 +545,6 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         is_focused,
         viewport,
         surface_metrics,
-        cursor_reveal_requested,
         overlay_state,
         bounds,
         layout,
@@ -583,7 +575,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
                 bounds,
                 layout.cell_width,
                 layout.line_height,
-                cursor_reveal_requested.replace(None),
+                viewport.take_cursor_reveal_request(),
             ),
         )
     });
