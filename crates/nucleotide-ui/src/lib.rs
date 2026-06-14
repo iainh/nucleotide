@@ -44,7 +44,7 @@ pub mod utils;
 pub mod vcs_icon;
 
 pub mod gpui_widgets {
-    pub use ::gpui_component::{list, scroll, sidebar};
+    pub use ::gpui_component::{kbd, list, scroll, sidebar};
 }
 
 #[cfg(test)]
