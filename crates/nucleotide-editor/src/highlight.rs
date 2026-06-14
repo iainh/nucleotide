@@ -11,9 +11,10 @@ use helix_core::{
 };
 use helix_stdx::rope::RopeSliceExt;
 use helix_view::{
-    Document, Theme, View, ViewId,
+    Document, Theme, View,
     document::Mode,
     graphics::{Color, CursorKind, Style},
+    view::ViewPosition,
 };
 use nucleotide_logging::debug;
 
@@ -34,6 +35,7 @@ pub struct HighlightLineParams<'a> {
     pub editor_mode: Mode,
     pub cursor_shape: &'a helix_view::editor::CursorShapeConfig,
     pub is_view_focused: bool,
+    pub view_position: ViewPosition,
     pub line_start: usize,
     pub line_end: usize,
     pub fg_color: Hsla,
@@ -51,6 +53,7 @@ pub struct EditorLineHighlightContext<'a> {
     pub editor_mode: Mode,
     pub cursor_shape: &'a helix_view::editor::CursorShapeConfig,
     pub is_view_focused: bool,
+    pub view_position: ViewPosition,
     pub fg_color: Hsla,
     pub font: Font,
     pub default_text_style: Style,
@@ -113,15 +116,13 @@ pub fn diagnostic_overlay_spans(doc: &Document, theme: &Theme) -> Option<Diagnos
 
 pub fn text_style_at_position(
     doc: &Document,
-    view_id: ViewId,
+    view_position: ViewPosition,
     theme: &Theme,
     syntax_loader: &helix_core::syntax::Loader,
     position: usize,
 ) -> Style {
     let text = doc.text().slice(..);
-    let anchor = doc.view_offset(view_id).anchor;
-    let lines_from_anchor = text.len_lines() - text.char_to_line(anchor);
-    let height = u16::try_from(lines_from_anchor).unwrap_or(u16::MAX);
+    let (anchor, height) = syntax_highlight_window(text, view_position);
 
     let syntax_highlighter = doc_syntax_highlights(doc, anchor, height, syntax_loader);
 
@@ -143,9 +144,7 @@ pub fn text_style_at_position(
 
 pub fn highlight_line(params: HighlightLineParams<'_>) -> Vec<TextRun> {
     let text = params.doc.text().slice(..);
-    let anchor = params.doc.view_offset(params.view.id).anchor;
-    let lines_from_anchor = text.len_lines() - text.char_to_line(anchor);
-    let height = u16::try_from(lines_from_anchor).unwrap_or(u16::MAX);
+    let (anchor, height) = syntax_highlight_window(text, params.view_position);
     let syntax_highlighter =
         doc_syntax_highlights(params.doc, anchor, height, params.syntax_loader);
 
@@ -199,6 +198,7 @@ pub fn soft_wrap_highlighted_line_runs(
             editor_mode: context.editor_mode,
             cursor_shape: context.cursor_shape,
             is_view_focused: context.is_view_focused,
+            view_position: context.view_position,
             line_start,
             line_end,
             fg_color: context.fg_color,
@@ -238,6 +238,7 @@ pub fn unwrapped_highlighted_line(
         editor_mode: context.editor_mode,
         cursor_shape: context.cursor_shape,
         is_view_focused: context.is_view_focused,
+        view_position: context.view_position,
         line_start: params.line.line_start,
         line_end: params.line.line_end,
         fg_color: context.fg_color,
@@ -277,6 +278,14 @@ pub fn gpui_hsla_to_helix_color(c: Hsla) -> Option<Color> {
         (g * 255.0) as u8,
         (b * 255.0) as u8,
     ))
+}
+
+fn syntax_highlight_window(text: RopeSlice<'_>, view_position: ViewPosition) -> (usize, u16) {
+    let anchor = view_position.anchor.min(text.len_chars());
+    let lines_from_anchor = text.len_lines() - text.char_to_line(anchor);
+    let height = u16::try_from(lines_from_anchor).unwrap_or(u16::MAX);
+
+    (anchor, height)
 }
 
 fn doc_syntax_highlights<'d>(
@@ -570,5 +579,44 @@ impl<'t> OverlayHighlighter<'t> {
         } else {
             self.pos = usize::MAX;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use helix_view::view::ViewPosition;
+
+    use super::*;
+
+    #[test]
+    fn syntax_window_uses_supplied_view_position_anchor() {
+        let text = "one\ntwo\nthree\n";
+        let (anchor, height) = syntax_highlight_window(
+            text.into(),
+            ViewPosition {
+                anchor: text.find("three").unwrap(),
+                vertical_offset: 0,
+                horizontal_offset: 0,
+            },
+        );
+
+        assert_eq!(anchor, text.find("three").unwrap());
+        assert_eq!(height, 2);
+    }
+
+    #[test]
+    fn syntax_window_clamps_stale_view_position_anchor() {
+        let text = "one\ntwo";
+        let (anchor, height) = syntax_highlight_window(
+            text.into(),
+            ViewPosition {
+                anchor: 1_000,
+                vertical_offset: 0,
+                horizontal_offset: 0,
+            },
+        );
+
+        assert_eq!(anchor, text.chars().count());
+        assert_eq!(height, 1);
     }
 }

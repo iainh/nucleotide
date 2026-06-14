@@ -118,6 +118,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
     let cursor_presentation = editor_cursor_presentation(EditorCursorPresentationParams {
         document: params.document,
         view_id: params.view_id,
+        view_position: params.view_position,
         kind: params.cursor_kind,
         cursor_style: params.cursor_style,
         theme: params.theme,
@@ -132,7 +133,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
     let ruler_geometry = EditorSurfaceGeometry::new(params.bounds, gutter_width, params.cell_width);
     let ruler_paint_plans = document_ruler_paint_plans(DocumentRulerPaintParams {
         document: params.document,
-        view_id: params.view_id,
+        horizontal_offset: params.view_position.horizontal_offset,
         editor_rulers: &params.editor_rulers,
         geometry: ruler_geometry,
         color: params.ruler_color,
@@ -193,6 +194,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         editor_mode: params.editor_mode,
         cursor_shape: &params.cursor_shape,
         is_view_focused: params.is_focused,
+        view_position: params.view_position,
         fg_color: params.fg_color,
         font: params.font.clone(),
         default_text_style: params.default_text_style,
@@ -314,7 +316,7 @@ mod tests {
         theme::Loader as ThemeLoader,
     };
 
-    use crate::EDITOR_MINIMUM_VIEWPORT_COLUMNS;
+    use crate::{EDITOR_MINIMUM_VIEWPORT_COLUMNS, visible_ruler_paint_plans};
 
     use super::*;
 
@@ -479,6 +481,65 @@ mod tests {
 
         assert_eq!(soft_wrap.view_offset, view_position);
         assert_eq!(soft_wrap.visual_lines[0].visual_line, 1);
+    }
+
+    #[test]
+    fn frame_rulers_use_supplied_view_position_horizontal_offset() {
+        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        let syntax_loader = syntax::Loader::default();
+        let syntax_loader_swap = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let mut document = Document::from(
+            Rope::from("one\ntwo\nthree\n"),
+            None,
+            config,
+            syntax_loader_swap,
+        );
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        document.ensure_view_init(view.id);
+        let theme = ThemeLoader::new(&[]).default_theme(true);
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0)));
+        let view_position = ViewPosition {
+            anchor: 0,
+            vertical_offset: 0,
+            horizontal_offset: 3,
+        };
+
+        let frame = editor_document_frame(EditorDocumentFrameParams {
+            document: &document,
+            view: &view,
+            view_id: view.id,
+            theme: &theme,
+            syntax_loader: &syntax_loader,
+            first_row: 0,
+            last_row_from_scroll: 3,
+            view_position,
+            soft_wrap_enabled: false,
+            unwrapped_gutter: None,
+            bounds,
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            scroll_line_offset: px(0.0),
+            soft_wrap_minimum_columns: 10,
+            fg_color: black(),
+            font: font("TestFont"),
+            default_text_style: Style::default(),
+            default_bg: white(),
+            wrap_indicator_color: None,
+            ruler_color: black(),
+            editor_mode: Mode::Normal,
+            cursor_kind: CursorKind::Block,
+            cursor_style: Style::default(),
+            cursor_shape: CursorShapeConfig::default(),
+            editor_rulers: vec![1, 4, 10],
+            cursorline_enabled: true,
+            is_focused: true,
+        });
+
+        let geometry = EditorSurfaceGeometry::new(bounds, frame.gutter_width, px(8.0));
+        assert_eq!(
+            frame.ruler_paint_plans,
+            visible_ruler_paint_plans(geometry, &[1, 4, 10], 3, black())
+        );
     }
 
     #[test]

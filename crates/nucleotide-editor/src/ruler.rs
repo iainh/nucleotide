@@ -2,7 +2,7 @@
 // ABOUTME: Converts configured ruler columns into visible GPUI paint bounds
 
 use gpui::{Bounds, Hsla, Pixels, Window, fill, point, px, size};
-use helix_view::{Document, ViewId};
+use helix_view::Document;
 
 use crate::EditorSurfaceGeometry;
 
@@ -14,7 +14,7 @@ pub struct RulerPaintPlan {
 
 pub struct DocumentRulerPaintParams<'a> {
     pub document: &'a Document,
-    pub view_id: ViewId,
+    pub horizontal_offset: usize,
     pub editor_rulers: &'a [u16],
     pub geometry: EditorSurfaceGeometry,
     pub color: Hsla,
@@ -65,12 +65,11 @@ pub fn document_ruler_paint_plans(params: DocumentRulerPaintParams<'_>) -> Vec<R
         .and_then(|config| config.rulers.as_ref())
         .map(Vec::as_slice)
         .unwrap_or(params.editor_rulers);
-    let view_offset = params.document.view_offset(params.view_id);
 
     visible_ruler_paint_plans(
         params.geometry,
         rulers,
-        view_offset.horizontal_offset,
+        params.horizontal_offset,
         params.color,
     )
 }
