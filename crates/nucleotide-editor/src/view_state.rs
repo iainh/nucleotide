@@ -117,6 +117,14 @@ impl EditorViewState {
         self.viewport.visible_visual_rows()
     }
 
+    pub fn top_visual_row(&self) -> usize {
+        self.viewport.top_visual_row()
+    }
+
+    pub fn content_visual_rows(&self) -> usize {
+        self.viewport.content_visual_rows()
+    }
+
     pub fn sync_content_layout(
         &mut self,
         document: &helix_view::Document,

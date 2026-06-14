@@ -64,6 +64,56 @@ pub enum EditorViewportScrollDirection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorViewportCursorTarget {
+    Top,
+    Center,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorViewportCursorRequest {
+    pub target: EditorViewportCursorTarget,
+    pub count: usize,
+}
+
+impl EditorViewportCursorRequest {
+    pub fn target_visual_row(
+        self,
+        top_visual_row: usize,
+        visible_rows: usize,
+        content_visual_rows: usize,
+        scrolloff: usize,
+    ) -> usize {
+        let visible_rows = visible_rows.max(1);
+        let content_visual_rows = content_visual_rows.max(1);
+        let last_content_row = content_visual_rows.saturating_sub(1);
+        let last_visible_row = top_visual_row
+            .saturating_add(visible_rows.saturating_sub(1))
+            .min(last_content_row);
+        let last_visible_offset = last_visible_row.saturating_sub(top_visual_row);
+        let scrolloff = scrolloff.min(visible_rows.saturating_sub(1) / 2);
+        let count_offset = self.count.max(1).saturating_sub(1);
+
+        let target = match self.target {
+            EditorViewportCursorTarget::Top => top_visual_row
+                .saturating_add(scrolloff)
+                .saturating_add(count_offset),
+            EditorViewportCursorTarget::Center => {
+                top_visual_row.saturating_add(last_visible_offset / 2)
+            }
+            EditorViewportCursorTarget::Bottom => top_visual_row.saturating_add(
+                last_visible_offset.saturating_sub(scrolloff.saturating_add(count_offset)),
+            ),
+        };
+
+        target
+            .max(top_visual_row.saturating_add(scrolloff))
+            .min(top_visual_row.saturating_add(last_visible_offset.saturating_sub(scrolloff)))
+            .min(last_content_row)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorViewportScrollRequest {
     VisualRows(isize),
     VisualPages(isize),
@@ -863,6 +913,50 @@ mod tests {
             }
             .page_cursor_sync_direction(),
             None
+        );
+    }
+
+    #[test]
+    fn viewport_cursor_request_resolves_top_center_and_bottom_rows() {
+        assert_eq!(
+            EditorViewportCursorRequest {
+                target: EditorViewportCursorTarget::Top,
+                count: 1,
+            }
+            .target_visual_row(10, 20, 100, 5),
+            15
+        );
+        assert_eq!(
+            EditorViewportCursorRequest {
+                target: EditorViewportCursorTarget::Top,
+                count: 3,
+            }
+            .target_visual_row(10, 20, 100, 5),
+            17
+        );
+        assert_eq!(
+            EditorViewportCursorRequest {
+                target: EditorViewportCursorTarget::Center,
+                count: 1,
+            }
+            .target_visual_row(10, 20, 100, 5),
+            19
+        );
+        assert_eq!(
+            EditorViewportCursorRequest {
+                target: EditorViewportCursorTarget::Bottom,
+                count: 1,
+            }
+            .target_visual_row(10, 20, 100, 5),
+            24
+        );
+        assert_eq!(
+            EditorViewportCursorRequest {
+                target: EditorViewportCursorTarget::Bottom,
+                count: 3,
+            }
+            .target_visual_row(10, 20, 100, 5),
+            22
         );
     }
 

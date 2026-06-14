@@ -45,6 +45,7 @@ pub struct EditorInputOutcome {
     pub lsp_navigation_requested: Option<NativeLspNavigationRequest>,
     pub workspace_requested: Option<NativeWorkspaceRequest>,
     pub viewport_scroll_requested: Option<nucleotide_editor::EditorViewportScrollRequest>,
+    pub viewport_cursor_requested: Option<nucleotide_editor::EditorViewportCursorRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +147,7 @@ impl EditorInputBridge {
         let mut lsp_navigation_requested = None;
         let mut workspace_requested = None;
         let mut viewport_scroll_requested = None;
+        let mut viewport_cursor_requested = None;
         if !handled_by_compositor {
             let mode_before_fallback = context.editor.mode();
             match self
@@ -173,6 +175,10 @@ impl EditorInputBridge {
                 NativeInputResult::RequestViewportScroll(request) => {
                     handled_by_native_command = true;
                     viewport_scroll_requested = Some(request);
+                }
+                NativeInputResult::RequestViewportCursor(request) => {
+                    handled_by_native_command = true;
+                    viewport_cursor_requested = Some(request);
                 }
                 NativeInputResult::Fallback(keys) => {
                     for key in &keys {
@@ -226,6 +232,7 @@ impl EditorInputBridge {
             lsp_navigation_requested,
             workspace_requested,
             viewport_scroll_requested,
+            viewport_cursor_requested,
         }
     }
 
@@ -262,6 +269,7 @@ enum NativeInputResult {
     RequestLspNavigation(NativeLspNavigationRequest),
     RequestWorkspace(NativeWorkspaceRequest),
     RequestViewportScroll(nucleotide_editor::EditorViewportScrollRequest),
+    RequestViewportCursor(nucleotide_editor::EditorViewportCursorRequest),
     Fallback(Vec<KeyEvent>),
 }
 
@@ -290,6 +298,10 @@ enum NativeCommandResult {
     RequestViewportScroll {
         callbacks: Vec<compositor::Callback>,
         request: nucleotide_editor::EditorViewportScrollRequest,
+    },
+    RequestViewportCursor {
+        callbacks: Vec<compositor::Callback>,
+        request: nucleotide_editor::EditorViewportCursorRequest,
     },
     ReplayInsert {
         keys: Vec<KeyEvent>,
@@ -434,6 +446,11 @@ impl NativeCommandInput {
                 self.finish_insert_replay_if_needed(mode_before, editor.mode());
                 NativeInputResult::RequestViewportScroll(request)
             }
+            NativeCommandResult::RequestViewportCursor { callbacks, request } => {
+                finalize_native_command(editor, jobs, compositor, callbacks);
+                self.finish_insert_replay_if_needed(mode_before, editor.mode());
+                NativeInputResult::RequestViewportCursor(request)
+            }
             NativeCommandResult::ReplayInsert { keys, count } => {
                 for _ in 0..count {
                     for replay_key in keys.iter().copied() {
@@ -447,6 +464,9 @@ impl NativeCommandInput {
                             }
                             NativeInputResult::RequestViewportScroll(request) => {
                                 return NativeInputResult::RequestViewportScroll(request);
+                            }
+                            NativeInputResult::RequestViewportCursor(request) => {
+                                return NativeInputResult::RequestViewportCursor(request);
                             }
                             NativeInputResult::Fallback(fallback_keys) => {
                                 return NativeInputResult::Fallback(fallback_keys);
@@ -688,6 +708,17 @@ impl NativeCommandInput {
                     request,
                 }
             }
+            KeymapDispatch::RequestViewportCursor(request) => {
+                if self.keymaps.pending().is_empty() {
+                    context.editor.count = None;
+                } else {
+                    context.editor.selected_register = context.register.take();
+                }
+                NativeCommandResult::RequestViewportCursor {
+                    callbacks: Vec::new(),
+                    request,
+                }
+            }
             KeymapDispatch::Pending => {
                 context.editor.selected_register = context.register.take();
                 NativeCommandResult::Handled(Vec::new())
@@ -745,6 +776,10 @@ impl NativeCommandInput {
                     return KeymapDispatch::RequestLspNavigation(request);
                 }
 
+                if let Some(request) = native_viewport_cursor_command(command, context.count) {
+                    return KeymapDispatch::RequestViewportCursor(request);
+                }
+
                 if let Some(request) = native_page_cursor_command(command, context) {
                     return KeymapDispatch::RequestViewportScroll(request);
                 }
@@ -769,6 +804,7 @@ impl NativeCommandInput {
                         || native_picker_command(command).is_some()
                         || native_prompt_command(command).is_some()
                         || native_lsp_navigation_command(command).is_some()
+                        || native_viewport_cursor_command(command, None).is_some()
                         || native_page_cursor_command_supported(command)
                         || native_viewport_scroll_command(command, None).is_some()
                 }) {
@@ -787,6 +823,9 @@ impl NativeCommandInput {
                     }
                     if let Some(request) = native_lsp_navigation_command(command) {
                         return KeymapDispatch::RequestLspNavigation(request);
+                    }
+                    if let Some(request) = native_viewport_cursor_command(command, context.count) {
+                        return KeymapDispatch::RequestViewportCursor(request);
                     }
                     if let Some(request) = native_page_cursor_command(command, context) {
                         return KeymapDispatch::RequestViewportScroll(request);
@@ -835,6 +874,7 @@ enum KeymapDispatch {
     RequestPrompt(NativePromptRequest),
     RequestLspNavigation(NativeLspNavigationRequest),
     RequestViewportScroll(nucleotide_editor::EditorViewportScrollRequest),
+    RequestViewportCursor(nucleotide_editor::EditorViewportCursorRequest),
     Pending,
     Fallback,
 }
@@ -889,6 +929,13 @@ impl NativeCommandResultExt for NativeCommandResult {
             NativeCommandResult::RequestViewportScroll { request, .. } => {
                 *on_next_key = context.on_next_key_callback.take();
                 NativeCommandResult::RequestViewportScroll {
+                    callbacks: std::mem::take(&mut context.callback),
+                    request,
+                }
+            }
+            NativeCommandResult::RequestViewportCursor { request, .. } => {
+                *on_next_key = context.on_next_key_callback.take();
+                NativeCommandResult::RequestViewportCursor {
                     callbacks: std::mem::take(&mut context.callback),
                     request,
                 }
@@ -1139,6 +1186,23 @@ fn native_page_cursor_command_spec(
     }
 }
 
+fn native_viewport_cursor_command(
+    command: &MappableCommand,
+    count: Option<NonZeroUsize>,
+) -> Option<nucleotide_editor::EditorViewportCursorRequest> {
+    let target = match command.name() {
+        "goto_window_top" => nucleotide_editor::EditorViewportCursorTarget::Top,
+        "goto_window_center" => nucleotide_editor::EditorViewportCursorTarget::Center,
+        "goto_window_bottom" => nucleotide_editor::EditorViewportCursorTarget::Bottom,
+        _ => return None,
+    };
+
+    Some(nucleotide_editor::EditorViewportCursorRequest {
+        target,
+        count: count.map_or(1, NonZeroUsize::get),
+    })
+}
+
 fn native_viewport_scroll_command(
     command: &MappableCommand,
     count: Option<NonZeroUsize>,
@@ -1225,6 +1289,41 @@ pub(crate) fn apply_native_page_cursor_movement(
                 &mut annotations,
             )
         })
+    };
+
+    let doc = editor.document_mut(doc_id)?;
+    doc.set_selection(view_id, selection);
+    Some(doc_id)
+}
+
+pub(crate) fn apply_native_viewport_cursor_request(
+    editor: &mut Editor,
+    view_id: ViewId,
+    target_visual_row: usize,
+) -> Option<DocumentId> {
+    let extend = editor.mode() == Mode::Select;
+    let doc_id = editor.tree.try_get(view_id)?.doc;
+
+    let selection = {
+        let view = editor.tree.try_get(view_id)?;
+        let doc = editor.document(doc_id)?;
+        let text = doc.text().slice(..);
+        let text_format = doc.text_format(view.inner_area(doc).width, None);
+        let annotations = view.text_annotations(doc, None);
+        let horizontal_offset = doc.view_offset(view_id).horizontal_offset;
+        let target_visual_row = isize::try_from(target_visual_row).unwrap_or(isize::MAX);
+        let (pos, _) = char_idx_at_visual_offset(
+            text,
+            0,
+            target_visual_row,
+            horizontal_offset,
+            &text_format,
+            &annotations,
+        );
+
+        doc.selection(view_id)
+            .clone()
+            .transform(|range| range.put_cursor(text, pos, extend))
     };
 
     let doc = editor.document_mut(doc_id)?;
@@ -1990,6 +2089,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn native_viewport_cursor_command_routes_window_targets() {
+        assert_eq!(
+            native_viewport_cursor_command(&MappableCommand::goto_window_top, None),
+            Some(nucleotide_editor::EditorViewportCursorRequest {
+                target: nucleotide_editor::EditorViewportCursorTarget::Top,
+                count: 1,
+            })
+        );
+        assert_eq!(
+            native_viewport_cursor_command(&MappableCommand::goto_window_top, NonZeroUsize::new(3)),
+            Some(nucleotide_editor::EditorViewportCursorRequest {
+                target: nucleotide_editor::EditorViewportCursorTarget::Top,
+                count: 3,
+            })
+        );
+        assert_eq!(
+            native_viewport_cursor_command(&MappableCommand::goto_window_center, None),
+            Some(nucleotide_editor::EditorViewportCursorRequest {
+                target: nucleotide_editor::EditorViewportCursorTarget::Center,
+                count: 1,
+            })
+        );
+        assert_eq!(
+            native_viewport_cursor_command(&MappableCommand::goto_window_bottom, None),
+            Some(nucleotide_editor::EditorViewportCursorRequest {
+                target: nucleotide_editor::EditorViewportCursorTarget::Bottom,
+                count: 1,
+            })
+        );
+        assert_eq!(
+            native_viewport_cursor_command(&MappableCommand::page_down, None),
+            None
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn native_page_scroll_cursor_sync_moves_cursor_below_viewport() {
         let mut editor = test_editor_with_text(&numbered_lines(40));
@@ -2057,6 +2192,36 @@ mod tests {
 
         assert_eq!(changed_doc, None);
         assert_eq!(focused_cursor_line(&editor), 15);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_viewport_cursor_request_moves_cursor_to_visual_row() {
+        let mut editor = test_editor_with_text(&numbered_lines(40));
+        let view_id = editor.tree.focus;
+        set_test_cursor_line(&mut editor, 4);
+
+        let changed_doc = apply_native_viewport_cursor_request(&mut editor, view_id, 12);
+
+        assert!(changed_doc.is_some());
+        assert_eq!(focused_cursor_line(&editor), 12);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_viewport_cursor_request_extends_selection_in_select_mode() {
+        let mut editor = test_editor_with_text(&numbered_lines(40));
+        let view_id = editor.tree.focus;
+        set_test_cursor_line(&mut editor, 4);
+        editor.mode = Mode::Select;
+
+        let changed_doc = apply_native_viewport_cursor_request(&mut editor, view_id, 12);
+
+        assert!(changed_doc.is_some());
+        let doc_id = editor.tree.try_get(view_id).unwrap().doc;
+        let doc = editor.document(doc_id).unwrap();
+        let text = doc.text().slice(..);
+        let primary = doc.selection(view_id).primary();
+        assert_eq!(helix_core::coords_at_pos(text, primary.anchor).row, 4);
+        assert_eq!(helix_core::coords_at_pos(text, primary.head).row, 12);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2920,6 +3085,66 @@ mod tests {
             let expected_line =
                 start_line.saturating_add_signed(expected_direction * half_page_rows as isize);
             assert_eq!(focused_cursor_line(&editor), expected_line);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_native_viewport_cursor() {
+        for (keys, request) in [
+            (
+                vec!["g", "t"],
+                nucleotide_editor::EditorViewportCursorRequest {
+                    target: nucleotide_editor::EditorViewportCursorTarget::Top,
+                    count: 1,
+                },
+            ),
+            (
+                vec!["g", "c"],
+                nucleotide_editor::EditorViewportCursorRequest {
+                    target: nucleotide_editor::EditorViewportCursorTarget::Center,
+                    count: 1,
+                },
+            ),
+            (
+                vec!["g", "b"],
+                nucleotide_editor::EditorViewportCursorRequest {
+                    target: nucleotide_editor::EditorViewportCursorTarget::Bottom,
+                    count: 1,
+                },
+            ),
+            (
+                vec!["3", "g", "t"],
+                nucleotide_editor::EditorViewportCursorRequest {
+                    target: nucleotide_editor::EditorViewportCursorTarget::Top,
+                    count: 3,
+                },
+            ),
+        ] {
+            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut editor = test_editor_with_text(&numbered_lines(20));
+            let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let mut jobs = Jobs::new();
+
+            for key in keys.iter().take(keys.len() - 1) {
+                let pending =
+                    handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, key);
+                assert!(pending.handled_by_native_command);
+                assert!(!pending.handled_by_terminal_editor);
+                assert_eq!(pending.viewport_cursor_requested, None);
+            }
+
+            let outcome = handle_key_str(
+                &mut bridge,
+                &mut editor,
+                &mut compositor,
+                &mut jobs,
+                keys[keys.len() - 1],
+            );
+
+            assert!(outcome.handled_by_native_command);
+            assert!(!outcome.handled_by_terminal_editor);
+            assert_eq!(outcome.viewport_cursor_requested, Some(request));
+            assert!(!outcome.selection_changed);
         }
     }
 
