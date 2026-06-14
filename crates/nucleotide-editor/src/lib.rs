@@ -32,6 +32,7 @@ pub mod selection;
 pub mod soft_wrap;
 mod style;
 pub mod surface;
+pub mod view_component;
 pub mod view_state;
 pub mod viewport;
 
@@ -128,6 +129,7 @@ pub use surface::{
     EditorSurface, EditorSurfaceMetricSnapshot, EditorSurfaceMetrics, EditorSurfacePointerEvent,
     paint_editor_background,
 };
+pub use view_component::NativeEditorView;
 pub use view_state::EditorViewState;
 pub use viewport::{
     EditorCursorReveal, EditorViewport, EditorViewportContentLayout, EditorViewportContentUpdate,

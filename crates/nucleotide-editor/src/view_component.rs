@@ -1,0 +1,260 @@
+// ABOUTME: Native GPUI editor view component shell
+// ABOUTME: Composes editor document painting with viewport input and scrollbars
+
+use std::rc::Rc;
+
+use gpui::{
+    App, Bounds, Component, EntityId, InteractiveElement as _, IntoElement, ParentElement as _,
+    Pixels, RenderOnce, Styled as _, TextStyle, Window, div,
+};
+
+use crate::{
+    EditorDocumentElement, EditorLayout, EditorSurface, EditorSurfacePointerEvent, EditorViewState,
+    EditorViewport, ViewportScrollUpdate,
+};
+
+type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
+type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
+
+pub struct NativeEditorView<P> {
+    view_entity_id: EntityId,
+    editor_state: EditorViewState,
+    text_style: TextStyle,
+    paint: P,
+    on_scroll: Option<ScrollCallback>,
+    on_mouse_down: Option<PointerCallback>,
+    on_mouse_drag: Option<PointerCallback>,
+    on_mouse_up: Option<PointerCallback>,
+}
+
+impl<P> NativeEditorView<P>
+where
+    P: FnMut(&mut EditorViewState, Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App)
+        + 'static,
+{
+    pub fn new(
+        view_entity_id: EntityId,
+        editor_state: EditorViewState,
+        text_style: TextStyle,
+        paint: P,
+    ) -> Self {
+        Self {
+            view_entity_id,
+            editor_state,
+            text_style,
+            paint,
+            on_scroll: None,
+            on_mouse_down: None,
+            on_mouse_drag: None,
+            on_mouse_up: None,
+        }
+    }
+
+    pub fn on_scroll(
+        mut self,
+        callback: impl Fn(&EditorViewport, ViewportScrollUpdate, &mut App) + 'static,
+    ) -> Self {
+        self.on_scroll = Some(Rc::new(callback));
+        self
+    }
+
+    pub fn on_mouse_down(
+        mut self,
+        callback: impl Fn(EditorSurfacePointerEvent, &mut App) + 'static,
+    ) -> Self {
+        self.on_mouse_down = Some(Rc::new(callback));
+        self
+    }
+
+    pub fn on_mouse_drag(
+        mut self,
+        callback: impl Fn(EditorSurfacePointerEvent, &mut App) + 'static,
+    ) -> Self {
+        self.on_mouse_drag = Some(Rc::new(callback));
+        self
+    }
+
+    pub fn on_mouse_up(
+        mut self,
+        callback: impl Fn(EditorSurfacePointerEvent, &mut App) + 'static,
+    ) -> Self {
+        self.on_mouse_up = Some(Rc::new(callback));
+        self
+    }
+}
+
+impl<P> IntoElement for NativeEditorView<P>
+where
+    P: FnMut(&mut EditorViewState, Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App)
+        + 'static,
+{
+    type Element = Component<Self>;
+
+    fn into_element(self) -> Self::Element {
+        Component::new(self)
+    }
+}
+
+impl<P> RenderOnce for NativeEditorView<P>
+where
+    P: FnMut(&mut EditorViewState, Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App)
+        + 'static,
+{
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let NativeEditorView {
+            view_entity_id,
+            editor_state,
+            text_style,
+            mut paint,
+            on_scroll,
+            on_mouse_down,
+            on_mouse_drag,
+            on_mouse_up,
+        } = self;
+
+        let viewport = editor_state.viewport().clone();
+        let surface_metrics = editor_state.surface_metrics().clone();
+        let scrollbar_state = editor_state.scrollbar_state().clone();
+        let mut paint_editor_state = editor_state;
+        let document_element =
+            EditorDocumentElement::new(text_style, move |bounds, after_layout, window, cx| {
+                paint(&mut paint_editor_state, bounds, after_layout, window, cx);
+            });
+
+        let mut editor_surface = EditorSurface::new(
+            view_entity_id,
+            viewport,
+            surface_metrics,
+            scrollbar_state,
+            document_element,
+        );
+
+        if let Some(on_scroll) = on_scroll {
+            editor_surface = editor_surface.on_scroll(move |viewport, update, cx| {
+                on_scroll(viewport, update, cx);
+            });
+        }
+
+        if let Some(on_mouse_down) = on_mouse_down {
+            editor_surface = editor_surface.on_mouse_down(move |event, cx| {
+                on_mouse_down(event, cx);
+            });
+        }
+
+        if let Some(on_mouse_drag) = on_mouse_drag {
+            editor_surface = editor_surface.on_mouse_drag(move |event, cx| {
+                on_mouse_drag(event, cx);
+            });
+        }
+
+        if let Some(on_mouse_up) = on_mouse_up {
+            editor_surface = editor_surface.on_mouse_up(move |event, cx| {
+                on_mouse_up(event, cx);
+            });
+        }
+
+        div().id("editor-content").w_full().h_full().flex().child(
+            div()
+                .id("editor-paint-area")
+                .w_full()
+                .h_full()
+                .flex_1()
+                .child(editor_surface),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::Cell, rc::Rc};
+
+    use gpui::{
+        AppContext as _, Empty, Entity, IntoElement as _, MouseButton, ScrollDelta,
+        ScrollWheelEvent, TestAppContext, TouchPhase, point, px, size,
+    };
+
+    use super::*;
+
+    #[gpui::test]
+    fn native_editor_view_draws_and_dispatches_input(cx: &mut TestAppContext) {
+        let view_entity_id = cx.update(|cx| {
+            let entity: Entity<Empty> = cx.new(|_| Empty);
+            entity.entity_id()
+        });
+
+        let mut editor_state = EditorViewState::new(px(20.0), px(8.0));
+        editor_state
+            .viewport_mut()
+            .set_layout(px(20.0), size(px(100.0), px(200.0)), 50);
+
+        let painted = Rc::new(Cell::new(false));
+        let saw_scroll = Rc::new(Cell::new(false));
+        let saw_down = Rc::new(Cell::new(false));
+        let saw_drag = Rc::new(Cell::new(false));
+        let saw_up = Rc::new(Cell::new(false));
+
+        let window = cx.add_empty_window();
+        window.draw(
+            point(px(0.0), px(0.0)),
+            size(px(112.0), px(200.0)),
+            |_, _| {
+                NativeEditorView::new(
+                    view_entity_id,
+                    editor_state.clone(),
+                    TextStyle::default(),
+                    {
+                        let painted = Rc::clone(&painted);
+                        move |_state, _bounds, _layout, _window, _cx| {
+                            painted.set(true);
+                        }
+                    },
+                )
+                .on_scroll({
+                    let saw_scroll = Rc::clone(&saw_scroll);
+                    move |_, _, _| saw_scroll.set(true)
+                })
+                .on_mouse_down({
+                    let saw_down = Rc::clone(&saw_down);
+                    move |_, _| saw_down.set(true)
+                })
+                .on_mouse_drag({
+                    let saw_drag = Rc::clone(&saw_drag);
+                    move |_, _| saw_drag.set(true)
+                })
+                .on_mouse_up({
+                    let saw_up = Rc::clone(&saw_up);
+                    move |_, _| saw_up.set(true)
+                })
+                .into_element()
+            },
+        );
+
+        window.simulate_event(ScrollWheelEvent {
+            position: point(px(10.0), px(10.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: TouchPhase::Moved,
+        });
+        window.simulate_mouse_down(
+            point(px(10.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        window.simulate_mouse_move(
+            point(px(10.0), px(30.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        window.simulate_mouse_up(
+            point(px(10.0), px(30.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+
+        assert!(painted.get());
+        assert!(saw_scroll.get());
+        assert!(saw_down.get());
+        assert!(saw_drag.get());
+        assert!(saw_up.get());
+    }
+}
