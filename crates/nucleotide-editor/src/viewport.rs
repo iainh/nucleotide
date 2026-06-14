@@ -58,9 +58,26 @@ pub enum EditorCursorReveal {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorViewportScrollDirection {
+    Backward,
+    Forward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorViewportScrollRequest {
     VisualRows(isize),
+    VisualPages(isize),
     CursorReveal(EditorCursorReveal),
+}
+
+impl EditorViewportScrollRequest {
+    pub fn page_cursor_sync_direction(self) -> Option<EditorViewportScrollDirection> {
+        match self {
+            Self::VisualPages(pages) if pages > 0 => Some(EditorViewportScrollDirection::Forward),
+            Self::VisualPages(pages) if pages < 0 => Some(EditorViewportScrollDirection::Backward),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -205,6 +222,7 @@ impl EditorViewport {
     ) -> ViewportScrollUpdate {
         match request {
             EditorViewportScrollRequest::VisualRows(rows) => self.scroll_by_visual_rows(rows),
+            EditorViewportScrollRequest::VisualPages(pages) => self.scroll_by_visual_pages(pages),
             EditorViewportScrollRequest::CursorReveal(reveal) => {
                 self.request_cursor_reveal(reveal);
                 ViewportScrollUpdate {
@@ -215,6 +233,11 @@ impl EditorViewport {
                 }
             }
         }
+    }
+
+    pub fn scroll_by_visual_pages(&self, pages: isize) -> ViewportScrollUpdate {
+        let visible_rows = isize::try_from(self.visible_visual_rows()).unwrap_or(isize::MAX);
+        self.scroll_by_visual_rows(visible_rows.saturating_mul(pages))
     }
 
     pub fn scroll_by_visual_rows(&self, rows: isize) -> ViewportScrollUpdate {
@@ -766,6 +789,21 @@ mod tests {
         assert_eq!(viewport.scroll_position().y, px(0.0));
         assert_eq!(update.crossed_visual_rows, -2);
         assert_eq!(update.top_visual_row, 0);
+    }
+
+    #[test]
+    fn viewport_page_scroll_request_moves_by_visible_rows() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(100.0), px(100.0)), 50);
+
+        let update = viewport.apply_scroll_request(EditorViewportScrollRequest::VisualPages(1));
+
+        assert!(update.changed);
+        assert_eq!(viewport.visible_visual_rows(), 5);
+        assert_eq!(viewport.scroll_position().y, px(100.0));
+        assert_eq!(update.crossed_visual_rows, 5);
+        assert_eq!(update.top_visual_row, 5);
+        assert!(viewport.has_pending_view_sync());
     }
 
     #[test]

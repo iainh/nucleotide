@@ -113,6 +113,10 @@ impl EditorViewState {
         self.viewport.apply_scroll_request(request)
     }
 
+    pub fn visible_visual_rows(&self) -> usize {
+        self.viewport.visible_visual_rows()
+    }
+
     pub fn sync_content_layout(
         &mut self,
         document: &helix_view::Document,
@@ -572,6 +576,21 @@ mod tests {
 
         assert!(update.changed);
         assert_eq!(state.viewport().top_visual_row(), 4);
+        assert!(state.viewport().has_pending_view_sync());
+    }
+
+    #[test]
+    fn view_state_applies_viewport_page_scroll_requests() {
+        let mut state = EditorViewState::new(px(20.0), px(8.0));
+        state
+            .viewport_mut()
+            .set_layout(px(20.0), size(px(100.0), px(100.0)), 50);
+
+        let update = state.apply_viewport_scroll(EditorViewportScrollRequest::VisualPages(1));
+
+        assert!(update.changed);
+        assert_eq!(state.visible_visual_rows(), 5);
+        assert_eq!(state.viewport().top_visual_row(), 5);
         assert!(state.viewport().has_pending_view_sync());
     }
 

@@ -111,6 +111,10 @@ impl DocumentView {
         self.editor_state.apply_viewport_scroll(request)
     }
 
+    pub fn visible_visual_rows(&self) -> usize {
+        self.editor_state.visible_visual_rows()
+    }
+
     pub fn layout_snapshot(&self) -> EditorViewLayoutSnapshot {
         self.editor_state.layout_snapshot()
     }
