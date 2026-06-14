@@ -725,7 +725,7 @@ impl OverlayView {
                                                 line_clamp: None,
                                             };
                                             let focus = cx.focus_handle();
-                                            crate::document::DocumentView::new(core.clone(), view_id, default_style, &focus, false)
+                                            crate::document::DocumentView::new(core.clone(), None, view_id, default_style, &focus, false)
                                         });
                                         if let Some(cap_arc) = &cap_for_open_reg
                                             && let Ok(mut cap) = cap_arc.write() {

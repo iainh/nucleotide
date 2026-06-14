@@ -6456,6 +6456,7 @@ impl Workspace {
                 line_clamp: None,
             };
             let core = self.core.clone();
+            let input = self.input.clone();
 
             // Check if view exists and update its style if it does
             if let Some(view) = self.view_manager.get_document_view(&view_id) {
@@ -6467,7 +6468,14 @@ impl Workspace {
                 // Create new view if it doesn't exist
                 let view = cx.new(|cx| {
                     let doc_focus_handle = cx.focus_handle();
-                    DocumentView::new(core, view_id, style.clone(), &doc_focus_handle, is_focused)
+                    DocumentView::new(
+                        core,
+                        Some(input),
+                        view_id,
+                        style.clone(),
+                        &doc_focus_handle,
+                        is_focused,
+                    )
                 });
                 self.view_manager.insert_document_view(view_id, view);
             }

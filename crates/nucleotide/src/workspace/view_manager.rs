@@ -95,6 +95,7 @@ impl ViewManager {
         // Read editor state to get current views and collect view information
         let workspace = cx.entity();
         let core = workspace.read(cx).core.clone();
+        let input = workspace.read(cx).input.clone();
 
         // Collect all the data we need in one go to avoid borrowing conflicts
         // Clone the necessary data to avoid lifetime issues
@@ -196,6 +197,7 @@ impl ViewManager {
 
                     DocumentView::new(
                         core.clone(),
+                        Some(input.clone()),
                         view_id,
                         default_style,
                         &doc_focus_handle,
