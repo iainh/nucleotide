@@ -193,35 +193,36 @@ impl RenderOnce for EditorSurface {
             .overflow_hidden()
             .child(self.child);
 
-        if let Some(on_scroll) = self.on_scroll.clone() {
-            let viewport = self.viewport.clone();
-            let metrics = self.metrics.clone();
-            let view_entity_id = self.view_entity_id;
-            let content_bounds = Rc::clone(&content_bounds);
+        let viewport = self.viewport.clone();
+        let metrics = self.metrics.clone();
+        let view_entity_id = self.view_entity_id;
+        let scroll_content_bounds = Rc::clone(&content_bounds);
+        let on_scroll = self.on_scroll.clone();
 
-            content = content.on_scroll_wheel(move |event: &ScrollWheelEvent, _window, cx| {
-                let Some(bounds) = content_bounds.get() else {
-                    return;
-                };
-                if !bounds.contains(&event.position) {
-                    return;
-                }
+        content = content.on_scroll_wheel(move |event: &ScrollWheelEvent, _window, cx| {
+            let Some(bounds) = scroll_content_bounds.get() else {
+                return;
+            };
+            if !bounds.contains(&event.position) {
+                return;
+            }
 
-                let line_height = metrics.get().line_height;
-                let raw_delta = event.delta.pixel_delta(line_height);
-                let delta = point(px(0.0), raw_delta.y);
-                let scroll_update = viewport.scroll_by_delta(delta);
+            let line_height = metrics.get().line_height;
+            let raw_delta = event.delta.pixel_delta(line_height);
+            let delta = point(px(0.0), raw_delta.y);
+            let scroll_update = viewport.scroll_by_delta(delta);
 
-                if !scroll_update.changed {
-                    return;
-                }
+            if !scroll_update.changed {
+                return;
+            }
 
+            if let Some(on_scroll) = &on_scroll {
                 on_scroll(&viewport, scroll_update, cx);
+            }
 
-                cx.notify(view_entity_id);
-                cx.stop_propagation();
-            });
-        }
+            cx.notify(view_entity_id);
+            cx.stop_propagation();
+        });
 
         if let Some(on_mouse_down) = self.on_mouse_down.clone() {
             let metrics = self.metrics.clone();
@@ -425,6 +426,44 @@ mod tests {
         assert!(saw_down.get());
         assert!(saw_drag.get());
         assert!(saw_up.get());
+        assert!(viewport.scroll_position().y > px(0.0));
+    }
+
+    #[gpui::test]
+    fn editor_surface_scrolls_without_observer_callback(cx: &mut TestAppContext) {
+        let view_entity_id = cx.update(|cx| {
+            let entity: Entity<Empty> = cx.new(|_| Empty);
+            entity.entity_id()
+        });
+
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(100.0), px(200.0)), 50);
+        let metrics = EditorSurfaceMetrics::new(px(20.0), px(8.0));
+        let scrollbar_state = EditorScrollbarState::default();
+
+        let window = cx.add_empty_window();
+        window.draw(
+            point(px(0.0), px(0.0)),
+            size(px(112.0), px(200.0)),
+            |_, _| {
+                EditorSurface::new(
+                    view_entity_id,
+                    viewport.clone(),
+                    metrics.clone(),
+                    scrollbar_state.clone(),
+                    div().size_full(),
+                )
+                .into_element()
+            },
+        );
+
+        window.simulate_event(ScrollWheelEvent {
+            position: point(px(10.0), px(10.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: TouchPhase::Moved,
+        });
+
         assert!(viewport.scroll_position().y > px(0.0));
     }
 }
