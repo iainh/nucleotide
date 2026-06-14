@@ -3161,7 +3161,12 @@ impl Workspace {
 
         view_entity.update(cx, |view, cx| {
             let update = view.apply_viewport_scroll(request);
-            if update.changed {
+            if update.changed
+                || matches!(
+                    request,
+                    nucleotide_editor::EditorViewportScrollRequest::CursorReveal(_)
+                )
+            {
                 cx.notify();
             }
         });

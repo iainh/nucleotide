@@ -53,11 +53,14 @@ pub struct EditorViewportContentUpdate {
 pub enum EditorCursorReveal {
     Scrolloff,
     Center,
+    Top,
+    Bottom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorViewportScrollRequest {
     VisualRows(isize),
+    CursorReveal(EditorCursorReveal),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -202,6 +205,15 @@ impl EditorViewport {
     ) -> ViewportScrollUpdate {
         match request {
             EditorViewportScrollRequest::VisualRows(rows) => self.scroll_by_visual_rows(rows),
+            EditorViewportScrollRequest::CursorReveal(reveal) => {
+                self.request_cursor_reveal(reveal);
+                ViewportScrollUpdate {
+                    changed: false,
+                    crossed_visual_rows: 0,
+                    top_visual_row: self.top_visual_row(),
+                    offset_within_row: self.offset_within_row(),
+                }
+            }
         }
     }
 
@@ -295,6 +307,10 @@ impl EditorViewport {
                 }
             }
             EditorCursorReveal::Center => Some(visual_row.saturating_sub(visible_rows / 2)),
+            EditorCursorReveal::Top => Some(visual_row),
+            EditorCursorReveal::Bottom => {
+                Some(visual_row.saturating_sub(visible_rows.saturating_sub(1)))
+            }
         };
 
         if let Some(target_top) = target_top {
@@ -753,6 +769,25 @@ mod tests {
     }
 
     #[test]
+    fn viewport_scroll_request_can_defer_cursor_reveal() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(100.0), px(100.0)), 50);
+
+        let update = viewport.apply_scroll_request(EditorViewportScrollRequest::CursorReveal(
+            EditorCursorReveal::Center,
+        ));
+
+        assert!(!update.changed);
+        assert_eq!(viewport.scroll_position().y, px(0.0));
+        assert_eq!(update.top_visual_row, 0);
+        assert!(!viewport.has_pending_view_sync());
+        assert_eq!(
+            viewport.take_cursor_reveal_request(),
+            Some(EditorCursorReveal::Center)
+        );
+    }
+
+    #[test]
     fn viewport_reports_scrollbar_position_changes() {
         let mut viewport = EditorViewport::new(px(20.0));
         viewport.set_layout(px(20.0), size(px(800.0), px(400.0)), 100);
@@ -876,6 +911,34 @@ mod tests {
         assert!(update.changed);
         assert_eq!(update.crossed_visual_rows, 18);
         assert_eq!(viewport.top_visual_row(), 18);
+        assert!(viewport.has_pending_view_sync());
+    }
+
+    #[test]
+    fn viewport_cursor_reveal_can_align_visual_row_top() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(800.0), px(100.0)), 100);
+        viewport.sync_from_helix_top_visual_row(0);
+
+        let update = viewport.reveal_visual_row(20, EditorCursorReveal::Top, 0);
+
+        assert!(update.changed);
+        assert_eq!(update.crossed_visual_rows, 20);
+        assert_eq!(viewport.top_visual_row(), 20);
+        assert!(viewport.has_pending_view_sync());
+    }
+
+    #[test]
+    fn viewport_cursor_reveal_can_align_visual_row_bottom() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(800.0), px(100.0)), 100);
+        viewport.sync_from_helix_top_visual_row(0);
+
+        let update = viewport.reveal_visual_row(20, EditorCursorReveal::Bottom, 0);
+
+        assert!(update.changed);
+        assert_eq!(update.crossed_visual_rows, 16);
+        assert_eq!(viewport.top_visual_row(), 16);
         assert!(viewport.has_pending_view_sync());
     }
 

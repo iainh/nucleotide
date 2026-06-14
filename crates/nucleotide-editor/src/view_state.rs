@@ -576,6 +576,21 @@ mod tests {
     }
 
     #[test]
+    fn view_state_applies_viewport_cursor_reveal_requests() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+
+        let update = state.apply_viewport_scroll(EditorViewportScrollRequest::CursorReveal(
+            EditorCursorReveal::Bottom,
+        ));
+
+        assert!(!update.changed);
+        assert_eq!(
+            state.viewport().take_cursor_reveal_request(),
+            Some(EditorCursorReveal::Bottom)
+        );
+    }
+
+    #[test]
     fn view_state_clears_owned_pointer_selection_state() {
         let state = EditorViewState::new(px(20.0), px(8.0));
         state.selection_drag_state().set_anchor(7);

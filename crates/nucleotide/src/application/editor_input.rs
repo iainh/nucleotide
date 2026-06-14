@@ -1086,6 +1086,21 @@ fn native_viewport_scroll_command(
     let rows = isize::try_from(rows).unwrap_or(isize::MAX);
 
     match command.name() {
+        "align_view_top" => Some(
+            nucleotide_editor::EditorViewportScrollRequest::CursorReveal(
+                nucleotide_editor::EditorCursorReveal::Top,
+            ),
+        ),
+        "align_view_center" => Some(
+            nucleotide_editor::EditorViewportScrollRequest::CursorReveal(
+                nucleotide_editor::EditorCursorReveal::Center,
+            ),
+        ),
+        "align_view_bottom" => Some(
+            nucleotide_editor::EditorViewportScrollRequest::CursorReveal(
+                nucleotide_editor::EditorCursorReveal::Bottom,
+            ),
+        ),
         "scroll_down" => Some(nucleotide_editor::EditorViewportScrollRequest::VisualRows(
             rows,
         )),
@@ -1689,6 +1704,38 @@ mod tests {
         );
         assert_eq!(
             native_viewport_scroll_command(&MappableCommand::page_down, None),
+            None
+        );
+    }
+
+    #[test]
+    fn native_viewport_scroll_command_routes_vertical_alignment() {
+        assert_eq!(
+            native_viewport_scroll_command(&MappableCommand::align_view_top, None),
+            Some(
+                nucleotide_editor::EditorViewportScrollRequest::CursorReveal(
+                    nucleotide_editor::EditorCursorReveal::Top,
+                )
+            )
+        );
+        assert_eq!(
+            native_viewport_scroll_command(&MappableCommand::align_view_center, None),
+            Some(
+                nucleotide_editor::EditorViewportScrollRequest::CursorReveal(
+                    nucleotide_editor::EditorCursorReveal::Center,
+                )
+            )
+        );
+        assert_eq!(
+            native_viewport_scroll_command(&MappableCommand::align_view_bottom, None),
+            Some(
+                nucleotide_editor::EditorViewportScrollRequest::CursorReveal(
+                    nucleotide_editor::EditorCursorReveal::Bottom,
+                )
+            )
+        );
+        assert_eq!(
+            native_viewport_scroll_command(&MappableCommand::align_view_middle, None),
             None
         );
     }
@@ -2412,6 +2459,65 @@ mod tests {
             (
                 ["z", "k"],
                 nucleotide_editor::EditorViewportScrollRequest::VisualRows(-1),
+            ),
+        ] {
+            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut editor = test_editor_with_text("one\ntwo\nthree\n");
+            let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let mut jobs = Jobs::new();
+
+            let pending = handle_key_str(
+                &mut bridge,
+                &mut editor,
+                &mut compositor,
+                &mut jobs,
+                keys[0],
+            );
+            assert!(pending.handled_by_native_command);
+            assert!(!pending.handled_by_terminal_editor);
+            assert_eq!(pending.viewport_scroll_requested, None);
+
+            let outcome = handle_key_str(
+                &mut bridge,
+                &mut editor,
+                &mut compositor,
+                &mut jobs,
+                keys[1],
+            );
+
+            assert!(outcome.handled_by_native_command);
+            assert!(!outcome.handled_by_terminal_editor);
+            assert_eq!(outcome.viewport_scroll_requested, Some(request));
+            assert!(!outcome.selection_changed);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_native_viewport_alignment() {
+        for (keys, request) in [
+            (
+                ["z", "t"],
+                nucleotide_editor::EditorViewportScrollRequest::CursorReveal(
+                    nucleotide_editor::EditorCursorReveal::Top,
+                ),
+            ),
+            (
+                ["z", "z"],
+                nucleotide_editor::EditorViewportScrollRequest::CursorReveal(
+                    nucleotide_editor::EditorCursorReveal::Center,
+                ),
+            ),
+            (
+                ["z", "c"],
+                nucleotide_editor::EditorViewportScrollRequest::CursorReveal(
+                    nucleotide_editor::EditorCursorReveal::Center,
+                ),
+            ),
+            (
+                ["z", "b"],
+                nucleotide_editor::EditorViewportScrollRequest::CursorReveal(
+                    nucleotide_editor::EditorCursorReveal::Bottom,
+                ),
             ),
         ] {
             let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
