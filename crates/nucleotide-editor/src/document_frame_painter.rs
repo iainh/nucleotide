@@ -3,17 +3,17 @@
 
 use gpui::{App, Bounds, FocusHandle, Hsla, Pixels, TextStyle, Window, px};
 use helix_core::{Rope, RopeSlice};
-use helix_view::{Document, DocumentId, Editor, Theme, View, ViewId, graphics::Style};
+use helix_view::{Document, Editor, Theme, View, ViewId, graphics::Style};
 use nucleotide_logging::{debug, error};
 
 use crate::{
     CursorOverlayPlan, DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams,
     EditorDocumentFrame, EditorDocumentFrameFromEditorParams, EditorLayout,
-    EditorLineBackgroundStyle, EditorSurfaceGeometry, EditorViewFrameState, EditorViewState,
-    EditorViewportSurfaceLayout, LineLayoutCache, SoftWrapCursorPaintPlanParams,
-    SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams, UnwrappedCursorPaintPlanParams,
-    UnwrappedEditorLinePaintParams, build_gutter_lines_from_plans, cursor_style_for_mode,
-    editor_document_frame_from_editor, gutter::SoftWrapGutterLine,
+    EditorLineBackgroundStyle, EditorSurfaceGeometry, EditorViewContentPrepareParams,
+    EditorViewFrameState, EditorViewState, EditorViewportSurfaceLayout, LineLayoutCache,
+    SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams,
+    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams, build_gutter_lines_from_plans,
+    cursor_style_for_mode, editor_document_frame_from_editor, gutter::SoftWrapGutterLine,
     highlight::gpui_hsla_to_helix_color, paint_diagnostic_gutter_markers, paint_editor_background,
     paint_gutter_lines, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
     paint_unwrapped_editor_line, paint_visible_rulers, shape_and_paint_editor_cursor,
@@ -203,7 +203,6 @@ pub struct NativeEditorFramePlanParams<'a> {
 
 pub struct NativeEditorFramePrepareParams<'a> {
     pub editor: &'a mut Editor,
-    pub doc_id: DocumentId,
     pub view_id: ViewId,
     pub editor_state: &'a mut EditorViewState,
     pub theme: &'a Theme,
@@ -238,7 +237,6 @@ pub struct NativeEditorFramePaintParams<'a> {
 
 pub struct NativeEditorFrameRenderParams<'a> {
     pub editor: &'a mut Editor,
-    pub doc_id: DocumentId,
     pub view_id: ViewId,
     pub editor_state: &'a mut EditorViewState,
     pub theme: &'a Theme,
@@ -302,9 +300,10 @@ struct SoftWrapDocumentFramePaintParams<'a> {
 pub fn prepare_native_editor_frame(
     params: NativeEditorFramePrepareParams<'_>,
 ) -> Option<NativeEditorPreparedFrame> {
+    let doc_id = params.editor.tree.try_get(params.view_id)?.doc;
     let frame_state = params.editor_state.sync_frame_layout(
         params.editor,
-        params.doc_id,
+        doc_id,
         params.view_id,
         EditorViewportSurfaceLayout::for_editor(
             Some(params.theme),
@@ -315,7 +314,7 @@ pub fn prepare_native_editor_frame(
         ),
     )?;
     let view = params.editor.tree.try_get(params.view_id)?;
-    let document = params.editor.document(params.doc_id)?;
+    let document = params.editor.document(doc_id)?;
     let paint_style = native_editor_frame_paint_style(NativeEditorFramePaintStyleParams {
         editor: params.editor,
         theme_styles: params.theme_styles,
@@ -350,7 +349,6 @@ pub fn render_native_editor_frame(
 ) -> Option<CursorOverlayPlan> {
     let NativeEditorFrameRenderParams {
         editor,
-        doc_id,
         view_id,
         editor_state,
         theme,
@@ -365,9 +363,24 @@ pub fn render_native_editor_frame(
         palette,
     } = params;
 
+    let text_system = cx.text_system();
+    let content_state =
+        editor_state.prepare_content_for_render(EditorViewContentPrepareParams {
+            editor: &*editor,
+            view_id,
+            theme: Some(theme),
+            text_system: text_system.as_ref(),
+            text_style,
+        })?;
+    debug!(
+        physical_lines = content_state.physical_lines,
+        visual_rows = content_state.update.visual_rows,
+        soft_wrap = content_state.update.soft_wrap,
+        "Primed native editor viewport content metrics"
+    );
+
     let prepared_frame = prepare_native_editor_frame(NativeEditorFramePrepareParams {
         editor,
-        doc_id,
         view_id,
         editor_state: &mut *editor_state,
         theme,
@@ -1158,7 +1171,6 @@ mod tests {
 
         let prepared = prepare_native_editor_frame(NativeEditorFramePrepareParams {
             editor: &mut editor,
-            doc_id,
             view_id,
             editor_state: &mut state,
             theme: &theme,

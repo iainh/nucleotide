@@ -20,7 +20,6 @@ type PointerSelectionCallback =
     Rc<dyn Fn(EditorPointerSelectionPhase, EditorSurfacePointerEvent, &mut App)>;
 type CursorOverlayCallback = Rc<dyn Fn(Option<CursorOverlayPlan>, &mut App)>;
 type KeyDownCallback = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>;
-type PrepareContentCallback = Rc<dyn Fn(&mut EditorViewState, &TextStyle, &mut App) -> bool>;
 
 pub struct NativeEditorView<P> {
     view_entity_id: EntityId,
@@ -28,7 +27,6 @@ pub struct NativeEditorView<P> {
     text_style: TextStyle,
     paint: P,
     focus: Option<FocusHandle>,
-    on_prepare_content: Option<PrepareContentCallback>,
     on_scroll: Option<ScrollCallback>,
     on_key_down: Option<KeyDownCallback>,
     on_cursor_overlay: Option<CursorOverlayCallback>,
@@ -61,7 +59,6 @@ where
             text_style,
             paint,
             focus: None,
-            on_prepare_content: None,
             on_scroll: None,
             on_key_down: None,
             on_cursor_overlay: None,
@@ -74,14 +71,6 @@ where
 
     pub fn track_focus(mut self, focus: FocusHandle) -> Self {
         self.focus = Some(focus);
-        self
-    }
-
-    pub fn on_prepare_content(
-        mut self,
-        callback: impl Fn(&mut EditorViewState, &TextStyle, &mut App) -> bool + 'static,
-    ) -> Self {
-        self.on_prepare_content = Some(Rc::new(callback));
         self
     }
 
@@ -171,14 +160,13 @@ where
         ) -> Option<CursorOverlayPlan>
         + 'static,
 {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let NativeEditorView {
             view_entity_id,
             editor_state,
             text_style,
             mut paint,
             focus,
-            on_prepare_content,
             on_scroll,
             on_key_down,
             on_cursor_overlay,
@@ -188,14 +176,7 @@ where
             on_mouse_up,
         } = self;
 
-        let mut editor_state = editor_state;
         let root = div().id("editor-content").w_full().h_full().flex();
-
-        if let Some(on_prepare_content) = on_prepare_content
-            && !on_prepare_content(&mut editor_state, &text_style, cx)
-        {
-            return root;
-        }
 
         let viewport = editor_state.viewport().clone();
         let surface_metrics = editor_state.surface_metrics().clone();
@@ -392,92 +373,6 @@ mod tests {
                 EditorPointerSelectionPhase::End,
             ]
         );
-    }
-
-    #[gpui::test]
-    fn native_editor_view_skips_paint_when_prepare_content_fails(cx: &mut TestAppContext) {
-        let view_entity_id = cx.update(|cx| {
-            let entity: Entity<Empty> = cx.new(|_| Empty);
-            entity.entity_id()
-        });
-
-        let prepared = Rc::new(Cell::new(false));
-        let painted = Rc::new(Cell::new(false));
-        let window = cx.add_empty_window();
-        window.draw(
-            point(px(0.0), px(0.0)),
-            size(px(112.0), px(200.0)),
-            |_, _| {
-                NativeEditorView::new(
-                    view_entity_id,
-                    EditorViewState::new(px(20.0), px(8.0)),
-                    TextStyle::default(),
-                    {
-                        let painted = Rc::clone(&painted);
-                        move |_state, _bounds, _layout, _window, _cx| {
-                            painted.set(true);
-                            None
-                        }
-                    },
-                )
-                .on_prepare_content({
-                    let prepared = Rc::clone(&prepared);
-                    move |_, _, _| {
-                        prepared.set(true);
-                        false
-                    }
-                })
-                .into_element()
-            },
-        );
-
-        assert!(prepared.get());
-        assert!(!painted.get());
-    }
-
-    #[gpui::test]
-    fn native_editor_view_prepares_content_before_paint(cx: &mut TestAppContext) {
-        let view_entity_id = cx.update(|cx| {
-            let entity: Entity<Empty> = cx.new(|_| Empty);
-            entity.entity_id()
-        });
-
-        let prepared = Rc::new(Cell::new(false));
-        let paint_saw_prepared_state = Rc::new(Cell::new(false));
-        let window = cx.add_empty_window();
-        window.draw(
-            point(px(0.0), px(0.0)),
-            size(px(112.0), px(200.0)),
-            |_, _| {
-                NativeEditorView::new(
-                    view_entity_id,
-                    EditorViewState::new(px(20.0), px(8.0)),
-                    TextStyle::default(),
-                    {
-                        let paint_saw_prepared_state = Rc::clone(&paint_saw_prepared_state);
-                        move |state, _bounds, _layout, _window, _cx| {
-                            paint_saw_prepared_state
-                                .set(state.viewport().content_visual_rows() == 24);
-                            None
-                        }
-                    },
-                )
-                .on_prepare_content({
-                    let prepared = Rc::clone(&prepared);
-                    move |state, _, _| {
-                        prepared.set(true);
-                        state
-                            .viewport_mut()
-                            .set_layout(px(20.0), size(px(100.0), px(200.0)), 24);
-                        true
-                    }
-                })
-                .into_element()
-            },
-        );
-
-        assert!(prepared.get());
-        assert!(paint_saw_prepared_state.get());
     }
 
     struct KeyDispatchHost {

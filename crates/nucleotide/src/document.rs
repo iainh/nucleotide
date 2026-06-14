@@ -7,17 +7,15 @@ use gpui::{
 };
 // Import helix's syntax highlighting system
 use helix_view::{ViewId, document::Mode};
-use nucleotide_logging::debug;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::{Core, Input, InputEvent};
 use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
-    EditorSurfacePointerEvent, EditorViewContentPrepareParams, EditorViewLayoutSnapshot,
-    EditorViewState, NativeEditorFramePalette, NativeEditorFrameRenderParams,
-    NativeEditorFrameThemeStyles, NativeEditorView, log_pointer_selection_outcome,
-    render_native_editor_frame,
+    EditorSurfacePointerEvent, EditorViewLayoutSnapshot, EditorViewState, NativeEditorFramePalette,
+    NativeEditorFrameRenderParams, NativeEditorFrameThemeStyles, NativeEditorView,
+    log_pointer_selection_outcome, render_native_editor_frame,
 };
 
 fn handle_editor_pointer_selection(
@@ -29,15 +27,12 @@ fn handle_editor_pointer_selection(
     cx: &mut App,
 ) {
     let outcome = core.update(cx, |core, cx| {
-        let doc_id = core.editor.tree.try_get(view_id).map(|view| view.doc)?;
-
-        let outcome = editor_state.handle_pointer_selection_outcome(
+        let outcome = editor_state.handle_pointer_selection_for_view_outcome(
             &mut core.editor,
-            doc_id,
             view_id,
             phase,
             event,
-        );
+        )?;
 
         if outcome.changed() {
             cx.notify();
@@ -150,7 +145,6 @@ impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editor_content = {
             let core = self.core.clone();
-            let prepare_core = self.core.clone();
             let view_id = self.view_id;
             let style = self.style.clone();
             let focus = self.focus.clone();
@@ -179,30 +173,6 @@ impl Render for DocumentView {
                     })
                 },
             )
-            .on_prepare_content(move |editor_state, text_style, cx| {
-                let Some(content_state) = ({
-                    let core = prepare_core.read(cx);
-                    let editor = &core.editor;
-                    let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-                    editor_state.prepare_content_for_render(EditorViewContentPrepareParams {
-                        editor,
-                        view_id,
-                        theme: Some(&theme),
-                        text_system: cx.text_system(),
-                        text_style,
-                    })
-                }) else {
-                    return false;
-                };
-
-                debug!(
-                    physical_lines = content_state.physical_lines,
-                    visual_rows = content_state.update.visual_rows,
-                    soft_wrap = content_state.update.soft_wrap,
-                    "Primed native editor viewport content metrics"
-                );
-                true
-            })
             .track_focus(focus.clone());
 
             if let Some(input) = input {
@@ -295,7 +265,6 @@ fn paint_document_content(
 
     let helix_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
     core.update(cx, |core, cx| {
-        let doc_id = core.editor.tree.try_get(view_id)?.doc;
         let tokens = cx.theme().tokens;
         let ui_tokens = cx.ui_theme().tokens;
         let theme_styles = NativeEditorFrameThemeStyles::from_style_fn(|key| cx.theme_style(key));
@@ -304,7 +273,6 @@ fn paint_document_content(
             cx,
             NativeEditorFrameRenderParams {
                 editor: &mut core.editor,
-                doc_id,
                 view_id,
                 editor_state,
                 theme: &helix_theme,
