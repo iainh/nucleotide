@@ -1,271 +1,248 @@
 // ABOUTME: Centralized command completion logic with deduplication for Nucleotide
-// ABOUTME: Bridges between Helix's completion system and Nucleotide's UI layer
+// ABOUTME: Builds native prompt completions from Helix command metadata and editor state
 
 use helix_core::fuzzy::fuzzy_match;
 use helix_term::commands::{TYPABLE_COMMAND_LIST, TypableCommand};
-use helix_term::ui::completers;
-use helix_view::Editor;
+use helix_view::{Editor, document::SCRATCH_BUFFER_NAME, editor::Config};
 use nucleotide_ui::prompt_view::CompletionItem;
 use once_cell::sync::Lazy;
+use std::path::{MAIN_SEPARATOR, Path};
 
-/// Static list of available settings keys
+/// Static list of available settings keys derived from Helix's editor config.
 pub static SETTINGS_KEYS: Lazy<Vec<String>> = Lazy::new(|| {
-    // Hardcode some common settings to test if the completion logic works
-    vec![
-        "line-numbers".to_string(),
-        "auto-pairs".to_string(),
-        "auto-save".to_string(),
-        "auto-format".to_string(),
-        "auto-completion".to_string(),
-        "auto-info".to_string(),
-        "cursorline".to_string(),
-        "cursorcolumn".to_string(),
-        "color-modes".to_string(),
-        "true-color".to_string(),
-        "search.smart-case".to_string(),
-        "search.wrap-around".to_string(),
-        "lsp.display-messages".to_string(),
-        "lsp.display-inlay-hints".to_string(),
-        "rulers".to_string(),
-        "whitespace.render".to_string(),
-        "whitespace.characters".to_string(),
-        "indent-guides.render".to_string(),
-        "indent-guides.character".to_string(),
-        "mouse".to_string(),
-        "middle-click-paste".to_string(),
-        "scroll-lines".to_string(),
-        "shell".to_string(),
-        "file-picker.hidden".to_string(),
-        "file-picker.follow-symlinks".to_string(),
-        "file-picker.deduplicate-links".to_string(),
-        "file-picker.parents".to_string(),
-        "file-picker.ignore".to_string(),
-        "file-picker.git-ignore".to_string(),
-        "file-picker.git-global".to_string(),
-        "file-picker.git-exclude".to_string(),
-        "file-picker.max-depth".to_string(),
-    ]
+    let mut keys = Vec::new();
+    collect_setting_keys(&serde_json::json!(Config::default()), &mut keys, None);
+    keys.sort();
+    keys.dedup();
+    keys
 });
 
-/// Get command completions with deduplication of aliases
-pub fn get_command_completions(editor: &Editor, input: &str) -> Vec<CompletionItem> {
-    let parts: Vec<&str> = input.split_whitespace().collect();
+#[derive(Clone, Debug)]
+pub struct CommandCompletionCache {
+    settings: Vec<String>,
+    buffers: Vec<String>,
+    languages: Vec<String>,
+    configured_language_servers: Vec<String>,
+    active_language_servers: Vec<String>,
+}
 
-    // Check if we're completing a command or arguments
-    if parts.is_empty() || (parts.len() == 1 && !input.ends_with(' ')) {
-        // Complete command names with deduplication
-        complete_command_names(parts.first().copied().unwrap_or(""))
-    } else {
-        // Complete command arguments
-        complete_command_arguments(editor, &parts, input)
+impl CommandCompletionCache {
+    pub fn from_editor(editor: &Editor) -> Self {
+        let buffers = editor
+            .documents
+            .values()
+            .map(|doc| {
+                doc.relative_path()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| SCRATCH_BUFFER_NAME.to_string())
+            })
+            .collect();
+
+        let text = "text".to_string();
+        let mut languages: Vec<_> = editor
+            .syn_loader
+            .load()
+            .language_configs()
+            .map(|config| config.language_id.clone())
+            .chain(std::iter::once(text))
+            .collect();
+        languages.sort();
+        languages.dedup();
+
+        let (configured_language_servers, active_language_servers) =
+            if let Some(doc) = active_document(editor) {
+                let configured = doc
+                    .language_config()
+                    .into_iter()
+                    .flat_map(|config| &config.language_servers)
+                    .map(|server| server.name.clone())
+                    .collect();
+                let active = doc
+                    .language_servers()
+                    .map(|server| server.name().to_string())
+                    .collect();
+                (configured, active)
+            } else {
+                (Vec::new(), Vec::new())
+            };
+
+        Self {
+            settings: SETTINGS_KEYS.to_vec(),
+            buffers,
+            languages,
+            configured_language_servers,
+            active_language_servers,
+        }
     }
 }
 
-/// Simplified version that doesn't require editor (for use in closures)
-/// Takes optional pre-cached data for completions that need context
+impl Default for CommandCompletionCache {
+    fn default() -> Self {
+        Self {
+            settings: SETTINGS_KEYS.to_vec(),
+            buffers: Vec::new(),
+            languages: Vec::new(),
+            configured_language_servers: Vec::new(),
+            active_language_servers: Vec::new(),
+        }
+    }
+}
+
+/// Get command completions with deduplication of aliases.
+pub fn get_command_completions(editor: &Editor, input: &str) -> Vec<CompletionItem> {
+    let cache = CommandCompletionCache::from_editor(editor);
+    get_command_completions_with_cache(input, Some(&cache))
+}
+
+/// Simplified version that doesn't require editor state.
 pub fn get_command_completions_simple(input: &str) -> Vec<CompletionItem> {
     get_command_completions_with_cache(input, None)
 }
 
-/// Version that can use cached settings for better completions
+/// Version that can use cached editor data for better completions.
 pub fn get_command_completions_with_cache(
     input: &str,
-    cached_settings: Option<Vec<String>>,
+    cache: Option<&CommandCompletionCache>,
 ) -> Vec<CompletionItem> {
     let parts: Vec<&str> = input.split_whitespace().collect();
 
-    // Check if we're completing a command or arguments
     if parts.is_empty() {
         complete_command_names("")
-    } else if parts.len() == 1 && !input.ends_with(' ') {
-        // Still typing the command name (e.g., "tog" for "toggle")
+    } else if parts.len() == 1 && !input_ends_with_whitespace(input) {
         complete_command_names(parts[0])
     } else {
-        // We have a command and are completing arguments
-        complete_command_arguments_with_cache(&parts, input, cached_settings)
+        let default_cache;
+        let cache = if let Some(cache) = cache {
+            cache
+        } else {
+            default_cache = CommandCompletionCache::default();
+            &default_cache
+        };
+        complete_command_arguments_with_cache(&parts, input, cache)
     }
 }
 
-/// Complete command names, showing aliases but not as separate entries
+/// Complete command names, showing aliases but not as separate entries.
 fn complete_command_names(pattern: &str) -> Vec<CompletionItem> {
-    // First, find all commands that match (either by name or alias)
     let mut matched_commands: Vec<(&TypableCommand, u16)> = Vec::new();
 
     for cmd in TYPABLE_COMMAND_LIST {
-        // Check if the pattern matches the primary name
         if let Some((_, score)) = fuzzy_match(pattern, std::iter::once(cmd.name), false)
             .into_iter()
             .next()
         {
             matched_commands.push((cmd, score));
         } else {
-            // Check if pattern matches any alias
             for alias in cmd.aliases {
                 if let Some((_, score)) = fuzzy_match(pattern, std::iter::once(*alias), false)
                     .into_iter()
                     .next()
                 {
                     matched_commands.push((cmd, score));
-                    break; // Only need to match once per command
+                    break;
                 }
             }
         }
     }
 
-    // Sort by score (higher scores first)
     matched_commands.sort_by(|a, b| b.1.cmp(&a.1));
 
-    // Convert to CompletionItems with formatted display
     matched_commands
         .into_iter()
         .map(|(cmd, _score)| {
-            // Format the display text with aliases
             let display_text = if cmd.aliases.is_empty() {
-                None // No need for separate display text if there are no aliases
+                None
             } else {
                 Some(format!("{} ({})", cmd.name, cmd.aliases.join(", ")).into())
             };
 
             CompletionItem {
-                text: cmd.name.to_string().into(), // Only the command name for insertion
+                text: cmd.name.to_string().into(),
                 description: Some(cmd.doc.to_string().into()),
-                display_text, // Optional display text with aliases
+                display_text,
             }
         })
         .collect()
 }
 
-/// Complete command arguments using Helix's completers
-fn complete_command_arguments(editor: &Editor, parts: &[&str], input: &str) -> Vec<CompletionItem> {
-    let command_name = parts[0];
+/// Argument completion with cached editor data.
+fn complete_command_arguments_with_cache(
+    parts: &[&str],
+    input: &str,
+    cache: &CommandCompletionCache,
+) -> Vec<CompletionItem> {
+    let Some(context) = ArgumentContext::new(parts, input) else {
+        return Vec::new();
+    };
 
-    // Find the command (checking both name and aliases)
     let command = TYPABLE_COMMAND_LIST
         .iter()
-        .find(|cmd| cmd.name == command_name || cmd.aliases.contains(&command_name));
+        .find(|cmd| cmd.name == context.command || cmd.aliases.contains(&context.command));
 
-    if let Some(cmd) = command {
-        // Get the current argument being typed (or empty string if at a space)
-        let current_arg = if input.ends_with(' ') {
-            ""
-        } else {
-            parts.last().copied().unwrap_or("")
-        };
+    let Some(cmd) = command else {
+        return Vec::new();
+    };
 
-        // Special handling for specific commands with custom completion logic
-        match cmd.name {
-            "theme" => complete_themes(current_arg),
-            "toggle" | "set" | "get" => {
-                // Use the setting completer and format with command prefix
-                let command = cmd.name;
-                completers::setting(editor, current_arg)
-                    .into_iter()
-                    .map(|(_, text)| CompletionItem {
-                        text: format!("{} {}", command, text.content).into(),
-                        description: Some(
-                            format!(
-                                "{} the {} setting",
-                                if command == "toggle" {
-                                    "Toggle"
-                                } else if command == "set" {
-                                    "Set"
-                                } else {
-                                    "Get"
-                                },
-                                text.content
-                            )
-                            .into(),
-                        ),
-                        display_text: None,
-                    })
-                    .collect()
-            }
-            "language" => {
-                // Use the language completer and format with command prefix
-                completers::language(editor, current_arg)
-                    .into_iter()
-                    .map(|(_, text)| CompletionItem {
-                        text: format!("language {}", text.content).into(),
-                        description: Some(format!("Set language to {}", text.content).into()),
-                        display_text: None,
-                    })
-                    .collect()
-            }
-            "buffer-close" | "buffer-close!" => {
-                // Use the buffer completer and format with command prefix
-                let command = cmd.name;
-                completers::buffer(editor, current_arg)
-                    .into_iter()
-                    .map(|(_, span)| {
-                        // Extract content from the Span - span.content is a Cow<str>
-                        CompletionItem {
-                            text: format!("{} {}", command, span.content).into(),
-                            description: Some(format!("Close buffer: {}", span.content).into()),
-                            display_text: None,
-                        }
-                    })
-                    .collect()
-            }
-            "lsp-restart" | "lsp-stop" => {
-                // Use the language server completer and format with command prefix
-                let command = cmd.name;
-                completers::configured_language_servers(editor, current_arg)
-                    .into_iter()
-                    .map(|(_, text)| CompletionItem {
-                        text: format!("{} {}", command, text.content).into(),
-                        description: Some(
-                            format!(
-                                "{} language server: {}",
-                                if command == "lsp-restart" {
-                                    "Restart"
-                                } else {
-                                    "Stop"
-                                },
-                                text.content
-                            )
-                            .into(),
-                        ),
-                        display_text: None,
-                    })
-                    .collect()
-            }
-            "open" | "edit" | "e" | "o" | "write" | "w" | "cd" => {
-                // Use the filename completer for file-based commands
-                // For file paths, we don't include the command prefix to keep them readable
-                let command = cmd.name;
-                completers::filename(editor, current_arg)
-                    .into_iter()
-                    .map(|(_, text)| CompletionItem {
-                        text: text.content.to_string().into(),
-                        description: Some(
-                            format!(
-                                "{} {}",
-                                match command {
-                                    "open" | "edit" | "e" | "o" => "Open",
-                                    "write" | "w" => "Write to",
-                                    "cd" => "Change directory to",
-                                    _ => "Use",
-                                },
-                                text.content
-                            )
-                            .into(),
-                        ),
-                        display_text: None,
-                    })
-                    .collect()
-            }
-            _ => {
-                // For other commands, return empty
-                Vec::new()
-            }
+    match cmd.name {
+        "theme" if context.arg_index == 0 => {
+            complete_themes(input, context.current_arg, context.command)
         }
-    } else {
-        Vec::new()
+        "toggle-option" | "set-option" | "get-option" if context.arg_index == 0 => {
+            complete_settings(input, context.current_arg, cmd.name, &cache.settings)
+        }
+        "set-language" if context.arg_index == 0 => complete_list(
+            input,
+            context.current_arg,
+            &cache.languages,
+            false,
+            |language| format!("Set language to {language}"),
+        ),
+        "buffer-close" | "buffer-close!" => {
+            complete_list(input, context.current_arg, &cache.buffers, true, |buffer| {
+                format!("Close buffer: {buffer}")
+            })
+        }
+        "lsp-restart" => complete_list(
+            input,
+            context.current_arg,
+            &cache.configured_language_servers,
+            false,
+            |server| format!("Restart language server: {server}"),
+        ),
+        "lsp-stop" => complete_list(
+            input,
+            context.current_arg,
+            &cache.active_language_servers,
+            false,
+            |server| format!("Stop language server: {server}"),
+        ),
+        command if is_file_command(command) => complete_filesystem_paths(
+            input,
+            context.current_arg,
+            PathCompletionKind::FileOrDirectory,
+            path_action_label(command, context.command),
+        ),
+        "change-current-directory" => complete_filesystem_paths(
+            input,
+            context.current_arg,
+            PathCompletionKind::Directory,
+            "Change directory to",
+        ),
+        _ if input_ends_with_whitespace(input) && parts.len() == 1 => {
+            get_command_argument_hint(cmd).map_or_else(Vec::new, |hint| {
+                vec![CompletionItem {
+                    text: format!("{} {hint}", context.command).into(),
+                    description: None,
+                    display_text: Some(hint.into()),
+                }]
+            })
+        }
+        _ => Vec::new(),
     }
 }
 
-/// Complete theme names
-fn complete_themes(prefix: &str) -> Vec<CompletionItem> {
+/// Complete theme names.
+fn complete_themes(input: &str, current_arg: &str, command: &str) -> Vec<CompletionItem> {
     let mut names =
         helix_view::theme::Loader::read_names(&helix_loader::config_dir().join("themes"));
 
@@ -279,144 +256,397 @@ fn complete_themes(prefix: &str) -> Vec<CompletionItem> {
     names.sort();
     names.dedup();
 
-    fuzzy_match(prefix, names, false)
+    fuzzy_match(current_arg, names, false)
         .into_iter()
         .map(|(name, _score)| CompletionItem {
-            text: format!("theme {name}").into(),
+            text: replace_current_arg(input, current_arg, &name).into(),
             description: Some(format!("Switch to {name} theme").into()),
+            display_text: Some(format!("{command} {name}").into()),
+        })
+        .collect()
+}
+
+fn complete_settings(
+    input: &str,
+    current_arg: &str,
+    command: &str,
+    settings: &[String],
+) -> Vec<CompletionItem> {
+    let action = match command {
+        "toggle-option" => "Toggle",
+        "set-option" => "Set",
+        "get-option" => "Get",
+        _ => "Use",
+    };
+
+    complete_list(input, current_arg, settings, false, |setting| {
+        format!("{action} the {setting} setting")
+    })
+}
+
+fn complete_list(
+    input: &str,
+    current_arg: &str,
+    candidates: &[String],
+    path: bool,
+    description: impl Fn(&str) -> String,
+) -> Vec<CompletionItem> {
+    fuzzy_match(current_arg, candidates.iter().map(String::as_str), path)
+        .into_iter()
+        .map(|(candidate, _score)| CompletionItem {
+            text: replace_current_arg(input, current_arg, candidate).into(),
+            description: Some(description(candidate).into()),
             display_text: None,
         })
         .collect()
 }
 
-/// Argument completion with optional cached data
-fn complete_command_arguments_with_cache(
-    parts: &[&str],
-    input: &str,
-    cached_settings: Option<Vec<String>>,
-) -> Vec<CompletionItem> {
-    let command_name = parts[0];
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum PathCompletionKind {
+    FileOrDirectory,
+    Directory,
+}
 
-    // Find the command (checking both name and aliases)
-    let command = TYPABLE_COMMAND_LIST
-        .iter()
-        .find(|cmd| cmd.name == command_name || cmd.aliases.contains(&command_name));
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PathCandidate {
+    path: String,
+    is_dir: bool,
+}
 
-    if let Some(cmd) = command {
-        // Get the current argument being typed
-        // When typing "toggle line", parts = ["toggle", "line"]
-        // We want "line" as the current_arg
-        let current_arg = if parts.len() > 1 {
-            if input.ends_with(' ') {
-                // "toggle " -> empty string for new argument
-                ""
-            } else {
-                // "toggle line" -> "line"
-                parts[1]
-            }
-        } else {
-            ""
-        };
-
-        // Handle completions based on command type
-        // Note: "toggle" is an alias for "toggle-option", "set" for "set-option", etc.
-        match cmd.name {
-            "theme" => complete_themes(current_arg),
-            "toggle-option" | "set-option" | "get-option" => {
-                // Use cached settings if available
-                if let Some(settings) = cached_settings {
-                    use helix_core::fuzzy::fuzzy_match;
-                    let matches = fuzzy_match(
-                        current_arg,
-                        settings.iter().map(std::string::String::as_str),
-                        false,
-                    );
-
-                    // Use the command that was actually typed (which might be an alias)
-                    let typed_command = command_name;
-
-                    matches
-                        .into_iter()
-                        .map(|(setting, _score)| CompletionItem {
-                            text: format!("{typed_command} {setting}").into(),
-                            description: Some(
-                                format!(
-                                    "{} the {} setting",
-                                    if cmd.name == "toggle-option" {
-                                        "Toggle"
-                                    } else if cmd.name == "set-option" {
-                                        "Set"
-                                    } else {
-                                        "Get"
-                                    },
-                                    setting
-                                )
-                                .into(),
-                            ),
-                            display_text: None,
-                        })
-                        .collect()
-                } else {
-                    // Fallback hint when no cached settings available
-                    if input.ends_with(' ') && parts.len() == 1 {
-                        vec![CompletionItem {
-                            text: "<setting>".to_string().into(),
-                            description: Some(
-                                format!(
-                                    "{} a configuration setting",
-                                    if cmd.name == "toggle" {
-                                        "Toggle"
-                                    } else if cmd.name == "set" {
-                                        "Set"
-                                    } else {
-                                        "Get"
-                                    }
-                                )
-                                .into(),
-                            ),
-                            display_text: None,
-                        }]
-                    } else {
-                        Vec::new()
-                    }
-                }
-            }
-            _ => {
-                // For other commands, we can't provide completions without editor context
-                // But we can at least show helpful information
-                if input.ends_with(' ') && parts.len() == 1 {
-                    // Show a hint about what arguments the command expects
-                    if let Some(hint) = get_command_argument_hint(cmd) {
-                        vec![CompletionItem {
-                            text: hint.into(),
-                            description: None,
-                            display_text: None,
-                        }]
-                    } else {
-                        Vec::new()
-                    }
-                } else {
-                    Vec::new()
-                }
-            }
-        }
-    } else {
-        Vec::new()
+impl AsRef<str> for PathCandidate {
+    fn as_ref(&self) -> &str {
+        &self.path
     }
 }
 
-/// Get a hint about what arguments a command expects
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum PathCandidateMatch {
+    Reject,
+    AcceptIncomplete,
+    Accept,
+}
+
+fn complete_filesystem_paths(
+    input: &str,
+    current_arg: &str,
+    kind: PathCompletionKind,
+    action_label: &str,
+) -> Vec<CompletionItem> {
+    let is_tilde = current_arg == "~";
+    let path = helix_stdx::path::expand_tilde(Path::new(current_arg));
+
+    let (dir, file_name) = if current_arg.ends_with(MAIN_SEPARATOR) {
+        (path, None)
+    } else {
+        let is_period = (current_arg.ends_with(&format!("{MAIN_SEPARATOR}."))
+            && current_arg.len() > 2)
+            || current_arg == ".";
+        let file_name = if is_period {
+            Some(".".to_string())
+        } else {
+            path.file_name()
+                .and_then(|file| file.to_str().map(str::to_string))
+        };
+
+        let path = if is_period {
+            path
+        } else {
+            match path.parent() {
+                Some(path) if !path.as_os_str().is_empty() => std::borrow::Cow::Borrowed(path),
+                _ => std::borrow::Cow::Owned(helix_stdx::env::current_working_dir()),
+            }
+        };
+
+        (path, file_name)
+    };
+
+    let candidates = ignore::WalkBuilder::new(&dir)
+        .hidden(false)
+        .follow_links(false)
+        .git_ignore(true)
+        .max_depth(Some(1))
+        .build()
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let candidate_match = match kind {
+                PathCompletionKind::FileOrDirectory => {
+                    if entry
+                        .file_type()
+                        .is_some_and(|file_type| file_type.is_dir())
+                    {
+                        PathCandidateMatch::AcceptIncomplete
+                    } else {
+                        PathCandidateMatch::Accept
+                    }
+                }
+                PathCompletionKind::Directory => {
+                    if entry
+                        .file_type()
+                        .is_some_and(|file_type| file_type.is_dir())
+                    {
+                        PathCandidateMatch::Accept
+                    } else {
+                        PathCandidateMatch::Reject
+                    }
+                }
+            };
+
+            if candidate_match == PathCandidateMatch::Reject {
+                return None;
+            }
+
+            let is_dir = entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_dir());
+            let mut path = if is_tilde {
+                entry.path().to_path_buf()
+            } else {
+                entry
+                    .path()
+                    .strip_prefix(&dir)
+                    .unwrap_or(entry.path())
+                    .to_path_buf()
+            };
+
+            if candidate_match == PathCandidateMatch::AcceptIncomplete {
+                path.push("");
+            }
+
+            let path = path.into_os_string().into_string().ok()?;
+            if path.is_empty() {
+                return None;
+            }
+
+            Some(PathCandidate { path, is_dir })
+        });
+
+    let arg_prefix = argument_path_prefix(current_arg, file_name.as_deref());
+    let matches = if let Some(file_name) = file_name {
+        fuzzy_match(&file_name, candidates, true)
+            .into_iter()
+            .map(|(candidate, _score)| candidate)
+            .collect()
+    } else {
+        let mut candidates: Vec<_> = candidates.collect();
+        candidates
+            .sort_by(|left, right| (!left.is_dir, &left.path).cmp(&(!right.is_dir, &right.path)));
+        candidates
+    };
+
+    matches
+        .into_iter()
+        .map(|candidate| {
+            let completed_arg = if is_tilde {
+                candidate.path
+            } else {
+                format!("{arg_prefix}{}", candidate.path)
+            };
+            CompletionItem {
+                text: replace_current_arg(input, current_arg, &completed_arg).into(),
+                description: Some(format!("{action_label} {completed_arg}").into()),
+                display_text: None,
+            }
+        })
+        .collect()
+}
+
+fn argument_path_prefix(current_arg: &str, file_name: Option<&str>) -> String {
+    if current_arg.ends_with(MAIN_SEPARATOR) {
+        return current_arg.to_string();
+    }
+
+    file_name
+        .and_then(|file_name| current_arg.strip_suffix(file_name))
+        .unwrap_or("")
+        .to_string()
+}
+
+fn replace_current_arg(input: &str, current_arg: &str, replacement: &str) -> String {
+    if current_arg.is_empty() {
+        format!("{input}{replacement}")
+    } else if let Some(prefix) = input.strip_suffix(current_arg) {
+        format!("{prefix}{replacement}")
+    } else {
+        format!("{input}{replacement}")
+    }
+}
+
+fn collect_setting_keys(value: &serde_json::Value, keys: &mut Vec<String>, scope: Option<&str>) {
+    let Some(map) = value.as_object() else {
+        return;
+    };
+
+    for (key, value) in map {
+        let key = match scope {
+            Some(scope) => format!("{scope}.{key}"),
+            None => key.clone(),
+        };
+        collect_setting_keys(value, keys, Some(&key));
+        if !value.is_object() {
+            keys.push(key);
+        }
+    }
+}
+
+fn active_document(editor: &Editor) -> Option<&helix_view::Document> {
+    editor
+        .tree
+        .try_get(editor.tree.focus)
+        .and_then(|view| editor.document(view.doc))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ArgumentContext<'a> {
+    command: &'a str,
+    current_arg: &'a str,
+    arg_index: usize,
+}
+
+impl<'a> ArgumentContext<'a> {
+    fn new(parts: &'a [&'a str], input: &'a str) -> Option<Self> {
+        let command = parts.first().copied()?;
+        let trailing = input_ends_with_whitespace(input);
+        let current_arg = if trailing {
+            ""
+        } else {
+            parts.last().copied().unwrap_or("")
+        };
+        let arg_index = if trailing {
+            parts.len().saturating_sub(1)
+        } else {
+            parts.len().saturating_sub(2)
+        };
+
+        Some(Self {
+            command,
+            current_arg,
+            arg_index,
+        })
+    }
+}
+
+fn input_ends_with_whitespace(input: &str) -> bool {
+    input.chars().last().is_some_and(char::is_whitespace)
+}
+
+fn is_file_command(command: &str) -> bool {
+    matches!(
+        command,
+        "open"
+            | "write"
+            | "write!"
+            | "write-buffer-close"
+            | "write-buffer-close!"
+            | "write-quit"
+            | "write-quit!"
+            | "vsplit"
+            | "hsplit"
+    )
+}
+
+fn path_action_label(command: &str, typed_command: &str) -> &'static str {
+    match command {
+        "open" | "vsplit" | "hsplit" => "Open",
+        "write" | "write!" => "Write to",
+        "write-buffer-close" | "write-buffer-close!" => "Write and close",
+        "write-quit" | "write-quit!" => "Write and quit",
+        _ if matches!(typed_command, "cd") => "Change directory to",
+        _ => "Use",
+    }
+}
+
+/// Get a hint about what arguments a command expects.
 fn get_command_argument_hint(cmd: &TypableCommand) -> Option<String> {
     match cmd.name {
-        "open" | "edit" | "e" | "o" => Some("<file>".to_string()),
-        "write" | "w" => Some("[<file>]".to_string()),
-        "buffer-close" | "bc" => Some("[<buffer>]".to_string()),
-        "toggle" => Some("<setting>".to_string()),
-        "set" => Some("<setting> <value>".to_string()),
-        "get" => Some("<setting>".to_string()),
-        "language" => Some("<language>".to_string()),
-        "cd" => Some("<directory>".to_string()),
+        "open" | "vsplit" | "hsplit" => Some("<file>".to_string()),
+        "write"
+        | "write!"
+        | "write-buffer-close"
+        | "write-buffer-close!"
+        | "write-quit"
+        | "write-quit!" => Some("[<file>]".to_string()),
+        "buffer-close" | "buffer-close!" => Some("[<buffer>]".to_string()),
+        "toggle-option" => Some("<setting>".to_string()),
+        "set-option" => Some("<setting> <value>".to_string()),
+        "get-option" => Some("<setting>".to_string()),
+        "set-language" => Some("<language>".to_string()),
+        "change-current-directory" => Some("<directory>".to_string()),
         "lsp-restart" | "lsp-stop" => Some("<language-server>".to_string()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setting_keys_are_derived_from_helix_config() {
+        assert!(SETTINGS_KEYS.iter().any(|key| key == "search.smart-case"));
+        assert!(SETTINGS_KEYS.iter().any(|key| key == "scroll-lines"));
+        assert!(SETTINGS_KEYS.len() > 20);
+    }
+
+    #[test]
+    fn cached_setting_completion_preserves_typed_alias() {
+        let cache = CommandCompletionCache {
+            settings: vec!["line-number".to_string(), "mouse".to_string()],
+            ..CommandCompletionCache::default()
+        };
+
+        let items = get_command_completions_with_cache("toggle line", Some(&cache));
+
+        assert!(
+            items
+                .iter()
+                .any(|item| item.text.as_ref() == "toggle line-number")
+        );
+    }
+
+    #[test]
+    fn cached_context_completion_preserves_typed_aliases() {
+        let cache = CommandCompletionCache {
+            languages: vec!["rust".to_string()],
+            buffers: vec!["src/main.rs".to_string()],
+            configured_language_servers: vec!["rust-analyzer".to_string()],
+            active_language_servers: vec!["rust-analyzer".to_string()],
+            ..CommandCompletionCache::default()
+        };
+
+        let language_items = get_command_completions_with_cache("lang ru", Some(&cache));
+        assert!(
+            language_items
+                .iter()
+                .any(|item| item.text.as_ref() == "lang rust")
+        );
+
+        let buffer_items = get_command_completions_with_cache("bc src", Some(&cache));
+        assert!(
+            buffer_items
+                .iter()
+                .any(|item| item.text.as_ref() == "bc src/main.rs")
+        );
+
+        let lsp_items = get_command_completions_with_cache("lsp-restart rust", Some(&cache));
+        assert!(
+            lsp_items
+                .iter()
+                .any(|item| item.text.as_ref() == "lsp-restart rust-analyzer")
+        );
+    }
+
+    #[test]
+    fn filesystem_completion_replaces_the_full_prompt_argument() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("alpha.txt");
+        std::fs::write(&file_path, "").unwrap();
+
+        let partial_path = temp_dir.path().join("alp");
+        let input = format!("open {}", partial_path.display());
+        let expected = format!("open {}", file_path.display());
+
+        let items = get_command_completions_with_cache(&input, None);
+
+        assert!(items.iter().any(|item| item.text.as_ref() == expected));
     }
 }
