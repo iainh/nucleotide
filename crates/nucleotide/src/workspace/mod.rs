@@ -4262,12 +4262,11 @@ impl Workspace {
                 self.show_file_tree = !self.show_file_tree;
                 cx.notify();
             }
-            crate::Update::Info(info) => {
-                self.info_hidden = false;
-                self.info.update(cx, |info_box, info_cx| {
-                    info_box.set_info(info);
-                    info_cx.notify();
-                });
+            crate::Update::Info(_info) => {
+                // Helix autoinfo is rendered by the dedicated native key-hint
+                // popup. Avoid also showing the generic info box for the same
+                // pending keymap payload.
+                self.info_hidden = true;
                 self.update_key_hints(cx);
                 self.view_manager.set_needs_focus_restore(true);
                 cx.notify();
@@ -5064,11 +5063,9 @@ impl Workspace {
             width: info.width,
             height: info.height,
         });
-        let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
 
         self.key_hints.update(cx, |key_hints, cx| {
             key_hints.set_info(editor_info);
-            key_hints.set_theme(theme);
             cx.notify();
         });
     }
