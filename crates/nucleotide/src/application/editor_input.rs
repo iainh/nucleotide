@@ -39,6 +39,8 @@ pub struct NativeCompletionRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativePickerRequest {
     File,
+    FileCurrentDirectory,
+    FileCurrentBufferDirectory,
     Buffer,
 }
 
@@ -794,6 +796,10 @@ fn native_prompt_command(command: &MappableCommand) -> bool {
 fn native_picker_command(command: &MappableCommand) -> Option<NativePickerRequest> {
     match command.name() {
         "file_picker" => Some(NativePickerRequest::File),
+        "file_picker_in_current_directory" => Some(NativePickerRequest::FileCurrentDirectory),
+        "file_picker_in_current_buffer_directory" => {
+            Some(NativePickerRequest::FileCurrentBufferDirectory)
+        }
         "buffer_picker" => Some(NativePickerRequest::Buffer),
         _ => None,
     }
@@ -1189,16 +1195,16 @@ mod tests {
             Some(NativePickerRequest::File)
         );
         assert_eq!(
-            native_picker_command(&MappableCommand::buffer_picker),
-            Some(NativePickerRequest::Buffer)
-        );
-        assert_eq!(
             native_picker_command(&MappableCommand::file_picker_in_current_directory),
-            None
+            Some(NativePickerRequest::FileCurrentDirectory)
         );
         assert_eq!(
             native_picker_command(&MappableCommand::file_picker_in_current_buffer_directory),
-            None
+            Some(NativePickerRequest::FileCurrentBufferDirectory)
+        );
+        assert_eq!(
+            native_picker_command(&MappableCommand::buffer_picker),
+            Some(NativePickerRequest::Buffer)
         );
         assert_eq!(native_picker_command(&MappableCommand::command_mode), None);
         assert_eq!(native_picker_command(&MappableCommand::normal_mode), None);
@@ -1206,15 +1212,11 @@ mod tests {
 
     #[test]
     fn default_space_f_keymap_requests_file_picker() {
+        use std::str::FromStr;
+
         let mut keymaps = Keymaps::default();
-        let space = KeyEvent {
-            code: KeyCode::Char(' '),
-            modifiers: KeyModifiers::empty(),
-        };
-        let f = KeyEvent {
-            code: KeyCode::Char('f'),
-            modifiers: KeyModifiers::empty(),
-        };
+        let space = KeyEvent::from_str("space").unwrap();
+        let f = KeyEvent::from_str("f").unwrap();
 
         assert!(matches!(
             keymaps.get(Mode::Normal, space),
@@ -1229,6 +1231,30 @@ mod tests {
                 );
             }
             _ => panic!("expected SPACE-f to resolve to file_picker"),
+        }
+    }
+
+    #[test]
+    fn default_space_shift_f_keymap_requests_current_directory_picker() {
+        use std::str::FromStr;
+
+        let mut keymaps = Keymaps::default();
+        let space = KeyEvent::from_str("space").unwrap();
+        let shift_f = KeyEvent::from_str("F").unwrap();
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, shift_f) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(
+                    native_picker_command(&command),
+                    Some(NativePickerRequest::FileCurrentDirectory)
+                );
+            }
+            _ => panic!("expected SPACE-F to resolve to file_picker_in_current_directory"),
         }
     }
 
