@@ -15,12 +15,11 @@ use crate::Core;
 use nucleotide_editor::{
     DocumentFramePaintParams, EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal,
     EditorDocumentElement, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
-    EditorLayout, EditorOverlayState, EditorSelectionDragState, EditorSurface,
-    EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState,
-    EditorViewport, EditorViewportContentLayout, EditorViewportSurfaceLayout, LineLayoutCache,
-    begin_editor_pointer_selection_at_event, cursor_document_line, cursor_style_for_mode,
-    editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame, paint_editor_background,
-    shape_cursor_text, update_editor_pointer_selection_at_event,
+    EditorLayout, EditorOverlayState, EditorSurface, EditorSurfaceMetrics,
+    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewport,
+    EditorViewportContentLayout, EditorViewportSurfaceLayout, cursor_document_line,
+    cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame,
+    paint_editor_background, shape_cursor_text,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -94,22 +93,15 @@ fn handle_editor_mouse_down(
     core: &Entity<Core>,
     doc_id: DocumentId,
     view_id: ViewId,
-    drag_state: &EditorSelectionDragState,
-    line_cache: &LineLayoutCache,
+    editor_state: &EditorViewState,
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
     let mut pointer_update = None;
 
     core.update(cx, |core, cx| {
-        pointer_update = begin_editor_pointer_selection_at_event(
-            &mut core.editor,
-            doc_id,
-            view_id,
-            line_cache,
-            drag_state,
-            event,
-        );
+        pointer_update =
+            editor_state.begin_pointer_selection_at_event(&mut core.editor, doc_id, view_id, event);
 
         if pointer_update.is_some() {
             cx.notify();
@@ -138,20 +130,17 @@ fn handle_editor_mouse_drag(
     core: &Entity<Core>,
     doc_id: DocumentId,
     view_id: ViewId,
-    drag_state: &EditorSelectionDragState,
-    line_cache: &LineLayoutCache,
+    editor_state: &EditorViewState,
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
     let mut pointer_update = None;
 
     core.update(cx, |core, cx| {
-        pointer_update = update_editor_pointer_selection_at_event(
+        pointer_update = editor_state.update_pointer_selection_at_event(
             &mut core.editor,
             doc_id,
             view_id,
-            line_cache,
-            drag_state,
             event,
         );
 
@@ -412,44 +401,26 @@ impl Render for DocumentView {
         .on_mouse_down({
             let core = self.core.clone();
             let view_id = self.view_id;
-            let selection_drag_state = self.editor_state.selection_drag_state().clone();
-            let line_cache = surface_metrics.line_cache();
+            let editor_state = self.editor_state.clone();
 
             move |event: EditorSurfacePointerEvent, cx| {
-                handle_editor_mouse_down(
-                    &core,
-                    doc_id,
-                    view_id,
-                    &selection_drag_state,
-                    &line_cache,
-                    event,
-                    cx,
-                );
+                handle_editor_mouse_down(&core, doc_id, view_id, &editor_state, event, cx);
             }
         })
         .on_mouse_drag({
             let core = self.core.clone();
             let view_id = self.view_id;
-            let selection_drag_state = self.editor_state.selection_drag_state().clone();
-            let line_cache = surface_metrics.line_cache();
+            let editor_state = self.editor_state.clone();
 
             move |event: EditorSurfacePointerEvent, cx| {
-                handle_editor_mouse_drag(
-                    &core,
-                    doc_id,
-                    view_id,
-                    &selection_drag_state,
-                    &line_cache,
-                    event,
-                    cx,
-                );
+                handle_editor_mouse_drag(&core, doc_id, view_id, &editor_state, event, cx);
             }
         })
         .on_mouse_up({
-            let selection_drag_state = self.editor_state.selection_drag_state().clone();
+            let editor_state = self.editor_state.clone();
 
             move |event: EditorSurfacePointerEvent, _cx| {
-                selection_drag_state.clear();
+                editor_state.clear_pointer_selection();
                 debug!(position = ?event.position, "Mouse up event - click completed");
             }
         });
