@@ -31,6 +31,13 @@ pub struct EditorViewFrameState {
     pub scroll_line_offset: Pixels,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorViewContentState {
+    pub doc_id: DocumentId,
+    pub update: EditorViewportContentUpdate,
+    pub physical_lines: usize,
+}
+
 impl EditorViewState {
     pub fn new(line_height: Pixels, cell_width: Pixels) -> Self {
         Self {
@@ -75,6 +82,23 @@ impl EditorViewState {
         layout: EditorViewportContentLayout<'_>,
     ) -> EditorViewportContentUpdate {
         self.viewport.sync_content_layout(document, view, layout)
+    }
+
+    pub fn sync_content_layout_for_editor(
+        &mut self,
+        editor: &Editor,
+        view_id: ViewId,
+        layout: EditorViewportContentLayout<'_>,
+    ) -> Option<EditorViewContentState> {
+        let view = editor.tree.try_get(view_id)?;
+        let document = editor.document(view.doc)?;
+        let update = self.sync_content_layout(document, view, layout);
+
+        Some(EditorViewContentState {
+            doc_id: view.doc,
+            update,
+            physical_lines: document.text().len_lines(),
+        })
     }
 
     pub fn sync_frame_layout(
@@ -449,5 +473,35 @@ mod tests {
             state.viewport().offset_within_row()
         );
         assert!(frame_state.line_cache.find_line_by_index(7).is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_sync_content_layout_for_editor_resolves_view_document() {
+        let mut state = EditorViewState::new(px(20.0), px(8.0));
+        let (editor, doc_id, view_id) = test_editor_with_text("one\ntwo\nthree\n");
+
+        let content_state = state
+            .sync_content_layout_for_editor(
+                &editor,
+                view_id,
+                EditorViewportContentLayout {
+                    theme: None,
+                    bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(101.0))),
+                    cell_width: px(8.0),
+                    minimum_columns: 1,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(content_state.doc_id, doc_id);
+        assert_eq!(
+            content_state.physical_lines,
+            editor.document(doc_id).unwrap().text().len_lines()
+        );
+        assert!(content_state.update.visual_rows >= 3);
+        assert_eq!(
+            state.viewport().content_visual_rows(),
+            content_state.update.visual_rows
+        );
     }
 }
