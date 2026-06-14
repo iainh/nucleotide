@@ -237,6 +237,9 @@ impl ViewManager {
             && let Some(doc_view) = self.documents.get(&view_id)
         {
             let doc_focus = doc_view.focus_handle(cx);
+            if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                coord.set_editor_focus(doc_focus.clone());
+            }
             window.focus(&doc_focus);
             debug!(view_id = ?view_id, "Focused active document view");
             return;
@@ -245,6 +248,9 @@ impl ViewManager {
         // If no focused view, try to focus the first available view
         if let Some((view_id, doc_view)) = self.documents.iter().next() {
             let doc_focus = doc_view.focus_handle(cx);
+            if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                coord.set_editor_focus(doc_focus.clone());
+            }
             window.focus(&doc_focus);
             self.focused_view_id = Some(*view_id);
             debug!(view_id = ?view_id, "Focused first available document view");
