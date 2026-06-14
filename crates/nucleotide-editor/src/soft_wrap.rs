@@ -223,7 +223,10 @@ pub fn soft_wrap_visual_position(
     let annotations = TextAnnotations::default();
     let formatter =
         DocumentFormatter::new_at_prev_checkpoint(text, text_format, &annotations, anchor);
-    let mut last_visual_line = 0;
+    let mut last_visual_position = SoftWrapVisualPosition {
+        visual_line: 0,
+        visual_col: 0,
+    };
 
     for grapheme in formatter {
         let next_char_pos = grapheme.char_idx + grapheme.doc_chars();
@@ -233,13 +236,19 @@ pub fn soft_wrap_visual_position(
                 visual_col: grapheme.visual_pos.col,
             });
         }
-        last_visual_line = grapheme.visual_pos.row;
+
+        let end_col = if grapheme.source.is_eof() {
+            grapheme.visual_pos.col
+        } else {
+            grapheme.visual_pos.col + grapheme.width()
+        };
+        last_visual_position = SoftWrapVisualPosition {
+            visual_line: grapheme.visual_pos.row,
+            visual_col: end_col,
+        };
     }
 
-    (char_idx >= text.len_chars()).then_some(SoftWrapVisualPosition {
-        visual_line: last_visual_line,
-        visual_col: 0,
-    })
+    (char_idx >= text.len_chars()).then_some(last_visual_position)
 }
 
 pub fn decorate_soft_wrap_line_runs(
@@ -414,9 +423,9 @@ mod tests {
     use helix_view::view::ViewPosition;
 
     use super::{
-        SoftWrapRenderPlanParams, SoftWrapVisualLine, decorate_soft_wrap_line_runs,
-        soft_wrap_line_paint_plans, soft_wrap_render_plan, soft_wrap_viewport_height,
-        soft_wrap_visual_lines, soft_wrap_visual_position,
+        SoftWrapRenderPlanParams, SoftWrapVisualLine, SoftWrapVisualPosition,
+        decorate_soft_wrap_line_runs, soft_wrap_line_paint_plans, soft_wrap_render_plan,
+        soft_wrap_viewport_height, soft_wrap_visual_lines, soft_wrap_visual_position,
     };
     use crate::EditorSurfaceGeometry;
 
@@ -521,6 +530,54 @@ mod tests {
 
         assert_eq!(position.visual_line, 1);
         assert_eq!(position.visual_col, 1);
+    }
+
+    #[test]
+    fn visual_position_uses_final_empty_line_at_trailing_newline_eof() {
+        let text = "one\n";
+        let position = soft_wrap_visual_position(
+            text.into(),
+            &TextFormat {
+                soft_wrap: true,
+                viewport_width: 20,
+                ..TextFormat::default()
+            },
+            0,
+            text.chars().count(),
+        )
+        .expect("cursor position");
+
+        assert_eq!(
+            position,
+            SoftWrapVisualPosition {
+                visual_line: 1,
+                visual_col: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn visual_position_uses_end_column_at_eof_without_trailing_newline() {
+        let text = "one";
+        let position = soft_wrap_visual_position(
+            text.into(),
+            &TextFormat {
+                soft_wrap: true,
+                viewport_width: 20,
+                ..TextFormat::default()
+            },
+            0,
+            text.chars().count(),
+        )
+        .expect("cursor position");
+
+        assert_eq!(
+            position,
+            SoftWrapVisualPosition {
+                visual_line: 0,
+                visual_col: 3,
+            }
+        );
     }
 
     #[test]
