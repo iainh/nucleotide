@@ -447,7 +447,11 @@ pub fn native_editor_frame_paint_plan(
         syntax_loader: params.syntax_loader,
         first_row: params.frame_state.first_row,
         last_row_from_scroll: params.frame_state.last_row_from_scroll,
-        view_position: params.frame_state.viewport_update.view_position,
+        view_position: params
+            .frame_state
+            .viewport_update
+            .view_position_plan
+            .view_position,
         soft_wrap_enabled: params.frame_state.viewport_update.soft_wrap,
         unwrapped_gutter: params.unwrapped_gutter,
         bounds: params.bounds,
