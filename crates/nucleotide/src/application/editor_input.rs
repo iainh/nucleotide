@@ -863,6 +863,8 @@ fn native_command_supported(command: &MappableCommand) -> bool {
         || native_register_edit_command(command)
         || native_register_selection_command(command)
         || native_selection_transform_command(command)
+        || native_textobject_command(command)
+        || native_surround_command(command)
         || native_search_command(command)
         || native_buffer_navigation_command(command)
         || native_diagnostic_navigation_command(command)
@@ -1207,6 +1209,20 @@ fn native_selection_transform_command(command: &MappableCommand) -> bool {
     )
 }
 
+fn native_textobject_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "select_textobject_around" | "select_textobject_inner"
+    )
+}
+
+fn native_surround_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "surround_add" | "surround_replace" | "surround_delete"
+    )
+}
+
 fn native_insert_command_supported(command: &MappableCommand) -> bool {
     (!native_insert_entry_command(command)
         && native_prompt_command(command).is_none()
@@ -1214,6 +1230,8 @@ fn native_insert_command_supported(command: &MappableCommand) -> bool {
         && !native_register_edit_command(command)
         && !native_register_selection_command(command)
         && !native_selection_transform_command(command)
+        && !native_textobject_command(command)
+        && !native_surround_command(command)
         && native_file_navigation_command(command).is_none()
         && native_command_supported(command))
         || native_insert_edit_command(command)
@@ -1378,11 +1396,44 @@ mod tests {
         doc.set_selection(view_id, Selection::point(cursor));
     }
 
+    fn set_test_selection(editor: &mut Editor, from: usize, to: usize) {
+        let view_id = editor.tree.focus;
+        let doc_id = editor.tree.try_get(view_id).unwrap().doc;
+        let doc = editor.document_mut(doc_id).unwrap();
+        doc.set_selection(view_id, Selection::single(from, to));
+    }
+
+    fn focused_document_text(editor: &Editor) -> String {
+        let view_id = editor.tree.focus;
+        let doc_id = editor.tree.try_get(view_id).unwrap().doc;
+        editor.document(doc_id).unwrap().text().to_string()
+    }
+
+    fn focused_selection_fragments(editor: &Editor) -> Vec<String> {
+        let view_id = editor.tree.focus;
+        let doc_id = editor.tree.try_get(view_id).unwrap().doc;
+        let doc = editor.document(doc_id).unwrap();
+        doc.selection(view_id)
+            .fragments(doc.text().slice(..))
+            .map(|fragment| fragment.into_owned())
+            .collect()
+    }
+
     fn plain_char_key(ch: char) -> KeyEvent {
         KeyEvent {
             code: KeyCode::Char(ch),
             modifiers: KeyModifiers::empty(),
         }
+    }
+
+    fn handle_key_str(
+        bridge: &mut EditorInputBridge,
+        editor: &mut Editor,
+        compositor: &mut Compositor,
+        jobs: &mut Jobs,
+        key: &str,
+    ) -> EditorInputOutcome {
+        bridge.handle_key(KeyEvent::from_str(key).unwrap(), compositor, editor, jobs)
     }
 
     #[test]
@@ -1440,6 +1491,10 @@ mod tests {
         assert!(native_command_supported(&MappableCommand::indent));
         assert!(native_command_supported(&MappableCommand::join_selections));
         assert!(native_command_supported(&MappableCommand::trim_selections));
+        assert!(native_command_supported(
+            &MappableCommand::select_textobject_inner
+        ));
+        assert!(native_command_supported(&MappableCommand::surround_add));
         assert!(!native_command_supported(&MappableCommand::goto_definition));
     }
 
@@ -1853,6 +1908,33 @@ mod tests {
     }
 
     #[test]
+    fn default_match_keymaps_route_textobjects_and_surrounds_natively() {
+        for (key, command) in [
+            ("a", MappableCommand::select_textobject_around),
+            ("i", MappableCommand::select_textobject_inner),
+            ("s", MappableCommand::surround_add),
+            ("r", MappableCommand::surround_replace),
+            ("d", MappableCommand::surround_delete),
+        ] {
+            let mut keymaps = Keymaps::default();
+            let m = KeyEvent::from_str("m").unwrap();
+
+            assert!(matches!(
+                keymaps.get(Mode::Normal, m),
+                KeymapResult::Pending(_)
+            ));
+
+            match keymaps.get(Mode::Normal, KeyEvent::from_str(key).unwrap()) {
+                KeymapResult::Matched(resolved) => {
+                    assert_eq!(resolved, command);
+                    assert!(native_command_supported(&resolved));
+                }
+                _ => panic!("expected m{key} to resolve to native command"),
+            }
+        }
+    }
+
+    #[test]
     fn default_space_f_keymap_requests_file_picker() {
         let mut keymaps = Keymaps::default();
         let space = KeyEvent::from_str("space").unwrap();
@@ -2058,6 +2140,40 @@ mod tests {
         assert!(!outcome.handled_by_terminal_editor);
         assert_eq!(outcome.picker_requested, None);
         assert_eq!(outcome.lsp_navigation_requested, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_handles_textobject_selection_natively() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text("one two\n");
+        set_test_cursor(&mut editor, 1);
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        for key in ["m", "i", "w"] {
+            let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, key);
+            assert!(outcome.handled_by_native_command);
+            assert!(!outcome.handled_by_terminal_editor);
+        }
+
+        assert_eq!(focused_selection_fragments(&editor), vec!["one"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_handles_surround_add_natively() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text("one two\n");
+        set_test_selection(&mut editor, 0, 3);
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        for key in ["m", "s", "("] {
+            let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, key);
+            assert!(outcome.handled_by_native_command);
+            assert!(!outcome.handled_by_terminal_editor);
+        }
+
+        assert_eq!(focused_document_text(&editor), "(one) two\n\n");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2539,6 +2655,35 @@ mod tests {
         ));
         assert!(!native_selection_transform_command(
             &MappableCommand::normal_mode
+        ));
+    }
+
+    #[test]
+    fn textobject_commands_are_classified_separately() {
+        assert!(native_textobject_command(
+            &MappableCommand::select_textobject_around
+        ));
+        assert!(native_textobject_command(
+            &MappableCommand::select_textobject_inner
+        ));
+        assert!(!native_textobject_command(&MappableCommand::surround_add));
+        assert!(!native_textobject_command(&MappableCommand::normal_mode));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::select_textobject_inner
+        ));
+    }
+
+    #[test]
+    fn surround_commands_are_classified_separately() {
+        assert!(native_surround_command(&MappableCommand::surround_add));
+        assert!(native_surround_command(&MappableCommand::surround_replace));
+        assert!(native_surround_command(&MappableCommand::surround_delete));
+        assert!(!native_surround_command(
+            &MappableCommand::select_textobject_inner
+        ));
+        assert!(!native_surround_command(&MappableCommand::normal_mode));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::surround_add
         ));
     }
 
