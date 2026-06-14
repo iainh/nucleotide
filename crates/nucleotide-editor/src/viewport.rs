@@ -587,9 +587,17 @@ impl EditorViewport {
 
         let view = editor.tree.try_get(view_id)?;
         let document = editor.document(doc_id)?;
-        let view_position = document.view_offset(view_id);
+        let helix_view_position = document.view_offset(view_id);
         let helix_snapshot =
             self.sync_from_helix_view(document, view, view_id, &metrics.text_format);
+        let annotations = view.text_annotations(document, None);
+        let view_position = view_position_for_top_visual_row(
+            document.text().slice(..),
+            self.top_visual_row(),
+            helix_view_position.horizontal_offset,
+            &metrics.text_format,
+            &annotations,
+        );
 
         Some(EditorViewportSurfaceUpdate {
             gutter_columns,
@@ -704,6 +712,33 @@ pub fn helix_viewport_snapshot(
         anchor_line,
         vertical_offset: view_offset.vertical_offset,
         top_visual_row,
+    }
+}
+
+pub fn view_position_for_top_visual_row(
+    text: RopeSlice<'_>,
+    top_visual_row: usize,
+    horizontal_offset: usize,
+    text_format: &TextFormat,
+    annotations: &TextAnnotations<'_>,
+) -> ViewPosition {
+    let (anchor, vertical_offset) = char_idx_at_visual_offset(
+        text,
+        0,
+        isize::try_from(top_visual_row).unwrap_or(isize::MAX),
+        0,
+        text_format,
+        annotations,
+    );
+
+    ViewPosition {
+        anchor,
+        vertical_offset,
+        horizontal_offset: if text_format.soft_wrap {
+            0
+        } else {
+            horizontal_offset
+        },
     }
 }
 
@@ -1553,6 +1588,77 @@ mod tests {
 
         assert_eq!(snapshot.anchor_line, 1);
         assert!(snapshot.top_visual_row >= snapshot.anchor_line + 2);
+    }
+
+    #[test]
+    fn view_position_for_top_visual_row_clamps_to_text() {
+        let text = Rope::from("one\ntwo");
+        let text_format = TextFormat::default();
+        let annotations = default_annotations();
+
+        let view_position =
+            view_position_for_top_visual_row(text.slice(..), 1_000, 7, &text_format, &annotations);
+
+        assert_eq!(text.char_to_line(view_position.anchor), 1);
+        assert_eq!(view_position.vertical_offset, 0);
+        assert_eq!(view_position.horizontal_offset, 7);
+    }
+
+    #[test]
+    fn view_position_for_top_visual_row_clears_soft_wrap_horizontal_offset() {
+        let text = "abcdef\nzz";
+        let text_format = TextFormat {
+            soft_wrap: true,
+            viewport_width: 3,
+            ..TextFormat::default()
+        };
+        let annotations = default_annotations();
+
+        let view_position =
+            view_position_for_top_visual_row(text.into(), 1, 7, &text_format, &annotations);
+
+        assert_eq!(view_position.horizontal_offset, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn surface_layout_render_position_clamps_stale_helix_anchor() {
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo");
+        let mut viewport = EditorViewport::new(px(20.0));
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(41.0)));
+
+        {
+            let doc = editor.document_mut(doc_id).unwrap();
+            doc.set_view_offset(
+                view_id,
+                ViewPosition {
+                    anchor: 1_000,
+                    vertical_offset: 0,
+                    horizontal_offset: 7,
+                },
+            );
+        }
+
+        let update = viewport
+            .sync_surface_layout(
+                &mut editor,
+                doc_id,
+                view_id,
+                EditorViewportSurfaceLayout {
+                    theme: None,
+                    bounds,
+                    cell_width: px(8.0),
+                    line_height: px(20.0),
+                    minimum_columns: 1,
+                    cursor_reveal: None,
+                },
+            )
+            .unwrap();
+
+        let doc = editor.document(doc_id).unwrap();
+        assert_eq!(doc.view_offset(view_id).anchor, 1_000);
+        assert!(update.view_position.anchor <= doc.text().len_chars());
+        assert_eq!(doc.text().char_to_line(update.view_position.anchor), 1);
+        assert_eq!(update.view_position.horizontal_offset, 7);
     }
 
     #[test]
