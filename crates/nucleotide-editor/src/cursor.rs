@@ -328,7 +328,8 @@ pub struct UnwrappedCursorPaintPlanParams<'a> {
     pub cursor_at_trailing_newline: bool,
     pub cursor_viewport_position: Option<CursorViewportPosition>,
     pub line_layout: Option<&'a LineLayout>,
-    pub next_line_y_offset: Pixels,
+    pub line_height: Pixels,
+    pub scroll_line_offset: Pixels,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -547,12 +548,12 @@ pub fn unwrapped_cursor_paint_plan(
     }
 
     if params.cursor_at_trailing_newline && params.cursor_char_idx >= params.text.len_chars() {
+        let y_offset = params.line_height * cursor_viewport_position.viewport_row as f32
+            - params.scroll_line_offset;
+
         return Some(UnwrappedCursorPaintPlan {
             source: UnwrappedCursorPaintPlanSource::PhantomTrailingNewline,
-            paint_position: phantom_line_cursor_paint_position(
-                params.geometry,
-                params.next_line_y_offset,
-            ),
+            paint_position: phantom_line_cursor_paint_position(params.geometry, y_offset),
             line_position: None,
         });
     }
@@ -1176,7 +1177,8 @@ mod tests {
                 viewport_row: 1,
             }),
             line_layout: Some(&layout),
-            next_line_y_offset: px(40.0),
+            line_height: px(20.0),
+            scroll_line_offset: px(0.0),
         })
         .expect("visible cursor plan");
 
@@ -1207,7 +1209,8 @@ mod tests {
                 viewport_row: 1,
             }),
             line_layout: None,
-            next_line_y_offset: px(20.0),
+            line_height: px(20.0),
+            scroll_line_offset: px(0.0),
         })
         .expect("phantom cursor plan");
 
@@ -1217,6 +1220,35 @@ mod tests {
         );
         assert_eq!(plan.paint_position.paint_origin, point(px(132.0), px(61.0)));
         assert!(plan.line_position.is_none());
+    }
+
+    #[test]
+    fn unwrapped_cursor_paint_plan_anchors_trailing_newline_to_viewport_row() {
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            4,
+            px(8.0),
+        );
+        let plan = unwrapped_cursor_paint_plan(UnwrappedCursorPaintPlanParams {
+            text: "one\ntwo\n".into(),
+            geometry,
+            cursor_char_idx: 8,
+            cursor_at_trailing_newline: true,
+            cursor_viewport_position: Some(CursorViewportPosition {
+                line: 2,
+                viewport_row: 0,
+            }),
+            line_layout: None,
+            line_height: px(20.0),
+            scroll_line_offset: px(7.0),
+        })
+        .expect("phantom cursor plan");
+
+        assert_eq!(
+            plan.source,
+            UnwrappedCursorPaintPlanSource::PhantomTrailingNewline
+        );
+        assert_eq!(plan.paint_position.paint_origin, point(px(132.0), px(34.0)));
     }
 
     #[test]
@@ -1236,7 +1268,8 @@ mod tests {
                 cursor_at_trailing_newline: false,
                 cursor_viewport_position: None,
                 line_layout: Some(&layout),
-                next_line_y_offset: px(40.0),
+                line_height: px(20.0),
+                scroll_line_offset: px(0.0),
             })
             .is_none()
         );
@@ -1251,7 +1284,8 @@ mod tests {
                     viewport_row: 1,
                 }),
                 line_layout: Some(&layout),
-                next_line_y_offset: px(40.0),
+                line_height: px(20.0),
+                scroll_line_offset: px(0.0),
             })
             .is_none()
         );

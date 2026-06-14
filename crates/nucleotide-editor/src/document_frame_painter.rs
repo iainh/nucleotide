@@ -273,6 +273,7 @@ struct UnwrappedDocumentFramePaintParams<'a> {
     pub element_focused: bool,
     pub selection_primary: Hsla,
     pub selection_secondary: Hsla,
+    pub scroll_line_offset: Pixels,
 }
 
 struct SoftWrapDocumentFramePaintParams<'a> {
@@ -581,6 +582,7 @@ pub fn paint_document_frame(
             element_focused: params.element_focused,
             selection_primary: params.selection_primary,
             selection_secondary: params.selection_secondary,
+            scroll_line_offset: params.scroll_line_offset,
         },
     )
 }
@@ -654,7 +656,6 @@ fn paint_unwrapped_document_frame(
     let frame = params.frame;
     let unwrapped_plan = frame.unwrapped_render_plan.as_ref()?;
 
-    let next_unwrapped_line_y_offset = unwrapped_plan.next_line_y_offset;
     let unwrapped_paint_plans = unwrapped_plan.line_paint_plans();
 
     for (unwrapped_plan, highlighted_line) in unwrapped_paint_plans
@@ -707,7 +708,7 @@ fn paint_unwrapped_document_frame(
         params.line_cache.push(layout);
     }
 
-    let cursor_overlay = paint_unwrapped_cursor(window, cx, &params, next_unwrapped_line_y_offset);
+    let cursor_overlay = paint_unwrapped_cursor(window, cx, &params);
     paint_unwrapped_gutter(window, cx, &params);
 
     cursor_overlay
@@ -803,7 +804,6 @@ fn paint_unwrapped_cursor(
     window: &mut Window,
     cx: &mut App,
     params: &UnwrappedDocumentFramePaintParams<'_>,
-    next_unwrapped_line_y_offset: Pixels,
 ) -> Option<CursorOverlayPlan> {
     let frame = params.frame;
     let cursor_viewport_pos = frame.render_snapshot.cursor_viewport_position;
@@ -854,7 +854,8 @@ fn paint_unwrapped_cursor(
             && line_viewport.file_ends_with_newline,
         cursor_viewport_position: Some(cursor_viewport_pos),
         line_layout: line_layout.as_ref(),
-        next_line_y_offset: next_unwrapped_line_y_offset,
+        line_height: params.layout.line_height,
+        scroll_line_offset: params.scroll_line_offset,
     });
 
     let Some(cursor_paint_plan) = cursor_paint_plan else {
