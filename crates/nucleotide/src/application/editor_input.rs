@@ -53,6 +53,7 @@ pub enum NativePickerRequest {
     FileCurrentBufferDirectory,
     Buffer,
     JumpList,
+    Symbols { workspace: bool },
     Diagnostics { workspace: bool },
     CodeActions,
     HoverDocs,
@@ -863,6 +864,12 @@ fn native_picker_command(command: &MappableCommand) -> Option<NativePickerReques
         }
         "buffer_picker" => Some(NativePickerRequest::Buffer),
         "jumplist_picker" => Some(NativePickerRequest::JumpList),
+        "lsp_or_syntax_symbol_picker" | "symbol_picker" => {
+            Some(NativePickerRequest::Symbols { workspace: false })
+        }
+        "lsp_or_syntax_workspace_symbol_picker" | "workspace_symbol_picker" => {
+            Some(NativePickerRequest::Symbols { workspace: true })
+        }
         "diagnostics_picker" => Some(NativePickerRequest::Diagnostics { workspace: false }),
         "workspace_diagnostics_picker" => {
             Some(NativePickerRequest::Diagnostics { workspace: true })
@@ -1334,6 +1341,14 @@ mod tests {
             Some(NativePickerRequest::JumpList)
         );
         assert_eq!(
+            native_picker_command(&MappableCommand::lsp_or_syntax_symbol_picker),
+            Some(NativePickerRequest::Symbols { workspace: false })
+        );
+        assert_eq!(
+            native_picker_command(&MappableCommand::lsp_or_syntax_workspace_symbol_picker),
+            Some(NativePickerRequest::Symbols { workspace: true })
+        );
+        assert_eq!(
             native_picker_command(&MappableCommand::diagnostics_picker),
             Some(NativePickerRequest::Diagnostics { workspace: false })
         );
@@ -1452,6 +1467,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn default_space_symbol_keymaps_request_native_symbol_pickers() {
+        let mut keymaps = Keymaps::default();
+        let space = KeyEvent::from_str("space").unwrap();
+        let s = KeyEvent::from_str("s").unwrap();
+        let shift_s = KeyEvent::from_str("S").unwrap();
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, s) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(
+                    native_picker_command(&command),
+                    Some(NativePickerRequest::Symbols { workspace: false })
+                );
+            }
+            _ => panic!("expected SPACE-s to resolve to symbol picker"),
+        }
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, shift_s) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(
+                    native_picker_command(&command),
+                    Some(NativePickerRequest::Symbols { workspace: true })
+                );
+            }
+            _ => panic!("expected SPACE-S to resolve to workspace symbol picker"),
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_file_picker_for_space_f() {
         let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
@@ -1489,6 +1542,29 @@ mod tests {
         assert!(picker.handled_by_native_command);
         assert!(!picker.handled_by_terminal_editor);
         assert_eq!(picker.picker_requested, Some(NativePickerRequest::JumpList));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_symbol_picker_for_space_s() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text("one\ntwo\n");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let space = KeyEvent::from_str("space").unwrap();
+        let s = KeyEvent::from_str("s").unwrap();
+
+        let pending = bridge.handle_key(space, &mut compositor, &mut editor, &mut jobs);
+        assert!(pending.handled_by_native_command);
+        assert_eq!(pending.picker_requested, None);
+
+        let picker = bridge.handle_key(s, &mut compositor, &mut editor, &mut jobs);
+        assert!(picker.handled_by_native_command);
+        assert!(!picker.handled_by_terminal_editor);
+        assert_eq!(
+            picker.picker_requested,
+            Some(NativePickerRequest::Symbols { workspace: false })
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
