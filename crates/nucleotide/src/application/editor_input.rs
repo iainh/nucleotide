@@ -21,7 +21,7 @@ use helix_view::{
     DocumentId, Editor, ViewId,
     document::Mode,
     editor::Action,
-    input::{Event, KeyEvent},
+    input::KeyEvent,
     keyboard::{KeyCode, KeyModifiers},
 };
 use nucleotide_logging::{debug, info};
@@ -36,7 +36,6 @@ pub struct EditorInputOutcome {
     pub focused_view_id: ViewId,
     pub focused_doc_id: Option<DocumentId>,
     pub selection_changed: bool,
-    pub handled_by_compositor: bool,
     pub handled_by_native_command: bool,
     pub unhandled_keys: Vec<KeyEvent>,
     pub completion_requested: Option<NativeCompletionRequest>,
@@ -130,13 +129,6 @@ impl EditorInputBridge {
             );
         }
 
-        let mut context = compositor::Context {
-            editor,
-            scroll: None,
-            jobs,
-        };
-        let event = Event::Key(key);
-        let handled_by_compositor = compositor.handle_event(&event, &mut context);
         let mut handled_by_native_command = false;
         let mut unhandled_keys = Vec::new();
         let mut completion_requested = None;
@@ -146,46 +138,44 @@ impl EditorInputBridge {
         let mut workspace_requested = None;
         let mut viewport_scroll_requested = None;
         let mut viewport_cursor_requested = None;
-        if !handled_by_compositor {
-            match self
-                .native_commands
-                .handle_key(key, compositor, context.editor, context.jobs)
-            {
-                NativeInputResult::Handled {
-                    completion_requested: request,
-                    picker_requested: picker_request,
-                    prompt_requested: prompt_request,
-                } => {
-                    handled_by_native_command = true;
-                    completion_requested = request;
-                    picker_requested = picker_request;
-                    prompt_requested = prompt_request;
-                }
-                NativeInputResult::RequestLspNavigation(request) => {
-                    handled_by_native_command = true;
-                    lsp_navigation_requested = Some(request);
-                }
-                NativeInputResult::RequestWorkspace(request) => {
-                    handled_by_native_command = true;
-                    workspace_requested = Some(request);
-                }
-                NativeInputResult::RequestViewportScroll(request) => {
-                    handled_by_native_command = true;
-                    viewport_scroll_requested = Some(request);
-                }
-                NativeInputResult::RequestViewportCursor(request) => {
-                    handled_by_native_command = true;
-                    viewport_cursor_requested = Some(request);
-                }
-                NativeInputResult::Unhandled(keys) => {
-                    debug!(?keys, "Native editor input was not handled");
-                    unhandled_keys = keys;
-                }
+        match self
+            .native_commands
+            .handle_key(key, compositor, editor, jobs)
+        {
+            NativeInputResult::Handled {
+                completion_requested: request,
+                picker_requested: picker_request,
+                prompt_requested: prompt_request,
+            } => {
+                handled_by_native_command = true;
+                completion_requested = request;
+                picker_requested = picker_request;
+                prompt_requested = prompt_request;
             }
-        };
+            NativeInputResult::RequestLspNavigation(request) => {
+                handled_by_native_command = true;
+                lsp_navigation_requested = Some(request);
+            }
+            NativeInputResult::RequestWorkspace(request) => {
+                handled_by_native_command = true;
+                workspace_requested = Some(request);
+            }
+            NativeInputResult::RequestViewportScroll(request) => {
+                handled_by_native_command = true;
+                viewport_scroll_requested = Some(request);
+            }
+            NativeInputResult::RequestViewportCursor(request) => {
+                handled_by_native_command = true;
+                viewport_cursor_requested = Some(request);
+            }
+            NativeInputResult::Unhandled(keys) => {
+                debug!(?keys, "Native editor input was not handled");
+                unhandled_keys = keys;
+            }
+        }
 
-        let after_selection = focused_doc_id
-            .and_then(|doc_id| selection_snapshot(context.editor, doc_id, focused_view_id));
+        let after_selection =
+            focused_doc_id.and_then(|doc_id| selection_snapshot(editor, doc_id, focused_view_id));
 
         if let Some(snapshot) = after_selection {
             debug!(
@@ -212,7 +202,6 @@ impl EditorInputBridge {
             focused_view_id,
             focused_doc_id,
             selection_changed,
-            handled_by_compositor,
             handled_by_native_command,
             unhandled_keys,
             completion_requested,
