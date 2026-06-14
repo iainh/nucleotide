@@ -94,6 +94,15 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
                     window.refresh();
                 }
             }
+        })
+        .on_mouse_up_out(MouseButton::Left, {
+            let drag = drag.clone();
+            move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
+                if drag.dragging.get() {
+                    drag.dragging.set(false);
+                    window.refresh();
+                }
+            }
         });
 
     // Visuals
@@ -232,6 +241,15 @@ pub fn bottom_panel_split<C: IntoElement>(
                     window.refresh();
                 }
             }
+        })
+        .on_mouse_up_out(MouseButton::Left, {
+            let drag = drag.clone();
+            move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
+                if drag.dragging.get() {
+                    drag.dragging.set(false);
+                    window.refresh();
+                }
+            }
         });
 
     // Panel shell at bottom
@@ -296,6 +314,16 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
     let mut root = div().relative().size_full();
 
     root = root.on_mouse_up(MouseButton::Left, {
+        let drag = drag.clone();
+        move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
+            if drag.dragging.get() {
+                drag.dragging.set(false);
+                window.refresh();
+            }
+        }
+    });
+
+    root = root.on_mouse_up_out(MouseButton::Left, {
         let drag = drag.clone();
         move |_ev: &MouseUpEvent, window: &mut Window, _cx: &mut App| {
             if drag.dragging.get() {

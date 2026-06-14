@@ -7253,6 +7253,13 @@ impl Render for Workspace {
                         workspace.is_resizing_file_tree = false;
                         cx.notify();
                     }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|workspace, _event: &MouseUpEvent, _window, cx| {
+                        workspace.is_resizing_file_tree = false;
+                        cx.notify();
+                    }),
                 );
         }
         // Add mouse down handler for global UI interactions
@@ -7773,6 +7780,12 @@ impl Render for Workspace {
                                     window.refresh();
                                 }
                             }))
+                            .on_mouse_up_out(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, _cx| {
+                                if this.basic_term_resizing {
+                                    this.basic_term_resizing = false;
+                                    window.refresh();
+                                }
+                            }))
                             .child(nucleotide_ui::bottom_panel_split(
                                 self.basic_terminal_height,
                                 80.0,
@@ -7873,6 +7886,15 @@ impl Render for Workspace {
                         },
                     ))
                     .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, _cx| {
+                            if this.is_resizing_file_tree {
+                                this.is_resizing_file_tree = false;
+                                window.refresh();
+                            }
+                        }),
+                    )
+                    .on_mouse_up_out(
                         MouseButton::Left,
                         cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, _cx| {
                             if this.is_resizing_file_tree {
