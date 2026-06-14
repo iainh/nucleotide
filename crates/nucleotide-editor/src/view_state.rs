@@ -1,7 +1,7 @@
 // ABOUTME: Persistent native editor view state shared by GPUI render phases
 // ABOUTME: Bundles viewport, metrics, overlay, scrollbar, and selection state
 
-use gpui::{Pixels, TextStyle, px};
+use gpui::{Pixels, TextStyle, TextSystem, px};
 use helix_view::{DocumentId, Editor, Theme, ViewId};
 
 use crate::{
@@ -55,6 +55,16 @@ impl EditorViewState {
         self.viewport.set_line_height(metrics.line_height);
         self.surface_metrics
             .set(metrics.line_height, metrics.cell_width);
+    }
+
+    pub fn resolve_and_apply_text_metrics(
+        &mut self,
+        text_system: &TextSystem,
+        style: &TextStyle,
+    ) -> EditorTextMetrics {
+        let metrics = EditorTextMetrics::resolve(text_system, style);
+        self.apply_text_metrics(metrics);
+        metrics
     }
 
     pub fn update_line_height_from_text_style(&mut self, style: &TextStyle) {
@@ -253,7 +263,7 @@ mod tests {
     use std::sync::Arc;
 
     use arc_swap::{ArcSwap, access::Map};
-    use gpui::{Bounds, point, px, size};
+    use gpui::{Bounds, TestAppContext, point, px, size};
     use helix_core::{Transaction, syntax};
     use helix_view::{
         DocumentId, Editor,
@@ -349,6 +359,23 @@ mod tests {
         assert_eq!(state.viewport().line_height(), px(24.0));
         assert_eq!(state.surface_metrics().get().line_height, px(24.0));
         assert_eq!(state.surface_metrics().get().cell_width, px(9.0));
+    }
+
+    #[gpui::test]
+    fn view_state_resolves_and_applies_text_metrics(cx: &mut TestAppContext) {
+        let mut state = EditorViewState::new(px(20.0), px(8.0));
+        let style = TextStyle::default();
+
+        let metrics =
+            cx.update(|cx| state.resolve_and_apply_text_metrics(cx.text_system(), &style));
+
+        assert_eq!(state.line_height(), metrics.line_height);
+        assert_eq!(state.viewport().line_height(), metrics.line_height);
+        assert_eq!(
+            state.surface_metrics().get().line_height,
+            metrics.line_height
+        );
+        assert_eq!(state.surface_metrics().get().cell_width, metrics.cell_width);
     }
 
     #[test]
