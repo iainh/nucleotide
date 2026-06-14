@@ -1205,6 +1205,34 @@ mod tests {
     }
 
     #[test]
+    fn default_space_f_keymap_requests_file_picker() {
+        let mut keymaps = Keymaps::default();
+        let space = KeyEvent {
+            code: KeyCode::Char(' '),
+            modifiers: KeyModifiers::empty(),
+        };
+        let f = KeyEvent {
+            code: KeyCode::Char('f'),
+            modifiers: KeyModifiers::empty(),
+        };
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, f) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(
+                    native_picker_command(&command),
+                    Some(NativePickerRequest::File)
+                );
+            }
+            _ => panic!("expected SPACE-f to resolve to file_picker"),
+        }
+    }
+
+    #[test]
     fn history_commands_are_classified_separately() {
         assert!(native_history_command(&MappableCommand::undo));
         assert!(native_history_command(&MappableCommand::redo));

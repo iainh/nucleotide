@@ -1733,10 +1733,7 @@ impl Workspace {
                         key_hints.set_info(None);
                         cx.notify();
                     });
-                    // Invoke file finder
-                    let core = self.core.clone();
-                    let handle = self.handle.clone();
-                    open(core, handle, cx);
+                    cx.emit(crate::Update::ShowFilePicker);
                     return;
                 }
                 "b" if self.leader_active => {
@@ -1747,9 +1744,7 @@ impl Workspace {
                         key_hints.set_info(None);
                         cx.notify();
                     });
-                    let core = self.core.clone();
-                    let handle = self.handle.clone();
-                    show_buffer_picker(core, handle, cx);
+                    cx.emit(crate::Update::ShowBufferPicker);
                     return;
                 }
                 "t" if self.leader_active => {
@@ -6177,16 +6172,7 @@ impl Workspace {
     pub fn open_file_picker(&mut self, cx: &mut Context<Self>) {
         nucleotide_logging::debug!("Opening file picker");
 
-        // Send the space+f shortcut to open file picker (common Helix shortcut)
-        let key_event = KeyEvent {
-            code: KeyCode::Char('f'),
-            modifiers: KeyModifiers::empty(),
-        };
-
-        self.input.update(cx, |_, cx| {
-            cx.emit(crate::InputEvent::Key(key_event));
-        });
-        nucleotide_logging::debug!("Sent 'f' key to open file picker");
+        cx.emit(crate::Update::ShowFilePicker);
     }
 
     /// Open command palette  
