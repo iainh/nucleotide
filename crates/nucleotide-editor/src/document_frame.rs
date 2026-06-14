@@ -7,6 +7,7 @@ use helix_view::{
     document::Mode,
     editor::CursorShapeConfig,
     graphics::{CursorKind, Style},
+    view::ViewPosition,
 };
 
 use crate::{
@@ -34,6 +35,7 @@ pub struct EditorDocumentFrameParams<'a> {
     pub syntax_loader: &'a helix_core::syntax::Loader,
     pub first_row: usize,
     pub last_row_from_scroll: usize,
+    pub view_position: ViewPosition,
     pub soft_wrap_enabled: bool,
     pub unwrapped_gutter: Option<EditorDocumentFrameGutterParams<'a>>,
     pub bounds: Bounds<Pixels>,
@@ -64,6 +66,7 @@ pub struct EditorDocumentFrameFromEditorParams<'a> {
     pub theme: &'a Theme,
     pub first_row: usize,
     pub last_row_from_scroll: usize,
+    pub view_position: ViewPosition,
     pub soft_wrap_enabled: bool,
     pub unwrapped_gutter_layout: Option<&'a EditorLayout>,
     pub bounds: Bounds<Pixels>,
@@ -159,7 +162,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         document_soft_wrap_render_plan(DocumentSoftWrapRenderPlanParams {
             document: params.document,
             theme: Some(params.theme),
-            view_id: params.view_id,
+            view_position: params.view_position,
             bounds: params.bounds,
             gutter_columns: gutter_width,
             cell_width: params.cell_width,
@@ -267,6 +270,7 @@ pub fn editor_document_frame_from_editor(
         syntax_loader: &syntax_loader,
         first_row: params.first_row,
         last_row_from_scroll: params.last_row_from_scroll,
+        view_position: params.view_position,
         soft_wrap_enabled: params.soft_wrap_enabled,
         unwrapped_gutter: params.unwrapped_gutter_layout.map(|layout| {
             EditorDocumentFrameGutterParams {
@@ -370,6 +374,7 @@ mod tests {
             syntax_loader: &syntax_loader,
             first_row: 0,
             last_row_from_scroll: 2,
+            view_position: document.view_offset(view.id),
             soft_wrap_enabled: true,
             unwrapped_gutter: None,
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
@@ -417,6 +422,66 @@ mod tests {
     }
 
     #[test]
+    fn soft_wrap_frame_uses_supplied_view_position() {
+        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        let syntax_loader = syntax::Loader::default();
+        let syntax_loader_swap = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let mut document = Document::from(
+            Rope::from("one\ntwo\nthree\n"),
+            None,
+            config,
+            syntax_loader_swap,
+        );
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        document.ensure_view_init(view.id);
+        let theme = ThemeLoader::new(&[]).default_theme(true);
+        let view_position = ViewPosition {
+            anchor: 0,
+            vertical_offset: 1,
+            horizontal_offset: 0,
+        };
+
+        let frame = editor_document_frame(EditorDocumentFrameParams {
+            document: &document,
+            view: &view,
+            view_id: view.id,
+            theme: &theme,
+            syntax_loader: &syntax_loader,
+            first_row: 0,
+            last_row_from_scroll: 2,
+            view_position,
+            soft_wrap_enabled: true,
+            unwrapped_gutter: None,
+            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            scroll_line_offset: px(0.0),
+            soft_wrap_minimum_columns: 10,
+            fg_color: black(),
+            font: font("TestFont"),
+            default_text_style: Style::default(),
+            default_bg: white(),
+            wrap_indicator_color: None,
+            ruler_color: black(),
+            editor_mode: Mode::Normal,
+            cursor_kind: CursorKind::Block,
+            cursor_style: Style::default(),
+            cursor_shape: CursorShapeConfig::default(),
+            editor_rulers: Vec::new(),
+            cursorline_enabled: true,
+            is_focused: true,
+        });
+
+        let soft_wrap = frame
+            .soft_wrap_render_plan
+            .as_ref()
+            .expect("soft-wrap plan");
+
+        assert_eq!(soft_wrap.view_offset, view_position);
+        assert_eq!(soft_wrap.visual_lines[0].visual_line, 1);
+    }
+
+    #[test]
     fn frame_collects_unwrapped_render_plan_when_soft_wrap_disabled() {
         let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
         let syntax_loader = syntax::Loader::default();
@@ -440,6 +505,7 @@ mod tests {
             syntax_loader: &syntax_loader,
             first_row: 0,
             last_row_from_scroll: 3,
+            view_position: document.view_offset(view.id),
             soft_wrap_enabled: false,
             unwrapped_gutter: None,
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(120.0))),
@@ -506,6 +572,7 @@ mod tests {
             theme: &theme,
             first_row: 0,
             last_row_from_scroll: 2,
+            view_position: document.view_offset(view_id),
             soft_wrap_enabled: false,
             unwrapped_gutter_layout: Some(&layout),
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),

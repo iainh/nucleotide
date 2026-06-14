@@ -36,6 +36,7 @@ pub struct EditorViewportSurfaceUpdate {
     pub gutter_columns: u16,
     pub visual_rows: usize,
     pub soft_wrap: bool,
+    pub view_position: ViewPosition,
     pub helix_view_synced: bool,
     pub cursor_revealed: bool,
     pub helix_snapshot: HelixViewportSnapshot,
@@ -441,6 +442,7 @@ impl EditorViewport {
 
         let view = editor.tree.try_get(view_id)?;
         let document = editor.document(doc_id)?;
+        let view_position = document.view_offset(view_id);
         let helix_snapshot =
             self.sync_from_helix_view(document, view, view_id, &metrics.text_format);
 
@@ -448,6 +450,7 @@ impl EditorViewport {
             gutter_columns,
             visual_rows: metrics.visual_rows,
             soft_wrap: metrics.soft_wrap,
+            view_position,
             helix_view_synced,
             cursor_revealed,
             helix_snapshot,
