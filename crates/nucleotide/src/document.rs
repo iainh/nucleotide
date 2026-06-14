@@ -19,7 +19,7 @@ use nucleotide_editor::{
     EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewport,
     EditorViewportContentLayout, EditorViewportSurfaceLayout, cursor_document_line,
     cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame,
-    paint_editor_background, shape_cursor_text,
+    paint_editor_background,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -678,16 +678,6 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         let doc_text = document.text().clone();
         let _tab_width = document.tab_width() as u16;
 
-        let cursor_text_shape = shape_cursor_text(
-            window.text_system().as_ref(),
-            frame.cursor_presentation.block_text.clone(),
-            &style.font(),
-            style.font_size.to_pixels(px(16.0)),
-            &frame.cursor_presentation.text_style_at_cursor,
-            frame.cursor_presentation.block_text_color(bg_color),
-            bg_color,
-        );
-
         let text = doc_text.slice(..);
 
         let gutter_style = cx.theme_style("ui.linenr");
@@ -720,7 +710,6 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
                 fg_color,
                 default_bg: bg_color,
                 cursorline_color: cursorline_style,
-                cursor_text_shape: &cursor_text_shape,
                 is_focused,
                 element_focused,
                 selection_primary: tokens.editor.selection_primary,
