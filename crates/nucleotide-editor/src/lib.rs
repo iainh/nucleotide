@@ -23,6 +23,7 @@ pub mod line_painter;
 pub mod line_plan;
 pub mod line_text;
 pub mod metrics;
+pub mod overlay_state;
 pub mod render_snapshot;
 pub mod ruler;
 pub mod scroll_manager;
@@ -95,6 +96,7 @@ pub use line_text::{
     shared_line_text_without_trailing_newline,
 };
 pub use metrics::EditorTextMetrics;
+pub use overlay_state::EditorOverlayState;
 pub use render_snapshot::{
     EditorRenderSnapshot, document_render_snapshot, render_snapshot_for_cursor,
 };
