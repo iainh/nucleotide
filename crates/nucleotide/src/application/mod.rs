@@ -2103,6 +2103,16 @@ impl Application {
                         editor_input::NativePickerRequest::File => {
                             cx.emit(crate::Update::ShowFilePicker);
                         }
+                        editor_input::NativePickerRequest::FileAt(path) => {
+                            if path.exists() {
+                                cx.emit(crate::Update::ShowFilePickerAt(path));
+                            } else {
+                                self.editor.set_error(format!(
+                                    "File picker path does not exist: {}",
+                                    path.display()
+                                ));
+                            }
+                        }
                         editor_input::NativePickerRequest::FileCurrentDirectory => {
                             let cwd = helix_stdx::env::current_working_dir();
                             if cwd.exists() {
