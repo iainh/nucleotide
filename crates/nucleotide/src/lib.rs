@@ -14,6 +14,7 @@ pub mod document;
 pub mod editor_capabilities_impl;
 pub mod editor_provider;
 pub mod file_tree;
+mod helix_command;
 pub mod input_coordinator;
 #[cfg(test)]
 pub mod integration_test_phase2;

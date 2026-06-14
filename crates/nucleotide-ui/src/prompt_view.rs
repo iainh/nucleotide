@@ -1,5 +1,5 @@
 // ABOUTME: GPUI-native prompt component for text input with completion support
-// ABOUTME: Replaces dependency on helix_term::ui::Prompt with a proper GPUI implementation
+// ABOUTME: Replaces the terminal prompt widget with a proper GPUI implementation
 
 use crate::common::ModalStyle;
 use gpui::prelude::FluentBuilder;
