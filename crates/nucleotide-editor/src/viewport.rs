@@ -543,7 +543,7 @@ impl EditorViewport {
             metrics.viewport_columns,
             self.visible_visual_rows(),
         );
-        apply_helix_view_area_plan(editor, view_id, view_area_plan);
+        apply_helix_view_area_plan(editor.tree.get_mut(view_id), view_area_plan);
 
         let mut helix_view_synced = if self.has_pending_view_sync() {
             let view = editor.tree.try_get(view_id)?.clone();
@@ -653,8 +653,7 @@ fn editor_viewport_content_metrics(
 }
 
 fn apply_helix_view_area_plan(
-    editor: &mut Editor,
-    view_id: ViewId,
+    view: &mut helix_view::View,
     plan: EditorViewportViewAreaPlan,
 ) -> bool {
     if !plan.changed {
@@ -662,12 +661,11 @@ fn apply_helix_view_area_plan(
     }
 
     debug!(
-        view_id = ?view_id,
         old_area = ?plan.previous_area,
         new_area = ?plan.target_area,
         "Syncing native viewport dimensions to Helix view area"
     );
-    editor.tree.get_mut(view_id).area = plan.target_area;
+    view.area = plan.target_area;
     true
 }
 
