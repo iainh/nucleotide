@@ -196,9 +196,19 @@ impl Render for DocumentView {
                         layout: after_layout,
                         window,
                         cx,
-                    });
+                    })
                 },
             )
+            .on_cursor_overlay(|overlay_plan, cx| {
+                let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+                if let Some(overlay_plan) = overlay_plan {
+                    layout_info.cursor_position = Some(overlay_plan.cursor_position);
+                    layout_info.cursor_size = Some(overlay_plan.cursor_size);
+                } else {
+                    layout_info.cursor_position = None;
+                    layout_info.cursor_size = None;
+                }
+            })
             .on_pointer_selection({
                 let core = self.core.clone();
                 let view_id = self.view_id;
@@ -248,7 +258,9 @@ struct DocumentPaintParams<'a> {
     cx: &'a mut App,
 }
 
-fn paint_document_content(params: DocumentPaintParams<'_>) {
+fn paint_document_content(
+    params: DocumentPaintParams<'_>,
+) -> Option<nucleotide_editor::CursorOverlayPlan> {
     let DocumentPaintParams {
         core,
         doc_id,
@@ -289,12 +301,10 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
             fallback_ruler_color: ui_tokens.chrome.border_default,
         })
     });
-    let Some(prepared_frame) = prepared_frame else {
-        return;
-    };
+    let prepared_frame = prepared_frame?;
 
     let element_focused = focus.is_focused(window);
-    let overlay_plan = paint_native_editor_frame(
+    paint_native_editor_frame(
         window,
         cx,
         NativeEditorFramePaintParams {
@@ -306,14 +316,5 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
             diagnostic_theme: &helix_theme,
             element_focused,
         },
-    );
-
-    let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
-    if let Some(overlay_plan) = overlay_plan {
-        layout_info.cursor_position = Some(overlay_plan.cursor_position);
-        layout_info.cursor_size = Some(overlay_plan.cursor_size);
-    } else {
-        layout_info.cursor_position = None;
-        layout_info.cursor_size = None;
-    }
+    )
 }

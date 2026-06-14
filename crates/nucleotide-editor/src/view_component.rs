@@ -9,14 +9,16 @@ use gpui::{
 };
 
 use crate::{
-    EditorDocumentElement, EditorLayout, EditorSurface, EditorSurfacePointerEvent, EditorViewState,
-    EditorViewport, ViewportScrollUpdate, selection::EditorPointerSelectionPhase,
+    CursorOverlayPlan, EditorDocumentElement, EditorLayout, EditorSurface,
+    EditorSurfacePointerEvent, EditorViewState, EditorViewport, ViewportScrollUpdate,
+    selection::EditorPointerSelectionPhase,
 };
 
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
 type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
 type PointerSelectionCallback =
     Rc<dyn Fn(EditorPointerSelectionPhase, EditorSurfacePointerEvent, &mut App)>;
+type CursorOverlayCallback = Rc<dyn Fn(Option<CursorOverlayPlan>, &mut App)>;
 
 pub struct NativeEditorView<P> {
     view_entity_id: EntityId,
@@ -24,6 +26,7 @@ pub struct NativeEditorView<P> {
     text_style: TextStyle,
     paint: P,
     on_scroll: Option<ScrollCallback>,
+    on_cursor_overlay: Option<CursorOverlayCallback>,
     on_pointer_selection: Option<PointerSelectionCallback>,
     on_mouse_down: Option<PointerCallback>,
     on_mouse_drag: Option<PointerCallback>,
@@ -32,7 +35,13 @@ pub struct NativeEditorView<P> {
 
 impl<P> NativeEditorView<P>
 where
-    P: FnMut(&mut EditorViewState, Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App)
+    P: FnMut(
+            &mut EditorViewState,
+            Bounds<Pixels>,
+            &mut EditorLayout,
+            &mut Window,
+            &mut App,
+        ) -> Option<CursorOverlayPlan>
         + 'static,
 {
     pub fn new(
@@ -47,6 +56,7 @@ where
             text_style,
             paint,
             on_scroll: None,
+            on_cursor_overlay: None,
             on_pointer_selection: None,
             on_mouse_down: None,
             on_mouse_drag: None,
@@ -59,6 +69,14 @@ where
         callback: impl Fn(&EditorViewport, ViewportScrollUpdate, &mut App) + 'static,
     ) -> Self {
         self.on_scroll = Some(Rc::new(callback));
+        self
+    }
+
+    pub fn on_cursor_overlay(
+        mut self,
+        callback: impl Fn(Option<CursorOverlayPlan>, &mut App) + 'static,
+    ) -> Self {
+        self.on_cursor_overlay = Some(Rc::new(callback));
         self
     }
 
@@ -97,7 +115,13 @@ where
 
 impl<P> IntoElement for NativeEditorView<P>
 where
-    P: FnMut(&mut EditorViewState, Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App)
+    P: FnMut(
+            &mut EditorViewState,
+            Bounds<Pixels>,
+            &mut EditorLayout,
+            &mut Window,
+            &mut App,
+        ) -> Option<CursorOverlayPlan>
         + 'static,
 {
     type Element = Component<Self>;
@@ -109,7 +133,13 @@ where
 
 impl<P> RenderOnce for NativeEditorView<P>
 where
-    P: FnMut(&mut EditorViewState, Bounds<Pixels>, &mut EditorLayout, &mut Window, &mut App)
+    P: FnMut(
+            &mut EditorViewState,
+            Bounds<Pixels>,
+            &mut EditorLayout,
+            &mut Window,
+            &mut App,
+        ) -> Option<CursorOverlayPlan>
         + 'static,
 {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
@@ -119,6 +149,7 @@ where
             text_style,
             mut paint,
             on_scroll,
+            on_cursor_overlay,
             on_pointer_selection,
             on_mouse_down,
             on_mouse_drag,
@@ -131,7 +162,10 @@ where
         let mut paint_editor_state = editor_state;
         let document_element =
             EditorDocumentElement::new(text_style, move |bounds, after_layout, window, cx| {
-                paint(&mut paint_editor_state, bounds, after_layout, window, cx);
+                let overlay_plan = paint(&mut paint_editor_state, bounds, after_layout, window, cx);
+                if let Some(on_cursor_overlay) = &on_cursor_overlay {
+                    on_cursor_overlay(overlay_plan, cx);
+                }
             });
 
         let mut editor_surface = EditorSurface::new(
@@ -196,7 +230,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     use gpui::{
         AppContext as _, Empty, Entity, IntoElement as _, MouseButton, ScrollDelta,
@@ -217,12 +254,17 @@ mod tests {
             .viewport_mut()
             .set_layout(px(20.0), size(px(100.0), px(200.0)), 50);
 
-        let painted = Rc::new(std::cell::Cell::new(false));
-        let saw_scroll = Rc::new(std::cell::Cell::new(false));
-        let saw_down = Rc::new(std::cell::Cell::new(false));
-        let saw_drag = Rc::new(std::cell::Cell::new(false));
-        let saw_up = Rc::new(std::cell::Cell::new(false));
+        let painted = Rc::new(Cell::new(false));
+        let overlay_seen = Rc::new(Cell::new(None));
+        let saw_scroll = Rc::new(Cell::new(false));
+        let saw_down = Rc::new(Cell::new(false));
+        let saw_drag = Rc::new(Cell::new(false));
+        let saw_up = Rc::new(Cell::new(false));
         let phases = Rc::new(RefCell::new(Vec::new()));
+        let overlay_plan = CursorOverlayPlan {
+            cursor_position: point(px(12.0), px(24.0)),
+            cursor_size: size(px(8.0), px(20.0)),
+        };
 
         let window = cx.add_empty_window();
         window.draw(
@@ -237,9 +279,14 @@ mod tests {
                         let painted = Rc::clone(&painted);
                         move |_state, _bounds, _layout, _window, _cx| {
                             painted.set(true);
+                            Some(overlay_plan)
                         }
                     },
                 )
+                .on_cursor_overlay({
+                    let overlay_seen = Rc::clone(&overlay_seen);
+                    move |overlay_plan, _| overlay_seen.set(overlay_plan)
+                })
                 .on_scroll({
                     let saw_scroll = Rc::clone(&saw_scroll);
                     move |_, _, _| saw_scroll.set(true)
@@ -287,6 +334,7 @@ mod tests {
         );
 
         assert!(painted.get());
+        assert_eq!(overlay_seen.get(), Some(overlay_plan));
         assert!(saw_scroll.get());
         assert!(saw_down.get());
         assert!(saw_drag.get());
