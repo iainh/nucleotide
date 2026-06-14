@@ -349,33 +349,25 @@ impl OverlayView {
 
                             // Only set up completion for command prompts, not search/regex prompts.
                             if matches!(submit_action, PromptSubmitAction::Command) {
-                                // Set up completion function for command mode using our centralized completions module
-                                // Try to get actual settings from the editor
-                                let settings_cache = if let Some(core) = self.core.upgrade() {
-                                    // Use the Helix setting completer to get all available settings
-                                    // Pass an empty string to get all settings
-                                    let all_settings = helix_term::ui::completers::setting(
-                                        &core.read(cx).editor,
-                                        "",
-                                    );
-                                    let settings: Vec<String> = all_settings
-                                        .into_iter()
-                                        .map(|(_, span)| span.content.to_string())
-                                        .collect();
-                                    settings
-                                } else {
-                                    // Fallback to hardcoded list
-                                    crate::completions::SETTINGS_KEYS.to_vec()
-                                };
+                                let completion_cache = self
+                                    .core
+                                    .upgrade()
+                                    .map(|core| {
+                                        crate::completions::CommandCompletionCache::from_editor(
+                                            &core.read(cx).editor,
+                                        )
+                                    })
+                                    .unwrap_or_default();
 
                                 view = view.with_completion_fn(move |input| {
                                     // Strip leading colon if present
                                     let input = input.strip_prefix(':').unwrap_or(input);
 
-                                    // Use cached settings for better completions
+                                    // Use cached editor context so prompt completion does not
+                                    // depend on Helix's terminal UI prompt/completer layer.
                                     crate::completions::get_command_completions_with_cache(
                                         input,
-                                        Some(settings_cache.to_vec()),
+                                        Some(&completion_cache),
                                     )
                                 });
                             }
