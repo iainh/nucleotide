@@ -4093,6 +4093,12 @@ impl Workspace {
                 let core = self.core.clone();
                 show_buffer_picker(core, handle, cx);
             }
+            crate::Update::ShowCodeActions => {
+                nucleotide_logging::info!("Workspace received ShowCodeActions");
+                let handle = self.handle.clone();
+                let core = self.core.clone();
+                show_code_actions(core, handle, cx);
+            }
             crate::Update::Info(info) => {
                 self.info_hidden = false;
                 self.info.update(cx, |info_box, info_cx| {
