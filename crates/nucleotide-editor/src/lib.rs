@@ -42,11 +42,12 @@ pub use cursor::{
     ShapedEditorCursorPaintParams, ShapedEditorCursorPlan, ShapedEditorCursorPlanParams,
     SoftWrapCursorPaintPlan, SoftWrapCursorPaintPlanParams, UnwrappedCursorPaintPlan,
     UnwrappedCursorPaintPlanParams, UnwrappedCursorPaintPlanSource, block_cursor_text,
-    cursor_background_color, cursor_document_line, cursor_foreground_color, cursor_line_position,
-    cursor_overlay_plan, cursor_text_run, cursor_viewport_position, editor_cursor_presentation,
-    paint_shaped_editor_cursor, phantom_line_cursor_paint_position, shape_and_paint_editor_cursor,
-    shape_cursor_text, shaped_editor_cursor_plan, soft_wrap_cursor_paint_plan,
-    soft_wrap_cursor_paint_position, unwrapped_cursor_paint_plan, unwrapped_cursor_paint_position,
+    cursor_background_color, cursor_document_line, cursor_document_line_for_view,
+    cursor_foreground_color, cursor_line_position, cursor_overlay_plan, cursor_text_run,
+    cursor_viewport_position, editor_cursor_presentation, paint_shaped_editor_cursor,
+    phantom_line_cursor_paint_position, shape_and_paint_editor_cursor, shape_cursor_text,
+    shaped_editor_cursor_plan, soft_wrap_cursor_paint_plan, soft_wrap_cursor_paint_position,
+    unwrapped_cursor_paint_plan, unwrapped_cursor_paint_position,
 };
 pub use cursor_style::{cursor_has_reversed_modifier, cursor_style_for_mode};
 pub use diagnostics::{

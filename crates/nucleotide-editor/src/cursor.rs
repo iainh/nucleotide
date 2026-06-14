@@ -471,6 +471,16 @@ pub fn cursor_document_line(
     text.char_to_line(cursor_char_idx.min(text.len_chars()))
 }
 
+pub fn cursor_document_line_for_view(document: &Document, view_id: ViewId) -> usize {
+    let text = document.text();
+    let cursor_char_idx = document.selection(view_id).primary().cursor(text.slice(..));
+    let cursor_at_trailing_newline = cursor_char_idx == text.len_chars()
+        && text.len_chars() > 0
+        && text.char(text.len_chars() - 1) == '\n';
+
+    cursor_document_line(text.slice(..), cursor_char_idx, cursor_at_trailing_newline)
+}
+
 pub fn cursor_viewport_position(
     cursor_line: usize,
     first_row: usize,
@@ -660,9 +670,18 @@ pub fn shape_cursor_text(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arc_swap::{ArcSwap, access::Map};
     use gpui::{black, hsla, point, px, size};
-    use helix_core::doc_formatter::TextFormat;
-    use helix_view::graphics::{Color, Modifier};
+    use helix_core::{Selection, Transaction, doc_formatter::TextFormat, syntax};
+    use helix_view::{
+        DocumentId, Editor,
+        editor::{Action, Config},
+        graphics::{Color, Modifier, Rect},
+        handlers::Handlers,
+        theme,
+    };
 
     use super::*;
 
@@ -688,6 +707,41 @@ mod tests {
             viewport_width: 17,
             soft_wrap_at_text_width: false,
         }
+    }
+
+    fn test_handlers() -> Handlers {
+        let (completion_tx, _) = tokio::sync::mpsc::channel(1);
+        let (signature_tx, _) = tokio::sync::mpsc::channel(1);
+        let (auto_save_tx, _) = tokio::sync::mpsc::channel(1);
+        let (doc_colors_tx, _) = tokio::sync::mpsc::channel(1);
+
+        Handlers {
+            completions: helix_view::handlers::completion::CompletionHandler::new(completion_tx),
+            signature_hints: signature_tx,
+            auto_save: auto_save_tx,
+            document_colors: doc_colors_tx,
+            word_index: helix_view::handlers::word_index::Handler::spawn(),
+        }
+    }
+
+    fn test_editor_with_text(text: &str) -> (Editor, DocumentId, ViewId) {
+        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let theme_loader = Arc::new(theme::Loader::new(&[]));
+        let mut editor = Editor::new(
+            Rect::new(0, 0, 80, 24),
+            theme_loader,
+            syntax_loader,
+            Arc::new(Map::new(Arc::clone(&config), |config: &Config| config)),
+            test_handlers(),
+        );
+        let doc_id = editor.new_file(Action::VerticalSplit);
+        let view_id = editor.tree.focus;
+        let doc = editor.document_mut(doc_id).unwrap();
+        let transaction = Transaction::change(doc.text(), [(0, 0, Some(text.into()))].into_iter());
+        doc.apply(&transaction, view_id);
+
+        (editor, doc_id, view_id)
     }
 
     #[test]
@@ -874,6 +928,27 @@ mod tests {
     #[test]
     fn cursor_document_line_clamps_to_document_end() {
         assert_eq!(cursor_document_line("abc\ndef".into(), 99, false), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cursor_document_line_for_view_uses_primary_selection() {
+        let (mut editor, doc_id, view_id) = test_editor_with_text("abc\ndef\n");
+        let document = editor.document_mut(doc_id).unwrap();
+        document.set_selection(view_id, Selection::point(5));
+
+        assert_eq!(cursor_document_line_for_view(document, view_id), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cursor_document_line_for_view_uses_final_empty_line_at_trailing_newline() {
+        let (mut editor, doc_id, view_id) = test_editor_with_text("abc\n");
+        let document = editor.document_mut(doc_id).unwrap();
+        document.set_selection(view_id, Selection::point(document.text().len_chars()));
+
+        assert_eq!(
+            cursor_document_line_for_view(document, view_id),
+            document.text().len_lines().saturating_sub(1)
+        );
     }
 
     #[test]

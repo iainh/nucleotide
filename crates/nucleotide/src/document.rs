@@ -16,7 +16,7 @@ use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
     EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewportContentLayout,
     NativeEditorFramePaintParams, NativeEditorFramePrepareParams, NativeEditorView,
-    cursor_document_line, paint_native_editor_frame, prepare_native_editor_frame,
+    cursor_document_line_for_view, paint_native_editor_frame, prepare_native_editor_frame,
 };
 
 // Removed unused debug helper: test_synthetic_click_accuracy
@@ -223,17 +223,9 @@ impl DocumentView {
                 Some(doc) => doc,
                 None => return Vec::new(), // Document was closed
             };
-            let text = document.text();
 
-            let primary_idx = document
-                .selection(self.view_id)
-                .primary()
-                .cursor(text.slice(..));
-            let cursor_at_trailing_newline = primary_idx == text.len_chars()
-                && text.len_chars() > 0
-                && text.char(text.len_chars() - 1) == '\n';
             (
-                cursor_document_line(text.slice(..), primary_idx, cursor_at_trailing_newline),
+                cursor_document_line_for_view(document, self.view_id),
                 doc_id,
             )
         };
