@@ -90,9 +90,10 @@ sequenceDiagram
     Bridge->>Bridge: GPUI Key → Helix KeyEvent
     Bridge->>Application: emit(InputEvent::Key)
     Application->>Application: handle_input_event()
-    Application->>Helix: compositor.handle_event()
-    Helix->>Helix: Execute command
-    Helix-->>Application: EditorEvent
+    Application->>Application: EditorInputBridge::handle_key()
+    Application->>Application: Native command routing
+    Application->>Helix: Execute mappable command when needed
+    Helix-->>Application: Editor state updates
     Application-->>Workspace: emit(Update)
     Workspace-->>GPUI: UI updates
 ```
