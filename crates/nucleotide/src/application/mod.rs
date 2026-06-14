@@ -2003,6 +2003,16 @@ impl Application {
         }
     }
 
+    fn create_native_prompt(request: editor_input::NativePromptRequest) -> crate::prompt::Prompt {
+        let prompt = match request {
+            editor_input::NativePromptRequest::Command => ":",
+            editor_input::NativePromptRequest::Search => "search:",
+            editor_input::NativePromptRequest::ReverseSearch => "rsearch:",
+        };
+
+        crate::prompt::Prompt::native(prompt, "", |_| {}).with_cancel(|| {})
+    }
+
     #[allow(dead_code)]
     fn emit_overlays_except_prompt(&mut self, cx: &mut gpui::Context<crate::Core>) {
         // Check for picker events first
@@ -2039,7 +2049,7 @@ impl Application {
             return;
         }
 
-        // Handle prompts through legacy system
+        // Handle remaining prompts created by unsupported Helix terminal commands.
         if let Some(prompt) = self.create_native_prompt_from_helix(last_key, cx) {
             cx.emit(crate::Update::Prompt(prompt));
             return;
@@ -2096,6 +2106,10 @@ impl Application {
 
                 if let Some(request) = outcome.lsp_navigation_requested {
                     self.trigger_lsp_navigation(request, cx);
+                }
+
+                if let Some(request) = outcome.prompt_requested {
+                    cx.emit(crate::Update::Prompt(Self::create_native_prompt(request)));
                 }
 
                 if let Some(request) = outcome.picker_requested {
