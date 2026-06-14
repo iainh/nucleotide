@@ -26,7 +26,6 @@ use helix_core::{Rope, RopeSlice, Selection};
 use helix_lsp::lsp;
 use helix_stdx::rope::RopeSliceExt;
 use helix_view::ViewId;
-use helix_view::info::Info as HelixInfo;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
@@ -104,9 +103,6 @@ pub struct Workspace {
     // Delete confirmation modal state
     delete_confirm_open: bool,
     delete_confirm_path: Option<std::path::PathBuf>,
-    // Leader key state (e.g., SPACE as prefix)
-    leader_active: bool,
-    leader_deadline: Option<std::time::Instant>,
     // Terminal panel state
     terminal_panel_visible: bool,
     terminal_id: Option<TerminalId>,
@@ -816,8 +812,6 @@ impl Workspace {
             needs_file_tree_refresh: false,
             delete_confirm_open: false,
             delete_confirm_path: None,
-            leader_active: false,
-            leader_deadline: None,
             terminal_panel_visible: false,
             terminal_id: None,
             next_terminal_id: 1,
@@ -1828,199 +1822,8 @@ impl Workspace {
             }
         }
 
-        // Leader key timeout handling
-
         // Update input context based on current focus state
         self.update_input_context(window, cx);
-
-        // Determine current Helix editor mode for precise gating
-        let helix_mode = { self.core.read(cx).editor.mode() };
-
-        // If we left Normal mode while a leader sequence was active, cancel it
-        if self.leader_active && helix_mode != helix_view::document::Mode::Normal {
-            info!("Leader: cancelled due to leaving Normal mode");
-            self.leader_active = false;
-            self.leader_deadline = None;
-            self.key_hints.update(cx, |key_hints, cx| {
-                key_hints.set_info(None);
-                cx.notify();
-            });
-        }
-
-        // Leader key handling: SPACE as prefix only in Normal editor mode
-        if self.input_coordinator.current_context() == InputContext::Normal
-            && helix_mode == helix_view::document::Mode::Normal
-        {
-            match ev.keystroke.key.as_str() {
-                "space" | " "
-                    if !self.leader_active && ev.keystroke.modifiers.number_of_modifiers() == 0 =>
-                {
-                    info!("Leader: SPACE pressed, activating leader mode");
-                    // Activate leader, swallow the space
-                    self.leader_active = true;
-                    // No timeout in Normal mode
-
-                    // Show leader key hint list
-                    let info = HelixInfo {
-                        title: "Leader (space)".into(),
-                        text: "f   File Finder\n\
-                               F   File Finder (cwd)\n\
-                               b   Buffer Picker\n\
-                               t   Toggle File Tree\n\
-                               a   Code Actions\n\
-                               k   Hover Documentation\n\
-                               d   Diagnostics (buffer)\n\
-                               D   Diagnostics (workspace)\n\
-                               esc Cancel"
-                            .into(),
-                        width: 0,
-                        height: 0,
-                    };
-                    let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-                    self.key_hints.update(cx, |key_hints, cx| {
-                        key_hints.set_info(Some(info));
-                        key_hints.set_theme(theme);
-                        cx.notify();
-                    });
-                    return;
-                }
-                "a" if self.leader_active => {
-                    info!("Leader: SPACE-a detected, opening Code Actions");
-                    // SPACE-a => Show code actions
-                    self.leader_active = false;
-                    self.leader_deadline = None;
-                    // Clear leader hint
-                    self.key_hints.update(cx, |key_hints, cx| {
-                        key_hints.set_info(None);
-                        cx.notify();
-                    });
-                    show_code_actions(self.core.clone(), self.handle.clone(), cx);
-                    return;
-                }
-                "f" if self.leader_active && ev.keystroke.modifiers.shift => {
-                    info!("Leader: SPACE-F detected, opening File Finder in cwd");
-                    self.leader_active = false;
-                    self.leader_deadline = None;
-                    self.key_hints.update(cx, |key_hints, cx| {
-                        key_hints.set_info(None);
-                        cx.notify();
-                    });
-                    let cwd = helix_stdx::env::current_working_dir();
-                    if cwd.exists() {
-                        let handle = self.handle.clone();
-                        let core = self.core.clone();
-                        let overlay = self.overlay.clone();
-                        open_at(core, handle, overlay, cwd, cx);
-                    } else {
-                        self.core.update(cx, |core, _cx| {
-                            core.editor
-                                .set_error("Current working directory does not exist");
-                        });
-                        cx.notify();
-                    }
-                    return;
-                }
-                "f" if self.leader_active => {
-                    info!("Leader: SPACE-f detected, opening File Finder");
-                    // Clear leader state and hint
-                    self.leader_active = false;
-                    self.leader_deadline = None;
-                    self.key_hints.update(cx, |key_hints, cx| {
-                        key_hints.set_info(None);
-                        cx.notify();
-                    });
-                    let handle = self.handle.clone();
-                    let core = self.core.clone();
-                    let overlay = self.overlay.clone();
-                    open(core, handle, overlay, cx);
-                    return;
-                }
-                "b" if self.leader_active => {
-                    info!("Leader: SPACE-b detected, opening Buffer Picker");
-                    self.leader_active = false;
-                    self.leader_deadline = None;
-                    self.key_hints.update(cx, |key_hints, cx| {
-                        key_hints.set_info(None);
-                        cx.notify();
-                    });
-                    let handle = self.handle.clone();
-                    let core = self.core.clone();
-                    let overlay = self.overlay.clone();
-                    show_buffer_picker(core, handle, overlay, cx);
-                    return;
-                }
-                "t" if self.leader_active => {
-                    info!("Leader: SPACE-t detected, toggling File Tree");
-                    self.leader_active = false;
-                    self.leader_deadline = None;
-                    self.key_hints.update(cx, |key_hints, cx| {
-                        key_hints.set_info(None);
-                        cx.notify();
-                    });
-                    self.show_file_tree = !self.show_file_tree;
-                    cx.notify();
-                    return;
-                }
-                "d" if self.leader_active && !ev.keystroke.modifiers.shift => {
-                    info!("Leader: SPACE-d detected, showing Diagnostics (buffer)");
-                    self.leader_active = false;
-                    self.leader_deadline = None;
-                    self.key_hints.update(cx, |key_hints, cx| {
-                        key_hints.set_info(None);
-                        cx.notify();
-                    });
-                    // Bridge to application to show diagnostics picker for current buffer
-                    event_bridge::send_bridged_event(
-                        event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace: false },
-                    );
-                    return;
-                }
-                "d" if self.leader_active && ev.keystroke.modifiers.shift => {
-                    info!("Leader: SPACE-D detected, showing Diagnostics (workspace)");
-                    self.leader_active = false;
-                    self.leader_deadline = None;
-                    self.key_hints.update(cx, |key_hints, cx| {
-                        key_hints.set_info(None);
-                        cx.notify();
-                    });
-                    // Bridge to application to show workspace-wide diagnostics picker
-                    event_bridge::send_bridged_event(
-                        event_bridge::BridgedEvent::DiagnosticsPickerRequested { workspace: true },
-                    );
-                    return;
-                }
-                "k" if self.leader_active => {
-                    info!("Leader: SPACE-k detected, requesting hover documentation");
-                    self.leader_active = false;
-                    self.leader_deadline = None;
-                    self.key_hints.update(cx, |key_hints, cx| {
-                        key_hints.set_info(None);
-                        cx.notify();
-                    });
-                    show_hover_docs(self.core.clone(), self.handle.clone(), cx);
-                    return;
-                }
-                "escape" if self.leader_active => {
-                    info!("Leader: cancelled by Escape");
-                    // Cancel leader
-                    self.leader_active = false;
-                    self.leader_deadline = None;
-                    // Clear leader hint
-                    self.key_hints.update(cx, |key_hints, cx| {
-                        key_hints.set_info(None);
-                        cx.notify();
-                    });
-                    return;
-                }
-                _ => {
-                    if self.leader_active {
-                        // Keep leader active and swallow unrelated keys until ESC or valid sequence
-                        info!(key = %ev.keystroke.key, "Leader: awaiting sequence; key ignored");
-                        return;
-                    }
-                }
-            }
-        }
 
         // Delegate to InputCoordinator for processing
         let result = self.input_coordinator.handle_key_event(ev, window);
