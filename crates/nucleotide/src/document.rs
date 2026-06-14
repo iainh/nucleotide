@@ -1,10 +1,12 @@
+use std::{cell::Cell, rc::Rc};
+
 use gpui::{
     App, Bounds, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, Styled,
-    TextStyle, Window, div, px,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, SharedString,
+    Styled, TextStyle, Window, div, px,
 };
 // Import helix's syntax highlighting system
-use helix_view::{DocumentId, ViewId};
+use helix_view::{DocumentId, ViewId, document::Mode};
 use nucleotide_logging::debug;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 use nucleotide_ui::theme_manager::HelixThemedContext;
@@ -46,6 +48,32 @@ fn handle_editor_pointer_selection(
     log_pointer_selection_outcome(outcome);
 }
 
+fn should_bubble_to_workspace_leader(
+    core: &Entity<Core>,
+    leader_passthrough: &Cell<bool>,
+    ev: &KeyDownEvent,
+    cx: &mut App,
+) -> bool {
+    let is_normal_mode = core.read(cx).editor.mode() == Mode::Normal;
+    if !is_normal_mode {
+        leader_passthrough.set(false);
+        return false;
+    }
+
+    let key = ev.keystroke.key.as_str();
+    if !leader_passthrough.get() {
+        if matches!(key, "space" | " ") && ev.keystroke.modifiers.number_of_modifiers() == 0 {
+            leader_passthrough.set(true);
+            return true;
+        }
+
+        return false;
+    }
+
+    leader_passthrough.set(false);
+    true
+}
+
 pub struct DocumentView {
     core: Entity<Core>,
     input: Option<Entity<Input>>,
@@ -54,6 +82,7 @@ pub struct DocumentView {
     focus: FocusHandle,
     is_focused: bool,
     editor_state: EditorViewState,
+    leader_passthrough: Rc<Cell<bool>>,
 }
 
 impl DocumentView {
@@ -77,6 +106,7 @@ impl DocumentView {
             focus: focus.clone(),
             is_focused,
             editor_state,
+            leader_passthrough: Rc::new(Cell::new(false)),
         }
     }
 
@@ -147,6 +177,8 @@ impl Render for DocumentView {
             let paint_focus = focus.clone();
             let is_focused = self.is_focused;
             let input = self.input.clone();
+            let key_core = self.core.clone();
+            let leader_passthrough = Rc::clone(&self.leader_passthrough);
 
             let mut editor_content = NativeEditorView::new(
                 cx.entity_id(),
@@ -172,10 +204,15 @@ impl Render for DocumentView {
 
             if let Some(input) = input {
                 editor_content = editor_content.on_key_down(move |ev, _window, cx| {
+                    if should_bubble_to_workspace_leader(&key_core, &leader_passthrough, ev, cx) {
+                        return false;
+                    }
+
                     let key = crate::utils::translate_key(&ev.keystroke);
                     input.update(cx, |_, cx| {
                         cx.emit(InputEvent::Key(key));
                     });
+                    true
                 });
             }
 
