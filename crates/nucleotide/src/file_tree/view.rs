@@ -7,9 +7,9 @@ use crate::file_tree::{
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled,
-    UniformListScrollHandle, Window, div, px, uniform_list,
+    App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, StatefulInteractiveElement,
+    Styled, UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_types::VcsStatus;
@@ -41,6 +41,12 @@ pub struct FileTreeView {
     pending_fs_events: std::collections::HashMap<PathBuf, FileTreeEvent>,
     /// Last file system event time for debouncing
     last_fs_event_time: Option<std::time::Instant>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileTreeRowAction {
+    ToggleDirectory,
+    OpenFile,
 }
 
 impl FileTreeView {
@@ -1081,7 +1087,40 @@ impl FileTreeView {
         }
     }
 
-    /// Render a single file tree entry with wrapped GPUI behavior.
+    fn primary_row_action(entry: &FileTreeEntry) -> FileTreeRowAction {
+        if entry.is_directory() {
+            FileTreeRowAction::ToggleDirectory
+        } else {
+            FileTreeRowAction::OpenFile
+        }
+    }
+
+    fn activate_entry(&mut self, path: PathBuf, action: FileTreeRowAction, cx: &mut Context<Self>) {
+        self.select_path(Some(path.clone()), cx);
+
+        match action {
+            FileTreeRowAction::ToggleDirectory => self.toggle_directory(&path, cx),
+            FileTreeRowAction::OpenFile => cx.emit(FileTreeEvent::OpenFile { path }),
+        }
+    }
+
+    fn request_entry_context_menu(
+        &mut self,
+        path: PathBuf,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_handle.focus(window, cx);
+        self.select_path(Some(path.clone()), cx);
+        cx.emit(FileTreeEvent::ContextMenuRequested {
+            path,
+            x: f32::from(position.x),
+            y: f32::from(position.y),
+        });
+    }
+
+    /// Render a single file tree entry with Zed-style row interactions.
     fn render_entry(
         &self,
         entry: &FileTreeEntry,
@@ -1089,43 +1128,9 @@ impl FileTreeView {
     ) -> impl IntoElement + use<> {
         let is_selected = self.selected_path.as_ref() == Some(&entry.path);
         let indentation = px(entry.depth as f32 * 16.0); // 16px per level
-        let path = entry.path.clone();
-        let is_dir = entry.is_directory();
+        let action = Self::primary_row_action(entry);
 
-        // Wrapper adds click behavior; row content built via helper to centralize styling/layout
-        div()
-            .w_full()
-            .on_mouse_up(MouseButton::Left, {
-                let path = path.clone();
-                cx.listener(move |view, _event, window, cx| {
-                    // Focus the tree view when any entry is clicked
-                    debug!("File tree entry clicked, focusing tree view");
-                    view.focus_handle.focus(window, cx);
-                    view.select_path(Some(path.clone()), cx);
-
-                    if is_dir {
-                        view.toggle_directory(&path, cx);
-                    } else {
-                        // Open file when clicked
-                        cx.emit(FileTreeEvent::OpenFile { path: path.clone() });
-                    }
-                })
-            })
-            .on_mouse_down(MouseButton::Right, {
-                let path = path.clone();
-                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
-                    // Focus and select the item under cursor, then request context menu
-                    view.focus_handle.focus(window, cx);
-                    view.select_path(Some(path.clone()), cx);
-                    // Emit context menu request with screen coordinates
-                    cx.emit(FileTreeEvent::ContextMenuRequested {
-                        path: path.clone(),
-                        x: f32::from(event.position.x),
-                        y: f32::from(event.position.y),
-                    });
-                })
-            })
-            .child(self.build_file_tree_row(entry, is_selected, indentation, cx))
+        self.build_file_tree_row(entry, is_selected, indentation, action, cx)
     }
 
     /// Centralized helper to build a file tree row with consistent styling and slots.
@@ -1134,6 +1139,7 @@ impl FileTreeView {
         entry: &FileTreeEntry,
         is_selected: bool,
         indentation: gpui::Pixels,
+        action: FileTreeRowAction,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = cx.theme();
@@ -1143,6 +1149,7 @@ impl FileTreeView {
         } else {
             file_tree_tokens.item_text
         };
+        let path = entry.path.clone();
 
         div()
             .id(("file-tree-entry", entry.id.0))
@@ -1151,6 +1158,30 @@ impl FileTreeView {
             .px(px(0.0))
             .py(px(0.0))
             .rounded(px(4.0))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, {
+                let path = path.clone();
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    view.request_entry_context_menu(path.clone(), event.position, window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                })
+            })
+            .on_click({
+                let path = path.clone();
+                cx.listener(move |view, event: &ClickEvent, window, cx| {
+                    view.focus_handle.focus(window, cx);
+
+                    if event.modifiers().secondary() {
+                        view.request_entry_context_menu(path.clone(), event.position(), window, cx);
+                    } else {
+                        debug!("File tree entry clicked");
+                        view.activate_entry(path.clone(), action, cx);
+                    }
+
+                    cx.stop_propagation();
+                })
+            })
             .child(
                 div()
                     .w_full()
@@ -1307,6 +1338,49 @@ impl FileTreeView {
         }
 
         node
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::file_tree::entry::FileTreeEntryId;
+
+    #[test]
+    fn primary_row_action_toggles_directories() {
+        let entry =
+            FileTreeEntry::new_directory(FileTreeEntryId(1), PathBuf::from("/workspace/src"), None);
+
+        assert_eq!(
+            FileTreeView::primary_row_action(&entry),
+            FileTreeRowAction::ToggleDirectory
+        );
+    }
+
+    #[test]
+    fn primary_row_action_opens_files_and_symlinks() {
+        let file = FileTreeEntry::new_file(
+            FileTreeEntryId(1),
+            PathBuf::from("/workspace/main.rs"),
+            12,
+            None,
+        );
+        let symlink = FileTreeEntry::new_symlink(
+            FileTreeEntryId(2),
+            PathBuf::from("/workspace/current"),
+            Some(PathBuf::from("/workspace/releases/current")),
+            true,
+            None,
+        );
+
+        assert_eq!(
+            FileTreeView::primary_row_action(&file),
+            FileTreeRowAction::OpenFile
+        );
+        assert_eq!(
+            FileTreeView::primary_row_action(&symlink),
+            FileTreeRowAction::OpenFile
+        );
     }
 }
 
