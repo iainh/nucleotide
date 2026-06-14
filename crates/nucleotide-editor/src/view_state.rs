@@ -47,6 +47,14 @@ pub struct EditorViewContentState {
     pub physical_lines: usize,
 }
 
+pub struct EditorViewContentPrepareParams<'a> {
+    pub editor: &'a Editor,
+    pub view_id: ViewId,
+    pub theme: Option<&'a Theme>,
+    pub text_system: &'a TextSystem,
+    pub text_style: &'a TextStyle,
+}
+
 impl EditorViewState {
     pub fn new(line_height: Pixels, cell_width: Pixels) -> Self {
         Self {
@@ -135,6 +143,19 @@ impl EditorViewState {
                 self.viewport.viewport_bounds(),
                 cell_width,
             ),
+        )
+    }
+
+    pub fn prepare_content_for_render(
+        &mut self,
+        params: EditorViewContentPrepareParams<'_>,
+    ) -> Option<EditorViewContentState> {
+        let metrics = self.resolve_and_apply_text_metrics(params.text_system, params.text_style);
+        self.sync_content_layout_for_current_viewport(
+            params.editor,
+            params.view_id,
+            params.theme,
+            metrics.cell_width,
         )
     }
 
@@ -396,6 +417,46 @@ mod tests {
             metrics.line_height
         );
         assert_eq!(state.surface_metrics().get().cell_width, metrics.cell_width);
+    }
+
+    #[gpui::test]
+    fn view_state_prepares_render_content_with_resolved_metrics(cx: &mut TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _runtime_guard = runtime.enter();
+        let mut state = EditorViewState::new(px(20.0), px(8.0));
+        let (editor, doc_id, view_id) = test_editor_with_text("one\ntwo\nthree\n");
+        let style = TextStyle::default();
+
+        let content_state = cx
+            .update(|cx| {
+                state.prepare_content_for_render(EditorViewContentPrepareParams {
+                    editor: &editor,
+                    view_id,
+                    theme: None,
+                    text_system: cx.text_system(),
+                    text_style: &style,
+                })
+            })
+            .unwrap();
+
+        assert_eq!(content_state.doc_id, doc_id);
+        assert_eq!(
+            content_state.physical_lines,
+            editor.document(doc_id).unwrap().text().len_lines()
+        );
+        assert!(content_state.update.visual_rows >= 3);
+        assert_eq!(
+            state.viewport().content_visual_rows(),
+            content_state.update.visual_rows
+        );
+        assert_eq!(
+            state.surface_metrics().get().line_height,
+            state.line_height()
+        );
+        assert!(state.surface_metrics().get().cell_width > px(0.0));
     }
 
     #[test]

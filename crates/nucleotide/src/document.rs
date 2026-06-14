@@ -12,9 +12,9 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
-    EditorSurfacePointerEvent, EditorViewLayoutSnapshot, EditorViewState, NativeEditorFramePalette,
-    NativeEditorFrameRenderParams, NativeEditorFrameThemeStyles, NativeEditorView,
-    render_native_editor_frame,
+    EditorSurfacePointerEvent, EditorViewContentPrepareParams, EditorViewLayoutSnapshot,
+    EditorViewState, NativeEditorFramePalette, NativeEditorFrameRenderParams,
+    NativeEditorFrameThemeStyles, NativeEditorView, render_native_editor_frame,
 };
 
 fn handle_editor_pointer_selection(
@@ -131,20 +131,18 @@ impl EventEmitter<DismissEvent> for DocumentView {}
 impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // DocumentView render creates the native editor element for actual painting.
-        let metrics = self
-            .editor_state
-            .resolve_and_apply_text_metrics(cx.text_system(), &self.style);
-
         let Some(content_state) = ({
             let core = self.core.read(cx);
             let editor = &core.editor;
             let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-            self.editor_state.sync_content_layout_for_current_viewport(
-                editor,
-                self.view_id,
-                Some(&theme),
-                metrics.cell_width,
-            )
+            self.editor_state
+                .prepare_content_for_render(EditorViewContentPrepareParams {
+                    editor,
+                    view_id: self.view_id,
+                    theme: Some(&theme),
+                    text_system: cx.text_system(),
+                    text_style: &self.style,
+                })
         }) else {
             return div().id(SharedString::from(format!("doc-view-{:?}", self.view_id)));
         };
