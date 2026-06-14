@@ -139,7 +139,8 @@ pub use surface::{
 };
 pub use view_component::NativeEditorView;
 pub use view_state::{
-    EditorViewContentState, EditorViewFrameState, EditorViewLayoutSnapshot, EditorViewState,
+    EditorViewContentPrepareParams, EditorViewContentState, EditorViewFrameState,
+    EditorViewLayoutSnapshot, EditorViewState,
 };
 pub use viewport::{
     EditorCursorReveal, EditorViewport, EditorViewportContentLayout, EditorViewportContentUpdate,
