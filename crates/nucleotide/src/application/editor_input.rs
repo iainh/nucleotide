@@ -52,6 +52,7 @@ pub enum NativePickerRequest {
     FileCurrentDirectory,
     FileCurrentBufferDirectory,
     Buffer,
+    JumpList,
     Diagnostics { workspace: bool },
     CodeActions,
     HoverDocs,
@@ -861,6 +862,7 @@ fn native_picker_command(command: &MappableCommand) -> Option<NativePickerReques
             Some(NativePickerRequest::FileCurrentBufferDirectory)
         }
         "buffer_picker" => Some(NativePickerRequest::Buffer),
+        "jumplist_picker" => Some(NativePickerRequest::JumpList),
         "diagnostics_picker" => Some(NativePickerRequest::Diagnostics { workspace: false }),
         "workspace_diagnostics_picker" => {
             Some(NativePickerRequest::Diagnostics { workspace: true })
@@ -1328,6 +1330,10 @@ mod tests {
             Some(NativePickerRequest::Buffer)
         );
         assert_eq!(
+            native_picker_command(&MappableCommand::jumplist_picker),
+            Some(NativePickerRequest::JumpList)
+        );
+        assert_eq!(
             native_picker_command(&MappableCommand::diagnostics_picker),
             Some(NativePickerRequest::Diagnostics { workspace: false })
         );
@@ -1424,6 +1430,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn default_space_j_keymap_requests_jumplist_picker() {
+        let mut keymaps = Keymaps::default();
+        let space = KeyEvent::from_str("space").unwrap();
+        let j = KeyEvent::from_str("j").unwrap();
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, j) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(
+                    native_picker_command(&command),
+                    Some(NativePickerRequest::JumpList)
+                );
+            }
+            _ => panic!("expected SPACE-j to resolve to jumplist_picker"),
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_file_picker_for_space_f() {
         let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
@@ -1441,6 +1469,26 @@ mod tests {
         let picker = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
         assert!(picker.handled_by_native_command);
         assert_eq!(picker.picker_requested, Some(NativePickerRequest::File));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_jumplist_picker_for_space_j() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text("one\ntwo\n");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let space = KeyEvent::from_str("space").unwrap();
+        let j = KeyEvent::from_str("j").unwrap();
+
+        let pending = bridge.handle_key(space, &mut compositor, &mut editor, &mut jobs);
+        assert!(pending.handled_by_native_command);
+        assert_eq!(pending.picker_requested, None);
+
+        let picker = bridge.handle_key(j, &mut compositor, &mut editor, &mut jobs);
+        assert!(picker.handled_by_native_command);
+        assert!(!picker.handled_by_terminal_editor);
+        assert_eq!(picker.picker_requested, Some(NativePickerRequest::JumpList));
     }
 
     #[tokio::test(flavor = "current_thread")]

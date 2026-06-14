@@ -1872,6 +1872,82 @@ impl Application {
         ))
     }
 
+    fn create_jumplist_picker(&mut self) -> Option<crate::picker::Picker> {
+        use crate::picker_view::PickerItem;
+
+        {
+            let editor = &mut self.editor;
+            let documents = &mut editor.documents;
+
+            for (view, _) in editor.tree.views_mut() {
+                let doc_ids = view
+                    .jumps
+                    .iter()
+                    .map(|(doc_id, _)| *doc_id)
+                    .collect::<Vec<_>>();
+
+                for doc_id in doc_ids {
+                    if let Some(doc) = documents.get_mut(&doc_id) {
+                        view.sync_changes(doc);
+                    }
+                }
+            }
+        }
+
+        let mut items = Vec::new();
+
+        for (view, _) in self.editor.tree.views() {
+            for (doc_id, selection) in view.jumps.iter().rev() {
+                let Some(doc) = self.editor.documents.get(doc_id) else {
+                    continue;
+                };
+
+                let path = doc.path().cloned();
+                let path_label = path
+                    .as_deref()
+                    .map(get_relative_path)
+                    .and_then(|path| path.to_str().map(str::to_owned))
+                    .unwrap_or_else(|| "[scratch]".to_string());
+                let cursor_line = selection.primary().cursor_line(doc.text().slice(..)) + 1;
+                let label = if view.doc == *doc_id {
+                    format!("* {path_label}:{cursor_line}")
+                } else {
+                    format!("{path_label}:{cursor_line}")
+                };
+                let text = selection
+                    .fragments(doc.text().slice(..))
+                    .map(|fragment| fragment.into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let data = crate::types::JumpLocation {
+                    doc_id: *doc_id,
+                    selection: selection.clone(),
+                };
+
+                items.push(PickerItem {
+                    label: label.into(),
+                    sublabel: (!text.is_empty()).then(|| text.into()),
+                    data: Arc::new(data),
+                    file_path: path,
+                    vcs_status: None,
+                    columns: None,
+                });
+            }
+        }
+
+        if items.is_empty() {
+            None
+        } else {
+            Some(crate::picker::Picker::native(
+                "Jump List",
+                items,
+                |_index| {
+                    // Jumplist selection is handled by the overlay via typed item data.
+                },
+            ))
+        }
+    }
+
     fn create_native_prompt_from_helix(
         &mut self,
         last_key: Option<helix_view::input::KeyEvent>,
@@ -2053,6 +2129,13 @@ impl Application {
                         }
                         editor_input::NativePickerRequest::Buffer => {
                             cx.emit(crate::Update::ShowBufferPicker);
+                        }
+                        editor_input::NativePickerRequest::JumpList => {
+                            if let Some(picker) = self.create_jumplist_picker() {
+                                cx.emit(crate::Update::Picker(picker));
+                            } else {
+                                self.editor.set_status("Jumplist is empty");
+                            }
                         }
                         editor_input::NativePickerRequest::Diagnostics { workspace } => {
                             self.emit_diagnostics_panel(workspace, cx);
@@ -4770,6 +4853,29 @@ impl Application {
         .ok_or_else(|| anyhow::anyhow!("LSP target range is out of bounds"))?;
 
         doc.set_selection(view_id, Selection::single(range.head, range.anchor));
+        self.editor.ensure_cursor_in_view(view_id);
+
+        Ok((doc_id, view_id))
+    }
+
+    pub fn jump_to_jumplist_location(
+        &mut self,
+        location: &crate::types::JumpLocation,
+    ) -> anyhow::Result<(DocumentId, ViewId)> {
+        let doc_id = location.doc_id;
+        if self.editor.document(doc_id).is_none() {
+            anyhow::bail!("Jumplist target document is no longer open");
+        }
+
+        self.editor
+            .switch(doc_id, helix_view::editor::Action::Replace);
+        let view_id = self.editor.tree.focus;
+        let doc = self
+            .editor
+            .document_mut(doc_id)
+            .ok_or_else(|| anyhow::anyhow!("Jumplist target document is not open"))?;
+
+        doc.set_selection(view_id, location.selection.clone());
         self.editor.ensure_cursor_in_view(view_id);
 
         Ok((doc_id, view_id))

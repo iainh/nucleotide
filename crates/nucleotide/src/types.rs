@@ -48,6 +48,12 @@ pub struct LspLocation {
     pub offset_encoding: helix_lsp::OffsetEncoding,
 }
 
+#[derive(Debug, Clone)]
+pub struct JumpLocation {
+    pub doc_id: helix_view::DocumentId,
+    pub selection: helix_core::Selection,
+}
+
 // Hybrid Update enum for event system
 // Uses Event(AppEvent) for data-only events and direct variants for complex UI components with behavior
 pub enum Update {
