@@ -29,8 +29,12 @@ use std::{
 use tokio::sync::RwLock;
 
 use arc_swap::{ArcSwap, access::Map};
-use helix_core::{Position, Selection, pos_at_coords, syntax};
-use helix_lsp::{LanguageServerId, LspProgressMap};
+use futures_util::{
+    future::{BoxFuture, FutureExt},
+    stream::FuturesOrdered,
+};
+use helix_core::{Position, Selection, Uri, pos_at_coords, syntax};
+use helix_lsp::{LanguageServerId, LspProgressMap, OffsetEncoding, lsp};
 use helix_stdx::path::get_relative_path;
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
@@ -81,8 +85,8 @@ impl nucleotide_lsp::EnvironmentProvider for ProjectEnvironmentProvider {
 
 use gpui::{App, AppContext};
 use helix_term::{args::Args, compositor::Compositor, config::Config, job::Jobs, keymap::Keymaps};
-use helix_view::DocumentId;
 use helix_view::document::DocumentSavedEventResult;
+use helix_view::{DocumentId, ViewId};
 use helix_view::{Editor, doc_mut, graphics::Rect, handlers::Handlers};
 
 // Helper function to find workspace root from a specific directory
@@ -2012,6 +2016,10 @@ impl Application {
                     self.trigger_completion_manual(request.doc_id, request.view_id);
                 }
 
+                if let Some(request) = outcome.lsp_navigation_requested {
+                    self.trigger_lsp_navigation(request, cx);
+                }
+
                 if let Some(request) = outcome.picker_requested {
                     match request {
                         editor_input::NativePickerRequest::File => {
@@ -2861,6 +2869,140 @@ impl nucleotide_core::JobSystemAccess for Application {
     fn jobs_mut(&mut self) -> &mut Jobs {
         &mut self.jobs
     }
+}
+
+impl editor_input::NativeLspNavigationRequest {
+    fn language_server_feature(self) -> syntax::config::LanguageServerFeature {
+        match self {
+            Self::GotoDeclaration => syntax::config::LanguageServerFeature::GotoDeclaration,
+            Self::GotoDefinition => syntax::config::LanguageServerFeature::GotoDefinition,
+            Self::GotoTypeDefinition => syntax::config::LanguageServerFeature::GotoTypeDefinition,
+            Self::GotoImplementation => syntax::config::LanguageServerFeature::GotoImplementation,
+            Self::GotoReference => syntax::config::LanguageServerFeature::GotoReference,
+        }
+    }
+
+    fn picker_title(self) -> &'static str {
+        match self {
+            Self::GotoDeclaration => "Declarations",
+            Self::GotoDefinition => "Definitions",
+            Self::GotoTypeDefinition => "Type Definitions",
+            Self::GotoImplementation => "Implementations",
+            Self::GotoReference => "References",
+        }
+    }
+
+    fn unsupported_message(self) -> &'static str {
+        match self {
+            Self::GotoDeclaration => "No configured language server supports goto declaration",
+            Self::GotoDefinition => "No configured language server supports goto definition",
+            Self::GotoTypeDefinition => {
+                "No configured language server supports goto type definition"
+            }
+            Self::GotoImplementation => {
+                "No configured language server supports goto implementation"
+            }
+            Self::GotoReference => "No configured language server supports goto reference",
+        }
+    }
+
+    fn empty_message(self) -> &'static str {
+        match self {
+            Self::GotoDeclaration => "No declaration found.",
+            Self::GotoDefinition => "No definition found.",
+            Self::GotoTypeDefinition => "No type definition found.",
+            Self::GotoImplementation => "No implementation found.",
+            Self::GotoReference => "No references found.",
+        }
+    }
+}
+
+fn lsp_locations_from_definition_response(
+    response: Option<lsp::GotoDefinitionResponse>,
+    offset_encoding: OffsetEncoding,
+) -> Vec<crate::types::LspLocation> {
+    match response {
+        Some(lsp::GotoDefinitionResponse::Scalar(location)) => {
+            lsp_location_from_location(location, offset_encoding)
+                .into_iter()
+                .collect()
+        }
+        Some(lsp::GotoDefinitionResponse::Array(locations)) => locations
+            .into_iter()
+            .filter_map(|location| lsp_location_from_location(location, offset_encoding))
+            .collect(),
+        Some(lsp::GotoDefinitionResponse::Link(location_links)) => location_links
+            .into_iter()
+            .filter_map(|location_link| {
+                lsp_location_from_location(
+                    lsp::Location::new(location_link.target_uri, location_link.target_range),
+                    offset_encoding,
+                )
+            })
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+type LspLocationFuture = BoxFuture<'static, anyhow::Result<Vec<crate::types::LspLocation>>>;
+
+fn lsp_location_from_location(
+    location: lsp::Location,
+    offset_encoding: OffsetEncoding,
+) -> Option<crate::types::LspLocation> {
+    let uri: Uri = match location.uri.try_into() {
+        Ok(uri) => uri,
+        Err(err) => {
+            warn!(error = %err, "Discarding LSP location with unsupported URI");
+            return None;
+        }
+    };
+    let path = uri.as_path()?.to_path_buf();
+
+    Some(crate::types::LspLocation {
+        path,
+        range: location.range,
+        offset_encoding,
+    })
+}
+
+fn lsp_locations_picker(
+    title: &str,
+    locations: Vec<crate::types::LspLocation>,
+    project_directory: Option<&Path>,
+) -> crate::picker::Picker {
+    use crate::picker_view::PickerItem;
+
+    let items = locations
+        .into_iter()
+        .map(|location| {
+            let line = location.range.start.line + 1;
+            let character = location.range.start.character + 1;
+            let file_name = location
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| location.path.display().to_string());
+            let label = format!("{file_name}:{line}:{character}");
+            let path_label = project_directory
+                .and_then(|root| location.path.strip_prefix(root).ok())
+                .unwrap_or(&location.path)
+                .display()
+                .to_string();
+
+            PickerItem::with_sublabel_and_path(
+                label,
+                path_label,
+                location.path.clone(),
+                Arc::new(location),
+            )
+        })
+        .collect();
+
+    crate::picker::Picker::native(title.to_string(), items, |_index| {
+        // LSP location selection is handled by the overlay via typed item data.
+    })
 }
 
 impl Application {
@@ -4432,6 +4574,205 @@ impl Application {
                 },
             );
         }
+    }
+
+    pub fn trigger_lsp_navigation(
+        &mut self,
+        request: editor_input::NativeLspNavigationRequest,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        let feature = request.language_server_feature();
+        let include_declaration = self.editor.config().lsp.goto_reference_include_declaration;
+        let mut futures: FuturesOrdered<LspLocationFuture> = FuturesOrdered::new();
+
+        {
+            let view = self.editor.tree.get(self.editor.tree.focus);
+            let Some(doc) = self.editor.document(view.doc) else {
+                self.editor
+                    .set_error("No active document for LSP navigation");
+                return;
+            };
+
+            for language_server in doc.language_servers_with_feature(feature) {
+                let offset_encoding = language_server.offset_encoding();
+                let position = doc.position(view.id, offset_encoding);
+                let identifier = doc.identifier();
+
+                match request {
+                    editor_input::NativeLspNavigationRequest::GotoDeclaration => {
+                        if let Some(future) =
+                            language_server.goto_declaration(identifier, position, None)
+                        {
+                            futures.push_back(
+                                async move {
+                                    let response = future.await?;
+                                    Ok(lsp_locations_from_definition_response(
+                                        response,
+                                        offset_encoding,
+                                    ))
+                                }
+                                .boxed(),
+                            );
+                        }
+                    }
+                    editor_input::NativeLspNavigationRequest::GotoDefinition => {
+                        if let Some(future) =
+                            language_server.goto_definition(identifier, position, None)
+                        {
+                            futures.push_back(
+                                async move {
+                                    let response = future.await?;
+                                    Ok(lsp_locations_from_definition_response(
+                                        response,
+                                        offset_encoding,
+                                    ))
+                                }
+                                .boxed(),
+                            );
+                        }
+                    }
+                    editor_input::NativeLspNavigationRequest::GotoTypeDefinition => {
+                        if let Some(future) =
+                            language_server.goto_type_definition(identifier, position, None)
+                        {
+                            futures.push_back(
+                                async move {
+                                    let response = future.await?;
+                                    Ok(lsp_locations_from_definition_response(
+                                        response,
+                                        offset_encoding,
+                                    ))
+                                }
+                                .boxed(),
+                            );
+                        }
+                    }
+                    editor_input::NativeLspNavigationRequest::GotoImplementation => {
+                        if let Some(future) =
+                            language_server.goto_implementation(identifier, position, None)
+                        {
+                            futures.push_back(
+                                async move {
+                                    let response = future.await?;
+                                    Ok(lsp_locations_from_definition_response(
+                                        response,
+                                        offset_encoding,
+                                    ))
+                                }
+                                .boxed(),
+                            );
+                        }
+                    }
+                    editor_input::NativeLspNavigationRequest::GotoReference => {
+                        if let Some(future) = language_server.goto_reference(
+                            identifier,
+                            position,
+                            include_declaration,
+                            None,
+                        ) {
+                            futures.push_back(
+                                async move {
+                                    let locations = future.await?;
+                                    Ok(locations
+                                        .into_iter()
+                                        .flatten()
+                                        .filter_map(|location| {
+                                            lsp_location_from_location(location, offset_encoding)
+                                        })
+                                        .collect())
+                                }
+                                .boxed(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if futures.is_empty() {
+            self.editor.set_error(request.unsupported_message());
+            return;
+        }
+
+        let title = request.picker_title().to_string();
+        let empty_message = request.empty_message().to_string();
+        cx.spawn(async move |core, cx| {
+            let mut locations = Vec::new();
+            while let Some(response) = futures_util::StreamExt::next(&mut futures).await {
+                match response {
+                    Ok(mut response_locations) => locations.append(&mut response_locations),
+                    Err(err) => warn!(error = %err, "LSP navigation request failed"),
+                }
+            }
+
+            if let Some(core) = core.upgrade() {
+                let _ = core.update(cx, move |core, cx| {
+                    core.finish_lsp_navigation(title, empty_message, locations, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn finish_lsp_navigation(
+        &mut self,
+        title: String,
+        empty_message: String,
+        locations: Vec<crate::types::LspLocation>,
+        cx: &mut gpui::Context<crate::Core>,
+    ) {
+        match locations.as_slice() {
+            [] => self.editor.set_error(empty_message),
+            [location] => match self.jump_to_lsp_location(location) {
+                Ok((doc_id, view_id)) => {
+                    cx.emit(crate::Update::Event(AppEvent::Core(
+                        CoreEvent::SelectionChanged { doc_id, view_id },
+                    )));
+                }
+                Err(err) => self.editor.set_error(err.to_string()),
+            },
+            _ => {
+                let picker =
+                    lsp_locations_picker(&title, locations, self.project_directory.as_deref());
+                cx.emit(crate::Update::Picker(picker));
+            }
+        }
+
+        cx.emit(crate::Update::Event(AppEvent::Core(
+            CoreEvent::RedrawRequested,
+        )));
+    }
+
+    pub fn jump_to_lsp_location(
+        &mut self,
+        location: &crate::types::LspLocation,
+    ) -> anyhow::Result<(DocumentId, ViewId)> {
+        let doc_id = self
+            .editor
+            .open(&location.path, helix_view::editor::Action::Replace)?;
+        let view_id = self.editor.tree.focus;
+
+        if self.editor.tree.try_get(view_id).map(|view| view.doc) != Some(doc_id) {
+            self.editor
+                .switch(doc_id, helix_view::editor::Action::Replace);
+        }
+
+        let view_id = self.editor.tree.focus;
+        let doc = self
+            .editor
+            .document_mut(doc_id)
+            .ok_or_else(|| anyhow::anyhow!("LSP target document is not open"))?;
+        let range = helix_lsp::util::lsp_range_to_range(
+            doc.text(),
+            location.range,
+            location.offset_encoding,
+        )
+        .ok_or_else(|| anyhow::anyhow!("LSP target range is out of bounds"))?;
+
+        doc.set_selection(view_id, Selection::single(range.head, range.anchor));
+        self.editor.ensure_cursor_in_view(view_id);
+
+        Ok((doc_id, view_id))
     }
 
     /// Trigger completion on character input
