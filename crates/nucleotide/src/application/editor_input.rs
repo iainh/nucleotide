@@ -1,5 +1,5 @@
 // ABOUTME: Native editor input boundary for GPUI-driven document views
-// ABOUTME: Isolates the remaining Helix terminal input bridge from Application
+// ABOUTME: Executes Helix keymaps without routing editor input through helix-term views
 
 use helix_core::{
     Range, char_idx_at_visual_offset,
@@ -12,11 +12,10 @@ use helix_stdx::{
 };
 use helix_term::{
     commands::{self, MappableCommand, OnKeyCallback, OnKeyCallbackKind},
-    compositor::{self, Component, Compositor, EventResult},
+    compositor::{self, Compositor},
     events::{OnModeSwitch, PostCommand},
     job::Jobs,
     keymap::{KeymapResult, Keymaps},
-    ui::EditorView,
 };
 use helix_view::{
     DocumentId, Editor, ViewId,
@@ -39,7 +38,7 @@ pub struct EditorInputOutcome {
     pub selection_changed: bool,
     pub handled_by_compositor: bool,
     pub handled_by_native_command: bool,
-    pub handled_by_terminal_editor: bool,
+    pub unhandled_keys: Vec<KeyEvent>,
     pub completion_requested: Option<NativeCompletionRequest>,
     pub picker_requested: Option<NativePickerRequest>,
     pub prompt_requested: Option<NativePromptRequest>,
@@ -94,7 +93,6 @@ pub enum NativePickerRequest {
 
 pub struct EditorInputBridge {
     native_commands: NativeCommandInput,
-    terminal_editor: EditorView,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,10 +102,9 @@ struct SelectionSnapshot {
 }
 
 impl EditorInputBridge {
-    pub fn new(native_keymaps: Keymaps, terminal_keymaps: Keymaps) -> Self {
+    pub fn new(native_keymaps: Keymaps) -> Self {
         Self {
             native_commands: NativeCommandInput::new(native_keymaps),
-            terminal_editor: EditorView::new(terminal_keymaps),
         }
     }
 
@@ -141,7 +138,7 @@ impl EditorInputBridge {
         let event = Event::Key(key);
         let handled_by_compositor = compositor.handle_event(&event, &mut context);
         let mut handled_by_native_command = false;
-        let mut handled_by_terminal_editor = false;
+        let mut unhandled_keys = Vec::new();
         let mut completion_requested = None;
         let mut picker_requested = None;
         let mut prompt_requested = None;
@@ -150,7 +147,6 @@ impl EditorInputBridge {
         let mut viewport_scroll_requested = None;
         let mut viewport_cursor_requested = None;
         if !handled_by_compositor {
-            let mode_before_fallback = context.editor.mode();
             match self
                 .native_commands
                 .handle_key(key, compositor, context.editor, context.jobs)
@@ -181,17 +177,9 @@ impl EditorInputBridge {
                     handled_by_native_command = true;
                     viewport_cursor_requested = Some(request);
                 }
-                NativeInputResult::Fallback(keys) => {
-                    for key in &keys {
-                        let event = Event::Key(*key);
-                        handled_by_terminal_editor |=
-                            self.handle_terminal_editor_event(&event, compositor, &mut context);
-                    }
-                    self.native_commands.observe_terminal_fallback(
-                        mode_before_fallback,
-                        context.editor.mode(),
-                        &keys,
-                    );
+                NativeInputResult::Unhandled(keys) => {
+                    debug!(?keys, "Native editor input was not handled");
+                    unhandled_keys = keys;
                 }
             }
         };
@@ -226,7 +214,7 @@ impl EditorInputBridge {
             selection_changed,
             handled_by_compositor,
             handled_by_native_command,
-            handled_by_terminal_editor,
+            unhandled_keys,
             completion_requested,
             picker_requested,
             prompt_requested,
@@ -234,22 +222,6 @@ impl EditorInputBridge {
             workspace_requested,
             viewport_scroll_requested,
             viewport_cursor_requested,
-        }
-    }
-
-    fn handle_terminal_editor_event(
-        &mut self,
-        event: &Event,
-        compositor: &mut Compositor,
-        context: &mut compositor::Context<'_>,
-    ) -> bool {
-        match self.terminal_editor.handle_event(event, context) {
-            EventResult::Consumed(Some(callback)) => {
-                callback(compositor, context);
-                true
-            }
-            EventResult::Consumed(None) => true,
-            EventResult::Ignored(_) => false,
         }
     }
 }
@@ -271,7 +243,7 @@ enum NativeInputResult {
     RequestWorkspace(NativeWorkspaceRequest),
     RequestViewportScroll(nucleotide_editor::EditorViewportScrollRequest),
     RequestViewportCursor(nucleotide_editor::EditorViewportCursorRequest),
-    Fallback(Vec<KeyEvent>),
+    Unhandled(Vec<KeyEvent>),
 }
 
 enum NativeCommandResult {
@@ -308,45 +280,23 @@ enum NativeCommandResult {
         keys: Vec<KeyEvent>,
         count: usize,
     },
-    Fallback(Vec<KeyEvent>),
+    Unhandled(Vec<KeyEvent>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct InsertReplay {
     keys: Vec<KeyEvent>,
-    native: bool,
-}
-
-impl Default for InsertReplay {
-    fn default() -> Self {
-        Self {
-            keys: Vec::new(),
-            native: true,
-        }
-    }
 }
 
 impl InsertReplay {
-    fn native(keys: &[KeyEvent]) -> Self {
+    fn from_keys(keys: &[KeyEvent]) -> Self {
         Self {
             keys: keys.to_vec(),
-            native: true,
-        }
-    }
-
-    fn terminal(keys: &[KeyEvent]) -> Self {
-        Self {
-            keys: keys.to_vec(),
-            native: false,
         }
     }
 
     fn is_empty(&self) -> bool {
         self.keys.is_empty()
-    }
-
-    fn mark_terminal(&mut self) {
-        self.native = false;
     }
 }
 
@@ -469,8 +419,8 @@ impl NativeCommandInput {
                             NativeInputResult::RequestViewportCursor(request) => {
                                 return NativeInputResult::RequestViewportCursor(request);
                             }
-                            NativeInputResult::Fallback(fallback_keys) => {
-                                return NativeInputResult::Fallback(fallback_keys);
+                            NativeInputResult::Unhandled(unhandled_keys) => {
+                                return NativeInputResult::Unhandled(unhandled_keys);
                             }
                         }
                     }
@@ -481,27 +431,10 @@ impl NativeCommandInput {
                     prompt_requested: None,
                 }
             }
-            NativeCommandResult::Fallback(keys) => NativeInputResult::Fallback(keys),
-        }
-    }
-
-    fn observe_terminal_fallback(
-        &mut self,
-        mode_before: Mode,
-        mode_after: Mode,
-        fallback_keys: &[KeyEvent],
-    ) {
-        if mode_before != Mode::Insert && mode_after == Mode::Insert {
-            self.current_insert_replay = InsertReplay::terminal(fallback_keys);
-            return;
-        }
-
-        if mode_before == Mode::Insert {
-            self.current_insert_replay.mark_terminal();
-            self.current_insert_replay
-                .keys
-                .extend_from_slice(fallback_keys);
-            self.finish_insert_replay_if_needed(mode_before, mode_after);
+            NativeCommandResult::Unhandled(keys) => {
+                self.discard_insert_replay_if_needed(mode_before);
+                NativeInputResult::Unhandled(keys)
+            }
         }
     }
 
@@ -511,6 +444,12 @@ impl NativeCommandInput {
             && !self.current_insert_replay.is_empty()
         {
             self.last_insert_replay = Some(std::mem::take(&mut self.current_insert_replay));
+        }
+    }
+
+    fn discard_insert_replay_if_needed(&mut self, mode: Mode) {
+        if mode == Mode::Insert {
+            self.current_insert_replay = InsertReplay::default();
         }
     }
 
@@ -528,8 +467,8 @@ impl NativeCommandInput {
         let mode = Mode::Insert;
         let pending_keys = self.keymaps.pending().to_vec();
         let has_pending_keys = !pending_keys.is_empty();
-        let mut fallback_keys = pending_keys;
-        fallback_keys.push(key);
+        let mut unhandled_keys = pending_keys;
+        unhandled_keys.push(key);
 
         let key_result = self.keymaps.get(mode, key);
         context.editor.autoinfo = self.keymaps.sticky().map(|node| node.infobox());
@@ -537,19 +476,18 @@ impl NativeCommandInput {
         match &key_result {
             KeymapResult::Matched(command) => {
                 if native_insert_completion_command(command) {
-                    self.current_insert_replay.mark_terminal();
-                    self.current_insert_replay.keys.extend(fallback_keys);
+                    self.current_insert_replay.keys.extend(unhandled_keys);
                     return NativeCommandResult::RequestCompletion {
                         callbacks: Vec::new(),
                         request: completion_request(context),
                     };
                 }
                 if !native_insert_command_supported(command) {
-                    return NativeCommandResult::Fallback(fallback_keys);
+                    return NativeCommandResult::Unhandled(unhandled_keys);
                 }
                 let mut last_mode = mode;
                 execute_native_command(command, context, &mut last_mode);
-                self.current_insert_replay.keys.extend(fallback_keys);
+                self.current_insert_replay.keys.extend(unhandled_keys);
                 NativeCommandResult::Handled(Vec::new())
             }
             KeymapResult::Pending(node) => {
@@ -561,19 +499,18 @@ impl NativeCommandInput {
                     native_insert_command_supported(command)
                         || native_insert_completion_command(command)
                 }) {
-                    return NativeCommandResult::Fallback(fallback_keys);
+                    return NativeCommandResult::Unhandled(unhandled_keys);
                 }
                 let mut last_mode = mode;
                 let mut completion_requested = None;
                 for command in commands {
                     if native_insert_completion_command(command) {
-                        self.current_insert_replay.mark_terminal();
                         completion_requested = completion_request(context);
                     } else {
                         execute_native_command(command, context, &mut last_mode);
                     }
                 }
-                self.current_insert_replay.keys.extend(fallback_keys);
+                self.current_insert_replay.keys.extend(unhandled_keys);
                 if completion_requested.is_some() {
                     NativeCommandResult::RequestCompletion {
                         callbacks: Vec::new(),
@@ -585,7 +522,7 @@ impl NativeCommandInput {
             }
             KeymapResult::NotFound => {
                 if has_pending_keys {
-                    return NativeCommandResult::Fallback(fallback_keys);
+                    return NativeCommandResult::Unhandled(unhandled_keys);
                 }
 
                 if self.run_on_next_key(OnKeyCallbackKind::Fallback, context, key) {
@@ -598,10 +535,10 @@ impl NativeCommandInput {
                     self.current_insert_replay.keys.push(key);
                     NativeCommandResult::Handled(Vec::new())
                 } else {
-                    NativeCommandResult::Fallback(fallback_keys)
+                    NativeCommandResult::Unhandled(unhandled_keys)
                 }
             }
-            KeymapResult::Cancelled(_) => NativeCommandResult::Fallback(fallback_keys),
+            KeymapResult::Cancelled(_) => NativeCommandResult::Unhandled(unhandled_keys),
         }
     }
 
@@ -632,27 +569,23 @@ impl NativeCommandInput {
 
         if is_repeat_last_insert_key(key) && self.keymaps.pending().is_empty() {
             if let Some(replay) = self.last_insert_replay.clone() {
-                if replay.native {
-                    let count = context.editor.count.map_or(1, NonZeroUsize::get);
-                    context.editor.count = None;
-                    return NativeCommandResult::ReplayInsert {
-                        keys: replay.keys,
-                        count,
-                    };
-                }
-
-                return NativeCommandResult::Fallback(replay.keys);
+                let count = context.editor.count.map_or(1, NonZeroUsize::get);
+                context.editor.count = None;
+                return NativeCommandResult::ReplayInsert {
+                    keys: replay.keys,
+                    count,
+                };
             }
-            return NativeCommandResult::Fallback(vec![key]);
+            return NativeCommandResult::Unhandled(vec![key]);
         }
 
         context.count = context.editor.count;
         context.register = context.editor.selected_register.take();
 
         let pending_keys = self.keymaps.pending().to_vec();
-        let mut fallback_keys = pending_keys;
-        fallback_keys.push(key);
-        let replay_keys = fallback_keys.clone();
+        let mut unhandled_keys = pending_keys;
+        unhandled_keys.push(key);
+        let replay_keys = unhandled_keys.clone();
 
         match self.handle_keymap_event(mode, context, key) {
             KeymapDispatch::Handled => {
@@ -724,16 +657,19 @@ impl NativeCommandInput {
                 context.editor.selected_register = context.register.take();
                 NativeCommandResult::Handled(Vec::new())
             }
-            KeymapDispatch::Fallback => {
+            KeymapDispatch::Unhandled => {
                 context.editor.selected_register = context.register.take();
-                if let Some(request) = native_workspace_key_sequence(&fallback_keys) {
+                if let Some(request) = native_workspace_key_sequence(&unhandled_keys) {
                     context.editor.count = None;
                     return NativeCommandResult::RequestWorkspace {
                         callbacks: Vec::new(),
                         request,
                     };
                 }
-                NativeCommandResult::Fallback(fallback_keys)
+                if self.keymaps.pending().is_empty() {
+                    context.editor.count = None;
+                }
+                NativeCommandResult::Unhandled(unhandled_keys)
             }
         }
     }
@@ -745,7 +681,7 @@ impl NativeCommandInput {
         replay_keys: &[KeyEvent],
     ) {
         if mode_before != Mode::Insert && mode_after == Mode::Insert {
-            self.current_insert_replay = InsertReplay::native(replay_keys);
+            self.current_insert_replay = InsertReplay::from_keys(replay_keys);
         }
     }
 
@@ -794,7 +730,7 @@ impl NativeCommandInput {
                 }
 
                 if !native_command_supported(command) {
-                    return KeymapDispatch::Fallback;
+                    return KeymapDispatch::Unhandled;
                 }
                 execute_native_command(command, context, &mut last_mode);
                 KeymapDispatch::Handled
@@ -813,7 +749,7 @@ impl NativeCommandInput {
                         || native_page_cursor_command_supported(command)
                         || native_viewport_scroll_command(command, None).is_some()
                 }) {
-                    return KeymapDispatch::Fallback;
+                    return KeymapDispatch::Unhandled;
                 }
 
                 for command in commands {
@@ -849,10 +785,10 @@ impl NativeCommandInput {
                 if self.run_on_next_key(OnKeyCallbackKind::Fallback, context, key) {
                     KeymapDispatch::Handled
                 } else {
-                    KeymapDispatch::Fallback
+                    KeymapDispatch::Unhandled
                 }
             }
-            KeymapResult::Cancelled(_) => KeymapDispatch::Fallback,
+            KeymapResult::Cancelled(_) => KeymapDispatch::Unhandled,
         }
     }
 
@@ -884,7 +820,7 @@ enum KeymapDispatch {
     RequestViewportScroll(nucleotide_editor::EditorViewportScrollRequest),
     RequestViewportCursor(nucleotide_editor::EditorViewportCursorRequest),
     Pending,
-    Fallback,
+    Unhandled,
 }
 
 trait NativeCommandResultExt {
@@ -1484,7 +1420,7 @@ fn handle_native_file_navigation(
 
     for target in targets {
         if url::Url::parse(&target).is_ok() {
-            return KeymapDispatch::Fallback;
+            return KeymapDispatch::Unhandled;
         }
 
         let target_path = path::expand(&target);
@@ -2921,7 +2857,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_file_picker_for_space_f() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text("one\ntwo\n");
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
@@ -2931,12 +2867,10 @@ mod tests {
 
         let pending = bridge.handle_key(space, &mut compositor, &mut editor, &mut jobs);
         assert!(pending.handled_by_native_command);
-        assert!(!pending.handled_by_terminal_editor);
         assert_eq!(pending.picker_requested, None);
 
         let picker = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
         assert!(picker.handled_by_native_command);
-        assert!(!picker.handled_by_terminal_editor);
         assert_eq!(picker.picker_requested, Some(NativePickerRequest::File));
         assert_eq!(picker.workspace_requested, None);
     }
@@ -2944,7 +2878,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_file_picker_for_gpui_space_f() {
         for space_key in ["space", " "] {
-            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut bridge = EditorInputBridge::new(Keymaps::default());
             let mut editor = test_editor_with_text("one\ntwo\n");
             let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
             let mut jobs = Jobs::new();
@@ -2956,7 +2890,6 @@ mod tests {
                 &mut jobs,
             );
             assert!(pending.handled_by_native_command);
-            assert!(!pending.handled_by_terminal_editor);
             assert_eq!(pending.picker_requested, None);
 
             let picker = bridge.handle_key(
@@ -2967,7 +2900,6 @@ mod tests {
             );
 
             assert!(picker.handled_by_native_command);
-            assert!(!picker.handled_by_terminal_editor);
             assert_eq!(picker.picker_requested, Some(NativePickerRequest::File));
             assert_eq!(picker.workspace_requested, None);
         }
@@ -2975,7 +2907,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_workspace_toggle_for_space_t() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text("one\ntwo\n");
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
@@ -2988,13 +2920,11 @@ mod tests {
             "space",
         );
         assert!(pending.handled_by_native_command);
-        assert!(!pending.handled_by_terminal_editor);
         assert_eq!(pending.workspace_requested, None);
 
         let toggle = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "t");
 
         assert!(toggle.handled_by_native_command);
-        assert!(!toggle.handled_by_terminal_editor);
         assert_eq!(
             toggle.workspace_requested,
             Some(NativeWorkspaceRequest::ToggleFileTree)
@@ -3004,7 +2934,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_jumplist_picker_for_space_j() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text("one\ntwo\n");
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
@@ -3018,13 +2948,12 @@ mod tests {
 
         let picker = bridge.handle_key(j, &mut compositor, &mut editor, &mut jobs);
         assert!(picker.handled_by_native_command);
-        assert!(!picker.handled_by_terminal_editor);
         assert_eq!(picker.picker_requested, Some(NativePickerRequest::JumpList));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_symbol_picker_for_space_s() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text("one\ntwo\n");
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
@@ -3038,7 +2967,6 @@ mod tests {
 
         let picker = bridge.handle_key(s, &mut compositor, &mut editor, &mut jobs);
         assert!(picker.handled_by_native_command);
-        assert!(!picker.handled_by_terminal_editor);
         assert_eq!(
             picker.picker_requested,
             Some(NativePickerRequest::Symbols { workspace: false })
@@ -3047,7 +2975,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_global_search_for_space_slash() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text("one\ntwo\n");
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
@@ -3061,7 +2989,6 @@ mod tests {
 
         let prompt = bridge.handle_key(slash, &mut compositor, &mut editor, &mut jobs);
         assert!(prompt.handled_by_native_command);
-        assert!(!prompt.handled_by_terminal_editor);
         assert_eq!(
             prompt.prompt_requested,
             Some(NativePromptRequest::GlobalSearch)
@@ -3071,7 +2998,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_lsp_navigation_for_gd() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text("one\ntwo\n");
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
@@ -3085,7 +3012,6 @@ mod tests {
 
         let navigation = bridge.handle_key(d, &mut compositor, &mut editor, &mut jobs);
         assert!(navigation.handled_by_native_command);
-        assert!(!navigation.handled_by_terminal_editor);
         assert_eq!(
             navigation.lsp_navigation_requested,
             Some(NativeLspNavigationRequest::GotoDefinition)
@@ -3094,7 +3020,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_handles_jumplist_movement_natively() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text("one\ntwo\n");
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
@@ -3104,7 +3030,6 @@ mod tests {
         let outcome = bridge.handle_key(ctrl_o, &mut compositor, &mut editor, &mut jobs);
 
         assert!(outcome.handled_by_native_command);
-        assert!(!outcome.handled_by_terminal_editor);
         assert_eq!(outcome.picker_requested, None);
         assert_eq!(outcome.lsp_navigation_requested, None);
     }
@@ -3121,7 +3046,7 @@ mod tests {
                 nucleotide_editor::EditorViewportScrollRequest::VisualRows(-1),
             ),
         ] {
-            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut bridge = EditorInputBridge::new(Keymaps::default());
             let mut editor = test_editor_with_text("one\ntwo\nthree\n");
             let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
             let mut jobs = Jobs::new();
@@ -3134,7 +3059,6 @@ mod tests {
                 keys[0],
             );
             assert!(pending.handled_by_native_command);
-            assert!(!pending.handled_by_terminal_editor);
             assert_eq!(pending.viewport_scroll_requested, None);
 
             let outcome = handle_key_str(
@@ -3146,7 +3070,6 @@ mod tests {
             );
 
             assert!(outcome.handled_by_native_command);
-            assert!(!outcome.handled_by_terminal_editor);
             assert_eq!(outcome.viewport_scroll_requested, Some(request));
             assert!(!outcome.selection_changed);
         }
@@ -3164,7 +3087,7 @@ mod tests {
                 nucleotide_editor::EditorViewportScrollRequest::VisualPages(-1),
             ),
         ] {
-            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut bridge = EditorInputBridge::new(Keymaps::default());
             let mut editor = test_editor_with_text("one\ntwo\nthree\n");
             let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
             let mut jobs = Jobs::new();
@@ -3172,7 +3095,6 @@ mod tests {
             let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, key);
 
             assert!(outcome.handled_by_native_command);
-            assert!(!outcome.handled_by_terminal_editor);
             assert_eq!(outcome.viewport_scroll_requested, Some(request));
             assert!(!outcome.selection_changed);
         }
@@ -3200,7 +3122,7 @@ mod tests {
                 -1isize,
             ),
         ] {
-            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut bridge = EditorInputBridge::new(Keymaps::default());
             let mut editor = test_editor_with_text(&numbered_lines(80));
             let half_page_rows = editor
                 .tree
@@ -3215,7 +3137,6 @@ mod tests {
             let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, key);
 
             assert!(outcome.handled_by_native_command);
-            assert!(!outcome.handled_by_terminal_editor);
             assert_eq!(outcome.viewport_scroll_requested, Some(request));
             assert!(outcome.selection_changed);
             let expected_line =
@@ -3226,7 +3147,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_extends_selection_for_page_cursor_in_select_mode() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text(&numbered_lines(80));
         let view_id = editor.tree.focus;
         let half_page_rows = editor.tree.try_get(view_id).unwrap().inner_height() / 2;
@@ -3238,7 +3159,6 @@ mod tests {
         let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "C-d");
 
         assert!(outcome.handled_by_native_command);
-        assert!(!outcome.handled_by_terminal_editor);
         assert_eq!(
             outcome.viewport_scroll_requested,
             Some(
@@ -3293,7 +3213,7 @@ mod tests {
                 },
             ),
         ] {
-            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut bridge = EditorInputBridge::new(Keymaps::default());
             let mut editor = test_editor_with_text(&numbered_lines(20));
             let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
             let mut jobs = Jobs::new();
@@ -3302,7 +3222,6 @@ mod tests {
                 let pending =
                     handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, key);
                 assert!(pending.handled_by_native_command);
-                assert!(!pending.handled_by_terminal_editor);
                 assert_eq!(pending.viewport_cursor_requested, None);
             }
 
@@ -3315,7 +3234,6 @@ mod tests {
             );
 
             assert!(outcome.handled_by_native_command);
-            assert!(!outcome.handled_by_terminal_editor);
             assert_eq!(outcome.viewport_cursor_requested, Some(request));
             assert!(!outcome.selection_changed);
         }
@@ -3349,7 +3267,7 @@ mod tests {
                 ),
             ),
         ] {
-            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut bridge = EditorInputBridge::new(Keymaps::default());
             let mut editor = test_editor_with_text("one\ntwo\nthree\n");
             let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
             let mut jobs = Jobs::new();
@@ -3362,7 +3280,6 @@ mod tests {
                 keys[0],
             );
             assert!(pending.handled_by_native_command);
-            assert!(!pending.handled_by_terminal_editor);
             assert_eq!(pending.viewport_scroll_requested, None);
 
             let outcome = handle_key_str(
@@ -3374,7 +3291,6 @@ mod tests {
             );
 
             assert!(outcome.handled_by_native_command);
-            assert!(!outcome.handled_by_terminal_editor);
             assert_eq!(outcome.viewport_scroll_requested, Some(request));
             assert!(!outcome.selection_changed);
         }
@@ -3382,7 +3298,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_handles_align_view_middle_natively() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text(&format!("{}\n", "a".repeat(140)));
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
@@ -3394,19 +3310,17 @@ mod tests {
 
         let pending = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "z");
         assert!(pending.handled_by_native_command);
-        assert!(!pending.handled_by_terminal_editor);
 
         let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "m");
 
         assert!(outcome.handled_by_native_command);
-        assert!(!outcome.handled_by_terminal_editor);
         assert_eq!(focused_horizontal_offset(&editor), expected_offset);
         assert!(!outcome.selection_changed);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_counted_native_viewport_scroll() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text("one\ntwo\nthree\n");
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
@@ -3417,13 +3331,11 @@ mod tests {
 
         let pending = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "z");
         assert!(pending.handled_by_native_command);
-        assert!(!pending.handled_by_terminal_editor);
         assert_eq!(pending.viewport_scroll_requested, None);
 
         let scroll = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "j");
 
         assert!(scroll.handled_by_native_command);
-        assert!(!scroll.handled_by_terminal_editor);
         assert_eq!(
             scroll.viewport_scroll_requested,
             Some(nucleotide_editor::EditorViewportScrollRequest::VisualRows(
@@ -3436,7 +3348,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_handles_syntax_object_navigation_natively() {
         for sequence in [["]", "f"], ["[", "t"]] {
-            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut bridge = EditorInputBridge::new(Keymaps::default());
             let mut editor = test_editor_with_text("fn main() {}\n");
             let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
             let mut jobs = Jobs::new();
@@ -3445,7 +3357,6 @@ mod tests {
                 let outcome =
                     handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, key);
                 assert!(outcome.handled_by_native_command);
-                assert!(!outcome.handled_by_terminal_editor);
             }
 
             assert!(editor.status_msg.is_some());
@@ -3454,7 +3365,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_handles_textobject_selection_natively() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text("one two\n");
         set_test_cursor(&mut editor, 1);
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
@@ -3463,7 +3374,6 @@ mod tests {
         for key in ["m", "i", "w"] {
             let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, key);
             assert!(outcome.handled_by_native_command);
-            assert!(!outcome.handled_by_terminal_editor);
         }
 
         assert_eq!(focused_selection_fragments(&editor), vec!["one"]);
@@ -3471,7 +3381,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_handles_surround_add_natively() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text("one two\n");
         set_test_selection(&mut editor, 0, 3);
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
@@ -3480,7 +3390,6 @@ mod tests {
         for key in ["m", "s", "("] {
             let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, key);
             assert!(outcome.handled_by_native_command);
-            assert!(!outcome.handled_by_terminal_editor);
         }
 
         assert_eq!(focused_document_text(&editor), "(one) two\n\n");
@@ -3488,7 +3397,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn editor_input_bridge_requests_native_command_prompt() {
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text("one\ntwo\n");
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
         let mut jobs = Jobs::new();
@@ -3497,7 +3406,6 @@ mod tests {
             bridge.handle_key(plain_char_key(':'), &mut compositor, &mut editor, &mut jobs);
 
         assert!(outcome.handled_by_native_command);
-        assert!(!outcome.handled_by_terminal_editor);
         assert_eq!(outcome.prompt_requested, Some(NativePromptRequest::Command));
         assert!(compositor.find::<helix_term::ui::Prompt>().is_none());
     }
@@ -3508,7 +3416,7 @@ mod tests {
             ('/', NativePromptRequest::Search),
             ('?', NativePromptRequest::ReverseSearch),
         ] {
-            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut bridge = EditorInputBridge::new(Keymaps::default());
             let mut editor = test_editor_with_text("one\ntwo\n");
             let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
             let mut jobs = Jobs::new();
@@ -3517,7 +3425,6 @@ mod tests {
                 bridge.handle_key(plain_char_key(key), &mut compositor, &mut editor, &mut jobs);
 
             assert!(outcome.handled_by_native_command);
-            assert!(!outcome.handled_by_terminal_editor);
             assert_eq!(outcome.prompt_requested, Some(request));
             assert!(compositor.find::<helix_term::ui::Prompt>().is_none());
         }
@@ -3543,7 +3450,7 @@ mod tests {
                 NativePromptRequest::RegexSelection(crate::types::RegexSelectionAction::Remove),
             ),
         ] {
-            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut bridge = EditorInputBridge::new(Keymaps::default());
             let mut editor = test_editor_with_text("one two\n");
             let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
             let mut jobs = Jobs::new();
@@ -3556,7 +3463,6 @@ mod tests {
             );
 
             assert!(outcome.handled_by_native_command);
-            assert!(!outcome.handled_by_terminal_editor);
             assert_eq!(outcome.prompt_requested, Some(request));
             assert!(compositor.find::<helix_term::ui::Prompt>().is_none());
         }
@@ -3568,7 +3474,7 @@ mod tests {
         let target_path = temp_dir.path().join("target.txt");
         std::fs::write(&target_path, "opened\n").unwrap();
 
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text(&format!("{}\n", target_path.display()));
         set_test_cursor(&mut editor, 0);
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
@@ -3579,11 +3485,9 @@ mod tests {
 
         let pending = bridge.handle_key(g, &mut compositor, &mut editor, &mut jobs);
         assert!(pending.handled_by_native_command);
-        assert!(!pending.handled_by_terminal_editor);
 
         let outcome = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
         assert!(outcome.handled_by_native_command);
-        assert!(!outcome.handled_by_terminal_editor);
         assert_eq!(outcome.picker_requested, None);
 
         let focused_path = editor
@@ -3599,7 +3503,7 @@ mod tests {
     async fn editor_input_bridge_requests_native_picker_for_goto_directory() {
         let temp_dir = tempfile::tempdir().unwrap();
 
-        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
         let mut editor = test_editor_with_text(&format!("{}\n", temp_dir.path().display()));
         set_test_cursor(&mut editor, 0);
         let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
@@ -3610,11 +3514,9 @@ mod tests {
 
         let pending = bridge.handle_key(g, &mut compositor, &mut editor, &mut jobs);
         assert!(pending.handled_by_native_command);
-        assert!(!pending.handled_by_terminal_editor);
 
         let outcome = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
         assert!(outcome.handled_by_native_command);
-        assert!(!outcome.handled_by_terminal_editor);
         assert_eq!(
             outcome.picker_requested,
             Some(NativePickerRequest::FileAt(temp_dir.path().to_path_buf()))
@@ -4193,7 +4095,6 @@ mod tests {
         input.seed_insert_replay_if_needed(Mode::Normal, Mode::Insert, &[enter_insert]);
 
         assert_eq!(input.current_insert_replay.keys, vec![enter_insert]);
-        assert!(input.current_insert_replay.native);
         assert_eq!(input.last_insert_replay, None);
     }
 
@@ -4237,28 +4138,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_fallback_marks_insert_replay_non_native() {
-        let mut input = NativeCommandInput::new(Keymaps::default());
-        let enter_insert = KeyEvent {
-            code: KeyCode::Char('i'),
-            modifiers: KeyModifiers::empty(),
-        };
-        let inserted = KeyEvent {
-            code: KeyCode::Char('a'),
-            modifiers: KeyModifiers::empty(),
-        };
-
-        input.observe_terminal_fallback(Mode::Normal, Mode::Insert, &[enter_insert]);
-        input.observe_terminal_fallback(Mode::Insert, Mode::Insert, &[inserted]);
-
-        assert_eq!(
-            input.current_insert_replay.keys,
-            vec![enter_insert, inserted]
-        );
-        assert!(!input.current_insert_replay.native);
-    }
-
-    #[test]
     fn native_insert_replay_finishes_as_native() {
         let mut input = NativeCommandInput::new(Keymaps::default());
         let enter_insert = KeyEvent {
@@ -4283,13 +4162,6 @@ mod tests {
             input.last_insert_replay.as_ref().map(|replay| &replay.keys),
             Some(&vec![enter_insert, inserted, escape])
         );
-        assert_eq!(
-            input
-                .last_insert_replay
-                .as_ref()
-                .map(|replay| replay.native),
-            Some(true)
-        );
         assert!(input.current_insert_replay.is_empty());
     }
 
@@ -4311,37 +4183,29 @@ mod tests {
         );
     }
 
-    #[test]
-    fn terminal_fallback_starts_and_finishes_insert_replay() {
-        let mut input = NativeCommandInput::new(Keymaps::default());
-        let enter_insert = KeyEvent {
-            code: KeyCode::Char('i'),
-            modifiers: KeyModifiers::empty(),
-        };
-        let inserted = KeyEvent {
-            code: KeyCode::Char('a'),
-            modifiers: KeyModifiers::empty(),
-        };
-        let escape = KeyEvent {
-            code: KeyCode::Esc,
-            modifiers: KeyModifiers::empty(),
-        };
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_reports_unhandled_native_file_url() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
+        let mut editor = test_editor_with_text("https://example.com\n");
+        set_test_cursor(&mut editor, 0);
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
 
-        input.observe_terminal_fallback(Mode::Normal, Mode::Insert, &[enter_insert]);
-        input.observe_terminal_fallback(Mode::Insert, Mode::Insert, &[inserted]);
-        input.observe_terminal_fallback(Mode::Insert, Mode::Normal, &[escape]);
+        let pending = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "g");
+        assert!(pending.handled_by_native_command);
+        assert!(pending.unhandled_keys.is_empty());
 
+        let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "f");
+
+        assert!(!outcome.handled_by_native_command);
         assert_eq!(
-            input.last_insert_replay.as_ref().map(|replay| &replay.keys),
-            Some(&vec![enter_insert, inserted, escape])
+            outcome.unhandled_keys,
+            vec![
+                KeyEvent::from_str("g").unwrap(),
+                KeyEvent::from_str("f").unwrap()
+            ]
         );
-        assert_eq!(
-            input
-                .last_insert_replay
-                .as_ref()
-                .map(|replay| replay.native),
-            Some(false)
-        );
-        assert!(input.current_insert_replay.is_empty());
+        assert_eq!(outcome.picker_requested, None);
+        assert_eq!(outcome.prompt_requested, None);
     }
 }
