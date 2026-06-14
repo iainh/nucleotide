@@ -321,6 +321,7 @@ fn paint_soft_wrap_cursor(
         ),
         line_height: params.layout.line_height,
         cell_width: params.layout.cell_width,
+        scroll_line_offset: params.scroll_line_offset,
         vertical_offset: soft_wrap_render_plan.view_offset.vertical_offset,
         viewport_height: soft_wrap_render_plan.viewport_height,
         horizontal_offset: soft_wrap_render_plan.view_offset.horizontal_offset,

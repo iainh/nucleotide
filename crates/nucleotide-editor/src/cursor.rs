@@ -345,6 +345,18 @@ pub struct SoftWrapCursorPaintPlanParams<'a> {
     pub geometry: EditorSurfaceGeometry,
     pub line_height: Pixels,
     pub cell_width: Pixels,
+    pub scroll_line_offset: Pixels,
+    pub vertical_offset: usize,
+    pub viewport_height: usize,
+    pub horizontal_offset: usize,
+}
+
+pub struct SoftWrapCursorPaintPositionParams {
+    pub geometry: EditorSurfaceGeometry,
+    pub line_height: Pixels,
+    pub cell_width: Pixels,
+    pub cursor_position: SoftWrapVisualPosition,
+    pub scroll_line_offset: Pixels,
     pub vertical_offset: usize,
     pub viewport_height: usize,
     pub horizontal_offset: usize,
@@ -539,28 +551,27 @@ pub fn unwrapped_cursor_paint_plan(
 }
 
 pub fn soft_wrap_cursor_paint_position(
-    geometry: EditorSurfaceGeometry,
-    line_height: Pixels,
-    cell_width: Pixels,
-    cursor_position: SoftWrapVisualPosition,
-    vertical_offset: usize,
-    viewport_height: usize,
-    horizontal_offset: usize,
+    params: SoftWrapCursorPaintPositionParams,
 ) -> Option<CursorPaintPosition> {
-    if cursor_position.visual_line < vertical_offset
-        || cursor_position.visual_line >= vertical_offset.saturating_add(viewport_height)
+    if params.cursor_position.visual_line < params.vertical_offset
+        || params.cursor_position.visual_line
+            >= params
+                .vertical_offset
+                .saturating_add(params.viewport_height)
     {
         return None;
     }
 
-    let text_bounds = geometry.text_bounds();
-    let relative_line = cursor_position.visual_line - vertical_offset;
-    let visual_col_in_viewport = cursor_position.visual_col as f32 - horizontal_offset as f32;
+    let text_bounds = params.geometry.text_bounds();
+    let relative_line = params.cursor_position.visual_line - params.vertical_offset;
+    let visual_col_in_viewport =
+        params.cursor_position.visual_col as f32 - params.horizontal_offset as f32;
 
     Some(CursorPaintPosition {
         paint_origin: point(
-            text_bounds.origin.x + cell_width * visual_col_in_viewport,
-            text_bounds.origin.y + line_height * relative_line as f32,
+            text_bounds.origin.x + params.cell_width * visual_col_in_viewport,
+            text_bounds.origin.y - params.scroll_line_offset
+                + params.line_height * relative_line as f32,
         ),
         cursor_origin: point(px(0.0), px(0.0)),
     })
@@ -575,15 +586,16 @@ pub fn soft_wrap_cursor_paint_plan(
         params.anchor,
         params.cursor_char_idx,
     )?;
-    let paint_position = soft_wrap_cursor_paint_position(
-        params.geometry,
-        params.line_height,
-        params.cell_width,
-        visual_position.clone(),
-        params.vertical_offset,
-        params.viewport_height,
-        params.horizontal_offset,
-    )?;
+    let paint_position = soft_wrap_cursor_paint_position(SoftWrapCursorPaintPositionParams {
+        geometry: params.geometry,
+        line_height: params.line_height,
+        cell_width: params.cell_width,
+        cursor_position: visual_position.clone(),
+        scroll_line_offset: params.scroll_line_offset,
+        vertical_offset: params.vertical_offset,
+        viewport_height: params.viewport_height,
+        horizontal_offset: params.horizontal_offset,
+    })?;
 
     Some(SoftWrapCursorPaintPlan {
         visual_position,
@@ -898,6 +910,7 @@ mod tests {
             geometry,
             line_height: px(20.0),
             cell_width: px(8.0),
+            scroll_line_offset: px(0.0),
             vertical_offset: 1,
             viewport_height: 4,
             horizontal_offset: 0,
@@ -934,6 +947,7 @@ mod tests {
                 geometry,
                 line_height: px(20.0),
                 cell_width: px(8.0),
+                scroll_line_offset: px(0.0),
                 vertical_offset: 2,
                 viewport_height: 4,
                 horizontal_offset: 0,
@@ -954,13 +968,48 @@ mod tests {
             visual_col: 12,
         };
 
-        let position =
-            soft_wrap_cursor_paint_position(geometry, px(20.0), px(8.0), cursor_position, 5, 10, 3)
-                .expect("visible cursor");
+        let position = soft_wrap_cursor_paint_position(SoftWrapCursorPaintPositionParams {
+            geometry,
+            cursor_position,
+            line_height: px(20.0),
+            cell_width: px(8.0),
+            scroll_line_offset: px(0.0),
+            vertical_offset: 5,
+            viewport_height: 10,
+            horizontal_offset: 3,
+        })
+        .expect("visible cursor");
 
         assert_eq!(position.cursor_origin, point(px(0.0), px(0.0)));
         assert_eq!(position.paint_origin, point(px(204.0), px(81.0)));
         assert_eq!(position.cursor_point(), point(px(204.0), px(81.0)));
+    }
+
+    #[test]
+    fn soft_wrap_cursor_paint_position_subtracts_scroll_offset() {
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            4,
+            px(8.0),
+        );
+        let cursor_position = SoftWrapVisualPosition {
+            visual_line: 7,
+            visual_col: 12,
+        };
+
+        let position = soft_wrap_cursor_paint_position(SoftWrapCursorPaintPositionParams {
+            geometry,
+            cursor_position,
+            line_height: px(20.0),
+            cell_width: px(8.0),
+            scroll_line_offset: px(5.0),
+            vertical_offset: 5,
+            viewport_height: 10,
+            horizontal_offset: 3,
+        })
+        .expect("visible cursor");
+
+        assert_eq!(position.paint_origin, point(px(204.0), px(76.0)));
     }
 
     #[test]
@@ -972,33 +1021,35 @@ mod tests {
         );
 
         assert!(
-            soft_wrap_cursor_paint_position(
+            soft_wrap_cursor_paint_position(SoftWrapCursorPaintPositionParams {
                 geometry,
-                px(20.0),
-                px(8.0),
-                SoftWrapVisualPosition {
+                line_height: px(20.0),
+                cell_width: px(8.0),
+                cursor_position: SoftWrapVisualPosition {
                     visual_line: 4,
                     visual_col: 0,
                 },
-                5,
-                10,
-                0,
-            )
+                scroll_line_offset: px(0.0),
+                vertical_offset: 5,
+                viewport_height: 10,
+                horizontal_offset: 0,
+            })
             .is_none()
         );
         assert!(
-            soft_wrap_cursor_paint_position(
+            soft_wrap_cursor_paint_position(SoftWrapCursorPaintPositionParams {
                 geometry,
-                px(20.0),
-                px(8.0),
-                SoftWrapVisualPosition {
+                line_height: px(20.0),
+                cell_width: px(8.0),
+                cursor_position: SoftWrapVisualPosition {
                     visual_line: 15,
                     visual_col: 0,
                 },
-                5,
-                10,
-                0,
-            )
+                scroll_line_offset: px(0.0),
+                vertical_offset: 5,
+                viewport_height: 10,
+                horizontal_offset: 0,
+            })
             .is_none()
         );
     }
