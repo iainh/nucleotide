@@ -137,7 +137,9 @@ pub use surface::{
     paint_editor_background,
 };
 pub use view_component::NativeEditorView;
-pub use view_state::{EditorViewContentState, EditorViewFrameState, EditorViewState};
+pub use view_state::{
+    EditorViewContentState, EditorViewFrameState, EditorViewLayoutSnapshot, EditorViewState,
+};
 pub use viewport::{
     EditorCursorReveal, EditorViewport, EditorViewportContentLayout, EditorViewportContentUpdate,
     EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate, HelixViewportSnapshot,
