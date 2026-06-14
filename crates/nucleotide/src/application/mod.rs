@@ -2049,6 +2049,9 @@ impl Application {
                         editor_input::NativePickerRequest::Diagnostics { workspace } => {
                             self.emit_diagnostics_panel(workspace, cx);
                         }
+                        editor_input::NativePickerRequest::CodeActions => {
+                            cx.emit(crate::Update::ShowCodeActions);
+                        }
                     }
                 }
 

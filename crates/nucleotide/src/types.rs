@@ -114,6 +114,7 @@ pub enum Update {
     ShowFilePicker,
     ShowFilePickerAt(std::path::PathBuf),
     ShowBufferPicker,
+    ShowCodeActions,
     DiagnosticsPanel(gpui::Entity<crate::DiagnosticsPanel>),
     TerminalPanel(gpui::Entity<nucleotide_terminal_panel::TerminalPanel>),
 }
@@ -169,6 +170,7 @@ impl std::fmt::Debug for Update {
             Update::ShowFilePicker => write!(f, "ShowFilePicker"),
             Update::ShowFilePickerAt(path) => write!(f, "ShowFilePickerAt({path:?})"),
             Update::ShowBufferPicker => write!(f, "ShowBufferPicker"),
+            Update::ShowCodeActions => write!(f, "ShowCodeActions"),
             Update::DiagnosticsPanel(_) => write!(f, "DiagnosticsPanel(...)"),
             Update::TerminalPanel(_) => write!(f, "TerminalPanel(...)"),
         }
