@@ -792,18 +792,27 @@ fn native_command_supported(command: &MappableCommand) -> bool {
         || native_prompt_command(command)
         || native_history_command(command)
         || native_register_edit_command(command)
+        || native_register_selection_command(command)
         || native_selection_transform_command(command)
         || native_search_command(command)
+        || native_buffer_navigation_command(command)
+        || native_diagnostic_navigation_command(command)
+        || native_jumplist_navigation_command(command)
+        || native_split_navigation_command(command)
         || name.starts_with("move_")
         || name.starts_with("extend_")
         || matches!(
             name,
-            "align_view_bottom"
+            "add_newline_above"
+                | "add_newline_below"
+                | "align_view_bottom"
                 | "align_view_center"
                 | "align_view_middle"
                 | "align_view_top"
                 | "collapse_selection"
+                | "exit_select_mode"
                 | "flip_selections"
+                | "goto_column"
                 | "goto_file_end"
                 | "goto_file_start"
                 | "goto_first_nonwhitespace"
@@ -836,6 +845,7 @@ fn native_command_supported(command: &MappableCommand) -> bool {
                 | "select_line_above"
                 | "select_line_below"
                 | "select_mode"
+                | "match_brackets"
         )
 }
 
@@ -904,6 +914,7 @@ fn native_search_command(command: &MappableCommand) -> bool {
             | "extend_search_prev"
             | "search_selection"
             | "search_selection_detect_word_boundaries"
+            | "make_search_word_bounded"
     )
 }
 
@@ -931,6 +942,65 @@ fn native_register_edit_command(command: &MappableCommand) -> bool {
             | "replace_with_yanked"
             | "replace_selections_with_clipboard"
             | "replace_selections_with_primary_clipboard"
+    )
+}
+
+fn native_register_selection_command(command: &MappableCommand) -> bool {
+    matches!(command.name(), "select_register" | "copy_between_registers")
+}
+
+fn native_buffer_navigation_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "goto_next_buffer"
+            | "goto_previous_buffer"
+            | "goto_last_accessed_file"
+            | "goto_last_modified_file"
+            | "goto_last_modification"
+    )
+}
+
+fn native_diagnostic_navigation_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "goto_first_diag"
+            | "goto_last_diag"
+            | "goto_next_diag"
+            | "goto_prev_diag"
+            | "goto_first_change"
+            | "goto_last_change"
+            | "goto_next_change"
+            | "goto_prev_change"
+    )
+}
+
+fn native_jumplist_navigation_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "jump_forward" | "jump_backward" | "save_selection"
+    )
+}
+
+fn native_split_navigation_command(command: &MappableCommand) -> bool {
+    matches!(
+        command.name(),
+        "jump_view_right"
+            | "jump_view_left"
+            | "jump_view_up"
+            | "jump_view_down"
+            | "swap_view_right"
+            | "swap_view_left"
+            | "swap_view_up"
+            | "swap_view_down"
+            | "transpose_view"
+            | "rotate_view"
+            | "rotate_view_reverse"
+            | "hsplit"
+            | "hsplit_new"
+            | "vsplit"
+            | "vsplit_new"
+            | "wclose"
+            | "wonly"
     )
 }
 
@@ -977,6 +1047,7 @@ fn native_insert_command_supported(command: &MappableCommand) -> bool {
         && !native_prompt_command(command)
         && !native_history_command(command)
         && !native_register_edit_command(command)
+        && !native_register_selection_command(command)
         && !native_selection_transform_command(command)
         && native_command_supported(command))
         || native_insert_edit_command(command)
@@ -1226,7 +1297,79 @@ mod tests {
         assert!(native_command_supported(
             &MappableCommand::search_selection_detect_word_boundaries
         ));
+        assert!(native_command_supported(
+            &MappableCommand::make_search_word_bounded
+        ));
         assert!(!native_command_supported(&MappableCommand::global_search));
+    }
+
+    #[test]
+    fn native_command_supports_buffer_and_jumplist_navigation() {
+        assert!(native_command_supported(&MappableCommand::goto_next_buffer));
+        assert!(native_command_supported(
+            &MappableCommand::goto_previous_buffer
+        ));
+        assert!(native_command_supported(
+            &MappableCommand::goto_last_accessed_file
+        ));
+        assert!(native_command_supported(
+            &MappableCommand::goto_last_modified_file
+        ));
+        assert!(native_command_supported(
+            &MappableCommand::goto_last_modification
+        ));
+        assert!(native_command_supported(&MappableCommand::jump_forward));
+        assert!(native_command_supported(&MappableCommand::jump_backward));
+        assert!(native_command_supported(&MappableCommand::save_selection));
+    }
+
+    #[test]
+    fn native_command_supports_diagnostics_changes_and_matching() {
+        assert!(native_command_supported(&MappableCommand::goto_first_diag));
+        assert!(native_command_supported(&MappableCommand::goto_last_diag));
+        assert!(native_command_supported(&MappableCommand::goto_next_diag));
+        assert!(native_command_supported(&MappableCommand::goto_prev_diag));
+        assert!(native_command_supported(
+            &MappableCommand::goto_first_change
+        ));
+        assert!(native_command_supported(&MappableCommand::goto_last_change));
+        assert!(native_command_supported(&MappableCommand::goto_next_change));
+        assert!(native_command_supported(&MappableCommand::goto_prev_change));
+        assert!(native_command_supported(&MappableCommand::match_brackets));
+    }
+
+    #[test]
+    fn native_command_supports_split_navigation() {
+        assert!(native_command_supported(&MappableCommand::jump_view_right));
+        assert!(native_command_supported(&MappableCommand::jump_view_left));
+        assert!(native_command_supported(&MappableCommand::jump_view_up));
+        assert!(native_command_supported(&MappableCommand::jump_view_down));
+        assert!(native_command_supported(&MappableCommand::swap_view_right));
+        assert!(native_command_supported(&MappableCommand::swap_view_left));
+        assert!(native_command_supported(&MappableCommand::swap_view_up));
+        assert!(native_command_supported(&MappableCommand::swap_view_down));
+        assert!(native_command_supported(&MappableCommand::transpose_view));
+        assert!(native_command_supported(&MappableCommand::rotate_view));
+        assert!(native_command_supported(
+            &MappableCommand::rotate_view_reverse
+        ));
+        assert!(native_command_supported(&MappableCommand::hsplit));
+        assert!(native_command_supported(&MappableCommand::hsplit_new));
+        assert!(native_command_supported(&MappableCommand::vsplit));
+        assert!(native_command_supported(&MappableCommand::vsplit_new));
+        assert!(native_command_supported(&MappableCommand::wclose));
+        assert!(native_command_supported(&MappableCommand::wonly));
+    }
+
+    #[test]
+    fn native_command_supports_register_selection_commands() {
+        assert!(native_command_supported(&MappableCommand::select_register));
+        assert!(native_command_supported(
+            &MappableCommand::copy_between_registers
+        ));
+        assert!(!native_insert_command_supported(
+            &MappableCommand::select_register
+        ));
     }
 
     #[test]
@@ -1588,6 +1731,23 @@ mod tests {
             navigation.lsp_navigation_requested,
             Some(NativeLspNavigationRequest::GotoDefinition)
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_handles_jumplist_movement_natively() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text("one\ntwo\n");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let ctrl_o = KeyEvent::from_str("C-o").unwrap();
+
+        let outcome = bridge.handle_key(ctrl_o, &mut compositor, &mut editor, &mut jobs);
+
+        assert!(outcome.handled_by_native_command);
+        assert!(!outcome.handled_by_terminal_editor);
+        assert_eq!(outcome.picker_requested, None);
+        assert_eq!(outcome.lsp_navigation_requested, None);
     }
 
     #[test]
