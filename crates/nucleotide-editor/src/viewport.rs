@@ -32,6 +32,14 @@ pub struct HelixViewportSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorViewportViewPositionPlan {
+    pub top_visual_row: usize,
+    pub previous_view_position: ViewPosition,
+    pub view_position: ViewPosition,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditorViewportSurfaceUpdate {
     pub gutter_columns: u16,
     pub visual_rows: usize,
@@ -471,46 +479,22 @@ impl EditorViewport {
             return false;
         };
 
-        let top_visual_row = self.top_visual_row();
-        let mut view_offset = doc.view_offset(view_id);
-        let (anchor, vertical_offset) = {
-            let doc_text = doc.text().slice(..);
-            let annotations = view.text_annotations(doc, None);
-            let (anchor, vertical_offset) = char_idx_at_visual_offset(
-                doc_text,
-                0,
-                top_visual_row as isize,
-                0,
-                text_format,
-                &annotations,
-            );
-            (anchor, vertical_offset)
-        };
-
-        if view_offset.anchor == anchor
-            && view_offset.vertical_offset == vertical_offset
-            && (!text_format.soft_wrap || view_offset.horizontal_offset == 0)
-        {
+        let plan = self.plan_view_position(doc, &view, view_id, text_format);
+        if !plan.changed {
             return false;
         }
 
         debug!(
             view_id = ?view_id,
-            top_visual_row,
-            old_anchor = view_offset.anchor,
-            new_anchor = anchor,
-            old_vertical_offset = view_offset.vertical_offset,
-            new_vertical_offset = vertical_offset,
+            top_visual_row = plan.top_visual_row,
+            old_anchor = plan.previous_view_position.anchor,
+            new_anchor = plan.view_position.anchor,
+            old_vertical_offset = plan.previous_view_position.vertical_offset,
+            new_vertical_offset = plan.view_position.vertical_offset,
             "Syncing GUI scroll position to Helix view"
         );
 
-        view_offset.anchor = anchor;
-        view_offset.vertical_offset = vertical_offset;
-        if text_format.soft_wrap {
-            view_offset.horizontal_offset = 0;
-        }
-        doc.set_view_offset(view_id, view_offset);
-        true
+        apply_view_position_plan(doc, view_id, plan)
     }
 
     pub fn sync_content_layout(
@@ -587,17 +571,11 @@ impl EditorViewport {
 
         let view = editor.tree.try_get(view_id)?;
         let document = editor.document(doc_id)?;
-        let helix_view_position = document.view_offset(view_id);
         let helix_snapshot =
             self.sync_from_helix_view(document, view, view_id, &metrics.text_format);
-        let annotations = view.text_annotations(document, None);
-        let view_position = view_position_for_top_visual_row(
-            document.text().slice(..),
-            self.top_visual_row(),
-            helix_view_position.horizontal_offset,
-            &metrics.text_format,
-            &annotations,
-        );
+        let view_position = self
+            .plan_view_position(document, view, view_id, &metrics.text_format)
+            .view_position;
 
         Some(EditorViewportSurfaceUpdate {
             gutter_columns,
@@ -608,6 +586,23 @@ impl EditorViewport {
             cursor_revealed,
             helix_snapshot,
         })
+    }
+
+    pub fn plan_view_position(
+        &self,
+        document: &Document,
+        view: &helix_view::View,
+        view_id: ViewId,
+        text_format: &TextFormat,
+    ) -> EditorViewportViewPositionPlan {
+        let annotations = view.text_annotations(document, None);
+        view_position_plan_for_top_visual_row(
+            document.text().slice(..),
+            document.view_offset(view_id),
+            self.top_visual_row(),
+            text_format,
+            &annotations,
+        )
     }
 
     pub fn top_visual_row(&self) -> usize {
@@ -740,6 +735,42 @@ pub fn view_position_for_top_visual_row(
             horizontal_offset
         },
     }
+}
+
+pub fn view_position_plan_for_top_visual_row(
+    text: RopeSlice<'_>,
+    previous_view_position: ViewPosition,
+    top_visual_row: usize,
+    text_format: &TextFormat,
+    annotations: &TextAnnotations<'_>,
+) -> EditorViewportViewPositionPlan {
+    let view_position = view_position_for_top_visual_row(
+        text,
+        top_visual_row,
+        previous_view_position.horizontal_offset,
+        text_format,
+        annotations,
+    );
+
+    EditorViewportViewPositionPlan {
+        top_visual_row,
+        previous_view_position,
+        view_position,
+        changed: previous_view_position != view_position,
+    }
+}
+
+fn apply_view_position_plan(
+    document: &mut Document,
+    view_id: ViewId,
+    plan: EditorViewportViewPositionPlan,
+) -> bool {
+    if !plan.changed {
+        return false;
+    }
+
+    document.set_view_offset(view_id, plan.view_position);
+    true
 }
 
 pub fn document_cursor_visual_row(
@@ -1618,6 +1649,84 @@ mod tests {
             view_position_for_top_visual_row(text.into(), 1, 7, &text_format, &annotations);
 
         assert_eq!(view_position.horizontal_offset, 0);
+    }
+
+    #[test]
+    fn view_position_plan_reports_noop_for_matching_native_row() {
+        let text = Rope::from("one\ntwo\nthree");
+        let text_format = TextFormat::default();
+        let annotations = default_annotations();
+        let current_position = ViewPosition {
+            anchor: text.line_to_char(1),
+            vertical_offset: 0,
+            horizontal_offset: 7,
+        };
+
+        let plan = view_position_plan_for_top_visual_row(
+            text.slice(..),
+            current_position,
+            1,
+            &text_format,
+            &annotations,
+        );
+
+        assert!(!plan.changed);
+        assert_eq!(plan.top_visual_row, 1);
+        assert_eq!(plan.previous_view_position, current_position);
+        assert_eq!(plan.view_position, current_position);
+    }
+
+    #[test]
+    fn view_position_plan_maps_trailing_newline_eof_row() {
+        let text = Rope::from("one\ntwo\n");
+        let text_format = TextFormat::default();
+        let annotations = default_annotations();
+        let current_position = ViewPosition {
+            anchor: 0,
+            vertical_offset: 0,
+            horizontal_offset: 0,
+        };
+        let eof_row = text.len_lines().saturating_sub(1);
+
+        let plan = view_position_plan_for_top_visual_row(
+            text.slice(..),
+            current_position,
+            eof_row,
+            &text_format,
+            &annotations,
+        );
+
+        assert!(plan.changed);
+        assert_eq!(plan.top_visual_row, eof_row);
+        assert_eq!(plan.view_position.anchor, text.len_chars());
+        assert_eq!(text.char_to_line(plan.view_position.anchor), eof_row);
+    }
+
+    #[test]
+    fn view_position_plan_clears_soft_wrap_horizontal_offset() {
+        let text = Rope::from("abcdef\nzz");
+        let text_format = TextFormat {
+            soft_wrap: true,
+            viewport_width: 3,
+            ..TextFormat::default()
+        };
+        let annotations = default_annotations();
+        let current_position = ViewPosition {
+            anchor: 0,
+            vertical_offset: 0,
+            horizontal_offset: 7,
+        };
+
+        let plan = view_position_plan_for_top_visual_row(
+            text.slice(..),
+            current_position,
+            0,
+            &text_format,
+            &annotations,
+        );
+
+        assert!(plan.changed);
+        assert_eq!(plan.view_position.horizontal_offset, 0);
     }
 
     #[tokio::test(flavor = "current_thread")]
