@@ -37,6 +37,7 @@ pub struct EditorInputOutcome {
     pub handled_by_terminal_editor: bool,
     pub completion_requested: Option<NativeCompletionRequest>,
     pub picker_requested: Option<NativePickerRequest>,
+    pub prompt_requested: Option<NativePromptRequest>,
     pub lsp_navigation_requested: Option<NativeLspNavigationRequest>,
 }
 
@@ -53,6 +54,13 @@ pub enum NativeLspNavigationRequest {
     GotoTypeDefinition,
     GotoImplementation,
     GotoReference,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativePromptRequest {
+    Command,
+    Search,
+    ReverseSearch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +129,7 @@ impl EditorInputBridge {
         let mut handled_by_terminal_editor = false;
         let mut completion_requested = None;
         let mut picker_requested = None;
+        let mut prompt_requested = None;
         let mut lsp_navigation_requested = None;
         if !handled_by_compositor {
             let mode_before_fallback = context.editor.mode();
@@ -131,10 +140,12 @@ impl EditorInputBridge {
                 NativeInputResult::Handled {
                     completion_requested: request,
                     picker_requested: picker_request,
+                    prompt_requested: prompt_request,
                 } => {
                     handled_by_native_command = true;
                     completion_requested = request;
                     picker_requested = picker_request;
+                    prompt_requested = prompt_request;
                 }
                 NativeInputResult::RequestLspNavigation(request) => {
                     handled_by_native_command = true;
@@ -188,6 +199,7 @@ impl EditorInputBridge {
             handled_by_terminal_editor,
             completion_requested,
             picker_requested,
+            prompt_requested,
             lsp_navigation_requested,
         }
     }
@@ -220,6 +232,7 @@ enum NativeInputResult {
     Handled {
         completion_requested: Option<NativeCompletionRequest>,
         picker_requested: Option<NativePickerRequest>,
+        prompt_requested: Option<NativePromptRequest>,
     },
     RequestLspNavigation(NativeLspNavigationRequest),
     Fallback(Vec<KeyEvent>),
@@ -234,6 +247,10 @@ enum NativeCommandResult {
     RequestPicker {
         callbacks: Vec<compositor::Callback>,
         request: NativePickerRequest,
+    },
+    RequestPrompt {
+        callbacks: Vec<compositor::Callback>,
+        request: NativePromptRequest,
     },
     RequestLspNavigation {
         callbacks: Vec<compositor::Callback>,
@@ -337,6 +354,7 @@ impl NativeCommandInput {
                 NativeInputResult::Handled {
                     completion_requested: None,
                     picker_requested: None,
+                    prompt_requested: None,
                 }
             }
             NativeCommandResult::RequestCompletion { callbacks, request } => {
@@ -345,6 +363,7 @@ impl NativeCommandInput {
                 NativeInputResult::Handled {
                     completion_requested: request,
                     picker_requested: None,
+                    prompt_requested: None,
                 }
             }
             NativeCommandResult::RequestPicker { callbacks, request } => {
@@ -353,6 +372,16 @@ impl NativeCommandInput {
                 NativeInputResult::Handled {
                     completion_requested: None,
                     picker_requested: Some(request),
+                    prompt_requested: None,
+                }
+            }
+            NativeCommandResult::RequestPrompt { callbacks, request } => {
+                finalize_native_command(editor, jobs, compositor, callbacks);
+                self.finish_insert_replay_if_needed(mode_before, editor.mode());
+                NativeInputResult::Handled {
+                    completion_requested: None,
+                    picker_requested: None,
+                    prompt_requested: Some(request),
                 }
             }
             NativeCommandResult::RequestLspNavigation { callbacks, request } => {
@@ -377,6 +406,7 @@ impl NativeCommandInput {
                 NativeInputResult::Handled {
                     completion_requested: None,
                     picker_requested: None,
+                    prompt_requested: None,
                 }
             }
             NativeCommandResult::Fallback(keys) => NativeInputResult::Fallback(keys),
@@ -574,6 +604,17 @@ impl NativeCommandInput {
                     request,
                 }
             }
+            KeymapDispatch::RequestPrompt(request) => {
+                if self.keymaps.pending().is_empty() {
+                    context.editor.count = None;
+                } else {
+                    context.editor.selected_register = context.register.take();
+                }
+                NativeCommandResult::RequestPrompt {
+                    callbacks: Vec::new(),
+                    request,
+                }
+            }
             KeymapDispatch::RequestLspNavigation(request) => {
                 if self.keymaps.pending().is_empty() {
                     context.editor.count = None;
@@ -623,6 +664,10 @@ impl NativeCommandInput {
                     return KeymapDispatch::RequestPicker(request);
                 }
 
+                if let Some(request) = native_prompt_command(command) {
+                    return KeymapDispatch::RequestPrompt(request);
+                }
+
                 if let Some(action) = native_file_navigation_command(command) {
                     return handle_native_file_navigation(context, action);
                 }
@@ -645,6 +690,7 @@ impl NativeCommandInput {
                 if !commands.iter().all(|command| {
                     native_command_supported(command)
                         || native_picker_command(command).is_some()
+                        || native_prompt_command(command).is_some()
                         || native_lsp_navigation_command(command).is_some()
                 }) {
                     return KeymapDispatch::Fallback;
@@ -653,6 +699,9 @@ impl NativeCommandInput {
                 for command in commands {
                     if let Some(request) = native_picker_command(command) {
                         return KeymapDispatch::RequestPicker(request);
+                    }
+                    if let Some(request) = native_prompt_command(command) {
+                        return KeymapDispatch::RequestPrompt(request);
                     }
                     if let Some(action) = native_file_navigation_command(command) {
                         return handle_native_file_navigation(context, action);
@@ -698,6 +747,7 @@ impl NativeCommandInput {
 enum KeymapDispatch {
     Handled,
     RequestPicker(NativePickerRequest),
+    RequestPrompt(NativePromptRequest),
     RequestLspNavigation(NativeLspNavigationRequest),
     Pending,
     Fallback,
@@ -806,7 +856,7 @@ fn native_command_supported(command: &MappableCommand) -> bool {
 
     name == "normal_mode"
         || native_insert_entry_command(command)
-        || native_prompt_command(command)
+        || native_prompt_command(command).is_some()
         || native_history_command(command)
         || native_register_edit_command(command)
         || native_register_selection_command(command)
@@ -879,8 +929,13 @@ fn native_insert_entry_command(command: &MappableCommand) -> bool {
     )
 }
 
-fn native_prompt_command(command: &MappableCommand) -> bool {
-    matches!(command.name(), "command_mode" | "search" | "rsearch")
+fn native_prompt_command(command: &MappableCommand) -> Option<NativePromptRequest> {
+    match command.name() {
+        "command_mode" => Some(NativePromptRequest::Command),
+        "search" => Some(NativePromptRequest::Search),
+        "rsearch" => Some(NativePromptRequest::ReverseSearch),
+        _ => None,
+    }
 }
 
 fn native_picker_command(command: &MappableCommand) -> Option<NativePickerRequest> {
@@ -1139,7 +1194,7 @@ fn native_selection_transform_command(command: &MappableCommand) -> bool {
 
 fn native_insert_command_supported(command: &MappableCommand) -> bool {
     (!native_insert_entry_command(command)
-        && !native_prompt_command(command)
+        && native_prompt_command(command).is_none()
         && !native_history_command(command)
         && !native_register_edit_command(command)
         && !native_register_selection_command(command)
@@ -1306,6 +1361,13 @@ mod tests {
         let doc_id = editor.tree.try_get(view_id).unwrap().doc;
         let doc = editor.document_mut(doc_id).unwrap();
         doc.set_selection(view_id, Selection::point(cursor));
+    }
+
+    fn plain_char_key(ch: char) -> KeyEvent {
+        KeyEvent {
+            code: KeyCode::Char(ch),
+            modifiers: KeyModifiers::empty(),
+        }
     }
 
     #[test]
@@ -1567,14 +1629,41 @@ mod tests {
 
     #[test]
     fn prompt_commands_are_classified_separately() {
-        assert!(native_prompt_command(&MappableCommand::command_mode));
-        assert!(native_prompt_command(&MappableCommand::search));
-        assert!(native_prompt_command(&MappableCommand::rsearch));
-        assert!(!native_prompt_command(&MappableCommand::global_search));
-        assert!(!native_prompt_command(&MappableCommand::file_picker));
-        assert!(!native_prompt_command(&MappableCommand::buffer_picker));
-        assert!(!native_prompt_command(&MappableCommand::insert_mode));
-        assert!(!native_prompt_command(&MappableCommand::normal_mode));
+        assert_eq!(
+            native_prompt_command(&MappableCommand::command_mode),
+            Some(NativePromptRequest::Command)
+        );
+        assert_eq!(
+            native_prompt_command(&MappableCommand::search),
+            Some(NativePromptRequest::Search)
+        );
+        assert_eq!(
+            native_prompt_command(&MappableCommand::rsearch),
+            Some(NativePromptRequest::ReverseSearch)
+        );
+        assert_eq!(native_prompt_command(&MappableCommand::global_search), None);
+        assert_eq!(native_prompt_command(&MappableCommand::file_picker), None);
+        assert_eq!(native_prompt_command(&MappableCommand::buffer_picker), None);
+        assert_eq!(native_prompt_command(&MappableCommand::insert_mode), None);
+        assert_eq!(native_prompt_command(&MappableCommand::normal_mode), None);
+    }
+
+    #[test]
+    fn default_prompt_keymaps_request_native_prompts() {
+        for (key, request) in [
+            (':', NativePromptRequest::Command),
+            ('/', NativePromptRequest::Search),
+            ('?', NativePromptRequest::ReverseSearch),
+        ] {
+            let mut keymaps = Keymaps::default();
+
+            match keymaps.get(Mode::Normal, plain_char_key(key)) {
+                KeymapResult::Matched(command) => {
+                    assert_eq!(native_prompt_command(&command), Some(request));
+                }
+                _ => panic!("expected {key} to resolve to native prompt request"),
+            }
+        }
     }
 
     #[test]
@@ -1864,6 +1953,43 @@ mod tests {
         assert!(!outcome.handled_by_terminal_editor);
         assert_eq!(outcome.picker_requested, None);
         assert_eq!(outcome.lsp_navigation_requested, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_native_command_prompt() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text("one\ntwo\n");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let outcome =
+            bridge.handle_key(plain_char_key(':'), &mut compositor, &mut editor, &mut jobs);
+
+        assert!(outcome.handled_by_native_command);
+        assert!(!outcome.handled_by_terminal_editor);
+        assert_eq!(outcome.prompt_requested, Some(NativePromptRequest::Command));
+        assert!(compositor.find::<helix_term::ui::Prompt>().is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_native_search_prompts() {
+        for (key, request) in [
+            ('/', NativePromptRequest::Search),
+            ('?', NativePromptRequest::ReverseSearch),
+        ] {
+            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut editor = test_editor_with_text("one\ntwo\n");
+            let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let mut jobs = Jobs::new();
+
+            let outcome =
+                bridge.handle_key(plain_char_key(key), &mut compositor, &mut editor, &mut jobs);
+
+            assert!(outcome.handled_by_native_command);
+            assert!(!outcome.handled_by_terminal_editor);
+            assert_eq!(outcome.prompt_requested, Some(request));
+            assert!(compositor.find::<helix_term::ui::Prompt>().is_none());
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
