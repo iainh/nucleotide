@@ -811,6 +811,7 @@ mod tests {
                     cell_width: px(8.0),
                     line_height: px(20.0),
                     minimum_columns: 1,
+                    scrolloff: Config::default().scrolloff,
                     cursor_reveal: None,
                 },
             )

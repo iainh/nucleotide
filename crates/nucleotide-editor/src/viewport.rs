@@ -185,6 +185,7 @@ pub struct EditorViewportSurfaceLayout<'a> {
     pub cell_width: Pixels,
     pub line_height: Pixels,
     pub minimum_columns: u16,
+    pub scrolloff: usize,
     pub cursor_reveal: Option<EditorCursorReveal>,
 }
 
@@ -194,6 +195,7 @@ impl<'a> EditorViewportSurfaceLayout<'a> {
         bounds: Bounds<Pixels>,
         cell_width: Pixels,
         line_height: Pixels,
+        scrolloff: usize,
         cursor_reveal: Option<EditorCursorReveal>,
     ) -> Self {
         Self {
@@ -202,6 +204,7 @@ impl<'a> EditorViewportSurfaceLayout<'a> {
             cell_width,
             line_height,
             minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+            scrolloff,
             cursor_reveal,
         }
     }
@@ -556,13 +559,13 @@ impl EditorViewport {
         };
 
         let cursor_revealed = if let Some(cursor_reveal) = layout.cursor_reveal {
-            let scrolloff = editor.config().scrolloff;
             let cursor_visual_row = {
                 let view = editor.tree.try_get(view_id)?;
                 let document = editor.document(doc_id)?;
                 document_cursor_visual_row(document, view, view_id, &metrics.text_format)
             };
-            let scroll_update = self.reveal_visual_row(cursor_visual_row, cursor_reveal, scrolloff);
+            let scroll_update =
+                self.reveal_visual_row(cursor_visual_row, cursor_reveal, layout.scrolloff);
 
             let view = editor.tree.try_get(view_id)?.clone();
             let document = editor.document_mut(doc_id)?;
@@ -1291,7 +1294,7 @@ mod tests {
 
         let content_layout = EditorViewportContentLayout::for_editor(None, bounds, px(8.0));
         let surface_layout =
-            EditorViewportSurfaceLayout::for_editor(None, bounds, px(8.0), px(20.0), None);
+            EditorViewportSurfaceLayout::for_editor(None, bounds, px(8.0), px(20.0), 0, None);
 
         assert_eq!(
             content_layout.minimum_columns,
@@ -1350,6 +1353,7 @@ mod tests {
                     cell_width: px(8.0),
                     line_height: px(20.0),
                     minimum_columns: 1,
+                    scrolloff: Config::default().scrolloff,
                     cursor_reveal: None,
                 },
             )
@@ -1417,6 +1421,7 @@ mod tests {
                     cell_width: px(8.0),
                     line_height: px(20.0),
                     minimum_columns: 1,
+                    scrolloff: Config::default().scrolloff,
                     cursor_reveal: Some(EditorCursorReveal::Scrolloff),
                 },
             )
@@ -1442,6 +1447,7 @@ mod tests {
             cell_width: px(8.0),
             line_height: px(20.0),
             minimum_columns: 1,
+            scrolloff: Config::default().scrolloff,
             cursor_reveal: None,
         };
 
@@ -1475,6 +1481,7 @@ mod tests {
             cell_width: px(8.0),
             line_height: px(20.0),
             minimum_columns: 1,
+            scrolloff: Config::default().scrolloff,
             cursor_reveal: None,
         };
         let tall_layout = EditorViewportSurfaceLayout {
@@ -1533,6 +1540,7 @@ mod tests {
                     cell_width: px(8.0),
                     line_height: px(20.0),
                     minimum_columns: 1,
+                    scrolloff: Config::default().scrolloff,
                     cursor_reveal: Some(EditorCursorReveal::Scrolloff),
                 },
             )
@@ -1842,6 +1850,7 @@ mod tests {
                     cell_width: px(8.0),
                     line_height: px(20.0),
                     minimum_columns: 1,
+                    scrolloff: Config::default().scrolloff,
                     cursor_reveal: None,
                 },
             )
