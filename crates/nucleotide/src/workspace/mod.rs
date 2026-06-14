@@ -4076,7 +4076,8 @@ impl Workspace {
                 nucleotide_logging::info!("DIAG: Workspace received ShowFilePicker");
                 let handle = self.handle.clone();
                 let core = self.core.clone();
-                open(core, handle, cx);
+                let overlay = self.overlay.clone();
+                open(core, handle, overlay, cx);
             }
             crate::Update::ShowFilePickerAt(path) => {
                 nucleotide_logging::info!(
@@ -4085,13 +4086,15 @@ impl Workspace {
                 );
                 let handle = self.handle.clone();
                 let core = self.core.clone();
-                open_at(core, handle, path.clone(), cx);
+                let overlay = self.overlay.clone();
+                open_at(core, handle, overlay, path.clone(), cx);
             }
             crate::Update::ShowBufferPicker => {
                 nucleotide_logging::info!("DIAG: Workspace received ShowBufferPicker");
                 let handle = self.handle.clone();
                 let core = self.core.clone();
-                show_buffer_picker(core, handle, cx);
+                let overlay = self.overlay.clone();
+                show_buffer_picker(core, handle, overlay, cx);
             }
             crate::Update::ShowCodeActions => {
                 nucleotide_logging::info!("Workspace received ShowCodeActions");
@@ -4250,7 +4253,8 @@ impl Workspace {
                                         );
                                         let handle = self.handle.clone();
                                         let core = self.core.clone();
-                                        open(core, handle, cx);
+                                        let overlay = self.overlay.clone();
+                                        open(core, handle, overlay, cx);
                                     }
                                     OverlayType::CommandPalette => {
                                         // Only treat explicitly-tagged command palette as buffer picker
@@ -4260,7 +4264,8 @@ impl Workspace {
                                             );
                                             let handle = self.handle.clone();
                                             let core = self.core.clone();
-                                            show_buffer_picker(core, handle, cx);
+                                            let overlay = self.overlay.clone();
+                                            show_buffer_picker(core, handle, overlay, cx);
                                         }
                                     }
                                     _ => {
@@ -7131,11 +7136,14 @@ impl Render for Workspace {
             },
         ));
 
-        let handle = self.handle.clone();
-        let core = self.core.clone();
         workspace_div = workspace_div.on_action(cx.listener(
-            move |_, _: &crate::actions::editor::OpenFile, _window, cx| {
-                open(core.clone(), handle.clone(), cx)
+            move |workspace, _: &crate::actions::editor::OpenFile, _window, cx| {
+                open(
+                    workspace.core.clone(),
+                    workspace.handle.clone(),
+                    workspace.overlay.clone(),
+                    cx,
+                )
             },
         ));
 
@@ -7258,11 +7266,14 @@ impl Render for Workspace {
         ));
 
         // Workspace actions
-        let handle = self.handle.clone();
-        let core = self.core.clone();
         workspace_div = workspace_div.on_action(cx.listener(
-            move |_, _: &crate::actions::workspace::ShowBufferPicker, _window, cx| {
-                show_buffer_picker(core.clone(), handle.clone(), cx)
+            move |workspace, _: &crate::actions::workspace::ShowBufferPicker, _window, cx| {
+                show_buffer_picker(
+                    workspace.core.clone(),
+                    workspace.handle.clone(),
+                    workspace.overlay.clone(),
+                    cx,
+                )
             },
         ));
 
@@ -7285,11 +7296,14 @@ impl Render for Workspace {
         ));
 
         // File finder action
-        let handle = self.handle.clone();
-        let core = self.core.clone();
         workspace_div = workspace_div.on_action(cx.listener(
-            move |_, _: &crate::actions::workspace::ShowFileFinder, _window, cx| {
-                open(core.clone(), handle.clone(), cx)
+            move |workspace, _: &crate::actions::workspace::ShowFileFinder, _window, cx| {
+                open(
+                    workspace.core.clone(),
+                    workspace.handle.clone(),
+                    workspace.overlay.clone(),
+                    cx,
+                )
             },
         ));
 
@@ -8151,21 +8165,27 @@ fn load_tutor(core: Entity<Core>, handle: tokio::runtime::Handle, cx: &mut Conte
     })
 }
 
-fn open(core: Entity<Core>, handle: tokio::runtime::Handle, cx: &mut App) {
+fn open(
+    core: Entity<Core>,
+    handle: tokio::runtime::Handle,
+    overlay: Entity<OverlayView>,
+    cx: &mut Context<Workspace>,
+) {
     let base_dir = core.update(cx, |core, _| {
         core.project_directory
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
     });
 
-    open_at(core, handle, base_dir, cx);
+    open_at(core, handle, overlay, base_dir, cx);
 }
 
 fn open_at(
-    core: Entity<Core>,
+    _core: Entity<Core>,
     _handle: tokio::runtime::Handle,
+    overlay: Entity<OverlayView>,
     base_dir: std::path::PathBuf,
-    cx: &mut App,
+    cx: &mut Context<Workspace>,
 ) {
     use crate::picker_view::PickerItem;
     use ignore::WalkBuilder;
@@ -8293,10 +8313,7 @@ fn open_at(
 
     info!("Emitting file picker to overlay");
 
-    // Emit the picker to show it in the overlay
-    core.update(cx, |_core, cx| {
-        cx.emit(crate::Update::Picker(file_picker));
-    });
+    emit_picker_update(file_picker, &overlay, cx);
 }
 
 fn open_directory(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
@@ -8315,7 +8332,12 @@ fn open_directory(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut 
     });
 }
 
-fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
+fn show_buffer_picker(
+    core: Entity<Core>,
+    _handle: tokio::runtime::Handle,
+    overlay: Entity<OverlayView>,
+    cx: &mut Context<Workspace>,
+) {
     use crate::picker_view::PickerItem;
     use helix_view::DocumentId;
     use std::sync::Arc;
@@ -8441,10 +8463,17 @@ fn show_buffer_picker(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &
         // The overlay will handle buffer switching via the stored document ID
     });
 
-    // Emit the picker to show it in the overlay
-    core.update(cx, |_core, cx| {
-        cx.emit(crate::Update::Picker(buffer_picker));
-    });
+    emit_picker_update(buffer_picker, &overlay, cx);
+}
+
+fn emit_picker_update(
+    picker: crate::picker::Picker,
+    overlay: &Entity<OverlayView>,
+    cx: &mut Context<Workspace>,
+) {
+    let update = crate::Update::Picker(picker);
+    overlay.update(cx, |overlay, cx| overlay.handle_event(&update, cx));
+    cx.emit(update);
 }
 
 fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
