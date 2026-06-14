@@ -145,7 +145,8 @@ pub use viewport::{
     EditorCursorReveal, EditorViewport, EditorViewportContentLayout, EditorViewportContentUpdate,
     EditorViewportCursorRequest, EditorViewportCursorTarget, EditorViewportScrollDirection,
     EditorViewportScrollRequest, EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate,
-    EditorViewportViewPositionPlan, HelixViewportSnapshot, ViewportScrollUpdate,
-    document_cursor_visual_row, editor_viewport_size_for_bounds, helix_viewport_snapshot,
+    EditorViewportViewAreaPlan, EditorViewportViewPositionPlan, HelixViewportSnapshot,
+    ViewportScrollUpdate, document_cursor_visual_row, editor_viewport_size_for_bounds,
+    helix_view_area_plan_for_surface, helix_viewport_snapshot,
     view_position_plan_for_top_visual_row,
 };
