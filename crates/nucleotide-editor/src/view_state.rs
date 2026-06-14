@@ -259,6 +259,28 @@ impl EditorViewState {
             .update()
     }
 
+    pub fn handle_pointer_selection_for_view_at_event(
+        &self,
+        editor: &mut Editor,
+        view_id: ViewId,
+        phase: EditorPointerSelectionPhase,
+        event: EditorSurfacePointerEvent,
+    ) -> Option<EditorPointerSelectionUpdate> {
+        self.handle_pointer_selection_for_view_outcome(editor, view_id, phase, event)?
+            .update()
+    }
+
+    pub fn handle_pointer_selection_for_view_outcome(
+        &self,
+        editor: &mut Editor,
+        view_id: ViewId,
+        phase: EditorPointerSelectionPhase,
+        event: EditorSurfacePointerEvent,
+    ) -> Option<EditorPointerSelectionOutcome> {
+        let doc_id = editor.tree.try_get(view_id).map(|view| view.doc)?;
+        Some(self.handle_pointer_selection_outcome(editor, doc_id, view_id, phase, event))
+    }
+
     pub fn handle_pointer_selection_outcome(
         &self,
         editor: &mut Editor,
@@ -667,6 +689,42 @@ mod tests {
         assert!(!outcome.changed());
         assert_eq!(outcome.update(), None);
         assert_eq!(state.selection_drag_state().anchor(), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_pointer_selection_for_view_resolves_document() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        state.selection_drag_state().set_anchor(7);
+        let (mut editor, _doc_id, view_id) = test_editor_with_text("one\n");
+        let event = pointer_event();
+
+        let outcome = state
+            .handle_pointer_selection_for_view_outcome(
+                &mut editor,
+                view_id,
+                EditorPointerSelectionPhase::End,
+                event,
+            )
+            .unwrap();
+
+        assert_eq!(outcome, EditorPointerSelectionOutcome::Ended { event });
+        assert_eq!(state.selection_drag_state().anchor(), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_pointer_selection_for_missing_view_returns_none() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        let (mut editor, _doc_id, view_id) = test_editor_with_text("one\n");
+        editor.tree.remove(view_id);
+
+        let outcome = state.handle_pointer_selection_for_view_outcome(
+            &mut editor,
+            view_id,
+            EditorPointerSelectionPhase::Begin,
+            pointer_event(),
+        );
+
+        assert_eq!(outcome, None);
     }
 
     #[tokio::test(flavor = "current_thread")]
