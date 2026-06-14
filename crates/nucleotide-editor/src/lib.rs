@@ -65,10 +65,11 @@ pub use document_frame::{
 };
 pub use document_frame_painter::{
     DocumentFramePaintParams, NativeEditorFramePaintParams, NativeEditorFramePaintPlan,
-    NativeEditorFramePaintStyle, NativeEditorFramePaintStyleParams, NativeEditorFramePlanParams,
-    NativeEditorFramePrepareParams, NativeEditorPreparedFrame, native_editor_frame_paint_plan,
+    NativeEditorFramePaintStyle, NativeEditorFramePaintStyleParams, NativeEditorFramePalette,
+    NativeEditorFramePlanParams, NativeEditorFramePrepareParams, NativeEditorFrameRenderParams,
+    NativeEditorFrameThemeStyles, NativeEditorPreparedFrame, native_editor_frame_paint_plan,
     native_editor_frame_paint_style, paint_document_frame, paint_native_editor_frame,
-    prepare_native_editor_frame,
+    prepare_native_editor_frame, render_native_editor_frame,
 };
 pub use document_metrics::{
     EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,

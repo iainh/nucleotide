@@ -60,12 +60,8 @@ pub struct NativeEditorFramePaintStyle {
     pub ruler_color: Hsla,
 }
 
-pub struct NativeEditorFramePaintStyleParams<'a, F>
-where
-    F: FnMut(&str) -> Style,
-{
-    pub editor: &'a Editor,
-    pub theme_style: F,
+#[derive(Clone, Copy)]
+pub struct NativeEditorFramePalette {
     pub fg_color: Hsla,
     pub bg_color: Hsla,
     pub selection_primary: Hsla,
@@ -75,51 +71,114 @@ where
     pub fallback_ruler_color: Hsla,
 }
 
-pub fn native_editor_frame_paint_style<F>(
-    mut params: NativeEditorFramePaintStyleParams<'_, F>,
-) -> NativeEditorFramePaintStyle
-where
-    F: FnMut(&str) -> Style,
-{
+#[derive(Clone, Copy, Default)]
+pub struct NativeEditorFrameThemeStyles {
+    pub cursor: Style,
+    pub cursor_primary: Style,
+    pub cursor_primary_insert: Style,
+    pub cursor_primary_normal: Style,
+    pub cursor_primary_select: Style,
+    pub virtual_wrap: Style,
+    pub virtual_ruler: Style,
+    pub cursorline_primary: Style,
+    pub line_number: Style,
+    pub line_number_selected: Style,
+    pub gutter: Style,
+}
+
+impl NativeEditorFrameThemeStyles {
+    pub fn from_style_fn(mut style_for_key: impl FnMut(&str) -> Style) -> Self {
+        Self {
+            cursor: style_for_key("ui.cursor"),
+            cursor_primary: style_for_key("ui.cursor.primary"),
+            cursor_primary_insert: style_for_key("ui.cursor.primary.insert"),
+            cursor_primary_normal: style_for_key("ui.cursor.primary.normal"),
+            cursor_primary_select: style_for_key("ui.cursor.primary.select"),
+            virtual_wrap: style_for_key("ui.virtual.wrap"),
+            virtual_ruler: style_for_key("ui.virtual.ruler"),
+            cursorline_primary: style_for_key("ui.cursorline.primary"),
+            line_number: style_for_key("ui.linenr"),
+            line_number_selected: style_for_key("ui.linenr.selected"),
+            gutter: style_for_key("ui.gutter"),
+        }
+    }
+
+    fn style_for_key(&self, key: &str) -> Style {
+        match key {
+            "ui.cursor" => self.cursor,
+            "ui.cursor.primary" => self.cursor_primary,
+            "ui.cursor.primary.insert" => self.cursor_primary_insert,
+            "ui.cursor.primary.normal" => self.cursor_primary_normal,
+            "ui.cursor.primary.select" => self.cursor_primary_select,
+            "ui.virtual.wrap" => self.virtual_wrap,
+            "ui.virtual.ruler" => self.virtual_ruler,
+            "ui.cursorline.primary" => self.cursorline_primary,
+            "ui.linenr" => self.line_number,
+            "ui.linenr.selected" => self.line_number_selected,
+            "ui.gutter" => self.gutter,
+            _ => Style::default(),
+        }
+    }
+}
+
+pub struct NativeEditorFramePaintStyleParams<'a> {
+    pub editor: &'a Editor,
+    pub theme_styles: NativeEditorFrameThemeStyles,
+    pub palette: NativeEditorFramePalette,
+}
+
+pub fn native_editor_frame_paint_style(
+    params: NativeEditorFramePaintStyleParams<'_>,
+) -> NativeEditorFramePaintStyle {
     let default_text_style = Style {
-        fg: gpui_hsla_to_helix_color(params.fg_color),
-        bg: gpui_hsla_to_helix_color(params.bg_color),
+        fg: gpui_hsla_to_helix_color(params.palette.fg_color),
+        bg: gpui_hsla_to_helix_color(params.palette.bg_color),
         ..Default::default()
     };
-    let cursor_style = cursor_style_for_mode(params.editor.mode(), |key| (params.theme_style)(key));
-    let wrap_indicator_color = (params.theme_style)("ui.virtual.wrap")
+    let cursor_style = cursor_style_for_mode(params.editor.mode(), |key| {
+        params.theme_styles.style_for_key(key)
+    });
+    let wrap_indicator_color = params
+        .theme_styles
+        .virtual_wrap
         .fg
         .and_then(helix_color_to_hsla);
-    let ruler_color = (params.theme_style)("ui.virtual.ruler")
+    let ruler_color = params
+        .theme_styles
+        .virtual_ruler
         .bg
         .and_then(helix_color_to_hsla)
-        .unwrap_or(params.fallback_ruler_color);
-    let cursorline_color = (params.theme_style)("ui.cursorline.primary")
-        .bg
-        .and_then(helix_color_to_hsla);
-    let gutter_color = (params.theme_style)("ui.linenr")
-        .fg
-        .and_then(helix_color_to_hsla)
-        .unwrap_or(params.fallback_gutter_color);
-    let gutter_selected_color = (params.theme_style)("ui.linenr.selected")
-        .fg
-        .and_then(helix_color_to_hsla)
-        .unwrap_or(params.fallback_gutter_color);
-    let gutter_bg = (params.theme_style)("ui.gutter")
+        .unwrap_or(params.palette.fallback_ruler_color);
+    let cursorline_color = params
+        .theme_styles
+        .cursorline_primary
         .bg
         .and_then(helix_color_to_hsla);
+    let gutter_color = params
+        .theme_styles
+        .line_number
+        .fg
+        .and_then(helix_color_to_hsla)
+        .unwrap_or(params.palette.fallback_gutter_color);
+    let gutter_selected_color = params
+        .theme_styles
+        .line_number_selected
+        .fg
+        .and_then(helix_color_to_hsla)
+        .unwrap_or(params.palette.fallback_gutter_color);
+    let gutter_bg = params.theme_styles.gutter.bg.and_then(helix_color_to_hsla);
 
     NativeEditorFramePaintStyle {
-        fg_color: params.fg_color,
-        bg_color: params.bg_color,
+        fg_color: params.palette.fg_color,
+        bg_color: params.palette.bg_color,
         default_text_style,
         cursor_style,
         cursorline_color,
-        selection_primary: params.selection_primary,
-        selection_secondary: params.selection_secondary,
+        selection_primary: params.palette.selection_primary,
+        selection_secondary: params.palette.selection_secondary,
         gutter_color,
         gutter_selected_color,
-        diagnostic_highlight_base: params.diagnostic_highlight_base,
+        diagnostic_highlight_base: params.palette.diagnostic_highlight_base,
         gutter_bg,
         wrap_indicator_color,
         ruler_color,
@@ -142,10 +201,7 @@ pub struct NativeEditorFramePlanParams<'a> {
     pub style: NativeEditorFramePaintStyle,
 }
 
-pub struct NativeEditorFramePrepareParams<'a, F>
-where
-    F: FnMut(&str) -> Style,
-{
+pub struct NativeEditorFramePrepareParams<'a> {
     pub editor: &'a mut Editor,
     pub doc_id: DocumentId,
     pub view_id: ViewId,
@@ -157,14 +213,8 @@ where
     pub font_size: Pixels,
     pub is_focused: bool,
     pub soft_wrap_minimum_columns: u16,
-    pub theme_style: F,
-    pub fg_color: Hsla,
-    pub bg_color: Hsla,
-    pub selection_primary: Hsla,
-    pub selection_secondary: Hsla,
-    pub fallback_gutter_color: Hsla,
-    pub diagnostic_highlight_base: Hsla,
-    pub fallback_ruler_color: Hsla,
+    pub theme_styles: NativeEditorFrameThemeStyles,
+    pub palette: NativeEditorFramePalette,
 }
 
 pub struct NativeEditorFramePaintPlan {
@@ -184,6 +234,23 @@ pub struct NativeEditorFramePaintParams<'a> {
     pub text_style: &'a TextStyle,
     pub diagnostic_theme: &'a Theme,
     pub element_focused: bool,
+}
+
+pub struct NativeEditorFrameRenderParams<'a> {
+    pub editor: &'a mut Editor,
+    pub doc_id: DocumentId,
+    pub view_id: ViewId,
+    pub editor_state: &'a mut EditorViewState,
+    pub theme: &'a Theme,
+    pub bounds: Bounds<Pixels>,
+    pub layout: &'a mut EditorLayout,
+    pub text_style: &'a TextStyle,
+    pub font_size: Pixels,
+    pub is_focused: bool,
+    pub element_focused: bool,
+    pub soft_wrap_minimum_columns: u16,
+    pub theme_styles: NativeEditorFrameThemeStyles,
+    pub palette: NativeEditorFramePalette,
 }
 
 pub struct NativeEditorPreparedFrame {
@@ -231,12 +298,9 @@ struct SoftWrapDocumentFramePaintParams<'a> {
     pub scroll_line_offset: Pixels,
 }
 
-pub fn prepare_native_editor_frame<F>(
-    params: NativeEditorFramePrepareParams<'_, F>,
-) -> Option<NativeEditorPreparedFrame>
-where
-    F: FnMut(&str) -> Style,
-{
+pub fn prepare_native_editor_frame(
+    params: NativeEditorFramePrepareParams<'_>,
+) -> Option<NativeEditorPreparedFrame> {
     let frame_state = params.editor_state.sync_frame_layout(
         params.editor,
         params.doc_id,
@@ -253,14 +317,8 @@ where
     let document = params.editor.document(params.doc_id)?;
     let paint_style = native_editor_frame_paint_style(NativeEditorFramePaintStyleParams {
         editor: params.editor,
-        theme_style: params.theme_style,
-        fg_color: params.fg_color,
-        bg_color: params.bg_color,
-        selection_primary: params.selection_primary,
-        selection_secondary: params.selection_secondary,
-        fallback_gutter_color: params.fallback_gutter_color,
-        diagnostic_highlight_base: params.diagnostic_highlight_base,
-        fallback_ruler_color: params.fallback_ruler_color,
+        theme_styles: params.theme_styles,
+        palette: params.palette,
     });
     let paint_plan = native_editor_frame_paint_plan(NativeEditorFramePlanParams {
         editor: params.editor,
@@ -282,6 +340,59 @@ where
         frame_state,
         paint_plan,
     })
+}
+
+pub fn render_native_editor_frame(
+    window: &mut Window,
+    cx: &mut App,
+    params: NativeEditorFrameRenderParams<'_>,
+) -> Option<CursorOverlayPlan> {
+    let NativeEditorFrameRenderParams {
+        editor,
+        doc_id,
+        view_id,
+        editor_state,
+        theme,
+        bounds,
+        layout,
+        text_style,
+        font_size,
+        is_focused,
+        element_focused,
+        soft_wrap_minimum_columns,
+        theme_styles,
+        palette,
+    } = params;
+
+    let prepared_frame = prepare_native_editor_frame(NativeEditorFramePrepareParams {
+        editor,
+        doc_id,
+        view_id,
+        editor_state: &mut *editor_state,
+        theme,
+        bounds,
+        layout: &mut *layout,
+        text_style,
+        font_size,
+        is_focused,
+        soft_wrap_minimum_columns,
+        theme_styles,
+        palette,
+    })?;
+
+    paint_native_editor_frame(
+        window,
+        cx,
+        NativeEditorFramePaintParams {
+            editor_state,
+            frame_state: &prepared_frame.frame_state,
+            plan: &prepared_frame.paint_plan,
+            layout,
+            text_style,
+            diagnostic_theme: theme,
+            element_focused,
+        },
+    )
 }
 
 pub fn native_editor_frame_paint_plan(
@@ -889,7 +1000,7 @@ mod tests {
 
         let style = native_editor_frame_paint_style(NativeEditorFramePaintStyleParams {
             editor: &editor,
-            theme_style: |key| match key {
+            theme_styles: NativeEditorFrameThemeStyles::from_style_fn(|key| match key {
                 "ui.cursor" => Style::default().add_modifier(Modifier::BOLD),
                 "ui.cursor.primary" => Style::default().bg(Color::Rgb(1, 2, 3)),
                 "ui.virtual.wrap" => Style::default().fg(Color::Rgb(4, 5, 6)),
@@ -898,14 +1009,16 @@ mod tests {
                 "ui.linenr" => Style::default().fg(Color::Rgb(13, 14, 15)),
                 "ui.gutter" => Style::default().bg(Color::Rgb(16, 17, 18)),
                 _ => Style::default(),
+            }),
+            palette: NativeEditorFramePalette {
+                fg_color: black(),
+                bg_color: white(),
+                selection_primary,
+                selection_secondary,
+                fallback_gutter_color,
+                diagnostic_highlight_base,
+                fallback_ruler_color,
             },
-            fg_color: black(),
-            bg_color: white(),
-            selection_primary,
-            selection_secondary,
-            fallback_gutter_color,
-            diagnostic_highlight_base,
-            fallback_ruler_color,
         });
 
         assert_eq!(style.fg_color, black());
@@ -941,6 +1054,18 @@ mod tests {
         assert_eq!(style.selection_primary, selection_primary);
         assert_eq!(style.selection_secondary, selection_secondary);
         assert_eq!(style.diagnostic_highlight_base, diagnostic_highlight_base);
+    }
+
+    fn paint_palette() -> NativeEditorFramePalette {
+        NativeEditorFramePalette {
+            fg_color: black(),
+            bg_color: white(),
+            selection_primary: black(),
+            selection_secondary: white(),
+            fallback_gutter_color: black(),
+            diagnostic_highlight_base: black(),
+            fallback_ruler_color: black(),
+        }
     }
 
     fn paint_style() -> NativeEditorFramePaintStyle {
@@ -1042,14 +1167,8 @@ mod tests {
             font_size: px(16.0),
             is_focused: true,
             soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
-            theme_style: |_| Style::default(),
-            fg_color: black(),
-            bg_color: white(),
-            selection_primary: black(),
-            selection_secondary: white(),
-            fallback_gutter_color: black(),
-            diagnostic_highlight_base: black(),
-            fallback_ruler_color: black(),
+            theme_styles: NativeEditorFrameThemeStyles::default(),
+            palette: paint_palette(),
         })
         .unwrap();
 

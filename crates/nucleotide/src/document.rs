@@ -12,9 +12,9 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
-    EditorSurfacePointerEvent, EditorViewLayoutSnapshot, EditorViewState,
-    NativeEditorFramePaintParams, NativeEditorFramePrepareParams, NativeEditorView,
-    paint_native_editor_frame, prepare_native_editor_frame,
+    EditorSurfacePointerEvent, EditorViewLayoutSnapshot, EditorViewState, NativeEditorFramePalette,
+    NativeEditorFrameRenderParams, NativeEditorFrameThemeStyles, NativeEditorView,
+    render_native_editor_frame,
 };
 
 fn handle_editor_pointer_selection(
@@ -260,45 +260,38 @@ fn paint_document_content(
     } = params;
 
     let helix_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-    let prepared_frame = core.update(cx, |core, cx| {
+    let element_focused = focus.is_focused(window);
+    core.update(cx, |core, cx| {
         let tokens = cx.theme().tokens;
         let ui_tokens = cx.ui_theme().tokens;
-        prepare_native_editor_frame(NativeEditorFramePrepareParams {
-            editor: &mut core.editor,
-            doc_id,
-            view_id,
-            editor_state,
-            theme: &helix_theme,
-            bounds,
-            layout,
-            text_style: style,
-            font_size: style.font_size.to_pixels(px(16.0)),
-            is_focused,
-            soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
-            theme_style: |key| cx.theme_style(key),
-            fg_color: tokens.editor.text_primary,
-            bg_color: tokens.editor.background,
-            selection_primary: tokens.editor.selection_primary,
-            selection_secondary: tokens.editor.selection_secondary,
-            fallback_gutter_color: ui_tokens.editor.line_number,
-            diagnostic_highlight_base: tokens.chrome.text_on_chrome,
-            fallback_ruler_color: ui_tokens.chrome.border_default,
-        })
-    });
-    let prepared_frame = prepared_frame?;
-
-    let element_focused = focus.is_focused(window);
-    paint_native_editor_frame(
-        window,
-        cx,
-        NativeEditorFramePaintParams {
-            editor_state,
-            frame_state: &prepared_frame.frame_state,
-            plan: &prepared_frame.paint_plan,
-            layout,
-            text_style: style,
-            diagnostic_theme: &helix_theme,
-            element_focused,
-        },
-    )
+        let theme_styles = NativeEditorFrameThemeStyles::from_style_fn(|key| cx.theme_style(key));
+        render_native_editor_frame(
+            window,
+            cx,
+            NativeEditorFrameRenderParams {
+                editor: &mut core.editor,
+                doc_id,
+                view_id,
+                editor_state,
+                theme: &helix_theme,
+                bounds,
+                layout,
+                text_style: style,
+                font_size: style.font_size.to_pixels(px(16.0)),
+                is_focused,
+                element_focused,
+                soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+                theme_styles,
+                palette: NativeEditorFramePalette {
+                    fg_color: tokens.editor.text_primary,
+                    bg_color: tokens.editor.background,
+                    selection_primary: tokens.editor.selection_primary,
+                    selection_secondary: tokens.editor.selection_secondary,
+                    fallback_gutter_color: ui_tokens.editor.line_number,
+                    diagnostic_highlight_base: tokens.chrome.text_on_chrome,
+                    fallback_ruler_color: ui_tokens.chrome.border_default,
+                },
+            },
+        )
+    })
 }
