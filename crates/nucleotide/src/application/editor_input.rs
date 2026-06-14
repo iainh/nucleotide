@@ -2993,7 +2993,7 @@ mod tests {
             prompt.prompt_requested,
             Some(NativePromptRequest::GlobalSearch)
         );
-        assert!(compositor.find::<helix_term::ui::Prompt>().is_none());
+        assert!(compositor.pop().is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3407,7 +3407,7 @@ mod tests {
 
         assert!(outcome.handled_by_native_command);
         assert_eq!(outcome.prompt_requested, Some(NativePromptRequest::Command));
-        assert!(compositor.find::<helix_term::ui::Prompt>().is_none());
+        assert!(compositor.pop().is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3426,7 +3426,7 @@ mod tests {
 
             assert!(outcome.handled_by_native_command);
             assert_eq!(outcome.prompt_requested, Some(request));
-            assert!(compositor.find::<helix_term::ui::Prompt>().is_none());
+            assert!(compositor.pop().is_none());
         }
     }
 
@@ -3464,7 +3464,7 @@ mod tests {
 
             assert!(outcome.handled_by_native_command);
             assert_eq!(outcome.prompt_requested, Some(request));
-            assert!(compositor.find::<helix_term::ui::Prompt>().is_none());
+            assert!(compositor.pop().is_none());
         }
     }
 
