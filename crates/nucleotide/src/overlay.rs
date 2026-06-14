@@ -1156,6 +1156,33 @@ impl OverlayView {
                                         });
                                     }
                                 }
+                                else if let Some(location) = selected_item
+                                    .data
+                                    .downcast_ref::<crate::types::SyntaxFileLocation>()
+                                {
+                                    if let Some(core) = core_for_on_select.upgrade() {
+                                        core.update(picker_cx, |core, core_cx| {
+                                            match core.jump_to_syntax_file_location(location) {
+                                                Ok((doc_id, view_id)) => {
+                                                    core_cx.emit(crate::Update::Event(
+                                                        crate::types::AppEvent::Core(
+                                                            crate::types::CoreEvent::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        ),
+                                                    ));
+                                                    core_cx.emit(crate::Update::Event(
+                                                        crate::types::AppEvent::Core(
+                                                            crate::types::CoreEvent::RedrawRequested,
+                                                        ),
+                                                    ));
+                                                }
+                                                Err(err) => core.editor.set_error(err.to_string()),
+                                            }
+                                        });
+                                    }
+                                }
                                 // Check if it's a buffer picker item (DocumentId, Option<PathBuf>)
                                 else if let Some((doc_id, _path)) = selected_item.data.downcast_ref::<(
                                     helix_view::DocumentId,
