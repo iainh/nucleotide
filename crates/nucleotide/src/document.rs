@@ -14,9 +14,9 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     DocumentFramePaintParams, EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal,
-    EditorDocumentElement, EditorDocumentFrameFromEditorParams, EditorLayout, EditorSurface,
-    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewportContentLayout,
-    EditorViewportSurfaceLayout, cursor_document_line, cursor_style_for_mode,
+    EditorDocumentFrameFromEditorParams, EditorLayout, EditorSurfacePointerEvent,
+    EditorTextMetrics, EditorViewState, EditorViewportContentLayout, EditorViewportSurfaceLayout,
+    NativeEditorView, cursor_document_line, cursor_style_for_mode,
     editor_document_frame_from_editor, gpui_hsla_to_helix_color, paint_document_frame,
     paint_editor_background,
 };
@@ -321,7 +321,6 @@ impl Render for DocumentView {
 
         let metrics = EditorTextMetrics::resolve(cx.text_system(), &self.style);
         self.editor_state.apply_text_metrics(metrics);
-        let surface_metrics = self.editor_state.surface_metrics().clone();
 
         // Prime viewport content metrics from the latest known native surface size.
         {
@@ -351,83 +350,70 @@ impl Render for DocumentView {
             }
         }
 
-        let document_element = {
+        let editor_content = {
             let core = self.core.clone();
             let view_id = self.view_id;
             let style = self.style.clone();
             let focus = self.focus.clone();
             let is_focused = self.is_focused;
-            let mut editor_state = self.editor_state.clone();
 
-            EditorDocumentElement::new(style.clone(), move |bounds, after_layout, window, cx| {
-                paint_document_content(DocumentPaintParams {
-                    core: &core,
-                    doc_id,
-                    view_id,
-                    style: &style,
-                    focus: &focus,
-                    is_focused,
-                    editor_state: &mut editor_state,
-                    bounds,
-                    layout: after_layout,
-                    window,
-                    cx,
-                });
+            NativeEditorView::new(
+                cx.entity_id(),
+                self.editor_state.clone(),
+                style.clone(),
+                move |editor_state, bounds, after_layout, window, cx| {
+                    paint_document_content(DocumentPaintParams {
+                        core: &core,
+                        doc_id,
+                        view_id,
+                        style: &style,
+                        focus: &focus,
+                        is_focused,
+                        editor_state,
+                        bounds,
+                        layout: after_layout,
+                        window,
+                        cx,
+                    });
+                },
+            )
+            .on_scroll({
+                move |_viewport, scroll_update, _cx| {
+                    debug!(
+                        crossed_lines = scroll_update.crossed_visual_rows,
+                        top_visual_row = scroll_update.top_visual_row,
+                        offset_within_row = %scroll_update.offset_within_row,
+                        "Scroll wheel event handled by editor surface"
+                    );
+                }
+            })
+            .on_mouse_down({
+                let core = self.core.clone();
+                let view_id = self.view_id;
+                let editor_state = self.editor_state.clone();
+
+                move |event: EditorSurfacePointerEvent, cx| {
+                    handle_editor_mouse_down(&core, doc_id, view_id, &editor_state, event, cx);
+                }
+            })
+            .on_mouse_drag({
+                let core = self.core.clone();
+                let view_id = self.view_id;
+                let editor_state = self.editor_state.clone();
+
+                move |event: EditorSurfacePointerEvent, cx| {
+                    handle_editor_mouse_drag(&core, doc_id, view_id, &editor_state, event, cx);
+                }
+            })
+            .on_mouse_up({
+                let editor_state = self.editor_state.clone();
+
+                move |event: EditorSurfacePointerEvent, _cx| {
+                    editor_state.clear_pointer_selection();
+                    debug!(position = ?event.position, "Mouse up event - click completed");
+                }
             })
         };
-
-        let editor_surface = EditorSurface::new(
-            cx.entity_id(),
-            self.editor_state.viewport().clone(),
-            surface_metrics.clone(),
-            self.editor_state.scrollbar_state().clone(),
-            document_element,
-        )
-        .on_scroll({
-            move |_viewport, scroll_update, _cx| {
-                debug!(
-                    crossed_lines = scroll_update.crossed_visual_rows,
-                    top_visual_row = scroll_update.top_visual_row,
-                    offset_within_row = %scroll_update.offset_within_row,
-                    "Scroll wheel event handled by editor surface"
-                );
-            }
-        })
-        .on_mouse_down({
-            let core = self.core.clone();
-            let view_id = self.view_id;
-            let editor_state = self.editor_state.clone();
-
-            move |event: EditorSurfacePointerEvent, cx| {
-                handle_editor_mouse_down(&core, doc_id, view_id, &editor_state, event, cx);
-            }
-        })
-        .on_mouse_drag({
-            let core = self.core.clone();
-            let view_id = self.view_id;
-            let editor_state = self.editor_state.clone();
-
-            move |event: EditorSurfacePointerEvent, cx| {
-                handle_editor_mouse_drag(&core, doc_id, view_id, &editor_state, event, cx);
-            }
-        })
-        .on_mouse_up({
-            let editor_state = self.editor_state.clone();
-
-            move |event: EditorSurfacePointerEvent, _cx| {
-                editor_state.clear_pointer_selection();
-                debug!(position = ?event.position, "Mouse up event - click completed");
-            }
-        });
-
-        let editor_content = div().id("editor-content").w_full().h_full().flex().child(
-            div()
-                .id("editor-paint-area")
-                .w_full()
-                .h_full()
-                .flex_1()
-                .child(editor_surface),
-        );
 
         let diags = {
             let _theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
