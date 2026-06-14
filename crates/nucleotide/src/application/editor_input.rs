@@ -1060,10 +1060,6 @@ fn native_command_supported(command: &MappableCommand) -> bool {
                 | "page_cursor_down"
                 | "page_cursor_half_up"
                 | "page_cursor_half_down"
-                | "page_cursor_up_select"
-                | "page_cursor_down_select"
-                | "page_cursor_half_up_select"
-                | "page_cursor_half_down_select"
                 | "remove_primary_selection"
                 | "scroll_down"
                 | "scroll_up"
@@ -2178,6 +2174,26 @@ mod tests {
     }
 
     #[test]
+    fn native_page_cursor_command_spec_routes_page_variants() {
+        assert_eq!(
+            native_page_cursor_command_spec(&MappableCommand::page_cursor_half_down),
+            Some((
+                nucleotide_editor::EditorViewportScrollDirection::Forward,
+                1,
+                2,
+            ))
+        );
+        assert_eq!(
+            native_page_cursor_command_spec(&MappableCommand::page_cursor_up),
+            Some((
+                nucleotide_editor::EditorViewportScrollDirection::Backward,
+                -1,
+                1,
+            ))
+        );
+    }
+
+    #[test]
     fn native_viewport_cursor_command_routes_window_targets() {
         assert_eq!(
             native_viewport_cursor_command(&MappableCommand::goto_window_top, None),
@@ -3206,6 +3222,43 @@ mod tests {
                 start_line.saturating_add_signed(expected_direction * half_page_rows as isize);
             assert_eq!(focused_cursor_line(&editor), expected_line);
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_extends_selection_for_page_cursor_in_select_mode() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text(&numbered_lines(80));
+        let view_id = editor.tree.focus;
+        let half_page_rows = editor.tree.try_get(view_id).unwrap().inner_height() / 2;
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+        set_test_cursor_line(&mut editor, 4);
+        editor.mode = Mode::Select;
+
+        let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "C-d");
+
+        assert!(outcome.handled_by_native_command);
+        assert!(!outcome.handled_by_terminal_editor);
+        assert_eq!(
+            outcome.viewport_scroll_requested,
+            Some(
+                nucleotide_editor::EditorViewportScrollRequest::VisualPageWithCursor {
+                    pages: 1,
+                    divisor: 2,
+                }
+            )
+        );
+        assert!(outcome.selection_changed);
+
+        let doc_id = editor.tree.try_get(view_id).unwrap().doc;
+        let doc = editor.document(doc_id).unwrap();
+        let text = doc.text().slice(..);
+        let primary = doc.selection(view_id).primary();
+        assert_eq!(helix_core::coords_at_pos(text, primary.anchor).row, 4);
+        assert_eq!(
+            helix_core::coords_at_pos(text, primary.head).row,
+            4 + half_page_rows
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
