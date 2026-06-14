@@ -1178,6 +1178,92 @@ impl FileTreeView {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+    use std::{cell::RefCell, rc::Rc};
+
+    fn test_config() -> FileTreeConfig {
+        FileTreeConfig {
+            show_hidden: true,
+            show_ignored: true,
+            initial_depth: 3,
+            watch_filesystem: false,
+        }
+    }
+
+    fn subscribe_file_tree_events(
+        cx: &mut TestAppContext,
+        view: &gpui::Entity<FileTreeView>,
+    ) -> Rc<RefCell<Vec<FileTreeEvent>>> {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let events_for_subscription = events.clone();
+
+        cx.update(|cx| {
+            cx.subscribe(view, move |_view, event: &FileTreeEvent, _cx| {
+                events_for_subscription.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+        cx.run_until_parked();
+
+        events
+    }
+
+    #[gpui::test]
+    async fn file_activation_selects_entry_and_emits_open_file(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("main.rs");
+        std::fs::write(&file_path, "fn main() {}\n").unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(temp_dir.path().to_path_buf(), test_config(), cx));
+        let events = subscribe_file_tree_events(cx, &view);
+
+        view.update(cx, |view, cx| {
+            view.activate_entry(file_path.clone(), ProjectTreeRowAction::OpenFile, cx);
+        });
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _cx| {
+            assert_eq!(view.selected_path(), Some(&file_path));
+        });
+
+        let events = events.borrow();
+        assert!(events.contains(&FileTreeEvent::SelectionChanged {
+            path: Some(file_path.clone()),
+        }));
+        assert!(events.contains(&FileTreeEvent::OpenFile { path: file_path }));
+    }
+
+    #[gpui::test]
+    async fn directory_activation_selects_entry_and_emits_toggle(cx: &mut TestAppContext) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root_path = temp_dir.path().to_path_buf();
+        std::fs::create_dir(root_path.join("src")).unwrap();
+
+        let view = cx.new(|cx| FileTreeView::new(root_path.clone(), test_config(), cx));
+        let events = subscribe_file_tree_events(cx, &view);
+
+        view.update(cx, |view, cx| {
+            assert!(view.tree.is_expanded(&root_path));
+            view.activate_entry(root_path.clone(), ProjectTreeRowAction::ToggleDirectory, cx);
+        });
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _cx| {
+            assert_eq!(view.selected_path(), Some(&root_path));
+            assert!(!view.tree.is_expanded(&root_path));
+        });
+
+        let events = events.borrow();
+        assert!(events.contains(&FileTreeEvent::DirectoryToggled {
+            path: root_path,
+            expanded: false,
+        }));
+    }
+}
+
 impl EventEmitter<FileTreeEvent> for FileTreeView {}
 
 impl Focusable for FileTreeView {
