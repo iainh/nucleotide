@@ -3149,6 +3149,25 @@ impl Workspace {
         cx.notify();
     }
 
+    fn handle_viewport_scroll(
+        &mut self,
+        view_id: helix_view::ViewId,
+        request: nucleotide_editor::EditorViewportScrollRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view_entity) = self.view_manager.get_document_view(&view_id) else {
+            return;
+        };
+
+        view_entity.update(cx, |view, cx| {
+            let update = view.apply_viewport_scroll(request);
+            if update.changed {
+                cx.notify();
+            }
+        });
+        cx.notify();
+    }
+
     fn handle_overlay_update(&mut self, cx: &mut Context<Self>) {
         // When a picker, prompt, or completion appears, auto-dismiss the info box
         self.info_hidden = true;
@@ -4523,6 +4542,9 @@ impl Workspace {
                 view_id,
                 trigger,
             } => self.handle_completion_requested(*doc_id, *view_id, trigger, cx),
+            crate::Update::ViewportScroll { view_id, request } => {
+                self.handle_viewport_scroll(*view_id, *request, cx);
+            }
             // Handle new event-based updates (during migration)
             crate::Update::Event(event) => {
                 match event {

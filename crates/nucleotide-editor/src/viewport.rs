@@ -55,6 +55,11 @@ pub enum EditorCursorReveal {
     Center,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorViewportScrollRequest {
+    VisualRows(isize),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct EditorViewportContentLayout<'a> {
     pub theme: Option<&'a Theme>,
@@ -187,6 +192,36 @@ impl EditorViewport {
             changed,
             crossed_visual_rows,
             top_visual_row: self.top_visual_row(),
+            offset_within_row: self.offset_within_row(),
+        }
+    }
+
+    pub fn apply_scroll_request(
+        &self,
+        request: EditorViewportScrollRequest,
+    ) -> ViewportScrollUpdate {
+        match request {
+            EditorViewportScrollRequest::VisualRows(rows) => self.scroll_by_visual_rows(rows),
+        }
+    }
+
+    pub fn scroll_by_visual_rows(&self, rows: isize) -> ViewportScrollUpdate {
+        let old_position = self.scroll_position();
+        let old_top_visual_row = self.top_visual_row();
+
+        if rows != 0 {
+            let delta_y = self.scroll.line_height() * rows as f32;
+            self.scroll
+                .set_scroll_position(point(old_position.x, old_position.y + delta_y));
+        }
+
+        let new_position = self.scroll_position();
+        let new_top_visual_row = self.top_visual_row();
+
+        ViewportScrollUpdate {
+            changed: old_position != new_position,
+            crossed_visual_rows: new_top_visual_row as isize - old_top_visual_row as isize,
+            top_visual_row: new_top_visual_row,
             offset_within_row: self.offset_within_row(),
         }
     }
@@ -687,6 +722,34 @@ mod tests {
         assert_eq!(update.top_visual_row, 1);
         assert_eq!(update.offset_within_row, px(5.0));
         assert!(viewport.has_pending_view_sync());
+    }
+
+    #[test]
+    fn viewport_scroll_request_moves_by_visual_rows() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(100.0), px(100.0)), 50);
+
+        let update = viewport.apply_scroll_request(EditorViewportScrollRequest::VisualRows(3));
+
+        assert!(update.changed);
+        assert_eq!(viewport.scroll_position().y, px(60.0));
+        assert_eq!(update.crossed_visual_rows, 3);
+        assert_eq!(update.top_visual_row, 3);
+        assert!(viewport.has_pending_view_sync());
+    }
+
+    #[test]
+    fn viewport_scroll_request_clamps_above_document_start() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(100.0), px(100.0)), 50);
+        viewport.apply_scroll_request(EditorViewportScrollRequest::VisualRows(2));
+
+        let update = viewport.apply_scroll_request(EditorViewportScrollRequest::VisualRows(-10));
+
+        assert!(update.changed);
+        assert_eq!(viewport.scroll_position().y, px(0.0));
+        assert_eq!(update.crossed_visual_rows, -2);
+        assert_eq!(update.top_visual_row, 0);
     }
 
     #[test]

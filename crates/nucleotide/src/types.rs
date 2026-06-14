@@ -142,6 +142,10 @@ pub enum Update {
         view_id: helix_view::ViewId,
         trigger: CompletionTrigger,
     },
+    ViewportScroll {
+        view_id: helix_view::ViewId,
+        request: nucleotide_editor::EditorViewportScrollRequest,
+    },
     ShowFilePicker,
     ShowFilePickerAt(std::path::PathBuf),
     ShowBufferPicker,
@@ -202,6 +206,9 @@ impl std::fmt::Debug for Update {
                     f,
                     "CompletionRequested(doc: {doc_id:?}, view: {view_id:?}, trigger: {trigger:?})"
                 )
+            }
+            Update::ViewportScroll { view_id, request } => {
+                write!(f, "ViewportScroll(view: {view_id:?}, request: {request:?})")
             }
             Update::FileTreeEvent(_) => write!(f, "FileTreeEvent(...)"),
             Update::CompletionEvent(_) => write!(f, "CompletionEvent(...)"),

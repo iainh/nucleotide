@@ -13,7 +13,7 @@ use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
     EditorSurfacePointerEvent, EditorViewLayoutSnapshot, EditorViewState, NativeEditorFramePalette,
     NativeEditorFrameRenderParams, NativeEditorFrameThemeStyles, NativeEditorView,
-    log_pointer_selection_outcome, render_native_editor_frame,
+    ViewportScrollUpdate, log_pointer_selection_outcome, render_native_editor_frame,
 };
 
 fn handle_editor_pointer_selection(
@@ -102,6 +102,13 @@ impl DocumentView {
     pub fn request_cursor_center(&self) {
         self.editor_state
             .request_cursor_reveal(EditorCursorReveal::Center);
+    }
+
+    pub fn apply_viewport_scroll(
+        &self,
+        request: nucleotide_editor::EditorViewportScrollRequest,
+    ) -> ViewportScrollUpdate {
+        self.editor_state.apply_viewport_scroll(request)
     }
 
     pub fn layout_snapshot(&self) -> EditorViewLayoutSnapshot {
