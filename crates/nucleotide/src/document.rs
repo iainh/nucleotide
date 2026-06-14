@@ -281,47 +281,33 @@ impl EventEmitter<DismissEvent> for DocumentView {}
 impl Render for DocumentView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // DocumentView render creates the native editor element for actual painting.
-        let doc_id = {
-            let editor = &self.core.read(cx).editor;
-            match editor.tree.try_get(self.view_id) {
-                Some(view) => view.doc,
-                None => {
-                    // View no longer exists, render empty div
-                    return div().id(SharedString::from(format!("doc-view-{:?}", self.view_id)));
-                }
-            }
-        };
-
         let metrics = EditorTextMetrics::resolve(cx.text_system(), &self.style);
         self.editor_state.apply_text_metrics(metrics);
 
-        // Prime viewport content metrics from the latest known native surface size.
-        {
+        let Some(content_state) = ({
             let core = self.core.read(cx);
             let editor = &core.editor;
-            if let Some(view) = editor.tree.try_get(self.view_id)
-                && let Some(document) = editor.document(doc_id)
-            {
-                let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-                let viewport_bounds = self.editor_state.viewport().viewport_bounds();
-                let content_update = self.editor_state.sync_content_layout(
-                    document,
-                    view,
-                    EditorViewportContentLayout::for_editor(
-                        Some(&theme),
-                        viewport_bounds,
-                        metrics.cell_width,
-                    ),
-                );
-
-                debug!(
-                    physical_lines = document.text().len_lines(),
-                    visual_rows = content_update.visual_rows,
-                    soft_wrap = content_update.soft_wrap,
-                    "Primed native editor viewport content metrics"
-                );
-            }
-        }
+            let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+            let viewport_bounds = self.editor_state.viewport().viewport_bounds();
+            self.editor_state.sync_content_layout_for_editor(
+                editor,
+                self.view_id,
+                EditorViewportContentLayout::for_editor(
+                    Some(&theme),
+                    viewport_bounds,
+                    metrics.cell_width,
+                ),
+            )
+        }) else {
+            return div().id(SharedString::from(format!("doc-view-{:?}", self.view_id)));
+        };
+        let doc_id = content_state.doc_id;
+        debug!(
+            physical_lines = content_state.physical_lines,
+            visual_rows = content_state.update.visual_rows,
+            soft_wrap = content_state.update.soft_wrap,
+            "Primed native editor viewport content metrics"
+        );
 
         let editor_content = {
             let core = self.core.clone();
