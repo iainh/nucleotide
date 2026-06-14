@@ -3757,11 +3757,6 @@ impl Workspace {
         core.update(cx, move |core, cx| {
             let _guard = handle.enter();
 
-            // First, close the prompt by clearing the compositor
-            if core.compositor.find::<helix_term::ui::Prompt>().is_some() {
-                core.compositor.pop();
-            }
-
             // Create a helix compositor context to execute the command
             let mut comp_ctx = helix_term::compositor::Context {
                 editor: &mut core.editor,

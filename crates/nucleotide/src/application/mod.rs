@@ -1950,59 +1950,6 @@ impl Application {
         }
     }
 
-    fn create_native_prompt_from_helix(
-        &mut self,
-        last_key: Option<helix_view::input::KeyEvent>,
-        _cx: &mut gpui::Context<crate::Core>,
-    ) -> Option<crate::prompt::Prompt> {
-        use crate::prompt::Prompt;
-        use std::sync::Arc;
-
-        // Check if there's a helix prompt in the compositor
-        if let Some(_helix_prompt) = self.compositor.find::<helix_term::ui::Prompt>() {
-            // Determine prompt type based on the key that triggered it
-            let prompt_text = if let Some(key) = last_key {
-                match key.code {
-                    helix_view::keyboard::KeyCode::Char('/') if key.modifiers.is_empty() => {
-                        "search:"
-                    }
-                    helix_view::keyboard::KeyCode::Char('?') if key.modifiers.is_empty() => {
-                        "rsearch:"
-                    }
-                    helix_view::keyboard::KeyCode::Char(':') if key.modifiers.is_empty() => ":",
-                    _ => {
-                        // For other keys, don't show a native prompt
-                        // This prevents all keys from opening search
-                        return None;
-                    }
-                }
-            } else {
-                // No key info, default to command prompt
-                ":"
-            };
-
-            // Prompts should always start empty when first opened
-            let initial_input = String::new();
-
-            // Create native prompt with command execution through Update event
-            let prompt = Prompt::Native {
-                prompt: prompt_text.into(),
-                initial_input: initial_input.into(),
-                on_submit: Arc::new(move |_input: &str| {
-                    // The actual command/search execution will be handled by workspace
-                    // through a CommandSubmitted or SearchSubmitted event
-                }),
-                on_cancel: Some(Arc::new(|| {
-                    // Prompt cancelled
-                })),
-            };
-
-            Some(prompt)
-        } else {
-            None
-        }
-    }
-
     fn create_native_prompt(request: editor_input::NativePromptRequest) -> crate::prompt::Prompt {
         let prompt = match request {
             editor_input::NativePromptRequest::Command => ":",
@@ -2046,19 +1993,9 @@ impl Application {
         }
     }
 
-    fn emit_overlays(
-        &mut self,
-        last_key: Option<helix_view::input::KeyEvent>,
-        cx: &mut gpui::Context<crate::Core>,
-    ) {
+    fn emit_overlays(&mut self, cx: &mut gpui::Context<crate::Core>) {
         // Check for picker events first
         if self.check_for_picker_and_emit_event(cx) {
-            return;
-        }
-
-        // Handle remaining prompts created by unsupported Helix terminal commands.
-        if let Some(prompt) = self.create_native_prompt_from_helix(last_key, cx) {
-            cx.emit(crate::Update::Prompt(prompt));
             return;
         }
 
@@ -2207,8 +2144,7 @@ impl Application {
                     }
                 }
 
-                // Emit overlays after key handling, passing the key that was just processed
-                self.emit_overlays(Some(key), cx);
+                self.emit_overlays(cx);
 
                 cx.emit(crate::Update::Event(AppEvent::Core(
                     CoreEvent::RedrawRequested,
