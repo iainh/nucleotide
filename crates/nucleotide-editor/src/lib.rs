@@ -60,8 +60,8 @@ pub use diagnostics::{
 };
 pub use document_element::EditorDocumentElement;
 pub use document_frame::{
-    EditorDocumentFrame, EditorDocumentFrameFromEditorParams, EditorDocumentFrameGutterParams,
-    EditorDocumentFrameParams, editor_document_frame, editor_document_frame_from_editor,
+    EditorDocumentFrame, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
+    editor_document_frame,
 };
 pub use document_frame_painter::{
     DocumentFramePaintParams, NativeEditorFramePaintParams, NativeEditorFramePaintPlan,
