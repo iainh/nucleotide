@@ -67,6 +67,8 @@ pub enum EditorViewportScrollDirection {
 pub enum EditorViewportScrollRequest {
     VisualRows(isize),
     VisualPages(isize),
+    VisualPageFraction { pages: isize, divisor: usize },
+    VisualPageWithCursor { pages: isize, divisor: usize },
     CursorReveal(EditorCursorReveal),
 }
 
@@ -75,6 +77,12 @@ impl EditorViewportScrollRequest {
         match self {
             Self::VisualPages(pages) if pages > 0 => Some(EditorViewportScrollDirection::Forward),
             Self::VisualPages(pages) if pages < 0 => Some(EditorViewportScrollDirection::Backward),
+            Self::VisualPageFraction { pages, .. } if pages > 0 => {
+                Some(EditorViewportScrollDirection::Forward)
+            }
+            Self::VisualPageFraction { pages, .. } if pages < 0 => {
+                Some(EditorViewportScrollDirection::Backward)
+            }
             _ => None,
         }
     }
@@ -223,6 +231,10 @@ impl EditorViewport {
         match request {
             EditorViewportScrollRequest::VisualRows(rows) => self.scroll_by_visual_rows(rows),
             EditorViewportScrollRequest::VisualPages(pages) => self.scroll_by_visual_pages(pages),
+            EditorViewportScrollRequest::VisualPageFraction { pages, divisor }
+            | EditorViewportScrollRequest::VisualPageWithCursor { pages, divisor } => {
+                self.scroll_by_visual_page_fraction(pages, divisor)
+            }
             EditorViewportScrollRequest::CursorReveal(reveal) => {
                 self.request_cursor_reveal(reveal);
                 ViewportScrollUpdate {
@@ -236,7 +248,16 @@ impl EditorViewport {
     }
 
     pub fn scroll_by_visual_pages(&self, pages: isize) -> ViewportScrollUpdate {
-        let visible_rows = isize::try_from(self.visible_visual_rows()).unwrap_or(isize::MAX);
+        self.scroll_by_visual_page_fraction(pages, 1)
+    }
+
+    pub fn scroll_by_visual_page_fraction(
+        &self,
+        pages: isize,
+        divisor: usize,
+    ) -> ViewportScrollUpdate {
+        let visible_rows = self.visible_visual_rows() / divisor.max(1);
+        let visible_rows = isize::try_from(visible_rows).unwrap_or(isize::MAX);
         self.scroll_by_visual_rows(visible_rows.saturating_mul(pages))
     }
 
@@ -804,6 +825,45 @@ mod tests {
         assert_eq!(update.crossed_visual_rows, 5);
         assert_eq!(update.top_visual_row, 5);
         assert!(viewport.has_pending_view_sync());
+    }
+
+    #[test]
+    fn viewport_page_fraction_request_moves_by_fractional_visible_rows() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(100.0), px(100.0)), 50);
+
+        let update =
+            viewport.apply_scroll_request(EditorViewportScrollRequest::VisualPageFraction {
+                pages: 1,
+                divisor: 2,
+            });
+
+        assert!(update.changed);
+        assert_eq!(viewport.visible_visual_rows(), 5);
+        assert_eq!(viewport.scroll_position().y, px(40.0));
+        assert_eq!(update.crossed_visual_rows, 2);
+        assert_eq!(update.top_visual_row, 2);
+        assert!(viewport.has_pending_view_sync());
+    }
+
+    #[test]
+    fn viewport_page_cursor_sync_direction_excludes_cursor_page_requests() {
+        assert_eq!(
+            EditorViewportScrollRequest::VisualPageFraction {
+                pages: 1,
+                divisor: 2,
+            }
+            .page_cursor_sync_direction(),
+            Some(EditorViewportScrollDirection::Forward)
+        );
+        assert_eq!(
+            EditorViewportScrollRequest::VisualPageWithCursor {
+                pages: 1,
+                divisor: 2,
+            }
+            .page_cursor_sync_direction(),
+            None
+        );
     }
 
     #[test]
