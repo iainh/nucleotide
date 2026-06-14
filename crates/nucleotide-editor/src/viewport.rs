@@ -473,22 +473,14 @@ impl EditorViewport {
         snapshot
     }
 
-    pub fn sync_to_helix_view(
+    pub fn sync_view_position(
         &self,
-        editor: &mut Editor,
-        doc_id: DocumentId,
+        document: &mut Document,
+        view: &helix_view::View,
         view_id: ViewId,
         text_format: &TextFormat,
     ) -> bool {
-        let Some(view) = editor.tree.try_get(view_id).cloned() else {
-            return false;
-        };
-
-        let Some(doc) = editor.document_mut(doc_id) else {
-            return false;
-        };
-
-        let plan = self.plan_view_position(doc, &view, view_id, text_format);
+        let plan = self.plan_view_position(document, view, view_id, text_format);
         if !plan.changed {
             return false;
         }
@@ -503,7 +495,7 @@ impl EditorViewport {
             "Syncing GUI scroll position to Helix view"
         );
 
-        apply_view_position_plan(doc, view_id, plan)
+        apply_view_position_plan(document, view_id, plan)
     }
 
     pub fn sync_content_layout(
@@ -554,7 +546,9 @@ impl EditorViewport {
         apply_helix_view_area_plan(editor, view_id, view_area_plan);
 
         let mut helix_view_synced = if self.has_pending_view_sync() {
-            let synced = self.sync_to_helix_view(editor, doc_id, view_id, &metrics.text_format);
+            let view = editor.tree.try_get(view_id)?.clone();
+            let document = editor.document_mut(doc_id)?;
+            let synced = self.sync_view_position(document, &view, view_id, &metrics.text_format);
             self.clear_pending_view_sync();
             synced
         } else {
@@ -570,8 +564,10 @@ impl EditorViewport {
             };
             let scroll_update = self.reveal_visual_row(cursor_visual_row, cursor_reveal, scrolloff);
 
+            let view = editor.tree.try_get(view_id)?.clone();
+            let document = editor.document_mut(doc_id)?;
             helix_view_synced |=
-                self.sync_to_helix_view(editor, doc_id, view_id, &metrics.text_format);
+                self.sync_view_position(document, &view, view_id, &metrics.text_format);
 
             scroll_update.changed
         } else {
@@ -1771,6 +1767,52 @@ mod tests {
 
         assert!(plan.changed);
         assert_eq!(plan.view_position.horizontal_offset, 0);
+    }
+
+    #[test]
+    fn viewport_sync_view_position_updates_document_offset() {
+        let (mut document, view) = test_document_and_view("one\ntwo\nthree\n");
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(240.0), px(20.0)), 4);
+        viewport.sync_from_helix_top_visual_row(1);
+
+        let synced =
+            viewport.sync_view_position(&mut document, &view, view.id, &TextFormat::default());
+
+        assert!(synced);
+        assert_eq!(
+            document
+                .text()
+                .char_to_line(document.view_offset(view.id).anchor),
+            1
+        );
+    }
+
+    #[test]
+    fn viewport_sync_view_position_reports_noop_for_matching_offset() {
+        let (mut document, view) = test_document_and_view("one\ntwo\nthree\n");
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(240.0), px(20.0)), 4);
+        viewport.sync_from_helix_top_visual_row(1);
+        document.set_view_offset(
+            view.id,
+            ViewPosition {
+                anchor: document.text().line_to_char(1),
+                vertical_offset: 0,
+                horizontal_offset: 0,
+            },
+        );
+
+        let synced =
+            viewport.sync_view_position(&mut document, &view, view.id, &TextFormat::default());
+
+        assert!(!synced);
+        assert_eq!(
+            document
+                .text()
+                .char_to_line(document.view_offset(view.id).anchor),
+            1
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
