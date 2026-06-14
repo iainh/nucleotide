@@ -7,13 +7,12 @@ use helix_view::Theme;
 use nucleotide_logging::{debug, error};
 
 use crate::{
-    CursorOverlayPlan, CursorTextShape, DiagnosticGutterMarkersPaintParams,
-    EditorCursorTextPaintParams, EditorDocumentFrame, EditorLayout, EditorLineBackgroundStyle,
-    EditorSurfaceGeometry, LineLayoutCache, ShapedEditorCursorPaintParams,
-    SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams,
-    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams, build_gutter_lines_from_plans,
-    gutter::SoftWrapGutterLine, paint_diagnostic_gutter_markers, paint_gutter_lines,
-    paint_shaped_editor_cursor, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
+    CursorOverlayPlan, DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams,
+    EditorDocumentFrame, EditorLayout, EditorLineBackgroundStyle, EditorSurfaceGeometry,
+    LineLayoutCache, SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams,
+    SoftWrapGutterPaintParams, UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams,
+    build_gutter_lines_from_plans, gutter::SoftWrapGutterLine, paint_diagnostic_gutter_markers,
+    paint_gutter_lines, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
     paint_unwrapped_editor_line, paint_visible_rulers, shape_and_paint_editor_cursor,
     soft_wrap_cursor_paint_plan, unwrapped_cursor_paint_plan,
 };
@@ -29,7 +28,6 @@ pub struct DocumentFramePaintParams<'a> {
     pub fg_color: Hsla,
     pub default_bg: Hsla,
     pub cursorline_color: Option<Hsla>,
-    pub cursor_text_shape: &'a CursorTextShape,
     pub is_focused: bool,
     pub element_focused: bool,
     pub selection_primary: Hsla,
@@ -51,8 +49,8 @@ struct UnwrappedDocumentFramePaintParams<'a> {
     pub line_cache: &'a LineLayoutCache,
     pub font_size: Pixels,
     pub fg_color: Hsla,
+    pub default_bg: Hsla,
     pub cursorline_color: Option<Hsla>,
-    pub cursor_text_shape: &'a CursorTextShape,
     pub is_focused: bool,
     pub element_focused: bool,
     pub selection_primary: Hsla,
@@ -130,8 +128,8 @@ pub fn paint_document_frame(
             line_cache: params.line_cache,
             font_size: params.font_size,
             fg_color: params.fg_color,
+            default_bg: params.default_bg,
             cursorline_color: params.cursorline_color,
-            cursor_text_shape: params.cursor_text_shape,
             is_focused: params.is_focused,
             element_focused: params.element_focused,
             selection_primary: params.selection_primary,
@@ -442,16 +440,20 @@ fn paint_unwrapped_cursor(
     }
     debug!("Cursor paint plan selected: {:?}", cursor_paint_plan.source);
 
-    Some(paint_shaped_editor_cursor(
+    let font = params.text_style.font();
+    Some(shape_and_paint_editor_cursor(
         window,
         cx,
-        ShapedEditorCursorPaintParams {
+        EditorCursorTextPaintParams {
             paint_position: cursor_paint_position,
             kind: frame.cursor_presentation.kind,
             cursor_style: &frame.cursor_presentation.cursor_style,
             text_style_at_cursor: &frame.cursor_presentation.text_style_at_cursor,
-            cursor_text_shape: params.cursor_text_shape.clone(),
+            cursor_text: frame.cursor_presentation.block_text.clone(),
+            font: &font,
+            font_size: params.font_size,
             fallback_fg: params.fg_color,
+            default_bg: params.default_bg,
             fallback_width: params.layout.cell_width,
             line_height: params.layout.line_height,
         },
