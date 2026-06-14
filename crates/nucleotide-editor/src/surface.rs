@@ -17,7 +17,7 @@ use crate::{
 
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
 type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
-type KeyDownCallback = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App)>;
+type KeyDownCallback = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EditorSurfaceMetricSnapshot {
@@ -115,7 +115,7 @@ impl EditorSurface {
 
     pub fn on_key_down(
         mut self,
-        callback: impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static,
+        callback: impl Fn(&KeyDownEvent, &mut Window, &mut App) -> bool + 'static,
     ) -> Self {
         self.on_key_down = Some(Rc::new(callback));
         self
@@ -218,8 +218,9 @@ impl RenderOnce for EditorSurface {
 
         if let Some(on_key_down) = self.on_key_down.clone() {
             content = content.on_key_down(move |event, window, cx| {
-                on_key_down(event, window, cx);
-                cx.stop_propagation();
+                if on_key_down(event, window, cx) {
+                    cx.stop_propagation();
+                }
             });
         }
 
@@ -350,9 +351,9 @@ mod tests {
     use std::{cell::Cell, rc::Rc};
 
     use gpui::{
-        AppContext as _, Empty, Entity, EntityId, FocusHandle, IntoElement, Keystroke, MouseButton,
-        Render, ScrollDelta, ScrollWheelEvent, Styled, TestAppContext, TouchPhase, Window, div,
-        point, px, size,
+        AppContext as _, Empty, Entity, EntityId, FocusHandle, InteractiveElement as _,
+        IntoElement, Keystroke, MouseButton, ParentElement as _, Render, ScrollDelta,
+        ScrollWheelEvent, Styled, TestAppContext, TouchPhase, Window, div, point, px, size,
     };
 
     use super::{EditorSurface, EditorSurfaceMetrics};
@@ -505,6 +506,8 @@ mod tests {
         scrollbar_state: EditorScrollbarState,
         focus: FocusHandle,
         saw_key: Rc<Cell<bool>>,
+        saw_parent_key: Rc<Cell<bool>>,
+        consume_key: bool,
     }
 
     impl Render for SurfaceKeyDispatchHost {
@@ -513,20 +516,31 @@ mod tests {
             _window: &mut Window,
             _cx: &mut gpui::Context<Self>,
         ) -> impl IntoElement {
-            EditorSurface::new(
-                self.view_entity_id,
-                self.viewport.clone(),
-                self.metrics.clone(),
-                self.scrollbar_state.clone(),
-                div().size_full(),
-            )
-            .track_focus(self.focus.clone())
-            .on_key_down({
-                let saw_key = Rc::clone(&self.saw_key);
-                move |event, _, _| {
-                    saw_key.set(event.keystroke.key == "a");
-                }
-            })
+            div()
+                .on_key_down({
+                    let saw_parent_key = Rc::clone(&self.saw_parent_key);
+                    move |event, _, _| {
+                        saw_parent_key.set(event.keystroke.key == "a");
+                    }
+                })
+                .child(
+                    EditorSurface::new(
+                        self.view_entity_id,
+                        self.viewport.clone(),
+                        self.metrics.clone(),
+                        self.scrollbar_state.clone(),
+                        div().size_full(),
+                    )
+                    .track_focus(self.focus.clone())
+                    .on_key_down({
+                        let saw_key = Rc::clone(&self.saw_key);
+                        let consume_key = self.consume_key;
+                        move |event, _, _| {
+                            saw_key.set(event.keystroke.key == "a");
+                            consume_key
+                        }
+                    }),
+                )
         }
     }
 
@@ -545,6 +559,8 @@ mod tests {
                     scrollbar_state: EditorScrollbarState::default(),
                     focus: cx.focus_handle(),
                     saw_key,
+                    saw_parent_key: Rc::new(Cell::new(false)),
+                    consume_key: true,
                 })
             })
             .unwrap()
@@ -557,5 +573,39 @@ mod tests {
         cx.dispatch_keystroke(*window, Keystroke::parse("a").unwrap());
 
         assert!(saw_key.get());
+    }
+
+    #[gpui::test]
+    fn editor_surface_allows_unconsumed_key_events_to_bubble(cx: &mut TestAppContext) {
+        let saw_key = Rc::new(Cell::new(false));
+        let saw_parent_key = Rc::new(Cell::new(false));
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                let mut viewport = EditorViewport::new(px(20.0));
+                viewport.set_layout(px(20.0), size(px(100.0), px(200.0)), 50);
+                let saw_key = Rc::clone(&saw_key);
+                let saw_parent_key = Rc::clone(&saw_parent_key);
+                cx.new(|cx| SurfaceKeyDispatchHost {
+                    view_entity_id: cx.entity_id(),
+                    viewport,
+                    metrics: EditorSurfaceMetrics::new(px(20.0), px(8.0)),
+                    scrollbar_state: EditorScrollbarState::default(),
+                    focus: cx.focus_handle(),
+                    saw_key,
+                    saw_parent_key,
+                    consume_key: false,
+                })
+            })
+            .unwrap()
+        });
+
+        window
+            .update(cx, |host, window, _cx| window.focus(&host.focus))
+            .unwrap();
+
+        cx.dispatch_keystroke(*window, Keystroke::parse("a").unwrap());
+
+        assert!(saw_key.get());
+        assert!(saw_parent_key.get());
     }
 }

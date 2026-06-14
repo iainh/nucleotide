@@ -19,7 +19,7 @@ type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
 type PointerSelectionCallback =
     Rc<dyn Fn(EditorPointerSelectionPhase, EditorSurfacePointerEvent, &mut App)>;
 type CursorOverlayCallback = Rc<dyn Fn(Option<CursorOverlayPlan>, &mut App)>;
-type KeyDownCallback = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App)>;
+type KeyDownCallback = Rc<dyn Fn(&KeyDownEvent, &mut Window, &mut App) -> bool>;
 
 pub struct NativeEditorView<P> {
     view_entity_id: EntityId,
@@ -76,7 +76,7 @@ where
 
     pub fn on_key_down(
         mut self,
-        callback: impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static,
+        callback: impl Fn(&KeyDownEvent, &mut Window, &mut App) -> bool + 'static,
     ) -> Self {
         self.on_key_down = Some(Rc::new(callback));
         self
@@ -207,9 +207,8 @@ where
         }
 
         if let Some(on_key_down) = on_key_down {
-            editor_surface = editor_surface.on_key_down(move |event, window, cx| {
-                on_key_down(event, window, cx);
-            });
+            editor_surface =
+                editor_surface.on_key_down(move |event, window, cx| on_key_down(event, window, cx));
         }
 
         if on_pointer_selection.is_some() || on_mouse_down.is_some() {
@@ -400,6 +399,7 @@ mod tests {
                 let saw_key = Rc::clone(&self.saw_key);
                 move |event, _, _| {
                     saw_key.set(event.keystroke.key == "a");
+                    true
                 }
             })
         }
