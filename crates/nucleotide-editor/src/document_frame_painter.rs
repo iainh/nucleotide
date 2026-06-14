@@ -313,6 +313,7 @@ pub fn prepare_native_editor_frame(
     params: NativeEditorFramePrepareParams<'_>,
 ) -> Option<NativeEditorPreparedFrame> {
     let doc_id = params.editor.tree.try_get(params.view_id)?.doc;
+    let scrolloff = params.editor.config().scrolloff;
     let frame_state = params.editor_state.sync_frame_layout(
         params.editor,
         doc_id,
@@ -322,6 +323,7 @@ pub fn prepare_native_editor_frame(
             params.bounds,
             params.layout.cell_width,
             params.layout.line_height,
+            scrolloff,
             None,
         ),
     )?;
@@ -1162,6 +1164,7 @@ mod tests {
         let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo\n");
         let theme = theme::Loader::new(&[]).default_theme(true);
         let bounds = gpui::Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0)));
+        let scrolloff = editor.config().scrolloff;
         let frame_state = state
             .sync_frame_layout(
                 &mut editor,
@@ -1172,6 +1175,7 @@ mod tests {
                     bounds,
                     px(8.0),
                     px(20.0),
+                    scrolloff,
                     None,
                 ),
             )
