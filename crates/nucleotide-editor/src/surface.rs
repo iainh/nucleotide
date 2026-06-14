@@ -212,7 +212,8 @@ impl RenderOnce for EditorSurface {
             .overflow_hidden()
             .child(self.child);
 
-        if let Some(focus) = self.focus.clone() {
+        let focus = self.focus.clone();
+        if let Some(focus) = focus.clone() {
             content = content.track_focus(&focus);
         }
 
@@ -259,13 +260,18 @@ impl RenderOnce for EditorSurface {
             let metrics = self.metrics.clone();
             let view_entity_id = self.view_entity_id;
             let content_bounds = Rc::clone(&content_bounds);
+            let focus = focus.clone();
 
-            content = content.on_mouse_down(MouseButton::Left, move |event, _window, cx| {
+            content = content.on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 let Some(bounds) = content_bounds.get() else {
                     return;
                 };
                 if !bounds.contains(&event.position) {
                     return;
+                }
+
+                if let Some(focus) = &focus {
+                    focus.focus(window);
                 }
 
                 on_mouse_down(
@@ -307,17 +313,37 @@ impl RenderOnce for EditorSurface {
         if let Some(on_mouse_up) = self.on_mouse_up.clone() {
             let metrics = self.metrics.clone();
             let view_entity_id = self.view_entity_id;
-            let content_bounds = Rc::clone(&content_bounds);
+            let mouse_up_bounds = Rc::clone(&content_bounds);
+            let on_mouse_up_inside = on_mouse_up.clone();
 
             content = content.on_mouse_up(MouseButton::Left, move |event, _window, cx| {
-                let Some(bounds) = content_bounds.get() else {
+                let Some(bounds) = mouse_up_bounds.get() else {
                     return;
                 };
                 if !bounds.contains(&event.position) {
                     return;
                 }
 
-                on_mouse_up(
+                on_mouse_up_inside(
+                    Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
+                    cx,
+                );
+
+                cx.notify(view_entity_id);
+                cx.stop_propagation();
+            });
+
+            let metrics = self.metrics.clone();
+            let view_entity_id = self.view_entity_id;
+            let mouse_up_out_bounds = Rc::clone(&content_bounds);
+            let on_mouse_up_out = on_mouse_up.clone();
+
+            content = content.on_mouse_up_out(MouseButton::Left, move |event, _window, cx| {
+                let Some(bounds) = mouse_up_out_bounds.get() else {
+                    return;
+                };
+
+                on_mouse_up_out(
                     Self::surface_event(metrics.clone(), bounds, event.position, event.modifiers),
                     cx,
                 );
@@ -462,6 +488,54 @@ mod tests {
     }
 
     #[gpui::test]
+    fn editor_surface_dispatches_mouse_up_outside_bounds(cx: &mut TestAppContext) {
+        let view_entity_id = cx.update(|cx| {
+            let entity: Entity<Empty> = cx.new(|_| Empty);
+            entity.entity_id()
+        });
+
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(100.0), px(200.0)), 50);
+        let metrics = EditorSurfaceMetrics::new(px(20.0), px(8.0));
+        let scrollbar_state = EditorScrollbarState::default();
+        let saw_up = Rc::new(Cell::new(false));
+
+        let window = cx.add_empty_window();
+        window.draw(
+            point(px(0.0), px(0.0)),
+            size(px(220.0), px(200.0)),
+            |_, _| {
+                div().w(px(112.0)).h(px(200.0)).child(
+                    EditorSurface::new(
+                        view_entity_id,
+                        viewport.clone(),
+                        metrics.clone(),
+                        scrollbar_state.clone(),
+                        div().size_full(),
+                    )
+                    .on_mouse_up({
+                        let saw_up = Rc::clone(&saw_up);
+                        move |_, _| saw_up.set(true)
+                    }),
+                )
+            },
+        );
+
+        window.simulate_mouse_down(
+            point(px(10.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        window.simulate_mouse_up(
+            point(px(150.0), px(30.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+
+        assert!(saw_up.get());
+    }
+
+    #[gpui::test]
     fn editor_surface_scrolls_without_observer_callback(cx: &mut TestAppContext) {
         let view_entity_id = cx.update(|cx| {
             let entity: Entity<Empty> = cx.new(|_| Empty);
@@ -497,6 +571,66 @@ mod tests {
         });
 
         assert!(viewport.scroll_position().y > px(0.0));
+    }
+
+    struct SurfacePointerFocusHost {
+        view_entity_id: EntityId,
+        focus: FocusHandle,
+        saw_down: Rc<Cell<bool>>,
+    }
+
+    impl Render for SurfacePointerFocusHost {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            let mut viewport = EditorViewport::new(px(20.0));
+            viewport.set_layout(px(20.0), size(px(100.0), px(200.0)), 50);
+            let saw_down = Rc::clone(&self.saw_down);
+
+            EditorSurface::new(
+                self.view_entity_id,
+                viewport,
+                EditorSurfaceMetrics::new(px(20.0), px(8.0)),
+                EditorScrollbarState::default(),
+                div().size_full(),
+            )
+            .track_focus(self.focus.clone())
+            .on_mouse_down(move |_, _| saw_down.set(true))
+        }
+    }
+
+    #[gpui::test]
+    fn editor_surface_focuses_on_mouse_down(cx: &mut TestAppContext) {
+        let saw_down = Rc::new(Cell::new(false));
+        let (host, cx) = cx.add_window_view(|_, cx| {
+            let saw_down = Rc::clone(&saw_down);
+            SurfacePointerFocusHost {
+                view_entity_id: cx.entity_id(),
+                focus: cx.focus_handle(),
+                saw_down,
+            }
+        });
+
+        cx.update(|window, cx| {
+            host.update(cx, |host, _cx| {
+                assert!(!host.focus.is_focused(window));
+            });
+        });
+
+        cx.simulate_mouse_down(
+            point(px(10.0), px(10.0)),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+
+        cx.update(|window, cx| {
+            host.update(cx, |host, _cx| {
+                assert!(host.focus.is_focused(window));
+            });
+        });
+        assert!(saw_down.get());
     }
 
     struct SurfaceKeyDispatchHost {
