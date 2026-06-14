@@ -45,6 +45,7 @@ pub struct EditorViewportSurfaceUpdate {
     pub visual_rows: usize,
     pub soft_wrap: bool,
     pub view_position: ViewPosition,
+    pub view_position_plan: EditorViewportViewPositionPlan,
     pub helix_view_synced: bool,
     pub cursor_revealed: bool,
     pub helix_snapshot: HelixViewportSnapshot,
@@ -573,15 +574,16 @@ impl EditorViewport {
         let document = editor.document(doc_id)?;
         let helix_snapshot =
             self.sync_from_helix_view(document, view, view_id, &metrics.text_format);
-        let view_position = self
-            .plan_view_position(document, view, view_id, &metrics.text_format)
-            .view_position;
+        let view_position_plan =
+            self.plan_view_position(document, view, view_id, &metrics.text_format);
+        let view_position = view_position_plan.view_position;
 
         Some(EditorViewportSurfaceUpdate {
             gutter_columns,
             visual_rows: metrics.visual_rows,
             soft_wrap: metrics.soft_wrap,
             view_position,
+            view_position_plan,
             helix_view_synced,
             cursor_revealed,
             helix_snapshot,
@@ -1765,6 +1767,10 @@ mod tests {
 
         let doc = editor.document(doc_id).unwrap();
         assert_eq!(doc.view_offset(view_id).anchor, 1_000);
+        assert_eq!(
+            update.view_position_plan.view_position,
+            update.view_position
+        );
         assert!(update.view_position.anchor <= doc.text().len_chars());
         assert_eq!(doc.text().char_to_line(update.view_position.anchor), 1);
         assert_eq!(update.view_position.horizontal_offset, 7);
