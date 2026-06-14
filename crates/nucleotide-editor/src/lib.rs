@@ -58,8 +58,8 @@ pub use diagnostics::{
 };
 pub use document_element::EditorDocumentElement;
 pub use document_frame::{
-    EditorDocumentFrame, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
-    editor_document_frame,
+    EditorDocumentFrame, EditorDocumentFrameFromEditorParams, EditorDocumentFrameGutterParams,
+    EditorDocumentFrameParams, editor_document_frame, editor_document_frame_from_editor,
 };
 pub use document_frame_painter::{DocumentFramePaintParams, paint_document_frame};
 pub use document_metrics::{

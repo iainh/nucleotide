@@ -14,10 +14,10 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     DocumentFramePaintParams, EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal,
-    EditorDocumentElement, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
-    EditorLayout, EditorSurface, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState,
-    EditorViewportContentLayout, EditorViewportSurfaceLayout, cursor_document_line,
-    cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame,
+    EditorDocumentElement, EditorDocumentFrameFromEditorParams, EditorLayout, EditorSurface,
+    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewportContentLayout,
+    EditorViewportSurfaceLayout, cursor_document_line, cursor_style_for_mode,
+    editor_document_frame_from_editor, gpui_hsla_to_helix_color, paint_document_frame,
     paint_editor_background,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
@@ -552,9 +552,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
             None => return,
         };
         let text = document.text();
-        let editor_config = editor.config();
         let editor_mode = editor.mode();
-        let (_, cursor_kind) = editor.cursor();
 
         let first_row = frame_state.first_row;
         let last_row_from_scroll = frame_state.last_row_from_scroll;
@@ -568,17 +566,16 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
             // Use UI theme's border color from tokens
             cx.ui_theme().tokens.chrome.border_default
         });
-        let loader = editor.syn_loader.load();
-        let frame = editor_document_frame(EditorDocumentFrameParams {
+        let frame = editor_document_frame_from_editor(EditorDocumentFrameFromEditorParams {
+            editor,
             document,
             view,
             view_id,
             theme: &theme,
-            syntax_loader: &loader,
             first_row,
             last_row_from_scroll,
             soft_wrap_enabled,
-            unwrapped_gutter: Some(EditorDocumentFrameGutterParams { editor, layout }),
+            unwrapped_gutter_layout: Some(layout),
             bounds,
             cell_width: layout.cell_width,
             line_height: layout.line_height,
@@ -590,17 +587,14 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
             default_bg: bg_color,
             wrap_indicator_color,
             ruler_color,
-            editor_mode,
-            cursor_kind,
             cursor_style,
-            cursor_shape: editor_config.cursor_shape.clone(),
-            editor_rulers: editor_config.rulers.clone(),
-            cursorline_enabled: editor_config.cursorline && is_focused,
             is_focused,
         });
         debug!(
             "Cursorline check - config value: {}, focused: {}, enabled: {}",
-            editor_config.cursorline, is_focused, frame.cursorline_enabled
+            editor.config().cursorline,
+            is_focused,
+            frame.cursorline_enabled
         );
 
         let cursorline_style = if frame.cursorline_enabled {
