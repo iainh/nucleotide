@@ -6590,25 +6590,21 @@ impl Workspace {
         {
             // Access the DocumentView to get real font metrics
             return doc_view.read_with(cx, |doc_view, _cx| {
-                // Get the actual line height from DocumentView
-                let line_height = doc_view.get_line_height();
-
-                // Use cached character width derived from font metrics
-                let char_width = px(cached_char_w);
-                let gutter_width = if doc_view.get_gutter_width() > px(0.0) {
-                    doc_view.get_gutter_width()
+                let layout = doc_view.layout_snapshot();
+                let gutter_width = if layout.gutter_width > px(0.0) {
+                    layout.gutter_width
                 } else {
                     fallback_gutter_width
                 };
-                let (cursor_position, cursor_size) = doc_view
-                    .get_cursor_overlay_bounds()
+                let (cursor_position, cursor_size) = layout
+                    .cursor_overlay_bounds
                     .map_or((None, None), |(position, size)| {
                         (Some(position), Some(size))
                     });
 
                 (
-                    line_height,
-                    char_width,
+                    layout.line_height,
+                    layout.cell_width,
                     gutter_width,
                     cursor_position,
                     cursor_size,

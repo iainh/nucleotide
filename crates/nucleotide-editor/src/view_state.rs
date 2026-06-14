@@ -1,7 +1,7 @@
 // ABOUTME: Persistent native editor view state shared by GPUI render phases
 // ABOUTME: Bundles viewport, metrics, overlay, scrollbar, and selection state
 
-use gpui::{Pixels, TextStyle, TextSystem, px};
+use gpui::{Pixels, Point, Size, TextStyle, TextSystem, px};
 use helix_view::{DocumentId, Editor, Theme, ViewId};
 
 use crate::{
@@ -29,6 +29,15 @@ pub struct EditorViewFrameState {
     pub first_row: usize,
     pub last_row_from_scroll: usize,
     pub scroll_line_offset: Pixels,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditorViewLayoutSnapshot {
+    pub line_height: Pixels,
+    pub cell_width: Pixels,
+    pub gutter_width: Pixels,
+    pub cursor_overlay_bounds: Option<(Point<Pixels>, Size<Pixels>)>,
+    pub cursor_completion_anchor: Option<(Point<Pixels>, Size<Pixels>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +174,17 @@ impl EditorViewState {
 
     pub fn apply_cursor_overlay_plan(&self, overlay_plan: Option<CursorOverlayPlan>) {
         self.overlay_state.apply_cursor_overlay_plan(overlay_plan);
+    }
+
+    pub fn layout_snapshot(&self) -> EditorViewLayoutSnapshot {
+        let metrics = self.surface_metrics.get();
+        EditorViewLayoutSnapshot {
+            line_height: self.line_height,
+            cell_width: metrics.cell_width,
+            gutter_width: self.overlay_state.gutter_width(),
+            cursor_overlay_bounds: self.overlay_state.cursor_overlay_bounds(),
+            cursor_completion_anchor: self.overlay_state.cursor_completion_anchor(),
+        }
     }
 
     pub fn begin_pointer_selection_at_event(
@@ -376,6 +396,34 @@ mod tests {
             metrics.line_height
         );
         assert_eq!(state.surface_metrics().get().cell_width, metrics.cell_width);
+    }
+
+    #[test]
+    fn view_state_layout_snapshot_collects_native_metrics() {
+        let mut state = EditorViewState::new(px(20.0), px(8.0));
+        state.apply_text_metrics(metrics(px(24.0), px(9.0)));
+        state
+            .overlay_state()
+            .set_gutter_width_from_columns(6, px(9.0));
+        let overlay_plan = CursorOverlayPlan {
+            cursor_position: point(px(4.0), px(6.0)),
+            cursor_size: size(px(9.0), px(24.0)),
+        };
+        state.apply_cursor_overlay_plan(Some(overlay_plan));
+
+        let snapshot = state.layout_snapshot();
+
+        assert_eq!(snapshot.line_height, px(24.0));
+        assert_eq!(snapshot.cell_width, px(9.0));
+        assert_eq!(snapshot.gutter_width, px(54.0));
+        assert_eq!(
+            snapshot.cursor_overlay_bounds,
+            Some((overlay_plan.cursor_position, overlay_plan.cursor_size))
+        );
+        assert_eq!(
+            snapshot.cursor_completion_anchor,
+            Some((point(px(4.0), px(30.0)), overlay_plan.cursor_size))
+        );
     }
 
     #[test]

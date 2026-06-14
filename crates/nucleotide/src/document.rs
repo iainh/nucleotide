@@ -1,7 +1,7 @@
 use gpui::{
     App, Bounds, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Size,
-    Styled, TextStyle, Window, div, px,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, Styled,
+    TextStyle, Window, div, px,
 };
 // Import helix's syntax highlighting system
 use helix_view::{DocumentId, ViewId};
@@ -12,9 +12,9 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 use crate::Core;
 use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
-    EditorSurfacePointerEvent, EditorViewState, NativeEditorFramePaintParams,
-    NativeEditorFramePrepareParams, NativeEditorView, paint_native_editor_frame,
-    prepare_native_editor_frame,
+    EditorSurfacePointerEvent, EditorViewLayoutSnapshot, EditorViewState,
+    NativeEditorFramePaintParams, NativeEditorFramePrepareParams, NativeEditorView,
+    paint_native_editor_frame, prepare_native_editor_frame,
 };
 
 fn handle_editor_pointer_selection(
@@ -121,25 +121,8 @@ impl DocumentView {
             .request_cursor_reveal(EditorCursorReveal::Center);
     }
 
-    /// Get the actual line height used by this DocumentView
-    pub fn get_line_height(&self) -> Pixels {
-        self.editor_state.line_height()
-    }
-
-    /// Get the last painted gutter width in window pixels.
-    pub fn get_gutter_width(&self) -> Pixels {
-        self.editor_state.overlay_state().gutter_width()
-    }
-
-    /// Get the cursor's last painted top-left position and size in window coordinates.
-    pub fn get_cursor_overlay_bounds(&self) -> Option<(Point<Pixels>, Size<Pixels>)> {
-        self.editor_state.overlay_state().cursor_overlay_bounds()
-    }
-
-    /// Get the last cursor position and size in window coordinates
-    /// Returns (position, size) where position is bottom-left corner for completion positioning
-    pub fn get_cursor_coordinates(&self) -> Option<(Point<Pixels>, Size<Pixels>)> {
-        self.editor_state.overlay_state().cursor_completion_anchor()
+    pub fn layout_snapshot(&self) -> EditorViewLayoutSnapshot {
+        self.editor_state.layout_snapshot()
     }
 }
 
