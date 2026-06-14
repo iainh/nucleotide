@@ -1979,6 +1979,14 @@ mod tests {
         }
     }
 
+    fn translated_gpui_key(key: &str) -> KeyEvent {
+        crate::utils::translate_key(&gpui::Keystroke {
+            key: key.into(),
+            modifiers: gpui::Modifiers::default(),
+            key_char: None,
+        })
+    }
+
     fn handle_key_str(
         bridge: &mut EditorInputBridge,
         editor: &mut Editor,
@@ -2915,6 +2923,38 @@ mod tests {
         assert!(!picker.handled_by_terminal_editor);
         assert_eq!(picker.picker_requested, Some(NativePickerRequest::File));
         assert_eq!(picker.workspace_requested, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_file_picker_for_gpui_space_f() {
+        for space_key in ["space", " "] {
+            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut editor = test_editor_with_text("one\ntwo\n");
+            let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let mut jobs = Jobs::new();
+
+            let pending = bridge.handle_key(
+                translated_gpui_key(space_key),
+                &mut compositor,
+                &mut editor,
+                &mut jobs,
+            );
+            assert!(pending.handled_by_native_command);
+            assert!(!pending.handled_by_terminal_editor);
+            assert_eq!(pending.picker_requested, None);
+
+            let picker = bridge.handle_key(
+                translated_gpui_key("f"),
+                &mut compositor,
+                &mut editor,
+                &mut jobs,
+            );
+
+            assert!(picker.handled_by_native_command);
+            assert!(!picker.handled_by_terminal_editor);
+            assert_eq!(picker.picker_requested, Some(NativePickerRequest::File));
+            assert_eq!(picker.workspace_requested, None);
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
