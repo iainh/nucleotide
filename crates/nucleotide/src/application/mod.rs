@@ -6237,9 +6237,6 @@ pub fn init_editor(
     let native_keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
         &config.keys
     }));
-    let terminal_keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
-        &config.keys
-    }));
     let compositor = Compositor::new(Rect {
         x: 0,
         y: 0,
@@ -6247,8 +6244,7 @@ pub fn init_editor(
         height: 25,
     });
     let native_keymaps = Keymaps::new(native_keys);
-    let terminal_keymaps = Keymaps::new(terminal_keys);
-    let editor_input = EditorInputBridge::new(native_keymaps, terminal_keymaps);
+    let editor_input = EditorInputBridge::new(native_keymaps);
     let jobs = Jobs::new();
 
     // Initialize completion coordinator - but we need to do this after Application is created
@@ -6375,11 +6371,11 @@ mod job_callback_tests {
 
     #[test]
     fn panic_payload_message_reads_static_str_payloads() {
-        let payload: Box<dyn std::any::Any + Send> = Box::new("missing ui::EditorView");
+        let payload: Box<dyn std::any::Any + Send> = Box::new("missing compositor component");
 
         assert_eq!(
             panic_payload_message(payload.as_ref()),
-            "missing ui::EditorView"
+            "missing compositor component"
         );
     }
 

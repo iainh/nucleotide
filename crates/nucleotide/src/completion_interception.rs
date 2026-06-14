@@ -113,15 +113,17 @@ pub fn hook_11_view_doc_validation(view_matches: bool, doc_matches: bool) {
     );
 }
 
-// Hook Point 12: Compositor Search
-pub fn hook_12_compositor_search() {
-    nucleotide_logging::info!("🔫12 COMPOSITOR_SEARCH: Looking for ui::EditorView in compositor");
+// Hook Point 12: Completion Overlay Search
+pub fn hook_12_completion_overlay_search() {
+    nucleotide_logging::info!(
+        "🔫12 COMPLETION_OVERLAY_SEARCH: Looking for native completion state"
+    );
 }
 
-// Hook Point 13: EditorView Found/Not Found
-pub fn hook_13_editorview_result(found: bool, completion_exists: Option<bool>) {
+// Hook Point 13: Completion Overlay Found/Not Found
+pub fn hook_13_completion_overlay_result(found: bool, completion_exists: Option<bool>) {
     nucleotide_logging::info!(
-        "🔫13 EDITORVIEW_RESULT: found={}, completion_exists={:?}",
+        "🔫13 COMPLETION_OVERLAY_RESULT: found={}, completion_exists={:?}",
         found,
         completion_exists
     );
