@@ -61,6 +61,7 @@ pub enum NativePromptRequest {
     Command,
     Search,
     ReverseSearch,
+    GlobalSearch,
     RegexSelection(crate::types::RegexSelectionAction),
 }
 
@@ -935,6 +936,7 @@ fn native_prompt_command(command: &MappableCommand) -> Option<NativePromptReques
         "command_mode" => Some(NativePromptRequest::Command),
         "search" => Some(NativePromptRequest::Search),
         "rsearch" => Some(NativePromptRequest::ReverseSearch),
+        "global_search" => Some(NativePromptRequest::GlobalSearch),
         "select_regex" => Some(NativePromptRequest::RegexSelection(
             crate::types::RegexSelectionAction::Select,
         )),
@@ -1478,7 +1480,7 @@ mod tests {
         assert!(native_command_supported(
             &MappableCommand::make_search_word_bounded
         ));
-        assert!(!native_command_supported(&MappableCommand::global_search));
+        assert!(native_command_supported(&MappableCommand::global_search));
     }
 
     #[test]
@@ -1678,7 +1680,10 @@ mod tests {
                 crate::types::RegexSelectionAction::Remove
             ))
         );
-        assert_eq!(native_prompt_command(&MappableCommand::global_search), None);
+        assert_eq!(
+            native_prompt_command(&MappableCommand::global_search),
+            Some(NativePromptRequest::GlobalSearch)
+        );
         assert_eq!(native_prompt_command(&MappableCommand::file_picker), None);
         assert_eq!(native_prompt_command(&MappableCommand::buffer_picker), None);
         assert_eq!(native_prompt_command(&MappableCommand::insert_mode), None);
@@ -1717,6 +1722,28 @@ mod tests {
                 }
                 _ => panic!("expected {key} to resolve to native prompt request"),
             }
+        }
+    }
+
+    #[test]
+    fn default_space_slash_keymap_requests_global_search_prompt() {
+        let mut keymaps = Keymaps::default();
+        let space = KeyEvent::from_str("space").unwrap();
+        let slash = KeyEvent::from_str("/").unwrap();
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, slash) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(
+                    native_prompt_command(&command),
+                    Some(NativePromptRequest::GlobalSearch)
+                );
+            }
+            _ => panic!("expected SPACE-/ to resolve to global_search"),
         }
     }
 
@@ -1967,6 +1994,30 @@ mod tests {
             picker.picker_requested,
             Some(NativePickerRequest::Symbols { workspace: false })
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_global_search_for_space_slash() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text("one\ntwo\n");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let space = KeyEvent::from_str("space").unwrap();
+        let slash = KeyEvent::from_str("/").unwrap();
+
+        let pending = bridge.handle_key(space, &mut compositor, &mut editor, &mut jobs);
+        assert!(pending.handled_by_native_command);
+        assert_eq!(pending.prompt_requested, None);
+
+        let prompt = bridge.handle_key(slash, &mut compositor, &mut editor, &mut jobs);
+        assert!(prompt.handled_by_native_command);
+        assert!(!prompt.handled_by_terminal_editor);
+        assert_eq!(
+            prompt.prompt_requested,
+            Some(NativePromptRequest::GlobalSearch)
+        );
+        assert!(compositor.find::<helix_term::ui::Prompt>().is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]

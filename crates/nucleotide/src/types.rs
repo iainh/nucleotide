@@ -61,6 +61,12 @@ pub struct SyntaxFileLocation {
     pub end: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalSearchLocation {
+    pub path: std::path::PathBuf,
+    pub line: usize,
+}
+
 // Hybrid Update enum for event system
 // Uses Event(AppEvent) for data-only events and direct variants for complex UI components with behavior
 pub enum Update {
@@ -95,6 +101,7 @@ pub enum Update {
     ShouldQuit,
     CommandSubmitted(String),
     SearchSubmitted(String),
+    GlobalSearchSubmitted(String),
     RegexSelectionSubmitted {
         action: RegexSelectionAction,
         regex: String,
@@ -162,6 +169,9 @@ impl std::fmt::Debug for Update {
             Update::ShouldQuit => write!(f, "ShouldQuit"),
             Update::CommandSubmitted(cmd) => write!(f, "CommandSubmitted({cmd:?})"),
             Update::SearchSubmitted(query) => write!(f, "SearchSubmitted({query:?})"),
+            Update::GlobalSearchSubmitted(query) => {
+                write!(f, "GlobalSearchSubmitted({query:?})")
+            }
             Update::RegexSelectionSubmitted { action, regex } => {
                 write!(f, "RegexSelectionSubmitted({action:?}, {regex:?})")
             }

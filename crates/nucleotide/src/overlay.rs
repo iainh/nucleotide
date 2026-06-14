@@ -100,12 +100,14 @@ impl HoverPopupState {
 enum PromptSubmitAction {
     Command,
     Search,
+    GlobalSearch,
     RegexSelection(RegexSelectionAction),
 }
 
 fn prompt_submit_action(prompt_text: &str) -> PromptSubmitAction {
     match prompt_text {
         "search:" | "rsearch:" => PromptSubmitAction::Search,
+        "global-search:" => PromptSubmitAction::GlobalSearch,
         "select:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Select),
         "split:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Split),
         "keep:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Keep),
@@ -389,6 +391,11 @@ impl OverlayView {
                                         match submit_action {
                                             PromptSubmitAction::Search => {
                                                 cx.emit(crate::Update::SearchSubmitted(
+                                                    input.to_string(),
+                                                ));
+                                            }
+                                            PromptSubmitAction::GlobalSearch => {
+                                                cx.emit(crate::Update::GlobalSearchSubmitted(
                                                     input.to_string(),
                                                 ));
                                             }
@@ -1189,6 +1196,33 @@ impl OverlayView {
                                     if let Some(core) = core_for_on_select.upgrade() {
                                         core.update(picker_cx, |core, core_cx| {
                                             match core.jump_to_syntax_file_location(location) {
+                                                Ok((doc_id, view_id)) => {
+                                                    core_cx.emit(crate::Update::Event(
+                                                        crate::types::AppEvent::Core(
+                                                            crate::types::CoreEvent::SelectionChanged {
+                                                                doc_id,
+                                                                view_id,
+                                                            },
+                                                        ),
+                                                    ));
+                                                    core_cx.emit(crate::Update::Event(
+                                                        crate::types::AppEvent::Core(
+                                                            crate::types::CoreEvent::RedrawRequested,
+                                                        ),
+                                                    ));
+                                                }
+                                                Err(err) => core.editor.set_error(err.to_string()),
+                                            }
+                                        });
+                                    }
+                                }
+                                else if let Some(location) = selected_item
+                                    .data
+                                    .downcast_ref::<crate::types::GlobalSearchLocation>()
+                                {
+                                    if let Some(core) = core_for_on_select.upgrade() {
+                                        core.update(picker_cx, |core, core_cx| {
+                                            match core.jump_to_global_search_location(location) {
                                                 Ok((doc_id, view_id)) => {
                                                     core_cx.emit(crate::Update::Event(
                                                         crate::types::AppEvent::Core(
