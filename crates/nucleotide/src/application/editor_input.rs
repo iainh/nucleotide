@@ -1,6 +1,7 @@
 // ABOUTME: Native editor input boundary for GPUI-driven document views
 // ABOUTME: Isolates the remaining Helix terminal input bridge from Application
 
+use helix_core::{Range, char_idx_at_visual_offset};
 use helix_stdx::{
     path::{self, find_paths},
     rope::RopeSliceExt,
@@ -1101,6 +1102,12 @@ fn native_viewport_scroll_command(
                 nucleotide_editor::EditorCursorReveal::Bottom,
             ),
         ),
+        "page_down" => Some(nucleotide_editor::EditorViewportScrollRequest::VisualPages(
+            1,
+        )),
+        "page_up" => Some(nucleotide_editor::EditorViewportScrollRequest::VisualPages(
+            -1,
+        )),
         "scroll_down" => Some(nucleotide_editor::EditorViewportScrollRequest::VisualRows(
             rows,
         )),
@@ -1109,6 +1116,74 @@ fn native_viewport_scroll_command(
         )),
         _ => None,
     }
+}
+
+pub(crate) fn sync_cursor_after_native_page_scroll(
+    editor: &mut Editor,
+    view_id: ViewId,
+    direction: nucleotide_editor::EditorViewportScrollDirection,
+    top_visual_row: usize,
+    visible_rows: usize,
+) -> Option<DocumentId> {
+    let visible_rows = visible_rows.max(1);
+    let mode = editor.mode();
+    let scrolloff = editor
+        .config()
+        .scrolloff
+        .min(visible_rows.saturating_sub(1) / 2);
+    let doc_id = editor.tree.try_get(view_id)?.doc;
+
+    let (primary_index, anchor, head) = {
+        let view = editor.tree.try_get(view_id)?;
+        let doc = editor.document(doc_id)?;
+        let text = doc.text().slice(..);
+        let range = doc.selection(view_id).primary();
+        let cursor = range.cursor(text);
+        let text_format = doc.text_format(view.inner_area(doc).width, None);
+        let annotations = view.text_annotations(doc, None);
+
+        let target_visual_row = match direction {
+            nucleotide_editor::EditorViewportScrollDirection::Forward => {
+                top_visual_row.saturating_add(scrolloff)
+            }
+            nucleotide_editor::EditorViewportScrollDirection::Backward => top_visual_row
+                .saturating_add(visible_rows)
+                .saturating_sub(scrolloff)
+                .saturating_sub(1),
+        };
+        let target_visual_row = isize::try_from(target_visual_row).unwrap_or(isize::MAX);
+        let (mut head, offset_within_visual_row) =
+            char_idx_at_visual_offset(text, 0, target_visual_row, 0, &text_format, &annotations);
+
+        match direction {
+            nucleotide_editor::EditorViewportScrollDirection::Forward => {
+                head = head.saturating_add((offset_within_visual_row != 0) as usize);
+                if head <= cursor {
+                    return None;
+                }
+            }
+            nucleotide_editor::EditorViewportScrollDirection::Backward => {
+                if head >= cursor {
+                    return None;
+                }
+            }
+        }
+
+        let anchor = if mode == Mode::Select {
+            range.anchor
+        } else {
+            head
+        };
+        (doc.selection(view_id).primary_index(), anchor, head)
+    };
+
+    let doc = editor.document_mut(doc_id)?;
+    let selection = doc
+        .selection(view_id)
+        .clone()
+        .replace(primary_index, Range::new(anchor, head));
+    doc.set_selection(view_id, selection);
+    Some(doc_id)
 }
 
 fn native_workspace_key_sequence(keys: &[KeyEvent]) -> Option<NativeWorkspaceRequest> {
@@ -1553,11 +1628,32 @@ mod tests {
         editor
     }
 
+    fn numbered_lines(count: usize) -> String {
+        (0..count).map(|line| format!("{line}\n")).collect()
+    }
+
     fn set_test_cursor(editor: &mut Editor, cursor: usize) {
         let view_id = editor.tree.focus;
         let doc_id = editor.tree.try_get(view_id).unwrap().doc;
         let doc = editor.document_mut(doc_id).unwrap();
         doc.set_selection(view_id, Selection::point(cursor));
+    }
+
+    fn set_test_cursor_line(editor: &mut Editor, line: usize) {
+        let view_id = editor.tree.focus;
+        let doc_id = editor.tree.try_get(view_id).unwrap().doc;
+        let doc = editor.document_mut(doc_id).unwrap();
+        let cursor = doc.text().line_to_char(line);
+        doc.set_selection(view_id, Selection::point(cursor));
+    }
+
+    fn focused_cursor_line(editor: &Editor) -> usize {
+        let view_id = editor.tree.focus;
+        let doc_id = editor.tree.try_get(view_id).unwrap().doc;
+        let doc = editor.document(doc_id).unwrap();
+        let text = doc.text().slice(..);
+        let cursor = doc.selection(view_id).primary().cursor(text);
+        helix_core::coords_at_pos(text, cursor).row
     }
 
     fn set_test_selection(editor: &mut Editor, from: usize, to: usize) {
@@ -1704,7 +1800,21 @@ mod tests {
         );
         assert_eq!(
             native_viewport_scroll_command(&MappableCommand::page_down, None),
-            None
+            Some(nucleotide_editor::EditorViewportScrollRequest::VisualPages(
+                1
+            ))
+        );
+        assert_eq!(
+            native_viewport_scroll_command(&MappableCommand::page_up, None),
+            Some(nucleotide_editor::EditorViewportScrollRequest::VisualPages(
+                -1
+            ))
+        );
+        assert_eq!(
+            native_viewport_scroll_command(&MappableCommand::page_down, NonZeroUsize::new(3)),
+            Some(nucleotide_editor::EditorViewportScrollRequest::VisualPages(
+                1
+            ))
         );
     }
 
@@ -1738,6 +1848,75 @@ mod tests {
             native_viewport_scroll_command(&MappableCommand::align_view_middle, None),
             None
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_page_scroll_cursor_sync_moves_cursor_below_viewport() {
+        let mut editor = test_editor_with_text(&numbered_lines(40));
+        let view_id = editor.tree.focus;
+        let top_visual_row = 10usize;
+        let visible_rows = 10usize;
+        let scrolloff = editor
+            .config()
+            .scrolloff
+            .min(visible_rows.saturating_sub(1) / 2);
+        set_test_cursor_line(&mut editor, 0);
+
+        let changed_doc = sync_cursor_after_native_page_scroll(
+            &mut editor,
+            view_id,
+            nucleotide_editor::EditorViewportScrollDirection::Forward,
+            top_visual_row,
+            visible_rows,
+        );
+
+        assert!(changed_doc.is_some());
+        assert_eq!(focused_cursor_line(&editor), top_visual_row + scrolloff);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_page_scroll_cursor_sync_moves_cursor_above_viewport() {
+        let mut editor = test_editor_with_text(&numbered_lines(40));
+        let view_id = editor.tree.focus;
+        let top_visual_row = 10usize;
+        let visible_rows = 10usize;
+        let scrolloff = editor
+            .config()
+            .scrolloff
+            .min(visible_rows.saturating_sub(1) / 2);
+        set_test_cursor_line(&mut editor, 30);
+
+        let changed_doc = sync_cursor_after_native_page_scroll(
+            &mut editor,
+            view_id,
+            nucleotide_editor::EditorViewportScrollDirection::Backward,
+            top_visual_row,
+            visible_rows,
+        );
+
+        assert!(changed_doc.is_some());
+        assert_eq!(
+            focused_cursor_line(&editor),
+            top_visual_row + visible_rows - scrolloff - 1
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_page_scroll_cursor_sync_leaves_visible_cursor_unchanged() {
+        let mut editor = test_editor_with_text(&numbered_lines(40));
+        let view_id = editor.tree.focus;
+        set_test_cursor_line(&mut editor, 15);
+
+        let changed_doc = sync_cursor_after_native_page_scroll(
+            &mut editor,
+            view_id,
+            nucleotide_editor::EditorViewportScrollDirection::Forward,
+            10,
+            10,
+        );
+
+        assert_eq!(changed_doc, None);
+        assert_eq!(focused_cursor_line(&editor), 15);
     }
 
     #[test]
@@ -2484,6 +2663,32 @@ mod tests {
                 &mut jobs,
                 keys[1],
             );
+
+            assert!(outcome.handled_by_native_command);
+            assert!(!outcome.handled_by_terminal_editor);
+            assert_eq!(outcome.viewport_scroll_requested, Some(request));
+            assert!(!outcome.selection_changed);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_native_page_scroll() {
+        for (key, request) in [
+            (
+                "C-f",
+                nucleotide_editor::EditorViewportScrollRequest::VisualPages(1),
+            ),
+            (
+                "C-b",
+                nucleotide_editor::EditorViewportScrollRequest::VisualPages(-1),
+            ),
+        ] {
+            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut editor = test_editor_with_text("one\ntwo\nthree\n");
+            let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let mut jobs = Jobs::new();
+
+            let outcome = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, key);
 
             assert!(outcome.handled_by_native_command);
             assert!(!outcome.handled_by_terminal_editor);

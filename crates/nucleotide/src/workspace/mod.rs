@@ -3159,7 +3159,7 @@ impl Workspace {
             return;
         };
 
-        view_entity.update(cx, |view, cx| {
+        let (update, visible_rows) = view_entity.update(cx, |view, cx| {
             let update = view.apply_viewport_scroll(request);
             if update.changed
                 || matches!(
@@ -3169,7 +3169,24 @@ impl Workspace {
             {
                 cx.notify();
             }
+            (update, view.visible_visual_rows())
         });
+
+        if let Some(direction) = request.page_cursor_sync_direction() {
+            let changed_doc_id = self.core.update(cx, |core, _cx| {
+                crate::application::editor_input::sync_cursor_after_native_page_scroll(
+                    &mut core.editor,
+                    view_id,
+                    direction,
+                    update.top_visual_row,
+                    visible_rows,
+                )
+            });
+            if let Some(doc_id) = changed_doc_id {
+                self.handle_selection_changed(doc_id, view_id, cx);
+            }
+        }
+
         cx.notify();
     }
 
