@@ -241,6 +241,8 @@ mod tests {
         theme::Loader as ThemeLoader,
     };
 
+    use crate::EDITOR_MINIMUM_VIEWPORT_COLUMNS;
+
     use super::*;
 
     #[test]
@@ -269,7 +271,7 @@ mod tests {
             cell_width: px(8.0),
             line_height: px(20.0),
             scroll_line_offset: px(0.0),
-            soft_wrap_minimum_columns: 10,
+            soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
             fg_color: black(),
             font: font("TestFont"),
             default_text_style: Style::default(),
@@ -339,7 +341,7 @@ mod tests {
             cell_width: px(8.0),
             line_height: px(20.0),
             scroll_line_offset: px(5.0),
-            soft_wrap_minimum_columns: 10,
+            soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
             fg_color: black(),
             font: font("TestFont"),
             default_text_style: Style::default(),

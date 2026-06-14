@@ -15,13 +15,14 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    CursorOverlayPlan, DocumentFramePaintParams, EditorCursorReveal, EditorDocumentElement,
-    EditorDocumentFrameGutterParams, EditorDocumentFrameParams, EditorLayout, EditorScrollbarState,
-    EditorSelectionDragState, EditorSurface, EditorSurfaceMetrics, EditorSurfacePointerEvent,
-    EditorTextMetrics, EditorViewport, EditorViewportContentLayout, EditorViewportSurfaceLayout,
-    LineLayoutCache, begin_editor_pointer_selection_at_event, cursor_document_line,
-    cursor_style_for_mode, editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame,
-    paint_editor_background, shape_cursor_text, update_editor_pointer_selection_at_event,
+    CursorOverlayPlan, DocumentFramePaintParams, EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+    EditorCursorReveal, EditorDocumentElement, EditorDocumentFrameGutterParams,
+    EditorDocumentFrameParams, EditorLayout, EditorScrollbarState, EditorSelectionDragState,
+    EditorSurface, EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics,
+    EditorViewport, EditorViewportContentLayout, EditorViewportSurfaceLayout, LineLayoutCache,
+    begin_editor_pointer_selection_at_event, cursor_document_line, cursor_style_for_mode,
+    editor_document_frame, gpui_hsla_to_helix_color, paint_document_frame, paint_editor_background,
+    shape_cursor_text, update_editor_pointer_selection_at_event,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -405,12 +406,11 @@ impl Render for DocumentView {
                 let content_update = self.viewport.sync_content_layout(
                     document,
                     view,
-                    EditorViewportContentLayout {
-                        theme: Some(&theme),
-                        bounds: viewport_bounds,
-                        cell_width: metrics.cell_width,
-                        minimum_columns: 1,
-                    },
+                    EditorViewportContentLayout::for_editor(
+                        Some(&theme),
+                        viewport_bounds,
+                        metrics.cell_width,
+                    ),
                 );
 
                 debug!(
@@ -626,14 +626,13 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
             &mut core.editor,
             doc_id,
             view_id,
-            EditorViewportSurfaceLayout {
-                theme: Some(&theme),
+            EditorViewportSurfaceLayout::for_editor(
+                Some(&theme),
                 bounds,
-                cell_width: layout.cell_width,
-                line_height: layout.line_height,
-                minimum_columns: 1,
-                cursor_reveal: cursor_reveal_requested.replace(None),
-            },
+                layout.cell_width,
+                layout.line_height,
+                cursor_reveal_requested.replace(None),
+            ),
         )
     });
     let Some(viewport_update) = viewport_update else {
@@ -700,7 +699,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
             cell_width: layout.cell_width,
             line_height: layout.line_height,
             scroll_line_offset,
-            soft_wrap_minimum_columns: 10,
+            soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
             fg_color,
             font: style.font(),
             default_text_style,
