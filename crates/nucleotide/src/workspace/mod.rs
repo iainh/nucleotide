@@ -15,10 +15,10 @@ use std::sync::Arc;
 use gpui::FontFeatures;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, AppContext, BorrowAppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, Size,
-    StatefulInteractiveElement, Styled, TextStyle, Window, WindowAppearance,
+    App, AppContext, BorrowAppContext, Context, DismissEvent, DragMoveEvent, Empty, Entity,
+    EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
+    Render, Size, StatefulInteractiveElement, Styled, TextStyle, Window, WindowAppearance,
     WindowBackgroundAppearance, black, div, px, white,
 };
 use helix_core::syntax::config::LanguageServerFeature;
@@ -150,7 +150,19 @@ enum PendingFileOp {
     Duplicate { path: std::path::PathBuf },
 }
 
+#[derive(Clone)]
+struct DraggedFileTreeResize;
+
+impl Render for DraggedFileTreeResize {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
 const GLOBAL_SEARCH_RESULT_LIMIT: usize = 5000;
+const FILE_TREE_MIN_WIDTH: f32 = 150.0;
+const FILE_TREE_DEFAULT_WIDTH: f32 = 240.0;
+const FILE_TREE_MIN_EDITOR_WIDTH: f32 = 200.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GlobalSearchMatch {
@@ -1153,6 +1165,53 @@ impl Workspace {
             );
         }
         cx.notify();
+    }
+
+    fn finish_file_tree_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_resizing_file_tree {
+            self.is_resizing_file_tree = false;
+            cx.notify();
+            window.refresh();
+        }
+    }
+
+    fn max_file_tree_width(viewport_width: f32) -> f32 {
+        (viewport_width - FILE_TREE_MIN_EDITOR_WIDTH).max(FILE_TREE_MIN_WIDTH)
+    }
+
+    fn clamped_file_tree_resize_width(
+        resize_start_width: f32,
+        resize_start_x: f32,
+        mouse_x: f32,
+        viewport_width: f32,
+    ) -> f32 {
+        let dx = mouse_x - resize_start_x;
+        (resize_start_width + dx).clamp(
+            FILE_TREE_MIN_WIDTH,
+            Self::max_file_tree_width(viewport_width),
+        )
+    }
+
+    fn update_file_tree_resize(
+        &mut self,
+        mouse_x: f32,
+        viewport_width: f32,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let new_width = Self::clamped_file_tree_resize_width(
+            self.resize_start_width,
+            self.resize_start_x,
+            mouse_x,
+            viewport_width,
+        );
+
+        if (self.file_tree_width - new_width).abs() > 0.5 {
+            self.file_tree_width = new_width;
+            cx.notify();
+            true
+        } else {
+            false
+        }
     }
 
     fn cm_action_new_file(this: &mut Workspace, cx: &mut Context<Workspace>) {
@@ -7168,31 +7227,28 @@ impl Render for Workspace {
             workspace_div = workspace_div
                 .cursor(gpui::CursorStyle::ResizeLeftRight)
                 .on_mouse_move(
-                    cx.listener(|workspace, event: &MouseMoveEvent, _window, cx| {
-                        // Mouse events in GPUI are already in logical pixels, no scale correction needed
-                        let mouse_x = f32::from(event.position.x);
-                        let delta = mouse_x - workspace.resize_start_x;
-                        let new_width = (workspace.resize_start_width + delta).clamp(150.0, 600.0);
-
-                        // Update width if changed
-                        if (workspace.file_tree_width - new_width).abs() > 0.1 {
-                            workspace.file_tree_width = new_width;
-                            cx.notify();
+                    cx.listener(|workspace, event: &MouseMoveEvent, window, cx| {
+                        if event.dragging()
+                            && workspace.update_file_tree_resize(
+                                f32::from(event.position.x),
+                                f32::from(window.viewport_size().width),
+                                cx,
+                            )
+                        {
+                            window.refresh();
                         }
                     }),
                 )
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(|workspace, _event: &MouseUpEvent, _window, cx| {
-                        workspace.is_resizing_file_tree = false;
-                        cx.notify();
+                    cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
+                        workspace.finish_file_tree_resize(window, cx);
                     }),
                 )
                 .on_mouse_up_out(
                     MouseButton::Left,
-                    cx.listener(|workspace, _event: &MouseUpEvent, _window, cx| {
-                        workspace.is_resizing_file_tree = false;
-                        cx.notify();
+                    cx.listener(|workspace, _event: &MouseUpEvent, window, cx| {
+                        workspace.finish_file_tree_resize(window, cx);
                     }),
                 );
         }
@@ -7786,9 +7842,8 @@ impl Render for Workspace {
             if self.show_file_tree {
                 let handle_visual_w = 4.0f32;
                 let handle_hit_w = 12.0f32;
-                let min_left = 150.0f32;
                 let viewport_w = f32::from(window.viewport_size().width);
-                let max_left = (viewport_w - 200.0).max(min_left);
+                let max_left = Self::max_file_tree_width(viewport_w);
 
                 let overlay_bg_w = (self.file_tree_width).clamp(0.0, max_left);
 
@@ -7799,42 +7854,28 @@ impl Render for Workspace {
                     .min_h(px(0.0))
                     .on_mouse_move(cx.listener(
                         move |this: &mut Workspace, ev: &MouseMoveEvent, window, cx| {
-                            if this.is_resizing_file_tree && ev.dragging() {
-                                let dx = f32::from(ev.position.x) - this.resize_start_x;
-                                let mut new_w = this.resize_start_width + dx;
-                                // Clamp to viewport and min/max
-                                let viewport_w = f32::from(window.viewport_size().width);
-                                let max_allowed = (viewport_w - 200.0).max(min_left);
-                                if new_w < min_left {
-                                    new_w = min_left;
-                                }
-                                if new_w > max_allowed {
-                                    new_w = max_allowed;
-                                }
-                                if (this.file_tree_width - new_w).abs() > 0.5 {
-                                    this.file_tree_width = new_w;
-                                    cx.notify();
-                                    window.refresh();
-                                }
+                            if this.is_resizing_file_tree
+                                && ev.dragging()
+                                && this.update_file_tree_resize(
+                                    f32::from(ev.position.x),
+                                    f32::from(window.viewport_size().width),
+                                    cx,
+                                )
+                            {
+                                window.refresh();
                             }
                         },
                     ))
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, _cx| {
-                            if this.is_resizing_file_tree {
-                                this.is_resizing_file_tree = false;
-                                window.refresh();
-                            }
+                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
+                            this.finish_file_tree_resize(window, cx);
                         }),
                     )
                     .on_mouse_up_out(
                         MouseButton::Left,
-                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, _cx| {
-                            if this.is_resizing_file_tree {
-                                this.is_resizing_file_tree = false;
-                                window.refresh();
-                            }
+                        cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
+                            this.finish_file_tree_resize(window, cx);
                         }),
                     );
 
@@ -7879,6 +7920,7 @@ impl Render for Workspace {
                     nucleotide_ui::tokens::with_alpha(cx.theme().tokens.chrome.border_default, 0.9);
                 container = container.child(
                     div()
+                        .id("file-tree-resize-handle")
                         .absolute()
                         .top_0()
                         .left(px(self.file_tree_width))
@@ -7898,8 +7940,9 @@ impl Render for Workspace {
                                 move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
                                     if ev.click_count >= 2 {
                                         let viewport_w = f32::from(window.viewport_size().width);
-                                        let max_allowed = (viewport_w - 200.0).max(min_left);
-                                        let snap = 240.0f32.clamp(min_left, max_allowed);
+                                        let max_allowed = Self::max_file_tree_width(viewport_w);
+                                        let snap = FILE_TREE_DEFAULT_WIDTH
+                                            .clamp(FILE_TREE_MIN_WIDTH, max_allowed);
                                         if (this.file_tree_width - snap).abs() > 0.5 {
                                             this.file_tree_width = snap;
                                             cx.notify();
@@ -7911,10 +7954,45 @@ impl Render for Workspace {
                                     this.is_resizing_file_tree = true;
                                     this.resize_start_x = f32::from(ev.position.x);
                                     this.resize_start_width = this.file_tree_width;
+                                    cx.notify();
                                     window.refresh();
                                     cx.stop_propagation();
                                 },
                             ),
+                        )
+                        .on_drag(DraggedFileTreeResize, |_, _, _, cx| {
+                            cx.new(|_| DraggedFileTreeResize)
+                        })
+                        .on_drag_move::<DraggedFileTreeResize>(cx.listener(
+                            |this: &mut Workspace,
+                             event: &DragMoveEvent<DraggedFileTreeResize>,
+                             window,
+                             cx| {
+                                if this.is_resizing_file_tree
+                                    && event.event.dragging()
+                                    && this.update_file_tree_resize(
+                                        f32::from(event.event.position.x),
+                                        f32::from(window.viewport_size().width),
+                                        cx,
+                                    )
+                                {
+                                    window.refresh();
+                                }
+                            },
+                        ))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
+                                this.finish_file_tree_resize(window, cx);
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .on_mouse_up_out(
+                            MouseButton::Left,
+                            cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
+                                this.finish_file_tree_resize(window, cx);
+                                cx.stop_propagation();
+                            }),
                         ),
                 );
 
@@ -9001,6 +9079,22 @@ mod tests {
             .collect();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn file_tree_resize_width_tracks_mouse_and_clamps_to_bounds() {
+        assert_eq!(
+            Workspace::clamped_file_tree_resize_width(250.0, 300.0, 360.0, 1000.0),
+            310.0
+        );
+        assert_eq!(
+            Workspace::clamped_file_tree_resize_width(250.0, 300.0, 100.0, 1000.0),
+            FILE_TREE_MIN_WIDTH
+        );
+        assert_eq!(
+            Workspace::clamped_file_tree_resize_width(250.0, 300.0, 1200.0, 1000.0),
+            800.0
+        );
     }
 
     fn selection_fragments(selection: &Selection, text: &Rope) -> Vec<String> {
