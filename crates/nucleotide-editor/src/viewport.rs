@@ -283,7 +283,7 @@ impl EditorViewport {
             return 1;
         }
 
-        ((self.scroll.viewport_size().height / line_height).floor() as usize).max(1)
+        ((self.scroll.viewport_size().height / line_height).ceil() as usize).max(1)
     }
 
     pub fn sync_from_helix_top_visual_row(&self, top_visual_row: usize) {
@@ -811,6 +811,19 @@ mod tests {
         assert_eq!(update.crossed_visual_rows, 18);
         assert_eq!(viewport.top_visual_row(), 18);
         assert!(viewport.has_pending_view_sync());
+    }
+
+    #[test]
+    fn viewport_counts_partial_bottom_row_as_visible() {
+        let mut viewport = EditorViewport::new(px(20.0));
+        viewport.set_layout(px(20.0), size(px(800.0), px(99.0)), 10);
+
+        assert_eq!(viewport.visible_visual_rows(), 5);
+
+        let update = viewport.reveal_visual_row(9, EditorCursorReveal::Scrolloff, 0);
+
+        assert!(update.changed);
+        assert_eq!(viewport.top_visual_row(), 5);
     }
 
     #[test]
