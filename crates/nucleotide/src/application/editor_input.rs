@@ -39,6 +39,7 @@ pub struct EditorInputOutcome {
     pub picker_requested: Option<NativePickerRequest>,
     pub prompt_requested: Option<NativePromptRequest>,
     pub lsp_navigation_requested: Option<NativeLspNavigationRequest>,
+    pub workspace_requested: Option<NativeWorkspaceRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +55,11 @@ pub enum NativeLspNavigationRequest {
     GotoTypeDefinition,
     GotoImplementation,
     GotoReference,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeWorkspaceRequest {
+    ToggleFileTree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +139,7 @@ impl EditorInputBridge {
         let mut picker_requested = None;
         let mut prompt_requested = None;
         let mut lsp_navigation_requested = None;
+        let mut workspace_requested = None;
         if !handled_by_compositor {
             let mode_before_fallback = context.editor.mode();
             match self
@@ -152,6 +159,10 @@ impl EditorInputBridge {
                 NativeInputResult::RequestLspNavigation(request) => {
                     handled_by_native_command = true;
                     lsp_navigation_requested = Some(request);
+                }
+                NativeInputResult::RequestWorkspace(request) => {
+                    handled_by_native_command = true;
+                    workspace_requested = Some(request);
                 }
                 NativeInputResult::Fallback(keys) => {
                     for key in &keys {
@@ -203,6 +214,7 @@ impl EditorInputBridge {
             picker_requested,
             prompt_requested,
             lsp_navigation_requested,
+            workspace_requested,
         }
     }
 
@@ -237,6 +249,7 @@ enum NativeInputResult {
         prompt_requested: Option<NativePromptRequest>,
     },
     RequestLspNavigation(NativeLspNavigationRequest),
+    RequestWorkspace(NativeWorkspaceRequest),
     Fallback(Vec<KeyEvent>),
 }
 
@@ -257,6 +270,10 @@ enum NativeCommandResult {
     RequestLspNavigation {
         callbacks: Vec<compositor::Callback>,
         request: NativeLspNavigationRequest,
+    },
+    RequestWorkspace {
+        callbacks: Vec<compositor::Callback>,
+        request: NativeWorkspaceRequest,
     },
     ReplayInsert {
         keys: Vec<KeyEvent>,
@@ -391,6 +408,11 @@ impl NativeCommandInput {
                 self.finish_insert_replay_if_needed(mode_before, editor.mode());
                 NativeInputResult::RequestLspNavigation(request)
             }
+            NativeCommandResult::RequestWorkspace { callbacks, request } => {
+                finalize_native_command(editor, jobs, compositor, callbacks);
+                self.finish_insert_replay_if_needed(mode_before, editor.mode());
+                NativeInputResult::RequestWorkspace(request)
+            }
             NativeCommandResult::ReplayInsert { keys, count } => {
                 for _ in 0..count {
                     for replay_key in keys.iter().copied() {
@@ -398,6 +420,9 @@ impl NativeCommandInput {
                             NativeInputResult::Handled { .. } => {}
                             NativeInputResult::RequestLspNavigation(request) => {
                                 return NativeInputResult::RequestLspNavigation(request);
+                            }
+                            NativeInputResult::RequestWorkspace(request) => {
+                                return NativeInputResult::RequestWorkspace(request);
                             }
                             NativeInputResult::Fallback(fallback_keys) => {
                                 return NativeInputResult::Fallback(fallback_keys);
@@ -634,6 +659,13 @@ impl NativeCommandInput {
             }
             KeymapDispatch::Fallback => {
                 context.editor.selected_register = context.register.take();
+                if let Some(request) = native_workspace_key_sequence(&fallback_keys) {
+                    context.editor.count = None;
+                    return NativeCommandResult::RequestWorkspace {
+                        callbacks: Vec::new(),
+                        request,
+                    };
+                }
                 NativeCommandResult::Fallback(fallback_keys)
             }
         }
@@ -791,6 +823,13 @@ impl NativeCommandResultExt for NativeCommandResult {
             NativeCommandResult::RequestLspNavigation { request, .. } => {
                 *on_next_key = context.on_next_key_callback.take();
                 NativeCommandResult::RequestLspNavigation {
+                    callbacks: std::mem::take(&mut context.callback),
+                    request,
+                }
+            }
+            NativeCommandResult::RequestWorkspace { request, .. } => {
+                *on_next_key = context.on_next_key_callback.take();
+                NativeCommandResult::RequestWorkspace {
                     callbacks: std::mem::take(&mut context.callback),
                     request,
                 }
@@ -990,6 +1029,29 @@ fn native_lsp_navigation_command(command: &MappableCommand) -> Option<NativeLspN
         "goto_reference" => Some(NativeLspNavigationRequest::GotoReference),
         _ => None,
     }
+}
+
+fn native_workspace_key_sequence(keys: &[KeyEvent]) -> Option<NativeWorkspaceRequest> {
+    match keys {
+        [space, key] if is_plain_space_key(*space) && is_plain_char_key(*key, 't') => {
+            Some(NativeWorkspaceRequest::ToggleFileTree)
+        }
+        _ => None,
+    }
+}
+
+fn is_plain_space_key(key: KeyEvent) -> bool {
+    is_plain_char_key(key, ' ')
+}
+
+fn is_plain_char_key(key: KeyEvent, expected: char) -> bool {
+    matches!(
+        key,
+        KeyEvent {
+            code: KeyCode::Char(ch),
+            modifiers
+        } if ch == expected && modifiers.is_empty()
+    )
 }
 
 fn native_file_navigation_command(command: &MappableCommand) -> Option<Action> {
@@ -1935,6 +1997,28 @@ mod tests {
     }
 
     #[test]
+    fn workspace_leader_sequences_are_classified_separately() {
+        assert_eq!(
+            native_workspace_key_sequence(&[
+                KeyEvent::from_str("space").unwrap(),
+                KeyEvent::from_str("t").unwrap(),
+            ]),
+            Some(NativeWorkspaceRequest::ToggleFileTree)
+        );
+        assert_eq!(
+            native_workspace_key_sequence(&[
+                KeyEvent::from_str("space").unwrap(),
+                KeyEvent::from_str("f").unwrap(),
+            ]),
+            None
+        );
+        assert_eq!(
+            native_workspace_key_sequence(&[KeyEvent::from_str("t").unwrap()]),
+            None
+        );
+    }
+
+    #[test]
     fn default_goto_keymaps_request_native_lsp_navigation() {
         let mut keymaps = Keymaps::default();
         let g = KeyEvent::from_str("g").unwrap();
@@ -2081,11 +2165,43 @@ mod tests {
 
         let pending = bridge.handle_key(space, &mut compositor, &mut editor, &mut jobs);
         assert!(pending.handled_by_native_command);
+        assert!(!pending.handled_by_terminal_editor);
         assert_eq!(pending.picker_requested, None);
 
         let picker = bridge.handle_key(f, &mut compositor, &mut editor, &mut jobs);
         assert!(picker.handled_by_native_command);
+        assert!(!picker.handled_by_terminal_editor);
         assert_eq!(picker.picker_requested, Some(NativePickerRequest::File));
+        assert_eq!(picker.workspace_requested, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_workspace_toggle_for_space_t() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+        let mut editor = test_editor_with_text("one\ntwo\n");
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        let pending = handle_key_str(
+            &mut bridge,
+            &mut editor,
+            &mut compositor,
+            &mut jobs,
+            "space",
+        );
+        assert!(pending.handled_by_native_command);
+        assert!(!pending.handled_by_terminal_editor);
+        assert_eq!(pending.workspace_requested, None);
+
+        let toggle = handle_key_str(&mut bridge, &mut editor, &mut compositor, &mut jobs, "t");
+
+        assert!(toggle.handled_by_native_command);
+        assert!(!toggle.handled_by_terminal_editor);
+        assert_eq!(
+            toggle.workspace_requested,
+            Some(NativeWorkspaceRequest::ToggleFileTree)
+        );
+        assert_eq!(toggle.picker_requested, None);
     }
 
     #[tokio::test(flavor = "current_thread")]

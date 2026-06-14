@@ -147,6 +147,7 @@ pub enum Update {
     ShowBufferPicker,
     ShowCodeActions,
     ShowHoverDocs,
+    ToggleFileTree,
     DiagnosticsPanel(gpui::Entity<crate::DiagnosticsPanel>),
     TerminalPanel(gpui::Entity<nucleotide_terminal_panel::TerminalPanel>),
 }
@@ -210,6 +211,7 @@ impl std::fmt::Debug for Update {
             Update::ShowBufferPicker => write!(f, "ShowBufferPicker"),
             Update::ShowCodeActions => write!(f, "ShowCodeActions"),
             Update::ShowHoverDocs => write!(f, "ShowHoverDocs"),
+            Update::ToggleFileTree => write!(f, "ToggleFileTree"),
             Update::DiagnosticsPanel(_) => write!(f, "DiagnosticsPanel(...)"),
             Update::TerminalPanel(_) => write!(f, "TerminalPanel(...)"),
         }
