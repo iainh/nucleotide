@@ -61,6 +61,7 @@ pub enum NativePromptRequest {
     Command,
     Search,
     ReverseSearch,
+    RegexSelection(crate::types::RegexSelectionAction),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -934,6 +935,18 @@ fn native_prompt_command(command: &MappableCommand) -> Option<NativePromptReques
         "command_mode" => Some(NativePromptRequest::Command),
         "search" => Some(NativePromptRequest::Search),
         "rsearch" => Some(NativePromptRequest::ReverseSearch),
+        "select_regex" => Some(NativePromptRequest::RegexSelection(
+            crate::types::RegexSelectionAction::Select,
+        )),
+        "split_selection" => Some(NativePromptRequest::RegexSelection(
+            crate::types::RegexSelectionAction::Split,
+        )),
+        "keep_selections" => Some(NativePromptRequest::RegexSelection(
+            crate::types::RegexSelectionAction::Keep,
+        )),
+        "remove_selections" => Some(NativePromptRequest::RegexSelection(
+            crate::types::RegexSelectionAction::Remove,
+        )),
         _ => None,
     }
 }
@@ -1641,6 +1654,30 @@ mod tests {
             native_prompt_command(&MappableCommand::rsearch),
             Some(NativePromptRequest::ReverseSearch)
         );
+        assert_eq!(
+            native_prompt_command(&MappableCommand::select_regex),
+            Some(NativePromptRequest::RegexSelection(
+                crate::types::RegexSelectionAction::Select
+            ))
+        );
+        assert_eq!(
+            native_prompt_command(&MappableCommand::split_selection),
+            Some(NativePromptRequest::RegexSelection(
+                crate::types::RegexSelectionAction::Split
+            ))
+        );
+        assert_eq!(
+            native_prompt_command(&MappableCommand::keep_selections),
+            Some(NativePromptRequest::RegexSelection(
+                crate::types::RegexSelectionAction::Keep
+            ))
+        );
+        assert_eq!(
+            native_prompt_command(&MappableCommand::remove_selections),
+            Some(NativePromptRequest::RegexSelection(
+                crate::types::RegexSelectionAction::Remove
+            ))
+        );
         assert_eq!(native_prompt_command(&MappableCommand::global_search), None);
         assert_eq!(native_prompt_command(&MappableCommand::file_picker), None);
         assert_eq!(native_prompt_command(&MappableCommand::buffer_picker), None);
@@ -1651,13 +1688,30 @@ mod tests {
     #[test]
     fn default_prompt_keymaps_request_native_prompts() {
         for (key, request) in [
-            (':', NativePromptRequest::Command),
-            ('/', NativePromptRequest::Search),
-            ('?', NativePromptRequest::ReverseSearch),
+            (":", NativePromptRequest::Command),
+            ("/", NativePromptRequest::Search),
+            ("?", NativePromptRequest::ReverseSearch),
+            (
+                "s",
+                NativePromptRequest::RegexSelection(crate::types::RegexSelectionAction::Select),
+            ),
+            (
+                "S",
+                NativePromptRequest::RegexSelection(crate::types::RegexSelectionAction::Split),
+            ),
+            (
+                "K",
+                NativePromptRequest::RegexSelection(crate::types::RegexSelectionAction::Keep),
+            ),
+            (
+                "A-K",
+                NativePromptRequest::RegexSelection(crate::types::RegexSelectionAction::Remove),
+            ),
         ] {
             let mut keymaps = Keymaps::default();
+            let key_event = KeyEvent::from_str(key).unwrap();
 
-            match keymaps.get(Mode::Normal, plain_char_key(key)) {
+            match keymaps.get(Mode::Normal, key_event) {
                 KeymapResult::Matched(command) => {
                     assert_eq!(native_prompt_command(&command), Some(request));
                 }
@@ -1984,6 +2038,45 @@ mod tests {
 
             let outcome =
                 bridge.handle_key(plain_char_key(key), &mut compositor, &mut editor, &mut jobs);
+
+            assert!(outcome.handled_by_native_command);
+            assert!(!outcome.handled_by_terminal_editor);
+            assert_eq!(outcome.prompt_requested, Some(request));
+            assert!(compositor.find::<helix_term::ui::Prompt>().is_none());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_requests_native_regex_selection_prompts() {
+        for (key, request) in [
+            (
+                "s",
+                NativePromptRequest::RegexSelection(crate::types::RegexSelectionAction::Select),
+            ),
+            (
+                "S",
+                NativePromptRequest::RegexSelection(crate::types::RegexSelectionAction::Split),
+            ),
+            (
+                "K",
+                NativePromptRequest::RegexSelection(crate::types::RegexSelectionAction::Keep),
+            ),
+            (
+                "A-K",
+                NativePromptRequest::RegexSelection(crate::types::RegexSelectionAction::Remove),
+            ),
+        ] {
+            let mut bridge = EditorInputBridge::new(Keymaps::default(), Keymaps::default());
+            let mut editor = test_editor_with_text("one two\n");
+            let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+            let mut jobs = Jobs::new();
+
+            let outcome = bridge.handle_key(
+                KeyEvent::from_str(key).unwrap(),
+                &mut compositor,
+                &mut editor,
+                &mut jobs,
+            );
 
             assert!(outcome.handled_by_native_command);
             assert!(!outcome.handled_by_terminal_editor);

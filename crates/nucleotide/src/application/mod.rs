@@ -2008,6 +2008,12 @@ impl Application {
             editor_input::NativePromptRequest::Command => ":",
             editor_input::NativePromptRequest::Search => "search:",
             editor_input::NativePromptRequest::ReverseSearch => "rsearch:",
+            editor_input::NativePromptRequest::RegexSelection(action) => match action {
+                crate::types::RegexSelectionAction::Select => "select:",
+                crate::types::RegexSelectionAction::Split => "split:",
+                crate::types::RegexSelectionAction::Keep => "keep:",
+                crate::types::RegexSelectionAction::Remove => "remove:",
+            },
         };
 
         crate::prompt::Prompt::native(prompt, "", |_| {}).with_cancel(|| {})

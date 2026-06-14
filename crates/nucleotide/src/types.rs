@@ -95,6 +95,10 @@ pub enum Update {
     ShouldQuit,
     CommandSubmitted(String),
     SearchSubmitted(String),
+    RegexSelectionSubmitted {
+        action: RegexSelectionAction,
+        regex: String,
+    },
     OpenFile(std::path::PathBuf),
     OpenDirectory(std::path::PathBuf),
     DocumentChanged {
@@ -158,6 +162,9 @@ impl std::fmt::Debug for Update {
             Update::ShouldQuit => write!(f, "ShouldQuit"),
             Update::CommandSubmitted(cmd) => write!(f, "CommandSubmitted({cmd:?})"),
             Update::SearchSubmitted(query) => write!(f, "SearchSubmitted({query:?})"),
+            Update::RegexSelectionSubmitted { action, regex } => {
+                write!(f, "RegexSelectionSubmitted({action:?}, {regex:?})")
+            }
             Update::DocumentChanged { doc_id } => write!(f, "DocumentChanged({doc_id:?})"),
             Update::SelectionChanged { doc_id, view_id } => {
                 write!(f, "SelectionChanged(doc: {doc_id:?}, view: {view_id:?})")
@@ -197,4 +204,12 @@ impl std::fmt::Debug for Update {
             Update::TerminalPanel(_) => write!(f, "TerminalPanel(...)"),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegexSelectionAction {
+    Select,
+    Split,
+    Keep,
+    Remove,
 }

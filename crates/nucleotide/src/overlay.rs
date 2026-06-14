@@ -1,4 +1,4 @@
-use crate::types::HoverDocEntry;
+use crate::types::{HoverDocEntry, RegexSelectionAction};
 use gpui::{
     App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, Styled, Window,
@@ -93,6 +93,24 @@ impl HoverPopupState {
                 self.active_index -= 1;
             }
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PromptSubmitAction {
+    Command,
+    Search,
+    RegexSelection(RegexSelectionAction),
+}
+
+fn prompt_submit_action(prompt_text: &str) -> PromptSubmitAction {
+    match prompt_text {
+        "search:" | "rsearch:" => PromptSubmitAction::Search,
+        "select:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Select),
+        "split:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Split),
+        "keep:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Keep),
+        "remove:" => PromptSubmitAction::RegexSelection(RegexSelectionAction::Remove),
+        _ => PromptSubmitAction::Command,
     }
 }
 
@@ -315,8 +333,7 @@ impl OverlayView {
                         let on_cancel = on_cancel.clone();
 
                         let prompt_view = cx.new(|cx| {
-                            let is_search_prompt = prompt_text.starts_with("search")
-                                || prompt_text.starts_with("rsearch");
+                            let submit_action = prompt_submit_action(&prompt_text);
 
                             let mut view = PromptView::new(prompt_text.clone(), cx);
 
@@ -328,8 +345,8 @@ impl OverlayView {
                                 view.set_text(&initial_input, cx);
                             }
 
-                            // Only set up completion for command prompts, not search prompts
-                            if !is_search_prompt {
+                            // Only set up completion for command prompts, not search/regex prompts.
+                            if matches!(submit_action, PromptSubmitAction::Command) {
                                 // Set up completion function for command mode using our centralized completions module
                                 // Try to get actual settings from the editor
                                 let settings_cache = if let Some(core) = self.core.upgrade() {
@@ -365,19 +382,28 @@ impl OverlayView {
                             let core_weak_submit = self.core.clone();
                             view = view.on_submit(move |input: &str, cx| {
                                 use nucleotide_logging::info;
-                                info!(input = %input, input_len = input.len(), is_search = is_search_prompt, "Overlay on_submit received input");
+                                info!(input = %input, input_len = input.len(), "Overlay on_submit received input");
                                 // Emit appropriate event based on prompt type
                                 if let Some(core) = core_weak_submit.upgrade() {
                                     core.update(cx, |_core, cx| {
-                                        if is_search_prompt {
-                                            cx.emit(crate::Update::SearchSubmitted(
-                                                input.to_string(),
-                                            ));
-                                        } else {
-                                            info!(command = %input, "Emitting CommandSubmitted event");
-                                            cx.emit(crate::Update::CommandSubmitted(
-                                                input.to_string(),
-                                            ));
+                                        match submit_action {
+                                            PromptSubmitAction::Search => {
+                                                cx.emit(crate::Update::SearchSubmitted(
+                                                    input.to_string(),
+                                                ));
+                                            }
+                                            PromptSubmitAction::RegexSelection(action) => {
+                                                cx.emit(crate::Update::RegexSelectionSubmitted {
+                                                    action,
+                                                    regex: input.to_string(),
+                                                });
+                                            }
+                                            PromptSubmitAction::Command => {
+                                                info!(command = %input, "Emitting CommandSubmitted event");
+                                                cx.emit(crate::Update::CommandSubmitted(
+                                                    input.to_string(),
+                                                ));
+                                            }
                                         }
                                     });
                                 }

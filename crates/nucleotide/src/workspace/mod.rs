@@ -21,8 +21,8 @@ use gpui::{
     StatefulInteractiveElement, Styled, TextStyle, Window, WindowAppearance,
     WindowBackgroundAppearance, black, div, px, white,
 };
-use helix_core::Selection;
 use helix_core::syntax::config::LanguageServerFeature;
+use helix_core::{RopeSlice, Selection};
 use helix_lsp::lsp;
 use helix_view::ViewId;
 use helix_view::info::Info as HelixInfo;
@@ -48,7 +48,7 @@ use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
 use crate::overlay::OverlayView;
-use crate::types::HoverDocEntry;
+use crate::types::{HoverDocEntry, RegexSelectionAction};
 use crate::utils;
 use crate::{Core, Input, InputEvent};
 use nucleotide_core::EventBus;
@@ -145,6 +145,31 @@ enum PendingFileOp {
     NewFolder { parent: std::path::PathBuf },
     Rename { path: std::path::PathBuf },
     Duplicate { path: std::path::PathBuf },
+}
+
+fn regex_selection_result(
+    action: RegexSelectionAction,
+    text: RopeSlice<'_>,
+    selection: &Selection,
+    regex: &helix_stdx::rope::Regex,
+) -> Result<Selection, &'static str> {
+    match action {
+        RegexSelectionAction::Select => {
+            helix_core::selection::select_on_matches(text, selection, regex)
+                .ok_or("nothing selected")
+        }
+        RegexSelectionAction::Split => Ok(helix_core::selection::split_on_matches(
+            text, selection, regex,
+        )),
+        RegexSelectionAction::Keep => {
+            helix_core::selection::keep_or_remove_matches(text, selection, regex, false)
+                .ok_or("no selections remaining")
+        }
+        RegexSelectionAction::Remove => {
+            helix_core::selection::keep_or_remove_matches(text, selection, regex, true)
+                .ok_or("no selections remaining")
+        }
+    }
 }
 
 impl EventEmitter<crate::Update> for Workspace {}
@@ -3365,6 +3390,104 @@ impl Workspace {
         }
     }
 
+    fn handle_regex_selection_submitted(
+        &mut self,
+        action: RegexSelectionAction,
+        regex_text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        info!(
+            action = ?action,
+            regex = regex_text,
+            "Regex selection submitted"
+        );
+
+        self.overlay.update(cx, |overlay, cx| {
+            overlay.clear(cx);
+        });
+
+        if regex_text.is_empty() {
+            return;
+        }
+
+        let mut changed_selection = None;
+        self.core.update(cx, |core, cx| {
+            let _guard = self.handle.enter();
+
+            let case_insensitive = core.editor.config().search.smart_case
+                && !regex_text.chars().any(char::is_uppercase);
+            let regex = match helix_stdx::rope::RegexBuilder::new()
+                .syntax(
+                    helix_stdx::rope::Config::new()
+                        .case_insensitive(case_insensitive)
+                        .multi_line(true),
+                )
+                .build(regex_text)
+            {
+                Ok(regex) => regex,
+                Err(err) => {
+                    core.editor.set_error(format!("Invalid regex: {err}"));
+                    return;
+                }
+            };
+
+            let view_id = core.editor.tree.focus;
+            let Some(doc_id) = core.editor.tree.try_get(view_id).map(|view| view.doc) else {
+                return;
+            };
+
+            {
+                let tree = &mut core.editor.tree;
+                let documents = &mut core.editor.documents;
+                let view = tree.get_mut(view_id);
+                let Some(doc) = documents.get_mut(&doc_id) else {
+                    return;
+                };
+                doc.append_changes_to_history(view);
+                let snapshot = doc.selection(view_id).clone();
+                view.jumps.push((doc_id, snapshot));
+            }
+
+            let result = {
+                let Some(doc) = core.editor.documents.get(&doc_id) else {
+                    return;
+                };
+                regex_selection_result(action, doc.text().slice(..), doc.selection(view_id), &regex)
+            };
+
+            match result {
+                Ok(selection) => {
+                    let Some(doc) = core.editor.documents.get_mut(&doc_id) else {
+                        return;
+                    };
+                    doc.set_selection(view_id, selection);
+                    core.editor.ensure_cursor_in_view(view_id);
+                    changed_selection = Some((doc_id, view_id));
+                    cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
+                        crate::types::CoreEvent::SelectionChanged { doc_id, view_id },
+                    )));
+                    cx.emit(crate::Update::Event(crate::types::AppEvent::Core(
+                        crate::types::CoreEvent::RedrawRequested,
+                    )));
+                }
+                Err(message) => {
+                    core.editor.set_error(message);
+                }
+            }
+
+            cx.notify();
+        });
+
+        if let Some((_, view_id)) = changed_selection
+            && let Some(view_entity) = self.view_manager.get_document_view(&view_id)
+        {
+            view_entity.update(cx, |view, cx| {
+                view.request_cursor_center();
+                cx.notify();
+            });
+        }
+    }
+
     fn handle_command_submitted(&mut self, command: &str, cx: &mut Context<Self>) {
         info!("handle_command_submitted called with '{}'", command);
 
@@ -4148,6 +4271,9 @@ impl Workspace {
             crate::Update::CommandSubmitted(command) => self.handle_command_submitted(command, cx),
             crate::Update::SearchSubmitted(search_text) => {
                 self.handle_search_submitted(search_text, cx)
+            }
+            crate::Update::RegexSelectionSubmitted { action, regex } => {
+                self.handle_regex_selection_submitted(*action, regex, cx)
             }
             // Helix event bridge - respond to automatic Helix events
             crate::Update::DocumentChanged { doc_id } => self.handle_document_changed(*doc_id, cx),
@@ -8875,7 +9001,22 @@ impl Workspace {}
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+    use helix_core::{Range, Rope, SmallVec};
     use std::path::PathBuf;
+
+    fn test_regex(pattern: &str) -> helix_stdx::rope::Regex {
+        helix_stdx::rope::RegexBuilder::new()
+            .syntax(helix_stdx::rope::Config::new().multi_line(true))
+            .build(pattern)
+            .unwrap()
+    }
+
+    fn selection_fragments(selection: &Selection, text: &Rope) -> Vec<String> {
+        selection
+            .fragments(text.slice(..))
+            .map(|fragment| fragment.into_owned())
+            .collect()
+    }
 
     #[test]
     #[allow(clippy::assertions_on_constants)]
@@ -8918,6 +9059,97 @@ mod tests {
 
         // This test mainly ensures the integration compiles
         assert!(true, "ProjectLspConfig should be creatable with defaults");
+    }
+
+    #[test]
+    fn regex_selection_result_selects_matches() {
+        let text = Rope::from("one two one");
+        let selection = Selection::single(0, text.len_chars());
+        let regex = test_regex("one");
+
+        let result = regex_selection_result(
+            RegexSelectionAction::Select,
+            text.slice(..),
+            &selection,
+            &regex,
+        )
+        .unwrap();
+
+        assert_eq!(selection_fragments(&result, &text), vec!["one", "one"]);
+    }
+
+    #[test]
+    fn regex_selection_result_splits_matches() {
+        let text = Rope::from("one,two,three");
+        let selection = Selection::single(0, text.len_chars());
+        let regex = test_regex(",");
+
+        let result = regex_selection_result(
+            RegexSelectionAction::Split,
+            text.slice(..),
+            &selection,
+            &regex,
+        )
+        .unwrap();
+
+        assert_eq!(
+            selection_fragments(&result, &text),
+            vec!["one", "two", "three"]
+        );
+    }
+
+    #[test]
+    fn regex_selection_result_keeps_or_removes_matching_selections() {
+        let text = Rope::from("one two");
+        let selection = Selection::new(
+            SmallVec::from_vec(vec![Range::new(0, 3), Range::new(4, 7)]),
+            0,
+        );
+        let regex = test_regex("one");
+
+        let kept = regex_selection_result(
+            RegexSelectionAction::Keep,
+            text.slice(..),
+            &selection,
+            &regex,
+        )
+        .unwrap();
+        let removed = regex_selection_result(
+            RegexSelectionAction::Remove,
+            text.slice(..),
+            &selection,
+            &regex,
+        )
+        .unwrap();
+
+        assert_eq!(selection_fragments(&kept, &text), vec!["one"]);
+        assert_eq!(selection_fragments(&removed, &text), vec!["two"]);
+    }
+
+    #[test]
+    fn regex_selection_result_reports_empty_results() {
+        let text = Rope::from("one two");
+        let selection = Selection::single(0, text.len_chars());
+        let regex = test_regex("missing");
+
+        assert_eq!(
+            regex_selection_result(
+                RegexSelectionAction::Select,
+                text.slice(..),
+                &selection,
+                &regex,
+            ),
+            Err("nothing selected")
+        );
+        assert_eq!(
+            regex_selection_result(
+                RegexSelectionAction::Keep,
+                text.slice(..),
+                &selection,
+                &regex,
+            ),
+            Err("no selections remaining")
+        );
     }
 
     // Helper struct for testing workspace functionality
