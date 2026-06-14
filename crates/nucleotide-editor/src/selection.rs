@@ -41,6 +41,13 @@ pub struct EditorPointerSelectionUpdate {
     pub selection: EditorSelectionUpdate,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorPointerSelectionPhase {
+    Begin,
+    Extend,
+    End,
+}
+
 pub fn pointer_selection_anchor(
     hit_char_idx: usize,
     primary_anchor: usize,

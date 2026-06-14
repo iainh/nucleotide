@@ -5,11 +5,11 @@ use gpui::{Pixels, TextStyle, px};
 use helix_view::{DocumentId, Editor, ViewId};
 
 use crate::{
-    CursorOverlayPlan, EditorCursorReveal, EditorOverlayState, EditorPointerSelectionUpdate,
-    EditorScrollbarState, EditorSelectionDragState, EditorSurfaceMetrics,
-    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport, EditorViewportContentLayout,
-    EditorViewportContentUpdate, EditorViewportSurfaceLayout, EditorViewportSurfaceUpdate,
-    LineLayoutCache, begin_editor_pointer_selection_at_event,
+    CursorOverlayPlan, EditorCursorReveal, EditorOverlayState, EditorPointerSelectionPhase,
+    EditorPointerSelectionUpdate, EditorScrollbarState, EditorSelectionDragState,
+    EditorSurfaceMetrics, EditorSurfacePointerEvent, EditorTextMetrics, EditorViewport,
+    EditorViewportContentLayout, EditorViewportContentUpdate, EditorViewportSurfaceLayout,
+    EditorViewportSurfaceUpdate, LineLayoutCache, begin_editor_pointer_selection_at_event,
     update_editor_pointer_selection_at_event,
 };
 
@@ -149,6 +149,28 @@ impl EditorViewState {
             &self.selection_drag_state,
             event,
         )
+    }
+
+    pub fn handle_pointer_selection_at_event(
+        &self,
+        editor: &mut Editor,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        phase: EditorPointerSelectionPhase,
+        event: EditorSurfacePointerEvent,
+    ) -> Option<EditorPointerSelectionUpdate> {
+        match phase {
+            EditorPointerSelectionPhase::Begin => {
+                self.begin_pointer_selection_at_event(editor, doc_id, view_id, event)
+            }
+            EditorPointerSelectionPhase::Extend => {
+                self.update_pointer_selection_at_event(editor, doc_id, view_id, event)
+            }
+            EditorPointerSelectionPhase::End => {
+                self.clear_pointer_selection();
+                None
+            }
+        }
     }
 
     pub fn clear_pointer_selection(&self) {
@@ -326,6 +348,60 @@ mod tests {
 
         assert!(update.is_none());
         assert_eq!(state.selection_drag_state().anchor(), Some(0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_pointer_phase_begin_uses_owned_cache_and_drag_state() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        state.selection_drag_state().set_anchor(7);
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
+
+        let update = state.handle_pointer_selection_at_event(
+            &mut editor,
+            doc_id,
+            view_id,
+            EditorPointerSelectionPhase::Begin,
+            pointer_event(),
+        );
+
+        assert!(update.is_none());
+        assert_eq!(state.selection_drag_state().anchor(), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_pointer_phase_extend_uses_owned_cache() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        state.selection_drag_state().set_anchor(0);
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
+
+        let update = state.handle_pointer_selection_at_event(
+            &mut editor,
+            doc_id,
+            view_id,
+            EditorPointerSelectionPhase::Extend,
+            pointer_event(),
+        );
+
+        assert!(update.is_none());
+        assert_eq!(state.selection_drag_state().anchor(), Some(0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn view_state_pointer_phase_end_clears_owned_drag_state() {
+        let state = EditorViewState::new(px(20.0), px(8.0));
+        state.selection_drag_state().set_anchor(7);
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\n");
+
+        let update = state.handle_pointer_selection_at_event(
+            &mut editor,
+            doc_id,
+            view_id,
+            EditorPointerSelectionPhase::End,
+            pointer_event(),
+        );
+
+        assert!(update.is_none());
+        assert_eq!(state.selection_drag_state().anchor(), None);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -116,11 +116,11 @@ pub use scrollbar::{
     scroll_position_for_scrollbar_pointer,
 };
 pub use selection::{
-    EditorPointerSelectionUpdate, EditorSelectionDragState, EditorSelectionUpdate,
-    apply_pointer_selection, begin_editor_pointer_selection_at_event, begin_pointer_selection,
-    begin_pointer_selection_at_event, pointer_selection_anchor, primary_selection_anchor,
-    selection_for_range, update_editor_pointer_selection_at_event, update_pointer_selection,
-    update_pointer_selection_at_event,
+    EditorPointerSelectionPhase, EditorPointerSelectionUpdate, EditorSelectionDragState,
+    EditorSelectionUpdate, apply_pointer_selection, begin_editor_pointer_selection_at_event,
+    begin_pointer_selection, begin_pointer_selection_at_event, pointer_selection_anchor,
+    primary_selection_anchor, selection_for_range, update_editor_pointer_selection_at_event,
+    update_pointer_selection, update_pointer_selection_at_event,
 };
 pub use soft_wrap::{
     DocumentSoftWrapRenderPlanParams, SoftWrapLinePaintPlan, SoftWrapRenderPlan,
