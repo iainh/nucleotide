@@ -2,19 +2,21 @@
 // ABOUTME: Converts EditorDocumentFrame plans into GPUI paint calls
 
 use gpui::{App, Bounds, Hsla, Pixels, TextStyle, Window, px};
-use helix_core::RopeSlice;
-use helix_view::Theme;
+use helix_core::{Rope, RopeSlice};
+use helix_view::{Document, Editor, Theme, View, ViewId, graphics::Style};
 use nucleotide_logging::{debug, error};
 
 use crate::{
     CursorOverlayPlan, DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams,
-    EditorDocumentFrame, EditorLayout, EditorLineBackgroundStyle, EditorSurfaceGeometry,
+    EditorDocumentFrame, EditorDocumentFrameFromEditorParams, EditorLayout,
+    EditorLineBackgroundStyle, EditorSurfaceGeometry, EditorViewFrameState, EditorViewState,
     LineLayoutCache, SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams,
     SoftWrapGutterPaintParams, UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams,
-    build_gutter_lines_from_plans, gutter::SoftWrapGutterLine, paint_diagnostic_gutter_markers,
-    paint_gutter_lines, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
-    paint_unwrapped_editor_line, paint_visible_rulers, shape_and_paint_editor_cursor,
-    soft_wrap_cursor_paint_plan, unwrapped_cursor_paint_plan,
+    build_gutter_lines_from_plans, editor_document_frame_from_editor, gutter::SoftWrapGutterLine,
+    paint_diagnostic_gutter_markers, paint_editor_background, paint_gutter_lines,
+    paint_soft_wrap_editor_line, paint_soft_wrap_gutter, paint_unwrapped_editor_line,
+    paint_visible_rulers, shape_and_paint_editor_cursor, soft_wrap_cursor_paint_plan,
+    unwrapped_cursor_paint_plan,
 };
 
 pub struct DocumentFramePaintParams<'a> {
@@ -38,6 +40,58 @@ pub struct DocumentFramePaintParams<'a> {
     pub diagnostic_highlight_base: Hsla,
     pub gutter_bg: Option<Hsla>,
     pub scroll_line_offset: Pixels,
+}
+
+#[derive(Clone, Copy)]
+pub struct NativeEditorFramePaintStyle {
+    pub fg_color: Hsla,
+    pub bg_color: Hsla,
+    pub default_text_style: Style,
+    pub cursor_style: Style,
+    pub cursorline_color: Option<Hsla>,
+    pub selection_primary: Hsla,
+    pub selection_secondary: Hsla,
+    pub gutter_color: Hsla,
+    pub gutter_selected_color: Hsla,
+    pub diagnostic_highlight_base: Hsla,
+    pub gutter_bg: Option<Hsla>,
+    pub wrap_indicator_color: Option<Hsla>,
+    pub ruler_color: Hsla,
+}
+
+pub struct NativeEditorFramePlanParams<'a> {
+    pub editor: &'a Editor,
+    pub document: &'a Document,
+    pub view: &'a View,
+    pub view_id: ViewId,
+    pub theme: &'a Theme,
+    pub frame_state: &'a EditorViewFrameState,
+    pub bounds: Bounds<Pixels>,
+    pub layout: &'a EditorLayout,
+    pub text_style: &'a TextStyle,
+    pub font_size: Pixels,
+    pub is_focused: bool,
+    pub soft_wrap_minimum_columns: u16,
+    pub style: NativeEditorFramePaintStyle,
+}
+
+pub struct NativeEditorFramePaintPlan {
+    frame: EditorDocumentFrame,
+    text: Rope,
+    bounds: Bounds<Pixels>,
+    font_size: Pixels,
+    is_focused: bool,
+    style: NativeEditorFramePaintStyle,
+}
+
+pub struct NativeEditorFramePaintParams<'a> {
+    pub editor_state: &'a mut EditorViewState,
+    pub frame_state: &'a EditorViewFrameState,
+    pub plan: &'a NativeEditorFramePaintPlan,
+    pub layout: &'a EditorLayout,
+    pub text_style: &'a TextStyle,
+    pub diagnostic_theme: &'a Theme,
+    pub element_focused: bool,
 }
 
 struct UnwrappedDocumentFramePaintParams<'a> {
@@ -78,6 +132,138 @@ struct SoftWrapDocumentFramePaintParams<'a> {
     pub diagnostic_highlight_base: Hsla,
     pub gutter_bg: Option<Hsla>,
     pub scroll_line_offset: Pixels,
+}
+
+pub fn native_editor_frame_paint_plan(
+    params: NativeEditorFramePlanParams<'_>,
+) -> NativeEditorFramePaintPlan {
+    let frame = editor_document_frame_from_editor(EditorDocumentFrameFromEditorParams {
+        editor: params.editor,
+        document: params.document,
+        view: params.view,
+        view_id: params.view_id,
+        theme: params.theme,
+        first_row: params.frame_state.first_row,
+        last_row_from_scroll: params.frame_state.last_row_from_scroll,
+        soft_wrap_enabled: params.frame_state.viewport_update.soft_wrap,
+        unwrapped_gutter_layout: Some(params.layout),
+        bounds: params.bounds,
+        cell_width: params.layout.cell_width,
+        line_height: params.layout.line_height,
+        scroll_line_offset: params.frame_state.scroll_line_offset,
+        soft_wrap_minimum_columns: params.soft_wrap_minimum_columns,
+        fg_color: params.style.fg_color,
+        font: params.text_style.font(),
+        default_text_style: params.style.default_text_style,
+        default_bg: params.style.bg_color,
+        wrap_indicator_color: params.style.wrap_indicator_color,
+        ruler_color: params.style.ruler_color,
+        cursor_style: params.style.cursor_style,
+        is_focused: params.is_focused,
+    });
+
+    debug!(
+        "Cursorline check - config value: {}, focused: {}, enabled: {}",
+        params.editor.config().cursorline,
+        params.is_focused,
+        frame.cursorline_enabled
+    );
+
+    let text = params.document.text();
+    let cursor_char_idx = frame.cursor_presentation.cursor_char_idx;
+    let cursor_line_num = frame.render_snapshot.cursor_line;
+    debug!(
+        "Cursor position: line={}, char_idx={}",
+        cursor_line_num, cursor_char_idx
+    );
+    debug!(
+        "Cursor position - line: {}, col_in_line: {}, primary_idx: {}, gutter_width: {}",
+        frame.primary_cursor_line,
+        frame.primary_cursor_col,
+        frame.primary_cursor_idx,
+        frame.gutter_width
+    );
+    if frame.gutter_width != 0 {
+        debug!("need to render gutter {}", frame.gutter_width);
+    }
+
+    let line_viewport = frame.render_snapshot.line_viewport;
+    let last_row = frame.render_snapshot.last_row;
+    let cursor_at_end = line_viewport.cursor_at_end;
+    let file_ends_with_newline = line_viewport.file_ends_with_newline;
+
+    debug!(
+        "End of file check - cursor_char_idx: {}, text.len_chars(): {}, last_char: {:?}, cursor_at_end: {}, ends_with_newline: {}",
+        cursor_char_idx,
+        text.len_chars(),
+        if text.len_chars() > 0 {
+            Some(text.char(text.len_chars() - 1))
+        } else {
+            None
+        },
+        cursor_at_end,
+        file_ends_with_newline
+    );
+
+    if cursor_at_end && file_ends_with_newline {
+        let cursor_line = text.char_to_line(cursor_char_idx.saturating_sub(1));
+        debug!(
+            "Cursor at EOF with newline - cursor_line: {cursor_line}, last_row: {last_row}, total_lines: {}",
+            frame.total_lines
+        );
+    }
+
+    NativeEditorFramePaintPlan {
+        frame,
+        text: text.clone(),
+        bounds: params.bounds,
+        font_size: params.font_size,
+        is_focused: params.is_focused,
+        style: params.style,
+    }
+}
+
+pub fn paint_native_editor_frame(
+    window: &mut Window,
+    cx: &mut App,
+    params: NativeEditorFramePaintParams<'_>,
+) -> Option<CursorOverlayPlan> {
+    let plan = params.plan;
+    paint_editor_background(window, plan.bounds, plan.style.bg_color);
+
+    let overlay_plan = paint_document_frame(
+        window,
+        cx,
+        DocumentFramePaintParams {
+            frame: &plan.frame,
+            text: plan.text.slice(..),
+            bounds: plan.bounds,
+            layout: params.layout,
+            text_style: params.text_style,
+            line_cache: &params.frame_state.line_cache,
+            font_size: plan.font_size,
+            fg_color: plan.style.fg_color,
+            default_bg: plan.style.bg_color,
+            cursorline_color: plan
+                .frame
+                .cursorline_enabled
+                .then_some(plan.style.cursorline_color)
+                .flatten(),
+            is_focused: plan.is_focused,
+            element_focused: params.element_focused,
+            selection_primary: plan.style.selection_primary,
+            selection_secondary: plan.style.selection_secondary,
+            gutter_color: plan.style.gutter_color,
+            gutter_selected_color: plan.style.gutter_selected_color,
+            diagnostic_theme: params.diagnostic_theme,
+            diagnostic_highlight_base: plan.style.diagnostic_highlight_base,
+            gutter_bg: plan.style.gutter_bg,
+            scroll_line_offset: params.frame_state.scroll_line_offset,
+        },
+    );
+    params.editor_state.apply_cursor_overlay_plan(overlay_plan);
+
+    overlay_plan
 }
 
 pub fn paint_document_frame(
@@ -484,4 +670,133 @@ fn paint_unwrapped_gutter(
             error!(error = ?e, "Failed to paint gutter line");
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arc_swap::{ArcSwap, access::Map};
+    use gpui::{TextStyle, black, point, px, size, white};
+    use helix_core::{Transaction, syntax};
+    use helix_view::{
+        DocumentId, Editor, ViewId,
+        editor::{Action, Config},
+        graphics::{Rect, Style},
+        handlers::Handlers,
+        theme,
+    };
+
+    use crate::{EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorViewState, EditorViewportSurfaceLayout};
+
+    use super::*;
+
+    fn test_handlers() -> Handlers {
+        let (completion_tx, _) = tokio::sync::mpsc::channel(1);
+        let (signature_tx, _) = tokio::sync::mpsc::channel(1);
+        let (auto_save_tx, _) = tokio::sync::mpsc::channel(1);
+        let (doc_colors_tx, _) = tokio::sync::mpsc::channel(1);
+
+        Handlers {
+            completions: helix_view::handlers::completion::CompletionHandler::new(completion_tx),
+            signature_hints: signature_tx,
+            auto_save: auto_save_tx,
+            document_colors: doc_colors_tx,
+            word_index: helix_view::handlers::word_index::Handler::spawn(),
+        }
+    }
+
+    fn test_editor_with_text(text: &str) -> (Editor, DocumentId, ViewId) {
+        let mut config = Config::default();
+        config.cursorline = true;
+        let config = Arc::new(ArcSwap::new(Arc::new(config)));
+        let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let theme_loader = Arc::new(theme::Loader::new(&[]));
+        let mut editor = Editor::new(
+            Rect::new(0, 0, 80, 24),
+            theme_loader,
+            syntax_loader,
+            Arc::new(Map::new(Arc::clone(&config), |config: &Config| config)),
+            test_handlers(),
+        );
+        let doc_id = editor.new_file(Action::VerticalSplit);
+        let view_id = editor.tree.focus;
+        let doc = editor.document_mut(doc_id).unwrap();
+        let transaction = Transaction::change(doc.text(), [(0, 0, Some(text.into()))].into_iter());
+        doc.apply(&transaction, view_id);
+
+        (editor, doc_id, view_id)
+    }
+
+    fn paint_style() -> NativeEditorFramePaintStyle {
+        NativeEditorFramePaintStyle {
+            fg_color: black(),
+            bg_color: white(),
+            default_text_style: Style::default(),
+            cursor_style: Style::default(),
+            cursorline_color: Some(black()),
+            selection_primary: black(),
+            selection_secondary: white(),
+            gutter_color: black(),
+            gutter_selected_color: white(),
+            diagnostic_highlight_base: black(),
+            gutter_bg: None,
+            wrap_indicator_color: None,
+            ruler_color: black(),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_frame_paint_plan_owns_frame_and_text() {
+        let mut state = EditorViewState::new(px(20.0), px(8.0));
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo\n");
+        let theme = theme::Loader::new(&[]).default_theme(true);
+        let bounds = gpui::Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0)));
+        let frame_state = state
+            .sync_frame_layout(
+                &mut editor,
+                doc_id,
+                view_id,
+                EditorViewportSurfaceLayout::for_editor(
+                    Some(&theme),
+                    bounds,
+                    px(8.0),
+                    px(20.0),
+                    None,
+                ),
+            )
+            .unwrap();
+        let document = editor.document(doc_id).unwrap();
+        let view = editor.tree.try_get(view_id).unwrap();
+        let text_style = TextStyle::default();
+        let layout = crate::EditorLayout {
+            rows: 6,
+            columns: 30,
+            line_height: px(20.0),
+            font_size: px(16.0),
+            cell_width: px(8.0),
+        };
+
+        let plan = native_editor_frame_paint_plan(NativeEditorFramePlanParams {
+            editor: &editor,
+            document,
+            view,
+            view_id,
+            theme: &theme,
+            frame_state: &frame_state,
+            bounds,
+            layout: &layout,
+            text_style: &text_style,
+            font_size: px(16.0),
+            is_focused: true,
+            soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+            style: paint_style(),
+        });
+
+        assert_eq!(plan.text.to_string(), document.text().to_string());
+        assert_eq!(plan.frame.total_lines, document.text().len_lines());
+        assert!(plan.frame.cursorline_enabled);
+        assert_eq!(plan.bounds, bounds);
+        assert_eq!(plan.font_size, px(16.0));
+    }
 }
