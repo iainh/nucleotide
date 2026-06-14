@@ -3190,6 +3190,48 @@ impl Workspace {
         cx.notify();
     }
 
+    fn handle_viewport_cursor(
+        &mut self,
+        view_id: helix_view::ViewId,
+        request: nucleotide_editor::EditorViewportCursorRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view_entity) = self.view_manager.get_document_view(&view_id) else {
+            return;
+        };
+
+        let (top_visual_row, visible_rows, content_rows) = view_entity.update(cx, |view, _cx| {
+            (
+                view.top_visual_row(),
+                view.visible_visual_rows(),
+                view.content_visual_rows(),
+            )
+        });
+        let scrolloff = self
+            .core
+            .read(cx)
+            .editor
+            .config()
+            .scrolloff
+            .min(visible_rows.saturating_sub(1) / 2);
+        let target_visual_row =
+            request.target_visual_row(top_visual_row, visible_rows, content_rows, scrolloff);
+
+        let changed_doc_id = self.core.update(cx, |core, _cx| {
+            crate::application::editor_input::apply_native_viewport_cursor_request(
+                &mut core.editor,
+                view_id,
+                target_visual_row,
+            )
+        });
+
+        if let Some(doc_id) = changed_doc_id {
+            self.handle_selection_changed(doc_id, view_id, cx);
+        }
+
+        cx.notify();
+    }
+
     fn handle_overlay_update(&mut self, cx: &mut Context<Self>) {
         // When a picker, prompt, or completion appears, auto-dismiss the info box
         self.info_hidden = true;
@@ -4566,6 +4608,9 @@ impl Workspace {
             } => self.handle_completion_requested(*doc_id, *view_id, trigger, cx),
             crate::Update::ViewportScroll { view_id, request } => {
                 self.handle_viewport_scroll(*view_id, *request, cx);
+            }
+            crate::Update::ViewportCursor { view_id, request } => {
+                self.handle_viewport_cursor(*view_id, *request, cx);
             }
             // Handle new event-based updates (during migration)
             crate::Update::Event(event) => {

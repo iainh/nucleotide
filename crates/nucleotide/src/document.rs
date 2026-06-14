@@ -115,6 +115,14 @@ impl DocumentView {
         self.editor_state.visible_visual_rows()
     }
 
+    pub fn top_visual_row(&self) -> usize {
+        self.editor_state.top_visual_row()
+    }
+
+    pub fn content_visual_rows(&self) -> usize {
+        self.editor_state.content_visual_rows()
+    }
+
     pub fn layout_snapshot(&self) -> EditorViewLayoutSnapshot {
         self.editor_state.layout_snapshot()
     }
