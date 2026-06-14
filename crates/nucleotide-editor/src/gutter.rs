@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Hsla, Pixels, Point, Result, ShapedLine, TextRun, TextStyle, Window, WindowTextSystem,
-    black, point, white,
+    App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, TextRun, TextStyle, Window,
+    WindowTextSystem, black, point, px, white,
 };
 use helix_view::{Document, Editor, Theme, View, graphics::Style};
 
@@ -49,6 +49,19 @@ pub struct GutterLineParams<'a> {
 pub struct GutterLinePlanParams<'a> {
     pub layout: &'a EditorLayout,
     pub origin: Point<Pixels>,
+    pub first_row: usize,
+    pub last_row: usize,
+    pub editor: &'a Editor,
+    pub document: &'a Document,
+    pub view: &'a View,
+    pub theme: &'a Theme,
+    pub is_focused: bool,
+}
+
+pub struct UnwrappedGutterLinePlanParams<'a> {
+    pub layout: &'a EditorLayout,
+    pub bounds: Bounds<Pixels>,
+    pub scroll_line_offset: Pixels,
     pub first_row: usize,
     pub last_row: usize,
     pub editor: &'a Editor,
@@ -131,6 +144,26 @@ pub fn build_gutter_line_plans(params: GutterLinePlanParams<'_>) -> Vec<GutterLi
     }
 
     gutter.lines
+}
+
+pub fn build_unwrapped_gutter_line_plans(
+    params: UnwrappedGutterLinePlanParams<'_>,
+) -> Vec<GutterLinePlan> {
+    let mut origin = params.bounds.origin;
+    origin.x += px(2.);
+    origin.y += px(1.) - params.scroll_line_offset;
+
+    build_gutter_line_plans(GutterLinePlanParams {
+        layout: params.layout,
+        origin,
+        first_row: params.first_row,
+        last_row: params.last_row,
+        editor: params.editor,
+        document: params.document,
+        view: params.view,
+        theme: params.theme,
+        is_focused: params.is_focused,
+    })
 }
 
 pub fn build_gutter_lines_from_plans(

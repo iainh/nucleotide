@@ -13,16 +13,17 @@ use nucleotide_logging::{debug, error};
 
 use crate::{
     CursorOverlayPlan, DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams,
-    EditorDocumentFrame, EditorDocumentFrameGutterParams, EditorDocumentFrameParams, EditorLayout,
-    EditorLineBackgroundStyle, EditorSurfaceGeometry, EditorViewContentPrepareParams,
-    EditorViewFrameState, EditorViewState, EditorViewportSurfaceLayout, LineLayoutCache,
-    SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams,
-    UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams, build_gutter_lines_from_plans,
-    cursor_style_for_mode, editor_document_frame, gutter::SoftWrapGutterLine,
-    highlight::gpui_hsla_to_helix_color, paint_diagnostic_gutter_markers, paint_editor_background,
-    paint_gutter_lines, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
-    paint_unwrapped_editor_line, paint_visible_rulers, shape_and_paint_editor_cursor,
-    soft_wrap_cursor_paint_plan, style::helix_color_to_hsla, unwrapped_cursor_paint_plan,
+    EditorDocumentFrame, EditorDocumentFrameParams, EditorLayout, EditorLineBackgroundStyle,
+    EditorSurfaceGeometry, EditorViewContentPrepareParams, EditorViewFrameState, EditorViewState,
+    EditorViewportSurfaceLayout, GutterLinePlan, LineLayoutCache, SoftWrapCursorPaintPlanParams,
+    SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams, UnwrappedCursorPaintPlanParams,
+    UnwrappedEditorLinePaintParams, UnwrappedGutterLinePlanParams, build_gutter_lines_from_plans,
+    build_unwrapped_gutter_line_plans, cursor_style_for_mode, document_render_snapshot,
+    editor_document_frame, gutter::SoftWrapGutterLine, highlight::gpui_hsla_to_helix_color,
+    paint_diagnostic_gutter_markers, paint_editor_background, paint_gutter_lines,
+    paint_soft_wrap_editor_line, paint_soft_wrap_gutter, paint_unwrapped_editor_line,
+    paint_visible_rulers, shape_and_paint_editor_cursor, soft_wrap_cursor_paint_plan,
+    style::helix_color_to_hsla, unwrapped_cursor_paint_plan,
 };
 
 pub struct DocumentFramePaintParams<'a> {
@@ -197,7 +198,7 @@ pub struct NativeEditorFramePlanParams<'a> {
     pub theme: &'a Theme,
     pub syntax_loader: &'a helix_core::syntax::Loader,
     pub frame_state: &'a EditorViewFrameState,
-    pub unwrapped_gutter: Option<EditorDocumentFrameGutterParams<'a>>,
+    pub unwrapped_gutter_line_plans: Vec<GutterLinePlan>,
     pub bounds: Bounds<Pixels>,
     pub layout: &'a EditorLayout,
     pub text_style: &'a TextStyle,
@@ -324,15 +325,38 @@ pub fn prepare_native_editor_frame(
             None,
         ),
     )?;
-    let view = params.editor.tree.try_get(params.view_id)?;
-    let document = params.editor.document(doc_id)?;
-    let syntax_loader = params.editor.syn_loader.load();
-    let editor_config = params.editor.config();
-    let editor_mode = params.editor.mode();
-    let (_, cursor_kind) = params.editor.cursor();
+    let editor = &*params.editor;
+    let view = editor.tree.try_get(params.view_id)?;
+    let document = editor.document(doc_id)?;
+    let syntax_loader = editor.syn_loader.load();
+    let editor_config = editor.config();
+    let editor_mode = editor.mode();
+    let (_, cursor_kind) = editor.cursor();
     let cursor_shape = editor_config.cursor_shape.clone();
     let editor_rulers = editor_config.rulers.clone();
     let cursorline_enabled = editor_config.cursorline && params.is_focused;
+    let unwrapped_gutter_line_plans = if frame_state.viewport_update.soft_wrap {
+        Vec::new()
+    } else {
+        let render_snapshot = document_render_snapshot(
+            document,
+            params.view_id,
+            frame_state.first_row,
+            frame_state.last_row_from_scroll,
+        );
+        build_unwrapped_gutter_line_plans(UnwrappedGutterLinePlanParams {
+            layout: params.layout,
+            bounds: params.bounds,
+            scroll_line_offset: frame_state.scroll_line_offset,
+            first_row: frame_state.first_row,
+            last_row: render_snapshot.last_row,
+            editor,
+            document,
+            view,
+            theme: params.theme,
+            is_focused: params.is_focused,
+        })
+    };
     let paint_style = native_editor_frame_paint_style(NativeEditorFramePaintStyleParams {
         editor_mode,
         theme_styles: params.theme_styles,
@@ -345,10 +369,7 @@ pub fn prepare_native_editor_frame(
         theme: params.theme,
         syntax_loader: &syntax_loader,
         frame_state: &frame_state,
-        unwrapped_gutter: Some(EditorDocumentFrameGutterParams {
-            editor: &*params.editor,
-            layout: params.layout,
-        }),
+        unwrapped_gutter_line_plans,
         bounds: params.bounds,
         layout: params.layout,
         text_style: params.text_style,
@@ -453,7 +474,7 @@ pub fn native_editor_frame_paint_plan(
             .view_position_plan
             .view_position,
         soft_wrap_enabled: params.frame_state.viewport_update.soft_wrap,
-        unwrapped_gutter: params.unwrapped_gutter,
+        unwrapped_gutter_line_plans: params.unwrapped_gutter_line_plans,
         bounds: params.bounds,
         cell_width: params.layout.cell_width,
         line_height: params.layout.line_height,
@@ -1161,6 +1182,12 @@ mod tests {
         let editor_config = editor.config();
         let editor_mode = editor.mode();
         let (_, cursor_kind) = editor.cursor();
+        let render_snapshot = document_render_snapshot(
+            document,
+            view_id,
+            frame_state.first_row,
+            frame_state.last_row_from_scroll,
+        );
         let text_style = TextStyle::default();
         let layout = crate::EditorLayout {
             rows: 6,
@@ -1169,6 +1196,19 @@ mod tests {
             font_size: px(16.0),
             cell_width: px(8.0),
         };
+        let unwrapped_gutter_line_plans =
+            build_unwrapped_gutter_line_plans(UnwrappedGutterLinePlanParams {
+                layout: &layout,
+                bounds,
+                scroll_line_offset: frame_state.scroll_line_offset,
+                first_row: frame_state.first_row,
+                last_row: render_snapshot.last_row,
+                editor: &editor,
+                document,
+                view,
+                theme: &theme,
+                is_focused: true,
+            });
 
         let plan = native_editor_frame_paint_plan(NativeEditorFramePlanParams {
             document,
@@ -1177,10 +1217,7 @@ mod tests {
             theme: &theme,
             syntax_loader: &syntax_loader,
             frame_state: &frame_state,
-            unwrapped_gutter: Some(EditorDocumentFrameGutterParams {
-                editor: &editor,
-                layout: &layout,
-            }),
+            unwrapped_gutter_line_plans,
             bounds,
             layout: &layout,
             text_style: &text_style,

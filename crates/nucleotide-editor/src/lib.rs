@@ -59,10 +59,7 @@ pub use diagnostics::{
     paint_diagnostic_gutter_markers, paint_diagnostic_marker,
 };
 pub use document_element::EditorDocumentElement;
-pub use document_frame::{
-    EditorDocumentFrame, EditorDocumentFrameGutterParams, EditorDocumentFrameParams,
-    editor_document_frame,
-};
+pub use document_frame::{EditorDocumentFrame, EditorDocumentFrameParams, editor_document_frame};
 pub use document_frame_painter::{
     DocumentFramePaintParams, NativeEditorFramePaintParams, NativeEditorFramePaintPlan,
     NativeEditorFramePaintStyle, NativeEditorFramePaintStyleParams, NativeEditorFramePalette,
@@ -78,8 +75,9 @@ pub use geometry::{EditorLayout, EditorSurfaceGeometry};
 pub use gutter::{
     GutterLine, GutterLineParams, GutterLinePlan, GutterLinePlanParams,
     SoftWrapGutterLinePaintPlan, SoftWrapGutterLinePlan, SoftWrapGutterPaintParams,
-    build_gutter_line_plans, build_gutter_lines, build_gutter_lines_from_plans,
-    build_soft_wrap_gutter_for_visual_lines, build_soft_wrap_gutter_lines, paint_gutter_lines,
+    UnwrappedGutterLinePlanParams, build_gutter_line_plans, build_gutter_lines,
+    build_gutter_lines_from_plans, build_soft_wrap_gutter_for_visual_lines,
+    build_soft_wrap_gutter_lines, build_unwrapped_gutter_line_plans, paint_gutter_lines,
     paint_soft_wrap_gutter, paint_soft_wrap_gutter_lines, soft_wrap_gutter_line_paint_plans,
     soft_wrap_gutter_line_plans,
 };
