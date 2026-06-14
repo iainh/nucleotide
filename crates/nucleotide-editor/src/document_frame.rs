@@ -58,32 +58,6 @@ pub struct EditorDocumentFrameParams<'a> {
     pub is_focused: bool,
 }
 
-pub struct EditorDocumentFrameFromEditorParams<'a> {
-    pub editor: &'a Editor,
-    pub document: &'a Document,
-    pub view: &'a View,
-    pub view_id: ViewId,
-    pub theme: &'a Theme,
-    pub first_row: usize,
-    pub last_row_from_scroll: usize,
-    pub view_position: ViewPosition,
-    pub soft_wrap_enabled: bool,
-    pub unwrapped_gutter_layout: Option<&'a EditorLayout>,
-    pub bounds: Bounds<Pixels>,
-    pub cell_width: Pixels,
-    pub line_height: Pixels,
-    pub scroll_line_offset: Pixels,
-    pub soft_wrap_minimum_columns: u16,
-    pub fg_color: Hsla,
-    pub font: Font,
-    pub default_text_style: Style,
-    pub default_bg: Hsla,
-    pub wrap_indicator_color: Option<Hsla>,
-    pub ruler_color: Hsla,
-    pub cursor_style: Style,
-    pub is_focused: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct EditorDocumentFrame {
     pub gutter_width: u16,
@@ -255,50 +229,6 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         ruler_paint_plans,
         unwrapped_gutter_line_plans,
     }
-}
-
-pub fn editor_document_frame_from_editor(
-    params: EditorDocumentFrameFromEditorParams<'_>,
-) -> EditorDocumentFrame {
-    let syntax_loader = params.editor.syn_loader.load();
-    let editor_config = params.editor.config();
-    let (_, cursor_kind) = params.editor.cursor();
-
-    editor_document_frame(EditorDocumentFrameParams {
-        document: params.document,
-        view: params.view,
-        view_id: params.view_id,
-        theme: params.theme,
-        syntax_loader: &syntax_loader,
-        first_row: params.first_row,
-        last_row_from_scroll: params.last_row_from_scroll,
-        view_position: params.view_position,
-        soft_wrap_enabled: params.soft_wrap_enabled,
-        unwrapped_gutter: params.unwrapped_gutter_layout.map(|layout| {
-            EditorDocumentFrameGutterParams {
-                editor: params.editor,
-                layout,
-            }
-        }),
-        bounds: params.bounds,
-        cell_width: params.cell_width,
-        line_height: params.line_height,
-        scroll_line_offset: params.scroll_line_offset,
-        soft_wrap_minimum_columns: params.soft_wrap_minimum_columns,
-        fg_color: params.fg_color,
-        font: params.font,
-        default_text_style: params.default_text_style,
-        default_bg: params.default_bg,
-        wrap_indicator_color: params.wrap_indicator_color,
-        ruler_color: params.ruler_color,
-        editor_mode: params.editor.mode(),
-        cursor_kind,
-        cursor_style: params.cursor_style,
-        cursor_shape: editor_config.cursor_shape.clone(),
-        editor_rulers: editor_config.rulers.clone(),
-        cursorline_enabled: editor_config.cursorline && params.is_focused,
-        is_focused: params.is_focused,
-    })
 }
 
 #[cfg(test)]
@@ -609,13 +539,17 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn frame_from_editor_derives_editor_render_state() {
+    async fn frame_uses_explicit_editor_render_state() {
         let mut config = Config::default();
         config.cursorline = true;
         config.rulers = vec![2, 4];
         let (editor, doc_id, view_id) = test_editor_with_config(config);
         let document = editor.document(doc_id).unwrap();
         let view = editor.tree.try_get(view_id).unwrap();
+        let syntax_loader = editor.syn_loader.load();
+        let editor_config = editor.config();
+        let editor_mode = editor.mode();
+        let (_, cursor_kind) = editor.cursor();
         let theme = ThemeLoader::new(&[]).default_theme(true);
         let layout = EditorLayout {
             rows: 6,
@@ -625,17 +559,20 @@ mod tests {
             cell_width: px(8.0),
         };
 
-        let frame = editor_document_frame_from_editor(EditorDocumentFrameFromEditorParams {
-            editor: &editor,
+        let frame = editor_document_frame(EditorDocumentFrameParams {
             document,
             view,
             view_id,
             theme: &theme,
+            syntax_loader: &syntax_loader,
             first_row: 0,
             last_row_from_scroll: 2,
             view_position: document.view_offset(view_id),
             soft_wrap_enabled: false,
-            unwrapped_gutter_layout: Some(&layout),
+            unwrapped_gutter: Some(EditorDocumentFrameGutterParams {
+                editor: &editor,
+                layout: &layout,
+            }),
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
             cell_width: layout.cell_width,
             line_height: layout.line_height,
@@ -647,7 +584,12 @@ mod tests {
             default_bg: white(),
             wrap_indicator_color: None,
             ruler_color: black(),
+            editor_mode,
+            cursor_kind,
             cursor_style: Style::default(),
+            cursor_shape: editor_config.cursor_shape.clone(),
+            editor_rulers: editor_config.rulers.clone(),
+            cursorline_enabled: editor_config.cursorline,
             is_focused: true,
         });
 
