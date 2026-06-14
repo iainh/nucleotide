@@ -13,11 +13,11 @@ use nucleotide_ui::theme_manager::HelixThemedContext;
 
 use crate::Core;
 use nucleotide_editor::{
-    EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorSurfacePointerEvent,
-    EditorTextMetrics, EditorViewState, EditorViewportContentLayout, EditorViewportSurfaceLayout,
-    NativeEditorFramePaintParams, NativeEditorFramePaintStyle, NativeEditorFramePlanParams,
-    NativeEditorView, cursor_document_line, cursor_style_for_mode, gpui_hsla_to_helix_color,
-    native_editor_frame_paint_plan, paint_native_editor_frame,
+    EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
+    EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewportContentLayout,
+    EditorViewportSurfaceLayout, NativeEditorFramePaintParams, NativeEditorFramePaintStyle,
+    NativeEditorFramePlanParams, NativeEditorView, cursor_document_line, cursor_style_for_mode,
+    gpui_hsla_to_helix_color, native_editor_frame_paint_plan, paint_native_editor_frame,
 };
 use nucleotide_ui::theme_utils::color_to_hsla;
 
@@ -87,58 +87,23 @@ fn test_shaped_line_accuracy(shaped_line: &gpui::ShapedLine, line_text: &str, _f
 }
 */
 
-fn handle_editor_mouse_down(
+fn handle_editor_pointer_selection(
     core: &Entity<Core>,
     doc_id: DocumentId,
     view_id: ViewId,
     editor_state: &EditorViewState,
+    phase: EditorPointerSelectionPhase,
     event: EditorSurfacePointerEvent,
     cx: &mut App,
 ) {
     let mut pointer_update = None;
 
     core.update(cx, |core, cx| {
-        pointer_update =
-            editor_state.begin_pointer_selection_at_event(&mut core.editor, doc_id, view_id, event);
-
-        if pointer_update.is_some() {
-            cx.notify();
-        }
-    });
-
-    if let Some(pointer_update) = pointer_update {
-        debug!(
-            line_idx = pointer_update.hit_test.line_idx,
-            char_offset = pointer_update.hit_test.char_offset,
-            anchor = pointer_update.selection.anchor,
-            target_pos = pointer_update.selection.head,
-            "Applied editor click selection"
-        );
-    } else {
-        debug!(
-            window_pos = ?event.position,
-            bounds = ?event.bounds,
-            line_height = %event.line_height,
-            "Click hit test did not find a rendered line"
-        );
-    }
-}
-
-fn handle_editor_mouse_drag(
-    core: &Entity<Core>,
-    doc_id: DocumentId,
-    view_id: ViewId,
-    editor_state: &EditorViewState,
-    event: EditorSurfacePointerEvent,
-    cx: &mut App,
-) {
-    let mut pointer_update = None;
-
-    core.update(cx, |core, cx| {
-        pointer_update = editor_state.update_pointer_selection_at_event(
+        pointer_update = editor_state.handle_pointer_selection_at_event(
             &mut core.editor,
             doc_id,
             view_id,
+            phase,
             event,
         );
 
@@ -149,11 +114,22 @@ fn handle_editor_mouse_drag(
 
     if let Some(pointer_update) = pointer_update {
         debug!(
+            phase = ?phase,
             line_idx = pointer_update.hit_test.line_idx,
             char_offset = pointer_update.hit_test.char_offset,
             anchor = pointer_update.selection.anchor,
             target_pos = pointer_update.selection.head,
-            "Applied editor drag selection"
+            "Applied editor pointer selection"
+        );
+    } else if matches!(phase, EditorPointerSelectionPhase::End) {
+        debug!(position = ?event.position, "Mouse up event - pointer selection ended");
+    } else {
+        debug!(
+            phase = ?phase,
+            window_pos = ?event.position,
+            bounds = ?event.bounds,
+            line_height = %event.line_height,
+            "Pointer hit test did not find a rendered line"
         );
     }
 }
@@ -386,30 +362,21 @@ impl Render for DocumentView {
                     );
                 }
             })
-            .on_mouse_down({
+            .on_pointer_selection({
                 let core = self.core.clone();
                 let view_id = self.view_id;
                 let editor_state = self.editor_state.clone();
 
-                move |event: EditorSurfacePointerEvent, cx| {
-                    handle_editor_mouse_down(&core, doc_id, view_id, &editor_state, event, cx);
-                }
-            })
-            .on_mouse_drag({
-                let core = self.core.clone();
-                let view_id = self.view_id;
-                let editor_state = self.editor_state.clone();
-
-                move |event: EditorSurfacePointerEvent, cx| {
-                    handle_editor_mouse_drag(&core, doc_id, view_id, &editor_state, event, cx);
-                }
-            })
-            .on_mouse_up({
-                let editor_state = self.editor_state.clone();
-
-                move |event: EditorSurfacePointerEvent, _cx| {
-                    editor_state.clear_pointer_selection();
-                    debug!(position = ?event.position, "Mouse up event - click completed");
+                move |phase, event, cx| {
+                    handle_editor_pointer_selection(
+                        &core,
+                        doc_id,
+                        view_id,
+                        &editor_state,
+                        phase,
+                        event,
+                        cx,
+                    );
                 }
             })
         };

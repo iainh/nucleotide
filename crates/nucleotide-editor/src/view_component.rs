@@ -10,11 +10,13 @@ use gpui::{
 
 use crate::{
     EditorDocumentElement, EditorLayout, EditorSurface, EditorSurfacePointerEvent, EditorViewState,
-    EditorViewport, ViewportScrollUpdate,
+    EditorViewport, ViewportScrollUpdate, selection::EditorPointerSelectionPhase,
 };
 
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
 type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
+type PointerSelectionCallback =
+    Rc<dyn Fn(EditorPointerSelectionPhase, EditorSurfacePointerEvent, &mut App)>;
 
 pub struct NativeEditorView<P> {
     view_entity_id: EntityId,
@@ -22,6 +24,7 @@ pub struct NativeEditorView<P> {
     text_style: TextStyle,
     paint: P,
     on_scroll: Option<ScrollCallback>,
+    on_pointer_selection: Option<PointerSelectionCallback>,
     on_mouse_down: Option<PointerCallback>,
     on_mouse_drag: Option<PointerCallback>,
     on_mouse_up: Option<PointerCallback>,
@@ -44,6 +47,7 @@ where
             text_style,
             paint,
             on_scroll: None,
+            on_pointer_selection: None,
             on_mouse_down: None,
             on_mouse_drag: None,
             on_mouse_up: None,
@@ -55,6 +59,14 @@ where
         callback: impl Fn(&EditorViewport, ViewportScrollUpdate, &mut App) + 'static,
     ) -> Self {
         self.on_scroll = Some(Rc::new(callback));
+        self
+    }
+
+    pub fn on_pointer_selection(
+        mut self,
+        callback: impl Fn(EditorPointerSelectionPhase, EditorSurfacePointerEvent, &mut App) + 'static,
+    ) -> Self {
+        self.on_pointer_selection = Some(Rc::new(callback));
         self
     }
 
@@ -107,6 +119,7 @@ where
             text_style,
             mut paint,
             on_scroll,
+            on_pointer_selection,
             on_mouse_down,
             on_mouse_drag,
             on_mouse_up,
@@ -135,21 +148,38 @@ where
             });
         }
 
-        if let Some(on_mouse_down) = on_mouse_down {
+        if on_pointer_selection.is_some() || on_mouse_down.is_some() {
+            let on_pointer_selection = on_pointer_selection.clone();
             editor_surface = editor_surface.on_mouse_down(move |event, cx| {
-                on_mouse_down(event, cx);
+                if let Some(on_pointer_selection) = &on_pointer_selection {
+                    on_pointer_selection(EditorPointerSelectionPhase::Begin, event, cx);
+                }
+                if let Some(on_mouse_down) = &on_mouse_down {
+                    on_mouse_down(event, cx);
+                }
             });
         }
 
-        if let Some(on_mouse_drag) = on_mouse_drag {
+        if on_pointer_selection.is_some() || on_mouse_drag.is_some() {
+            let on_pointer_selection = on_pointer_selection.clone();
             editor_surface = editor_surface.on_mouse_drag(move |event, cx| {
-                on_mouse_drag(event, cx);
+                if let Some(on_pointer_selection) = &on_pointer_selection {
+                    on_pointer_selection(EditorPointerSelectionPhase::Extend, event, cx);
+                }
+                if let Some(on_mouse_drag) = &on_mouse_drag {
+                    on_mouse_drag(event, cx);
+                }
             });
         }
 
-        if let Some(on_mouse_up) = on_mouse_up {
+        if on_pointer_selection.is_some() || on_mouse_up.is_some() {
             editor_surface = editor_surface.on_mouse_up(move |event, cx| {
-                on_mouse_up(event, cx);
+                if let Some(on_pointer_selection) = &on_pointer_selection {
+                    on_pointer_selection(EditorPointerSelectionPhase::End, event, cx);
+                }
+                if let Some(on_mouse_up) = &on_mouse_up {
+                    on_mouse_up(event, cx);
+                }
             });
         }
 
@@ -166,7 +196,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, rc::Rc};
+    use std::{cell::RefCell, rc::Rc};
 
     use gpui::{
         AppContext as _, Empty, Entity, IntoElement as _, MouseButton, ScrollDelta,
@@ -187,11 +217,12 @@ mod tests {
             .viewport_mut()
             .set_layout(px(20.0), size(px(100.0), px(200.0)), 50);
 
-        let painted = Rc::new(Cell::new(false));
-        let saw_scroll = Rc::new(Cell::new(false));
-        let saw_down = Rc::new(Cell::new(false));
-        let saw_drag = Rc::new(Cell::new(false));
-        let saw_up = Rc::new(Cell::new(false));
+        let painted = Rc::new(std::cell::Cell::new(false));
+        let saw_scroll = Rc::new(std::cell::Cell::new(false));
+        let saw_down = Rc::new(std::cell::Cell::new(false));
+        let saw_drag = Rc::new(std::cell::Cell::new(false));
+        let saw_up = Rc::new(std::cell::Cell::new(false));
+        let phases = Rc::new(RefCell::new(Vec::new()));
 
         let window = cx.add_empty_window();
         window.draw(
@@ -212,6 +243,10 @@ mod tests {
                 .on_scroll({
                     let saw_scroll = Rc::clone(&saw_scroll);
                     move |_, _, _| saw_scroll.set(true)
+                })
+                .on_pointer_selection({
+                    let phases = Rc::clone(&phases);
+                    move |phase, _, _| phases.borrow_mut().push(phase)
                 })
                 .on_mouse_down({
                     let saw_down = Rc::clone(&saw_down);
@@ -256,5 +291,13 @@ mod tests {
         assert!(saw_down.get());
         assert!(saw_drag.get());
         assert!(saw_up.get());
+        assert_eq!(
+            phases.borrow().as_slice(),
+            &[
+                EditorPointerSelectionPhase::Begin,
+                EditorPointerSelectionPhase::Extend,
+                EditorPointerSelectionPhase::End,
+            ]
+        );
     }
 }
