@@ -2008,6 +2008,7 @@ impl Application {
             editor_input::NativePromptRequest::Command => ":",
             editor_input::NativePromptRequest::Search => "search:",
             editor_input::NativePromptRequest::ReverseSearch => "rsearch:",
+            editor_input::NativePromptRequest::GlobalSearch => "global-search:",
             editor_input::NativePromptRequest::RegexSelection(action) => match action {
                 crate::types::RegexSelectionAction::Select => "select:",
                 crate::types::RegexSelectionAction::Split => "split:",
@@ -5529,6 +5530,33 @@ impl Application {
         }
 
         doc.set_selection(view_id, Selection::single(location.start, location.end));
+        self.editor.ensure_cursor_in_view(view_id);
+
+        Ok((doc_id, view_id))
+    }
+
+    pub fn jump_to_global_search_location(
+        &mut self,
+        location: &crate::types::GlobalSearchLocation,
+    ) -> anyhow::Result<(DocumentId, ViewId)> {
+        let doc_id = self
+            .editor
+            .open(&location.path, helix_view::editor::Action::Replace)?;
+        let view_id = self.editor.tree.focus;
+        let doc = self
+            .editor
+            .document_mut(doc_id)
+            .ok_or_else(|| anyhow::anyhow!("Global search target document is not open"))?;
+        let text = doc.text();
+        if location.line >= text.len_lines() {
+            anyhow::bail!(
+                "The line you jumped to does not exist anymore because the file has changed"
+            );
+        }
+
+        let start = text.line_to_char(location.line);
+        let end = text.line_to_char((location.line + 1).min(text.len_lines()));
+        doc.set_selection(view_id, Selection::single(start, end));
         self.editor.ensure_cursor_in_view(view_id);
 
         Ok((doc_id, view_id))
