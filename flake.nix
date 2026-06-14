@@ -52,7 +52,7 @@
         darwinBuildInputs = with pkgs; lib.optionals stdenv.isDarwin [
           libiconv
           # Modern Apple SDK - the hooks will ensure proper framework linking
-          apple-sdk_12
+          apple-sdk
         ];
 
         linuxBuildInputs = with pkgs; lib.optionals stdenv.isLinux [

@@ -9,7 +9,7 @@ homepage.workspace = true
 publish = false
 description = "A native GUI for the Helix editor - main application (Layer 6)"
 categories = ["text-editors", "gui"]
-rust-version = "1.88"
+rust-version = "1.95"
 include = ["src/**/*", "README.md"]
 default-run = "nucl"
 
@@ -42,6 +42,7 @@ nucleotide-terminal-panel = { path = "../nucleotide-terminal-panel" }
 
 # External dependencies
 gpui.workspace = true
+gpui_platform.workspace = true
 zed-sum-tree.workspace = true
 
 helix-stdx.workspace = true

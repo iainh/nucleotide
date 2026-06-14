@@ -615,7 +615,7 @@ impl Workspace {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         // Register editor focus with the global coordinator for centralized focus handling
-        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
             coord.set_editor_focus(focus_handle.clone());
         }
 
@@ -968,9 +968,11 @@ impl Workspace {
                     this.delete_confirm_open = false;
                     this.delete_confirm_path = None;
                     // Restore focus immediately for responsiveness
-                    if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                    if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+                    {
                         let _ = coord.focus_first(
                             window,
+                            cx,
                             &[
                                 nucleotide_ui::FocusRole::Editor,
                                 nucleotide_ui::FocusRole::FileTree,
@@ -1076,7 +1078,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        use gpui::{Corner, anchored, point};
+        use gpui::{Anchor, anchored, point};
+        // Move keyboard focus to the workspace focus group so arrow/enter navigation works
+        window.focus(&self.focus_handle, cx);
+
         let theme = cx.theme();
         let tokens = &theme.tokens;
         let (x, y) = self.context_menu_pos;
@@ -1086,9 +1091,6 @@ impl Workspace {
 
         // Use anchored popup at the stored cursor position, relative to window
         let dd_tokens = tokens.dropdown_tokens();
-
-        // Move keyboard focus to the workspace focus group so arrow/enter navigation works
-        window.focus(&self.focus_handle);
 
         let popup = div()
             .bg(dd_tokens.container_background)
@@ -1175,9 +1177,12 @@ impl Workspace {
                     if w.context_menu_open {
                         w.context_menu_open = false;
                         // Restore focus to editor/file tree
-                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                        if let Some(coord) =
+                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+                        {
                             let _ = coord.focus_first(
                                 window,
+                                cx,
                                 &[
                                     nucleotide_ui::FocusRole::Editor,
                                     nucleotide_ui::FocusRole::FileTree,
@@ -1193,9 +1198,12 @@ impl Workspace {
                 cx.listener(|w: &mut Workspace, _ev, window, cx| {
                     if w.context_menu_open {
                         w.context_menu_open = false;
-                        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+                        if let Some(coord) =
+                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+                        {
                             let _ = coord.focus_first(
                                 window,
+                                cx,
                                 &[
                                     nucleotide_ui::FocusRole::Editor,
                                     nucleotide_ui::FocusRole::FileTree,
@@ -1209,7 +1217,7 @@ impl Workspace {
             .child(
                 anchored()
                     .position(point(px(x), px(y)))
-                    .anchor(Corner::TopLeft)
+                    .anchor(Anchor::TopLeft)
                     // Offset the menu away from the cursor so the pointer isn't directly above the first item
                     .offset(point(px(8.0), px(8.0)))
                     .snap_to_window_with_margin(tokens.sizes.space_2)
@@ -3436,8 +3444,8 @@ impl Workspace {
             let open_documents = core
                 .editor
                 .documents
-                .iter()
-                .filter_map(|(_, doc)| {
+                .values()
+                .filter_map(|doc| {
                     doc.path()
                         .cloned()
                         .map(|path| (path, doc.text().to_owned()))
@@ -4422,17 +4430,17 @@ impl Workspace {
                                         let overlay = self.overlay.clone();
                                         open(core, handle, overlay, cx);
                                     }
-                                    OverlayType::CommandPalette => {
-                                        // Only treat explicitly-tagged command palette as buffer picker
-                                        if overlay_id == "buffer_picker" {
-                                            nucleotide_logging::info!(
-                                                "DIAG: Workspace observed OverlayShown(CommandPalette as buffer_picker)"
-                                            );
-                                            let handle = self.handle.clone();
-                                            let core = self.core.clone();
-                                            let overlay = self.overlay.clone();
-                                            show_buffer_picker(core, handle, overlay, cx);
-                                        }
+                                    // Only treat explicitly-tagged command palette as buffer picker
+                                    OverlayType::CommandPalette
+                                        if overlay_id == "buffer_picker" =>
+                                    {
+                                        nucleotide_logging::info!(
+                                            "DIAG: Workspace observed OverlayShown(CommandPalette as buffer_picker)"
+                                        );
+                                        let handle = self.handle.clone();
+                                        let core = self.core.clone();
+                                        let overlay = self.overlay.clone();
+                                        show_buffer_picker(core, handle, overlay, cx);
                                     }
                                     _ => {
                                         // Other overlay types not yet implemented
@@ -4786,7 +4794,7 @@ impl Workspace {
 
         // Apply the same sorting as the main tab bar for consistency
         // Sort by the order field which tracks opening order
-        documents.sort_by(|a, b| a.order.cmp(&b.order));
+        documents.sort_by_key(|doc| doc.order);
 
         // Create a temporary TabBar to get overflow documents
         let temp_tab_bar = TabBar::new(
@@ -5925,13 +5933,13 @@ impl Workspace {
             && let Some(doc_view) = self.view_manager.get_document_view(&view_id)
         {
             let doc_focus = doc_view.focus_handle(cx);
-            window.focus(&doc_focus);
+            window.focus(&doc_focus, cx);
             nucleotide_logging::debug!(view_id = ?view_id, "Focused active document view");
             return;
         }
 
         // If no specific document, focus the main workspace
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         nucleotide_logging::debug!("Focused main workspace");
     }
 
@@ -5943,7 +5951,7 @@ impl Workspace {
             && self.show_file_tree
         {
             let file_tree_focus = file_tree.focus_handle(cx);
-            window.focus(&file_tree_focus);
+            window.focus(&file_tree_focus, cx);
             nucleotide_logging::debug!("Focused file tree");
             return;
         }
@@ -6923,10 +6931,10 @@ impl Render for Workspace {
             {
                 // First, nudge caret into the document view if we have one.
                 if let Some(fh) = doc_focus_handle {
-                    window.focus(&fh);
+                    window.focus(&fh, cx);
                 }
                 // Then ensure global key routing via workspace root.
-                window.focus(&self.focus_handle);
+                window.focus(&self.focus_handle, cx);
             }
         }
 
@@ -6989,9 +6997,11 @@ impl Render for Workspace {
         if self.view_manager.needs_focus_restore() {
             if self.view_manager.get_focused_document_view().is_some() {
                 self.view_manager.focus_editor_area(cx, window);
-            } else if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>() {
+            } else if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
+            {
                 let _ = coord.focus_first(
                     window,
+                    cx,
                     &[
                         nucleotide_ui::FocusRole::Terminal,
                         nucleotide_ui::FocusRole::Picker,
@@ -7001,14 +7011,14 @@ impl Render for Workspace {
                     ],
                 );
             } else {
-                window.focus(&self.focus_handle);
+                window.focus(&self.focus_handle, cx);
             }
             self.view_manager.set_needs_focus_restore(false);
         }
 
         // If terminal was toggled on via button, focus it now
         if self.terminal_panel_visible && self.terminal_focus_pending {
-            window.focus(&self.terminal_focus);
+            window.focus(&self.terminal_focus, cx);
             self.terminal_focus_pending = false;
         }
         // Don't create views during render - just use existing ones
@@ -7706,7 +7716,7 @@ impl Render for Workspace {
                                 .h(px(h))
                                 .track_focus(&self.terminal_focus)
                                 .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseDownEvent, window, cx| {
-                                    window.focus(&this.terminal_focus);
+                                    window.focus(&this.terminal_focus, cx);
                                     this.terminal_active = true;
                                     cx.notify();
                                     cx.stop_propagation();
@@ -8026,7 +8036,7 @@ impl Render for Workspace {
 
         // If terminal was toggled on via button, focus it now (after elements are built)
         if self.terminal_panel_visible && self.terminal_focus_pending {
-            window.focus(&self.terminal_focus);
+            window.focus(&self.terminal_focus, cx);
             self.terminal_focus_pending = false;
         }
 
@@ -8177,7 +8187,7 @@ impl Render for Workspace {
                 root
             })
             .when(self.lsp_menu_open, |container| {
-                use gpui::{Corner, anchored, point};
+                use gpui::{Anchor, anchored, point};
                 let ui_theme = cx.global::<nucleotide_ui::Theme>();
                 let dd_tokens = ui_theme.tokens.dropdown_tokens();
 
@@ -8190,7 +8200,7 @@ impl Render for Workspace {
 
                         // Sort servers by name for a stable order
                         let mut servers: Vec<_> = state.servers.values().cloned().collect();
-                        servers.sort_by(|a, b| a.name.cmp(&b.name));
+                        servers.sort_by_key(|server| server.name.clone());
 
                         // If there are no servers, show muted empty message
                         if servers.is_empty() {
@@ -8311,10 +8321,11 @@ impl Render for Workspace {
                             cx.listener(|this: &mut Workspace, _ev, window, cx| {
                                 this.lsp_menu_open = false;
                                 if let Some(coord) =
-                                    cx.try_global::<nucleotide_ui::FocusCoordinator>()
+                                    cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
                                 {
                                     let _ = coord.focus_first(
                                         window,
+                                        cx,
                                         &[
                                             nucleotide_ui::FocusRole::Editor,
                                             nucleotide_ui::FocusRole::FileTree,
@@ -8327,7 +8338,7 @@ impl Render for Workspace {
                         .child(
                             anchored()
                                 .position(point(px(x), px(y)))
-                                .anchor(Corner::BottomLeft)
+                                .anchor(Anchor::BottomLeft)
                                 .offset(point(px(0.0), px(4.0)))
                                 .snap_to_window_with_margin(ui_theme.tokens.sizes.space_2)
                                 .child(
@@ -8463,7 +8474,7 @@ fn open_at(
     }
 
     // Sort items by label (path) for consistent ordering
-    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items.sort_by_key(|item| item.label.clone());
 
     info!("File picker has {} items", items.len());
 
@@ -8574,7 +8585,7 @@ fn show_buffer_picker(
     });
 
     // Sort by MRU (Most Recently Used) - most recent first
-    buffer_metas.sort_by(|a, b| b.focused_at.cmp(&a.focused_at));
+    buffer_metas.sort_by_key(|meta| std::cmp::Reverse(meta.focused_at));
 
     // Create picker items with terminal-like formatting
     let mut items = Vec::new();
@@ -8849,7 +8860,7 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
         // If none, exit with a notification
         if completion_items.is_empty() {
             if let Some(core) = core_weak.upgrade() {
-                let _ = core.update(cx, |_core, cx| {
+                core.update(cx, |_core, cx| {
                     cx.emit(crate::Update::EditorStatus(
                         nucleotide_types::EditorStatus {
                             status: "No code actions available".to_string(),
@@ -8863,16 +8874,14 @@ fn show_code_actions(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &m
 
         // Create a CompletionView and load items
         if let Some(core) = core_weak.upgrade() {
-            let completion_view = cx
-                .new(|cx| {
-                    let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
-                    view.set_items(completion_items, cx);
-                    view
-                })
-                .expect("create code actions completion view");
+            let completion_view = cx.new(|cx| {
+                let mut view = nucleotide_ui::completion_v2::CompletionView::new(cx);
+                view.set_items(completion_items, cx);
+                view
+            });
 
             // Emit completion-style code actions into overlay
-            let _ = core.update(cx, |_core, cx| {
+            core.update(cx, |_core, cx| {
                 cx.emit(crate::Update::CodeActions(completion_view, pairs));
             });
         }
@@ -8977,7 +8986,7 @@ fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
 
         if entries.is_empty() {
             if let Some(core) = core_weak.upgrade() {
-                let _ = core.update(cx, |core, _| {
+                core.update(cx, |core, _| {
                     core.editor.set_status("No hover results available.");
                 });
             }
@@ -8986,7 +8995,7 @@ fn show_hover_docs(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut
 
         if let Some(core) = core_weak.upgrade() {
             let payload = entries;
-            let _ = core.update(cx, |_core, cx| {
+            core.update(cx, |_core, cx| {
                 cx.emit(crate::Update::HoverDocs(payload));
             });
         }

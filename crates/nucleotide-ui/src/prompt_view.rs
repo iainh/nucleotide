@@ -439,7 +439,7 @@ impl Render for PromptView {
 
         // Focus ourselves if we're not already focused
         if !self.focus_handle.is_focused(window) {
-            self.focus_handle.focus(window);
+            self.focus_handle.focus(window, cx);
         }
 
         div()

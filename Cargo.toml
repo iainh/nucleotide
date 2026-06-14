@@ -29,10 +29,11 @@ repository = "https://github.com/iainh/nucleotide"
 homepage = "https://github.com/iainh/nucleotide"
 
 [workspace.dependencies]
-# GPUI and Zed dependencies - using crates.io gpui 0.2 series
-gpui = { version = "0.2.2", features = ["test-support", "runtime_shaders"] }
-gpui_tokio = { version = "0.2.0" }
-gpui-component = "0.5.0"
+# GPUI and GPUI-adjacent dependencies. These track git sources so Cargo
+# can pull GPUI fixes and keep direct/transitive GPUI types unified.
+gpui = { git = "https://github.com/zed-industries/zed", package = "gpui", features = ["test-support"] }
+gpui_tokio = { git = "https://github.com/zed-industries/zed", package = "gpui_tokio" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", package = "gpui_platform", features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
 zed-sum-tree = "0.2.0"
 
 # Helix dependencies - pinned to specific commit for reproducible builds
@@ -107,6 +108,12 @@ nucleotide-project = { path = "crates/nucleotide-project" }
 nucleotide-env = { path = "crates/nucleotide-env" }
 nucleotide-vcs = { path = "crates/nucleotide-vcs" }
 nucleotide-test-lsp = { path = "crates/nucleotide-test-lsp" }
+
+[patch.crates-io]
+# Zed workspace crates rely on these patched async primitives. Patches in
+# dependency workspaces are ignored by Cargo, so mirror the required entries here.
+async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
 
 [profile.dev]
 opt-level = 1

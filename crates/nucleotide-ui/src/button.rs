@@ -642,6 +642,7 @@ impl RenderOnce for Button {
                     offset: gpui::point(shadow.offset_x, shadow.offset_y),
                     blur_radius: shadow.blur_radius,
                     spread_radius: shadow.spread_radius,
+                    inset: false,
                 }])
             })
             .opacity(computed_style.opacity);
@@ -667,6 +668,7 @@ impl RenderOnce for Button {
                             offset: gpui::point(shadow.offset_x, shadow.offset_y),
                             blur_radius: shadow.blur_radius,
                             spread_radius: shadow.spread_radius,
+                            inset: false,
                         }]);
                     }
 
@@ -690,6 +692,7 @@ impl RenderOnce for Button {
                             offset: gpui::point(shadow.offset_x, shadow.offset_y),
                             blur_radius: shadow.blur_radius,
                             spread_radius: shadow.spread_radius,
+                            inset: false,
                         }]);
                     }
 

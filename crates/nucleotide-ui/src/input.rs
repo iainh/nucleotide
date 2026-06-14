@@ -161,6 +161,7 @@ impl RenderOnce for Input {
                     offset: gpui::point(px(0.), px(0.)),
                     blur_radius: px(0.),
                     spread_radius: px(2.0),
+                    inset: false,
                 }])
             })
             .when(has_error, |this| {
@@ -170,6 +171,7 @@ impl RenderOnce for Input {
                     offset: gpui::point(px(0.), px(0.)),
                     blur_radius: px(0.),
                     spread_radius: px(2.0),
+                    inset: false,
                 }])
             })
             .when_some(self.start_slot, |this, slot| {

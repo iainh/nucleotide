@@ -911,7 +911,7 @@ impl PickerView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         // Ensure the picker has focus when rendered
-        self.ensure_focus(window, &self.focus_handle);
+        self.ensure_focus(window, cx, &self.focus_handle);
 
         // Load initial preview if not already loaded
         if !self.initial_preview_loaded && !self.filtered_indices.is_empty() {
@@ -1338,7 +1338,7 @@ impl PickerView {
                                         ),
                                     )
                                     .h_full() // Use fixed height instead of flex_1
-                                    .track_scroll(self.list_scroll_handle.clone()),
+                                    .track_scroll(&self.list_scroll_handle),
                                 )
                             }),
                     )

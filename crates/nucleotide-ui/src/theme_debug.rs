@@ -559,7 +559,7 @@ impl Render for ThemeDebugView {
         })
         .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
         .with_horizontal_sizing_behavior(gpui::ListHorizontalSizingBehavior::FitList)
-        .track_scroll(self.scroll.clone())
+        .track_scroll(&self.scroll)
         .h_full();
 
         // Overlay and dialog container

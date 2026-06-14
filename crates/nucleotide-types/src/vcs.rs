@@ -1,12 +1,13 @@
 // ABOUTME: Version control system types for diff information and file status
 // ABOUTME: Core VCS types shared across the application without dependencies
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum VcsStatus {
     /// File is not tracked by VCS
     Untracked,
     /// File is tracked and not modified
+    #[default]
     Clean,
     /// File is tracked and has been modified
     Modified,
@@ -20,12 +21,6 @@ pub enum VcsStatus {
     Conflicted,
     /// Unknown VCS status
     Unknown,
-}
-
-impl Default for VcsStatus {
-    fn default() -> Self {
-        Self::Clean
-    }
 }
 
 impl VcsStatus {
@@ -151,7 +146,7 @@ impl DiffHunkInfo {
 }
 
 /// Type of change represented by a diff hunk
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DiffChangeType {
     /// Lines were added
@@ -159,6 +154,7 @@ pub enum DiffChangeType {
     /// Lines were removed
     Deletion,
     /// Lines were modified
+    #[default]
     Modification,
 }
 
@@ -187,12 +183,6 @@ impl DiffChangeType {
             Self::Deletion => '-',
             Self::Modification => '~',
         }
-    }
-}
-
-impl Default for DiffChangeType {
-    fn default() -> Self {
-        Self::Modification
     }
 }
 

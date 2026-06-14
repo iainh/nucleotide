@@ -4,8 +4,8 @@
 use crate::lsp_state::LspState;
 use gpui::{
     App, Bounds, Context, Element, ElementId, Entity, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, ParentElement, Pixels, Render, SharedString, Style, Styled, TextRun,
-    TextStyle, Window, div, px,
+    IntoElement, LayoutId, ParentElement, Pixels, Render, SharedString, Style, Styled, TextAlign,
+    TextRun, TextStyle, Window, div, px,
 };
 use nucleotide_logging::error;
 
@@ -189,6 +189,8 @@ impl Element for LspStatusElement {
             if let Err(e) = shaped.paint(
                 gpui::Point::new(bounds.origin.x, y_center),
                 line_height,
+                TextAlign::Left,
+                None,
                 window,
                 cx,
             ) {

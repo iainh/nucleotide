@@ -145,7 +145,7 @@ fn complete_command_names(pattern: &str) -> Vec<CompletionItem> {
         }
     }
 
-    matched_commands.sort_by(|a, b| b.1.cmp(&a.1));
+    matched_commands.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
     matched_commands
         .into_iter()

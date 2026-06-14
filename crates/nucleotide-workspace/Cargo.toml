@@ -9,7 +9,7 @@ homepage.workspace = true
 publish = false
 description = "Workspace management for Nucleotide editor (Layer 5)"
 categories = ["text-editors", "gui"]
-rust-version = "1.88"
+rust-version = "1.95"
 
 [dependencies]
 nucleotide-core = { path = "../nucleotide-core" }

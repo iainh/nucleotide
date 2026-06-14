@@ -271,7 +271,7 @@ impl RenderOnce for EditorSurface {
                 }
 
                 if let Some(focus) = &focus {
-                    focus.focus(window);
+                    focus.focus(window, cx);
                 }
 
                 on_mouse_down(
@@ -701,7 +701,7 @@ mod tests {
         });
 
         window
-            .update(cx, |host, window, _cx| window.focus(&host.focus))
+            .update(cx, |host, window, cx| window.focus(&host.focus, cx))
             .unwrap();
 
         cx.dispatch_keystroke(*window, Keystroke::parse("a").unwrap());
@@ -734,7 +734,7 @@ mod tests {
         });
 
         window
-            .update(cx, |host, window, _cx| window.focus(&host.focus))
+            .update(cx, |host, window, cx| window.focus(&host.focus, cx))
             .unwrap();
 
         cx.dispatch_keystroke(*window, Keystroke::parse("a").unwrap());

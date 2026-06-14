@@ -99,9 +99,10 @@ where
 
         // Schedule delayed execution
         let delay = self.config.delay;
+        let executor = cx.background_executor().clone();
         self.pending_task = Some(cx.spawn(async move |_this, _cx| {
             // Wait for the delay
-            gpui::Timer::after(delay).await;
+            executor.timer(delay).await;
 
             // Execute the handler
             handler(input);

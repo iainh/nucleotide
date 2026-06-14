@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, TextRun, TextStyle, Window,
+    App, Bounds, Hsla, Pixels, Point, Result, ShapedLine, TextAlign, TextRun, TextStyle, Window,
     WindowTextSystem, black, point, px, white,
 };
 use helix_view::{Document, Editor, Theme, View, graphics::Style};
@@ -209,7 +209,9 @@ pub fn paint_gutter_lines(
     mut on_error: impl FnMut(Result<()>),
 ) {
     for line in lines {
-        let result = line.shaped_line.paint(line.origin, line_height, window, cx);
+        let result =
+            line.shaped_line
+                .paint(line.origin, line_height, TextAlign::Left, None, window, cx);
         if result.is_err() {
             on_error(result);
         }
@@ -341,7 +343,9 @@ pub fn paint_soft_wrap_gutter_lines(
     mut on_error: impl FnMut(Result<()>),
 ) {
     for line in lines {
-        let result = line.shaped_line.paint(line.origin, line_height, window, cx);
+        let result =
+            line.shaped_line
+                .paint(line.origin, line_height, TextAlign::Left, None, window, cx);
         if result.is_err() {
             on_error(result);
         }

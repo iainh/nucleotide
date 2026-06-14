@@ -560,7 +560,7 @@ impl ProjectDetector {
         }
 
         // Sort by priority (highest first)
-        matches.sort_by(|a, b| b.1.priority.cmp(&a.1.priority));
+        matches.sort_by_key(|entry| std::cmp::Reverse(entry.1.priority));
 
         // Use the highest priority match
         let (project_name, _marker_config, marker_pattern) = matches[0];

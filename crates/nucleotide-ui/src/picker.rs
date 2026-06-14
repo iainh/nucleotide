@@ -114,6 +114,7 @@ impl RenderOnce for PickerElement {
                                     offset: gpui::point(px(picker_tokens.shadow_offset_x), px(picker_tokens.shadow_offset_y)),
                                     blur_radius: px(picker_tokens.shadow_blur_radius),
                                     spread_radius: px(0.0), // No spread for clean shadows
+                                    inset: false,
                                 }])
                                 .font(font)
                                 .text_size(tokens.sizes.text_md)

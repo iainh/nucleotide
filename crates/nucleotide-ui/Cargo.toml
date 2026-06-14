@@ -4,14 +4,13 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-rust-version = "1.88"
+rust-version = "1.95"
 
 [dependencies]
 nucleotide-types = { workspace = true, features = ["gpui-bridge"] }
 nucleotide-events.workspace = true
 nucleotide-core = { path = "../nucleotide-core" }
 gpui.workspace = true
-gpui-component.workspace = true
 nucleotide-logging.workspace = true
 helix-view.workspace = true
 helix-lsp.workspace = true

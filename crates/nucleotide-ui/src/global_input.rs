@@ -1725,7 +1725,12 @@ pub enum FocusRole {
 
 impl FocusCoordinator {
     /// Focus the given role if a handle is registered. Returns true on success.
-    pub fn focus_role(&self, window: &mut gpui::Window, role: FocusRole) -> bool {
+    pub fn focus_role(
+        &self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+        role: FocusRole,
+    ) -> bool {
         let handle = match role {
             FocusRole::Editor => self.editor_focus(),
             FocusRole::Completion => self.completion_focus(),
@@ -1737,7 +1742,7 @@ impl FocusCoordinator {
         };
         if let Some(h) = handle {
             if !h.is_focused(window) {
-                h.focus(window);
+                h.focus(window, cx);
             }
             true
         } else {
@@ -1746,9 +1751,14 @@ impl FocusCoordinator {
     }
 
     /// Focus the first available role in order. Returns true if any focus was applied.
-    pub fn focus_first(&self, window: &mut gpui::Window, roles: &[FocusRole]) -> bool {
+    pub fn focus_first(
+        &self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+        roles: &[FocusRole],
+    ) -> bool {
         for role in roles {
-            if self.focus_role(window, *role) {
+            if self.focus_role(window, cx, *role) {
                 return true;
             }
         }

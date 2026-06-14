@@ -152,6 +152,7 @@ impl VcsIcon {
                 offset: gpui::point(px(1.0), px(1.5)),
                 blur_radius: px(2.0),
                 spread_radius: px(0.0),
+                inset: false,
             }]);
 
         // Base filled circle with border

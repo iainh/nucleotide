@@ -211,7 +211,7 @@ impl ProjectMarkersConfig {
             }
         }
         // Sort by priority (descending)
-        results.sort_by(|a, b| b.1.priority.cmp(&a.1.priority));
+        results.sort_by_key(|entry| std::cmp::Reverse(entry.1.priority));
         results
     }
 
@@ -224,7 +224,7 @@ impl ProjectMarkersConfig {
             }
         }
         // Sort by priority (descending)
-        matches.sort_by(|a, b| b.1.priority.cmp(&a.1.priority));
+        matches.sort_by_key(|entry| std::cmp::Reverse(entry.1.priority));
         matches
     }
 }

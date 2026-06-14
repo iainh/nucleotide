@@ -4,8 +4,8 @@
 use std::borrow::Cow;
 
 use gpui::{
-    App, Bounds, Font, Hsla, Pixels, Point, ShapedLine, SharedString, Size, TextRun, Window,
-    WindowTextSystem, fill, point, px, size, white,
+    App, Bounds, Font, Hsla, Pixels, Point, ShapedLine, SharedString, Size, TextAlign, TextRun,
+    Window, WindowTextSystem, fill, point, px, size, white,
 };
 use helix_core::{RopeSlice, doc_formatter::TextFormat, graphemes::next_grapheme_boundary};
 use helix_view::{
@@ -79,7 +79,14 @@ impl EditorCursor {
         window.paint_quad(fill(bounds, self.color));
 
         if let Some(text) = &self.text
-            && let Err(error) = text.paint(bounds.origin, self.line_height, window, cx)
+            && let Err(error) = text.paint(
+                bounds.origin,
+                self.line_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            )
         {
             error!(error = ?error, "Failed to paint cursor text");
         }

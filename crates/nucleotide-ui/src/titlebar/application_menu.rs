@@ -2,7 +2,7 @@
 // ABOUTME: Inspired by Zed's ApplicationMenu, simplified for Nucleotide's UI stack
 
 use gpui::{
-    AnchoredPositionMode, Context, Corner, ElementId, FocusHandle, InteractiveElement, IntoElement,
+    Anchor, AnchoredPositionMode, Context, ElementId, FocusHandle, InteractiveElement, IntoElement,
     KeyDownEvent, MouseButton, ParentElement, Pixels, Render, SharedString, Styled, Window,
     anchored, deferred, div, point, px,
 };
@@ -210,7 +210,7 @@ impl Render for ApplicationMenu {
         // Dropdown panel (rendered as a deferred anchored element to ensure top-most layering)
         if let Some(idx) = self.open_index {
             // Ensure we capture keyboard focus for Escape handling
-            window.focus(&self.focus_handle);
+            window.focus(&self.focus_handle, cx);
 
             // Full-window click-away blocker below the dropdown to prevent underlying interactions
             let viewport = window.viewport_size();
@@ -238,7 +238,7 @@ impl Render for ApplicationMenu {
             let popup = anchored()
                 .position_mode(AnchoredPositionMode::Local)
                 .snap_to_window_with_margin(px(8.0))
-                .anchor(Corner::TopLeft)
+                .anchor(Anchor::TopLeft)
                 .position(point(px(left), row_h))
                 .child(div().occlude().child(self.render_dropdown_for(idx, cx)));
 

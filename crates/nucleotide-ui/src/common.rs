@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use gpui::prelude::FluentBuilder;
-use gpui::{FocusHandle, Hsla, IntoElement, ParentElement, Styled, Window, div, hsla, px};
+use gpui::{App, FocusHandle, Hsla, IntoElement, ParentElement, Styled, Window, div, hsla, px};
 
 /// Common modal styling configuration
 #[derive(Clone)]
@@ -165,9 +165,9 @@ impl SearchInput {
 
 /// Common focus handling utilities
 pub trait FocusableModal {
-    fn ensure_focus(&self, window: &mut Window, focus_handle: &FocusHandle) {
+    fn ensure_focus(&self, window: &mut Window, cx: &mut App, focus_handle: &FocusHandle) {
         if !focus_handle.is_focused(window) {
-            focus_handle.focus(window);
+            focus_handle.focus(window, cx);
         }
     }
 }
