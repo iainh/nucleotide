@@ -54,6 +54,13 @@ pub struct JumpLocation {
     pub selection: helix_core::Selection,
 }
 
+#[derive(Debug, Clone)]
+pub struct SyntaxFileLocation {
+    pub path: std::path::PathBuf,
+    pub start: usize,
+    pub end: usize,
+}
+
 // Hybrid Update enum for event system
 // Uses Event(AppEvent) for data-only events and direct variants for complex UI components with behavior
 pub enum Update {

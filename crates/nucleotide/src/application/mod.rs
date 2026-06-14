@@ -34,9 +34,10 @@ use futures_util::{
     future::{BoxFuture, FutureExt},
     stream::FuturesOrdered,
 };
-use helix_core::{Position, Selection, Uri, pos_at_coords, syntax};
+use helix_core::{Position, RopeSlice, Selection, Uri, pos_at_coords, syntax};
 use helix_lsp::{LanguageServerId, LspProgressMap, OffsetEncoding, lsp};
 use helix_stdx::path::get_relative_path;
+use helix_view::document::from_reader;
 use nucleotide_events::{ProjectLspCommand, ProjectLspCommandError};
 use nucleotide_lsp::{HelixLspBridge, ProjectLspManager, ServerStatus};
 
@@ -3034,6 +3035,9 @@ fn lsp_locations_from_definition_response(
 type LspLocationFuture = BoxFuture<'static, anyhow::Result<Vec<crate::types::LspLocation>>>;
 type SymbolItemFuture = BoxFuture<'static, anyhow::Result<Vec<NativeSymbolItem>>>;
 
+const WORKSPACE_SYNTAX_SYMBOL_FILE_LIMIT: usize = 10_000;
+const WORKSPACE_SYNTAX_SYMBOL_ITEM_LIMIT: usize = 20_000;
+
 #[derive(Debug)]
 struct NativeSymbolItem {
     name: String,
@@ -3048,6 +3052,7 @@ struct NativeSymbolItem {
 enum NativeSymbolTarget {
     Lsp(crate::types::LspLocation),
     Jump(crate::types::JumpLocation),
+    SyntaxFile(crate::types::SyntaxFileLocation),
 }
 
 fn native_symbol_item_from_lsp(
@@ -3207,9 +3212,23 @@ fn syntax_symbol_items_from_document(
 
     let text = doc.text().slice(..);
     let path = doc.path().cloned();
+    syntax_symbol_items_from_text(syntax, loader, text, path.clone(), |start, end, _line| {
+        NativeSymbolTarget::Jump(crate::types::JumpLocation {
+            doc_id,
+            selection: Selection::single(start, end),
+        })
+    })
+}
+
+fn syntax_symbol_items_from_text(
+    syntax: &syntax::Syntax,
+    loader: &syntax::Loader,
+    text: RopeSlice<'_>,
+    path: Option<PathBuf>,
+    target_for_range: impl Fn(usize, usize, usize) -> NativeSymbolTarget,
+) -> Vec<NativeSymbolItem> {
     let mut tags_iter = syntax.tags(text, loader, ..);
     let mut items = Vec::new();
-
     while let Some(event) = tags_iter.next() {
         let syntax::QueryIterEvent::Match(mat) = event else {
             continue;
@@ -3236,14 +3255,142 @@ fn syntax_symbol_items_from_document(
             container_name: None,
             path: path.clone(),
             line: start_line + 1,
-            target: NativeSymbolTarget::Jump(crate::types::JumpLocation {
-                doc_id,
-                selection: Selection::single(start, end),
-            }),
+            target: target_for_range(start, end, start_line + 1),
         });
     }
 
     items
+}
+
+fn syntax_symbol_items_from_path(path: &Path, loader: &syntax::Loader) -> Vec<NativeSymbolItem> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            debug!(path = %path.display(), error = %err, "Skipping unreadable syntax symbol file");
+            return Vec::new();
+        }
+    };
+    let (rope, _encoding, _has_bom) = match from_reader(&mut file, None) {
+        Ok(result) => result,
+        Err(err) => {
+            debug!(path = %path.display(), error = %err, "Skipping undecodable syntax symbol file");
+            return Vec::new();
+        }
+    };
+    let text = rope.slice(..);
+    let Some(language) = loader
+        .language_for_filename(path)
+        .or_else(|| loader.language_for_shebang(text))
+    else {
+        return Vec::new();
+    };
+    let Ok(syntax) = syntax::Syntax::new(text, language, loader) else {
+        return Vec::new();
+    };
+    let path = path.to_path_buf();
+    syntax_symbol_items_from_text(
+        &syntax,
+        loader,
+        text,
+        Some(path.clone()),
+        |start, end, _line| {
+            NativeSymbolTarget::SyntaxFile(crate::types::SyntaxFileLocation {
+                path: path.clone(),
+                start,
+                end,
+            })
+        },
+    )
+}
+
+fn workspace_syntax_symbol_items_from_paths(
+    search_root: PathBuf,
+    file_picker_config: helix_view::editor::FilePickerConfig,
+    loader: Arc<syntax::Loader>,
+    open_paths: HashSet<PathBuf>,
+) -> anyhow::Result<Vec<NativeSymbolItem>> {
+    if !search_root.exists() {
+        anyhow::bail!("Current working directory does not exist");
+    }
+
+    let absolute_root = search_root
+        .canonicalize()
+        .unwrap_or_else(|_| search_root.clone());
+    let dedup_symlinks = file_picker_config.deduplicate_links;
+    let mut walk_builder = ignore::WalkBuilder::new(&search_root);
+    walk_builder
+        .hidden(file_picker_config.hidden)
+        .parents(file_picker_config.parents)
+        .ignore(file_picker_config.ignore)
+        .follow_links(file_picker_config.follow_symlinks)
+        .git_ignore(file_picker_config.git_ignore)
+        .git_global(file_picker_config.git_global)
+        .git_exclude(file_picker_config.git_exclude)
+        .max_depth(file_picker_config.max_depth)
+        .filter_entry(move |entry| {
+            filter_workspace_symbol_entry(entry, &absolute_root, dedup_symlinks)
+        })
+        .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
+        .add_custom_ignore_filename(".helix/ignore");
+
+    let mut items = Vec::new();
+    let mut files_seen = 0;
+    for entry in walk_builder.build().filter_map(Result::ok) {
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if open_paths.contains(path) {
+            continue;
+        }
+
+        files_seen += 1;
+        if files_seen > WORKSPACE_SYNTAX_SYMBOL_FILE_LIMIT {
+            warn!(
+                limit = WORKSPACE_SYNTAX_SYMBOL_FILE_LIMIT,
+                "Stopped workspace syntax symbol scan at file limit"
+            );
+            break;
+        }
+
+        items.extend(syntax_symbol_items_from_path(path, &loader));
+        if items.len() >= WORKSPACE_SYNTAX_SYMBOL_ITEM_LIMIT {
+            items.truncate(WORKSPACE_SYNTAX_SYMBOL_ITEM_LIMIT);
+            warn!(
+                limit = WORKSPACE_SYNTAX_SYMBOL_ITEM_LIMIT,
+                "Stopped workspace syntax symbol scan at item limit"
+            );
+            break;
+        }
+    }
+
+    Ok(items)
+}
+
+fn filter_workspace_symbol_entry(
+    entry: &ignore::DirEntry,
+    root: &Path,
+    dedup_symlinks: bool,
+) -> bool {
+    if matches!(
+        entry.file_name().to_str(),
+        Some(".git" | ".pijul" | ".jj" | ".hg" | ".svn")
+    ) {
+        return false;
+    }
+
+    if dedup_symlinks && entry.path_is_symlink() {
+        return entry
+            .path()
+            .canonicalize()
+            .ok()
+            .is_some_and(|path| !path.starts_with(root));
+    }
+
+    true
 }
 
 fn lsp_location_from_location(
@@ -3335,6 +3482,7 @@ fn lsp_symbol_picker(
             let data: Arc<dyn std::any::Any + Send + Sync> = match symbol.target {
                 NativeSymbolTarget::Lsp(location) => Arc::new(location),
                 NativeSymbolTarget::Jump(location) => Arc::new(location),
+                NativeSymbolTarget::SyntaxFile(location) => Arc::new(location),
             };
 
             PickerItem {
@@ -5130,8 +5278,7 @@ impl Application {
 
         if futures.is_empty() {
             if workspace {
-                self.editor
-                    .set_error("No configured language server supports workspace symbols");
+                self.trigger_workspace_syntax_symbol_picker(cx);
             } else if let Some(symbols) = syntax_fallback_symbols {
                 self.finish_native_symbol_picker("Document Symbols", symbols, cx);
             } else {
@@ -5161,6 +5308,70 @@ impl Application {
             if let Some(core) = core.upgrade() {
                 let _ = core.update(cx, move |core, cx| {
                     core.finish_native_symbol_picker(&title, symbols, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn trigger_workspace_syntax_symbol_picker(&mut self, cx: &mut gpui::Context<crate::Core>) {
+        let view = self.editor.tree.get(self.editor.tree.focus);
+        let Some(active_doc) = self.editor.document(view.doc) else {
+            self.editor
+                .set_error("No active document for workspace symbol picker");
+            return;
+        };
+
+        let search_root = active_doc
+            .path()
+            .map(|path| helix_loader::find_workspace_in(path).0)
+            .or_else(|| self.project_directory.clone())
+            .unwrap_or_else(|| helix_loader::find_workspace().0);
+        let file_picker_config = self.editor.config().file_picker.clone();
+        let loader = self.editor.syn_loader.load_full();
+        let open_paths = self
+            .editor
+            .documents()
+            .filter_map(|doc| doc.path().cloned())
+            .collect::<HashSet<_>>();
+        let mut open_symbols = Vec::new();
+        for doc in self.editor.documents() {
+            open_symbols.extend(syntax_symbol_items_from_document(doc.id(), doc, &loader));
+        }
+
+        self.editor.set_status("Indexing workspace symbols...");
+        cx.spawn(async move |core, cx| {
+            let workspace_symbols = cx
+                .background_executor()
+                .spawn(async move {
+                    workspace_syntax_symbol_items_from_paths(
+                        search_root,
+                        file_picker_config,
+                        loader,
+                        open_paths,
+                    )
+                })
+                .await;
+
+            if let Some(core) = core.upgrade() {
+                let _ = core.update(cx, move |core, cx| {
+                    let mut symbols = open_symbols;
+                    match workspace_symbols {
+                        Ok(mut workspace_symbols) => {
+                            symbols.append(&mut workspace_symbols);
+                            core.finish_native_symbol_picker("Workspace Symbols", symbols, cx);
+                        }
+                        Err(err) if symbols.is_empty() => {
+                            core.editor.set_error(err.to_string());
+                            cx.emit(crate::Update::Event(AppEvent::Core(
+                                CoreEvent::RedrawRequested,
+                            )));
+                        }
+                        Err(err) => {
+                            warn!(error = %err, "Workspace syntax symbol scan failed");
+                            core.finish_native_symbol_picker("Workspace Symbols", symbols, cx);
+                        }
+                    }
                 });
             }
         })
@@ -5263,6 +5474,31 @@ impl Application {
             .ok_or_else(|| anyhow::anyhow!("Jumplist target document is not open"))?;
 
         doc.set_selection(view_id, location.selection.clone());
+        self.editor.ensure_cursor_in_view(view_id);
+
+        Ok((doc_id, view_id))
+    }
+
+    pub fn jump_to_syntax_file_location(
+        &mut self,
+        location: &crate::types::SyntaxFileLocation,
+    ) -> anyhow::Result<(DocumentId, ViewId)> {
+        let doc_id = self
+            .editor
+            .open(&location.path, helix_view::editor::Action::Replace)?;
+        let view_id = self.editor.tree.focus;
+        let doc = self
+            .editor
+            .document_mut(doc_id)
+            .ok_or_else(|| anyhow::anyhow!("Syntax symbol target document is not open"))?;
+        let len_chars = doc.text().len_chars();
+        if location.start >= len_chars || location.end > len_chars {
+            anyhow::bail!(
+                "The location you jumped to does not exist anymore because the file has changed"
+            );
+        }
+
+        doc.set_selection(view_id, Selection::single(location.start, location.end));
         self.editor.ensure_cursor_in_view(view_id);
 
         Ok((doc_id, view_id))
@@ -6117,14 +6353,15 @@ fn should_update_env_var(key: &str) -> bool {
 mod tests {
 
     use super::{
-        NativeSymbolTarget, native_symbol_item_from_lsp, syntax_symbol_kind_from_capture_name,
+        NativeSymbolItem, NativeSymbolTarget, lsp_symbol_picker, native_symbol_item_from_lsp,
+        syntax_symbol_kind_from_capture_name,
     };
     use crate::test_utils::test_support::{
         TestUpdate, create_counting_channel, create_test_diagnostic_events,
         create_test_document_events, create_test_selection_events,
     };
     use helix_lsp::{OffsetEncoding, lsp};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     #[test]
@@ -6179,6 +6416,48 @@ mod tests {
                 assert_eq!(location.offset_encoding, OffsetEncoding::Utf8);
             }
             NativeSymbolTarget::Jump(_) => panic!("expected LSP-backed symbol target"),
+            NativeSymbolTarget::SyntaxFile(_) => panic!("expected LSP-backed symbol target"),
+        }
+    }
+
+    #[test]
+    fn symbol_picker_preserves_syntax_file_target_payload() {
+        let path = PathBuf::from("/workspace/src/lib.rs");
+        let symbol = NativeSymbolItem {
+            name: "render".to_string(),
+            kind: "function",
+            container_name: None,
+            path: Some(path.clone()),
+            line: 12,
+            target: NativeSymbolTarget::SyntaxFile(crate::types::SyntaxFileLocation {
+                path: path.clone(),
+                start: 120,
+                end: 126,
+            }),
+        };
+
+        let picker = lsp_symbol_picker(
+            "Workspace Symbols",
+            vec![symbol],
+            Some(Path::new("/workspace")),
+        );
+        match picker {
+            crate::picker::Picker::Native { title, items, .. } => {
+                assert_eq!(title.as_ref(), "Workspace Symbols");
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].label.as_ref(), "function render");
+                assert_eq!(
+                    items[0].sublabel.as_ref().map(|label| label.as_ref()),
+                    Some("src/lib.rs:12")
+                );
+                let location = items[0]
+                    .data
+                    .downcast_ref::<crate::types::SyntaxFileLocation>()
+                    .expect("syntax file symbol item should carry a syntax file location");
+                assert_eq!(location.path, path);
+                assert_eq!(location.start, 120);
+                assert_eq!(location.end, 126);
+            }
         }
     }
 
