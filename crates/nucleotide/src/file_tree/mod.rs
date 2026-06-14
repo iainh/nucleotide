@@ -4,6 +4,7 @@
 pub mod entry;
 pub mod icons;
 // pub mod project_header;
+pub mod sidebar;
 pub mod summary;
 pub mod tree;
 pub mod view;

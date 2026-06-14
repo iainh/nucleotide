@@ -3,7 +3,8 @@
 
 use crate::file_tree::watcher::FileTreeWatcher;
 use crate::file_tree::{
-    FileTree, FileTreeConfig, FileTreeEntry, FileTreeEvent, icons::chevron_icon,
+    FileTree, FileTreeConfig, FileTreeEntry, FileTreeEvent,
+    sidebar::{ProjectTreeRow, ProjectTreeRowAction, ProjectTreeRowEvent, render_project_tree_row},
 };
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -14,10 +15,7 @@ use gpui::{
 use nucleotide_logging::{debug, error, warn};
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::ThemedContext as UIThemedContext;
-use nucleotide_ui::{
-    Theme, VcsIcon, VcsIconRenderer,
-    scrollbar::{Scrollbar, ScrollbarState},
-};
+use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_vcs::VcsServiceHandle;
 use std::path::{Path, PathBuf};
 
@@ -41,12 +39,6 @@ pub struct FileTreeView {
     pending_fs_events: std::collections::HashMap<PathBuf, FileTreeEvent>,
     /// Last file system event time for debouncing
     last_fs_event_time: Option<std::time::Instant>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FileTreeRowAction {
-    ToggleDirectory,
-    OpenFile,
 }
 
 impl FileTreeView {
@@ -1087,20 +1079,40 @@ impl FileTreeView {
         }
     }
 
-    fn primary_row_action(entry: &FileTreeEntry) -> FileTreeRowAction {
-        if entry.is_directory() {
-            FileTreeRowAction::ToggleDirectory
-        } else {
-            FileTreeRowAction::OpenFile
-        }
-    }
-
-    fn activate_entry(&mut self, path: PathBuf, action: FileTreeRowAction, cx: &mut Context<Self>) {
+    fn activate_entry(
+        &mut self,
+        path: PathBuf,
+        action: ProjectTreeRowAction,
+        cx: &mut Context<Self>,
+    ) {
         self.select_path(Some(path.clone()), cx);
 
         match action {
-            FileTreeRowAction::ToggleDirectory => self.toggle_directory(&path, cx),
-            FileTreeRowAction::OpenFile => cx.emit(FileTreeEvent::OpenFile { path }),
+            ProjectTreeRowAction::ToggleDirectory => self.toggle_directory(&path, cx),
+            ProjectTreeRowAction::OpenFile => cx.emit(FileTreeEvent::OpenFile { path }),
+        }
+    }
+
+    fn handle_project_tree_row_event(
+        &mut self,
+        row_event: ProjectTreeRowEvent,
+        position: Option<gpui::Point<gpui::Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match row_event {
+            ProjectTreeRowEvent::Activate { path, action } => {
+                self.focus_handle.focus(window, cx);
+                debug!("File tree entry clicked");
+                self.activate_entry(path, action, cx);
+            }
+            ProjectTreeRowEvent::ContextMenuRequested { path } => {
+                let Some(position) = position else {
+                    return;
+                };
+                self.request_entry_context_menu(path, position, window, cx);
+                window.prevent_default();
+            }
         }
     }
 
@@ -1127,260 +1139,42 @@ impl FileTreeView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let is_selected = self.selected_path.as_ref() == Some(&entry.path);
-        let indentation = px(entry.depth as f32 * 16.0); // 16px per level
-        let action = Self::primary_row_action(entry);
-
-        self.build_file_tree_row(entry, is_selected, indentation, action, cx)
-    }
-
-    /// Centralized helper to build a file tree row with consistent styling and slots.
-    fn build_file_tree_row(
-        &self,
-        entry: &FileTreeEntry,
-        is_selected: bool,
-        indentation: gpui::Pixels,
-        action: FileTreeRowAction,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let theme = cx.theme();
-        let file_tree_tokens = theme.tokens.file_tree_tokens();
-        let row_foreground = if is_selected {
-            theme.tokens.editor.text_on_primary
-        } else {
-            file_tree_tokens.item_text
-        };
-        let path = entry.path.clone();
-
-        div()
-            .id(("file-tree-entry", entry.id.0))
-            .w_full()
-            .h(px(30.0))
-            .px(px(0.0))
-            .py(px(0.0))
-            .rounded(px(4.0))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Right, {
-                let path = path.clone();
-                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
-                    view.request_entry_context_menu(path.clone(), event.position, window, cx);
-                    window.prevent_default();
-                    cx.stop_propagation();
-                })
-            })
-            .on_click({
-                let path = path.clone();
-                cx.listener(move |view, event: &ClickEvent, window, cx| {
-                    view.focus_handle.focus(window, cx);
-
-                    if event.modifiers().secondary() {
-                        view.request_entry_context_menu(path.clone(), event.position(), window, cx);
-                    } else {
-                        debug!("File tree entry clicked");
-                        view.activate_entry(path.clone(), action, cx);
-                    }
-
-                    cx.stop_propagation();
-                })
-            })
-            .child(
-                div()
-                    .w_full()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .pl(indentation)
-                    .pr(px(8.0))
-                    .text_color(row_foreground)
-                    .when(is_selected, |row| {
-                        row.bg(file_tree_tokens.item_background_selected)
-                    })
-                    .when(!is_selected, |row| {
-                        row.hover(move |row| {
-                            row.bg(file_tree_tokens.item_background_hover)
-                                .text_color(file_tree_tokens.item_text)
-                        })
-                    })
-                    .child(
-                        div()
-                            .w(px(14.0))
-                            .h(px(14.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .when(entry.is_directory(), |div| {
-                                div.child(self.render_chevron(entry, is_selected, cx))
-                            }),
-                    )
-                    .child(self.render_icon_with_vcs_status(entry, is_selected, cx))
-                    .child(self.render_filename_with_selection(entry, is_selected, cx)),
-            )
-            .into_any_element()
-    }
-
-    // Removed end-slot indicator per design update
-
-    /// Render the chevron for directories using design tokens
-    fn render_chevron(
-        &self,
-        entry: &FileTreeEntry,
-        is_selected: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+        let vcs_status = self.get_vcs_status_for_entry(&entry.path, cx);
+        let row = ProjectTreeRow::from_entry(entry, is_selected, vcs_status);
         let theme = cx.theme().clone();
-        let file_tree_tokens = theme.tokens.file_tree_tokens();
-        let chevron_color = if is_selected {
-            theme.tokens.editor.text_on_primary
-        } else {
-            file_tree_tokens.item_text_secondary
-        };
+        let context_menu_event = row.context_menu_event();
+        let click_row = row.clone();
 
-        chevron_icon(if entry.is_expanded { "down" } else { "right" })
-            .size_3()
-            .text_color(chevron_color)
-    }
-
-    /// Render the file/directory icon with VCS status overlay using VcsIcon component
-    fn render_icon_with_vcs_status(
-        &self,
-        entry: &FileTreeEntry,
-        is_selected: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = cx.global::<Theme>();
-        let file_tree_tokens = theme.tokens.file_tree_tokens();
-        let selected_text = theme.tokens.editor.text_on_primary;
-        let icon_color = if is_selected {
-            selected_text
-        } else {
-            file_tree_tokens.item_text
-        };
-
-        // Create the appropriate VcsIcon based on the entry type
-        let vcs_icon = match &entry.kind {
-            crate::file_tree::FileKind::Directory { .. } => VcsIcon::directory(entry.is_expanded)
-                .size(16.0)
-                .text_color(icon_color),
-            crate::file_tree::FileKind::File { extension } => {
-                VcsIcon::from_extension(extension.as_deref())
-                    .size(16.0)
-                    .text_color(icon_color)
-            }
-            crate::file_tree::FileKind::Symlink { target_exists, .. } => {
-                VcsIcon::symlink(*target_exists)
-                    .size(16.0)
-                    .text_color(if *target_exists {
-                        icon_color
-                    } else {
-                        theme.tokens.editor.error
-                    })
-            }
-        };
-
-        // Add VCS status if available
-        let vcs_icon_with_status =
-            vcs_icon.vcs_status(self.get_vcs_status_for_entry(&entry.path, cx));
-
-        // Use the VcsIconRenderer trait to render with proper theme context
-        self.render_vcs_icon(vcs_icon_with_status, cx)
-    }
-
-    /// Render the filename using color theory text colors
-    fn render_filename_with_selection(
-        &self,
-        entry: &FileTreeEntry,
-        is_selected: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = cx.theme();
-        let file_tree_tokens = theme.tokens.file_tree_tokens();
-        let selected_text = theme.tokens.editor.text_on_primary;
-
-        // For root directory, show just the directory name
-        let filename = if entry.depth == 0 && entry.is_directory() {
-            entry
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .or_else(|| {
-                    entry
-                        .path
-                        .components()
-                        .next_back()
-                        .and_then(|c| c.as_os_str().to_str())
+        render_project_tree_row(
+            row,
+            &theme,
+            |_, _, cx| cx.stop_propagation(),
+            {
+                let context_menu_event = context_menu_event.clone();
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    view.handle_project_tree_row_event(
+                        context_menu_event.clone(),
+                        Some(event.position),
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
                 })
-                .unwrap_or(".")
-                .to_string()
-        } else {
-            entry.file_name().unwrap_or("?").to_string()
-        };
-
-        // Use computed chrome text colors for consistency with chrome background
-        let mut node = div()
-            .flex_1()
-            .min_w(px(0.0))
-            .overflow_hidden()
-            .text_size(cx.global::<nucleotide_ui::Theme>().tokens.sizes.text_md) // Themed text size
-            .child(filename);
-
-        if is_selected {
-            node = node.text_color(selected_text);
-        } else if entry.depth == 0 && entry.is_directory() {
-            node = node
-                .text_color(file_tree_tokens.item_text)
-                .font_weight(gpui::FontWeight::MEDIUM);
-        } else if entry.is_hidden {
-            node = node
-                .text_color(file_tree_tokens.item_text_secondary)
-                .hover(move |node| node.text_color(file_tree_tokens.item_text));
-        } else {
-            node = node.text_color(file_tree_tokens.item_text);
-        }
-
-        node
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::file_tree::entry::FileTreeEntryId;
-
-    #[test]
-    fn primary_row_action_toggles_directories() {
-        let entry =
-            FileTreeEntry::new_directory(FileTreeEntryId(1), PathBuf::from("/workspace/src"), None);
-
-        assert_eq!(
-            FileTreeView::primary_row_action(&entry),
-            FileTreeRowAction::ToggleDirectory
-        );
-    }
-
-    #[test]
-    fn primary_row_action_opens_files_and_symlinks() {
-        let file = FileTreeEntry::new_file(
-            FileTreeEntryId(1),
-            PathBuf::from("/workspace/main.rs"),
-            12,
-            None,
-        );
-        let symlink = FileTreeEntry::new_symlink(
-            FileTreeEntryId(2),
-            PathBuf::from("/workspace/current"),
-            Some(PathBuf::from("/workspace/releases/current")),
-            true,
-            None,
-        );
-
-        assert_eq!(
-            FileTreeView::primary_row_action(&file),
-            FileTreeRowAction::OpenFile
-        );
-        assert_eq!(
-            FileTreeView::primary_row_action(&symlink),
-            FileTreeRowAction::OpenFile
-        );
+            },
+            {
+                let click_row = click_row.clone();
+                cx.listener(move |view, event: &ClickEvent, window, cx| {
+                    let row_event = click_row.click_event(event.modifiers().secondary());
+                    view.handle_project_tree_row_event(
+                        row_event,
+                        Some(event.position()),
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                })
+            },
+        )
     }
 }
 
@@ -1428,6 +1222,19 @@ impl Render for FileTreeView {
                 debug!("File tree container clicked, focusing");
                 view.focus_handle.focus(window, cx);
             }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|view, event: &MouseDownEvent, window, cx| {
+                    let root_path = view.tree.root_path().to_path_buf();
+                    view.handle_project_tree_row_event(
+                        ProjectTreeRowEvent::context_menu_for_path(root_path),
+                        Some(event.position),
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }),
+            )
             // Handle FileTree actions
             .on_action(cx.listener(
                 |view, _: &crate::actions::file_tree::SelectNext, _window, cx| {

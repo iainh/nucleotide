@@ -34,16 +34,20 @@ use nucleotide_lsp::HelixLspBridge;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 
 // ViewManager already imported above via pub use
-use nucleotide_ui::{
-    AboutWindow, Button, ButtonSize, ButtonVariant, ListItem, ListItemSpacing, ListItemVariant,
-};
+use nucleotide_ui::{AboutWindow, Button, ButtonSize, ButtonVariant};
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 use nucleotide_lsp::ServerStatus;
 
 use crate::application::find_workspace_root_from;
 use crate::document::DocumentView;
-use crate::file_tree::{FileTreeConfig, FileTreeEvent, FileTreeView};
+use crate::file_tree::{
+    FileTreeConfig, FileTreeEvent, FileTreeView,
+    sidebar::{
+        ProjectTreeContextMenuCallbacks, ProjectTreeContextMenuIntent, ProjectTreeContextMenuState,
+        render_project_tree_context_menu,
+    },
+};
 use crate::info_box::InfoBoxView;
 use crate::key_hint_view::KeyHintView;
 use crate::notification::NotificationView;
@@ -56,6 +60,8 @@ use nucleotide_events::v2::terminal::{Event as TerminalEvent, TerminalId};
 use nucleotide_terminal::TerminalBounds;
 // (no direct Workspace v2 items used here)
 use nucleotide_vcs::VcsServiceHandle;
+
+type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 
 pub struct Workspace {
     core: Entity<Core>,
@@ -560,22 +566,23 @@ impl Workspace {
 
         row.into_any_element()
     }
-    #[allow(clippy::type_complexity)]
-    #[allow(clippy::type_complexity)]
-    fn context_menu_items() -> Vec<(&'static str, fn(&mut Workspace, &mut Context<Workspace>))> {
-        vec![
-            ("New File", Workspace::cm_action_new_file),
-            ("New Folder", Workspace::cm_action_new_folder),
-            ("Rename", Workspace::cm_action_rename),
-            ("Delete", Workspace::cm_action_delete),
-            ("Duplicate", Workspace::cm_action_duplicate),
-            ("Copy Path", Workspace::cm_action_copy_path),
-            (
-                "Copy Relative Path",
-                Workspace::cm_action_copy_relative_path,
-            ),
-            ("Reveal in OS", Workspace::cm_action_reveal_in_os),
-        ]
+    fn context_menu_intents() -> &'static [ProjectTreeContextMenuIntent] {
+        ProjectTreeContextMenuIntent::common_file_operations()
+    }
+
+    fn context_menu_handler(intent: ProjectTreeContextMenuIntent) -> FileTreeContextMenuHandler {
+        match intent {
+            ProjectTreeContextMenuIntent::NewFile => Workspace::cm_action_new_file,
+            ProjectTreeContextMenuIntent::NewFolder => Workspace::cm_action_new_folder,
+            ProjectTreeContextMenuIntent::Rename => Workspace::cm_action_rename,
+            ProjectTreeContextMenuIntent::Delete => Workspace::cm_action_delete,
+            ProjectTreeContextMenuIntent::Duplicate => Workspace::cm_action_duplicate,
+            ProjectTreeContextMenuIntent::CopyPath => Workspace::cm_action_copy_path,
+            ProjectTreeContextMenuIntent::CopyRelativePath => {
+                Workspace::cm_action_copy_relative_path
+            }
+            ProjectTreeContextMenuIntent::RevealInOs => Workspace::cm_action_reveal_in_os,
+        }
     }
     /// Ensure document is in the order list, adding it to the end if new
     fn ensure_document_in_order(&mut self, doc_id: helix_view::DocumentId) {
@@ -1078,156 +1085,73 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        use gpui::{Anchor, anchored, point};
         // Move keyboard focus to the workspace focus group so arrow/enter navigation works
         window.focus(&self.focus_handle, cx);
 
-        let theme = cx.theme();
-        let tokens = &theme.tokens;
-        let (x, y) = self.context_menu_pos;
-
-        let items = Self::context_menu_items();
-        let item_count = items.len();
-
-        // Use anchored popup at the stored cursor position, relative to window
-        let dd_tokens = tokens.dropdown_tokens();
-
-        let popup = div()
-            .bg(dd_tokens.container_background)
-            .border_1()
-            .border_color(dd_tokens.border)
-            .rounded(tokens.sizes.radius_md)
-            .shadow_lg()
-            .min_w(px(200.0))
-            // Use equal padding on all sides so the selection has the same
-            // inset from the border horizontally as vertically
-            .py(tokens.sizes.space_1)
-            .px(tokens.sizes.space_1)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            // Prevent hover/move from reaching the file tree beneath the menu
-            .on_mouse_move(|_, _, cx| cx.stop_propagation())
-            .children(items.into_iter().enumerate().map(|(i, (label, handler))| {
-                let text_default = dd_tokens.item_text;
-                // Compute rounded corner radius for selected rows at the top/bottom of the menu
-                let inner_radius = tokens.sizes.radius_md - px(0.5); // Outer radius minus half border
-                let is_first = i == 0;
-                let is_last = i + 1 == item_count;
-                div()
-                    .w_full()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_move(cx.listener(move |w: &mut Workspace, _ev, _win, cx| {
-                        if w.context_menu_index != i {
-                            w.context_menu_index = i;
-                            cx.notify();
-                        }
-                    }))
-                    // Apply selection background on the full-width wrapper so it stretches edge to edge
-                    .when(self.context_menu_index == i, |d| {
-                        d.bg(dd_tokens.item_background_selected)
-                    })
-                    // Round selection corners to match the popup for first/last items
-                    .when(self.context_menu_index == i && is_first, |d| {
-                        d.rounded_tl(inner_radius).rounded_tr(inner_radius)
-                    })
-                    .when(self.context_menu_index == i && is_last, |d| {
-                        d.rounded_bl(inner_radius).rounded_br(inner_radius)
-                    })
-                    .on_mouse_up(MouseButton::Left, {
-                        let handler_fn = handler;
-                        cx.listener(move |workspace: &mut Workspace, _ev, _window, cx| {
-                            workspace.context_menu_open = false;
-                            handler_fn(workspace, cx);
-                            cx.stop_propagation();
-                        })
-                    })
-                    .child(
-                        ListItem::new(("filetree-cm", i as u32))
-                            .variant(ListItemVariant::Ghost)
-                            .spacing(ListItemSpacing::Compact)
-                            .child(
-                                div()
-                                    .w_full()
-                                    .text_size(tokens.sizes.text_sm)
-                                    // Tighter spacing for compact context menu rows
-                                    .px(tokens.sizes.space_2)
-                                    .py(tokens.sizes.space_1)
-                                    .text_color(if self.context_menu_index == i {
-                                        dd_tokens.item_text_selected
-                                    } else {
-                                        text_default
-                                    })
-                                    .child(label),
-                            ),
-                    )
-            }));
-
-        // Fullscreen backdrop to block clicks and handle outside-click dismiss
-        div()
-            .absolute()
-            .size_full()
-            .top_0()
-            .left_0()
-            .occlude()
-            // Swallow mouse move/hover so it doesn't update file tree hover beneath
-            .on_mouse_move(|_, _, cx| cx.stop_propagation())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|w: &mut Workspace, _ev, window, cx| {
-                    // Clicking backdrop closes the menu
-                    if w.context_menu_open {
-                        w.context_menu_open = false;
-                        // Restore focus to editor/file tree
-                        if let Some(coord) =
-                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
-                        {
-                            let _ = coord.focus_first(
-                                window,
-                                cx,
-                                &[
-                                    nucleotide_ui::FocusRole::Editor,
-                                    nucleotide_ui::FocusRole::FileTree,
-                                ],
-                            );
-                        }
+        let theme = cx.theme().clone();
+        render_project_tree_context_menu(
+            ProjectTreeContextMenuState {
+                theme: &theme,
+                position: self.context_menu_pos,
+                selected_index: self.context_menu_index,
+                intents: Self::context_menu_intents(),
+            },
+            cx,
+            ProjectTreeContextMenuCallbacks {
+                on_item_hover: |workspace: &mut Workspace,
+                                index: usize,
+                                _event: &MouseMoveEvent,
+                                _window: &mut Window,
+                                cx: &mut Context<Workspace>| {
+                    if workspace.context_menu_index != index {
+                        workspace.context_menu_index = index;
                         cx.notify();
                     }
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|w: &mut Workspace, _ev, window, cx| {
-                    if w.context_menu_open {
-                        w.context_menu_open = false;
-                        if let Some(coord) =
-                            cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned()
-                        {
-                            let _ = coord.focus_first(
-                                window,
-                                cx,
-                                &[
-                                    nucleotide_ui::FocusRole::Editor,
-                                    nucleotide_ui::FocusRole::FileTree,
-                                ],
-                            );
-                        }
-                        cx.notify();
-                    }
-                }),
-            )
-            .child(
-                anchored()
-                    .position(point(px(x), px(y)))
-                    .anchor(Anchor::TopLeft)
-                    // Offset the menu away from the cursor so the pointer isn't directly above the first item
-                    .offset(point(px(8.0), px(8.0)))
-                    .snap_to_window_with_margin(tokens.sizes.space_2)
-                    .child(popup),
-            )
+                },
+                on_item_activate: |workspace: &mut Workspace,
+                                   intent: ProjectTreeContextMenuIntent,
+                                   _event: &MouseUpEvent,
+                                   _window: &mut Window,
+                                   cx: &mut Context<Workspace>| {
+                    workspace.context_menu_open = false;
+                    let handler_fn = Workspace::context_menu_handler(intent);
+                    handler_fn(workspace, cx);
+                    cx.stop_propagation();
+                },
+                on_backdrop_mouse_down:
+                    |workspace: &mut Workspace,
+                     _event: &MouseDownEvent,
+                     window: &mut Window,
+                     cx: &mut Context<Workspace>| {
+                        workspace.dismiss_file_tree_context_menu(window, cx);
+                        cx.stop_propagation();
+                    },
+            },
+        )
     }
 
     // --- Context menu action handlers (stubs that close the menu and log) ---
     fn close_context_menu(&mut self, cx: &mut Context<Self>) {
         self.context_menu_open = false;
+        cx.notify();
+    }
+
+    fn dismiss_file_tree_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.context_menu_open {
+            return;
+        }
+
+        self.context_menu_open = false;
+        if let Some(coord) = cx.try_global::<nucleotide_ui::FocusCoordinator>().cloned() {
+            let _ = coord.focus_first(
+                window,
+                cx,
+                &[
+                    nucleotide_ui::FocusRole::Editor,
+                    nucleotide_ui::FocusRole::FileTree,
+                ],
+            );
+        }
         cx.notify();
     }
 
@@ -1633,7 +1557,7 @@ impl Workspace {
                     return;
                 }
                 "down" => {
-                    let len = Self::context_menu_items().len();
+                    let len = Self::context_menu_intents().len();
                     if len > 0 {
                         self.context_menu_index = (self.context_menu_index + 1) % len;
                         cx.notify();
@@ -1641,7 +1565,7 @@ impl Workspace {
                     return;
                 }
                 "up" => {
-                    let len = Self::context_menu_items().len();
+                    let len = Self::context_menu_intents().len();
                     if len > 0 {
                         self.context_menu_index = (self.context_menu_index + len - 1) % len;
                         cx.notify();
@@ -1649,9 +1573,9 @@ impl Workspace {
                     return;
                 }
                 "enter" => {
-                    let items = Self::context_menu_items();
-                    if let Some((_, handler)) = items.get(self.context_menu_index) {
-                        let handler_fn = *handler;
+                    if let Some(intent) = Self::context_menu_intents().get(self.context_menu_index)
+                    {
+                        let handler_fn = Self::context_menu_handler(*intent);
                         self.context_menu_open = false;
                         handler_fn(self, cx);
                     } else {
@@ -9063,6 +8987,20 @@ mod tests {
 
     fn default_file_picker_config() -> helix_view::editor::FilePickerConfig {
         helix_view::editor::Config::default().file_picker
+    }
+
+    #[test]
+    fn file_tree_context_menu_items_follow_sidebar_intent_order() {
+        let actual: Vec<_> = Workspace::context_menu_intents()
+            .iter()
+            .map(|intent| intent.label())
+            .collect();
+        let expected: Vec<_> = ProjectTreeContextMenuIntent::common_file_operations()
+            .iter()
+            .map(|intent| intent.label())
+            .collect();
+
+        assert_eq!(actual, expected);
     }
 
     fn selection_fragments(selection: &Selection, text: &Rope) -> Vec<String> {
