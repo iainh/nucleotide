@@ -1692,6 +1692,7 @@ impl Workspace {
                     let info = HelixInfo {
                         title: "Leader (space)".into(),
                         text: "f   File Finder\n\
+                               F   File Finder (cwd)\n\
                                b   Buffer Picker\n\
                                t   Toggle File Tree\n\
                                a   Code Actions\n\
@@ -1722,6 +1723,26 @@ impl Workspace {
                         cx.notify();
                     });
                     show_code_actions(self.core.clone(), self.handle.clone(), cx);
+                    return;
+                }
+                "f" if self.leader_active && ev.keystroke.modifiers.shift => {
+                    info!("Leader: SPACE-F detected, opening File Finder in cwd");
+                    self.leader_active = false;
+                    self.leader_deadline = None;
+                    self.key_hints.update(cx, |key_hints, cx| {
+                        key_hints.set_info(None);
+                        cx.notify();
+                    });
+                    let cwd = helix_stdx::env::current_working_dir();
+                    if cwd.exists() {
+                        cx.emit(crate::Update::ShowFilePickerAt(cwd));
+                    } else {
+                        self.core.update(cx, |core, _cx| {
+                            core.editor
+                                .set_error("Current working directory does not exist");
+                        });
+                        cx.notify();
+                    }
                     return;
                 }
                 "f" if self.leader_active => {
@@ -4056,6 +4077,15 @@ impl Workspace {
                 let handle = self.handle.clone();
                 let core = self.core.clone();
                 open(core, handle, cx);
+            }
+            crate::Update::ShowFilePickerAt(path) => {
+                nucleotide_logging::info!(
+                    path = %path.display(),
+                    "DIAG: Workspace received ShowFilePickerAt"
+                );
+                let handle = self.handle.clone();
+                let core = self.core.clone();
+                open_at(core, handle, path.clone(), cx);
             }
             crate::Update::ShowBufferPicker => {
                 nucleotide_logging::info!("DIAG: Workspace received ShowBufferPicker");
@@ -8109,7 +8139,22 @@ fn load_tutor(core: Entity<Core>, handle: tokio::runtime::Handle, cx: &mut Conte
     })
 }
 
-fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
+fn open(core: Entity<Core>, handle: tokio::runtime::Handle, cx: &mut App) {
+    let base_dir = core.update(cx, |core, _| {
+        core.project_directory
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+    });
+
+    open_at(core, handle, base_dir, cx);
+}
+
+fn open_at(
+    core: Entity<Core>,
+    _handle: tokio::runtime::Handle,
+    base_dir: std::path::PathBuf,
+    cx: &mut App,
+) {
     use crate::picker_view::PickerItem;
     use ignore::WalkBuilder;
     use std::sync::Arc;
@@ -8119,12 +8164,6 @@ fn open(core: Entity<Core>, _handle: tokio::runtime::Handle, cx: &mut App) {
     // Get all files in the current directory using ignore crate (respects .gitignore)
     let mut items = Vec::new();
 
-    // Use project directory if set, otherwise use current directory
-    let base_dir = core.update(cx, |core, _| {
-        core.project_directory
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-    });
     info!("Base directory for file picker: {:?}", base_dir);
 
     // Use ignore::Walk to get files, respecting .gitignore and other VCS ignore files

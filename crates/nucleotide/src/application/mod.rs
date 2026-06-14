@@ -2017,6 +2017,32 @@ impl Application {
                         editor_input::NativePickerRequest::File => {
                             cx.emit(crate::Update::ShowFilePicker);
                         }
+                        editor_input::NativePickerRequest::FileCurrentDirectory => {
+                            let cwd = helix_stdx::env::current_working_dir();
+                            if cwd.exists() {
+                                cx.emit(crate::Update::ShowFilePickerAt(cwd));
+                            } else {
+                                self.editor
+                                    .set_error("Current working directory does not exist");
+                            }
+                        }
+                        editor_input::NativePickerRequest::FileCurrentBufferDirectory => {
+                            let current_buffer_directory = self
+                                .editor
+                                .tree
+                                .try_get(self.editor.tree.focus)
+                                .and_then(|view| self.editor.document(view.doc))
+                                .and_then(|doc| doc.path())
+                                .and_then(|path| path.parent())
+                                .map(Path::to_path_buf);
+
+                            if let Some(path) = current_buffer_directory {
+                                cx.emit(crate::Update::ShowFilePickerAt(path));
+                            } else {
+                                self.editor
+                                    .set_error("current buffer has no path or parent");
+                            }
+                        }
                         editor_input::NativePickerRequest::Buffer => {
                             cx.emit(crate::Update::ShowBufferPicker);
                         }
