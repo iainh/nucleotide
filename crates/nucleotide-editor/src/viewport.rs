@@ -923,6 +923,35 @@ mod tests {
         assert_eq!(doc.text().char_to_line(doc.view_offset(view_id).anchor), 10);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn surface_layout_roundtrips_scroll_to_trailing_newline_eof() {
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo\n");
+        let mut viewport = EditorViewport::new(px(20.0));
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(21.0)));
+        let layout = EditorViewportSurfaceLayout {
+            theme: None,
+            bounds,
+            cell_width: px(8.0),
+            line_height: px(20.0),
+            minimum_columns: 1,
+            cursor_reveal: None,
+        };
+
+        viewport
+            .sync_surface_layout(&mut editor, doc_id, view_id, layout)
+            .unwrap();
+        let eof_row = viewport.content_visual_rows().saturating_sub(1);
+        viewport.scroll_to_vertical_position_from_scrollbar(viewport.max_scroll_offset().height);
+
+        let update = viewport
+            .sync_surface_layout(&mut editor, doc_id, view_id, layout)
+            .unwrap();
+
+        assert!(update.helix_view_synced);
+        assert_eq!(viewport.top_visual_row(), eof_row);
+        assert_eq!(update.helix_snapshot.top_visual_row, eof_row);
+    }
+
     #[test]
     fn surface_viewport_size_uses_text_area_height() {
         let bounds = Bounds::new(point(px(10.0), px(20.0)), size(px(300.0), px(101.0)));
