@@ -8,7 +8,7 @@ use helix_core::{
     graphemes::Grapheme,
     text_annotations::TextAnnotations,
 };
-use helix_view::{Document, Theme, ViewId, view::ViewPosition};
+use helix_view::{Document, Theme, view::ViewPosition};
 
 use crate::{EditorSurfaceGeometry, document_text_format_for_surface};
 
@@ -62,7 +62,7 @@ pub struct SoftWrapRenderPlanParams<'a> {
 pub struct DocumentSoftWrapRenderPlanParams<'a> {
     pub document: &'a Document,
     pub theme: Option<&'a Theme>,
-    pub view_id: ViewId,
+    pub view_position: ViewPosition,
     pub bounds: Bounds<Pixels>,
     pub gutter_columns: u16,
     pub cell_width: Pixels,
@@ -114,7 +114,7 @@ pub fn document_soft_wrap_render_plan(
     soft_wrap_render_plan(SoftWrapRenderPlanParams {
         text: params.document.text().slice(..),
         text_format,
-        view_offset: params.document.view_offset(params.view_id),
+        view_offset: params.view_position,
         bounds: params.bounds,
         gutter_columns: params.gutter_columns,
         cell_width: params.cell_width,

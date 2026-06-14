@@ -420,6 +420,7 @@ pub fn native_editor_frame_paint_plan(
         theme: params.theme,
         first_row: params.frame_state.first_row,
         last_row_from_scroll: params.frame_state.last_row_from_scroll,
+        view_position: params.frame_state.viewport_update.view_position,
         soft_wrap_enabled: params.frame_state.viewport_update.soft_wrap,
         unwrapped_gutter_layout: Some(params.layout),
         bounds: params.bounds,
