@@ -64,8 +64,9 @@ pub use document_frame::{
 };
 pub use document_frame_painter::{
     DocumentFramePaintParams, NativeEditorFramePaintParams, NativeEditorFramePaintPlan,
-    NativeEditorFramePaintStyle, NativeEditorFramePlanParams, native_editor_frame_paint_plan,
-    paint_document_frame, paint_native_editor_frame,
+    NativeEditorFramePaintStyle, NativeEditorFramePaintStyleParams, NativeEditorFramePlanParams,
+    native_editor_frame_paint_plan, native_editor_frame_paint_style, paint_document_frame,
+    paint_native_editor_frame,
 };
 pub use document_metrics::{
     EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,

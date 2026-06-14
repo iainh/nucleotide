@@ -12,11 +12,12 @@ use crate::{
     EditorLineBackgroundStyle, EditorSurfaceGeometry, EditorViewFrameState, EditorViewState,
     LineLayoutCache, SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams,
     SoftWrapGutterPaintParams, UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams,
-    build_gutter_lines_from_plans, editor_document_frame_from_editor, gutter::SoftWrapGutterLine,
+    build_gutter_lines_from_plans, cursor_style_for_mode, editor_document_frame_from_editor,
+    gutter::SoftWrapGutterLine, highlight::gpui_hsla_to_helix_color,
     paint_diagnostic_gutter_markers, paint_editor_background, paint_gutter_lines,
     paint_soft_wrap_editor_line, paint_soft_wrap_gutter, paint_unwrapped_editor_line,
     paint_visible_rulers, shape_and_paint_editor_cursor, soft_wrap_cursor_paint_plan,
-    unwrapped_cursor_paint_plan,
+    style::helix_color_to_hsla, unwrapped_cursor_paint_plan,
 };
 
 pub struct DocumentFramePaintParams<'a> {
@@ -57,6 +58,72 @@ pub struct NativeEditorFramePaintStyle {
     pub gutter_bg: Option<Hsla>,
     pub wrap_indicator_color: Option<Hsla>,
     pub ruler_color: Hsla,
+}
+
+pub struct NativeEditorFramePaintStyleParams<'a, F>
+where
+    F: FnMut(&str) -> Style,
+{
+    pub editor: &'a Editor,
+    pub theme_style: F,
+    pub fg_color: Hsla,
+    pub bg_color: Hsla,
+    pub selection_primary: Hsla,
+    pub selection_secondary: Hsla,
+    pub fallback_gutter_color: Hsla,
+    pub diagnostic_highlight_base: Hsla,
+    pub fallback_ruler_color: Hsla,
+}
+
+pub fn native_editor_frame_paint_style<F>(
+    mut params: NativeEditorFramePaintStyleParams<'_, F>,
+) -> NativeEditorFramePaintStyle
+where
+    F: FnMut(&str) -> Style,
+{
+    let default_text_style = Style {
+        fg: gpui_hsla_to_helix_color(params.fg_color),
+        bg: gpui_hsla_to_helix_color(params.bg_color),
+        ..Default::default()
+    };
+    let cursor_style = cursor_style_for_mode(params.editor.mode(), |key| (params.theme_style)(key));
+    let wrap_indicator_color = (params.theme_style)("ui.virtual.wrap")
+        .fg
+        .and_then(helix_color_to_hsla);
+    let ruler_color = (params.theme_style)("ui.virtual.ruler")
+        .bg
+        .and_then(helix_color_to_hsla)
+        .unwrap_or(params.fallback_ruler_color);
+    let cursorline_color = (params.theme_style)("ui.cursorline.primary")
+        .bg
+        .and_then(helix_color_to_hsla);
+    let gutter_color = (params.theme_style)("ui.linenr")
+        .fg
+        .and_then(helix_color_to_hsla)
+        .unwrap_or(params.fallback_gutter_color);
+    let gutter_selected_color = (params.theme_style)("ui.linenr.selected")
+        .fg
+        .and_then(helix_color_to_hsla)
+        .unwrap_or(params.fallback_gutter_color);
+    let gutter_bg = (params.theme_style)("ui.gutter")
+        .bg
+        .and_then(helix_color_to_hsla);
+
+    NativeEditorFramePaintStyle {
+        fg_color: params.fg_color,
+        bg_color: params.bg_color,
+        default_text_style,
+        cursor_style,
+        cursorline_color,
+        selection_primary: params.selection_primary,
+        selection_secondary: params.selection_secondary,
+        gutter_color,
+        gutter_selected_color,
+        diagnostic_highlight_base: params.diagnostic_highlight_base,
+        gutter_bg,
+        wrap_indicator_color,
+        ruler_color,
+    }
 }
 
 pub struct NativeEditorFramePlanParams<'a> {
@@ -682,7 +749,7 @@ mod tests {
     use helix_view::{
         DocumentId, Editor, ViewId,
         editor::{Action, Config},
-        graphics::{Rect, Style},
+        graphics::{Color, Modifier, Rect, Style},
         handlers::Handlers,
         theme,
     };
@@ -726,6 +793,71 @@ mod tests {
         doc.apply(&transaction, view_id);
 
         (editor, doc_id, view_id)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_frame_paint_style_resolves_theme_styles_and_fallbacks() {
+        let (editor, _, _) = test_editor_with_text("one\n");
+        let fallback_gutter_color = helix_color_to_hsla(Color::Rgb(80, 90, 100)).unwrap();
+        let fallback_ruler_color = helix_color_to_hsla(Color::Rgb(110, 120, 130)).unwrap();
+        let selection_primary = helix_color_to_hsla(Color::Rgb(140, 150, 160)).unwrap();
+        let selection_secondary = helix_color_to_hsla(Color::Rgb(170, 180, 190)).unwrap();
+        let diagnostic_highlight_base = helix_color_to_hsla(Color::Rgb(200, 210, 220)).unwrap();
+
+        let style = native_editor_frame_paint_style(NativeEditorFramePaintStyleParams {
+            editor: &editor,
+            theme_style: |key| match key {
+                "ui.cursor" => Style::default().add_modifier(Modifier::BOLD),
+                "ui.cursor.primary" => Style::default().bg(Color::Rgb(1, 2, 3)),
+                "ui.virtual.wrap" => Style::default().fg(Color::Rgb(4, 5, 6)),
+                "ui.virtual.ruler" => Style::default().bg(Color::Rgb(7, 8, 9)),
+                "ui.cursorline.primary" => Style::default().bg(Color::Rgb(10, 11, 12)),
+                "ui.linenr" => Style::default().fg(Color::Rgb(13, 14, 15)),
+                "ui.gutter" => Style::default().bg(Color::Rgb(16, 17, 18)),
+                _ => Style::default(),
+            },
+            fg_color: black(),
+            bg_color: white(),
+            selection_primary,
+            selection_secondary,
+            fallback_gutter_color,
+            diagnostic_highlight_base,
+            fallback_ruler_color,
+        });
+
+        assert_eq!(style.fg_color, black());
+        assert_eq!(style.bg_color, white());
+        assert_eq!(
+            style.default_text_style.fg,
+            gpui_hsla_to_helix_color(black())
+        );
+        assert_eq!(
+            style.default_text_style.bg,
+            gpui_hsla_to_helix_color(white())
+        );
+        assert_eq!(style.cursor_style.bg, Some(Color::Rgb(1, 2, 3)));
+        assert!(style.cursor_style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(
+            style.wrap_indicator_color,
+            helix_color_to_hsla(Color::Rgb(4, 5, 6))
+        );
+        assert_eq!(
+            style.ruler_color,
+            helix_color_to_hsla(Color::Rgb(7, 8, 9)).unwrap()
+        );
+        assert_eq!(
+            style.cursorline_color,
+            helix_color_to_hsla(Color::Rgb(10, 11, 12))
+        );
+        assert_eq!(
+            style.gutter_color,
+            helix_color_to_hsla(Color::Rgb(13, 14, 15)).unwrap()
+        );
+        assert_eq!(style.gutter_selected_color, fallback_gutter_color);
+        assert_eq!(style.gutter_bg, helix_color_to_hsla(Color::Rgb(16, 17, 18)));
+        assert_eq!(style.selection_primary, selection_primary);
+        assert_eq!(style.selection_secondary, selection_secondary);
+        assert_eq!(style.diagnostic_highlight_base, diagnostic_highlight_base);
     }
 
     fn paint_style() -> NativeEditorFramePaintStyle {

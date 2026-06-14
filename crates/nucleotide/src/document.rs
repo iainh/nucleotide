@@ -15,11 +15,10 @@ use crate::Core;
 use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
     EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewportContentLayout,
-    EditorViewportSurfaceLayout, NativeEditorFramePaintParams, NativeEditorFramePaintStyle,
-    NativeEditorFramePlanParams, NativeEditorView, cursor_document_line, cursor_style_for_mode,
-    gpui_hsla_to_helix_color, native_editor_frame_paint_plan, paint_native_editor_frame,
+    EditorViewportSurfaceLayout, NativeEditorFramePaintParams, NativeEditorFramePaintStyleParams,
+    NativeEditorFramePlanParams, NativeEditorView, cursor_document_line,
+    native_editor_frame_paint_plan, native_editor_frame_paint_style, paint_native_editor_frame,
 };
-use nucleotide_ui::theme_utils::color_to_hsla;
 
 // Removed unused debug helper: test_synthetic_click_accuracy
 /*
@@ -482,46 +481,22 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         let tokens = cx.theme().tokens;
         let bg_color = tokens.editor.background;
         let fg_color = tokens.editor.text_primary;
-        let default_text_style = helix_view::graphics::Style {
-            fg: gpui_hsla_to_helix_color(tokens.editor.text_primary),
-            bg: gpui_hsla_to_helix_color(tokens.editor.background),
-            ..Default::default()
-        };
-
         let document = match editor.document(doc_id) {
             Some(doc) => doc,
             None => return,
         };
-        let editor_mode = editor.mode();
-
-        let cursor_style = cursor_style_for_mode(editor_mode, |key| cx.theme_style(key));
-        let wrap_indicator_color = cx.theme_style("ui.virtual.wrap").fg.and_then(color_to_hsla);
-        const THEME_KEY_VIRTUAL_RULER: &str = "ui.virtual.ruler";
-        let ruler_style = cx.theme_style(THEME_KEY_VIRTUAL_RULER);
-        let ruler_color = ruler_style.bg.and_then(color_to_hsla).unwrap_or_else(|| {
-            // Use UI theme's border color from tokens
-            cx.ui_theme().tokens.chrome.border_default
+        let ui_tokens = cx.ui_theme().tokens;
+        let paint_style = native_editor_frame_paint_style(NativeEditorFramePaintStyleParams {
+            editor,
+            theme_style: |key| cx.theme_style(key),
+            fg_color,
+            bg_color,
+            selection_primary: tokens.editor.selection_primary,
+            selection_secondary: tokens.editor.selection_secondary,
+            fallback_gutter_color: ui_tokens.editor.line_number,
+            diagnostic_highlight_base: tokens.chrome.text_on_chrome,
+            fallback_ruler_color: ui_tokens.chrome.border_default,
         });
-
-        let cursorline_style = cx
-            .theme_style("ui.cursorline.primary")
-            .bg
-            .and_then(color_to_hsla);
-        let gutter_style = cx.theme_style("ui.linenr");
-        let gutter_selected_style = cx.theme_style("ui.linenr.selected");
-        let default_gutter_color = cx.ui_theme().tokens.editor.line_number;
-        let gutter_color = gutter_style
-            .fg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(default_gutter_color);
-        let gutter_selected_color = gutter_selected_style
-            .fg
-            .and_then(crate::utils::color_to_hsla)
-            .unwrap_or(default_gutter_color);
-        let gutter_bg = cx
-            .theme_style("ui.gutter")
-            .bg
-            .and_then(crate::utils::color_to_hsla);
         native_editor_frame_paint_plan(NativeEditorFramePlanParams {
             editor,
             document,
@@ -535,21 +510,7 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
             font_size: style.font_size.to_pixels(px(16.0)),
             is_focused,
             soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
-            style: NativeEditorFramePaintStyle {
-                fg_color,
-                bg_color,
-                default_text_style,
-                cursor_style,
-                cursorline_color: cursorline_style,
-                selection_primary: tokens.editor.selection_primary,
-                selection_secondary: tokens.editor.selection_secondary,
-                gutter_color,
-                gutter_selected_color,
-                diagnostic_highlight_base: cx.theme().tokens.chrome.text_on_chrome,
-                gutter_bg,
-                wrap_indicator_color,
-                ruler_color,
-            },
+            style: paint_style,
         })
     };
 
