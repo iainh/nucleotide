@@ -4099,6 +4099,12 @@ impl Workspace {
                 let core = self.core.clone();
                 show_code_actions(core, handle, cx);
             }
+            crate::Update::ShowHoverDocs => {
+                nucleotide_logging::info!("Workspace received ShowHoverDocs");
+                let handle = self.handle.clone();
+                let core = self.core.clone();
+                show_hover_docs(core, handle, cx);
+            }
             crate::Update::Info(info) => {
                 self.info_hidden = false;
                 self.info.update(cx, |info_box, info_cx| {

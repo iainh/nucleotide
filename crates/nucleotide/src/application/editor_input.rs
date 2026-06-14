@@ -44,6 +44,7 @@ pub enum NativePickerRequest {
     Buffer,
     Diagnostics { workspace: bool },
     CodeActions,
+    HoverDocs,
 }
 
 pub struct EditorInputBridge {
@@ -808,6 +809,7 @@ fn native_picker_command(command: &MappableCommand) -> Option<NativePickerReques
             Some(NativePickerRequest::Diagnostics { workspace: true })
         }
         "code_action" => Some(NativePickerRequest::CodeActions),
+        "hover" => Some(NativePickerRequest::HoverDocs),
         _ => None,
     }
 }
@@ -1225,6 +1227,10 @@ mod tests {
             native_picker_command(&MappableCommand::code_action),
             Some(NativePickerRequest::CodeActions)
         );
+        assert_eq!(
+            native_picker_command(&MappableCommand::hover),
+            Some(NativePickerRequest::HoverDocs)
+        );
         assert_eq!(native_picker_command(&MappableCommand::command_mode), None);
         assert_eq!(native_picker_command(&MappableCommand::normal_mode), None);
     }
@@ -1346,6 +1352,30 @@ mod tests {
                 );
             }
             _ => panic!("expected SPACE-a to resolve to code_action"),
+        }
+    }
+
+    #[test]
+    fn default_space_k_keymap_requests_hover_docs() {
+        use std::str::FromStr;
+
+        let mut keymaps = Keymaps::default();
+        let space = KeyEvent::from_str("space").unwrap();
+        let k = KeyEvent::from_str("k").unwrap();
+
+        assert!(matches!(
+            keymaps.get(Mode::Normal, space),
+            KeymapResult::Pending(_)
+        ));
+
+        match keymaps.get(Mode::Normal, k) {
+            KeymapResult::Matched(command) => {
+                assert_eq!(
+                    native_picker_command(&command),
+                    Some(NativePickerRequest::HoverDocs)
+                );
+            }
+            _ => panic!("expected SPACE-k to resolve to hover"),
         }
     }
 
