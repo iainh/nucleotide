@@ -15,9 +15,8 @@ use crate::Core;
 use nucleotide_editor::{
     EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorCursorReveal, EditorLayout, EditorPointerSelectionPhase,
     EditorSurfacePointerEvent, EditorTextMetrics, EditorViewState, EditorViewportContentLayout,
-    EditorViewportSurfaceLayout, NativeEditorFramePaintParams, NativeEditorFramePaintStyleParams,
-    NativeEditorFramePlanParams, NativeEditorView, cursor_document_line,
-    native_editor_frame_paint_plan, native_editor_frame_paint_style, paint_native_editor_frame,
+    NativeEditorFramePaintParams, NativeEditorFramePrepareParams, NativeEditorView,
+    cursor_document_line, paint_native_editor_frame, prepare_native_editor_frame,
 };
 
 // Removed unused debug helper: test_synthetic_click_accuracy
@@ -450,68 +449,34 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         cx,
     } = params;
 
-    let theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
-    let frame_state = core.update(cx, |core, _cx| {
-        editor_state.sync_frame_layout(
-            &mut core.editor,
+    let helix_theme = cx.global::<crate::ThemeManager>().helix_theme().clone();
+    let prepared_frame = core.update(cx, |core, cx| {
+        let tokens = cx.theme().tokens;
+        let ui_tokens = cx.ui_theme().tokens;
+        prepare_native_editor_frame(NativeEditorFramePrepareParams {
+            editor: &mut core.editor,
             doc_id,
             view_id,
-            EditorViewportSurfaceLayout::for_editor(
-                Some(&theme),
-                bounds,
-                layout.cell_width,
-                layout.line_height,
-                None,
-            ),
-        )
-    });
-    let Some(frame_state) = frame_state else {
-        return;
-    };
-
-    let paint_plan = {
-        let core = core.read(cx);
-        let editor = &core.editor;
-
-        let view = match editor.tree.try_get(view_id) {
-            Some(v) => v,
-            None => return,
-        };
-        let _viewport = view.area;
-        let tokens = cx.theme().tokens;
-        let bg_color = tokens.editor.background;
-        let fg_color = tokens.editor.text_primary;
-        let document = match editor.document(doc_id) {
-            Some(doc) => doc,
-            None => return,
-        };
-        let ui_tokens = cx.ui_theme().tokens;
-        let paint_style = native_editor_frame_paint_style(NativeEditorFramePaintStyleParams {
-            editor,
-            theme_style: |key| cx.theme_style(key),
-            fg_color,
-            bg_color,
-            selection_primary: tokens.editor.selection_primary,
-            selection_secondary: tokens.editor.selection_secondary,
-            fallback_gutter_color: ui_tokens.editor.line_number,
-            diagnostic_highlight_base: tokens.chrome.text_on_chrome,
-            fallback_ruler_color: ui_tokens.chrome.border_default,
-        });
-        native_editor_frame_paint_plan(NativeEditorFramePlanParams {
-            editor,
-            document,
-            view,
-            view_id,
-            theme: &theme,
-            frame_state: &frame_state,
+            editor_state,
+            theme: &helix_theme,
             bounds,
             layout,
             text_style: style,
             font_size: style.font_size.to_pixels(px(16.0)),
             is_focused,
             soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
-            style: paint_style,
+            theme_style: |key| cx.theme_style(key),
+            fg_color: tokens.editor.text_primary,
+            bg_color: tokens.editor.background,
+            selection_primary: tokens.editor.selection_primary,
+            selection_secondary: tokens.editor.selection_secondary,
+            fallback_gutter_color: ui_tokens.editor.line_number,
+            diagnostic_highlight_base: tokens.chrome.text_on_chrome,
+            fallback_ruler_color: ui_tokens.chrome.border_default,
         })
+    });
+    let Some(prepared_frame) = prepared_frame else {
+        return;
     };
 
     let element_focused = focus.is_focused(window);
@@ -520,11 +485,11 @@ fn paint_document_content(params: DocumentPaintParams<'_>) {
         cx,
         NativeEditorFramePaintParams {
             editor_state,
-            frame_state: &frame_state,
-            plan: &paint_plan,
+            frame_state: &prepared_frame.frame_state,
+            plan: &prepared_frame.paint_plan,
             layout,
             text_style: style,
-            diagnostic_theme: &theme,
+            diagnostic_theme: &helix_theme,
             element_focused,
         },
     );

@@ -3,21 +3,21 @@
 
 use gpui::{App, Bounds, Hsla, Pixels, TextStyle, Window, px};
 use helix_core::{Rope, RopeSlice};
-use helix_view::{Document, Editor, Theme, View, ViewId, graphics::Style};
+use helix_view::{Document, DocumentId, Editor, Theme, View, ViewId, graphics::Style};
 use nucleotide_logging::{debug, error};
 
 use crate::{
     CursorOverlayPlan, DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams,
     EditorDocumentFrame, EditorDocumentFrameFromEditorParams, EditorLayout,
     EditorLineBackgroundStyle, EditorSurfaceGeometry, EditorViewFrameState, EditorViewState,
-    LineLayoutCache, SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams,
-    SoftWrapGutterPaintParams, UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams,
-    build_gutter_lines_from_plans, cursor_style_for_mode, editor_document_frame_from_editor,
-    gutter::SoftWrapGutterLine, highlight::gpui_hsla_to_helix_color,
-    paint_diagnostic_gutter_markers, paint_editor_background, paint_gutter_lines,
-    paint_soft_wrap_editor_line, paint_soft_wrap_gutter, paint_unwrapped_editor_line,
-    paint_visible_rulers, shape_and_paint_editor_cursor, soft_wrap_cursor_paint_plan,
-    style::helix_color_to_hsla, unwrapped_cursor_paint_plan,
+    EditorViewportSurfaceLayout, LineLayoutCache, SoftWrapCursorPaintPlanParams,
+    SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams, UnwrappedCursorPaintPlanParams,
+    UnwrappedEditorLinePaintParams, build_gutter_lines_from_plans, cursor_style_for_mode,
+    editor_document_frame_from_editor, gutter::SoftWrapGutterLine,
+    highlight::gpui_hsla_to_helix_color, paint_diagnostic_gutter_markers, paint_editor_background,
+    paint_gutter_lines, paint_soft_wrap_editor_line, paint_soft_wrap_gutter,
+    paint_unwrapped_editor_line, paint_visible_rulers, shape_and_paint_editor_cursor,
+    soft_wrap_cursor_paint_plan, style::helix_color_to_hsla, unwrapped_cursor_paint_plan,
 };
 
 pub struct DocumentFramePaintParams<'a> {
@@ -142,6 +142,31 @@ pub struct NativeEditorFramePlanParams<'a> {
     pub style: NativeEditorFramePaintStyle,
 }
 
+pub struct NativeEditorFramePrepareParams<'a, F>
+where
+    F: FnMut(&str) -> Style,
+{
+    pub editor: &'a mut Editor,
+    pub doc_id: DocumentId,
+    pub view_id: ViewId,
+    pub editor_state: &'a mut EditorViewState,
+    pub theme: &'a Theme,
+    pub bounds: Bounds<Pixels>,
+    pub layout: &'a mut EditorLayout,
+    pub text_style: &'a TextStyle,
+    pub font_size: Pixels,
+    pub is_focused: bool,
+    pub soft_wrap_minimum_columns: u16,
+    pub theme_style: F,
+    pub fg_color: Hsla,
+    pub bg_color: Hsla,
+    pub selection_primary: Hsla,
+    pub selection_secondary: Hsla,
+    pub fallback_gutter_color: Hsla,
+    pub diagnostic_highlight_base: Hsla,
+    pub fallback_ruler_color: Hsla,
+}
+
 pub struct NativeEditorFramePaintPlan {
     frame: EditorDocumentFrame,
     text: Rope,
@@ -159,6 +184,11 @@ pub struct NativeEditorFramePaintParams<'a> {
     pub text_style: &'a TextStyle,
     pub diagnostic_theme: &'a Theme,
     pub element_focused: bool,
+}
+
+pub struct NativeEditorPreparedFrame {
+    pub frame_state: EditorViewFrameState,
+    pub paint_plan: NativeEditorFramePaintPlan,
 }
 
 struct UnwrappedDocumentFramePaintParams<'a> {
@@ -199,6 +229,59 @@ struct SoftWrapDocumentFramePaintParams<'a> {
     pub diagnostic_highlight_base: Hsla,
     pub gutter_bg: Option<Hsla>,
     pub scroll_line_offset: Pixels,
+}
+
+pub fn prepare_native_editor_frame<F>(
+    params: NativeEditorFramePrepareParams<'_, F>,
+) -> Option<NativeEditorPreparedFrame>
+where
+    F: FnMut(&str) -> Style,
+{
+    let frame_state = params.editor_state.sync_frame_layout(
+        params.editor,
+        params.doc_id,
+        params.view_id,
+        EditorViewportSurfaceLayout::for_editor(
+            Some(params.theme),
+            params.bounds,
+            params.layout.cell_width,
+            params.layout.line_height,
+            None,
+        ),
+    )?;
+    let view = params.editor.tree.try_get(params.view_id)?;
+    let document = params.editor.document(params.doc_id)?;
+    let paint_style = native_editor_frame_paint_style(NativeEditorFramePaintStyleParams {
+        editor: params.editor,
+        theme_style: params.theme_style,
+        fg_color: params.fg_color,
+        bg_color: params.bg_color,
+        selection_primary: params.selection_primary,
+        selection_secondary: params.selection_secondary,
+        fallback_gutter_color: params.fallback_gutter_color,
+        diagnostic_highlight_base: params.diagnostic_highlight_base,
+        fallback_ruler_color: params.fallback_ruler_color,
+    });
+    let paint_plan = native_editor_frame_paint_plan(NativeEditorFramePlanParams {
+        editor: params.editor,
+        document,
+        view,
+        view_id: params.view_id,
+        theme: params.theme,
+        frame_state: &frame_state,
+        bounds: params.bounds,
+        layout: params.layout,
+        text_style: params.text_style,
+        font_size: params.font_size,
+        is_focused: params.is_focused,
+        soft_wrap_minimum_columns: params.soft_wrap_minimum_columns,
+        style: paint_style,
+    });
+
+    Some(NativeEditorPreparedFrame {
+        frame_state,
+        paint_plan,
+    })
 }
 
 pub fn native_editor_frame_paint_plan(
@@ -930,5 +1013,71 @@ mod tests {
         assert!(plan.frame.cursorline_enabled);
         assert_eq!(plan.bounds, bounds);
         assert_eq!(plan.font_size, px(16.0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prepare_native_editor_frame_syncs_layout_and_builds_plan() {
+        let mut state = EditorViewState::new(px(20.0), px(8.0));
+        let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo\n");
+        let theme = theme::Loader::new(&[]).default_theme(true);
+        let bounds = gpui::Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0)));
+        let text_style = TextStyle::default();
+        let mut layout = crate::EditorLayout {
+            rows: 6,
+            columns: 30,
+            line_height: px(20.0),
+            font_size: px(16.0),
+            cell_width: px(8.0),
+        };
+
+        let prepared = prepare_native_editor_frame(NativeEditorFramePrepareParams {
+            editor: &mut editor,
+            doc_id,
+            view_id,
+            editor_state: &mut state,
+            theme: &theme,
+            bounds,
+            layout: &mut layout,
+            text_style: &text_style,
+            font_size: px(16.0),
+            is_focused: true,
+            soft_wrap_minimum_columns: EDITOR_MINIMUM_VIEWPORT_COLUMNS,
+            theme_style: |_| Style::default(),
+            fg_color: black(),
+            bg_color: white(),
+            selection_primary: black(),
+            selection_secondary: white(),
+            fallback_gutter_color: black(),
+            diagnostic_highlight_base: black(),
+            fallback_ruler_color: black(),
+        })
+        .unwrap();
+
+        let document = editor.document(doc_id).unwrap();
+        assert_eq!(
+            prepared.paint_plan.text.to_string(),
+            document.text().to_string()
+        );
+        assert_eq!(
+            prepared.paint_plan.frame.total_lines,
+            document.text().len_lines()
+        );
+        assert_eq!(prepared.paint_plan.bounds, bounds);
+        assert_eq!(prepared.paint_plan.font_size, px(16.0));
+        assert!(prepared.frame_state.viewport_update.visual_rows >= 2);
+        assert_eq!(
+            prepared.frame_state.first_row,
+            state.viewport().visible_visual_range().0
+        );
+        assert_eq!(
+            prepared.frame_state.last_row_from_scroll,
+            state.viewport().visible_visual_range().1
+        );
+        assert_eq!(
+            prepared.frame_state.scroll_line_offset,
+            state.viewport().offset_within_row()
+        );
+        assert_eq!(state.surface_metrics().get().cell_width, px(8.0));
+        assert_eq!(state.surface_metrics().get().line_height, px(20.0));
     }
 }
