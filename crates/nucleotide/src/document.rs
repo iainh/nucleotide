@@ -1,7 +1,7 @@
 use gpui::{
     App, Bounds, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, SharedString,
-    Styled, TextStyle, Window, div, px,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, Styled,
+    TextStyle, Window, div, px,
 };
 // Import helix's syntax highlighting system
 use helix_view::{DocumentId, ViewId};
@@ -144,9 +144,11 @@ impl Render for DocumentView {
             let view_id = self.view_id;
             let style = self.style.clone();
             let focus = self.focus.clone();
+            let paint_focus = focus.clone();
             let is_focused = self.is_focused;
+            let input = self.input.clone();
 
-            NativeEditorView::new(
+            let mut editor_content = NativeEditorView::new(
                 cx.entity_id(),
                 self.editor_state.clone(),
                 style.clone(),
@@ -156,7 +158,7 @@ impl Render for DocumentView {
                         doc_id,
                         view_id,
                         style: &style,
-                        focus: &focus,
+                        focus: &paint_focus,
                         is_focused,
                         editor_state,
                         bounds,
@@ -166,48 +168,49 @@ impl Render for DocumentView {
                     })
                 },
             )
-            .on_cursor_overlay(|overlay_plan, cx| {
-                let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
-                if let Some(overlay_plan) = overlay_plan {
-                    layout_info.cursor_position = Some(overlay_plan.cursor_position);
-                    layout_info.cursor_size = Some(overlay_plan.cursor_size);
-                } else {
-                    layout_info.cursor_position = None;
-                    layout_info.cursor_size = None;
-                }
-            })
-            .on_pointer_selection({
-                let core = self.core.clone();
-                let view_id = self.view_id;
-                let editor_state = self.editor_state.clone();
+            .track_focus(focus.clone());
 
-                move |phase, event, cx| {
-                    handle_editor_pointer_selection(
-                        &core,
-                        doc_id,
-                        view_id,
-                        &editor_state,
-                        phase,
-                        event,
-                        cx,
-                    );
-                }
-            })
+            if let Some(input) = input {
+                editor_content = editor_content.on_key_down(move |ev, _window, cx| {
+                    let key = crate::utils::translate_key(&ev.keystroke);
+                    input.update(cx, |_, cx| {
+                        cx.emit(InputEvent::Key(key));
+                    });
+                });
+            }
+
+            editor_content
+                .on_cursor_overlay(|overlay_plan, cx| {
+                    let layout_info = cx.global_mut::<crate::overlay::WorkspaceLayoutInfo>();
+                    if let Some(overlay_plan) = overlay_plan {
+                        layout_info.cursor_position = Some(overlay_plan.cursor_position);
+                        layout_info.cursor_size = Some(overlay_plan.cursor_size);
+                    } else {
+                        layout_info.cursor_position = None;
+                        layout_info.cursor_size = None;
+                    }
+                })
+                .on_pointer_selection({
+                    let core = self.core.clone();
+                    let view_id = self.view_id;
+                    let editor_state = self.editor_state.clone();
+
+                    move |phase, event, cx| {
+                        handle_editor_pointer_selection(
+                            &core,
+                            doc_id,
+                            view_id,
+                            &editor_state,
+                            phase,
+                            event,
+                            cx,
+                        );
+                    }
+                })
         };
 
         div()
             .id(SharedString::from(format!("doc-view-{:?}", self.view_id)))
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(|view, ev: &KeyDownEvent, _window, cx| {
-                let Some(input) = &view.input else {
-                    return;
-                };
-                let key = crate::utils::translate_key(&ev.keystroke);
-                input.update(cx, |_, cx| {
-                    cx.emit(InputEvent::Key(key));
-                });
-                cx.stop_propagation();
-            }))
             .w_full()
             .h_full()
             .flex()
