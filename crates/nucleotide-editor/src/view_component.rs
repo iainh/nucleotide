@@ -202,6 +202,16 @@ where
             });
         }
 
+        if let Some(focus) = focus {
+            editor_surface = editor_surface.track_focus(focus);
+        }
+
+        if let Some(on_key_down) = on_key_down {
+            editor_surface = editor_surface.on_key_down(move |event, window, cx| {
+                on_key_down(event, window, cx);
+            });
+        }
+
         if on_pointer_selection.is_some() || on_mouse_down.is_some() {
             let on_pointer_selection = on_pointer_selection.clone();
             editor_surface = editor_surface.on_mouse_down(move |event, cx| {
@@ -237,25 +247,9 @@ where
             });
         }
 
-        let mut root = div()
-            .key_context("Editor")
-            .id("editor-content")
-            .w_full()
-            .h_full()
-            .flex();
+        let root = div().id("editor-content").w_full().h_full().flex();
 
-        if let Some(on_key_down) = on_key_down {
-            root = root.on_key_down(move |event, window, cx| {
-                on_key_down(event, window, cx);
-                cx.stop_propagation();
-            });
-        }
-
-        let mut paint_area = div().id("editor-paint-area").w_full().h_full().flex_1();
-
-        if let Some(focus) = focus {
-            paint_area = paint_area.track_focus(&focus);
-        }
+        let paint_area = div().id("editor-paint-area").w_full().h_full().flex_1();
 
         root.child(paint_area.child(editor_surface))
     }
