@@ -117,12 +117,7 @@ impl LinuxTitlebar {
             // Fallback to default tokens
             #[cfg(debug_assertions)]
             warn!("No theme provider available, using default titlebar tokens");
-            TitleBarTokens {
-                background: gpui::hsla(0.0, 0.0, 0.95, 1.0),
-                foreground: gpui::hsla(0.0, 0.0, 0.2, 1.0),
-                border: gpui::hsla(0.0, 0.0, 0.8, 1.0),
-                height: px(34.0),
-            }
+            crate::DesignTokens::dark().titlebar_tokens()
         };
 
         // Choose style based on desktop environment

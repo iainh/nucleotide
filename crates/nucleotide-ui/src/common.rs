@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use gpui::prelude::FluentBuilder;
-use gpui::{App, FocusHandle, Hsla, IntoElement, ParentElement, Styled, Window, div, hsla, px};
+use gpui::{App, FocusHandle, Hsla, IntoElement, ParentElement, Styled, Window, div, px};
 
 /// Common modal styling configuration
 #[derive(Clone)]
@@ -61,52 +61,38 @@ impl ModalStyle {
             };
         }
 
-        // Fallback: Derive from Helix theme (legacy path)
+        // Fallback: derive chrome tokens from the Helix popup/background surface.
         use crate::theme_utils::color_to_hsla;
         let fallback_tokens = Self::default();
-        let background = theme
+        let surface = theme
             .get("ui.popup")
             .bg
             .and_then(color_to_hsla)
             .or_else(|| theme.get("ui.background").bg.and_then(color_to_hsla))
             .unwrap_or(fallback_tokens.background);
-        let text = theme
-            .get("ui.text")
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or(fallback_tokens.text);
-        let selected_background = theme
-            .get("ui.menu.selected")
-            .bg
-            .and_then(color_to_hsla)
-            .or_else(|| theme.get("ui.selection").bg.and_then(color_to_hsla))
-            .unwrap_or(fallback_tokens.selected_background);
-        let selected_text = theme
-            .get("ui.menu.selected")
-            .fg
-            .and_then(color_to_hsla)
-            .unwrap_or(text);
-        let border = theme
-            .get("ui.popup")
-            .fg
-            .and_then(color_to_hsla)
-            .or_else(|| theme.get("ui.text").fg.and_then(color_to_hsla))
-            .map(|color| hsla(color.h, color.s, color.l * 0.5, color.a))
-            .unwrap_or(fallback_tokens.border);
-        let prompt_text = theme
-            .get("ui.text")
-            .fg
-            .and_then(color_to_hsla)
-            .map(|color| hsla(color.h, color.s, color.l * 0.7, color.a))
-            .unwrap_or(fallback_tokens.prompt_text);
+        let is_dark = surface.l < 0.5;
+        let chrome = crate::tokens::ChromeTokens::from_surface_color(surface, is_dark);
+        let editor = crate::tokens::EditorTokens::fallback(is_dark);
+        let tokens = crate::DesignTokens {
+            editor,
+            chrome,
+            sizes: crate::tokens::SizeTokens::default(),
+        };
+        let dd = tokens.dropdown_tokens();
+        let background = tokens.chrome.popup_background;
+        let text = crate::styling::ColorTheory::ensure_contrast(
+            background,
+            tokens.chrome.text_on_chrome,
+            crate::styling::color_theory::ContrastRatios::AA_NORMAL,
+        );
 
         Self {
             background,
             text,
-            border,
-            selected_background,
-            selected_text,
-            prompt_text,
+            border: tokens.chrome.popup_border,
+            selected_background: dd.item_background_selected,
+            selected_text: dd.item_text_selected,
+            prompt_text: tokens.chrome.text_chrome_secondary,
         }
     }
 }

@@ -185,7 +185,10 @@ impl RenderOnce for Notification {
             .text_color(text_color)
             .border_1()
             .border_color(border_color)
-            .shadow_sm()
+            .shadow(vec![
+                theme.tokens.chrome.shadow_sm.to_box_shadow(false),
+                theme.tokens.chrome.inset_highlight.to_box_shadow(true),
+            ])
             .rounded_sm()
             .font(
                 cx.global::<nucleotide_types::FontSettings>()

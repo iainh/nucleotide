@@ -185,7 +185,10 @@ impl RenderOnce for TabOverflowMenu {
             .border_1()
             .border_color(dd_tokens.border)
             .rounded(tokens.sizes.radius_lg)
-            .shadow_lg()
+            .shadow(vec![
+                tokens.chrome.shadow_md.to_box_shadow(false),
+                tokens.chrome.inset_highlight.to_box_shadow(true),
+            ])
             .overflow_y_hidden()
             .flex()
             .flex_col()

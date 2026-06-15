@@ -613,7 +613,10 @@ impl Render for DiagnosticsPanel {
             .border_1()
             .border_color(modal_tokens.picker_tokens().border)
             .rounded_md()
-            .shadow_lg()
+            .shadow(vec![
+                modal_tokens.chrome.shadow_lg.to_box_shadow(false),
+                modal_tokens.chrome.inset_highlight.to_box_shadow(true),
+            ])
             .font(ui_font)
             .text_size(ui_text_size)
             .overflow_hidden()

@@ -366,10 +366,14 @@ mod component_token_tests {
             let status_bar = tokens.status_bar_tokens();
             let tab_bar = tokens.tab_bar_tokens();
 
-            // Verify all components have consistent separator colors
-            assert_eq!(titlebar.border, tokens.chrome.separator_color);
+            // Verify outer component edges use the shaded border color.
+            assert_eq!(titlebar.border, tokens.chrome.border_shadow);
+            assert_eq!(file_tree.border, tokens.chrome.border_shadow);
+            assert_eq!(status_bar.border, tokens.chrome.border_shadow);
+            assert_eq!(tab_bar.tab_border, tokens.chrome.border_shadow);
+
+            // Verify internal separators remain consistent.
             assert_eq!(file_tree.separator, tokens.chrome.separator_color);
-            assert_eq!(status_bar.border, tokens.chrome.separator_color);
             assert_eq!(tab_bar.tab_separator, tokens.chrome.separator_color);
 
             // Verify chrome backgrounds are computed correctly
@@ -392,6 +396,51 @@ mod component_token_tests {
             );
 
             println!("{} theme component consistency validated ✓", theme_name);
+        }
+    }
+
+    /// Test border shading and shadow depth tokens across themes.
+    #[test]
+    fn test_chrome_depth_tokens() {
+        let test_themes = [
+            ("Light", DesignTokens::light()),
+            ("Dark", DesignTokens::dark()),
+        ];
+
+        for (theme_name, tokens) in test_themes {
+            assert_ne!(
+                tokens.chrome.border_highlight, tokens.chrome.border_shadow,
+                "{} theme should provide distinct highlight and shadow border shades",
+                theme_name
+            );
+            assert!(tokens.chrome.border_highlight.a > 0.0);
+            assert!(tokens.chrome.border_shadow.a > 0.0);
+
+            let highlight_contrast =
+                ColorTheory::contrast_ratio(tokens.chrome.surface, tokens.chrome.border_highlight);
+            let shadow_contrast =
+                ColorTheory::contrast_ratio(tokens.chrome.surface, tokens.chrome.border_shadow);
+            assert!(
+                highlight_contrast > 1.0,
+                "{} theme highlight border should be visible against the surface",
+                theme_name
+            );
+            assert!(
+                shadow_contrast > 1.0,
+                "{} theme shadow border should be visible against the surface",
+                theme_name
+            );
+
+            assert!(tokens.chrome.shadow_sm.color.a > 0.0);
+            assert!(tokens.chrome.shadow_md.color.a >= tokens.chrome.shadow_sm.color.a);
+            assert!(tokens.chrome.shadow_lg.color.a >= tokens.chrome.shadow_md.color.a);
+            assert!(
+                f32::from(tokens.chrome.shadow_lg.blur_radius)
+                    > f32::from(tokens.chrome.shadow_sm.blur_radius)
+            );
+            assert_eq!(f32::from(tokens.chrome.shadow_sm.spread_radius), 0.0);
+
+            println!("{} theme depth tokens validated ✓", theme_name);
         }
     }
 
@@ -561,7 +610,7 @@ mod component_token_tests {
             dropdown_tokens.container_background,
             tokens.chrome.surface_elevated
         );
-        assert_eq!(dropdown_tokens.border, tokens.chrome.border_strong);
+        assert_eq!(dropdown_tokens.border, tokens.chrome.border_shadow);
 
         // Test that items use Helix selection colors
         assert_eq!(
@@ -709,8 +758,8 @@ mod component_token_tests {
         );
 
         // Test border consistency
-        assert_eq!(tooltip_tokens.border, tokens.chrome.border_strong);
-        assert_eq!(tooltip_tokens.arrow_border, tokens.chrome.border_strong);
+        assert_eq!(tooltip_tokens.border, tokens.chrome.border_shadow);
+        assert_eq!(tooltip_tokens.arrow_border, tokens.chrome.border_shadow);
 
         // Test shadow has transparency
         assert!(tooltip_tokens.shadow.a < 1.0);
@@ -735,7 +784,7 @@ mod component_token_tests {
         assert!(notification_tokens.error_background.a < 1.0);
 
         // Test info uses chrome colors
-        assert_eq!(notification_tokens.info_border, tokens.chrome.border_strong);
+        assert_eq!(notification_tokens.info_border, tokens.chrome.border_shadow);
 
         // Test close button has hover state
         assert!(notification_tokens.close_button_background_hover.a > 0.0);

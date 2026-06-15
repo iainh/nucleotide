@@ -66,7 +66,10 @@ impl Render for InfoBoxView {
             .child(
                 div()
                     .rounded_sm()
-                    .shadow_sm()
+                    .shadow(vec![
+                        theme.tokens.chrome.shadow_sm.to_box_shadow(false),
+                        theme.tokens.chrome.inset_highlight.to_box_shadow(true),
+                    ])
                     .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size - 1.0))
                     .bg(tooltip_tokens.background)
                     .text_color(tooltip_tokens.text)

@@ -84,42 +84,14 @@ impl RenderOnce for PromptElement {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match &self.prompt {
             Prompt::Legacy(text_with_style) => {
-                // Get colors from helix theme if available
-                let (bg_color, text_color, border_color) = if let Some(theme) = &self.theme {
-                    let ui_bg = theme.get("ui.background");
-                    let ui_text = theme.get("ui.text");
-                    let ui_window = theme.get("ui.window");
-
-                    let bg = ui_bg
-                        .bg
-                        .and_then(crate::theme_utils::color_to_hsla)
-                        .unwrap_or_else(|| cx.global::<crate::Theme>().tokens.chrome.surface);
-                    let text = ui_text
-                        .fg
-                        .and_then(crate::theme_utils::color_to_hsla)
-                        .unwrap_or_else(|| {
-                            cx.global::<crate::Theme>().tokens.chrome.text_on_chrome
-                        });
-                    let border = ui_window
-                        .fg
-                        .and_then(crate::theme_utils::color_to_hsla)
-                        .unwrap_or_else(|| {
-                            cx.global::<crate::Theme>().tokens.chrome.border_default
-                        });
-
-                    (bg, text, border)
-                } else {
-                    // Fallback to style from rendered text or defaults
-                    let bg = text_with_style
-                        .style(0)
-                        .and_then(|style| style.background_color)
-                        .unwrap_or_else(|| cx.global::<crate::Theme>().tokens.chrome.surface);
-                    (
-                        bg,
-                        cx.global::<crate::Theme>().tokens.chrome.text_on_chrome,
-                        cx.global::<crate::Theme>().tokens.chrome.border_default,
-                    )
-                };
+                let ui_theme = cx.global::<crate::Theme>().clone();
+                let bg_color = ui_theme.tokens.chrome.popup_background;
+                let text_color = crate::styling::ColorTheory::ensure_contrast(
+                    bg_color,
+                    ui_theme.tokens.chrome.text_on_chrome,
+                    crate::styling::color_theory::ContrastRatios::AA_NORMAL,
+                );
+                let border_color = ui_theme.tokens.chrome.popup_border;
 
                 let default_style = TextStyle {
                     font_family: "JetBrains Mono".into(),
@@ -140,7 +112,10 @@ impl RenderOnce for PromptElement {
                     .border_1()
                     .border_color(border_color)
                     .rounded_md()
-                    .shadow_lg()
+                    .shadow(vec![
+                        ui_theme.tokens.chrome.shadow_lg.to_box_shadow(false),
+                        ui_theme.tokens.chrome.inset_highlight.to_box_shadow(true),
+                    ])
                     .text_color(text_color)
                     .font(
                         cx.global::<nucleotide_types::FontSettings>()

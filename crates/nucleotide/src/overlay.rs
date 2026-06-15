@@ -1527,7 +1527,10 @@ impl OverlayView {
             .border_1()
             .border_color(tokens.chrome.border_default)
             .rounded(px(8.0))
-            .shadow_md()
+            .shadow(vec![
+                tokens.chrome.shadow_md.to_box_shadow(false),
+                tokens.chrome.inset_highlight.to_box_shadow(true),
+            ])
             .child(
                 div()
                     .px(px(12.0))

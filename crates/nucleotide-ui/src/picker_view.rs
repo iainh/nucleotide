@@ -946,6 +946,7 @@ impl PickerView {
         let list_width = dimensions.list_width;
         let preview_width = dimensions.preview_width;
         let show_preview = dimensions.show_preview;
+        let ui_theme = cx.global::<crate::Theme>();
 
         div()
             .flex()
@@ -957,7 +958,14 @@ impl PickerView {
             .border_1()
             .border_color(self.style.modal_style.border)
             .rounded_md()
-            .shadow_lg()
+            .shadow(vec![
+                ui_theme.tokens.chrome.shadow_lg.to_box_shadow(false),
+                ui_theme
+                    .tokens
+                    .chrome
+                    .inset_highlight
+                    .to_box_shadow(true),
+            ])
             .font(font)
             .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size))
             .overflow_hidden()

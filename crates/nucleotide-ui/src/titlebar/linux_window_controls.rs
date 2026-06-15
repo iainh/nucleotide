@@ -3,7 +3,7 @@
 
 use gpui::{
     App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce,
-    StatefulInteractiveElement, Styled, Window, div, hsla, svg,
+    StatefulInteractiveElement, Styled, Window, div, svg,
 };
 
 use crate::styling::ColorTheory;
@@ -51,16 +51,13 @@ pub struct LinuxControlStyle {
 impl LinuxControlStyle {
     /// Create GNOME-style controls (Adwaita theme inspired)
     pub fn gnome_style(
-        titlebar_tokens: TitleBarTokens,
-        _theme_tokens: &crate::DesignTokens,
+        _titlebar_tokens: TitleBarTokens,
+        theme_tokens: &crate::DesignTokens,
     ) -> Self {
-        let bg = titlebar_tokens.background;
-        let fg = titlebar_tokens.foreground;
-
         // GNOME uses more prominent button styling
-        let button_bg = ColorTheory::mix_oklch(bg, fg, 0.08); // Subtle background
-        let hover_bg = ColorTheory::mix_oklch(bg, fg, 0.15);
-        let active_bg = ColorTheory::mix_oklch(bg, fg, 0.25);
+        let button_bg = theme_tokens.chrome.surface;
+        let hover_bg = theme_tokens.chrome.surface_hover;
+        let active_bg = theme_tokens.chrome.surface_active;
 
         debug!(
             "Creating GNOME-style controls - bg: {:?}, hover: {:?}, active: {:?}",
@@ -71,22 +68,19 @@ impl LinuxControlStyle {
             background: button_bg,
             background_hover: hover_bg,
             background_active: active_bg,
-            icon: ColorTheory::mix_oklch(fg, bg, 0.2), // Softer icon color
-            icon_hover: fg,
-            border: Some(ColorTheory::mix_oklch(bg, fg, 0.12)),
+            icon: theme_tokens.chrome.text_chrome_secondary,
+            icon_hover: theme_tokens.chrome.text_on_chrome,
+            border: Some(theme_tokens.chrome.border_default),
             border_radius: 8.0, // GNOME's rounded corners
         }
     }
 
     /// Create KDE-style controls (Breeze theme inspired)  
-    pub fn kde_style(titlebar_tokens: TitleBarTokens, _theme_tokens: &crate::DesignTokens) -> Self {
-        let bg = titlebar_tokens.background;
-        let fg = titlebar_tokens.foreground;
-
+    pub fn kde_style(_titlebar_tokens: TitleBarTokens, theme_tokens: &crate::DesignTokens) -> Self {
         // KDE uses flatter, more subtle styling
-        let button_bg = hsla(0.0, 0.0, 0.0, 0.0); // Transparent by default
-        let hover_bg = ColorTheory::mix_oklch(bg, fg, 0.1);
-        let active_bg = ColorTheory::mix_oklch(bg, fg, 0.2);
+        let button_bg = ColorTheory::transparent();
+        let hover_bg = theme_tokens.chrome.surface_hover;
+        let active_bg = theme_tokens.chrome.surface_active;
 
         debug!(
             "Creating KDE-style controls - bg: {:?}, hover: {:?}, active: {:?}",
@@ -97,8 +91,8 @@ impl LinuxControlStyle {
             background: button_bg,
             background_hover: hover_bg,
             background_active: active_bg,
-            icon: ColorTheory::mix_oklch(fg, bg, 0.25),
-            icon_hover: fg,
+            icon: theme_tokens.chrome.text_chrome_secondary,
+            icon_hover: theme_tokens.chrome.text_on_chrome,
             border: None,       // KDE typically doesn't use borders
             border_radius: 4.0, // Subtle rounded corners
         }
@@ -106,21 +100,18 @@ impl LinuxControlStyle {
 
     /// Create minimal style for tiling window managers
     pub fn minimal_style(
-        titlebar_tokens: TitleBarTokens,
-        _theme_tokens: &crate::DesignTokens,
+        _titlebar_tokens: TitleBarTokens,
+        theme_tokens: &crate::DesignTokens,
     ) -> Self {
-        let bg = titlebar_tokens.background;
-        let fg = titlebar_tokens.foreground;
-
         // Minimal styling - just icon colors
         debug!("Creating minimal-style controls for tiling WM");
 
         Self {
-            background: hsla(0.0, 0.0, 0.0, 0.0), // Fully transparent
-            background_hover: ColorTheory::mix_oklch(bg, fg, 0.05), // Very subtle
-            background_active: ColorTheory::mix_oklch(bg, fg, 0.1),
-            icon: ColorTheory::mix_oklch(fg, bg, 0.4), // More subtle icons
-            icon_hover: fg,
+            background: ColorTheory::transparent(),
+            background_hover: theme_tokens.chrome.surface_hover,
+            background_active: theme_tokens.chrome.surface_active,
+            icon: theme_tokens.chrome.text_chrome_disabled,
+            icon_hover: theme_tokens.chrome.text_on_chrome,
             border: None,
             border_radius: 2.0,
         }
