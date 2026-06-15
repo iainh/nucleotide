@@ -16,11 +16,11 @@ use std::sync::Arc;
 use gpui::FontFeatures;
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, AppContext, BorrowAppContext, Context, DismissEvent, DragMoveEvent, Empty, Entity,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
+    Anchor, App, AppContext, BorrowAppContext, Bounds, Context, DismissEvent, DragMoveEvent, Empty,
+    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
     Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
-    WindowAppearance, WindowBackgroundAppearance, black, div, px, white,
+    WindowAppearance, WindowBackgroundAppearance, anchored, black, canvas, div, point, px, white,
 };
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::{Rope, RopeSlice, Selection};
@@ -216,6 +216,7 @@ pub struct Workspace {
     // Tab bar split menu state
     tab_bar_split_menu_open: bool,
     tab_bar_split_menu_pos: (f32, f32),
+    tab_bar_split_button_bounds: Option<Bounds<Pixels>>,
     tab_bar_split_menu_index: usize,
     // Tab bar new item menu state
     tab_bar_new_menu_open: bool,
@@ -2244,6 +2245,7 @@ impl Workspace {
             pinned_documents: HashSet::new(),
             tab_bar_split_menu_open: false,
             tab_bar_split_menu_pos: (0.0, 0.0),
+            tab_bar_split_button_bounds: None,
             tab_bar_split_menu_index: 0,
             tab_bar_new_menu_open: false,
             tab_bar_new_menu_pos: (0.0, 0.0),
@@ -2742,10 +2744,10 @@ impl Workspace {
                 }),
             )
             .child(
-                div()
-                    .absolute()
-                    .left(px(x + 8.0))
-                    .top(px(y + 8.0))
+                anchored()
+                    .position(point(px(x), px(y)))
+                    .anchor(Anchor::TopLeft)
+                    .snap_to_window_with_margin(tokens.sizes.space_2)
                     .child(popup),
             )
     }
@@ -2853,10 +2855,10 @@ impl Workspace {
                 }),
             )
             .child(
-                div()
-                    .absolute()
-                    .left(px(x + 8.0))
-                    .top(px(y + 8.0))
+                anchored()
+                    .position(point(px(x), px(y)))
+                    .anchor(Anchor::TopRight)
+                    .snap_to_window_with_margin(tokens.sizes.space_2)
                     .child(popup),
             )
     }
@@ -6924,30 +6926,64 @@ impl Workspace {
                         }),
                 )
                 .end_child(
-                    Button::icon_only("tab-split-menu", "icons/columns-2.svg")
-                        .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Small)
-                        .tooltip("Split Pane")
-                        .activate_on_mouse_down()
-                        .disabled(!has_documents)
-                        .on_click({
-                            let workspace = cx.entity().clone();
-                            move |event, window, cx| {
-                                workspace.update(cx, |workspace, cx| {
-                                    let position = event.position();
-                                    workspace.tab_context_menu_open = false;
-                                    workspace.tab_context_menu_doc_id = None;
-                                    workspace.tab_bar_new_menu_open = false;
-                                    workspace.tab_bar_split_menu_open = true;
-                                    workspace.tab_bar_split_menu_pos =
-                                        (f32::from(position.x), f32::from(position.y));
-                                    workspace.tab_bar_split_menu_index = 0;
-                                    window.focus(&workspace.focus_handle, cx);
-                                    cx.notify();
-                                });
-                                cx.stop_propagation();
-                            }
-                        }),
+                    div()
+                        .relative()
+                        .child(
+                            Button::icon_only("tab-split-menu", "icons/columns-2.svg")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Small)
+                                .tooltip("Split Pane")
+                                .activate_on_mouse_down()
+                                .disabled(!has_documents)
+                                .on_click({
+                                    let workspace = cx.entity().clone();
+                                    move |event, window, cx| {
+                                        workspace.update(cx, |workspace, cx| {
+                                            if workspace.tab_bar_split_menu_open {
+                                                workspace.tab_bar_split_menu_open = false;
+                                                workspace.tab_context_menu_open = false;
+                                                workspace.tab_context_menu_doc_id = None;
+                                                workspace.tab_bar_new_menu_open = false;
+                                                cx.notify();
+                                                return;
+                                            }
+
+                                            let fallback_position = event.position();
+                                            let menu_position = workspace
+                                                .tab_bar_split_button_bounds
+                                                .map(|bounds| bounds.bottom_right())
+                                                .unwrap_or(fallback_position);
+                                            workspace.tab_context_menu_open = false;
+                                            workspace.tab_context_menu_doc_id = None;
+                                            workspace.tab_bar_new_menu_open = false;
+                                            workspace.tab_bar_split_menu_open = true;
+                                            workspace.tab_bar_split_menu_pos = (
+                                                f32::from(menu_position.x),
+                                                f32::from(menu_position.y),
+                                            );
+                                            workspace.tab_bar_split_menu_index = 0;
+                                            window.focus(&workspace.focus_handle, cx);
+                                            cx.notify();
+                                        });
+                                        cx.stop_propagation();
+                                    }
+                                }),
+                        )
+                        .child(
+                            canvas(
+                                {
+                                    let workspace = cx.entity().clone();
+                                    move |bounds, _window, cx| {
+                                        workspace.update(cx, |workspace, _cx| {
+                                            workspace.tab_bar_split_button_bounds = Some(bounds);
+                                        });
+                                    }
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .size_full(),
+                        ),
                 )
                 .end_child(
                     Button::icon_only("tab-toggle-zoom", tab_bar_zoom_icon_path)
