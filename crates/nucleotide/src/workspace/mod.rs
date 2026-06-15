@@ -28,7 +28,7 @@ use helix_lsp::lsp;
 use helix_stdx::rope::RopeSliceExt;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
-use helix_view::{DocumentId, ViewId};
+use helix_view::{DocumentId, ViewId, graphics::Rect as HelixRect};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use nucleotide_lsp::HelixLspBridge;
@@ -118,6 +118,13 @@ struct TabContextMenuCapabilities {
     has_project_panel_path: bool,
     has_terminal_directory: bool,
     is_readonly: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DocumentViewLayout {
+    view_id: ViewId,
+    area: HelixRect,
+    is_focused: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8709,6 +8716,57 @@ impl Workspace {
         }
     }
 
+    fn document_view_layouts(&self, cx: &mut Context<Self>) -> Vec<DocumentViewLayout> {
+        self.core
+            .read(cx)
+            .editor
+            .tree
+            .views()
+            .map(|(view, is_focused)| DocumentViewLayout {
+                view_id: view.id,
+                area: view.area,
+                is_focused,
+            })
+            .collect()
+    }
+
+    fn render_document_view_layout(
+        &self,
+        layout: DocumentViewLayout,
+        line_height: Pixels,
+        cell_width: Pixels,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let view_entity = self
+            .view_manager
+            .get_document_view(&layout.view_id)?
+            .clone();
+        let theme = cx.theme();
+        let left = f32::from(layout.area.x) * f32::from(cell_width);
+        let top = f32::from(layout.area.y) * f32::from(line_height);
+        let width = (f32::from(layout.area.width) * f32::from(cell_width)).max(1.0);
+        let height = (f32::from(layout.area.height) * f32::from(line_height)).max(1.0);
+
+        Some(
+            div()
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(width))
+                .h(px(height))
+                .overflow_hidden()
+                .when(layout.is_focused, |d| {
+                    d.border_1().border_color(theme.tokens.editor.focus_ring)
+                })
+                .when(self.debug_colors_enabled, |d| {
+                    d.border_1()
+                        .border_color(theme.tokens.chrome.border_default)
+                })
+                .child(view_entity)
+                .into_any_element(),
+        )
+    }
+
     // /// Trigger completion UI based on current editor state
 
     /// Send a key directly to Helix, ensuring the editor has focus
@@ -9307,8 +9365,10 @@ impl Render for Workspace {
         let mut docs_root = div()
             .id("docs-root")
             .flex()
+            .relative()
             .w_full()
             .h_full()
+            .overflow_hidden()
             // Background color inherited // Use semantic background color
             .when(self.debug_colors_enabled, |d| {
                 // Editor docs area border (green)
@@ -9316,32 +9376,32 @@ impl Render for Workspace {
                     .border_color(cx.theme().tokens.chrome.border_strong)
             }); // No gap needed for documents
 
-        // Render an editor view even if focus is not currently on the editor
-        let maybe_view_entity = if let Some(focused_view_id) = self.view_manager.focused_view_id() {
-            self.view_manager
-                .get_document_view(&focused_view_id)
-                .cloned()
+        let (line_h_px, char_w_px, _, _, _) = self.get_focused_document_view_layout(cx);
+        let layouts = self.document_view_layouts(cx);
+        if layouts.is_empty() {
+            if let Some(doc_view) = self.view_manager.document_views().values().next().cloned() {
+                docs_root = docs_root.child(
+                    div()
+                        .id("document-container")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .when(self.debug_colors_enabled, |d| {
+                            d.border_1()
+                                .border_color(cx.theme().tokens.chrome.border_default)
+                        })
+                        .child(doc_view),
+                );
+            }
         } else {
-            // Fallback to Helix's tree focus or any existing view entity
-            let helix_focus = self.core.read(cx).editor.tree.focus;
-            self.view_manager
-                .get_document_view(&helix_focus)
-                .cloned()
-                .or_else(|| self.view_manager.document_views().values().next().cloned())
-        };
-
-        if let Some(doc_view) = maybe_view_entity {
-            let doc_element = div()
-                .id("document-container")
-                .flex()
-                .size_full()
-                .when(self.debug_colors_enabled, |d| {
-                    // Individual document container (teal)
-                    d.border_1()
-                        .border_color(cx.theme().tokens.chrome.border_default)
-                })
-                .child(doc_view);
-            docs_root = docs_root.child(doc_element);
+            for layout in layouts {
+                if let Some(doc_element) =
+                    self.render_document_view_layout(layout, line_h_px, char_w_px, cx)
+                {
+                    docs_root = docs_root.child(doc_element);
+                }
+            }
         }
 
         let focused_view = self
