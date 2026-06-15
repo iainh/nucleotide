@@ -3,7 +3,7 @@
 
 use gpui::{
     App, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce, Styled,
-    Window, WindowControlArea, hsla, svg,
+    Window, WindowControlArea, svg,
 };
 
 use crate::styling::{ColorTheory, StyleSize, StyleState, StyleVariant, compute_component_style};
@@ -41,31 +41,30 @@ pub struct WindowControlStyle {
 impl WindowControlStyle {
     pub fn default_from_tokens(
         titlebar_tokens: TitleBarTokens,
-        _theme_tokens: &crate::DesignTokens,
+        theme_tokens: &crate::DesignTokens,
     ) -> Self {
         // Create ghost button style that works on the titlebar background
         let bg = titlebar_tokens.background;
-        let fg = titlebar_tokens.foreground;
 
         // Create hover background that's subtle on titlebar
-        let hover_bg = ColorTheory::lighten(bg, 0.05);
+        let hover_bg = theme_tokens.chrome.surface_hover;
 
         debug!(
             "TITLEBAR WINDOW_CONTROL: Creating default control style - bg={:?}, fg={:?}, hover_bg={:?}",
-            bg, fg, hover_bg
+            bg, titlebar_tokens.foreground, hover_bg
         );
 
-        let icon_color = ColorTheory::mix_oklch(fg, bg, 0.3);
+        let icon_color = theme_tokens.chrome.text_chrome_secondary;
         debug!(
             "TITLEBAR WINDOW_CONTROL: Computed icon colors - normal={:?}, hover={:?}",
-            icon_color, fg
+            icon_color, theme_tokens.chrome.text_on_chrome
         );
 
         Self {
-            background: hsla(0.0, 0.0, 0.0, 0.0), // Transparent by default
+            background: ColorTheory::transparent(),
             background_hover: hover_bg,
-            icon: icon_color, // More subtle icon color
-            icon_hover: fg,
+            icon: icon_color,
+            icon_hover: theme_tokens.chrome.text_on_chrome,
         }
     }
 
@@ -103,15 +102,14 @@ impl WindowControlStyle {
     ) -> Self {
         // Create danger button style for close button
         let bg = titlebar_tokens.background;
-        let fg = titlebar_tokens.foreground;
         let error_color = theme_tokens.editor.error;
 
         debug!(
             "TITLEBAR WINDOW_CONTROL: Creating close button style - bg={:?}, fg={:?}, error_color={:?}",
-            bg, fg, error_color
+            bg, titlebar_tokens.foreground, error_color
         );
 
-        let icon_color = ColorTheory::mix_oklch(fg, bg, 0.3);
+        let icon_color = theme_tokens.chrome.text_chrome_secondary;
         let icon_hover = ColorTheory::best_text_color(error_color, theme_tokens);
 
         debug!(
@@ -120,9 +118,9 @@ impl WindowControlStyle {
         );
 
         Self {
-            background: hsla(0.0, 0.0, 0.0, 0.0), // Transparent by default
+            background: ColorTheory::transparent(),
             background_hover: error_color,
-            icon: icon_color, // More subtle icon color
+            icon: icon_color,
             icon_hover,
         }
     }
@@ -142,7 +140,7 @@ impl WindowControlStyle {
         );
 
         Self {
-            background: hsla(0.0, 0.0, 0.0, 0.0),      // transparent default
+            background: ColorTheory::transparent(),
             background_hover: danger_style.background, // Use computed danger color
             icon: ui_theme.tokens.chrome.text_chrome_secondary,
             icon_hover: danger_style.foreground, // Use computed text color on danger background

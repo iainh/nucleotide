@@ -81,15 +81,10 @@ impl PromptStyle {
             };
         }
 
-        use crate::theme_utils::color_to_hsla;
         let modal_style = ModalStyle::from_theme(theme);
-        let ui_menu = theme.get("ui.menu");
         Self {
+            completion_background: modal_style.background,
             modal_style,
-            completion_background: ui_menu
-                .bg
-                .and_then(color_to_hsla)
-                .unwrap_or_else(|| crate::ProviderHooks::theme().tokens.chrome.menu_background),
         }
     }
 }
@@ -441,6 +436,7 @@ impl Render for PromptView {
         if !self.focus_handle.is_focused(window) {
             self.focus_handle.focus(window, cx);
         }
+        let ui_theme = cx.global::<crate::Theme>();
 
         div()
             .key_context("PromptView")
@@ -451,7 +447,10 @@ impl Render for PromptView {
             .border_1()
             .border_color(self.style.modal_style.border)
             .rounded_md()
-            .shadow_lg()
+            .shadow(vec![
+                ui_theme.tokens.chrome.shadow_lg.to_box_shadow(false),
+                ui_theme.tokens.chrome.inset_highlight.to_box_shadow(true),
+            ])
             .font(font)
             .text_size(px(cx.global::<nucleotide_types::UiFontConfig>().size))
             .track_focus(&self.focus_handle)

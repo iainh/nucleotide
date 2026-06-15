@@ -117,7 +117,7 @@ pub use styling::{
 pub use theme_debug::ThemeDebugView;
 pub use tokens::{
     ChromeTokens, ColorContext, CompletionIconTokens, DesignTokens, EditorTokens, FileTreeTokens,
-    SizeTokens, StatusBarTokens, TabBarTokens, TitleBarTokens,
+    ShadowToken, SizeTokens, StatusBarTokens, TabBarTokens, TitleBarTokens,
 };
 pub use traits::{
     Component, ComponentBuilder, ComponentFactory, ComponentState, ComponentStyles, Composable,

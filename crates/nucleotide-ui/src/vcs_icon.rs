@@ -292,14 +292,15 @@ impl IntoElement for VcsIcon {
         };
 
         if should_show {
+            let tokens = crate::DesignTokens::dark();
             let fallback_color = match &vcs_status {
-                Some(VcsStatus::Modified) => gpui::hsla(0.15, 0.8, 0.6, 1.0), // Orange
-                Some(VcsStatus::Added) => gpui::hsla(0.33, 0.6, 0.5, 1.0),    // Green
-                Some(VcsStatus::Deleted) => gpui::hsla(0.0, 0.8, 0.5, 1.0),   // Red
-                Some(VcsStatus::Untracked) => gpui::hsla(0.0, 0.0, 0.7, 1.0), // Muted
-                Some(VcsStatus::Renamed) => gpui::hsla(0.61, 0.6, 0.5, 1.0),  // Blue
-                Some(VcsStatus::Conflicted) => gpui::hsla(0.0, 0.8, 0.5, 1.0), // Red
-                _ => gpui::hsla(0.0, 0.0, 0.7, 1.0),                          // Default muted
+                Some(VcsStatus::Modified) => tokens.editor.vcs_modified,
+                Some(VcsStatus::Added) => tokens.editor.vcs_added,
+                Some(VcsStatus::Deleted) => tokens.editor.vcs_deleted,
+                Some(VcsStatus::Untracked) => tokens.chrome.text_chrome_secondary,
+                Some(VcsStatus::Renamed) => tokens.chrome.primary,
+                Some(VcsStatus::Conflicted) => tokens.editor.error,
+                _ => tokens.chrome.text_chrome_secondary,
             };
 
             let indicator_size = (container_size * 0.5).max(6.0);
@@ -313,7 +314,7 @@ impl IntoElement for VcsIcon {
                 .rounded_full()
                 .bg(fallback_color)
                 .border_1()
-                .border_color(gpui::hsla(0.0, 0.0, 0.1, 1.0)); // Dark border
+                .border_color(tokens.chrome.border_shadow);
 
             container = container.child(overlay);
         }

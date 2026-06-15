@@ -1634,7 +1634,10 @@ impl Render for CompletionView {
                     .border_1()
                     .border_color(tokens.chrome.popup_border)
                     .rounded(tokens.sizes.radius_md)
-                    .shadow_lg()
+                    .shadow(vec![
+                        tokens.chrome.shadow_md.to_box_shadow(false),
+                        tokens.chrome.inset_highlight.to_box_shadow(true),
+                    ])
                     .py(tokens.sizes.space_1)
                     .px(tokens.sizes.space_1)
                     .child(

@@ -73,10 +73,7 @@ impl ProjectHeader {
         let project_name = self.get_project_name();
 
         let header_bg = tokens.chrome.surface_elevated;
-        let border_color = nucleotide_ui::styling::ColorTheory::subtle_border_color(
-            header_bg,
-            &tokens,
-        );
+        let border_color = tokens.chrome.border_shadow;
 
         div()
             .flex()

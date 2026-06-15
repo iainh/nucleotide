@@ -1016,7 +1016,10 @@ impl Workspace {
                     .border_1()
                     .border_color(picker_tokens.border)
                     .rounded(tokens.sizes.radius_lg)
-                    .shadow_xl()
+                    .shadow(vec![
+                        tokens.chrome.shadow_lg.to_box_shadow(false),
+                        tokens.chrome.inset_highlight.to_box_shadow(true),
+                    ])
                     .w(px(380.0))
                     .p(tokens.sizes.space_4)
                     .flex()
@@ -8351,7 +8354,14 @@ impl Render for Workspace {
                                         .border_1()
                                         .border_color(dd_tokens.border)
                                         .rounded(ui_theme.tokens.sizes.radius_md)
-                                        .shadow_md()
+                                        .shadow(vec![
+                                            ui_theme.tokens.chrome.shadow_md.to_box_shadow(false),
+                                            ui_theme
+                                                .tokens
+                                                .chrome
+                                                .inset_highlight
+                                                .to_box_shadow(true),
+                                        ])
                                         .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                             cx.stop_propagation()
                                         })

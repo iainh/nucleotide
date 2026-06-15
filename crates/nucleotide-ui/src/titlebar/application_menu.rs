@@ -110,9 +110,12 @@ impl ApplicationMenu {
             .id(SharedString::from("menu-dropdown"))
             .bg(chrome.menu_background)
             .border_1()
-            .border_color(chrome.menu_separator)
+            .border_color(chrome.border_shadow)
             .rounded_md()
-            .shadow_md()
+            .shadow(vec![
+                chrome.shadow_md.to_box_shadow(false),
+                chrome.inset_highlight.to_box_shadow(true),
+            ])
             .min_w(gpui::px(220.0))
             .max_w(gpui::px(420.0));
 

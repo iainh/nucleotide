@@ -113,6 +113,8 @@ impl RenderOnce for Input {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.global::<crate::Theme>();
         let input_tokens = theme.tokens.input_tokens();
+        let inset_highlight = theme.tokens.chrome.inset_highlight;
+        let inset_shadow = theme.tokens.chrome.inset_shadow;
 
         let is_focused = self.focus_handle.is_focused(_window);
         let has_error = self.error.is_some();
@@ -154,25 +156,37 @@ impl RenderOnce for Input {
             } else {
                 input_tokens.text
             })
+            .when(!is_focused && !has_error, |this| {
+                this.shadow(vec![
+                    inset_shadow.to_box_shadow(true),
+                    inset_highlight.to_box_shadow(true),
+                ])
+            })
             .when(is_focused && !has_error, |this| {
                 // Add focus ring
-                this.shadow(vec![gpui::BoxShadow {
-                    color: input_tokens.focus_ring,
-                    offset: gpui::point(px(0.), px(0.)),
-                    blur_radius: px(0.),
-                    spread_radius: px(2.0),
-                    inset: false,
-                }])
+                this.shadow(vec![
+                    gpui::BoxShadow {
+                        color: input_tokens.focus_ring,
+                        offset: gpui::point(px(0.), px(0.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(2.0),
+                        inset: false,
+                    },
+                    inset_highlight.to_box_shadow(true),
+                ])
             })
             .when(has_error, |this| {
                 // Add error ring
-                this.shadow(vec![gpui::BoxShadow {
-                    color: input_tokens.border_error, // Use border error color for ring
-                    offset: gpui::point(px(0.), px(0.)),
-                    blur_radius: px(0.),
-                    spread_radius: px(2.0),
-                    inset: false,
-                }])
+                this.shadow(vec![
+                    gpui::BoxShadow {
+                        color: input_tokens.border_error, // Use border error color for ring
+                        offset: gpui::point(px(0.), px(0.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(2.0),
+                        inset: false,
+                    },
+                    inset_shadow.to_box_shadow(true),
+                ])
             })
             .when_some(self.start_slot, |this, slot| {
                 this.child(div().mr_2().child(slot))

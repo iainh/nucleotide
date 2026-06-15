@@ -580,7 +580,10 @@ impl Render for ThemeDebugView {
                     .border_1()
                     .border_color(tokens.chrome.border_strong)
                     .rounded_lg()
-                    .shadow_lg()
+                    .shadow(vec![
+                        tokens.chrome.shadow_lg.to_box_shadow(false),
+                        tokens.chrome.inset_highlight.to_box_shadow(true),
+                    ])
                     .p_4()
                     .w(px(860.0))
                     .max_h(px(600.0))

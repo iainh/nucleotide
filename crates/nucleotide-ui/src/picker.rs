@@ -109,13 +109,19 @@ impl RenderOnce for PickerElement {
                                 .border_1()
                                 .border_color(picker_tokens.border)
                                 .rounded_md()
-                                .shadow(vec![gpui::BoxShadow {
-                                    color: picker_tokens.shadow,
-                                    offset: gpui::point(px(picker_tokens.shadow_offset_x), px(picker_tokens.shadow_offset_y)),
-                                    blur_radius: px(picker_tokens.shadow_blur_radius),
-                                    spread_radius: px(0.0), // No spread for clean shadows
-                                    inset: false,
-                                }])
+                                .shadow(vec![
+                                    gpui::BoxShadow {
+                                        color: picker_tokens.shadow,
+                                        offset: gpui::point(
+                                            px(picker_tokens.shadow_offset_x),
+                                            px(picker_tokens.shadow_offset_y),
+                                        ),
+                                        blur_radius: px(picker_tokens.shadow_blur_radius),
+                                        spread_radius: px(0.0), // No spread for clean shadows
+                                        inset: false,
+                                    },
+                                    tokens.chrome.inset_highlight.to_box_shadow(true),
+                                ])
                                 .font(font)
                                 .text_size(tokens.sizes.text_md)
                                 .child(

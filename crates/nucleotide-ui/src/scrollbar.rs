@@ -6,7 +6,7 @@ use std::{any::Any, cell::Cell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
 use gpui::prelude::{InteractiveElement, ParentElement, StatefulInteractiveElement, Styled};
 use gpui::{
     Along, App, Axis, Bounds, Div, IntoElement, IsZero, MouseButton, Pixels, Point, RenderOnce,
-    ScrollHandle, Size, UniformListScrollHandle, Window, div, hsla, px,
+    ScrollHandle, Size, UniformListScrollHandle, Window, div, px,
 };
 
 /// A scrollbar component that can be attached to scrollable content
@@ -256,7 +256,12 @@ impl RenderOnce for Scrollbar {
                 crate::styling::ColorTheory::with_alpha(chrome.separator_color, 0.0),
             )
         } else {
-            (hsla(0.0, 0.0, 0.8, alpha), hsla(0.0, 0.0, 0.0, 0.0))
+            let tokens = crate::DesignTokens::dark();
+            let chrome = &tokens.chrome;
+            (
+                crate::styling::ColorTheory::with_alpha(chrome.text_on_chrome, alpha),
+                crate::styling::ColorTheory::with_alpha(chrome.separator_color, 0.0),
+            )
         };
 
         let track_len = self

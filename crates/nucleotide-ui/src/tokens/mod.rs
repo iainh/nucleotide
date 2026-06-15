@@ -245,6 +245,29 @@ pub struct EditorTokens {
     pub focus_ring_warning: Hsla,
 }
 
+/// Theme-aware shadow geometry for elevated and inset chrome surfaces.
+#[derive(Debug, Clone, Copy)]
+pub struct ShadowToken {
+    pub offset_x: Pixels,
+    pub offset_y: Pixels,
+    pub blur_radius: Pixels,
+    pub spread_radius: Pixels,
+    pub color: Hsla,
+}
+
+impl ShadowToken {
+    /// Convert this token into a GPUI box shadow.
+    pub fn to_box_shadow(self, inset: bool) -> gpui::BoxShadow {
+        gpui::BoxShadow {
+            color: self.color,
+            offset: gpui::point(self.offset_x, self.offset_y),
+            blur_radius: self.blur_radius,
+            spread_radius: self.spread_radius,
+            inset,
+        }
+    }
+}
+
 /// Chrome-specific tokens computed from surface color using color theory
 #[derive(Debug, Clone, Copy)]
 pub struct ChromeTokens {
@@ -269,6 +292,15 @@ pub struct ChromeTokens {
     pub border_muted: Hsla,
     pub border_strong: Hsla,
     pub border_focus: Hsla,
+    pub border_highlight: Hsla,
+    pub border_shadow: Hsla,
+
+    // Depth system for raised, floating, and recessed chrome elements
+    pub shadow_sm: ShadowToken,
+    pub shadow_md: ShadowToken,
+    pub shadow_lg: ShadowToken,
+    pub inset_highlight: ShadowToken,
+    pub inset_shadow: ShadowToken,
 
     // Interactive states for chrome
     pub primary: Hsla,
@@ -510,6 +542,24 @@ impl ChromeTokens {
         let text_on_chrome =
             ColorTheory::ensure_contrast(base_surface, base, ContrastRatios::AA_NORMAL);
 
+        let border_highlight_base = if is_dark {
+            ColorTheory::adjust_oklab_lightness(base_surface, 0.12)
+        } else {
+            ColorTheory::adjust_oklab_lightness(base_surface, 0.07)
+        };
+        let border_shadow_base = if is_dark {
+            ColorTheory::adjust_oklab_lightness(base_surface, -0.09)
+        } else {
+            ColorTheory::adjust_oklab_lightness(base_surface, -0.16)
+        };
+        let border_highlight =
+            utils::with_alpha(border_highlight_base, if is_dark { 0.48 } else { 0.78 });
+        let border_shadow =
+            utils::with_alpha(border_shadow_base, if is_dark { 0.90 } else { 0.72 });
+        let shadow_alpha = if is_dark { 0.34 } else { 0.14 };
+        let shadow_color = hsla(0.0, 0.0, 0.0, shadow_alpha);
+        let shadow_color_strong = hsla(0.0, 0.0, 0.0, if is_dark { 0.46 } else { 0.20 });
+
         Self {
             // Computed chrome backgrounds from color theory
             titlebar_background: chrome_colors.titlebar_background,
@@ -552,6 +602,44 @@ impl ChromeTokens {
                 ColorTheory::adjust_oklab_lightness(chrome_colors.separator_color, -0.1)
             },
             border_focus: base_colors.primary_500,
+            border_highlight,
+            border_shadow,
+
+            shadow_sm: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(1.0),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+                color: shadow_color,
+            },
+            shadow_md: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(2.0),
+                blur_radius: px(6.0),
+                spread_radius: px(0.0),
+                color: shadow_color,
+            },
+            shadow_lg: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(6.0),
+                blur_radius: px(16.0),
+                spread_radius: px(0.0),
+                color: shadow_color_strong,
+            },
+            inset_highlight: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(1.0),
+                blur_radius: px(0.0),
+                spread_radius: px(0.0),
+                color: border_highlight,
+            },
+            inset_shadow: ShadowToken {
+                offset_x: px(0.0),
+                offset_y: px(-1.0),
+                blur_radius: px(0.0),
+                spread_radius: px(0.0),
+                color: border_shadow,
+            },
 
             // Interactive states for chrome
             primary: base_colors.primary_500,
@@ -560,7 +648,7 @@ impl ChromeTokens {
 
             // Menu and popup system (chrome elements)
             popup_background: chrome_colors.file_tree_background, // Consistent with file tree
-            popup_border: chrome_colors.separator_color,
+            popup_border: border_shadow,
             menu_background: chrome_colors.file_tree_background,
             menu_selected: utils::with_alpha(base_colors.primary_500, 0.2),
             menu_separator: chrome_colors.separator_color,
@@ -798,7 +886,7 @@ impl TitleBarTokens {
     pub fn from_chrome_tokens(chrome: &ChromeTokens, sizes: &SizeTokens) -> Self {
         let bg = chrome.titlebar_background;
         let fg = chrome.text_on_chrome;
-        let border = chrome.separator_color;
+        let border = chrome.border_shadow;
         let height = sizes.titlebar_height;
 
         nucleotide_logging::debug!(
@@ -842,7 +930,7 @@ impl FileTreeTokens {
         let item_selected = editor.selection_primary;
         let item_text = chrome.text_on_chrome;
         let item_text_secondary = chrome.text_chrome_secondary;
-        let border = chrome.border_muted;
+        let border = chrome.border_shadow;
         let separator = chrome.separator_color;
 
         nucleotide_logging::debug!(
@@ -894,7 +982,7 @@ impl StatusBarTokens {
         let text_secondary = chrome.text_chrome_secondary;
         let text_accent =
             ColorTheory::ensure_contrast(bg_active, chrome.primary, ContrastRatios::AA_NORMAL);
-        let border = chrome.separator_color;
+        let border = chrome.border_shadow;
         let mode_normal = text_primary;
         let mode_insert = ColorTheory::ensure_contrast(
             bg_active,
@@ -963,7 +1051,7 @@ impl TabBarTokens {
         let tab_hover_bg = chrome.surface_hover;
         let tab_text_active = editor.text_primary;
         let tab_text_inactive = chrome.text_chrome_secondary;
-        let tab_border = chrome.border_muted;
+        let tab_border = chrome.border_shadow;
         let tab_separator = chrome.separator_color;
         let tab_close = chrome.text_chrome_secondary;
         let tab_modified = editor.warning;
@@ -1064,14 +1152,14 @@ impl ButtonTokens {
         let primary_bg_hover = ColorTheory::adjust_oklab_lightness(primary_bg, 0.1);
         let primary_bg_active = ColorTheory::adjust_oklab_lightness(primary_bg, -0.1);
         let primary_text = chrome.text_on_chrome;
-        let primary_border = chrome.border_strong;
+        let primary_border = chrome.border_shadow;
 
         // Secondary buttons are subtle; lighten on hover, darken on active
         let secondary_bg = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
         let secondary_bg_hover = ColorTheory::adjust_oklab_lightness(secondary_bg, 0.1);
         let secondary_bg_active = ColorTheory::adjust_oklab_lightness(secondary_bg, -0.1);
         let secondary_text = chrome.text_on_chrome;
-        let secondary_border = chrome.border_muted;
+        let secondary_border = chrome.border_default;
 
         // Ghost buttons are transparent until hovered; lighten on hover, darken on active
         let ghost_bg = ColorTheory::transparent();
@@ -1109,17 +1197,17 @@ impl ButtonTokens {
         // Disabled states are muted versions
         let disabled_bg = ColorTheory::with_alpha(chrome.surface_hover, 0.3);
         let disabled_text = ColorTheory::with_alpha(chrome.text_on_chrome, 0.5);
-        let disabled_border = ColorTheory::with_alpha(chrome.border_muted, 0.5);
+        let disabled_border = ColorTheory::with_alpha(chrome.border_shadow, 0.45);
 
         // Focus rings use Helix focus colors
         let focus_ring = editor.focus_ring;
         let focus_ring_danger = editor.focus_ring_error;
 
-        // Shadow properties for above-left light source
-        let shadow_color = ColorTheory::with_alpha(hsla(0.0, 0.0, 0.0, 1.0), 0.08); // Very subtle shadow
-        let shadow_offset_x = -1.0; // Smaller left offset
-        let shadow_offset_y = 1.0; // Smaller below offset
-        let shadow_blur_radius = 2.0; // Tighter shadow to avoid bleed
+        // Shadow properties for raised controls.
+        let shadow_color = chrome.shadow_sm.color;
+        let shadow_offset_x = f32::from(chrome.shadow_sm.offset_x);
+        let shadow_offset_y = f32::from(chrome.shadow_sm.offset_y);
+        let shadow_blur_radius = f32::from(chrome.shadow_sm.blur_radius);
 
         Self {
             primary_background: primary_bg,
@@ -1221,7 +1309,7 @@ impl PickerTokens {
         // Header uses chrome colors for consistency with titlebar
         let header_bg = chrome.titlebar_background;
         let header_text = chrome.text_on_chrome;
-        let header_border = chrome.border_muted;
+        let header_border = chrome.border_shadow;
 
         // Items use transparent backgrounds with Helix selection colors
         let item_bg = ColorTheory::transparent();
@@ -1244,19 +1332,19 @@ impl PickerTokens {
             chrome.text_on_chrome,
             ContrastRatios::AA_NORMAL,
         );
-        let input_border = chrome.border_muted;
+        let input_border = chrome.border_shadow;
         let input_border_focus = editor.focus_ring; // Use Helix focus color
         let input_placeholder = chrome.text_chrome_secondary;
 
         // Chrome elements
-        let border = chrome.border_strong;
+        let border = chrome.border_shadow;
         let separator = chrome.separator_color;
-        let shadow = ColorTheory::with_alpha(chrome.surface, 0.3);
+        let shadow = chrome.shadow_lg.color;
 
-        // Shadow properties for above-left light source
-        let shadow_offset_x = -2.0; // Left offset (negative for left)
-        let shadow_offset_y = 2.0; // Below offset (positive for below)
-        let shadow_blur_radius = 4.0; // Moderate shadow for picker surfaces
+        // Shadow properties for floating picker surfaces.
+        let shadow_offset_x = f32::from(chrome.shadow_lg.offset_x);
+        let shadow_offset_y = f32::from(chrome.shadow_lg.offset_y);
+        let shadow_blur_radius = f32::from(chrome.shadow_lg.blur_radius);
 
         Self {
             container_background: container_bg,
@@ -1324,8 +1412,8 @@ impl DropdownTokens {
 
         // Container uses elevated chrome surface
         let container_bg = chrome.surface_elevated;
-        let border = chrome.border_strong;
-        let shadow = ColorTheory::with_alpha(chrome.surface, 0.3);
+        let border = chrome.border_shadow;
+        let shadow = chrome.shadow_md.color;
 
         // Items use transparent backgrounds with Helix selection
         let item_bg = ColorTheory::transparent();
@@ -1340,7 +1428,7 @@ impl DropdownTokens {
         let trigger_bg = chrome.surface_hover;
         let trigger_bg_hover = ColorTheory::adjust_oklab_lightness(chrome.surface_hover, 0.1);
         let trigger_text = chrome.text_on_chrome;
-        let trigger_border = chrome.border_muted;
+        let trigger_border = chrome.border_default;
 
         // Separators and icons
         let separator = chrome.separator_color;
@@ -1557,11 +1645,11 @@ impl ChromeTokens {
             placeholder: ColorTheory::with_alpha(self.text_on_chrome, 0.6),
 
             // Border colors
-            border: self.border_default,
+            border: self.border_shadow,
             border_hover: self.border_strong,
             border_focus: focus_ring,
             border_error: error_color,
-            border_disabled: ColorTheory::with_alpha(self.border_default, 0.5),
+            border_disabled: ColorTheory::with_alpha(self.border_shadow, 0.45),
 
             // State indicators - use Helix colors
             focus_ring,
@@ -1578,8 +1666,8 @@ impl ChromeTokens {
         TooltipTokens {
             // Container colors - elevated chrome surface
             background: tooltip_bg,
-            border: self.border_strong,
-            shadow: ColorTheory::with_alpha(self.surface, 0.3),
+            border: self.border_shadow,
+            shadow: self.shadow_md.color,
 
             // Text colors
             text: ColorTheory::ensure_contrast(tooltip_bg, self.text_on_chrome, 4.5),
@@ -1591,7 +1679,7 @@ impl ChromeTokens {
 
             // Arrow colors match container
             arrow_background: tooltip_bg,
-            arrow_border: self.border_strong,
+            arrow_border: self.border_shadow,
         }
     }
 
@@ -1619,7 +1707,7 @@ impl ChromeTokens {
             error_text: ColorTheory::ensure_contrast(error_bg, editor.error, 4.5),
 
             // Border colors - match semantic colors
-            info_border: self.border_strong,
+            info_border: self.border_shadow,
             success_border: editor.success,
             warning_border: editor.warning,
             error_border: editor.error,

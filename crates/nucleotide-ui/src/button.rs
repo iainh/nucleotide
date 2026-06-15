@@ -15,6 +15,29 @@ use gpui::{
 };
 use std::time::Duration;
 
+fn button_shadow_stack(
+    shadow: &crate::styling::BoxShadow,
+    inset_highlight: crate::tokens::ShadowToken,
+    inset_shadow: crate::tokens::ShadowToken,
+    pressed: bool,
+) -> Vec<gpui::BoxShadow> {
+    let mut shadows = vec![gpui::BoxShadow {
+        color: shadow.color,
+        offset: gpui::point(shadow.offset_x, shadow.offset_y),
+        blur_radius: shadow.blur_radius,
+        spread_radius: shadow.spread_radius,
+        inset: false,
+    }];
+
+    shadows.push(if pressed {
+        inset_shadow.to_box_shadow(true)
+    } else {
+        inset_highlight.to_box_shadow(true)
+    });
+
+    shadows
+}
+
 /// Button variant styles (backward compatibility)
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum ButtonVariant {
@@ -610,6 +633,8 @@ impl RenderOnce for Button {
             self.compute_style_from_tokens(&button_tokens, StyleState::Hover, &theme.tokens);
         let active_style =
             self.compute_style_from_tokens(&button_tokens, StyleState::Active, &theme.tokens);
+        let inset_highlight = theme.tokens.chrome.inset_highlight;
+        let inset_shadow = theme.tokens.chrome.inset_shadow;
 
         // Animations may be enabled globally; hover/active visuals are always applied
 
@@ -637,13 +662,12 @@ impl RenderOnce for Button {
             })
             .when(computed_style.shadow.is_some(), |el| {
                 let shadow = computed_style.shadow.as_ref().unwrap();
-                el.shadow(vec![gpui::BoxShadow {
-                    color: shadow.color,
-                    offset: gpui::point(shadow.offset_x, shadow.offset_y),
-                    blur_radius: shadow.blur_radius,
-                    spread_radius: shadow.spread_radius,
-                    inset: false,
-                }])
+                el.shadow(button_shadow_stack(
+                    shadow,
+                    inset_highlight,
+                    inset_shadow,
+                    false,
+                ))
             })
             .opacity(computed_style.opacity);
 
@@ -663,13 +687,12 @@ impl RenderOnce for Button {
                         });
 
                     if let Some(shadow) = &hover_style.shadow {
-                        hovered = hovered.shadow(vec![gpui::BoxShadow {
-                            color: shadow.color,
-                            offset: gpui::point(shadow.offset_x, shadow.offset_y),
-                            blur_radius: shadow.blur_radius,
-                            spread_radius: shadow.spread_radius,
-                            inset: false,
-                        }]);
+                        hovered = hovered.shadow(button_shadow_stack(
+                            shadow,
+                            inset_highlight,
+                            inset_shadow,
+                            false,
+                        ));
                     }
 
                     hovered
@@ -687,13 +710,12 @@ impl RenderOnce for Button {
                         });
 
                     if let Some(shadow) = &active_style.shadow {
-                        activated = activated.shadow(vec![gpui::BoxShadow {
-                            color: shadow.color,
-                            offset: gpui::point(shadow.offset_x, shadow.offset_y),
-                            blur_radius: shadow.blur_radius,
-                            spread_radius: shadow.spread_radius,
-                            inset: false,
-                        }]);
+                        activated = activated.shadow(button_shadow_stack(
+                            shadow,
+                            inset_highlight,
+                            inset_shadow,
+                            true,
+                        ));
                     }
 
                     activated

@@ -253,7 +253,10 @@ impl Render for KeyHintView {
                 .border_1()
                 .border_color(tooltip.border)
                 .rounded(px(6.0))
-                .shadow_lg()
+                .shadow(vec![
+                    theme.tokens.chrome.shadow_md.to_box_shadow(false),
+                    theme.tokens.chrome.inset_highlight.to_box_shadow(true),
+                ])
                 .p(px(8.0))
                 .flex()
                 .flex_col()
