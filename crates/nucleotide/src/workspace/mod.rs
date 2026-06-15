@@ -460,27 +460,20 @@ fn unpin_all_tabs<T: Eq + Hash>(pinned_items: &mut HashSet<T>) -> bool {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum PreviewTabTogglePlan<T> {
+enum PreviewTabTogglePlan {
     Unpreview,
-    Preview { close_doc_ids: Vec<T> },
+    Preview,
 }
 
-fn preview_tab_toggle_plan<T: Copy + Eq + Hash>(
-    ordered_items: &[T],
+fn preview_tab_toggle_plan<T: Eq + Hash>(
     preview_items: &HashSet<T>,
-    active_item: T,
-) -> PreviewTabTogglePlan<T> {
-    if preview_items.contains(&active_item) {
+    active_item: &T,
+) -> PreviewTabTogglePlan {
+    if preview_items.contains(active_item) {
         return PreviewTabTogglePlan::Unpreview;
     }
 
-    PreviewTabTogglePlan::Preview {
-        close_doc_ids: ordered_items
-            .iter()
-            .copied()
-            .filter(|item| *item != active_item && preview_items.contains(item))
-            .collect(),
-    }
+    PreviewTabTogglePlan::Preview
 }
 
 fn should_create_project_panel_preview_tab(
@@ -1578,18 +1571,12 @@ impl Workspace {
         };
 
         let preview_doc_ids = tracker.preview_doc_ids();
-        let PreviewTabTogglePlan::Preview { mut close_doc_ids } =
-            preview_tab_toggle_plan(&self.document_order, &preview_doc_ids, doc_id)
+        let PreviewTabTogglePlan::Preview = preview_tab_toggle_plan(&preview_doc_ids, &doc_id)
         else {
             return;
         };
 
-        for replaced_doc_id in tracker.replace_with_doc(doc_id, view_id, ephemeral) {
-            if !close_doc_ids.contains(&replaced_doc_id) {
-                close_doc_ids.push(replaced_doc_id);
-            }
-        }
-        self.close_tab_documents(close_doc_ids, cx);
+        tracker.replace_with_doc(doc_id, view_id, ephemeral);
     }
 
     fn enforce_max_tabs_to_target(
@@ -2022,12 +2009,12 @@ impl Workspace {
         };
 
         let preview_doc_ids = tracker.preview_doc_ids();
-        match preview_tab_toggle_plan(&self.document_order, &preview_doc_ids, active_doc_id) {
+        match preview_tab_toggle_plan(&preview_doc_ids, &active_doc_id) {
             PreviewTabTogglePlan::Unpreview => {
                 tracker.unregister_doc(active_doc_id);
                 cx.notify();
             }
-            PreviewTabTogglePlan::Preview { .. } => {
+            PreviewTabTogglePlan::Preview => {
                 self.replace_preview_tab_document(active_doc_id, active_view_id, false, cx);
                 cx.notify();
             }
@@ -12016,25 +12003,21 @@ mod tests {
 
     #[test]
     fn preview_tab_toggle_plan_unpreviews_active_preview_tab() {
-        let items = ['a', 'b', 'c'];
         let previews = HashSet::from(['b']);
 
         assert_eq!(
-            preview_tab_toggle_plan(&items, &previews, 'b'),
+            preview_tab_toggle_plan(&previews, &'b'),
             PreviewTabTogglePlan::Unpreview
         );
     }
 
     #[test]
-    fn preview_tab_toggle_plan_closes_existing_previews_when_marking_active_tab() {
-        let items = ['a', 'b', 'c', 'd'];
+    fn preview_tab_toggle_plan_marks_active_non_preview_tab_as_preview() {
         let previews = HashSet::from(['b', 'd']);
 
         assert_eq!(
-            preview_tab_toggle_plan(&items, &previews, 'c'),
-            PreviewTabTogglePlan::Preview {
-                close_doc_ids: vec!['b', 'd']
-            }
+            preview_tab_toggle_plan(&previews, &'c'),
+            PreviewTabTogglePlan::Preview
         );
     }
 

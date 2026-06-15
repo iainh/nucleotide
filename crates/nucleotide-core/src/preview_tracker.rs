@@ -113,6 +113,9 @@ impl PreviewTracker {
     }
 
     /// Replace all current preview markers with a single document.
+    ///
+    /// Returns documents that were unmarked as previews. The caller should keep
+    /// those documents open; tabs represent the jump list, not dirty state.
     pub fn replace_with_doc(
         &self,
         doc_id: DocumentId,
