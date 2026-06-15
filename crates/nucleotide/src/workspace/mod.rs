@@ -9,6 +9,7 @@ pub use view_manager::ViewManager;
 
 // Main workspace implementation
 use std::collections::HashSet;
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -18,23 +19,23 @@ use gpui::{
     App, AppContext, BorrowAppContext, Context, DismissEvent, DragMoveEvent, Empty, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
-    Render, Size, StatefulInteractiveElement, Styled, TextStyle, Window, WindowAppearance,
-    WindowBackgroundAppearance, black, div, px, white,
+    Render, ScrollHandle, Size, StatefulInteractiveElement, Styled, TextStyle, Window,
+    WindowAppearance, WindowBackgroundAppearance, black, div, px, white,
 };
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::{Rope, RopeSlice, Selection};
 use helix_lsp::lsp;
 use helix_stdx::rope::RopeSliceExt;
-use helix_view::ViewId;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::{KeyCode, KeyModifiers};
+use helix_view::{DocumentId, ViewId};
 use nucleotide_core::{event_bridge, gpui_to_helix_bridge};
 use nucleotide_logging::{debug, error, info, instrument, warn};
 use nucleotide_lsp::HelixLspBridge;
 use nucleotide_ui::ThemedContext as UIThemedContext;
 
 // ViewManager already imported above via pub use
-use nucleotide_ui::{AboutWindow, Button, ButtonSize, ButtonVariant};
+use nucleotide_ui::{AboutWindow, Button, ButtonSize, ButtonVariant, Tooltipped};
 
 use crate::input_coordinator::{FocusGroup, InputContext, InputCoordinator};
 use nucleotide_lsp::ServerStatus;
@@ -62,6 +63,119 @@ use nucleotide_terminal::TerminalBounds;
 use nucleotide_vcs::VcsServiceHandle;
 
 type FileTreeContextMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
+type TabContextMenuHandler = fn(&mut Workspace, DocumentId, &mut Context<Workspace>);
+type TabBarSplitMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
+type TabBarNewMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabContextMenuIntent {
+    Close,
+    CloseOthers,
+    CloseLeft,
+    CloseRight,
+    CloseClean,
+    CloseAll,
+    CopyPath,
+    CopyRelativePath,
+    RevealInOs,
+    RevealInProjectPanel,
+    OpenInTerminal,
+    ToggleReadOnly,
+    TogglePin,
+}
+
+impl TabContextMenuIntent {
+    fn label(self, is_pinned: bool, is_readonly: bool) -> &'static str {
+        match self {
+            Self::Close => "Close",
+            Self::CloseOthers => "Close Others",
+            Self::CloseLeft => "Close Left",
+            Self::CloseRight => "Close Right",
+            Self::CloseClean => "Close Clean",
+            Self::CloseAll => "Close All",
+            Self::CopyPath => "Copy Path",
+            Self::CopyRelativePath => "Copy Relative Path",
+            Self::RevealInOs => reveal_in_file_manager_label(false),
+            Self::RevealInProjectPanel => "Reveal In Project Panel",
+            Self::OpenInTerminal => "Open in Terminal",
+            Self::ToggleReadOnly if is_readonly => "Make File Editable",
+            Self::ToggleReadOnly => "Make File Read-Only",
+            Self::TogglePin if is_pinned => "Unpin Tab",
+            Self::TogglePin => "Pin Tab",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabContextMenuEntry {
+    Action(TabContextMenuIntent),
+    Separator,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TabContextMenuCapabilities {
+    has_file_path: bool,
+    has_project_panel_path: bool,
+    has_terminal_directory: bool,
+    is_readonly: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabBarSplitMenuIntent {
+    Right,
+    Left,
+    Up,
+    Down,
+}
+
+impl TabBarSplitMenuIntent {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Right => "Split Right",
+            Self::Left => "Split Left",
+            Self::Up => "Split Up",
+            Self::Down => "Split Down",
+        }
+    }
+
+    fn commands(self) -> &'static [&'static str] {
+        match self {
+            Self::Right => &["vsplit"],
+            Self::Left => &["vsplit", "swap_view_left"],
+            Self::Up => &["hsplit", "swap_view_up"],
+            Self::Down => &["hsplit"],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabBarNewMenuIntent {
+    NewFile,
+    OpenFile,
+    SearchProject,
+    SearchSymbols,
+    NewTerminal,
+    NewCenterTerminal,
+}
+
+impl TabBarNewMenuIntent {
+    fn label(self) -> &'static str {
+        match self {
+            Self::NewFile => "New File",
+            Self::OpenFile => "Open File",
+            Self::SearchProject => "Search Project",
+            Self::SearchSymbols => "Search Symbols",
+            Self::NewTerminal => "New Terminal",
+            Self::NewCenterTerminal => "New Center Terminal",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabBarNewMenuEntry {
+    Action(TabBarNewMenuIntent),
+    Separator,
+}
 
 pub struct Workspace {
     core: Entity<Core>,
@@ -85,12 +199,28 @@ pub struct Workspace {
     needs_appearance_update: bool,
     needs_window_appearance_update: bool,
     pending_appearance: Option<gpui::WindowAppearance>,
-    tab_overflow_dropdown_open: bool,
+    tab_bar_scroll_handle: ScrollHandle,
+    last_scrolled_tab_doc_id: Option<helix_view::DocumentId>,
+    suppress_tab_bar_auto_scroll: bool,
     // File tree context menu state
     context_menu_open: bool,
     context_menu_pos: (f32, f32),
     context_menu_path: Option<std::path::PathBuf>,
     context_menu_index: usize,
+    // Tab context menu state
+    tab_context_menu_open: bool,
+    tab_context_menu_pos: (f32, f32),
+    tab_context_menu_doc_id: Option<DocumentId>,
+    tab_context_menu_index: usize,
+    pinned_documents: HashSet<DocumentId>,
+    // Tab bar split menu state
+    tab_bar_split_menu_open: bool,
+    tab_bar_split_menu_pos: (f32, f32),
+    tab_bar_split_menu_index: usize,
+    // Tab bar new item menu state
+    tab_bar_new_menu_open: bool,
+    tab_bar_new_menu_pos: (f32, f32),
+    tab_bar_new_menu_index: usize,
     // LSP server list popup state
     lsp_menu_open: bool,
     lsp_menu_pos: (f32, f32),
@@ -163,6 +293,409 @@ const GLOBAL_SEARCH_RESULT_LIMIT: usize = 5000;
 const FILE_TREE_MIN_WIDTH: f32 = 150.0;
 const FILE_TREE_DEFAULT_WIDTH: f32 = 240.0;
 const FILE_TREE_MIN_EDITOR_WIDTH: f32 = 200.0;
+
+fn tab_bar_layout_height(
+    row_height: Pixels,
+    show_pinned_tabs_in_separate_row: bool,
+    has_pinned_tabs: bool,
+    has_unpinned_tabs: bool,
+) -> Pixels {
+    if show_pinned_tabs_in_separate_row && has_pinned_tabs && has_unpinned_tabs {
+        row_height * 2.0
+    } else {
+        row_height
+    }
+}
+
+#[cfg(test)]
+fn move_ordered_item_to_target_index<T: Copy + Eq>(
+    items: &mut Vec<T>,
+    source: T,
+    target: Option<T>,
+) -> bool {
+    if target == Some(source) {
+        return false;
+    }
+
+    let Some(source_index) = items.iter().position(|item| *item == source) else {
+        return false;
+    };
+
+    if target.is_none() && source_index + 1 == items.len() {
+        return false;
+    }
+
+    let Some(target_index) = target
+        .map(|target| items.iter().position(|item| *item == target))
+        .unwrap_or(Some(items.len()))
+    else {
+        return false;
+    };
+
+    if target_index == source_index {
+        return false;
+    }
+
+    let item = items.remove(source_index);
+    let insert_index = target_index.min(items.len());
+    items.insert(insert_index, item);
+    true
+}
+
+#[cfg(test)]
+fn dropped_tab_pin_state<T: Copy + Eq + Hash>(
+    items: &[T],
+    source: T,
+    target: Option<T>,
+    pinned_items: &HashSet<T>,
+) -> Option<bool> {
+    resolved_dropped_tab_pin_state(items, source, target, pinned_items, None)
+}
+
+#[cfg(test)]
+fn resolved_dropped_tab_pin_state<T: Copy + Eq + Hash>(
+    items: &[T],
+    source: T,
+    target: Option<T>,
+    pinned_items: &HashSet<T>,
+    forced_pin_state: Option<bool>,
+) -> Option<bool> {
+    if target == Some(source) || !items.contains(&source) {
+        return None;
+    }
+
+    if let Some(target) = target
+        && !items.contains(&target)
+    {
+        return None;
+    }
+
+    forced_pin_state.or_else(|| Some(target.is_some_and(|target| pinned_items.contains(&target))))
+}
+
+fn active_unpinned_tab_scroll_index<T: Copy + Eq + Hash>(
+    ordered_items: &[T],
+    pinned_items: &HashSet<T>,
+    active_item: T,
+) -> Option<usize> {
+    if pinned_items.contains(&active_item) {
+        return None;
+    }
+
+    ordered_items
+        .iter()
+        .filter(|item| !pinned_items.contains(*item))
+        .position(|item| *item == active_item)
+}
+
+fn should_scroll_active_tab<T: Copy + Eq>(
+    suppress_auto_scroll: bool,
+    last_scrolled_item: Option<T>,
+    active_item: Option<T>,
+) -> bool {
+    !suppress_auto_scroll && active_item.is_some() && last_scrolled_item != active_item
+}
+
+fn zed_style_tab_order<T: Copy + Eq + Hash>(
+    ordered_items: &[T],
+    pinned_items: &HashSet<T>,
+) -> Vec<T> {
+    let (mut pinned, unpinned): (Vec<_>, Vec<_>) = ordered_items
+        .iter()
+        .copied()
+        .partition(|item| pinned_items.contains(item));
+    pinned.extend(unpinned);
+    pinned
+}
+
+fn change_tab_pin_state<T: Copy + Eq + Hash>(
+    ordered_items: &mut Vec<T>,
+    pinned_items: &mut HashSet<T>,
+    item: T,
+    should_pin: bool,
+) -> bool {
+    if pinned_items.contains(&item) == should_pin {
+        return false;
+    }
+
+    let mut display_order = zed_style_tab_order(ordered_items, pinned_items);
+    let Some(item_index) = display_order
+        .iter()
+        .position(|candidate| *candidate == item)
+    else {
+        return false;
+    };
+
+    let pinned_count = display_order
+        .iter()
+        .filter(|candidate| pinned_items.contains(candidate))
+        .count();
+    let Some(destination_index) = (if should_pin {
+        Some(pinned_count.min(item_index))
+    } else {
+        pinned_count.checked_sub(1)
+    }) else {
+        return false;
+    };
+
+    if should_pin {
+        pinned_items.insert(item);
+    } else {
+        pinned_items.remove(&item);
+    }
+
+    let item = display_order.remove(item_index);
+    display_order.insert(destination_index, item);
+    *ordered_items = display_order;
+    true
+}
+
+fn unpin_all_tabs<T: Eq + Hash>(pinned_items: &mut HashSet<T>) -> bool {
+    if pinned_items.is_empty() {
+        return false;
+    }
+
+    pinned_items.clear();
+    true
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PreviewTabTogglePlan<T> {
+    Unpreview,
+    Preview { close_doc_ids: Vec<T> },
+}
+
+fn preview_tab_toggle_plan<T: Copy + Eq + Hash>(
+    ordered_items: &[T],
+    preview_items: &HashSet<T>,
+    active_item: T,
+) -> PreviewTabTogglePlan<T> {
+    if preview_items.contains(&active_item) {
+        return PreviewTabTogglePlan::Unpreview;
+    }
+
+    PreviewTabTogglePlan::Preview {
+        close_doc_ids: ordered_items
+            .iter()
+            .copied()
+            .filter(|item| *item != active_item && preview_items.contains(item))
+            .collect(),
+    }
+}
+
+fn should_create_project_panel_preview_tab(
+    preview_tabs_enabled: bool,
+    project_panel_preview_enabled: bool,
+    existed_already: bool,
+) -> bool {
+    preview_tabs_enabled && project_panel_preview_enabled && !existed_already
+}
+
+fn should_unpreview_changed_document(is_preview: bool, is_modified: bool) -> bool {
+    is_preview && is_modified
+}
+
+fn should_unpreview_retained_tab_after_close_others(is_preview: bool) -> bool {
+    is_preview
+}
+
+fn reveal_in_file_manager_label(is_remote: bool) -> &'static str {
+    if cfg!(target_os = "macos") && !is_remote {
+        "Reveal in Finder"
+    } else if cfg!(target_os = "windows") && !is_remote {
+        "Reveal in File Explorer"
+    } else {
+        "Reveal in File Manager"
+    }
+}
+
+fn tab_bar_zoom_icon_path(is_zoomed: bool) -> &'static str {
+    if is_zoomed {
+        "icons/minimize.svg"
+    } else {
+        "icons/maximize.svg"
+    }
+}
+
+fn tab_bar_zoom_tooltip(is_zoomed: bool) -> &'static str {
+    if is_zoomed { "Zoom Out" } else { "Zoom In" }
+}
+
+#[cfg(test)]
+fn tab_bar_end_button_icon_paths(is_zoomed: bool) -> [&'static str; 3] {
+    [
+        "icons/plus.svg",
+        "icons/columns-2.svg",
+        tab_bar_zoom_icon_path(is_zoomed),
+    ]
+}
+
+#[cfg(test)]
+fn tab_bar_end_button_tooltips(is_zoomed: bool) -> [&'static str; 3] {
+    ["New...", "Split Pane", tab_bar_zoom_tooltip(is_zoomed)]
+}
+
+#[derive(Clone, Copy)]
+struct MaxTabsDocument<T> {
+    id: T,
+    focused_at: std::time::Instant,
+    is_modified: bool,
+    is_pinned: bool,
+    is_protected: bool,
+}
+
+#[derive(Clone)]
+struct BatchCloseDocument<T, P> {
+    id: T,
+    is_active: bool,
+    path: Option<P>,
+}
+
+#[derive(Clone, Copy)]
+struct TabActivationDocument<T> {
+    id: T,
+    focused_at: std::time::Instant,
+}
+
+#[cfg(test)]
+fn max_tabs_close_candidates<T: Copy>(
+    documents: &[MaxTabsDocument<T>],
+    max_tabs: Option<std::num::NonZeroUsize>,
+) -> Vec<T> {
+    max_tabs_close_candidates_to_target(documents, max_tabs.map(std::num::NonZeroUsize::get))
+}
+
+fn max_tabs_close_candidates_to_target<T: Copy>(
+    documents: &[MaxTabsDocument<T>],
+    target_count: Option<usize>,
+) -> Vec<T> {
+    let Some(target_count) = target_count else {
+        return Vec::new();
+    };
+
+    if documents.len() <= target_count {
+        return Vec::new();
+    }
+
+    let mut remaining_count = documents.len();
+    let mut candidates = documents
+        .iter()
+        .filter(|document| !document.is_modified && !document.is_pinned && !document.is_protected)
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|document| document.focused_at);
+
+    let mut close_candidates = Vec::new();
+    for candidate in candidates {
+        if remaining_count <= target_count {
+            break;
+        }
+
+        close_candidates.push(candidate.id);
+        remaining_count -= 1;
+    }
+
+    close_candidates
+}
+
+fn batch_close_document_order<T: Copy, P: Clone + Ord>(
+    documents: &[BatchCloseDocument<T, P>],
+) -> Vec<T> {
+    let mut documents = documents.to_vec();
+    documents.sort_by_key(|document| {
+        (
+            document.is_active,
+            document.path.is_none(),
+            document.path.clone(),
+        )
+    });
+
+    documents.into_iter().map(|document| document.id).collect()
+}
+
+fn tab_activation_target_after_close<T: Copy + Eq>(
+    documents: &[TabActivationDocument<T>],
+    closing_doc_id: T,
+    active_doc_id: Option<T>,
+    activate_on_close: crate::config::TabActivateOnClose,
+) -> Option<T> {
+    if active_doc_id != Some(closing_doc_id) {
+        return None;
+    }
+
+    let closing_index = documents
+        .iter()
+        .position(|document| document.id == closing_doc_id)?;
+    let left_neighbour = || {
+        closing_index
+            .checked_sub(1)
+            .and_then(|index| documents.get(index))
+            .map(|document| document.id)
+    };
+    let right_neighbour = || documents.get(closing_index + 1).map(|document| document.id);
+
+    match activate_on_close {
+        crate::config::TabActivateOnClose::History => documents
+            .iter()
+            .filter(|document| document.id != closing_doc_id)
+            .max_by_key(|document| document.focused_at)
+            .map(|document| document.id)
+            .or_else(left_neighbour),
+        crate::config::TabActivateOnClose::Neighbour => right_neighbour().or_else(left_neighbour),
+        crate::config::TabActivateOnClose::LeftNeighbour => {
+            left_neighbour().or_else(right_neighbour)
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ActiveTabClosePlan<T> {
+    Close(T),
+    Activate(T),
+    Ignore,
+}
+
+fn active_tab_close_plan<T: Copy + Eq + Hash>(
+    ordered_items: &[T],
+    pinned_items: &HashSet<T>,
+    active_item: Option<T>,
+) -> ActiveTabClosePlan<T> {
+    let Some(active_item) = active_item else {
+        return ActiveTabClosePlan::Ignore;
+    };
+
+    if !ordered_items.contains(&active_item) {
+        return ActiveTabClosePlan::Ignore;
+    }
+
+    if pinned_items.contains(&active_item) {
+        return ordered_items
+            .iter()
+            .copied()
+            .find(|item| !pinned_items.contains(item))
+            .map(ActiveTabClosePlan::Activate)
+            .unwrap_or(ActiveTabClosePlan::Ignore);
+    }
+
+    ActiveTabClosePlan::Close(active_item)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TabDoubleClickPlan {
+    Rename,
+    Activate,
+}
+
+fn tab_double_click_plan(has_file_path: bool) -> TabDoubleClickPlan {
+    if has_file_path {
+        TabDoubleClickPlan::Rename
+    } else {
+        TabDoubleClickPlan::Activate
+    }
+}
+
+fn is_deleted_document_path(path: Option<&Path>) -> bool {
+    path.is_some_and(|path| !path.exists())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GlobalSearchMatch {
@@ -326,6 +859,40 @@ fn regex_selection_result(
 impl EventEmitter<crate::Update> for Workspace {}
 
 impl Workspace {
+    fn open_terminal_panel_at(&mut self, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
+        let id = TerminalId(self.next_terminal_id);
+        self.next_terminal_id += 1;
+        self.terminal_id = Some(id);
+        self.last_terminal_bounds = None;
+
+        let shell = None;
+        let env = Vec::<(String, String)>::new();
+        self.core.update(cx, |app, _cx| {
+            if let Some(bus) = &app.event_aggregator {
+                bus.dispatch_terminal(TerminalEvent::SpawnRequested {
+                    id,
+                    cwd,
+                    shell,
+                    env,
+                });
+            } else {
+                nucleotide_logging::warn!("No event aggregator; terminal spawn not dispatched");
+            }
+        });
+
+        let height = self.basic_terminal_height;
+        let entity = cx.new(|cx| {
+            let mut p = nucleotide_terminal_panel::TerminalPanel::new(id, height);
+            p.initialize(cx);
+            p
+        });
+        self.embedded_terminal_panel = Some(entity);
+        self.terminal_panel_visible = true;
+        self.terminal_focus_pending = true;
+        self.terminal_active = true;
+        cx.notify();
+    }
+
     fn toggle_terminal_panel(&mut self, cx: &mut Context<Self>) {
         // Basic layout: toggle visibility of embedded bottom panel
         if self.terminal_panel_visible {
@@ -566,10 +1133,10 @@ impl Workspace {
                     .icon("icons/chevron-up.svg")
                     .icon_position(IconPosition::End)
                     .on_click(cx.listener(
-                        |this: &mut Workspace, ev: &gpui::MouseUpEvent, _w, cx| {
+                        |this: &mut Workspace, ev: &gpui::ClickEvent, _w, cx| {
                             this.lsp_menu_open = true;
-                            this.lsp_menu_pos =
-                                (f32::from(ev.position.x), f32::from(ev.position.y));
+                            let position = ev.position();
+                            this.lsp_menu_pos = (f32::from(position.x), f32::from(position.y));
                             cx.notify();
                         },
                     )),
@@ -596,10 +1163,874 @@ impl Workspace {
             ProjectTreeContextMenuIntent::RevealInOs => Workspace::cm_action_reveal_in_os,
         }
     }
+
+    fn tab_context_menu_intents(
+        has_file_path: bool,
+        has_project_panel_path: bool,
+        has_terminal_directory: bool,
+    ) -> Vec<TabContextMenuIntent> {
+        let mut intents = vec![
+            TabContextMenuIntent::Close,
+            TabContextMenuIntent::CloseOthers,
+            TabContextMenuIntent::CloseLeft,
+            TabContextMenuIntent::CloseRight,
+            TabContextMenuIntent::CloseClean,
+            TabContextMenuIntent::CloseAll,
+        ];
+
+        if has_file_path {
+            intents.extend([
+                TabContextMenuIntent::ToggleReadOnly,
+                TabContextMenuIntent::CopyPath,
+                TabContextMenuIntent::CopyRelativePath,
+                TabContextMenuIntent::RevealInOs,
+            ]);
+        }
+
+        intents.push(TabContextMenuIntent::TogglePin);
+
+        if has_project_panel_path {
+            intents.push(TabContextMenuIntent::RevealInProjectPanel);
+        }
+
+        if has_terminal_directory {
+            intents.push(TabContextMenuIntent::OpenInTerminal);
+        }
+
+        intents
+    }
+
+    fn tab_context_menu_entries(
+        has_file_path: bool,
+        has_project_panel_path: bool,
+        has_terminal_directory: bool,
+    ) -> Vec<TabContextMenuEntry> {
+        let mut entries = vec![
+            TabContextMenuEntry::Action(TabContextMenuIntent::Close),
+            TabContextMenuEntry::Action(TabContextMenuIntent::CloseOthers),
+            TabContextMenuEntry::Separator,
+            TabContextMenuEntry::Action(TabContextMenuIntent::CloseLeft),
+            TabContextMenuEntry::Action(TabContextMenuIntent::CloseRight),
+            TabContextMenuEntry::Separator,
+            TabContextMenuEntry::Action(TabContextMenuIntent::CloseClean),
+            TabContextMenuEntry::Action(TabContextMenuIntent::CloseAll),
+        ];
+
+        if has_file_path {
+            entries.extend([
+                TabContextMenuEntry::Separator,
+                TabContextMenuEntry::Action(TabContextMenuIntent::ToggleReadOnly),
+                TabContextMenuEntry::Separator,
+                TabContextMenuEntry::Action(TabContextMenuIntent::CopyPath),
+                TabContextMenuEntry::Action(TabContextMenuIntent::CopyRelativePath),
+                TabContextMenuEntry::Separator,
+                TabContextMenuEntry::Action(TabContextMenuIntent::RevealInOs),
+            ]);
+        }
+
+        entries.extend([
+            TabContextMenuEntry::Separator,
+            TabContextMenuEntry::Action(TabContextMenuIntent::TogglePin),
+        ]);
+
+        if has_project_panel_path {
+            entries.push(TabContextMenuEntry::Action(
+                TabContextMenuIntent::RevealInProjectPanel,
+            ));
+        }
+
+        if has_terminal_directory {
+            entries.push(TabContextMenuEntry::Action(
+                TabContextMenuIntent::OpenInTerminal,
+            ));
+        }
+
+        entries
+    }
+
+    fn tab_context_menu_handler(intent: TabContextMenuIntent) -> TabContextMenuHandler {
+        match intent {
+            TabContextMenuIntent::Close => Workspace::tab_cm_action_close,
+            TabContextMenuIntent::CloseOthers => Workspace::tab_cm_action_close_others,
+            TabContextMenuIntent::CloseLeft => Workspace::tab_cm_action_close_left,
+            TabContextMenuIntent::CloseRight => Workspace::tab_cm_action_close_right,
+            TabContextMenuIntent::CloseClean => Workspace::tab_cm_action_close_clean,
+            TabContextMenuIntent::CloseAll => Workspace::tab_cm_action_close_all,
+            TabContextMenuIntent::CopyPath => Workspace::tab_cm_action_copy_path,
+            TabContextMenuIntent::CopyRelativePath => Workspace::tab_cm_action_copy_relative_path,
+            TabContextMenuIntent::RevealInOs => Workspace::tab_cm_action_reveal_in_os,
+            TabContextMenuIntent::RevealInProjectPanel => {
+                Workspace::tab_cm_action_reveal_in_project_panel
+            }
+            TabContextMenuIntent::OpenInTerminal => Workspace::tab_cm_action_open_in_terminal,
+            TabContextMenuIntent::ToggleReadOnly => Workspace::tab_cm_action_toggle_readonly,
+            TabContextMenuIntent::TogglePin => Workspace::tab_cm_action_toggle_pin,
+        }
+    }
+
+    fn tab_context_menu_intent_disabled(
+        intent: TabContextMenuIntent,
+        target_index: Option<usize>,
+        total_items: usize,
+        has_clean_items: bool,
+    ) -> bool {
+        match intent {
+            TabContextMenuIntent::Close | TabContextMenuIntent::CloseAll => target_index.is_none(),
+            TabContextMenuIntent::CloseOthers => total_items <= 1,
+            TabContextMenuIntent::CloseLeft => target_index.is_none_or(|index| index == 0),
+            TabContextMenuIntent::CloseRight => {
+                target_index.is_none_or(|index| index + 1 >= total_items)
+            }
+            TabContextMenuIntent::CloseClean => !has_clean_items,
+            TabContextMenuIntent::CopyPath
+            | TabContextMenuIntent::CopyRelativePath
+            | TabContextMenuIntent::RevealInOs
+            | TabContextMenuIntent::RevealInProjectPanel
+            | TabContextMenuIntent::OpenInTerminal
+            | TabContextMenuIntent::ToggleReadOnly => target_index.is_none(),
+            TabContextMenuIntent::TogglePin => target_index.is_none(),
+        }
+    }
+
+    fn tab_bar_split_menu_intents() -> &'static [TabBarSplitMenuIntent] {
+        &[
+            TabBarSplitMenuIntent::Right,
+            TabBarSplitMenuIntent::Left,
+            TabBarSplitMenuIntent::Up,
+            TabBarSplitMenuIntent::Down,
+        ]
+    }
+
+    fn tab_bar_split_menu_handler(intent: TabBarSplitMenuIntent) -> TabBarSplitMenuHandler {
+        match intent {
+            TabBarSplitMenuIntent::Right => Workspace::tab_bar_action_split_right,
+            TabBarSplitMenuIntent::Left => Workspace::tab_bar_action_split_left,
+            TabBarSplitMenuIntent::Up => Workspace::tab_bar_action_split_up,
+            TabBarSplitMenuIntent::Down => Workspace::tab_bar_action_split_down,
+        }
+    }
+
+    fn tab_bar_new_menu_intents() -> &'static [TabBarNewMenuIntent] {
+        &[
+            TabBarNewMenuIntent::NewFile,
+            TabBarNewMenuIntent::OpenFile,
+            TabBarNewMenuIntent::SearchProject,
+            TabBarNewMenuIntent::SearchSymbols,
+            TabBarNewMenuIntent::NewTerminal,
+            TabBarNewMenuIntent::NewCenterTerminal,
+        ]
+    }
+
+    fn tab_bar_new_menu_entries() -> &'static [TabBarNewMenuEntry] {
+        &[
+            TabBarNewMenuEntry::Action(TabBarNewMenuIntent::NewFile),
+            TabBarNewMenuEntry::Action(TabBarNewMenuIntent::OpenFile),
+            TabBarNewMenuEntry::Separator,
+            TabBarNewMenuEntry::Action(TabBarNewMenuIntent::SearchProject),
+            TabBarNewMenuEntry::Action(TabBarNewMenuIntent::SearchSymbols),
+            TabBarNewMenuEntry::Separator,
+            TabBarNewMenuEntry::Action(TabBarNewMenuIntent::NewTerminal),
+            TabBarNewMenuEntry::Action(TabBarNewMenuIntent::NewCenterTerminal),
+        ]
+    }
+
+    fn tab_bar_new_menu_handler(intent: TabBarNewMenuIntent) -> TabBarNewMenuHandler {
+        match intent {
+            TabBarNewMenuIntent::NewFile => Workspace::tab_bar_action_new_file,
+            TabBarNewMenuIntent::OpenFile => Workspace::tab_bar_action_open_file,
+            TabBarNewMenuIntent::SearchProject => Workspace::tab_bar_action_search_project,
+            TabBarNewMenuIntent::SearchSymbols => Workspace::tab_bar_action_search_symbols,
+            TabBarNewMenuIntent::NewTerminal => Workspace::tab_bar_action_new_terminal,
+            TabBarNewMenuIntent::NewCenterTerminal => Workspace::tab_bar_action_new_center_terminal,
+        }
+    }
+
     /// Ensure document is in the order list, adding it to the end if new
     fn ensure_document_in_order(&mut self, doc_id: helix_view::DocumentId) {
         if !self.document_order.contains(&doc_id) {
             self.document_order.push(doc_id);
+        }
+    }
+
+    fn visible_tab_document_ids(&self, cx: &mut Context<Self>) -> Vec<DocumentId> {
+        let core = self.core.read(cx);
+        let editor = &core.editor;
+
+        let visible_doc_ids = self
+            .document_order
+            .iter()
+            .copied()
+            .filter(|doc_id| editor.documents.contains_key(doc_id))
+            .collect::<Vec<_>>();
+
+        zed_style_tab_order(&visible_doc_ids, &self.pinned_documents)
+    }
+
+    fn tab_activation_documents(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Vec<TabActivationDocument<DocumentId>> {
+        let visible_doc_ids = self.visible_tab_document_ids(cx);
+        let core = self.core.read(cx);
+
+        visible_doc_ids
+            .into_iter()
+            .filter_map(|doc_id| {
+                let doc = core.editor.documents.get(&doc_id)?;
+                Some(TabActivationDocument {
+                    id: doc_id,
+                    focused_at: doc.focused_at,
+                })
+            })
+            .collect()
+    }
+
+    fn close_tab_documents(
+        &mut self,
+        doc_ids: impl IntoIterator<Item = DocumentId>,
+        cx: &mut Context<Self>,
+    ) {
+        let doc_ids = doc_ids.into_iter().collect::<Vec<_>>();
+        if doc_ids.is_empty() {
+            return;
+        }
+
+        let handle = self.handle.clone();
+        let closed_doc_ids = self.core.update(cx, |core, cx| {
+            let _guard = handle.enter();
+            let mut closed_doc_ids = Vec::new();
+            let active_doc_id = core
+                .editor
+                .tree
+                .try_get(core.editor.tree.focus)
+                .map(|view| view.doc);
+            let close_targets = doc_ids
+                .into_iter()
+                .map(|doc_id| {
+                    let path = core
+                        .editor
+                        .documents
+                        .get(&doc_id)
+                        .and_then(|doc| doc.path().cloned());
+
+                    BatchCloseDocument {
+                        id: doc_id,
+                        is_active: active_doc_id == Some(doc_id),
+                        path,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let doc_ids = batch_close_document_order(&close_targets);
+
+            for doc_id in doc_ids {
+                match core.editor.close_document(doc_id, false) {
+                    Ok(()) => {
+                        closed_doc_ids.push(doc_id);
+                    }
+                    Err(helix_view::editor::CloseError::BufferModified(_)) => {
+                        info!("Cannot close document {:?}: has unsaved changes", doc_id);
+                    }
+                    Err(helix_view::editor::CloseError::DoesNotExist) => {
+                        info!("Document {:?} does not exist", doc_id);
+                    }
+                    Err(_) => {
+                        info!("Failed to close document {:?}", doc_id);
+                    }
+                }
+            }
+
+            if !closed_doc_ids.is_empty() {
+                cx.emit(crate::Update::Redraw);
+                cx.notify();
+            }
+
+            closed_doc_ids
+        });
+
+        if !closed_doc_ids.is_empty() {
+            self.unregister_preview_documents(closed_doc_ids.iter().copied(), cx);
+            self.update_document_views(cx);
+            cx.notify();
+        }
+    }
+
+    fn close_single_tab_document(
+        &mut self,
+        doc_id: DocumentId,
+        active_doc_id: Option<DocumentId>,
+        activation_documents: &[TabActivationDocument<DocumentId>],
+        activate_on_close: crate::config::TabActivateOnClose,
+        cx: &mut Context<Self>,
+    ) {
+        let activation_target = tab_activation_target_after_close(
+            activation_documents,
+            doc_id,
+            active_doc_id,
+            activate_on_close,
+        );
+        let handle = self.handle.clone();
+        let closed = self.core.update(cx, |core, cx| {
+            let _guard = handle.enter();
+
+            match core.editor.close_document(doc_id, false) {
+                Ok(()) => {
+                    if let Some(target_doc_id) = activation_target
+                        && core.editor.documents.contains_key(&target_doc_id)
+                    {
+                        core.editor
+                            .switch(target_doc_id, helix_view::editor::Action::Replace);
+                    }
+                    cx.emit(crate::Update::Redraw);
+                    cx.notify();
+                    true
+                }
+                Err(helix_view::editor::CloseError::BufferModified(_)) => {
+                    info!("Cannot close document {:?}: has unsaved changes", doc_id);
+                    false
+                }
+                Err(helix_view::editor::CloseError::DoesNotExist) => {
+                    info!("Document {:?} does not exist", doc_id);
+                    false
+                }
+                Err(_) => {
+                    info!("Failed to close document {:?}", doc_id);
+                    false
+                }
+            }
+        });
+
+        if closed {
+            if activation_target.is_some() {
+                self.allow_tab_bar_auto_scroll();
+            }
+            self.unregister_preview_document(doc_id, cx);
+            self.update_document_views(cx);
+            cx.notify();
+        }
+    }
+
+    fn unregister_preview_document(&self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        if let Some(tracker) = cx.try_global::<nucleotide_core::preview_tracker::PreviewTracker>() {
+            tracker.unregister_doc(doc_id);
+        }
+    }
+
+    fn unregister_preview_documents(
+        &self,
+        doc_ids: impl IntoIterator<Item = DocumentId>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tracker) = cx.try_global::<nucleotide_core::preview_tracker::PreviewTracker>() {
+            for doc_id in doc_ids {
+                tracker.unregister_doc(doc_id);
+            }
+        }
+    }
+
+    fn clear_preview_documents(&self, cx: &mut Context<Self>) {
+        if let Some(tracker) = cx.try_global::<nucleotide_core::preview_tracker::PreviewTracker>() {
+            tracker.clear();
+        }
+    }
+
+    fn allow_tab_bar_auto_scroll(&mut self) {
+        self.suppress_tab_bar_auto_scroll = false;
+    }
+
+    fn active_document_and_view(&self, cx: &mut Context<Self>) -> Option<(DocumentId, ViewId)> {
+        let core = self.core.read(cx);
+        let view_id = self
+            .view_manager
+            .focused_view_id()
+            .filter(|view_id| core.editor.tree.contains(*view_id))
+            .unwrap_or(core.editor.tree.focus);
+        let doc_id = core.editor.tree.try_get(view_id)?.doc;
+        Some((doc_id, view_id))
+    }
+
+    fn switch_to_tab_document(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        self.allow_tab_bar_auto_scroll();
+        let handle = self.handle.clone();
+        self.core.update(cx, |core, cx| {
+            let _guard = handle.enter();
+            core.editor
+                .switch(doc_id, helix_view::editor::Action::Replace);
+            cx.emit(crate::Update::Redraw);
+            cx.notify();
+        });
+
+        self.update_document_views(cx);
+        cx.notify();
+    }
+
+    fn replace_preview_tab_document(
+        &mut self,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        ephemeral: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tracker) = cx
+            .try_global::<nucleotide_core::preview_tracker::PreviewTracker>()
+            .cloned()
+        else {
+            return;
+        };
+
+        let preview_doc_ids = tracker.preview_doc_ids();
+        let PreviewTabTogglePlan::Preview { mut close_doc_ids } =
+            preview_tab_toggle_plan(&self.document_order, &preview_doc_ids, doc_id)
+        else {
+            return;
+        };
+
+        for replaced_doc_id in tracker.replace_with_doc(doc_id, view_id, ephemeral) {
+            if !close_doc_ids.contains(&replaced_doc_id) {
+                close_doc_ids.push(replaced_doc_id);
+            }
+        }
+        self.close_tab_documents(close_doc_ids, cx);
+    }
+
+    fn enforce_max_tabs_to_target(
+        &mut self,
+        target_count: Option<usize>,
+        protected_doc_id: Option<DocumentId>,
+        cx: &mut Context<Self>,
+    ) {
+        if target_count.is_none() {
+            return;
+        }
+
+        let ephemeral_docs: HashSet<_> = cx
+            .try_global::<nucleotide_core::preview_tracker::PreviewTracker>()
+            .map(|tracker| tracker.ephemeral_doc_ids())
+            .unwrap_or_default();
+
+        let documents = {
+            let core = self.core.read(cx);
+            self.document_order
+                .iter()
+                .copied()
+                .filter(|doc_id| !ephemeral_docs.contains(doc_id))
+                .filter_map(|doc_id| {
+                    let doc = core.editor.documents.get(&doc_id)?;
+                    Some(MaxTabsDocument {
+                        id: doc_id,
+                        focused_at: doc.focused_at,
+                        is_modified: doc.is_modified(),
+                        is_pinned: self.pinned_documents.contains(&doc_id),
+                        is_protected: protected_doc_id == Some(doc_id),
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let close_candidates = max_tabs_close_candidates_to_target(&documents, target_count);
+        self.close_tab_documents(close_candidates, cx);
+    }
+
+    fn enforce_max_tabs(&mut self, protected_doc_id: Option<DocumentId>, cx: &mut Context<Self>) {
+        let target_count = self
+            .core
+            .read(cx)
+            .config
+            .gui
+            .max_tabs
+            .map(std::num::NonZeroUsize::get);
+        self.enforce_max_tabs_to_target(target_count, protected_doc_id, cx);
+    }
+
+    fn unpinned_tab_document_ids(
+        &self,
+        doc_ids: impl IntoIterator<Item = DocumentId>,
+    ) -> Vec<DocumentId> {
+        doc_ids
+            .into_iter()
+            .filter(|doc_id| !self.pinned_documents.contains(doc_id))
+            .collect()
+    }
+
+    fn tab_cm_action_close(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        let active_doc_id = {
+            let core = self.core.read(cx);
+            self.view_manager
+                .focused_view_id()
+                .and_then(|focused_view_id| core.editor.tree.try_get(focused_view_id))
+                .map(|view| view.doc)
+        };
+        let activation_documents = self.tab_activation_documents(cx);
+        let activate_on_close = self.core.read(cx).config.gui.tabs.activate_on_close;
+        self.close_single_tab_document(
+            doc_id,
+            active_doc_id,
+            &activation_documents,
+            activate_on_close,
+            cx,
+        );
+    }
+
+    fn close_active_tab_document(&mut self, cx: &mut Context<Self>) {
+        let Some((active_doc_id, _active_view_id)) = self.active_document_and_view(cx) else {
+            return;
+        };
+
+        let visible_doc_ids = self.visible_tab_document_ids(cx);
+        match active_tab_close_plan(
+            &visible_doc_ids,
+            &self.pinned_documents,
+            Some(active_doc_id),
+        ) {
+            ActiveTabClosePlan::Activate(doc_id) => {
+                self.switch_to_tab_document(doc_id, cx);
+            }
+            ActiveTabClosePlan::Close(doc_id) => {
+                let activation_documents = self.tab_activation_documents(cx);
+                let activate_on_close = self.core.read(cx).config.gui.tabs.activate_on_close;
+                self.close_single_tab_document(
+                    doc_id,
+                    Some(doc_id),
+                    &activation_documents,
+                    activate_on_close,
+                    cx,
+                );
+            }
+            ActiveTabClosePlan::Ignore => {}
+        }
+    }
+
+    fn tab_document_path(&self, doc_id: DocumentId, cx: &mut Context<Self>) -> Option<PathBuf> {
+        let core = self.core.read(cx);
+        core.editor
+            .documents
+            .get(&doc_id)
+            .and_then(|doc| doc.path().map(|path| path.to_path_buf()))
+    }
+
+    fn tab_terminal_directory(
+        &self,
+        doc_id: DocumentId,
+        cx: &mut Context<Self>,
+    ) -> Option<PathBuf> {
+        let path = self.tab_document_path(doc_id, cx)?;
+        let parent = path.parent()?;
+        if parent.as_os_str().is_empty() {
+            return self.current_project_root.clone();
+        }
+        Some(parent.to_path_buf())
+    }
+
+    fn tab_context_menu_capabilities(&self, cx: &mut Context<Self>) -> TabContextMenuCapabilities {
+        let Some(doc_id) = self.tab_context_menu_doc_id else {
+            return TabContextMenuCapabilities::default();
+        };
+
+        let tab_path = self.tab_document_path(doc_id, cx);
+        let is_readonly = {
+            let core = self.core.read(cx);
+            core.editor
+                .documents
+                .get(&doc_id)
+                .is_some_and(|doc| doc.readonly)
+        };
+
+        TabContextMenuCapabilities {
+            has_file_path: tab_path.is_some(),
+            has_project_panel_path: tab_path
+                .as_deref()
+                .is_some_and(|path| self.tab_path_visible_in_project_panel(path, cx)),
+            has_terminal_directory: self.tab_terminal_directory(doc_id, cx).is_some(),
+            is_readonly,
+        }
+    }
+
+    fn tab_path_visible_in_project_panel(&self, path: &Path, cx: &mut Context<Self>) -> bool {
+        self.file_tree
+            .as_ref()
+            .is_some_and(|file_tree| file_tree.read(cx).contains_path(path))
+    }
+
+    fn start_rename_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let current_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+            .to_string();
+        self.pending_file_op = Some(PendingFileOp::Rename { path });
+        self.core.update(cx, move |_core, cx| {
+            let prompt = crate::prompt::Prompt::native("Rename to", current_name, |_input| {});
+            cx.emit(crate::Update::Prompt(prompt));
+        });
+    }
+
+    fn relative_tab_path_text(&self, path: &Path) -> String {
+        if let Some(root) = &self.current_project_root
+            && let Ok(relative_path) = path.strip_prefix(root)
+        {
+            return relative_path.display().to_string();
+        }
+
+        path.display().to_string()
+    }
+
+    fn tab_cm_action_copy_path(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        if let Some(path) = self.tab_document_path(doc_id, cx) {
+            let text = path.display().to_string();
+            if !Self::copy_to_clipboard_impl(&text) {
+                nucleotide_logging::warn!(path=%text, "Failed to copy tab path to clipboard");
+            }
+            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
+                intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
+                    path,
+                    kind: nucleotide_events::v2::workspace::PathCopyKind::Absolute,
+                },
+            };
+            self.core.read(cx).dispatch_workspace_event(event);
+        }
+    }
+
+    fn tab_cm_action_copy_relative_path(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        if let Some(path) = self.tab_document_path(doc_id, cx) {
+            let text = self.relative_tab_path_text(&path);
+            if !Self::copy_to_clipboard_impl(&text) {
+                nucleotide_logging::warn!(
+                    path=%text,
+                    "Failed to copy tab relative path to clipboard"
+                );
+            }
+            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
+                intent: nucleotide_events::v2::workspace::FileOpIntent::CopyPath {
+                    path,
+                    kind: nucleotide_events::v2::workspace::PathCopyKind::RelativeToWorkspace,
+                },
+            };
+            self.core.read(cx).dispatch_workspace_event(event);
+        }
+    }
+
+    fn tab_cm_action_reveal_in_os(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        if let Some(path) = self.tab_document_path(doc_id, cx) {
+            let event = nucleotide_events::v2::workspace::Event::FileOpRequested {
+                intent: nucleotide_events::v2::workspace::FileOpIntent::RevealInOs { path },
+            };
+            self.core.read(cx).dispatch_workspace_event(event);
+        }
+    }
+
+    fn tab_cm_action_reveal_in_project_panel(
+        &mut self,
+        doc_id: DocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self.tab_document_path(doc_id, cx) else {
+            return;
+        };
+
+        let Some(file_tree) = &self.file_tree else {
+            return;
+        };
+
+        self.show_file_tree = true;
+        file_tree.update(cx, |tree, cx| {
+            tree.sync_selection_with_file(Some(path.as_path()), cx);
+        });
+        cx.notify();
+    }
+
+    fn tab_cm_action_open_in_terminal(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        if let Some(cwd) = self.tab_terminal_directory(doc_id, cx) {
+            self.open_terminal_panel_at(Some(cwd), cx);
+        }
+    }
+
+    fn tab_cm_action_toggle_readonly(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        let toggled = self.core.update(cx, |core, _cx| {
+            core.editor.documents.get_mut(&doc_id).map(|doc| {
+                doc.readonly = !doc.readonly;
+                doc.readonly
+            })
+        });
+
+        if let Some(readonly) = toggled {
+            nucleotide_logging::info!(?doc_id, readonly, "Toggled tab document read-only state");
+            cx.notify();
+        }
+    }
+
+    fn tab_cm_action_toggle_pin(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        let should_pin = !self.pinned_documents.contains(&doc_id);
+        if change_tab_pin_state(
+            &mut self.document_order,
+            &mut self.pinned_documents,
+            doc_id,
+            should_pin,
+        ) {
+            cx.notify();
+        }
+    }
+
+    fn tab_action_double_click(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        self.unregister_preview_document(doc_id, cx);
+
+        let path = self.tab_document_path(doc_id, cx);
+        match tab_double_click_plan(path.is_some()) {
+            TabDoubleClickPlan::Rename => {
+                if let Some(path) = path {
+                    self.start_rename_file(path, cx);
+                }
+            }
+            TabDoubleClickPlan::Activate => {
+                self.switch_to_tab_document(doc_id, cx);
+            }
+        }
+
+        cx.notify();
+    }
+
+    fn tab_cm_action_close_others(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        let should_unpreview_retained_tab = cx
+            .try_global::<nucleotide_core::preview_tracker::PreviewTracker>()
+            .is_some_and(|tracker| {
+                should_unpreview_retained_tab_after_close_others(tracker.is_preview_doc(doc_id))
+            });
+        if should_unpreview_retained_tab {
+            self.unregister_preview_document(doc_id, cx);
+        }
+
+        let doc_ids = self.visible_tab_document_ids(cx);
+        let doc_ids = self.unpinned_tab_document_ids(
+            doc_ids.into_iter().filter(|candidate| *candidate != doc_id),
+        );
+        self.close_tab_documents(doc_ids, cx);
+    }
+
+    fn tab_cm_action_close_left(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        let visible_doc_ids = self.visible_tab_document_ids(cx);
+        let doc_ids = visible_doc_ids
+            .iter()
+            .position(|candidate| *candidate == doc_id)
+            .map(|index| visible_doc_ids[..index].to_vec())
+            .unwrap_or_default();
+        let doc_ids = self.unpinned_tab_document_ids(doc_ids);
+        self.close_tab_documents(doc_ids, cx);
+    }
+
+    fn tab_cm_action_close_right(&mut self, doc_id: DocumentId, cx: &mut Context<Self>) {
+        let visible_doc_ids = self.visible_tab_document_ids(cx);
+        let doc_ids = visible_doc_ids
+            .iter()
+            .position(|candidate| *candidate == doc_id)
+            .map(|index| visible_doc_ids[index + 1..].to_vec())
+            .unwrap_or_default();
+        let doc_ids = self.unpinned_tab_document_ids(doc_ids);
+        self.close_tab_documents(doc_ids, cx);
+    }
+
+    fn tab_cm_action_close_clean(&mut self, _doc_id: DocumentId, cx: &mut Context<Self>) {
+        let visible_doc_ids = self.visible_tab_document_ids(cx);
+        let doc_ids = {
+            let core = self.core.read(cx);
+            visible_doc_ids
+                .into_iter()
+                .filter(|doc_id| {
+                    core.editor
+                        .documents
+                        .get(doc_id)
+                        .is_some_and(|doc| !doc.is_modified())
+                })
+                .collect::<Vec<_>>()
+        };
+        let doc_ids = self.unpinned_tab_document_ids(doc_ids);
+        self.close_tab_documents(doc_ids, cx);
+    }
+
+    fn tab_cm_action_close_all(&mut self, _doc_id: DocumentId, cx: &mut Context<Self>) {
+        let doc_ids = self.unpinned_tab_document_ids(self.visible_tab_document_ids(cx));
+        self.close_tab_documents(doc_ids, cx);
+    }
+
+    fn tab_bar_action_split_right(&mut self, cx: &mut Context<Self>) {
+        self.execute_tab_bar_split_intent(TabBarSplitMenuIntent::Right, cx);
+    }
+
+    fn tab_bar_action_split_left(&mut self, cx: &mut Context<Self>) {
+        self.execute_tab_bar_split_intent(TabBarSplitMenuIntent::Left, cx);
+    }
+
+    fn tab_bar_action_split_up(&mut self, cx: &mut Context<Self>) {
+        self.execute_tab_bar_split_intent(TabBarSplitMenuIntent::Up, cx);
+    }
+
+    fn tab_bar_action_split_down(&mut self, cx: &mut Context<Self>) {
+        self.execute_tab_bar_split_intent(TabBarSplitMenuIntent::Down, cx);
+    }
+
+    fn execute_tab_bar_split_intent(
+        &mut self,
+        intent: TabBarSplitMenuIntent,
+        cx: &mut Context<Self>,
+    ) {
+        for command in intent.commands() {
+            self.execute_raw_command(command, cx);
+        }
+    }
+
+    fn tab_bar_action_new_file(&mut self, cx: &mut Context<Self>) {
+        self.execute_raw_command("new", cx);
+    }
+
+    fn tab_bar_action_open_file(&mut self, cx: &mut Context<Self>) {
+        self.open_file_picker(cx);
+    }
+
+    fn tab_bar_action_search_project(&mut self, cx: &mut Context<Self>) {
+        self.start_global_search(cx);
+    }
+
+    fn tab_bar_action_search_symbols(&mut self, cx: &mut Context<Self>) {
+        self.core
+            .update(cx, |core, cx| core.trigger_lsp_symbol_picker(true, cx));
+    }
+
+    fn tab_bar_action_new_terminal(&mut self, cx: &mut Context<Self>) {
+        self.toggle_terminal_panel(cx);
+    }
+
+    fn tab_bar_action_new_center_terminal(&mut self, cx: &mut Context<Self>) {
+        self.toggle_terminal_panel(cx);
+    }
+
+    fn unpin_all_tabs(&mut self, cx: &mut Context<Self>) {
+        if unpin_all_tabs(&mut self.pinned_documents) {
+            cx.notify();
+        }
+    }
+
+    fn toggle_active_preview_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.core.read(cx).config.gui.preview_tabs.enabled {
+            return;
+        }
+
+        let Some((active_doc_id, active_view_id)) = self.active_document_and_view(cx) else {
+            return;
+        };
+        let Some(tracker) = cx
+            .try_global::<nucleotide_core::preview_tracker::PreviewTracker>()
+            .cloned()
+        else {
+            return;
+        };
+
+        let preview_doc_ids = tracker.preview_doc_ids();
+        match preview_tab_toggle_plan(&self.document_order, &preview_doc_ids, active_doc_id) {
+            PreviewTabTogglePlan::Unpreview => {
+                tracker.unregister_doc(active_doc_id);
+                cx.notify();
+            }
+            PreviewTabTogglePlan::Preview { .. } => {
+                self.replace_preview_tab_document(active_doc_id, active_view_id, false, cx);
+                cx.notify();
+            }
         }
     }
 
@@ -812,11 +2243,24 @@ impl Workspace {
             needs_appearance_update: false,
             needs_window_appearance_update: false,
             pending_appearance: None,
-            tab_overflow_dropdown_open: false,
+            tab_bar_scroll_handle: ScrollHandle::new(),
+            last_scrolled_tab_doc_id: None,
+            suppress_tab_bar_auto_scroll: false,
             context_menu_open: false,
             context_menu_pos: (0.0, 0.0),
             context_menu_path: None,
             context_menu_index: 0,
+            tab_context_menu_open: false,
+            tab_context_menu_pos: (0.0, 0.0),
+            tab_context_menu_doc_id: None,
+            tab_context_menu_index: 0,
+            pinned_documents: HashSet::new(),
+            tab_bar_split_menu_open: false,
+            tab_bar_split_menu_pos: (0.0, 0.0),
+            tab_bar_split_menu_index: 0,
+            tab_bar_new_menu_open: false,
+            tab_bar_new_menu_pos: (0.0, 0.0),
+            tab_bar_new_menu_index: 0,
             lsp_menu_open: false,
             lsp_menu_pos: (0.0, 0.0),
             document_order: Vec::new(),
@@ -1145,6 +2589,419 @@ impl Workspace {
         )
     }
 
+    fn render_tab_context_menu(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        window.focus(&self.focus_handle, cx);
+
+        let visible_doc_ids = self.visible_tab_document_ids(cx);
+        let target_doc_id = self.tab_context_menu_doc_id;
+        let target_index =
+            target_doc_id.and_then(|doc_id| visible_doc_ids.iter().position(|id| *id == doc_id));
+        let menu_capabilities = self.tab_context_menu_capabilities(cx);
+        let has_clean_items = {
+            let core = self.core.read(cx);
+            visible_doc_ids.iter().any(|doc_id| {
+                core.editor
+                    .documents
+                    .get(doc_id)
+                    .is_some_and(|doc| !doc.is_modified())
+            })
+        };
+        let target_is_pinned = self
+            .tab_context_menu_doc_id
+            .is_some_and(|doc_id| self.pinned_documents.contains(&doc_id));
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
+        let dropdown_tokens = tokens.dropdown_tokens();
+        let (x, y) = self.tab_context_menu_pos;
+        let entries = Self::tab_context_menu_entries(
+            menu_capabilities.has_file_path,
+            menu_capabilities.has_project_panel_path,
+            menu_capabilities.has_terminal_directory,
+        );
+        let item_count = entries
+            .iter()
+            .filter(|entry| matches!(entry, TabContextMenuEntry::Action(_)))
+            .count();
+
+        let popup = div()
+            .bg(dropdown_tokens.container_background)
+            .border_1()
+            .border_color(dropdown_tokens.border)
+            .rounded(tokens.sizes.radius_md)
+            .shadow(vec![
+                tokens.chrome.shadow_md.to_box_shadow(false),
+                tokens.chrome.inset_highlight.to_box_shadow(true),
+            ])
+            .min_w(px(220.0))
+            .py(tokens.sizes.space_1)
+            .px(tokens.sizes.space_1)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
+            .children(entries.into_iter().scan(0usize, |action_index, entry| {
+                let TabContextMenuEntry::Action(intent) = entry else {
+                    return Some(
+                        div()
+                            .h(px(1.0))
+                            .mx(tokens.sizes.space_2)
+                            .my(tokens.sizes.space_1)
+                            .bg(dropdown_tokens.separator)
+                            .into_any_element(),
+                    );
+                };
+
+                let index = *action_index;
+                *action_index += 1;
+                let is_disabled = Self::tab_context_menu_intent_disabled(
+                    intent,
+                    target_index,
+                    visible_doc_ids.len(),
+                    has_clean_items,
+                );
+                let is_selected = self.tab_context_menu_index == index;
+                let is_first = index == 0;
+                let is_last = index + 1 == item_count;
+                let inner_radius = tokens.sizes.radius_md - px(0.5);
+
+                Some(
+                    div()
+                        .w_full()
+                        .when(is_selected && !is_disabled, |item| {
+                            item.bg(dropdown_tokens.item_background_selected)
+                        })
+                        .when(is_selected && !is_disabled && is_first, |item| {
+                            item.rounded_tl(inner_radius).rounded_tr(inner_radius)
+                        })
+                        .when(is_selected && !is_disabled && is_last, |item| {
+                            item.rounded_bl(inner_radius).rounded_br(inner_radius)
+                        })
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .when(!is_disabled, |item| {
+                            item.on_mouse_move(cx.listener(
+                                move |workspace: &mut Workspace, _event, _window, cx| {
+                                    if workspace.tab_context_menu_index != index {
+                                        workspace.tab_context_menu_index = index;
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(
+                                    move |workspace: &mut Workspace, _event, _window, cx| {
+                                        if let Some(doc_id) = workspace.tab_context_menu_doc_id {
+                                            workspace.tab_context_menu_open = false;
+                                            workspace.tab_context_menu_doc_id = None;
+                                            let handler =
+                                                Workspace::tab_context_menu_handler(intent);
+                                            handler(workspace, doc_id, cx);
+                                        } else {
+                                            workspace.tab_context_menu_open = false;
+                                            cx.notify();
+                                        }
+                                        cx.stop_propagation();
+                                    },
+                                ),
+                            )
+                        })
+                        .child(
+                            div()
+                                .w_full()
+                                .text_size(tokens.sizes.text_sm)
+                                .px(tokens.sizes.space_2)
+                                .py(tokens.sizes.space_1)
+                                .text_color(if is_disabled {
+                                    dropdown_tokens.item_text_disabled
+                                } else if is_selected {
+                                    dropdown_tokens.item_text_selected
+                                } else {
+                                    dropdown_tokens.item_text
+                                })
+                                .child(
+                                    intent.label(target_is_pinned, menu_capabilities.is_readonly),
+                                ),
+                        )
+                        .into_any_element(),
+                )
+            }));
+
+        div()
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .occlude()
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
+                    workspace.tab_context_menu_open = false;
+                    workspace.tab_context_menu_doc_id = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
+                    workspace.tab_context_menu_open = false;
+                    workspace.tab_context_menu_doc_id = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(x + 8.0))
+                    .top(px(y + 8.0))
+                    .child(popup),
+            )
+    }
+
+    fn render_tab_bar_split_menu(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        window.focus(&self.focus_handle, cx);
+
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
+        let dropdown_tokens = tokens.dropdown_tokens();
+        let (x, y) = self.tab_bar_split_menu_pos;
+        let intents = Self::tab_bar_split_menu_intents();
+        let item_count = intents.len();
+
+        let popup = div()
+            .bg(dropdown_tokens.container_background)
+            .border_1()
+            .border_color(dropdown_tokens.border)
+            .rounded(tokens.sizes.radius_md)
+            .shadow(vec![
+                tokens.chrome.shadow_md.to_box_shadow(false),
+                tokens.chrome.inset_highlight.to_box_shadow(true),
+            ])
+            .min_w(px(180.0))
+            .py(tokens.sizes.space_1)
+            .px(tokens.sizes.space_1)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
+            .children(intents.iter().copied().enumerate().map(|(index, intent)| {
+                let is_selected = self.tab_bar_split_menu_index == index;
+                let is_first = index == 0;
+                let is_last = index + 1 == item_count;
+                let inner_radius = tokens.sizes.radius_md - px(0.5);
+
+                div()
+                    .w_full()
+                    .when(is_selected, |item| {
+                        item.bg(dropdown_tokens.item_background_selected)
+                    })
+                    .when(is_selected && is_first, |item| {
+                        item.rounded_tl(inner_radius).rounded_tr(inner_radius)
+                    })
+                    .when(is_selected && is_last, |item| {
+                        item.rounded_bl(inner_radius).rounded_br(inner_radius)
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_move(cx.listener(
+                        move |workspace: &mut Workspace, _event, _window, cx| {
+                            if workspace.tab_bar_split_menu_index != index {
+                                workspace.tab_bar_split_menu_index = index;
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |workspace: &mut Workspace, _event, _window, cx| {
+                            workspace.tab_bar_split_menu_open = false;
+                            let handler = Workspace::tab_bar_split_menu_handler(intent);
+                            handler(workspace, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .text_size(tokens.sizes.text_sm)
+                            .px(tokens.sizes.space_2)
+                            .py(tokens.sizes.space_1)
+                            .text_color(if is_selected {
+                                dropdown_tokens.item_text_selected
+                            } else {
+                                dropdown_tokens.item_text
+                            })
+                            .child(intent.label()),
+                    )
+            }));
+
+        div()
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .occlude()
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
+                    workspace.tab_bar_split_menu_open = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
+                    workspace.tab_bar_split_menu_open = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(x + 8.0))
+                    .top(px(y + 8.0))
+                    .child(popup),
+            )
+    }
+
+    fn render_tab_bar_new_menu(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        window.focus(&self.focus_handle, cx);
+
+        let theme = cx.theme();
+        let tokens = &theme.tokens;
+        let dropdown_tokens = tokens.dropdown_tokens();
+        let (x, y) = self.tab_bar_new_menu_pos;
+        let intents = Self::tab_bar_new_menu_intents();
+        let entries = Self::tab_bar_new_menu_entries();
+        let item_count = intents.len();
+
+        let popup = div()
+            .bg(dropdown_tokens.container_background)
+            .border_1()
+            .border_color(dropdown_tokens.border)
+            .rounded(tokens.sizes.radius_md)
+            .shadow(vec![
+                tokens.chrome.shadow_md.to_box_shadow(false),
+                tokens.chrome.inset_highlight.to_box_shadow(true),
+            ])
+            .min_w(px(200.0))
+            .py(tokens.sizes.space_1)
+            .px(tokens.sizes.space_1)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
+            .children(entries.iter().copied().scan(0usize, |action_index, entry| {
+                let TabBarNewMenuEntry::Action(intent) = entry else {
+                    return Some(
+                        div()
+                            .h(px(1.0))
+                            .mx(tokens.sizes.space_2)
+                            .my(tokens.sizes.space_1)
+                            .bg(dropdown_tokens.separator)
+                            .into_any_element(),
+                    );
+                };
+
+                let index = *action_index;
+                *action_index += 1;
+                let is_selected = self.tab_bar_new_menu_index == index;
+                let is_first = index == 0;
+                let is_last = index + 1 == item_count;
+                let inner_radius = tokens.sizes.radius_md - px(0.5);
+
+                Some(
+                    div()
+                        .w_full()
+                        .when(is_selected, |item| {
+                            item.bg(dropdown_tokens.item_background_selected)
+                        })
+                        .when(is_selected && is_first, |item| {
+                            item.rounded_tl(inner_radius).rounded_tr(inner_radius)
+                        })
+                        .when(is_selected && is_last, |item| {
+                            item.rounded_bl(inner_radius).rounded_br(inner_radius)
+                        })
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_move(cx.listener(
+                            move |workspace: &mut Workspace, _event, _window, cx| {
+                                if workspace.tab_bar_new_menu_index != index {
+                                    workspace.tab_bar_new_menu_index = index;
+                                    cx.notify();
+                                }
+                            },
+                        ))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |workspace: &mut Workspace, _event, _window, cx| {
+                                workspace.tab_bar_new_menu_open = false;
+                                let handler = Workspace::tab_bar_new_menu_handler(intent);
+                                handler(workspace, cx);
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .text_size(tokens.sizes.text_sm)
+                                .px(tokens.sizes.space_2)
+                                .py(tokens.sizes.space_1)
+                                .text_color(if is_selected {
+                                    dropdown_tokens.item_text_selected
+                                } else {
+                                    dropdown_tokens.item_text
+                                })
+                                .child(intent.label()),
+                        )
+                        .into_any_element(),
+                )
+            }));
+
+        div()
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .occlude()
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
+                    workspace.tab_bar_new_menu_open = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|workspace: &mut Workspace, _event, _window, cx| {
+                    workspace.tab_bar_new_menu_open = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(x + 8.0))
+                    .top(px(y + 8.0))
+                    .child(popup),
+            )
+    }
+
     // --- Context menu action handlers (stubs that close the menu and log) ---
     fn close_context_menu(&mut self, cx: &mut Context<Self>) {
         self.context_menu_open = false;
@@ -1258,16 +3115,7 @@ impl Workspace {
 
     fn cm_action_rename(this: &mut Workspace, cx: &mut Context<Workspace>) {
         if let Some(path) = this.context_menu_path.clone() {
-            let current_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            this.pending_file_op = Some(PendingFileOp::Rename { path });
-            this.core.update(cx, move |_core, cx| {
-                let prompt = crate::prompt::Prompt::native("Rename to", current_name, |_input| {});
-                cx.emit(crate::Update::Prompt(prompt));
-            });
+            this.start_rename_file(path, cx);
         }
         this.close_context_menu(cx);
     }
@@ -1604,6 +3452,176 @@ impl Workspace {
                     self.delete_confirm_open = false;
                     self.delete_confirm_path = None;
                     cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Tab context menu keyboard handling
+        if self.tab_context_menu_open {
+            match ev.keystroke.key.as_str() {
+                "escape" => {
+                    self.tab_context_menu_open = false;
+                    self.tab_context_menu_doc_id = None;
+                    cx.notify();
+                    return;
+                }
+                "down" => {
+                    let menu_capabilities = self.tab_context_menu_capabilities(cx);
+                    let len = Self::tab_context_menu_intents(
+                        menu_capabilities.has_file_path,
+                        menu_capabilities.has_project_panel_path,
+                        menu_capabilities.has_terminal_directory,
+                    )
+                    .len();
+                    if len > 0 {
+                        self.tab_context_menu_index = (self.tab_context_menu_index + 1) % len;
+                        cx.notify();
+                    }
+                    return;
+                }
+                "up" => {
+                    let menu_capabilities = self.tab_context_menu_capabilities(cx);
+                    let len = Self::tab_context_menu_intents(
+                        menu_capabilities.has_file_path,
+                        menu_capabilities.has_project_panel_path,
+                        menu_capabilities.has_terminal_directory,
+                    )
+                    .len();
+                    if len > 0 {
+                        self.tab_context_menu_index = (self.tab_context_menu_index + len - 1) % len;
+                        cx.notify();
+                    }
+                    return;
+                }
+                "enter" => {
+                    if let Some(doc_id) = self.tab_context_menu_doc_id {
+                        let menu_capabilities = self.tab_context_menu_capabilities(cx);
+                        let intents = Self::tab_context_menu_intents(
+                            menu_capabilities.has_file_path,
+                            menu_capabilities.has_project_panel_path,
+                            menu_capabilities.has_terminal_directory,
+                        );
+                        let Some(intent) = intents.get(self.tab_context_menu_index).copied() else {
+                            self.tab_context_menu_open = false;
+                            self.tab_context_menu_doc_id = None;
+                            cx.notify();
+                            return;
+                        };
+                        let visible_doc_ids = self.visible_tab_document_ids(cx);
+                        let target_index = visible_doc_ids.iter().position(|id| *id == doc_id);
+                        let has_clean_items = {
+                            let core = self.core.read(cx);
+                            visible_doc_ids.iter().any(|doc_id| {
+                                core.editor
+                                    .documents
+                                    .get(doc_id)
+                                    .is_some_and(|doc| !doc.is_modified())
+                            })
+                        };
+
+                        if Self::tab_context_menu_intent_disabled(
+                            intent,
+                            target_index,
+                            visible_doc_ids.len(),
+                            has_clean_items,
+                        ) {
+                            cx.notify();
+                        } else {
+                            let handler = Self::tab_context_menu_handler(intent);
+                            self.tab_context_menu_open = false;
+                            self.tab_context_menu_doc_id = None;
+                            handler(self, doc_id, cx);
+                        }
+                    } else {
+                        self.tab_context_menu_open = false;
+                        self.tab_context_menu_doc_id = None;
+                        cx.notify();
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Tab bar split menu keyboard handling
+        if self.tab_bar_split_menu_open {
+            match ev.keystroke.key.as_str() {
+                "escape" => {
+                    self.tab_bar_split_menu_open = false;
+                    cx.notify();
+                    return;
+                }
+                "down" => {
+                    let len = Self::tab_bar_split_menu_intents().len();
+                    if len > 0 {
+                        self.tab_bar_split_menu_index = (self.tab_bar_split_menu_index + 1) % len;
+                        cx.notify();
+                    }
+                    return;
+                }
+                "up" => {
+                    let len = Self::tab_bar_split_menu_intents().len();
+                    if len > 0 {
+                        self.tab_bar_split_menu_index =
+                            (self.tab_bar_split_menu_index + len - 1) % len;
+                        cx.notify();
+                    }
+                    return;
+                }
+                "enter" => {
+                    if let Some(intent) =
+                        Self::tab_bar_split_menu_intents().get(self.tab_bar_split_menu_index)
+                    {
+                        let handler = Self::tab_bar_split_menu_handler(*intent);
+                        self.tab_bar_split_menu_open = false;
+                        handler(self, cx);
+                    } else {
+                        self.tab_bar_split_menu_open = false;
+                        cx.notify();
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Tab bar new item menu keyboard handling
+        if self.tab_bar_new_menu_open {
+            match ev.keystroke.key.as_str() {
+                "escape" => {
+                    self.tab_bar_new_menu_open = false;
+                    cx.notify();
+                    return;
+                }
+                "down" => {
+                    let len = Self::tab_bar_new_menu_intents().len();
+                    if len > 0 {
+                        self.tab_bar_new_menu_index = (self.tab_bar_new_menu_index + 1) % len;
+                        cx.notify();
+                    }
+                    return;
+                }
+                "up" => {
+                    let len = Self::tab_bar_new_menu_intents().len();
+                    if len > 0 {
+                        self.tab_bar_new_menu_index = (self.tab_bar_new_menu_index + len - 1) % len;
+                        cx.notify();
+                    }
+                    return;
+                }
+                "enter" => {
+                    if let Some(intent) =
+                        Self::tab_bar_new_menu_intents().get(self.tab_bar_new_menu_index)
+                    {
+                        let handler = Self::tab_bar_new_menu_handler(*intent);
+                        self.tab_bar_new_menu_open = false;
+                        handler(self, cx);
+                    } else {
+                        self.tab_bar_new_menu_open = false;
+                        cx.notify();
+                    }
                     return;
                 }
                 _ => {}
@@ -3042,6 +5060,19 @@ impl Workspace {
     }
 
     fn handle_document_changed(&mut self, doc_id: helix_view::DocumentId, cx: &mut Context<Self>) {
+        let is_modified = self
+            .core
+            .read(cx)
+            .editor
+            .document(doc_id)
+            .is_some_and(|doc| doc.is_modified());
+        let is_preview = cx
+            .try_global::<nucleotide_core::preview_tracker::PreviewTracker>()
+            .is_some_and(|tracker| tracker.is_preview_doc(doc_id));
+        if should_unpreview_changed_document(is_preview, is_modified) {
+            self.unregister_preview_document(doc_id, cx);
+        }
+
         // Document content changed - update specific document view
         self.update_specific_document_view(doc_id, cx);
         cx.notify();
@@ -3091,6 +5122,7 @@ impl Workspace {
     fn handle_document_opened(&mut self, doc_id: helix_view::DocumentId, cx: &mut Context<Self>) {
         // New document opened - the view will be created automatically
         info!("Document opened: {:?}", doc_id);
+        self.ensure_document_in_order(doc_id);
 
         // Start LSP for the newly opened document using the feature flag system
         info!("Starting LSP for newly opened document using feature flag system");
@@ -3151,12 +5183,16 @@ impl Workspace {
             });
         }
 
+        self.enforce_max_tabs(Some(doc_id), cx);
         cx.notify();
     }
 
     fn handle_document_closed(&mut self, doc_id: helix_view::DocumentId, cx: &mut Context<Self>) {
         // Document closed - the view will be cleaned up automatically
         info!("Document closed: {:?}", doc_id);
+        self.document_order.retain(|candidate| *candidate != doc_id);
+        self.pinned_documents.remove(&doc_id);
+        self.unregister_preview_document(doc_id, cx);
         cx.notify();
     }
 
@@ -3896,12 +5932,21 @@ impl Workspace {
 
     fn handle_open_file_keep_focus(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
         // Open file but don't steal focus from file tree
-        self.open_file_internal(path, false, cx);
+        let preview_from_project_panel = {
+            let core = self.core.read(cx);
+            core.config.gui.preview_tabs.enabled
+                && core
+                    .config
+                    .gui
+                    .preview_tabs
+                    .enable_preview_from_project_panel
+        };
+        self.open_file_internal(path, false, preview_from_project_panel, cx);
     }
 
     fn handle_open_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
         // Open file and focus the editor
-        self.open_file_internal(path, true, cx);
+        self.open_file_internal(path, true, false, cx);
     }
 
     /// Open the nucleotide.toml settings file
@@ -3959,7 +6004,7 @@ impl Workspace {
         }
 
         // Open the settings file
-        self.open_file_internal(&settings_path, true, cx);
+        self.open_file_internal(&settings_path, true, false, cx);
     }
 
     /// Reload the nucleotide.toml configuration without restarting
@@ -3984,8 +6029,13 @@ impl Workspace {
                     settings_path.display()
                 );
 
+                let old_max_tabs = self.core.read(cx).config.gui.max_tabs;
+                let new_max_tabs = new_config.gui.max_tabs;
+                let preview_tabs_enabled = new_config.gui.preview_tabs.enabled;
+                let ui_font = new_config.gui.ui.font.clone();
+
                 // Update font configuration if needed
-                if let Some(ui_font) = &new_config.gui.ui.font {
+                if let Some(ui_font) = &ui_font {
                     let ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
                     ui_font_config.family = ui_font.family.clone();
                     ui_font_config.size = ui_font.size;
@@ -3993,6 +6043,24 @@ impl Workspace {
                         "UI font configuration updated: {} {}pt",
                         ui_font.family, ui_font.size
                     );
+                }
+
+                self.core.update(cx, move |core, cx| {
+                    core.config = new_config;
+                    cx.notify();
+                });
+
+                if !preview_tabs_enabled {
+                    self.clear_preview_documents(cx);
+                }
+
+                if old_max_tabs != new_max_tabs {
+                    let protected_doc_id = self
+                        .active_document_and_view(cx)
+                        .map(|(doc_id, _view_id)| doc_id);
+                    let settings_change_target =
+                        new_max_tabs.map(|max_tabs| max_tabs.get().saturating_add(1));
+                    self.enforce_max_tabs_to_target(settings_change_target, protected_doc_id, cx);
                 }
 
                 // Trigger a full redraw to apply changes
@@ -4012,13 +6080,21 @@ impl Workspace {
         &mut self,
         path: &std::path::Path,
         should_focus: bool,
+        preview_from_project_panel: bool,
         cx: &mut Context<Self>,
     ) {
         // Open the specified file in the editor
         info!("Workspace: Received OpenFile update for: {path:?}");
         let mut reveal_opened_view = None;
+        let mut opened_doc_id = None;
+        let mut project_panel_preview = None;
         self.core.update(cx, |core, cx| {
             let _guard = self.handle.enter();
+            let existed_already = core
+                .editor
+                .documents
+                .values()
+                .any(|doc| doc.path().is_some_and(|doc_path| doc_path == path));
 
             // Determine the right action based on whether we have views
             let action = if core.editor.tree.views().count() == 0 {
@@ -4040,6 +6116,7 @@ impl Workspace {
                 }
                 Ok(doc_id) => {
                     info!("Successfully opened file from picker: {path:?}, doc_id: {doc_id:?}");
+                    opened_doc_id = Some(doc_id);
 
                     // Log document info
                     if let Some(doc) = core.editor.document(doc_id) {
@@ -4107,6 +6184,13 @@ impl Workspace {
 
                     // Set cursor to beginning of file without selecting content
                     let view_id = core.editor.tree.focus;
+                    if should_create_project_panel_preview_tab(
+                        core.config.gui.preview_tabs.enabled,
+                        preview_from_project_panel,
+                        existed_already,
+                    ) {
+                        project_panel_preview = Some((doc_id, view_id));
+                    }
 
                     // Check if the view exists before attempting operations
                     if let Some(view) = core.editor.tree.try_get(view_id) {
@@ -4139,11 +6223,23 @@ impl Workspace {
             cx.notify();
         });
 
+        if let Some((doc_id, view_id)) = project_panel_preview {
+            self.replace_preview_tab_document(doc_id, view_id, true, cx);
+        } else if let Some(doc_id) = opened_doc_id
+            && !preview_from_project_panel
+        {
+            self.unregister_preview_document(doc_id, cx);
+        }
+
         // Force focus update to ensure the correct view is focused
         self.core.update(cx, |core, _cx| {
             let view_id = core.editor.tree.focus;
             info!("Current focused view after opening: {:?}", view_id);
         });
+
+        if opened_doc_id.is_some() {
+            self.allow_tab_bar_auto_scroll();
+        }
 
         // Update document views after opening file
         self.update_document_views(cx);
@@ -4491,6 +6587,18 @@ impl Workspace {
         use crate::tab_bar::{DocumentInfo, TabBar};
         use helix_view::editor::BufferLine;
 
+        let active_document_focused = self
+            .view_manager
+            .focused_view_id()
+            .and_then(|view_id| self.view_manager.get_document_view(&view_id))
+            .is_some_and(|doc_view| doc_view.focus_handle(cx).contains_focused(window, cx));
+        let tab_bar_menu_focused = self.tab_context_menu_open
+            || self.tab_bar_split_menu_open
+            || self.tab_bar_new_menu_open;
+        let workspace_focused = self.focus_handle.contains_focused(window, cx);
+        let editor_pane_focused = workspace_focused || active_document_focused;
+        let show_focused_tab_bar_buttons = editor_pane_focused || tab_bar_menu_focused;
+
         let core = self.core.read(cx);
         let editor = &core.editor;
 
@@ -4502,11 +6610,12 @@ impl Workspace {
             editor.documents.len()
         );
 
-        let should_show_tabs = match bufferline_config {
-            BufferLine::Never => false,
-            BufferLine::Always => true,
-            BufferLine::Multiple => editor.documents.len() > 1,
-        };
+        let should_show_tabs = core.config.gui.tab_bar.show
+            && match bufferline_config {
+                BufferLine::Never => false,
+                BufferLine::Always => true,
+                BufferLine::Multiple => editor.documents.len() > 1,
+            };
 
         debug!(
             should_show_tabs = should_show_tabs,
@@ -4525,28 +6634,6 @@ impl Workspace {
 
         debug!("Tab bar visible, rendering tabs");
 
-        // Calculate available width for tabs dynamically
-        let window_size = window.viewport_size();
-        let mut available_width = f32::from(window_size.width);
-
-        // Subtract file tree width if it's visible
-        if self.show_file_tree {
-            const RESIZE_HANDLE_WIDTH: f32 = 4.0;
-            available_width -= self.file_tree_width + RESIZE_HANDLE_WIDTH;
-        }
-
-        // Reserve some margin for window padding and other UI elements
-        const TAB_BAR_MARGIN: f32 = 20.0;
-        available_width = (available_width - TAB_BAR_MARGIN).max(200.0); // Minimum 200px
-
-        debug!(
-            window_width = f32::from(window_size.width),
-            file_tree_width = self.file_tree_width,
-            show_file_tree = self.show_file_tree,
-            calculated_available_width = available_width,
-            "Dynamic tab bar width calculation"
-        );
-
         // Get the currently active document ID
         let active_doc_id = self
             .view_manager
@@ -4556,6 +6643,19 @@ impl Workspace {
 
         // Get project directory for relative paths first
         let project_directory = core.project_directory.clone();
+        let show_nav_history_buttons = core.config.gui.tab_bar.show_nav_history_buttons;
+        let show_tab_bar_buttons =
+            core.config.gui.tab_bar.show_tab_bar_buttons && show_focused_tab_bar_buttons;
+        let show_pinned_tabs_in_separate_row =
+            core.config.gui.tab_bar.show_pinned_tabs_in_separate_row;
+        let show_close_button = core.config.gui.tabs.show_close_button;
+        let close_position = core.config.gui.tabs.close_position;
+        let show_file_icons = core.config.gui.tabs.file_icons;
+        let show_git_status = core.config.gui.tabs.git_status;
+        let show_diagnostics = core.config.gui.tabs.show_diagnostics;
+        let activate_on_close = core.config.gui.tabs.activate_on_close;
+        let show_preview_tabs = core.config.gui.preview_tabs.enabled;
+        let tab_bar_zoom_icon_path = tab_bar_zoom_icon_path(window.is_maximized());
 
         // Collect all current document IDs
         let current_doc_ids: std::collections::HashSet<_> =
@@ -4566,35 +6666,84 @@ impl Workspace {
         // Clean up order list - remove documents that no longer exist
         self.document_order
             .retain(|doc_id| current_doc_ids.contains(doc_id));
+        self.pinned_documents
+            .retain(|doc_id| current_doc_ids.contains(doc_id));
 
         // Add any new documents to the end of the order list (rightmost position)
         for &doc_id in &current_doc_ids {
             self.ensure_document_in_order(doc_id);
         }
 
-        // Now collect document information in the stable order, excluding ephemeral preview docs
+        // Now collect document information in the stable order. Ephemeral preview
+        // documents stay visible so they behave like Zed preview tabs.
         let mut documents = Vec::new();
         let core = self.core.read(cx);
         let editor = &core.editor;
-        // Build a set of ephemeral preview doc_ids to exclude from the tab bar
-        let ephemeral_docs: std::collections::HashSet<_> = cx
+        // Build preview doc sets. The preview setting controls tab presentation,
+        // but already-open documents remain visible when previews are disabled.
+        let preview_tracker = cx
             .try_global::<nucleotide_core::preview_tracker::PreviewTracker>()
-            .map(|t| t.ephemeral_doc_ids())
+            .cloned();
+        let preview_docs: std::collections::HashSet<_> = preview_tracker
+            .as_ref()
+            .map(|t| t.preview_doc_ids())
             .unwrap_or_default();
 
         // Iterate in our stable order, not HashMap order
         for (order_index, &doc_id) in self.document_order.iter().enumerate() {
-            if ephemeral_docs.contains(&doc_id) {
-                continue;
-            }
+            let is_preview = show_preview_tabs && preview_docs.contains(&doc_id);
+
             if let Some(doc) = editor.documents.get(&doc_id) {
+                let path = doc.path().map(|p| p.to_path_buf());
+                let diagnostic_severity = if show_file_icons {
+                    match show_diagnostics {
+                        crate::config::TabDiagnosticsVisibility::Off => None,
+                        crate::config::TabDiagnosticsVisibility::Errors => doc
+                            .diagnostics()
+                            .iter()
+                            .any(|diagnostic| {
+                                matches!(
+                                    diagnostic.severity,
+                                    Some(helix_core::diagnostic::Severity::Error)
+                                )
+                            })
+                            .then_some(helix_core::diagnostic::Severity::Error),
+                        crate::config::TabDiagnosticsVisibility::All => {
+                            if doc.diagnostics().iter().any(|diagnostic| {
+                                matches!(
+                                    diagnostic.severity,
+                                    Some(helix_core::diagnostic::Severity::Error)
+                                )
+                            }) {
+                                Some(helix_core::diagnostic::Severity::Error)
+                            } else if doc.diagnostics().iter().any(|diagnostic| {
+                                matches!(
+                                    diagnostic.severity,
+                                    Some(helix_core::diagnostic::Severity::Warning)
+                                )
+                            }) {
+                                Some(helix_core::diagnostic::Severity::Warning)
+                            } else {
+                                None
+                            }
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 documents.push(DocumentInfo {
                     id: doc_id,
-                    path: doc.path().map(|p| p.to_path_buf()),
+                    is_deleted: is_deleted_document_path(path.as_deref()),
+                    path,
                     is_modified: doc.is_modified(),
+                    is_readonly: doc.readonly,
+                    is_pinned: self.pinned_documents.contains(&doc_id),
+                    is_preview,
                     focused_at: doc.focused_at,
                     order: order_index, // Use position in Vec as order
                     git_status: None,   // Will be filled in after releasing core borrow
+                    diagnostic_severity,
                 });
             }
         }
@@ -4612,14 +6761,50 @@ impl Workspace {
             });
         }
 
-        // Update documents with VCS status using cached method
-        for doc_info in &mut documents {
-            if let Some(ref path) = doc_info.path {
-                let status = cx.global::<VcsServiceHandle>().get_status_cached(path, cx);
-                debug!(file = %path.display(), vcs_status = ?status, "VCS status for tab");
-                doc_info.git_status = status;
+        if show_git_status {
+            // Update documents with VCS status using cached method
+            for doc_info in &mut documents {
+                if let Some(ref path) = doc_info.path {
+                    let status = cx.global::<VcsServiceHandle>().get_status_cached(path, cx);
+                    debug!(file = %path.display(), vcs_status = ?status, "VCS status for tab");
+                    doc_info.git_status = status;
+                }
             }
         }
+
+        let visible_doc_ids = documents.iter().map(|doc| doc.id).collect::<Vec<_>>();
+        if should_scroll_active_tab(
+            self.suppress_tab_bar_auto_scroll,
+            self.last_scrolled_tab_doc_id,
+            active_doc_id,
+        ) && let Some(active_doc_id) = active_doc_id
+            && let Some(active_index) = active_unpinned_tab_scroll_index(
+                &visible_doc_ids,
+                &self.pinned_documents,
+                active_doc_id,
+            )
+        {
+            self.tab_bar_scroll_handle.scroll_to_item(active_index);
+            self.last_scrolled_tab_doc_id = Some(active_doc_id);
+        }
+
+        let has_documents = !documents.is_empty();
+        let activation_documents = {
+            let mut activation_documents = Vec::with_capacity(documents.len());
+            activation_documents.extend(documents.iter().filter(|doc| doc.is_pinned).map(|doc| {
+                TabActivationDocument {
+                    id: doc.id,
+                    focused_at: doc.focused_at,
+                }
+            }));
+            activation_documents.extend(documents.iter().filter(|doc| !doc.is_pinned).map(|doc| {
+                TabActivationDocument {
+                    id: doc.id,
+                    focused_at: doc.focused_at,
+                }
+            }));
+            activation_documents
+        };
 
         // Create tab bar with callbacks
         TabBar::new(
@@ -4646,193 +6831,213 @@ impl Workspace {
                     // Update workspace to refresh the view
                     workspace.update(cx, |workspace, cx| {
                         // Update document views to reflect the change
+                        workspace.tab_context_menu_open = false;
+                        workspace.tab_context_menu_doc_id = None;
+                        workspace.allow_tab_bar_auto_scroll();
                         workspace.update_document_views(cx);
                     });
                 }
             },
             {
                 let workspace = cx.entity().clone();
-                let core = self.core.clone();
-                let handle = self.handle.clone();
+                let activation_documents = activation_documents.clone();
                 move |doc_id, _window, cx| {
-                    // Handle tab close - close the buffer/document
-                    core.update(cx, |core, cx| {
-                        let _guard = handle.enter();
-
-                        // Close the document (buffer), not the view
-                        // This allows other buffers to remain open
-                        match core.editor.close_document(doc_id, false) {
-                            Ok(()) => {
-                                // Document closed successfully
-                                cx.emit(crate::Update::Redraw);
-                            }
-                            Err(helix_view::editor::CloseError::BufferModified(_)) => {
-                                // Document has unsaved changes - could show a dialog here
-                                // For now, just log it
-                                info!("Cannot close document {:?}: has unsaved changes", doc_id);
-                            }
-                            Err(helix_view::editor::CloseError::DoesNotExist) => {
-                                // Document doesn't exist anymore
-                                info!("Document {:?} does not exist", doc_id);
-                            }
-                            Err(_) => {
-                                // Other error
-                                info!("Failed to close document {:?}", doc_id);
-                            }
-                        }
-
-                        // Update the workspace
-                        cx.notify();
-                    });
-
-                    // Update workspace to refresh the view
                     workspace.update(cx, |workspace, cx| {
-                        workspace.update_document_views(cx);
+                        workspace.tab_context_menu_open = false;
+                        workspace.tab_context_menu_doc_id = None;
+                        workspace.close_single_tab_document(
+                            doc_id,
+                            active_doc_id,
+                            &activation_documents,
+                            activate_on_close,
+                            cx,
+                        );
                     });
                 }
             },
         )
-        .with_available_width(available_width) // Dynamic width based on window size and file tree
-        .with_overflow_open(self.tab_overflow_dropdown_open)
-        .with_overflow_toggle({
-            let workspace_entity = cx.entity().clone();
-            move |_window, cx| {
-                workspace_entity.update(cx, |workspace, cx| {
-                    workspace.tab_overflow_dropdown_open = !workspace.tab_overflow_dropdown_open;
+        .show_pinned_tabs_in_separate_row(show_pinned_tabs_in_separate_row)
+        .show_close_button(show_close_button)
+        .close_position(close_position)
+        .file_icons(show_file_icons)
+        .git_status(show_git_status)
+        .show_diagnostics(show_diagnostics)
+        .deemphasized(!editor_pane_focused)
+        .track_scroll(&self.tab_bar_scroll_handle)
+        .with_scroll_wheel_handler({
+            let workspace = cx.entity().clone();
+            move |_event, _window, cx| {
+                workspace.update(cx, |workspace, _cx| {
+                    workspace.suppress_tab_bar_auto_scroll = true;
+                });
+            }
+        })
+        .when(show_nav_history_buttons, |tab_bar| {
+            tab_bar
+                .start_child(
+                    Button::icon_only("tab-nav-back", "icons/arrow-left.svg")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Small)
+                        .tooltip("Go Back")
+                        .activate_on_mouse_down()
+                        .disabled(!has_documents)
+                        .on_click({
+                            let workspace = cx.entity().clone();
+                            move |_event, _window, cx| {
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.send_helix_key("ctrl-o", cx);
+                                });
+                                cx.stop_propagation();
+                            }
+                        }),
+                )
+                .start_child(
+                    Button::icon_only("tab-nav-forward", "icons/arrow-right.svg")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Small)
+                        .tooltip("Go Forward")
+                        .activate_on_mouse_down()
+                        .disabled(!has_documents)
+                        .on_click({
+                            let workspace = cx.entity().clone();
+                            move |_event, _window, cx| {
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.send_helix_key("ctrl-i", cx);
+                                });
+                                cx.stop_propagation();
+                            }
+                        }),
+                )
+        })
+        .when(show_tab_bar_buttons, |tab_bar| {
+            tab_bar
+                .end_child(
+                    Button::icon_only("tab-new-file", "icons/plus.svg")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Small)
+                        .tooltip("New...")
+                        .activate_on_mouse_down()
+                        .on_click({
+                            let workspace = cx.entity().clone();
+                            move |event, window, cx| {
+                                workspace.update(cx, |workspace, cx| {
+                                    let position = event.position();
+                                    workspace.tab_context_menu_open = false;
+                                    workspace.tab_context_menu_doc_id = None;
+                                    workspace.tab_bar_split_menu_open = false;
+                                    workspace.tab_bar_new_menu_open = true;
+                                    workspace.tab_bar_new_menu_pos =
+                                        (f32::from(position.x), f32::from(position.y));
+                                    workspace.tab_bar_new_menu_index = 0;
+                                    window.focus(&workspace.focus_handle, cx);
+                                    cx.notify();
+                                });
+                                cx.stop_propagation();
+                            }
+                        }),
+                )
+                .end_child(
+                    Button::icon_only("tab-split-menu", "icons/columns-2.svg")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Small)
+                        .tooltip("Split Pane")
+                        .activate_on_mouse_down()
+                        .disabled(!has_documents)
+                        .on_click({
+                            let workspace = cx.entity().clone();
+                            move |event, window, cx| {
+                                workspace.update(cx, |workspace, cx| {
+                                    let position = event.position();
+                                    workspace.tab_context_menu_open = false;
+                                    workspace.tab_context_menu_doc_id = None;
+                                    workspace.tab_bar_new_menu_open = false;
+                                    workspace.tab_bar_split_menu_open = true;
+                                    workspace.tab_bar_split_menu_pos =
+                                        (f32::from(position.x), f32::from(position.y));
+                                    workspace.tab_bar_split_menu_index = 0;
+                                    window.focus(&workspace.focus_handle, cx);
+                                    cx.notify();
+                                });
+                                cx.stop_propagation();
+                            }
+                        }),
+                )
+                .end_child(
+                    Button::icon_only("tab-toggle-zoom", tab_bar_zoom_icon_path)
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Small)
+                        .tooltip(tab_bar_zoom_tooltip(window.is_maximized()))
+                        .activate_on_mouse_down()
+                        .on_click(move |_event, window, cx| {
+                            window.zoom_window();
+                            cx.stop_propagation();
+                        }),
+                )
+        })
+        .with_pin_toggle_handler({
+            let workspace = cx.entity().clone();
+            move |doc_id, _window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.tab_context_menu_open = false;
+                    workspace.tab_context_menu_doc_id = None;
+                    workspace.tab_bar_split_menu_open = false;
+                    workspace.tab_bar_new_menu_open = false;
+                    workspace.tab_cm_action_toggle_pin(doc_id, cx);
+                });
+            }
+        })
+        .with_readonly_toggle_handler({
+            let workspace = cx.entity().clone();
+            move |doc_id, _window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.tab_context_menu_open = false;
+                    workspace.tab_context_menu_doc_id = None;
+                    workspace.tab_bar_split_menu_open = false;
+                    workspace.tab_bar_new_menu_open = false;
+                    workspace.tab_cm_action_toggle_readonly(doc_id, cx);
+                });
+            }
+        })
+        .with_empty_double_click_handler({
+            let workspace = cx.entity().clone();
+            move |_event, _window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.tab_context_menu_open = false;
+                    workspace.tab_context_menu_doc_id = None;
+                    workspace.tab_bar_split_menu_open = false;
+                    workspace.tab_bar_new_menu_open = false;
+                    workspace.tab_bar_action_new_file(cx);
+                });
+            }
+        })
+        .with_double_click_handler({
+            let workspace = cx.entity().clone();
+            move |doc_id, _window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.tab_context_menu_open = false;
+                    workspace.tab_context_menu_doc_id = None;
+                    workspace.tab_bar_split_menu_open = false;
+                    workspace.tab_bar_new_menu_open = false;
+                    workspace.tab_action_double_click(doc_id, cx);
+                });
+            }
+        })
+        .with_context_menu_handler({
+            let workspace = cx.entity().clone();
+            move |doc_id, event, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.tab_bar_split_menu_open = false;
+                    workspace.tab_bar_new_menu_open = false;
+                    workspace.tab_context_menu_open = true;
+                    workspace.tab_context_menu_pos =
+                        (f32::from(event.position.x), f32::from(event.position.y));
+                    workspace.tab_context_menu_doc_id = Some(doc_id);
+                    workspace.tab_context_menu_index = 0;
+                    window.focus(&workspace.focus_handle, cx);
                     cx.notify();
                 });
             }
         })
-        .into_any_element()
-    }
-
-    /// Render the tab overflow dropdown menu as an overlay
-    fn render_tab_overflow_menu(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        use crate::tab_bar::{DocumentInfo, TabBar};
-        use crate::tab_overflow_dropdown::TabOverflowMenu;
-        use helix_view::editor::BufferLine;
-
-        let core = self.core.read(cx);
-        let editor = &core.editor;
-
-        // Check bufferline configuration
-        let bufferline_config = &editor.config().bufferline;
-        let should_show_tabs = match bufferline_config {
-            BufferLine::Never => false,
-            BufferLine::Always => true,
-            BufferLine::Multiple => editor.documents.len() > 1,
-        };
-
-        if !should_show_tabs {
-            return div().into_any_element();
-        }
-
-        // Get the currently active document ID
-        let active_doc_id = self
-            .view_manager
-            .focused_view_id()
-            .and_then(|focused_view_id| editor.tree.try_get(focused_view_id))
-            .map(|view| view.doc);
-
-        // Get project directory for relative paths first
-        let project_directory = core.project_directory.clone();
-
-        // Collect document information using the same stable ordering as main tab bar
-        let mut documents = Vec::new();
-        for (order_index, &doc_id) in self.document_order.iter().enumerate() {
-            if let Some(doc) = editor.documents.get(&doc_id) {
-                documents.push(DocumentInfo {
-                    id: doc_id,
-                    path: doc.path().map(|p| p.to_path_buf()),
-                    is_modified: doc.is_modified(),
-                    focused_at: doc.focused_at,
-                    order: order_index, // Use position in Vec as order
-                    git_status: None,   // Will be filled in after releasing core borrow
-                });
-            }
-        }
-
-        // Calculate available width for tabs dynamically (same as in render_tab_bar)
-        let window_size = window.viewport_size();
-        let mut available_width = f32::from(window_size.width);
-
-        // Subtract file tree width if it's visible
-        if self.show_file_tree {
-            const RESIZE_HANDLE_WIDTH: f32 = 4.0;
-            available_width -= self.file_tree_width + RESIZE_HANDLE_WIDTH;
-        }
-
-        // Reserve some margin for window padding and other UI elements
-        const TAB_BAR_MARGIN: f32 = 20.0;
-        available_width = (available_width - TAB_BAR_MARGIN).max(200.0); // Minimum 200px
-
-        // Update documents with VCS status using cached method
-        for doc_info in &mut documents {
-            if let Some(ref path) = doc_info.path {
-                let status = cx.global::<VcsServiceHandle>().get_status_cached(path, cx);
-                doc_info.git_status = status;
-            }
-        }
-
-        // Apply the same sorting as the main tab bar for consistency
-        // Sort by the order field which tracks opening order
-        documents.sort_by_key(|doc| doc.order);
-
-        // Create a temporary TabBar to get overflow documents
-        let temp_tab_bar = TabBar::new(
-            documents.clone(),
-            active_doc_id,
-            project_directory.clone(),
-            |_doc_id, _window, _cx| {}, // No-op
-            |_doc_id, _window, _cx| {}, // No-op
-        )
-        .with_available_width(available_width); // Same dynamic width as main tab bar
-
-        let overflow_documents = temp_tab_bar.get_overflow_documents();
-
-        if overflow_documents.is_empty() {
-            return div().into_any_element();
-        }
-
-        TabOverflowMenu::new(
-            overflow_documents,
-            active_doc_id,
-            project_directory,
-            std::sync::Arc::new({
-                let workspace = cx.entity().clone();
-                let core = self.core.clone();
-                let handle = self.handle.clone();
-                move |doc_id, _window, cx| {
-                    // Switch the current view to display this document
-                    core.update(cx, |core, cx| {
-                        let _guard = handle.enter();
-                        // Use Helix's switch method to change which document is displayed
-                        core.editor
-                            .switch(doc_id, helix_view::editor::Action::Replace);
-                        // Emit a redraw event so the UI updates
-                        cx.emit(crate::Update::Redraw);
-                    });
-
-                    // Update workspace to refresh the view
-                    workspace.update(cx, |workspace, cx| {
-                        workspace.update_document_views(cx);
-                    });
-                }
-            }),
-            {
-                let workspace_entity = cx.entity().clone();
-                move |_window, cx| {
-                    workspace_entity.update(cx, |workspace, cx| {
-                        workspace.tab_overflow_dropdown_open = false;
-                        cx.notify();
-                    });
-                }
-            },
-        )
         .into_any_element()
     }
 
@@ -4890,9 +7095,10 @@ impl Workspace {
                         Button::icon_only("file-tree-toggle", "icons/folder-tree.svg")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Small)
+                            .tooltip("Toggle File Tree")
+                            .activate_on_mouse_down()
                             .on_click(move |_event, _window, app_cx| {
                                 workspace_entity.update(app_cx, |workspace, cx| {
-                                    info!("Status bar file tree toggle clicked");
                                     workspace.show_file_tree = !workspace.show_file_tree;
                                     cx.notify();
                                 });
@@ -4911,9 +7117,10 @@ impl Workspace {
                         Button::icon_only("terminal-toggle", "icons/terminal.svg")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Small)
+                            .tooltip("Toggle Terminal")
+                            .activate_on_mouse_down()
                             .on_click(move |_event, _window, app_cx| {
                                 workspace_entity.update(app_cx, |workspace, cx| {
-                                    info!("Status bar terminal toggle clicked");
                                     workspace.toggle_terminal_panel(cx);
                                 });
                             })
@@ -4965,10 +7172,16 @@ impl Workspace {
 
     fn handle_file_tree_event(&mut self, event: &FileTreeEvent, cx: &mut Context<Self>) {
         match event {
-            FileTreeEvent::OpenFile { path } => {
-                // Open file but keep focus on file tree
-                info!("FileTreeEvent::OpenFile received in workspace: {:?}", path);
-                self.handle_open_file_keep_focus(path, cx);
+            FileTreeEvent::OpenFile { path, focus_editor } => {
+                info!(
+                    "FileTreeEvent::OpenFile received in workspace: {:?}, focus_editor={}",
+                    path, focus_editor
+                );
+                if *focus_editor {
+                    self.handle_open_file(path, cx);
+                } else {
+                    self.handle_open_file_keep_focus(path, cx);
+                }
             }
             FileTreeEvent::SelectionChanged { path: _ } => {
                 // Update UI if needed for selection changes
@@ -6383,7 +8596,7 @@ impl Workspace {
         open(core, handle, overlay, cx);
     }
 
-    /// Open command palette  
+    /// Open command palette
     pub fn open_command_palette(&mut self, cx: &mut Context<Self>) {
         nucleotide_logging::debug!("Opening command palette");
 
@@ -6631,17 +8844,39 @@ impl Workspace {
         let core = self.core.read(cx);
         let editor = &core.editor;
         let bufferline_config = &editor.config().bufferline;
+        let show_tab_bar = core.config.gui.tab_bar.show;
+        let show_pinned_tabs_in_separate_row =
+            core.config.gui.tab_bar.show_pinned_tabs_in_separate_row;
+        let tab_bar_row_height = crate::tab::tab_container_height(cx.theme().tokens);
+        let has_pinned_tabs = editor
+            .documents
+            .keys()
+            .any(|doc_id| self.pinned_documents.contains(doc_id));
+        let has_unpinned_tabs = editor
+            .documents
+            .keys()
+            .any(|doc_id| !self.pinned_documents.contains(doc_id));
+        let visible_tab_bar_height = tab_bar_layout_height(
+            tab_bar_row_height,
+            show_pinned_tabs_in_separate_row,
+            has_pinned_tabs,
+            has_unpinned_tabs,
+        );
 
-        let tab_bar_height = match bufferline_config {
-            helix_view::editor::BufferLine::Never => px(0.0),
-            helix_view::editor::BufferLine::Always => px(40.0), // Standard tab height
-            helix_view::editor::BufferLine::Multiple => {
-                if editor.documents.len() > 1 {
-                    px(40.0) // Standard tab height when multiple docs
-                } else {
-                    px(0.0) // No tab bar for single document
+        let tab_bar_height = if show_tab_bar {
+            match bufferline_config {
+                helix_view::editor::BufferLine::Never => px(0.0),
+                helix_view::editor::BufferLine::Always => visible_tab_bar_height,
+                helix_view::editor::BufferLine::Multiple => {
+                    if editor.documents.len() > 1 {
+                        visible_tab_bar_height
+                    } else {
+                        px(0.0) // No tab bar for single document
+                    }
                 }
             }
+        } else {
+            px(0.0)
         };
 
         // Get actual file tree width (user may have resized it)
@@ -7169,9 +9404,23 @@ impl Render for Workspace {
                         |this| this.child(self.info.clone()),
                     )
                     .child(self.key_hints.clone())
-                    .when(self.tab_overflow_dropdown_open, |this| {
-                        // Render the overflow menu as an overlay
-                        this.child(self.render_tab_overflow_menu(window, cx))
+                    .when(self.tab_context_menu_open, |this| {
+                        this.child(
+                            gpui::deferred(self.render_tab_context_menu(window, cx))
+                                .with_priority(100),
+                        )
+                    })
+                    .when(self.tab_bar_split_menu_open, |this| {
+                        this.child(
+                            gpui::deferred(self.render_tab_bar_split_menu(window, cx))
+                                .with_priority(100),
+                        )
+                    })
+                    .when(self.tab_bar_new_menu_open, |this| {
+                        this.child(
+                            gpui::deferred(self.render_tab_bar_new_menu(window, cx))
+                                .with_priority(100),
+                        )
                     })
                     .when(self.delete_confirm_open, |this| {
                         // Render delete confirmation modal overlay
@@ -7259,16 +9508,26 @@ impl Render for Workspace {
         workspace_div = workspace_div.on_mouse_down(
             MouseButton::Left,
             cx.listener(|workspace, _event: &MouseDownEvent, _window, cx| {
-                // Close tab overflow dropdown when clicking elsewhere
-                if workspace.tab_overflow_dropdown_open {
-                    workspace.tab_overflow_dropdown_open = false;
-                    cx.notify();
-                }
-
                 // Clicking outside the delete confirm modal closes it
                 if workspace.delete_confirm_open {
                     workspace.delete_confirm_open = false;
                     workspace.delete_confirm_path = None;
+                    cx.notify();
+                }
+
+                if workspace.tab_context_menu_open {
+                    workspace.tab_context_menu_open = false;
+                    workspace.tab_context_menu_doc_id = None;
+                    cx.notify();
+                }
+
+                if workspace.tab_bar_split_menu_open {
+                    workspace.tab_bar_split_menu_open = false;
+                    cx.notify();
+                }
+
+                if workspace.tab_bar_new_menu_open {
+                    workspace.tab_bar_new_menu_open = false;
                     cx.notify();
                 }
 
@@ -7282,6 +9541,14 @@ impl Render for Workspace {
         );
 
         // Add action handlers
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |_, _: &crate::actions::common::Cancel, window, cx| {
+                if !cx.stop_active_drag(window) {
+                    cx.propagate();
+                }
+            },
+        ));
+
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::help::About, _window, cx| {
                 workspace.about_window.update(cx, |about_window, cx| {
@@ -7356,7 +9623,7 @@ impl Render for Workspace {
 
         workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::editor::CloseFile, _window, cx| {
-                workspace.execute_raw_command("close", cx);
+                workspace.close_active_tab_document(cx);
             },
         ));
 
@@ -7463,6 +9730,18 @@ impl Render for Workspace {
                 info!("ToggleFileTree action triggered from menu");
                 workspace.show_file_tree = !workspace.show_file_tree;
                 cx.notify();
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::UnpinAllTabs, _window, cx| {
+                workspace.unpin_all_tabs(cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::TogglePreviewTab, _window, cx| {
+                workspace.toggle_active_preview_tab(cx);
             },
         ));
 
@@ -7900,7 +10179,7 @@ impl Render for Workspace {
                     use nucleotide_ui::button::Button;
                     let open_btn = Button::new("open-dir-btn", "Open a directory to view files")
                         .on_click(cx.listener(
-                            move |_: &mut Workspace, _ev: &gpui::MouseUpEvent, _window, cx| {
+                            move |_: &mut Workspace, _ev: &gpui::ClickEvent, _window, cx| {
                                 open_directory(core.clone(), handle.clone(), cx);
                             },
                         ));
@@ -9092,6 +11371,410 @@ mod tests {
     }
 
     #[test]
+    fn tab_bar_layout_height_matches_rendered_row_count() {
+        let row_height = px(32.0);
+
+        assert_eq!(
+            tab_bar_layout_height(row_height, false, true, true),
+            row_height
+        );
+        assert_eq!(
+            tab_bar_layout_height(row_height, true, true, true),
+            px(64.0)
+        );
+        assert_eq!(
+            tab_bar_layout_height(row_height, true, true, false),
+            row_height
+        );
+        assert_eq!(
+            tab_bar_layout_height(row_height, true, false, true),
+            row_height
+        );
+    }
+
+    #[test]
+    fn tab_context_menu_items_match_zed_close_actions() {
+        let unpinned_labels = Workspace::tab_context_menu_intents(false, false, false)
+            .iter()
+            .map(|intent| intent.label(false, false))
+            .collect::<Vec<_>>();
+        let pinned_labels = Workspace::tab_context_menu_intents(false, false, false)
+            .iter()
+            .map(|intent| intent.label(true, false))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            unpinned_labels,
+            vec![
+                "Close",
+                "Close Others",
+                "Close Left",
+                "Close Right",
+                "Close Clean",
+                "Close All",
+                "Pin Tab"
+            ]
+        );
+        assert_eq!(pinned_labels.last(), Some(&"Unpin Tab"));
+    }
+
+    #[test]
+    fn tab_context_menu_entries_match_zed_grouping() {
+        let labels = Workspace::tab_context_menu_entries(false, false, false)
+            .iter()
+            .map(|entry| match entry {
+                TabContextMenuEntry::Action(intent) => intent.label(false, false),
+                TabContextMenuEntry::Separator => "|",
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "Close",
+                "Close Others",
+                "|",
+                "Close Left",
+                "Close Right",
+                "|",
+                "Close Clean",
+                "Close All",
+                "|",
+                "Pin Tab"
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_context_menu_entries_add_zed_file_path_actions_for_file_tabs() {
+        let reveal_label = reveal_in_file_manager_label(false);
+        let labels = Workspace::tab_context_menu_entries(true, false, false)
+            .iter()
+            .map(|entry| match entry {
+                TabContextMenuEntry::Action(intent) => intent.label(false, false),
+                TabContextMenuEntry::Separator => "|",
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "Close",
+                "Close Others",
+                "|",
+                "Close Left",
+                "Close Right",
+                "|",
+                "Close Clean",
+                "Close All",
+                "|",
+                "Make File Read-Only",
+                "|",
+                "Copy Path",
+                "Copy Relative Path",
+                "|",
+                reveal_label,
+                "|",
+                "Pin Tab"
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_context_menu_intents_add_zed_readonly_toggle_for_file_tabs() {
+        let labels = Workspace::tab_context_menu_intents(true, false, false)
+            .iter()
+            .map(|intent| intent.label(false, false))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "Close",
+                "Close Others",
+                "Close Left",
+                "Close Right",
+                "Close Clean",
+                "Close All",
+                "Make File Read-Only",
+                "Copy Path",
+                "Copy Relative Path",
+                reveal_in_file_manager_label(false),
+                "Pin Tab",
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_context_menu_readonly_toggle_label_matches_zed_state() {
+        assert_eq!(
+            TabContextMenuIntent::ToggleReadOnly.label(false, false),
+            "Make File Read-Only"
+        );
+        assert_eq!(
+            TabContextMenuIntent::ToggleReadOnly.label(false, true),
+            "Make File Editable"
+        );
+    }
+
+    #[test]
+    fn tab_context_menu_entries_add_reveal_project_panel_for_visible_project_paths() {
+        let reveal_label = reveal_in_file_manager_label(false);
+        let labels = Workspace::tab_context_menu_entries(true, true, false)
+            .iter()
+            .map(|entry| match entry {
+                TabContextMenuEntry::Action(intent) => intent.label(false, false),
+                TabContextMenuEntry::Separator => "|",
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "Close",
+                "Close Others",
+                "|",
+                "Close Left",
+                "Close Right",
+                "|",
+                "Close Clean",
+                "Close All",
+                "|",
+                "Make File Read-Only",
+                "|",
+                "Copy Path",
+                "Copy Relative Path",
+                "|",
+                reveal_label,
+                "|",
+                "Pin Tab",
+                "Reveal In Project Panel"
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_context_menu_entries_add_open_terminal_when_parent_directory_exists() {
+        let reveal_label = reveal_in_file_manager_label(false);
+        let labels = Workspace::tab_context_menu_entries(true, true, true)
+            .iter()
+            .map(|entry| match entry {
+                TabContextMenuEntry::Action(intent) => intent.label(false, false),
+                TabContextMenuEntry::Separator => "|",
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "Close",
+                "Close Others",
+                "|",
+                "Close Left",
+                "Close Right",
+                "|",
+                "Close Clean",
+                "Close All",
+                "|",
+                "Make File Read-Only",
+                "|",
+                "Copy Path",
+                "Copy Relative Path",
+                "|",
+                reveal_label,
+                "|",
+                "Pin Tab",
+                "Reveal In Project Panel",
+                "Open in Terminal"
+            ]
+        );
+    }
+
+    #[test]
+    fn reveal_in_file_manager_label_matches_zed_platform_label() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(reveal_in_file_manager_label(false), "Reveal in Finder");
+        } else if cfg!(target_os = "windows") {
+            assert_eq!(
+                reveal_in_file_manager_label(false),
+                "Reveal in File Explorer"
+            );
+        } else {
+            assert_eq!(
+                reveal_in_file_manager_label(false),
+                "Reveal in File Manager"
+            );
+        }
+        assert_eq!(reveal_in_file_manager_label(true), "Reveal in File Manager");
+    }
+
+    #[test]
+    fn tab_context_menu_disabled_states_match_zed_rules() {
+        assert!(!Workspace::tab_context_menu_intent_disabled(
+            TabContextMenuIntent::Close,
+            Some(0),
+            1,
+            false,
+        ));
+        assert!(Workspace::tab_context_menu_intent_disabled(
+            TabContextMenuIntent::CloseOthers,
+            Some(0),
+            1,
+            true,
+        ));
+        assert!(!Workspace::tab_context_menu_intent_disabled(
+            TabContextMenuIntent::CloseOthers,
+            Some(0),
+            2,
+            true,
+        ));
+        assert!(Workspace::tab_context_menu_intent_disabled(
+            TabContextMenuIntent::CloseLeft,
+            Some(0),
+            3,
+            true,
+        ));
+        assert!(Workspace::tab_context_menu_intent_disabled(
+            TabContextMenuIntent::CloseRight,
+            Some(2),
+            3,
+            true,
+        ));
+        assert!(Workspace::tab_context_menu_intent_disabled(
+            TabContextMenuIntent::CloseClean,
+            Some(1),
+            3,
+            false,
+        ));
+        assert!(!Workspace::tab_context_menu_intent_disabled(
+            TabContextMenuIntent::CloseClean,
+            Some(1),
+            3,
+            true,
+        ));
+        assert!(Workspace::tab_context_menu_intent_disabled(
+            TabContextMenuIntent::ToggleReadOnly,
+            None,
+            3,
+            true,
+        ));
+        assert!(!Workspace::tab_context_menu_intent_disabled(
+            TabContextMenuIntent::ToggleReadOnly,
+            Some(1),
+            3,
+            true,
+        ));
+    }
+
+    #[test]
+    fn tab_bar_split_menu_items_match_zed_directional_split_actions() {
+        let labels = Workspace::tab_bar_split_menu_intents()
+            .iter()
+            .map(|intent| intent.label())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec!["Split Right", "Split Left", "Split Up", "Split Down"]
+        );
+    }
+
+    #[test]
+    fn tab_bar_split_menu_commands_match_directional_helix_primitives() {
+        let commands = Workspace::tab_bar_split_menu_intents()
+            .iter()
+            .map(|intent| intent.commands())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            commands,
+            vec![
+                &["vsplit"][..],
+                &["vsplit", "swap_view_left"][..],
+                &["hsplit", "swap_view_up"][..],
+                &["hsplit"][..],
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_bar_new_menu_items_match_zed_new_actions() {
+        let labels = Workspace::tab_bar_new_menu_intents()
+            .iter()
+            .map(|intent| intent.label())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "New File",
+                "Open File",
+                "Search Project",
+                "Search Symbols",
+                "New Terminal",
+                "New Center Terminal"
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_bar_new_menu_entries_match_zed_grouping() {
+        let labels = Workspace::tab_bar_new_menu_entries()
+            .iter()
+            .map(|entry| match entry {
+                TabBarNewMenuEntry::Action(intent) => intent.label(),
+                TabBarNewMenuEntry::Separator => "|",
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "New File",
+                "Open File",
+                "|",
+                "Search Project",
+                "Search Symbols",
+                "|",
+                "New Terminal",
+                "New Center Terminal"
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_bar_end_buttons_follow_zed_new_split_zoom_order() {
+        assert_eq!(
+            tab_bar_end_button_icon_paths(false),
+            [
+                "icons/plus.svg",
+                "icons/columns-2.svg",
+                "icons/maximize.svg"
+            ]
+        );
+        assert_eq!(
+            tab_bar_end_button_icon_paths(true),
+            [
+                "icons/plus.svg",
+                "icons/columns-2.svg",
+                "icons/minimize.svg"
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_bar_end_button_tooltips_match_zed() {
+        assert_eq!(
+            tab_bar_end_button_tooltips(false),
+            ["New...", "Split Pane", "Zoom In"]
+        );
+        assert_eq!(
+            tab_bar_end_button_tooltips(true),
+            ["New...", "Split Pane", "Zoom Out"]
+        );
+    }
+
+    #[test]
     fn file_tree_resize_width_tracks_mouse_and_clamps_to_bounds() {
         assert_eq!(
             Workspace::clamped_file_tree_resize_width(250.0, 300.0, 360.0, 1000.0),
@@ -9104,6 +11787,573 @@ mod tests {
         assert_eq!(
             Workspace::clamped_file_tree_resize_width(250.0, 300.0, 1200.0, 1000.0),
             800.0
+        );
+    }
+
+    #[test]
+    fn move_ordered_item_to_target_index_moves_items_to_target_positions() {
+        let mut items = vec!['a', 'b', 'c', 'd'];
+
+        assert!(move_ordered_item_to_target_index(
+            &mut items,
+            'c',
+            Some('a')
+        ));
+        assert_eq!(items, vec!['c', 'a', 'b', 'd']);
+
+        assert!(move_ordered_item_to_target_index(
+            &mut items,
+            'a',
+            Some('d')
+        ));
+        assert_eq!(items, vec!['c', 'b', 'd', 'a']);
+    }
+
+    #[test]
+    fn move_ordered_item_to_target_index_moves_items_to_end() {
+        let mut items = vec!['a', 'b', 'c', 'd'];
+
+        assert!(move_ordered_item_to_target_index(&mut items, 'b', None));
+        assert_eq!(items, vec!['a', 'c', 'd', 'b']);
+    }
+
+    #[test]
+    fn move_ordered_item_to_target_index_reports_no_ops() {
+        let mut items = vec!['a', 'b', 'c', 'd'];
+
+        assert!(!move_ordered_item_to_target_index(
+            &mut items,
+            'a',
+            Some('a')
+        ));
+        assert_eq!(items, vec!['a', 'b', 'c', 'd']);
+
+        assert!(!move_ordered_item_to_target_index(&mut items, 'd', None));
+        assert!(!move_ordered_item_to_target_index(
+            &mut items,
+            'x',
+            Some('a')
+        ));
+        assert!(!move_ordered_item_to_target_index(
+            &mut items,
+            'a',
+            Some('x')
+        ));
+        assert_eq!(items, vec!['a', 'b', 'c', 'd']);
+    }
+
+    #[test]
+    fn dropped_tab_pin_state_follows_target_region() {
+        let items = ['a', 'b', 'c', 'd'];
+        let pinned = HashSet::from(['a', 'b']);
+
+        assert_eq!(
+            dropped_tab_pin_state(&items, 'c', Some('a'), &pinned),
+            Some(true)
+        );
+        assert_eq!(
+            dropped_tab_pin_state(&items, 'a', Some('c'), &pinned),
+            Some(false)
+        );
+        assert_eq!(
+            dropped_tab_pin_state(&items, 'a', None, &pinned),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn dropped_tab_pin_state_reports_invalid_drops() {
+        let items = ['a', 'b', 'c', 'd'];
+        let pinned = HashSet::from(['a', 'b']);
+
+        assert_eq!(dropped_tab_pin_state(&items, 'a', Some('a'), &pinned), None);
+        assert_eq!(dropped_tab_pin_state(&items, 'x', Some('a'), &pinned), None);
+        assert_eq!(dropped_tab_pin_state(&items, 'a', Some('x'), &pinned), None);
+    }
+
+    #[test]
+    fn resolved_dropped_tab_pin_state_honours_forced_row_targets() {
+        let items = ['a', 'b', 'c', 'd'];
+        let pinned = HashSet::from(['a', 'b']);
+
+        assert_eq!(
+            resolved_dropped_tab_pin_state(&items, 'c', None, &pinned, Some(true)),
+            Some(true)
+        );
+        assert_eq!(
+            resolved_dropped_tab_pin_state(&items, 'a', None, &pinned, Some(false)),
+            Some(false)
+        );
+        assert_eq!(
+            resolved_dropped_tab_pin_state(&items, 'a', Some('a'), &pinned, Some(false)),
+            None
+        );
+    }
+
+    #[test]
+    fn active_unpinned_tab_scroll_index_ignores_pinned_tabs() {
+        let items = ['a', 'b', 'c', 'd', 'e'];
+        let pinned = HashSet::from(['b', 'd']);
+
+        assert_eq!(
+            active_unpinned_tab_scroll_index(&items, &pinned, 'a'),
+            Some(0)
+        );
+        assert_eq!(
+            active_unpinned_tab_scroll_index(&items, &pinned, 'c'),
+            Some(1)
+        );
+        assert_eq!(
+            active_unpinned_tab_scroll_index(&items, &pinned, 'e'),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn active_unpinned_tab_scroll_index_skips_pinned_and_missing_tabs() {
+        let items = ['a', 'b', 'c', 'd'];
+        let pinned = HashSet::from(['a', 'b']);
+
+        assert_eq!(active_unpinned_tab_scroll_index(&items, &pinned, 'a'), None);
+        assert_eq!(active_unpinned_tab_scroll_index(&items, &pinned, 'b'), None);
+        assert_eq!(active_unpinned_tab_scroll_index(&items, &pinned, 'x'), None);
+    }
+
+    #[test]
+    fn active_tab_auto_scroll_respects_zed_manual_scroll_suppression() {
+        assert!(should_scroll_active_tab(false, None, Some('a')));
+        assert!(should_scroll_active_tab(false, Some('a'), Some('b')));
+        assert!(!should_scroll_active_tab(false, Some('a'), Some('a')));
+        assert!(!should_scroll_active_tab(false, Some('a'), None));
+        assert!(!should_scroll_active_tab(true, Some('a'), Some('b')));
+    }
+
+    #[test]
+    fn change_tab_pin_state_pins_tabs_left_to_right_without_reordering() {
+        let mut items = vec!['a', 'b', 'c'];
+        let mut pinned = HashSet::new();
+
+        assert!(change_tab_pin_state(&mut items, &mut pinned, 'a', true));
+        assert_eq!(items, vec!['a', 'b', 'c']);
+        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['a', 'b', 'c']);
+
+        assert!(change_tab_pin_state(&mut items, &mut pinned, 'b', true));
+        assert_eq!(items, vec!['a', 'b', 'c']);
+        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['a', 'b', 'c']);
+
+        assert!(change_tab_pin_state(&mut items, &mut pinned, 'c', true));
+        assert_eq!(items, vec!['a', 'b', 'c']);
+        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['a', 'b', 'c']);
+    }
+
+    #[test]
+    fn change_tab_pin_state_pins_tabs_right_to_left_at_pinned_boundary() {
+        let mut items = vec!['a', 'b', 'c'];
+        let mut pinned = HashSet::new();
+
+        assert!(change_tab_pin_state(&mut items, &mut pinned, 'c', true));
+        assert_eq!(items, vec!['c', 'a', 'b']);
+        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['c', 'a', 'b']);
+
+        assert!(change_tab_pin_state(&mut items, &mut pinned, 'b', true));
+        assert_eq!(items, vec!['c', 'b', 'a']);
+        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['c', 'b', 'a']);
+
+        assert!(change_tab_pin_state(&mut items, &mut pinned, 'a', true));
+        assert_eq!(items, vec!['c', 'b', 'a']);
+        assert_eq!(zed_style_tab_order(&items, &pinned), vec!['c', 'b', 'a']);
+    }
+
+    #[test]
+    fn change_tab_pin_state_unpins_tabs_to_start_of_unpinned_region() {
+        let mut items = vec!['a', 'b', 'c', 'd'];
+        let mut pinned = HashSet::from(['a', 'b']);
+
+        assert!(change_tab_pin_state(&mut items, &mut pinned, 'a', false));
+        assert_eq!(items, vec!['b', 'a', 'c', 'd']);
+        assert_eq!(
+            zed_style_tab_order(&items, &pinned),
+            vec!['b', 'a', 'c', 'd']
+        );
+
+        assert!(change_tab_pin_state(&mut items, &mut pinned, 'b', false));
+        assert_eq!(items, vec!['b', 'a', 'c', 'd']);
+        assert_eq!(
+            zed_style_tab_order(&items, &pinned),
+            vec!['b', 'a', 'c', 'd']
+        );
+    }
+
+    #[test]
+    fn change_tab_pin_state_reports_no_ops() {
+        let mut items = vec!['a', 'b'];
+        let mut pinned = HashSet::from(['a']);
+
+        assert!(!change_tab_pin_state(&mut items, &mut pinned, 'a', true));
+        assert!(!change_tab_pin_state(&mut items, &mut pinned, 'b', false));
+        assert!(!change_tab_pin_state(&mut items, &mut pinned, 'x', true));
+        assert_eq!(items, vec!['a', 'b']);
+        assert_eq!(pinned, HashSet::from(['a']));
+    }
+
+    #[test]
+    fn unpin_all_tabs_reports_no_ops_when_nothing_is_pinned() {
+        let mut pinned = HashSet::<char>::new();
+
+        assert!(!unpin_all_tabs(&mut pinned));
+        assert!(pinned.is_empty());
+    }
+
+    #[test]
+    fn unpin_all_tabs_preserves_current_tab_order() {
+        let items = vec!['a', 'b', 'c'];
+        let mut pinned = HashSet::from(['a', 'b']);
+
+        assert!(unpin_all_tabs(&mut pinned));
+        assert!(pinned.is_empty());
+        assert_eq!(zed_style_tab_order(&items, &pinned), items);
+    }
+
+    #[test]
+    fn preview_tab_toggle_plan_unpreviews_active_preview_tab() {
+        let items = ['a', 'b', 'c'];
+        let previews = HashSet::from(['b']);
+
+        assert_eq!(
+            preview_tab_toggle_plan(&items, &previews, 'b'),
+            PreviewTabTogglePlan::Unpreview
+        );
+    }
+
+    #[test]
+    fn preview_tab_toggle_plan_closes_existing_previews_when_marking_active_tab() {
+        let items = ['a', 'b', 'c', 'd'];
+        let previews = HashSet::from(['b', 'd']);
+
+        assert_eq!(
+            preview_tab_toggle_plan(&items, &previews, 'c'),
+            PreviewTabTogglePlan::Preview {
+                close_doc_ids: vec!['b', 'd']
+            }
+        );
+    }
+
+    #[test]
+    fn project_panel_preview_requires_global_and_project_panel_settings() {
+        assert!(should_create_project_panel_preview_tab(true, true, false));
+        assert!(!should_create_project_panel_preview_tab(false, true, false));
+        assert!(!should_create_project_panel_preview_tab(true, false, false));
+    }
+
+    #[test]
+    fn project_panel_preview_does_not_reclassify_existing_tabs() {
+        assert!(!should_create_project_panel_preview_tab(true, true, true));
+    }
+
+    #[test]
+    fn changed_preview_documents_are_unpreviewed_only_after_edits() {
+        assert!(should_unpreview_changed_document(true, true));
+        assert!(!should_unpreview_changed_document(true, false));
+        assert!(!should_unpreview_changed_document(false, true));
+        assert!(!should_unpreview_changed_document(false, false));
+    }
+
+    #[test]
+    fn close_others_unpreviews_retained_preview_tab() {
+        assert!(should_unpreview_retained_tab_after_close_others(true));
+        assert!(!should_unpreview_retained_tab_after_close_others(false));
+    }
+
+    #[test]
+    fn active_tab_close_plan_closes_unpinned_active_tab() {
+        let items = ['a', 'b', 'c'];
+        let pinned = HashSet::from(['a']);
+
+        assert_eq!(
+            active_tab_close_plan(&items, &pinned, Some('b')),
+            ActiveTabClosePlan::Close('b')
+        );
+    }
+
+    #[test]
+    fn active_tab_close_plan_activates_unpinned_tab_instead_of_closing_pinned_active_tab() {
+        let items = ['a', 'b', 'c'];
+        let pinned = HashSet::from(['a', 'b']);
+
+        assert_eq!(
+            active_tab_close_plan(&items, &pinned, Some('a')),
+            ActiveTabClosePlan::Activate('c')
+        );
+    }
+
+    #[test]
+    fn active_tab_close_plan_ignores_pinned_active_tab_when_no_unpinned_tab_exists() {
+        let items = ['a', 'b'];
+        let pinned = HashSet::from(['a', 'b']);
+
+        assert_eq!(
+            active_tab_close_plan(&items, &pinned, Some('a')),
+            ActiveTabClosePlan::Ignore
+        );
+    }
+
+    #[test]
+    fn active_tab_close_plan_ignores_missing_active_tab() {
+        let items = ['a', 'b'];
+        let pinned = HashSet::from(['a']);
+
+        assert_eq!(
+            active_tab_close_plan(&items, &pinned, None),
+            ActiveTabClosePlan::Ignore
+        );
+        assert_eq!(
+            active_tab_close_plan(&items, &pinned, Some('x')),
+            ActiveTabClosePlan::Ignore
+        );
+    }
+
+    #[test]
+    fn tab_double_click_renames_file_tabs_and_activates_pathless_tabs() {
+        assert_eq!(tab_double_click_plan(true), TabDoubleClickPlan::Rename);
+        assert_eq!(tab_double_click_plan(false), TabDoubleClickPlan::Activate);
+    }
+
+    #[test]
+    fn deleted_document_path_matches_zed_backing_file_rule() {
+        assert!(!is_deleted_document_path(None));
+
+        let dir = tempfile::tempdir().unwrap();
+        let existing_path = dir.path().join("existing.rs");
+        std::fs::write(&existing_path, "").unwrap();
+        assert!(!is_deleted_document_path(Some(existing_path.as_path())));
+
+        let missing_path = dir.path().join("missing.rs");
+        assert!(is_deleted_document_path(Some(missing_path.as_path())));
+    }
+
+    fn activation_doc(id: char, age: u64) -> TabActivationDocument<char> {
+        TabActivationDocument {
+            id,
+            focused_at: std::time::Instant::now() + std::time::Duration::from_secs(age),
+        }
+    }
+
+    #[test]
+    fn tab_activation_target_history_uses_most_recent_remaining_tab() {
+        let documents = [
+            activation_doc('a', 0),
+            activation_doc('b', 3),
+            activation_doc('c', 1),
+            activation_doc('d', 2),
+        ];
+
+        assert_eq!(
+            tab_activation_target_after_close(
+                &documents,
+                'c',
+                Some('c'),
+                crate::config::TabActivateOnClose::History,
+            ),
+            Some('b')
+        );
+    }
+
+    #[test]
+    fn tab_activation_target_neighbour_prefers_right_then_left() {
+        let documents = [
+            activation_doc('a', 0),
+            activation_doc('b', 1),
+            activation_doc('c', 2),
+            activation_doc('d', 3),
+        ];
+
+        assert_eq!(
+            tab_activation_target_after_close(
+                &documents,
+                'b',
+                Some('b'),
+                crate::config::TabActivateOnClose::Neighbour,
+            ),
+            Some('c')
+        );
+        assert_eq!(
+            tab_activation_target_after_close(
+                &documents,
+                'd',
+                Some('d'),
+                crate::config::TabActivateOnClose::Neighbour,
+            ),
+            Some('c')
+        );
+    }
+
+    #[test]
+    fn tab_activation_target_left_neighbour_prefers_left_then_right() {
+        let documents = [
+            activation_doc('a', 0),
+            activation_doc('b', 1),
+            activation_doc('c', 2),
+        ];
+
+        assert_eq!(
+            tab_activation_target_after_close(
+                &documents,
+                'c',
+                Some('c'),
+                crate::config::TabActivateOnClose::LeftNeighbour,
+            ),
+            Some('b')
+        );
+        assert_eq!(
+            tab_activation_target_after_close(
+                &documents,
+                'a',
+                Some('a'),
+                crate::config::TabActivateOnClose::LeftNeighbour,
+            ),
+            Some('b')
+        );
+    }
+
+    #[test]
+    fn tab_activation_target_ignores_inactive_or_missing_closes() {
+        let documents = [activation_doc('a', 0), activation_doc('b', 1)];
+
+        assert_eq!(
+            tab_activation_target_after_close(
+                &documents,
+                'a',
+                Some('b'),
+                crate::config::TabActivateOnClose::Neighbour,
+            ),
+            None
+        );
+        assert_eq!(
+            tab_activation_target_after_close(
+                &documents,
+                'x',
+                Some('x'),
+                crate::config::TabActivateOnClose::Neighbour,
+            ),
+            None
+        );
+    }
+
+    fn max_tab_doc(
+        id: char,
+        age: u64,
+        is_modified: bool,
+        is_pinned: bool,
+        is_protected: bool,
+    ) -> MaxTabsDocument<char> {
+        MaxTabsDocument {
+            id,
+            focused_at: std::time::Instant::now() + std::time::Duration::from_secs(age),
+            is_modified,
+            is_pinned,
+            is_protected,
+        }
+    }
+
+    #[test]
+    fn max_tabs_close_candidates_close_oldest_clean_unpinned_tabs() {
+        let documents = [
+            max_tab_doc('a', 0, false, false, false),
+            max_tab_doc('b', 1, false, false, false),
+            max_tab_doc('c', 2, false, false, false),
+            max_tab_doc('d', 3, false, false, true),
+        ];
+
+        let close_candidates =
+            max_tabs_close_candidates(&documents, std::num::NonZeroUsize::new(2));
+
+        assert_eq!(close_candidates, vec!['a', 'b']);
+    }
+
+    #[test]
+    fn max_tabs_settings_change_target_allows_active_settings_tab_over_cap() {
+        let documents = [
+            max_tab_doc('a', 0, false, false, false),
+            max_tab_doc('b', 1, false, false, false),
+            max_tab_doc('c', 2, false, false, false),
+            max_tab_doc('s', 3, false, false, true),
+        ];
+
+        assert_eq!(
+            max_tabs_close_candidates_to_target(&documents, Some(2)),
+            vec!['a', 'b']
+        );
+        assert_eq!(
+            max_tabs_close_candidates_to_target(&documents, Some(3)),
+            vec!['a']
+        );
+    }
+
+    #[test]
+    fn max_tabs_close_candidates_preserve_dirty_pinned_and_protected_tabs() {
+        let documents = [
+            max_tab_doc('a', 0, true, false, false),
+            max_tab_doc('b', 1, false, true, false),
+            max_tab_doc('c', 2, false, false, true),
+            max_tab_doc('d', 3, false, false, false),
+        ];
+
+        let close_candidates =
+            max_tabs_close_candidates(&documents, std::num::NonZeroUsize::new(1));
+
+        assert_eq!(close_candidates, vec!['d']);
+    }
+
+    #[test]
+    fn max_tabs_close_candidates_do_nothing_when_unlimited_or_under_cap() {
+        let documents = [
+            max_tab_doc('a', 0, false, false, false),
+            max_tab_doc('b', 1, false, false, false),
+        ];
+
+        assert!(max_tabs_close_candidates(&documents, None).is_empty());
+        assert!(max_tabs_close_candidates(&documents, std::num::NonZeroUsize::new(2)).is_empty());
+    }
+
+    fn close_batch_doc(
+        id: char,
+        path: Option<&'static str>,
+        is_active: bool,
+    ) -> BatchCloseDocument<char, &'static str> {
+        BatchCloseDocument {
+            id,
+            is_active,
+            path,
+        }
+    }
+
+    #[test]
+    fn batch_close_order_matches_zed_path_sorting() {
+        let documents = [
+            close_batch_doc('u', None, false),
+            close_batch_doc('b', Some("/project/b.rs"), false),
+            close_batch_doc('a', Some("/project/a.rs"), false),
+            close_batch_doc('m', None, false),
+        ];
+
+        assert_eq!(
+            batch_close_document_order(&documents),
+            vec!['a', 'b', 'u', 'm']
+        );
+    }
+
+    #[test]
+    fn batch_close_order_closes_active_document_last() {
+        let documents = [
+            close_batch_doc('a', Some("/project/a.rs"), false),
+            close_batch_doc('z', Some("/project/z.rs"), true),
+            close_batch_doc('b', Some("/project/b.rs"), false),
+            close_batch_doc('u', None, false),
+        ];
+
+        assert_eq!(
+            batch_close_document_order(&documents),
+            vec!['a', 'b', 'u', 'z']
         );
     }
 

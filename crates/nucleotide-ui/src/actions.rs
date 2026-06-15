@@ -126,6 +126,8 @@ pub mod workspace {
             NewFile,
             NewWindow,
             ShowCommandPalette,
+            UnpinAllTabs,
+            TogglePreviewTab,
         ]
     );
 }

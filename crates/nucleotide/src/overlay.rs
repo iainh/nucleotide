@@ -667,10 +667,11 @@ impl OverlayView {
 
                 match picker {
                     Picker::Native {
-                        title: _,
+                        title,
                         items,
                         on_select,
                     } => {
+                        let is_file_finder = title.as_ref() == "Open File";
                         let items = items.clone();
                         let on_select = on_select.clone();
                         let core_weak = self.core.clone();
@@ -716,8 +717,22 @@ impl OverlayView {
                             // Clone capability handle for each closure to avoid moving the original
                             let cap_for_open_reg = cap_for_picker.clone();
                             let cap_for_close = cap_for_picker.clone();
+                            let preview_settings_core = core_weak.clone();
 
                             view = view.with_preview_open_fn(move |path, picker_cx| {
+                                let should_open_preview_tab =
+                                    preview_settings_core.upgrade().is_some_and(|core| {
+                                        let core = core.read(picker_cx);
+                                        let settings = &core.config.gui.preview_tabs;
+                                        settings.enabled
+                                            && (!is_file_finder
+                                                || settings.enable_preview_from_file_finder)
+                                    });
+
+                                if !should_open_preview_tab {
+                                    return None;
+                                }
+
                                 let result = preview_exec.open(path, picker_cx);
                                 if let Some((doc_id, view_id)) = result {
                                     // Mount a DocumentView entity and register with capability for rendering

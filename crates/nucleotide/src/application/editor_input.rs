@@ -116,10 +116,13 @@ impl EditorInputBridge {
     ) -> EditorInputOutcome {
         log_completion_key_context(editor, key);
 
-        let focused_view_id = editor.tree.focus;
-        let focused_doc_id = editor.tree.try_get(focused_view_id).map(|view| view.doc);
-        let before_selection =
-            focused_doc_id.and_then(|doc_id| selection_snapshot(editor, doc_id, focused_view_id));
+        let before_focused_view_id = editor.tree.focus;
+        let before_focused_doc_id = editor
+            .tree
+            .try_get(before_focused_view_id)
+            .map(|view| view.doc);
+        let before_selection = before_focused_doc_id
+            .and_then(|doc_id| selection_snapshot(editor, doc_id, before_focused_view_id));
 
         if let Some(snapshot) = before_selection {
             debug!(
@@ -174,6 +177,8 @@ impl EditorInputBridge {
             }
         }
 
+        let focused_view_id = editor.tree.focus;
+        let focused_doc_id = editor.tree.try_get(focused_view_id).map(|view| view.doc);
         let after_selection =
             focused_doc_id.and_then(|doc_id| selection_snapshot(editor, doc_id, focused_view_id));
 
@@ -185,7 +190,9 @@ impl EditorInputBridge {
             );
         }
 
-        let selection_changed = selection_changed(before_selection, after_selection);
+        let focused_doc_changed = before_focused_doc_id != focused_doc_id;
+        let selection_changed =
+            focused_doc_changed || selection_changed(before_selection, after_selection);
         if selection_changed
             && let (Some(before), Some(after)) = (before_selection, after_selection)
         {
@@ -3021,6 +3028,37 @@ mod tests {
         assert!(outcome.handled_by_native_command);
         assert_eq!(outcome.picker_requested, None);
         assert_eq!(outcome.lsp_navigation_requested, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn editor_input_bridge_reports_document_switch_from_jumplist() {
+        let mut bridge = EditorInputBridge::new(Keymaps::default());
+        let mut editor = test_editor_with_text("one\ntwo\n");
+        let first_doc_id = editor.tree.try_get(editor.tree.focus).unwrap().doc;
+        let second_doc_id = editor.new_file(Action::Replace);
+        let mut compositor = Compositor::new(Rect::new(0, 0, 80, 24));
+        let mut jobs = Jobs::new();
+
+        assert_ne!(first_doc_id, second_doc_id);
+        assert_eq!(
+            editor.tree.try_get(editor.tree.focus).map(|view| view.doc),
+            Some(second_doc_id)
+        );
+
+        let outcome = bridge.handle_key(
+            KeyEvent::from_str("C-o").unwrap(),
+            &mut compositor,
+            &mut editor,
+            &mut jobs,
+        );
+
+        assert!(outcome.handled_by_native_command);
+        assert!(outcome.selection_changed);
+        assert_eq!(outcome.focused_doc_id, Some(first_doc_id));
+        assert_eq!(
+            editor.tree.try_get(editor.tree.focus).map(|view| view.doc),
+            Some(first_doc_id)
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

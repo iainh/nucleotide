@@ -19,6 +19,10 @@ use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
 use nucleotide_vcs::VcsServiceHandle;
 use std::path::{Path, PathBuf};
 
+fn should_focus_editor_for_project_tree_open(click_count: usize) -> bool {
+    click_count > 1
+}
+
 /// File tree view component
 pub struct FileTreeView {
     /// The underlying file tree data
@@ -156,6 +160,11 @@ impl FileTreeView {
     /// Get the current selection
     pub fn selected_path(&self) -> Option<&PathBuf> {
         self.selected_path.as_ref()
+    }
+
+    /// Return whether the tree knows about this path.
+    pub fn contains_path(&self, path: &Path) -> bool {
+        self.tree.entry_by_path(path).is_some()
     }
 
     /// Set the selection
@@ -296,7 +305,10 @@ impl FileTreeView {
             && let Some(entry) = self.tree.entry_by_path(&path)
         {
             if entry.is_file() {
-                cx.emit(FileTreeEvent::OpenFile { path });
+                cx.emit(FileTreeEvent::OpenFile {
+                    path,
+                    focus_editor: false,
+                });
             } else if entry.is_directory() {
                 self.toggle_directory(&path, cx);
             }
@@ -1083,13 +1095,17 @@ impl FileTreeView {
         &mut self,
         path: PathBuf,
         action: ProjectTreeRowAction,
+        click_count: usize,
         cx: &mut Context<Self>,
     ) {
         self.select_path(Some(path.clone()), cx);
 
         match action {
             ProjectTreeRowAction::ToggleDirectory => self.toggle_directory(&path, cx),
-            ProjectTreeRowAction::OpenFile => cx.emit(FileTreeEvent::OpenFile { path }),
+            ProjectTreeRowAction::OpenFile => cx.emit(FileTreeEvent::OpenFile {
+                path,
+                focus_editor: should_focus_editor_for_project_tree_open(click_count),
+            }),
         }
     }
 
@@ -1097,6 +1113,7 @@ impl FileTreeView {
         &mut self,
         row_event: ProjectTreeRowEvent,
         position: Option<gpui::Point<gpui::Pixels>>,
+        click_count: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1104,7 +1121,7 @@ impl FileTreeView {
             ProjectTreeRowEvent::Activate { path, action } => {
                 self.focus_handle.focus(window, cx);
                 debug!("File tree entry clicked");
-                self.activate_entry(path, action, cx);
+                self.activate_entry(path, action, click_count, cx);
             }
             ProjectTreeRowEvent::ContextMenuRequested { path } => {
                 let Some(position) = position else {
@@ -1152,7 +1169,13 @@ impl FileTreeView {
                 let left_click_row = left_click_row.clone();
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                     let row_event = left_click_row.click_event(event.modifiers.secondary());
-                    view.handle_project_tree_row_event(row_event, Some(event.position), window, cx);
+                    view.handle_project_tree_row_event(
+                        row_event,
+                        Some(event.position),
+                        event.click_count,
+                        window,
+                        cx,
+                    );
                     cx.stop_propagation();
                 })
             },
@@ -1162,6 +1185,7 @@ impl FileTreeView {
                     view.handle_project_tree_row_event(
                         context_menu_event.clone(),
                         Some(event.position),
+                        event.click_count,
                         window,
                         cx,
                     );
@@ -1216,7 +1240,7 @@ mod tests {
         let events = subscribe_file_tree_events(cx, &view);
 
         view.update(cx, |view, cx| {
-            view.activate_entry(file_path.clone(), ProjectTreeRowAction::OpenFile, cx);
+            view.activate_entry(file_path.clone(), ProjectTreeRowAction::OpenFile, 1, cx);
         });
         cx.run_until_parked();
 
@@ -1228,7 +1252,18 @@ mod tests {
         assert!(events.contains(&FileTreeEvent::SelectionChanged {
             path: Some(file_path.clone()),
         }));
-        assert!(events.contains(&FileTreeEvent::OpenFile { path: file_path }));
+        assert!(events.contains(&FileTreeEvent::OpenFile {
+            path: file_path,
+            focus_editor: false,
+        }));
+    }
+
+    #[test]
+    fn project_tree_file_open_focuses_editor_on_double_click_only() {
+        assert!(!should_focus_editor_for_project_tree_open(0));
+        assert!(!should_focus_editor_for_project_tree_open(1));
+        assert!(should_focus_editor_for_project_tree_open(2));
+        assert!(should_focus_editor_for_project_tree_open(3));
     }
 
     #[gpui::test]
@@ -1242,7 +1277,12 @@ mod tests {
 
         view.update(cx, |view, cx| {
             assert!(view.tree.is_expanded(&root_path));
-            view.activate_entry(root_path.clone(), ProjectTreeRowAction::ToggleDirectory, cx);
+            view.activate_entry(
+                root_path.clone(),
+                ProjectTreeRowAction::ToggleDirectory,
+                1,
+                cx,
+            );
         });
         cx.run_until_parked();
 
@@ -1310,6 +1350,7 @@ impl Render for FileTreeView {
                     view.handle_project_tree_row_event(
                         ProjectTreeRowEvent::context_menu_for_path(root_path),
                         Some(event.position),
+                        event.click_count,
                         window,
                         cx,
                     );

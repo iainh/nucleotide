@@ -514,7 +514,7 @@ use nucleotide::actions::{
     picker::{ConfirmSelection, DismissPicker, SelectFirst, SelectLast, TogglePreview},
     test::{TestCompletion, TestPrompt},
     window::{Hide, HideOthers, Minimize, ShowAll, Zoom},
-    workspace::ToggleFileTree,
+    workspace::{ToggleFileTree, TogglePreviewTab, UnpinAllTabs},
 };
 
 fn app_menus() -> Vec<Menu> {
@@ -555,7 +555,12 @@ fn app_menus() -> Vec<Menu> {
         Menu {
             name: "View".into(),
             disabled: false,
-            items: vec![MenuItem::action("Toggle File Tree", ToggleFileTree)],
+            items: vec![
+                MenuItem::action("Toggle File Tree", ToggleFileTree),
+                MenuItem::separator(),
+                MenuItem::action("Toggle Preview Tab", TogglePreviewTab),
+                MenuItem::action("Unpin All Tabs", UnpinAllTabs),
+            ],
         },
         Menu {
             name: "Window".into(),

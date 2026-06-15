@@ -3,15 +3,16 @@
 
 use crate::{
     ComponentFactory, Composable, Interactive, Slotted, StyleSize, StyleState, StyleVariant,
-    Styled as UIStyled,
+    Styled as UIStyled, ThemedContext, Tooltipped,
     styling::{ComputedStyle, TimingFunction, Transition, TransitionProperty},
     tokens::{ButtonTokens, DesignTokens},
 };
 use gpui::prelude::FluentBuilder;
 use gpui::px;
 use gpui::{
-    App, ElementId, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseUpEvent,
-    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, svg,
+    App, AppContext, ClickEvent, Context, ElementId, FontWeight, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement,
+    Styled, Window, div, svg,
 };
 use std::time::Duration;
 
@@ -149,7 +150,31 @@ pub enum ButtonSlot {
 }
 
 // Type alias for button click handler
-type ButtonClickHandler = Box<dyn Fn(&MouseUpEvent, &mut Window, &mut App) + 'static>;
+type ButtonClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+
+struct ButtonTooltip {
+    text: SharedString,
+}
+
+impl Render for ButtonTooltip {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tokens = cx.theme().tokens;
+        let tooltip_tokens = tokens.tooltip_tokens();
+
+        div()
+            .max_w(px(420.0))
+            .px(tokens.sizes.space_2)
+            .py(tokens.sizes.space_1)
+            .rounded(tokens.sizes.radius_sm)
+            .border_1()
+            .border_color(tooltip_tokens.border)
+            .bg(tooltip_tokens.background)
+            .shadow(vec![tokens.chrome.shadow_md.to_box_shadow(false)])
+            .text_size(tokens.sizes.text_sm)
+            .text_color(tooltip_tokens.text)
+            .child(self.text.clone())
+    }
+}
 
 /// A reusable button component
 #[derive(IntoElement)]
@@ -164,6 +189,8 @@ pub struct Button {
     icon_path: Option<SharedString>,
     icon_position: IconPosition,
     on_click: Option<ButtonClickHandler>,
+    tooltip: Option<SharedString>,
+    activate_on_mouse_down: bool,
     slots: Vec<ButtonSlot>,
     class_names: Vec<SharedString>,
 }
@@ -190,6 +217,8 @@ impl Button {
             icon_path: None,
             icon_position: IconPosition::Start,
             on_click: None,
+            tooltip: None,
+            activate_on_mouse_down: false,
             slots: Vec::new(),
             class_names: Vec::new(),
         }
@@ -208,6 +237,8 @@ impl Button {
             icon_path: Some(icon_path.into()),
             icon_position: IconPosition::Start,
             on_click: None,
+            tooltip: None,
+            activate_on_mouse_down: false,
             slots: Vec::new(),
             class_names: Vec::new(),
         }
@@ -246,7 +277,7 @@ impl Button {
     /// Set click handler
     pub fn on_click(
         mut self,
-        handler: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_click = Some(Box::new(handler));
         self
@@ -276,6 +307,11 @@ impl Button {
     /// Add a CSS class name
     pub fn class(mut self, class_name: impl Into<SharedString>) -> Self {
         self.class_names.push(class_name.into());
+        self
+    }
+
+    pub fn activate_on_mouse_down(mut self) -> Self {
+        self.activate_on_mouse_down = true;
         self
     }
 
@@ -558,7 +594,7 @@ impl UIStyled for Button {
 
 // Implement the Interactive trait
 impl Interactive for Button {
-    type ClickHandler = Box<dyn Fn(&MouseUpEvent, &mut Window, &mut App) + 'static>;
+    type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
     fn on_click(mut self, handler: Self::ClickHandler) -> Self {
         self.on_click = Some(handler);
@@ -568,6 +604,17 @@ impl Interactive for Button {
     fn on_secondary_click(self, _handler: Self::ClickHandler) -> Self {
         // Button doesn't support secondary click, just return self
         self
+    }
+}
+
+impl Tooltipped for Button {
+    fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    fn get_tooltip(&self) -> Option<&SharedString> {
+        self.tooltip.as_ref()
     }
 }
 
@@ -628,15 +675,12 @@ impl RenderOnce for Button {
         let computed_style =
             self.compute_style_from_tokens(&button_tokens, current_state, &theme.tokens);
 
-        // Precompute hover and active styles for interactive states
+        // Precompute hover style for interactive states
         let hover_style =
             self.compute_style_from_tokens(&button_tokens, StyleState::Hover, &theme.tokens);
-        let active_style =
-            self.compute_style_from_tokens(&button_tokens, StyleState::Active, &theme.tokens);
         let inset_highlight = theme.tokens.chrome.inset_highlight;
         let inset_shadow = theme.tokens.chrome.inset_shadow;
-
-        // Animations may be enabled globally; hover/active visuals are always applied
+        let activate_on_mouse_down = self.activate_on_mouse_down;
 
         let mut button = div()
             .id(self.id)
@@ -671,55 +715,33 @@ impl RenderOnce for Button {
             })
             .opacity(computed_style.opacity);
 
-        // Apply interactive hover/active states when interactive; animations only affect transitions
+        // GPUI 0.2.2 can leave active styles stuck on fast clicks because the
+        // mouse-up clear is only registered after a repaint. Keep chrome
+        // controls hover-only until we update GPUI to the newer Zed behavior.
         if current_state.is_interactive() {
-            button = button
-                .hover(|this| {
-                    let mut hovered = this
-                        .bg(hover_style.background)
-                        .text_color(hover_style.foreground)
-                        .border_color(hover_style.border_color)
-                        .text_size(computed_style.font_size)
-                        .font_weight(match computed_style.font_weight {
-                            400 => FontWeight::NORMAL,
-                            700 => FontWeight::BOLD,
-                            _ => FontWeight::MEDIUM,
-                        });
+            button = button.hover(|this| {
+                let mut hovered = this
+                    .bg(hover_style.background)
+                    .text_color(hover_style.foreground)
+                    .border_color(hover_style.border_color)
+                    .text_size(computed_style.font_size)
+                    .font_weight(match computed_style.font_weight {
+                        400 => FontWeight::NORMAL,
+                        700 => FontWeight::BOLD,
+                        _ => FontWeight::MEDIUM,
+                    });
 
-                    if let Some(shadow) = &hover_style.shadow {
-                        hovered = hovered.shadow(button_shadow_stack(
-                            shadow,
-                            inset_highlight,
-                            inset_shadow,
-                            false,
-                        ));
-                    }
+                if let Some(shadow) = &hover_style.shadow {
+                    hovered = hovered.shadow(button_shadow_stack(
+                        shadow,
+                        inset_highlight,
+                        inset_shadow,
+                        false,
+                    ));
+                }
 
-                    hovered
-                })
-                .active(|this| {
-                    let mut activated = this
-                        .bg(active_style.background)
-                        .text_color(active_style.foreground)
-                        .border_color(active_style.border_color)
-                        .text_size(computed_style.font_size)
-                        .font_weight(match computed_style.font_weight {
-                            400 => FontWeight::NORMAL,
-                            700 => FontWeight::BOLD,
-                            _ => FontWeight::MEDIUM,
-                        });
-
-                    if let Some(shadow) = &active_style.shadow {
-                        activated = activated.shadow(button_shadow_stack(
-                            shadow,
-                            inset_highlight,
-                            inset_shadow,
-                            true,
-                        ));
-                    }
-
-                    activated
-                });
+                hovered
+            });
         }
 
         // Handle cursor and interaction states
@@ -729,9 +751,24 @@ impl RenderOnce for Button {
             button = button.cursor_pointer();
 
             if let Some(on_click) = self.on_click {
-                button = button.on_mouse_up(MouseButton::Left, move |ev, window, cx| {
-                    on_click(ev, window, cx);
-                });
+                if activate_on_mouse_down {
+                    button = button.on_mouse_down(MouseButton::Left, move |ev, window, cx| {
+                        let click_event = crate::click_event_from_mouse_down(ev);
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        on_click(&click_event, window, cx);
+                    });
+                } else {
+                    button = button
+                        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                        .on_click(move |ev, window, cx| {
+                            cx.stop_propagation();
+                            if !ev.standard_click() {
+                                return;
+                            }
+                            on_click(ev, window, cx);
+                        });
+                }
             }
         }
 
@@ -787,7 +824,14 @@ impl RenderOnce for Button {
             }
         }
 
-        button
+        button.when_some(self.tooltip, |button, tooltip| {
+            button.tooltip(move |_window, cx| {
+                cx.new(|_| ButtonTooltip {
+                    text: tooltip.clone(),
+                })
+                .into()
+            })
+        })
     }
 }
 

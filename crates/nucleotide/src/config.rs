@@ -95,6 +95,174 @@ impl Default for WindowConfig {
     }
 }
 
+/// Visibility modes for close buttons on unpinned tabs.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TabCloseButtonVisibility {
+    /// Always render close buttons on unpinned tabs.
+    Always,
+    /// Render close buttons on unpinned tabs only while hovering over the tab.
+    #[default]
+    Hover,
+    /// Do not render close buttons on unpinned tabs.
+    Hidden,
+}
+
+/// Position of the tab close or pin button.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TabClosePosition {
+    /// Render the close or pin button on the left side of the tab.
+    Left,
+    /// Render the close or pin button on the right side of the tab.
+    #[default]
+    Right,
+}
+
+/// Diagnostic marker visibility for tabs.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TabDiagnosticsVisibility {
+    /// Do not show diagnostics on tabs.
+    #[default]
+    Off,
+    /// Show only error diagnostics on tabs.
+    Errors,
+    /// Show error and warning diagnostics on tabs.
+    All,
+}
+
+/// Tab activation policy after closing the active tab.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TabActivateOnClose {
+    /// Activate the previously active tab.
+    #[default]
+    History,
+    /// Activate the right neighbour when present, otherwise the left neighbour.
+    Neighbour,
+    /// Activate the left neighbour when present, otherwise the right neighbour.
+    LeftNeighbour,
+}
+
+/// Tab bar behaviour configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabBarConfig {
+    /// Show the tab bar.
+    #[serde(default = "default_true")]
+    pub show: bool,
+
+    /// Show tab-bar navigation history buttons.
+    #[serde(default = "default_true")]
+    pub show_nav_history_buttons: bool,
+
+    /// Show tab-bar action buttons such as new file and split controls.
+    #[serde(default = "default_true")]
+    pub show_tab_bar_buttons: bool,
+
+    /// Render pinned tabs in a separate row when both pinned and unpinned tabs are open.
+    #[serde(default)]
+    pub show_pinned_tabs_in_separate_row: bool,
+}
+
+impl Default for TabBarConfig {
+    fn default() -> Self {
+        Self {
+            show: true,
+            show_nav_history_buttons: true,
+            show_tab_bar_buttons: true,
+            show_pinned_tabs_in_separate_row: false,
+        }
+    }
+}
+
+/// Per-tab behaviour and decoration configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabsConfig {
+    /// Show git status decorations in tabs.
+    #[serde(default)]
+    pub git_status: bool,
+
+    /// Position of the close or pin button in each tab.
+    #[serde(default)]
+    pub close_position: TabClosePosition,
+
+    /// What to activate after closing the current tab.
+    #[serde(default)]
+    pub activate_on_close: TabActivateOnClose,
+
+    /// Show file icons in tabs.
+    #[serde(default)]
+    pub file_icons: bool,
+
+    /// Show diagnostic decorations in tabs.
+    #[serde(default)]
+    pub show_diagnostics: TabDiagnosticsVisibility,
+
+    /// Controls close button visibility for unpinned tabs.
+    #[serde(default)]
+    pub show_close_button: TabCloseButtonVisibility,
+}
+
+impl Default for TabsConfig {
+    fn default() -> Self {
+        Self {
+            git_status: false,
+            close_position: TabClosePosition::Right,
+            activate_on_close: TabActivateOnClose::History,
+            file_icons: false,
+            show_diagnostics: TabDiagnosticsVisibility::Off,
+            show_close_button: TabCloseButtonVisibility::Hover,
+        }
+    }
+}
+
+/// Preview tab behaviour configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewTabsConfig {
+    /// Enable preview tabs.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Open project-panel single-clicked files in preview mode.
+    #[serde(default = "default_true")]
+    pub enable_preview_from_project_panel: bool,
+
+    /// Open file-finder selections in preview mode.
+    #[serde(default)]
+    pub enable_preview_from_file_finder: bool,
+
+    /// Open multibuffer files in preview mode.
+    #[serde(default = "default_true")]
+    pub enable_preview_from_multibuffer: bool,
+
+    /// Open code-navigation multibuffers in preview mode.
+    #[serde(default)]
+    pub enable_preview_multibuffer_from_code_navigation: bool,
+
+    /// Open code-navigation files in preview mode.
+    #[serde(default = "default_true")]
+    pub enable_preview_file_from_code_navigation: bool,
+
+    /// Keep preview tabs in preview mode when navigating away from them.
+    #[serde(default)]
+    pub enable_keep_preview_on_code_navigation: bool,
+}
+
+impl Default for PreviewTabsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            enable_preview_from_project_panel: true,
+            enable_preview_from_file_finder: false,
+            enable_preview_from_multibuffer: true,
+            enable_preview_multibuffer_from_code_navigation: false,
+            enable_preview_file_from_code_navigation: true,
+            enable_keep_preview_on_code_navigation: false,
+        }
+    }
+}
+
 /// LSP feature flags configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspConfig {
@@ -196,6 +364,22 @@ pub struct GuiConfig {
     /// Window appearance configuration
     #[serde(default)]
     pub window: WindowConfig,
+
+    /// Maximum number of tabs to keep open. Unset for unlimited.
+    #[serde(default)]
+    pub max_tabs: Option<std::num::NonZeroUsize>,
+
+    /// Tab bar behaviour
+    #[serde(default)]
+    pub tab_bar: TabBarConfig,
+
+    /// Per-tab behaviour and decoration settings
+    #[serde(default)]
+    pub tabs: TabsConfig,
+
+    /// Preview tab behaviour
+    #[serde(default)]
+    pub preview_tabs: PreviewTabsConfig,
 
     /// LSP feature flags and configuration
     #[serde(default)]
@@ -579,6 +763,8 @@ mod tests {
     #[test]
     fn test_gui_config_parsing() {
         let config_str = r#"
+max_tabs = 5
+
 [ui.font]
 family = "Inter"
 weight = "medium"
@@ -588,6 +774,29 @@ size = 13.0
 family = "JetBrains Mono"
 weight = "normal"
 size = 14.5
+
+[tab_bar]
+show = false
+show_nav_history_buttons = false
+show_tab_bar_buttons = false
+show_pinned_tabs_in_separate_row = true
+
+[tabs]
+show_close_button = "hover"
+close_position = "left"
+activate_on_close = "left_neighbour"
+file_icons = true
+git_status = true
+show_diagnostics = "all"
+
+[preview_tabs]
+enabled = false
+enable_preview_from_project_panel = false
+enable_preview_from_file_finder = true
+enable_preview_from_multibuffer = false
+enable_preview_multibuffer_from_code_navigation = true
+enable_preview_file_from_code_navigation = false
+enable_keep_preview_on_code_navigation = true
 "#;
 
         let config: GuiConfig = toml::from_str(config_str).expect("Failed to parse GuiConfig");
@@ -605,6 +814,120 @@ size = 14.5
         assert_eq!(editor_font.family, "JetBrains Mono");
         assert_eq!(editor_font.weight, FontWeight::Normal);
         assert_eq!(editor_font.size, 14.5);
+        assert_eq!(config.max_tabs.map(std::num::NonZeroUsize::get), Some(5));
+        assert!(!config.tab_bar.show);
+        assert!(!config.tab_bar.show_nav_history_buttons);
+        assert!(!config.tab_bar.show_tab_bar_buttons);
+        assert!(config.tab_bar.show_pinned_tabs_in_separate_row);
+        assert_eq!(
+            config.tabs.show_close_button,
+            TabCloseButtonVisibility::Hover
+        );
+        assert_eq!(config.tabs.close_position, TabClosePosition::Left);
+        assert_eq!(
+            config.tabs.activate_on_close,
+            TabActivateOnClose::LeftNeighbour
+        );
+        assert!(config.tabs.file_icons);
+        assert!(config.tabs.git_status);
+        assert_eq!(config.tabs.show_diagnostics, TabDiagnosticsVisibility::All);
+        assert!(!config.preview_tabs.enabled);
+        assert!(!config.preview_tabs.enable_preview_from_project_panel);
+        assert!(config.preview_tabs.enable_preview_from_file_finder);
+        assert!(!config.preview_tabs.enable_preview_from_multibuffer);
+        assert!(
+            config
+                .preview_tabs
+                .enable_preview_multibuffer_from_code_navigation
+        );
+        assert!(!config.preview_tabs.enable_preview_file_from_code_navigation);
+        assert!(config.preview_tabs.enable_keep_preview_on_code_navigation);
+    }
+
+    #[test]
+    fn test_tab_close_button_visibility_parsing() {
+        let always: TabsConfig =
+            toml::from_str(r#"show_close_button = "always""#).expect("should parse always");
+        let hover: TabsConfig =
+            toml::from_str(r#"show_close_button = "hover""#).expect("should parse hover");
+        let hidden: TabsConfig =
+            toml::from_str(r#"show_close_button = "hidden""#).expect("should parse hidden");
+
+        assert_eq!(always.show_close_button, TabCloseButtonVisibility::Always);
+        assert_eq!(hover.show_close_button, TabCloseButtonVisibility::Hover);
+        assert_eq!(hidden.show_close_button, TabCloseButtonVisibility::Hidden);
+    }
+
+    #[test]
+    fn test_tab_close_position_parsing() {
+        let left: TabsConfig =
+            toml::from_str(r#"close_position = "left""#).expect("should parse left");
+        let right: TabsConfig =
+            toml::from_str(r#"close_position = "right""#).expect("should parse right");
+
+        assert_eq!(left.close_position, TabClosePosition::Left);
+        assert_eq!(right.close_position, TabClosePosition::Right);
+    }
+
+    #[test]
+    fn test_tab_activate_on_close_parsing() {
+        let history: TabsConfig =
+            toml::from_str(r#"activate_on_close = "history""#).expect("should parse history");
+        let neighbour: TabsConfig =
+            toml::from_str(r#"activate_on_close = "neighbour""#).expect("should parse neighbour");
+        let left_neighbour: TabsConfig = toml::from_str(r#"activate_on_close = "left_neighbour""#)
+            .expect("should parse left neighbour");
+
+        assert_eq!(history.activate_on_close, TabActivateOnClose::History);
+        assert_eq!(neighbour.activate_on_close, TabActivateOnClose::Neighbour);
+        assert_eq!(
+            left_neighbour.activate_on_close,
+            TabActivateOnClose::LeftNeighbour
+        );
+    }
+
+    #[test]
+    fn test_tab_bar_button_visibility_parsing() {
+        let config: TabBarConfig = toml::from_str(
+            r#"
+show = false
+show_nav_history_buttons = false
+show_tab_bar_buttons = false
+"#,
+        )
+        .expect("should parse tab bar button visibility settings");
+
+        assert!(!config.show);
+        assert!(!config.show_nav_history_buttons);
+        assert!(!config.show_tab_bar_buttons);
+    }
+
+    #[test]
+    fn test_tab_icon_and_git_status_parsing() {
+        let config: TabsConfig = toml::from_str(
+            r#"
+file_icons = true
+git_status = true
+"#,
+        )
+        .expect("should parse tab icon settings");
+
+        assert!(config.file_icons);
+        assert!(config.git_status);
+    }
+
+    #[test]
+    fn test_tab_diagnostics_visibility_parsing() {
+        let off: TabsConfig =
+            toml::from_str(r#"show_diagnostics = "off""#).expect("should parse off");
+        let errors: TabsConfig =
+            toml::from_str(r#"show_diagnostics = "errors""#).expect("should parse errors");
+        let all: TabsConfig =
+            toml::from_str(r#"show_diagnostics = "all""#).expect("should parse all");
+
+        assert_eq!(off.show_diagnostics, TabDiagnosticsVisibility::Off);
+        assert_eq!(errors.show_diagnostics, TabDiagnosticsVisibility::Errors);
+        assert_eq!(all.show_diagnostics, TabDiagnosticsVisibility::All);
     }
 
     #[test]
@@ -631,6 +954,31 @@ enable_fallback = false
         assert_eq!(config.lsp.project_lsp_startup, false);
         assert_eq!(config.lsp.startup_timeout_ms, 5000);
         assert_eq!(config.lsp.enable_fallback, true);
+        assert_eq!(config.max_tabs, None);
+        assert!(config.tab_bar.show);
+        assert!(config.tab_bar.show_nav_history_buttons);
+        assert!(config.tab_bar.show_tab_bar_buttons);
+        assert!(!config.tab_bar.show_pinned_tabs_in_separate_row);
+        assert_eq!(
+            config.tabs.show_close_button,
+            TabCloseButtonVisibility::Hover
+        );
+        assert_eq!(config.tabs.close_position, TabClosePosition::Right);
+        assert_eq!(config.tabs.activate_on_close, TabActivateOnClose::History);
+        assert!(!config.tabs.file_icons);
+        assert!(!config.tabs.git_status);
+        assert_eq!(config.tabs.show_diagnostics, TabDiagnosticsVisibility::Off);
+        assert!(config.preview_tabs.enabled);
+        assert!(config.preview_tabs.enable_preview_from_project_panel);
+        assert!(!config.preview_tabs.enable_preview_from_file_finder);
+        assert!(config.preview_tabs.enable_preview_from_multibuffer);
+        assert!(
+            !config
+                .preview_tabs
+                .enable_preview_multibuffer_from_code_navigation
+        );
+        assert!(config.preview_tabs.enable_preview_file_from_code_navigation);
+        assert!(!config.preview_tabs.enable_keep_preview_on_code_navigation);
     }
 
     #[test]
