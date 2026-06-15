@@ -131,7 +131,19 @@ pub use vcs_icon::{VcsIcon, VcsIconRenderer};
 // Export initialization and configuration types
 // (Functions are defined in this module, types can be re-exported)
 
-use gpui::{App, Hsla};
+use gpui::{App, ClickEvent, Hsla, MouseClickEvent, MouseDownEvent, MouseUpEvent};
+
+pub fn click_event_from_mouse_down(event: &MouseDownEvent) -> ClickEvent {
+    ClickEvent::Mouse(MouseClickEvent {
+        down: event.clone(),
+        up: MouseUpEvent {
+            button: event.button,
+            position: event.position,
+            modifiers: event.modifiers,
+            click_count: event.click_count,
+        },
+    })
+}
 
 /// Application theme built on DesignTokens only
 #[derive(Clone, Debug)]

@@ -5,8 +5,8 @@
 #[allow(clippy::field_reassign_with_default, clippy::assertions_on_constants)]
 mod tests {
     use crate::config::{
-        Config, EditorGuiConfig, FileOpsConfig, GuiConfig, LspConfig, ThemeConfig, ThemeMode,
-        UiConfig, WindowConfig,
+        Config, EditorGuiConfig, FileOpsConfig, GuiConfig, LspConfig, PreviewTabsConfig,
+        TabBarConfig, TabsConfig, ThemeConfig, ThemeMode, UiConfig, WindowConfig,
     };
 
     use nucleotide_types::{FontConfig, FontWeight, ProjectMarkersConfig};
@@ -388,6 +388,10 @@ dark_theme = "custom_dark"
                 blur_dark_themes: true,
                 appearance_follows_theme: false,
             },
+            max_tabs: None,
+            tab_bar: TabBarConfig::default(),
+            tabs: TabsConfig::default(),
+            preview_tabs: PreviewTabsConfig::default(),
             lsp: LspConfig::default(),
             project_markers: ProjectMarkersConfig::default(),
             file_ops: FileOpsConfig::default(),

@@ -26,7 +26,7 @@ pub enum FileTreeEvent {
     /// A file or directory was selected
     SelectionChanged { path: Option<PathBuf> },
     /// A file should be opened
-    OpenFile { path: PathBuf },
+    OpenFile { path: PathBuf, focus_editor: bool },
     /// A directory was expanded or collapsed
     DirectoryToggled { path: PathBuf, expanded: bool },
     /// Context menu requested on a specific entry at screen position (x, y)
