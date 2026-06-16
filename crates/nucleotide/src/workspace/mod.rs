@@ -1005,7 +1005,7 @@ fn tab_bar_end_button_icon_paths(is_zoomed: bool) -> [&'static str; 3] {
 
 #[cfg(test)]
 fn tab_bar_end_button_tooltips(is_zoomed: bool) -> [&'static str; 3] {
-    ["New...", "Split Pane", tab_bar_zoom_tooltip(is_zoomed)]
+    ["New File", "Split Pane", tab_bar_zoom_tooltip(is_zoomed)]
 }
 
 #[derive(Clone, Copy)]
@@ -7493,22 +7493,17 @@ impl Workspace {
                     Button::icon_only("tab-new-file", "icons/plus.svg")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Small)
-                        .tooltip("New...")
+                        .tooltip("New File")
                         .activate_on_mouse_down()
                         .on_click({
                             let workspace = cx.entity().clone();
-                            move |event, window, cx| {
+                            move |_event, _window, cx| {
                                 workspace.update(cx, |workspace, cx| {
-                                    let position = event.position();
                                     workspace.tab_context_menu_open = false;
                                     workspace.tab_context_menu_doc_id = None;
                                     workspace.tab_bar_split_menu_open = false;
-                                    workspace.tab_bar_new_menu_open = true;
-                                    workspace.tab_bar_new_menu_pos =
-                                        (f32::from(position.x), f32::from(position.y));
-                                    workspace.tab_bar_new_menu_index = 0;
-                                    window.focus(&workspace.focus_handle, cx);
-                                    cx.notify();
+                                    workspace.tab_bar_new_menu_open = false;
+                                    workspace.tab_bar_action_new_file(cx);
                                 });
                                 cx.stop_propagation();
                             }
@@ -12998,14 +12993,14 @@ mod tests {
     }
 
     #[test]
-    fn tab_bar_end_button_tooltips_match_zed() {
+    fn tab_bar_end_button_tooltips_describe_actions() {
         assert_eq!(
             tab_bar_end_button_tooltips(false),
-            ["New...", "Split Pane", "Zoom In"]
+            ["New File", "Split Pane", "Zoom In"]
         );
         assert_eq!(
             tab_bar_end_button_tooltips(true),
-            ["New...", "Split Pane", "Zoom Out"]
+            ["New File", "Split Pane", "Zoom Out"]
         );
     }
 
