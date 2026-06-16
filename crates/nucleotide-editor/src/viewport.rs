@@ -529,7 +529,9 @@ impl EditorViewport {
             let document = editor.document_mut(doc_id)?;
             self.sync_surface_layout_for_view(document, &mut view, view_id, layout)
         };
-        editor.tree.get_mut(view_id).area = view.area;
+        // Keep the resized view local to this surface. The Helix tree owns split
+        // geometry; writing per-pane paint bounds back into it causes layout
+        // feedback between independently rendered panes.
 
         Some(update)
     }
@@ -1374,10 +1376,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn surface_layout_sync_updates_helix_view_area_from_native_cells() {
+    async fn surface_layout_sync_uses_native_cells_without_rewriting_tree_area() {
         let (mut editor, doc_id, view_id) = test_editor_with_text("one\ntwo\nthree\n");
         let mut viewport = EditorViewport::new(px(20.0));
         let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(101.0)));
+        let original_area = editor.tree.get(view_id).area;
 
         let update = viewport
             .sync_surface_layout(
@@ -1407,19 +1410,48 @@ mod tests {
         );
         let view = editor.tree.get(view_id);
 
-        assert_eq!(view.gutter_offset(document), update.gutter_columns);
-        assert_eq!(view.inner_width(document), expected.viewport_columns);
-        assert_eq!(view.inner_height(), viewport.visible_visual_rows());
-        assert_eq!(update.view_area_plan.target_area, view.area);
-        assert!(update.view_area_plan.changed);
+        assert_eq!(view.area, original_area);
         assert_eq!(
-            view.area,
+            update.view_area_plan.target_area,
             helix_view_area_for_surface(
                 update.gutter_columns,
                 expected.viewport_columns,
                 viewport.visible_visual_rows()
             )
         );
+        assert!(update.view_area_plan.changed);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn surface_layout_sync_preserves_split_tree_area() {
+        let (mut editor, doc_id, _view_id) = test_editor_with_text("one\ntwo\nthree\n");
+        editor.switch(doc_id, Action::VerticalSplit);
+
+        let split_view_id = editor.tree.focus;
+        let original_area = editor.tree.get(split_view_id).area;
+        assert!(original_area.x > 0);
+
+        let mut viewport = EditorViewport::new(px(20.0));
+        let update = viewport
+            .sync_surface_layout(
+                &mut editor,
+                doc_id,
+                split_view_id,
+                EditorViewportSurfaceLayout {
+                    theme: None,
+                    bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(101.0))),
+                    cell_width: px(8.0),
+                    line_height: px(20.0),
+                    minimum_columns: 1,
+                    scrolloff: Config::default().scrolloff,
+                    cursor_reveal: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(editor.tree.get(split_view_id).area, original_area);
+        assert_eq!(update.view_area_plan.target_area.x, 0);
+        assert_ne!(update.view_area_plan.target_area, original_area);
     }
 
     #[test]

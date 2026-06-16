@@ -53,10 +53,20 @@ fn command_lookup(command: &str) -> CommandLookup {
             .find(|cmd| cmd.aliases.contains(&cmd_name))
     });
 
-    command.map_or_else(
-        || CommandLookup::Unknown(cmd_name.to_string()),
-        |cmd| CommandLookup::Found(typable_command(cmd.name, args, cmd.doc)),
-    )
+    if let Some(cmd) = command {
+        return CommandLookup::Found(typable_command(cmd.name, args, cmd.doc));
+    }
+
+    if args.trim().is_empty()
+        && let Some(cmd) = MappableCommand::STATIC_COMMAND_LIST
+            .iter()
+            .find(|cmd| cmd.name() == cmd_name)
+            .cloned()
+    {
+        return CommandLookup::Found(cmd);
+    }
+
+    CommandLookup::Unknown(cmd_name.to_string())
 }
 
 fn typable_command(name: &str, args: &str, doc: &str) -> MappableCommand {
@@ -74,11 +84,61 @@ fn typable_command(name: &str, args: &str, doc: &str) -> MappableCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arc_swap::{ArcSwap, access::Map};
+    use helix_core::syntax;
+    use helix_term::job::Jobs;
+    use helix_view::{
+        Editor,
+        editor::{Action, Config},
+        graphics::Rect,
+        handlers::{
+            Handlers, completion::CompletionHandler, word_index::Handler as WordIndexHandler,
+        },
+        theme,
+    };
+    use std::sync::Arc;
+
+    fn test_handlers() -> Handlers {
+        let (completion_tx, _) = tokio::sync::mpsc::channel(1);
+        let (signature_tx, _) = tokio::sync::mpsc::channel(1);
+        let (auto_save_tx, _) = tokio::sync::mpsc::channel(1);
+        let (doc_colors_tx, _) = tokio::sync::mpsc::channel(1);
+
+        Handlers {
+            completions: CompletionHandler::new(completion_tx),
+            signature_hints: signature_tx,
+            auto_save: auto_save_tx,
+            document_colors: doc_colors_tx,
+            word_index: WordIndexHandler::spawn(),
+        }
+    }
+
+    fn test_editor() -> Editor {
+        let config = Arc::new(ArcSwap::new(Arc::new(Config::default())));
+        let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let theme_loader = Arc::new(theme::Loader::new(&[]));
+        let mut editor = Editor::new(
+            Rect::new(0, 0, 80, 24),
+            theme_loader,
+            syntax_loader,
+            Arc::new(Map::new(Arc::clone(&config), |config: &Config| config)),
+            test_handlers(),
+        );
+        editor.new_file(Action::VerticalSplit);
+        editor
+    }
 
     fn unwrap_typable(lookup: CommandLookup) -> (String, String) {
         match lookup {
             CommandLookup::Found(MappableCommand::Typable { name, args, .. }) => (name, args),
             other => panic!("expected typable command, got {other:?}"),
+        }
+    }
+
+    fn unwrap_static(lookup: CommandLookup) -> String {
+        match lookup {
+            CommandLookup::Found(MappableCommand::Static { name, .. }) => name.to_string(),
+            other => panic!("expected static command, got {other:?}"),
         }
     }
 
@@ -104,6 +164,40 @@ mod tests {
 
         assert_eq!(name, "open");
         assert_eq!(args, "src/main.rs");
+    }
+
+    #[test]
+    fn static_command_resolves_by_name() {
+        let name = unwrap_static(command_lookup("swap_view_left"));
+
+        assert_eq!(name, "swap_view_left");
+    }
+
+    #[test]
+    fn static_command_rejects_arguments() {
+        match command_lookup("swap_view_left ignored") {
+            CommandLookup::Unknown(name) => assert_eq!(name, "swap_view_left"),
+            other => panic!("expected unknown command, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_command_line_runs_split_and_static_swap_commands() {
+        let mut editor = test_editor();
+        let mut jobs = Jobs::new();
+
+        execute_command_line(&mut editor, &mut jobs, "vsplit");
+        assert_eq!(editor.tree.views().count(), 2);
+
+        let focused_view_id = editor.tree.focus;
+        let focused_area_before_swap = editor.tree.get(focused_view_id).area;
+        assert!(focused_area_before_swap.x > 0);
+
+        execute_command_line(&mut editor, &mut jobs, "swap_view_left");
+
+        assert_eq!(editor.tree.views().count(), 2);
+        assert_eq!(editor.tree.focus, focused_view_id);
+        assert_eq!(editor.tree.get(focused_view_id).area.x, 0);
     }
 
     #[test]

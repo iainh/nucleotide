@@ -127,6 +127,49 @@ struct DocumentViewLayout {
     is_focused: bool,
 }
 
+fn helix_rect_to_scaled_pixel_bounds(
+    area: HelixRect,
+    total_area: HelixRect,
+    target_width: f32,
+    target_height: f32,
+) -> (Pixels, Pixels, Pixels, Pixels) {
+    let total_width = f32::from(total_area.width).max(1.0);
+    let total_height = f32::from(total_area.height).max(1.0);
+    let target_width = target_width.max(1.0);
+    let target_height = target_height.max(1.0);
+
+    let relative_x = area.x.saturating_sub(total_area.x);
+    let relative_y = area.y.saturating_sub(total_area.y);
+    let left = f32::from(relative_x) / total_width * target_width;
+    let top = f32::from(relative_y) / total_height * target_height;
+    let width = (f32::from(area.width) / total_width * target_width).max(1.0);
+    let height = (f32::from(area.height) / total_height * target_height).max(1.0);
+
+    (px(left), px(top), px(width), px(height))
+}
+
+fn document_view_layout_bounds(layouts: &[DocumentViewLayout]) -> Option<HelixRect> {
+    let first = layouts.first()?;
+    let mut min_x = first.area.x;
+    let mut min_y = first.area.y;
+    let mut max_x = first.area.x.saturating_add(first.area.width);
+    let mut max_y = first.area.y.saturating_add(first.area.height);
+
+    for layout in &layouts[1..] {
+        min_x = min_x.min(layout.area.x);
+        min_y = min_y.min(layout.area.y);
+        max_x = max_x.max(layout.area.x.saturating_add(layout.area.width));
+        max_y = max_y.max(layout.area.y.saturating_add(layout.area.height));
+    }
+
+    Some(HelixRect::new(
+        min_x,
+        min_y,
+        max_x.saturating_sub(min_x).max(1),
+        max_y.saturating_sub(min_y).max(1),
+    ))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TabBarSplitMenuIntent {
     Right,
@@ -1968,6 +2011,10 @@ impl Workspace {
         for command in intent.commands() {
             self.execute_raw_command(command, cx);
         }
+        if self.view_manager.focused_view_id().is_some() {
+            self.view_manager.set_needs_focus_restore(true);
+        }
+        cx.notify();
     }
 
     fn tab_bar_action_new_file(&mut self, cx: &mut Context<Self>) {
@@ -5735,7 +5782,7 @@ impl Workspace {
                 self.execute_raw_command(&format!("open {path}"), cx);
             }
             Command::Split { direction } => match direction {
-                SplitDirection::Horizontal => self.execute_raw_command("split", cx),
+                SplitDirection::Horizontal => self.execute_raw_command("hsplit", cx),
                 SplitDirection::Vertical => self.execute_raw_command("vsplit", cx),
             },
             Command::Close { force } => {
@@ -5850,6 +5897,11 @@ impl Workspace {
                 ),
             ));
         }
+
+        // Commands such as hsplit/vsplit/wclose mutate Helix's view tree.
+        // Keep the GPUI document-view entities in lockstep before the next render.
+        self.update_document_views(cx);
+        cx.notify();
 
         // Log bufferline config in workspace context after command execution
         let bufferline_after_workspace = &core.read(cx).editor.config().bufferline;
@@ -8733,8 +8785,9 @@ impl Workspace {
     fn render_document_view_layout(
         &self,
         layout: DocumentViewLayout,
-        line_height: Pixels,
-        cell_width: Pixels,
+        total_area: HelixRect,
+        editor_width: f32,
+        editor_height: f32,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let view_entity = self
@@ -8742,18 +8795,16 @@ impl Workspace {
             .get_document_view(&layout.view_id)?
             .clone();
         let theme = cx.theme();
-        let left = f32::from(layout.area.x) * f32::from(cell_width);
-        let top = f32::from(layout.area.y) * f32::from(line_height);
-        let width = (f32::from(layout.area.width) * f32::from(cell_width)).max(1.0);
-        let height = (f32::from(layout.area.height) * f32::from(line_height)).max(1.0);
+        let (left, top, width, height) =
+            helix_rect_to_scaled_pixel_bounds(layout.area, total_area, editor_width, editor_height);
 
         Some(
             div()
                 .absolute()
-                .left(px(left))
-                .top(px(top))
-                .w(px(width))
-                .h(px(height))
+                .left(left)
+                .top(top)
+                .w(width)
+                .h(height)
                 .overflow_hidden()
                 .when(layout.is_focused, |d| {
                     d.border_1().border_color(theme.tokens.editor.focus_ring)
@@ -9359,7 +9410,72 @@ impl Render for Workspace {
         }
         let bg_color = self.cached_bg_color;
 
-        // We'll compute the desired editor size from GPUI layout further below
+        // Compute the editor content dimensions before reading Helix view areas,
+        // so split panes use the current tree layout in this render pass.
+        let ui_theme = cx.global::<nucleotide_ui::Theme>();
+        let status_bar_height = ui_theme.tokens.sizes.titlebar_height;
+        let titlebar_height = ui_theme.tokens.sizes.titlebar_height;
+        let viewport_h = window.viewport_size().height;
+        let available_h =
+            (f32::from(viewport_h) - f32::from(status_bar_height) - f32::from(titlebar_height))
+                .max(0.0);
+        let content_max_h = px(available_h);
+
+        let min_term = 80.0f32;
+        let max_term = (available_h - 80.0).max(min_term);
+        if self.basic_terminal_height > max_term {
+            self.basic_terminal_height = max_term;
+        }
+
+        let (line_h_px, char_w_px, _, _, _) = self.get_focused_document_view_layout(cx);
+        let line_h_value = f32::from(line_h_px).max(1.0);
+        let char_w_value = f32::from(char_w_px).max(1.0);
+
+        let viewport_w_px = f32::from(window.viewport_size().width);
+        let file_tree_w_px = if self.show_file_tree {
+            self.file_tree_width
+        } else {
+            0.0
+        };
+        let file_tree_handle_w_px = if self.show_file_tree { 4.0 } else { 0.0 };
+        let editor_content_w_px = (viewport_w_px - file_tree_w_px - file_tree_handle_w_px).max(1.0);
+
+        let editor_h = if self.terminal_panel_visible {
+            (available_h - self.basic_terminal_height).max(0.0)
+        } else {
+            available_h
+        };
+        let editor_content_h_px = editor_h.max(1.0);
+
+        self.sync_embedded_terminal_size(
+            editor_content_w_px,
+            self.basic_terminal_height,
+            line_h_value,
+            char_w_value,
+            cx,
+        );
+
+        let rows = (editor_content_h_px / line_h_value).floor().max(1.0) as u16;
+        let cols = (editor_content_w_px / char_w_value).floor().max(1.0) as u16;
+        let desired_size = (cols, rows);
+
+        if self
+            .last_editor_size
+            .map(|(w, h)| w != desired_size.0 || h != desired_size.1)
+            .unwrap_or(true)
+        {
+            self.core.update(cx, |core, _| {
+                let rect = helix_view::graphics::Rect {
+                    x: 0,
+                    y: 0,
+                    width: desired_size.0,
+                    height: desired_size.1,
+                };
+                core.compositor.resize(rect);
+                core.editor.resize(rect);
+            });
+            self.last_editor_size = Some(desired_size);
+        }
 
         // Create document root container using design tokens
         let mut docs_root = div()
@@ -9376,8 +9492,8 @@ impl Render for Workspace {
                     .border_color(cx.theme().tokens.chrome.border_strong)
             }); // No gap needed for documents
 
-        let (line_h_px, char_w_px, _, _, _) = self.get_focused_document_view_layout(cx);
         let layouts = self.document_view_layouts(cx);
+        let layout_bounds = document_view_layout_bounds(&layouts);
         if layouts.is_empty() {
             if let Some(doc_view) = self.view_manager.document_views().values().next().cloned() {
                 docs_root = docs_root.child(
@@ -9395,11 +9511,17 @@ impl Render for Workspace {
                 );
             }
         } else {
-            for layout in layouts {
-                if let Some(doc_element) =
-                    self.render_document_view_layout(layout, line_h_px, char_w_px, cx)
-                {
-                    docs_root = docs_root.child(doc_element);
+            if let Some(total_area) = layout_bounds {
+                for layout in layouts {
+                    if let Some(doc_element) = self.render_document_view_layout(
+                        layout,
+                        total_area,
+                        editor_content_w_px,
+                        editor_content_h_px,
+                        cx,
+                    ) {
+                        docs_root = docs_root.child(doc_element);
+                    }
                 }
             }
         }
@@ -9450,17 +9572,17 @@ impl Render for Workspace {
                     .flex_col()
                     .w_full()
                     .flex_1() // Take remaining height after tab bar
+                    .relative()
                     // Debug: container styling; label appended later to ensure on top
                     .when(self.debug_colors_enabled, |d| {
-                        d.relative()
-                            .bg(nucleotide_ui::ColorTheory::with_alpha(
-                                cx.theme().tokens.chrome.surface,
-                                0.10,
-                            ))
-                            .border_l_2()
-                            .border_color(cx.theme().tokens.chrome.border_strong)
-                            .border_1()
-                            .border_color(cx.theme().tokens.chrome.border_default)
+                        d.bg(nucleotide_ui::ColorTheory::with_alpha(
+                            cx.theme().tokens.chrome.surface,
+                            0.10,
+                        ))
+                        .border_l_2()
+                        .border_color(cx.theme().tokens.chrome.border_strong)
+                        .border_1()
+                        .border_color(cx.theme().tokens.chrome.border_default)
                     })
                     .when_some(Some(docs_root), gpui::ParentElement::child)
                     .child(self.notifications.clone())
@@ -9817,6 +9939,30 @@ impl Render for Workspace {
         ));
 
         workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::SplitPaneRight, _window, cx| {
+                workspace.tab_bar_action_split_right(cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::SplitPaneLeft, _window, cx| {
+                workspace.tab_bar_action_split_left(cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::SplitPaneUp, _window, cx| {
+                workspace.tab_bar_action_split_up(cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
+            move |workspace, _: &crate::actions::workspace::SplitPaneDown, _window, cx| {
+                workspace.tab_bar_action_split_down(cx);
+            },
+        ));
+
+        workspace_div = workspace_div.on_action(cx.listener(
             move |workspace, _: &crate::actions::workspace::UnpinAllTabs, _window, cx| {
                 workspace.unpin_all_tabs(cx);
             },
@@ -9915,32 +10061,10 @@ impl Render for Workspace {
         // Now using a centralized sidebar split from nucleotide-ui
         // split debug logs removed
 
-        // Compute maximum content height so the content never pushes the status bar off-screen
-        let ui_theme = cx.global::<nucleotide_ui::Theme>();
-        let status_bar_height = ui_theme.tokens.sizes.titlebar_height; // status bar height equals titlebar token height
-        let titlebar_height = ui_theme.tokens.sizes.titlebar_height;
-        let viewport_h = window.viewport_size().height;
-        let available_h =
-            (f32::from(viewport_h) - f32::from(status_bar_height) - f32::from(titlebar_height))
-                .max(0.0);
-        let content_max_h = px(available_h);
-        // (debug logging removed)
-
         // New default layout
         let content_area = {
             // Basic layout mode: render simple colored, resizable panes
             let _ui_theme = cx.global::<nucleotide_ui::Theme>();
-
-            // Clamp terminal height to available space
-            let min_term = 80.0f32;
-            let max_term = (available_h - 80.0).max(min_term);
-            if self.basic_terminal_height > max_term {
-                self.basic_terminal_height = max_term;
-            }
-            let mut editor_h = available_h;
-            if self.terminal_panel_visible {
-                editor_h = (available_h - self.basic_terminal_height).max(0.0);
-            }
 
             // Left placeholder: File tree (yellow)
             let _left = div()
@@ -9998,53 +10122,6 @@ impl Render for Workspace {
                         .overflow_hidden()
                         .child(main_content),
                 );
-
-                // Compute desired Helix editor area in character cells (cols/rows)
-                // Helix expects compositor/editor sizes in cells, not pixels.
-                let viewport_w_px = f32::from(window.viewport_size().width);
-                let file_tree_w_px = if self.show_file_tree {
-                    self.file_tree_width
-                } else {
-                    0.0
-                };
-                let editor_w_px = (viewport_w_px - file_tree_w_px).max(0.0);
-                let editor_h_px = editor_h.max(0.0);
-
-                let (line_h_px, char_w_px, _, _, _) = self.get_focused_document_view_layout(cx);
-                let line_h_value = f32::from(line_h_px);
-                let char_w_value = f32::from(char_w_px);
-                self.sync_embedded_terminal_size(
-                    editor_w_px,
-                    self.basic_terminal_height,
-                    line_h_value,
-                    char_w_value,
-                    cx,
-                );
-                let rows = (editor_h_px / line_h_value).floor().max(1.0) as u16;
-                let cols = (editor_w_px / char_w_value).floor().max(1.0) as u16;
-                let desired_size = (cols, rows);
-
-                // Resize Helix compositor/editor if size changed
-
-                if self
-                    .last_editor_size
-                    .map(|(w, h)| w != desired_size.0 || h != desired_size.1)
-                    .unwrap_or(true)
-                {
-                    self.core.update(cx, |core, _| {
-                        let rect = helix_view::graphics::Rect {
-                            x: 0,
-                            y: 0,
-                            width: desired_size.0,
-                            height: desired_size.1,
-                        };
-                        core.compositor.resize(rect);
-                        core.editor.resize(rect);
-                    });
-                    self.last_editor_size = Some(desired_size);
-
-                    // Helix visible size equals our computed cell size
-                }
 
                 if self.terminal_panel_visible {
                     // Bottom terminal panel using shared split helper inside an absolute wrapper
@@ -10215,6 +10292,7 @@ impl Render for Workspace {
                 // Root container handling drag to resize
                 let mut container = div()
                     .relative()
+                    .w_full()
                     .h(content_max_h)
                     .min_h(px(0.0))
                     .on_mouse_move(cx.listener(
@@ -11777,6 +11855,57 @@ mod tests {
                 &["hsplit", "swap_view_up"][..],
                 &["hsplit"][..],
             ]
+        );
+    }
+
+    #[test]
+    fn helix_rect_to_scaled_pixel_bounds_fills_target_for_single_view() {
+        let (left, top, width, height) = helix_rect_to_scaled_pixel_bounds(
+            HelixRect::new(0, 0, 20, 10),
+            HelixRect::new(0, 0, 20, 10),
+            640.0,
+            320.0,
+        );
+
+        assert_eq!(f32::from(left), 0.0);
+        assert_eq!(f32::from(top), 0.0);
+        assert_eq!(f32::from(width), 640.0);
+        assert_eq!(f32::from(height), 320.0);
+    }
+
+    #[test]
+    fn helix_rect_to_scaled_pixel_bounds_maps_split_ratios_to_target() {
+        let (left, top, width, height) = helix_rect_to_scaled_pixel_bounds(
+            HelixRect::new(20, 0, 20, 10),
+            HelixRect::new(0, 0, 40, 10),
+            800.0,
+            300.0,
+        );
+
+        assert_eq!(f32::from(left), 400.0);
+        assert_eq!(f32::from(top), 0.0);
+        assert_eq!(f32::from(width), 400.0);
+        assert_eq!(f32::from(height), 300.0);
+    }
+
+    #[test]
+    fn document_view_layout_bounds_covers_all_view_rects() {
+        let layouts = vec![
+            DocumentViewLayout {
+                view_id: ViewId::default(),
+                area: HelixRect::new(10, 0, 20, 5),
+                is_focused: true,
+            },
+            DocumentViewLayout {
+                view_id: ViewId::default(),
+                area: HelixRect::new(30, 5, 20, 5),
+                is_focused: false,
+            },
+        ];
+
+        assert_eq!(
+            document_view_layout_bounds(&layouts),
+            Some(HelixRect::new(10, 0, 40, 10))
         );
     }
 
