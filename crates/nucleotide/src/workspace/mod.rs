@@ -652,6 +652,7 @@ pub struct Workspace {
     tab_bar_split_button_bounds: Option<Bounds<Pixels>>,
     tab_bar_split_menu_index: usize,
     split_pane_resize: Option<SplitPaneResizeState>,
+    restore_standard_cursor_after_resize: bool,
     // Tab bar new item menu state
     tab_bar_new_menu_open: bool,
     tab_bar_new_menu_pos: (f32, f32),
@@ -2695,6 +2696,7 @@ impl Workspace {
             tab_bar_split_button_bounds: None,
             tab_bar_split_menu_index: 0,
             split_pane_resize: None,
+            restore_standard_cursor_after_resize: false,
             tab_bar_new_menu_open: false,
             tab_bar_new_menu_pos: (0.0, 0.0),
             tab_bar_new_menu_index: 0,
@@ -3467,9 +3469,39 @@ impl Workspace {
     fn finish_file_tree_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_resizing_file_tree {
             self.is_resizing_file_tree = false;
-            cx.notify();
-            window.refresh();
+            self.request_standard_cursor_restore(window, cx);
         }
+    }
+
+    fn finish_active_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut finished = false;
+
+        if self.is_resizing_file_tree {
+            self.is_resizing_file_tree = false;
+            finished = true;
+        }
+
+        if self.basic_term_resizing {
+            self.basic_term_resizing = false;
+            finished = true;
+        }
+
+        if self.split_pane_resize.take().is_some() {
+            if self.view_manager.focused_view_id().is_some() {
+                self.view_manager.set_needs_focus_restore(true);
+            }
+            finished = true;
+        }
+
+        if finished {
+            self.request_standard_cursor_restore(window, cx);
+        }
+    }
+
+    fn request_standard_cursor_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.restore_standard_cursor_after_resize = true;
+        cx.notify();
+        window.refresh();
     }
 
     fn max_file_tree_width(viewport_width: f32) -> f32 {
@@ -3585,8 +3617,7 @@ impl Workspace {
             if self.view_manager.focused_view_id().is_some() {
                 self.view_manager.set_needs_focus_restore(true);
             }
-            cx.notify();
-            window.refresh();
+            self.request_standard_cursor_restore(window, cx);
         }
     }
 
@@ -10306,6 +10337,19 @@ impl Render for Workspace {
             }));
 
         // Add resize cursor and listeners only while resizing to reduce event overhead
+        if self.is_resizing_file_tree
+            || self.split_pane_resize.is_some()
+            || self.basic_term_resizing
+        {
+            workspace_div = workspace_div.capture_any_mouse_up(cx.listener(
+                |workspace, event: &MouseUpEvent, window, cx| {
+                    if event.button == MouseButton::Left {
+                        workspace.finish_active_resize(window, cx);
+                        cx.stop_propagation();
+                    }
+                },
+            ));
+        }
         if self.is_resizing_file_tree {
             workspace_div = workspace_div
                 .cursor(gpui::CursorStyle::ResizeLeftRight)
@@ -10864,16 +10908,16 @@ impl Render for Workspace {
                                     }
                                 },
                             ))
-                            .on_mouse_up(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, _cx| {
+                            .on_mouse_up(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
                                 if this.basic_term_resizing {
                                     this.basic_term_resizing = false;
-                                    window.refresh();
+                                    this.request_standard_cursor_restore(window, cx);
                                 }
                             }))
-                            .on_mouse_up_out(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, _cx| {
+                            .on_mouse_up_out(MouseButton::Left, cx.listener(|this: &mut Workspace, _ev: &MouseUpEvent, window, cx| {
                                 if this.basic_term_resizing {
                                     this.basic_term_resizing = false;
-                                    window.refresh();
+                                    this.request_standard_cursor_restore(window, cx);
                                 }
                             }))
                             .child(nucleotide_ui::bottom_panel_split(
@@ -11172,6 +11216,8 @@ impl Render for Workspace {
             window.focus(&self.terminal_focus, cx);
             self.terminal_focus_pending = false;
         }
+        let restore_standard_cursor =
+            std::mem::take(&mut self.restore_standard_cursor_after_resize);
 
         // Build final workspace with unified bottom status bar
         workspace_div
@@ -11194,6 +11240,18 @@ impl Render for Workspace {
                     )
                     .child(self.render_unified_status_bar(cx)), // Unified bottom status bar pinned at bottom
             )
+            .when(restore_standard_cursor, |root| {
+                root.child(
+                    canvas(
+                        |_bounds, _window, _cx| {},
+                        |_bounds, (), window, _cx| {
+                            window.set_window_cursor_style(gpui::CursorStyle::Arrow);
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+            })
             // Add Linux client-side resize hitboxes so the window can be resized
             .map(|root| {
                 #[cfg(target_os = "linux")]
