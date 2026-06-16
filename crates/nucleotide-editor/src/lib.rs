@@ -84,9 +84,11 @@ pub use gutter::{
 };
 pub use highlight::{
     DiagnosticOverlaySpans, EditorLineHighlightContext, HighlightLineParams,
-    SoftWrapHighlightedLineRunsParams, UnwrappedHighlightedLine, UnwrappedHighlightedLineParams,
+    SoftWrapHighlightedLineRunsBatchParams, SoftWrapHighlightedLineRunsParams,
+    UnwrappedHighlightedLine, UnwrappedHighlightedLineParams, UnwrappedHighlightedLinesParams,
     diagnostic_overlay_spans, gpui_hsla_to_helix_color, highlight_line,
-    soft_wrap_highlighted_line_runs, text_style_at_position, unwrapped_highlighted_line,
+    soft_wrap_highlighted_line_runs, soft_wrap_highlighted_line_runs_batch, text_style_at_position,
+    unwrapped_highlighted_line, unwrapped_highlighted_lines,
 };
 pub use hit_test::{EditorHitTestResult, hit_test_document_position};
 pub use line_cache::{LineLayout, LineLayoutCache};
