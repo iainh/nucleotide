@@ -41,6 +41,25 @@ struct SessionEntry {
     last_bounds: Option<TerminalBounds>,
 }
 
+#[cfg(feature = "terminal-emulator")]
+fn legacy_resize_bounds(
+    last_bounds: Option<TerminalBounds>,
+    cols: u16,
+    rows: u16,
+) -> Option<TerminalBounds> {
+    last_bounds.map(|bounds| bounds.with_cells(cols, rows))
+}
+
+#[cfg(feature = "terminal-emulator")]
+fn metrics_resize_bounds(
+    last_bounds: Option<TerminalBounds>,
+    new_bounds: TerminalBounds,
+) -> Option<TerminalBounds> {
+    last_bounds
+        .is_none_or(|prev| !prev.approx_eq(&new_bounds))
+        .then_some(new_bounds)
+}
+
 impl TerminalRuntimeHandler {
     pub fn new() -> Self {
         Self {
@@ -181,17 +200,33 @@ impl core::EventHandler for TerminalRuntimeHandler {
 
                     if size_changed {
                         if let Ok(session) = entry.session.lock() {
+                            #[cfg(feature = "terminal-emulator")]
+                            let resized_bounds =
+                                legacy_resize_bounds(entry.last_bounds, *cols, *rows);
+
+                            #[cfg(feature = "terminal-emulator")]
+                            if let Some(bounds) = resized_bounds {
+                                let (cell_width, cell_height) = bounds.cell_size();
+                                let _ = session.control_sender().send(ControlMsg::Resize {
+                                    cols: *cols,
+                                    rows: *rows,
+                                    cell_width,
+                                    cell_height,
+                                });
+                                entry.last_bounds = Some(bounds);
+                            }
+
                             let _ = futures_executor::block_on(session.resize(*cols, *rows));
                         }
                         #[cfg(feature = "terminal-emulator")]
                         if let Ok(mut view) = entry.view.lock() {
-                            view.resize_grid(*cols, *rows, None);
+                            view.resize_grid(
+                                *cols,
+                                *rows,
+                                entry.last_bounds.map(|bounds| bounds.cell_size()),
+                            );
                         }
                         entry.last_size = Some((*cols, *rows));
-                        #[cfg(feature = "terminal-emulator")]
-                        if let Some(existing) = entry.last_bounds.as_mut() {
-                            *existing = existing.with_cells(*cols, *rows);
-                        }
                     }
                 }
             }
@@ -207,13 +242,10 @@ impl core::EventHandler for TerminalRuntimeHandler {
                     {
                         let new_bounds =
                             TerminalBounds::from_cells(*cell_width, *cell_height, *cols, *rows);
-                        let bounds_changed = entry
-                            .last_bounds
-                            .as_ref()
-                            .map(|prev| !prev.approx_eq(&new_bounds))
-                            .unwrap_or(true);
 
-                        if bounds_changed {
+                        if let Some(new_bounds) =
+                            metrics_resize_bounds(entry.last_bounds, new_bounds)
+                        {
                             if let Ok(session) = entry.session.lock() {
                                 // Push control message to engine so emulator redraws with new metrics
                                 let _ = session.control_sender().send(ControlMsg::Resize {
@@ -276,5 +308,44 @@ impl core::EventHandler for TerminalRuntimeHandler {
             }
             TerminalEvent::FocusChanged { .. } => {}
         }
+    }
+}
+
+#[cfg(all(test, feature = "terminal-emulator"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_resize_reuses_cached_cell_metrics_for_emulator() {
+        let initial = TerminalBounds::from_cells(8.0, 16.0, 80, 24);
+        let resized = legacy_resize_bounds(Some(initial), 100, 30)
+            .expect("cached metrics should produce emulator resize bounds");
+
+        assert_eq!(resized.cols(), 100);
+        assert_eq!(resized.rows(), 30);
+        assert_eq!(resized.cell_size(), (8.0, 16.0));
+    }
+
+    #[test]
+    fn metrics_resize_is_skipped_after_matching_legacy_resize() {
+        let initial = TerminalBounds::from_cells(8.0, 16.0, 80, 24);
+        let resized = legacy_resize_bounds(Some(initial), 100, 30).unwrap();
+        let matching_metrics = TerminalBounds::from_cells(8.0, 16.0, 100, 30);
+
+        assert!(metrics_resize_bounds(Some(resized), matching_metrics).is_none());
+    }
+
+    #[test]
+    fn metrics_resize_still_applies_when_cell_metrics_change() {
+        let initial = TerminalBounds::from_cells(8.0, 16.0, 80, 24);
+        let resized = legacy_resize_bounds(Some(initial), 100, 30).unwrap();
+        let updated_metrics = TerminalBounds::from_cells(9.0, 18.0, 100, 30);
+
+        let metrics_resize = metrics_resize_bounds(Some(resized), updated_metrics)
+            .expect("changed cell metrics should force an emulator resize");
+
+        assert_eq!(metrics_resize.cols(), 100);
+        assert_eq!(metrics_resize.rows(), 30);
+        assert_eq!(metrics_resize.cell_size(), (9.0, 18.0));
     }
 }
