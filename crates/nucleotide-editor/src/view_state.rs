@@ -21,7 +21,8 @@ use crate::{
 pub struct EditorViewState {
     viewport: EditorViewport,
     surface_metrics: EditorSurfaceMetrics,
-    scrollbar_state: EditorScrollbarState,
+    vertical_scrollbar_state: EditorScrollbarState,
+    horizontal_scrollbar_state: EditorScrollbarState,
     selection_drag_state: EditorSelectionDragState,
     overlay_state: EditorOverlayState,
     line_height: Rc<Cell<Pixels>>,
@@ -64,7 +65,8 @@ impl EditorViewState {
         Self {
             viewport: EditorViewport::new(line_height),
             surface_metrics: EditorSurfaceMetrics::new(line_height, cell_width),
-            scrollbar_state: EditorScrollbarState::default(),
+            vertical_scrollbar_state: EditorScrollbarState::default(),
+            horizontal_scrollbar_state: EditorScrollbarState::default(),
             selection_drag_state: EditorSelectionDragState::default(),
             overlay_state: EditorOverlayState::new(),
             line_height: Rc::new(Cell::new(line_height)),
@@ -354,8 +356,12 @@ impl EditorViewState {
         &self.surface_metrics
     }
 
-    pub fn scrollbar_state(&self) -> &EditorScrollbarState {
-        &self.scrollbar_state
+    pub fn vertical_scrollbar_state(&self) -> &EditorScrollbarState {
+        &self.vertical_scrollbar_state
+    }
+
+    pub fn horizontal_scrollbar_state(&self) -> &EditorScrollbarState {
+        &self.horizontal_scrollbar_state
     }
 
     pub fn selection_drag_state(&self) -> &EditorSelectionDragState {

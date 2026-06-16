@@ -28,6 +28,7 @@ pub struct VisibleLinePlan {
 pub struct UnwrappedLinePaintPlan<'a> {
     pub line: &'a VisibleLinePlan,
     pub text_origin: Point<Pixels>,
+    pub line_origin: Point<Pixels>,
     pub cursorline_bounds: Bounds<Pixels>,
     pub is_cursor_line: bool,
 }
@@ -41,6 +42,7 @@ pub struct UnwrappedRenderPlanParams<'a> {
     pub cell_width: Pixels,
     pub line_height: Pixels,
     pub scroll_line_offset: Pixels,
+    pub horizontal_offset: usize,
     pub cursor_line: usize,
 }
 
@@ -50,6 +52,7 @@ pub struct UnwrappedRenderPlan {
     pub geometry: EditorSurfaceGeometry,
     pub line_height: Pixels,
     pub scroll_line_offset: Pixels,
+    pub horizontal_offset: usize,
     pub cursor_line: usize,
     pub visible_lines: Vec<VisibleLinePlan>,
     pub next_line_y_offset: Pixels,
@@ -61,6 +64,7 @@ impl UnwrappedRenderPlan {
             &self.visible_lines,
             self.geometry,
             self.line_height,
+            self.horizontal_offset,
             self.cursor_line,
         )
     }
@@ -119,6 +123,7 @@ pub fn unwrapped_render_plan(params: UnwrappedRenderPlanParams<'_>) -> Unwrapped
         ),
         line_height: params.line_height,
         scroll_line_offset: params.scroll_line_offset,
+        horizontal_offset: params.horizontal_offset,
         cursor_line: params.cursor_line,
         visible_lines,
         next_line_y_offset,
@@ -169,9 +174,11 @@ pub fn unwrapped_line_paint_plans<'a>(
     lines: &'a [VisibleLinePlan],
     geometry: EditorSurfaceGeometry,
     line_height: Pixels,
+    horizontal_offset: usize,
     cursor_line: usize,
 ) -> Vec<UnwrappedLinePaintPlan<'a>> {
-    let text_origin_x = geometry.text_origin_x();
+    let horizontal_offset_x = geometry.cell_width * horizontal_offset as f32;
+    let text_origin_x = geometry.text_origin_x() - horizontal_offset_x;
 
     lines
         .iter()
@@ -181,6 +188,7 @@ pub fn unwrapped_line_paint_plans<'a>(
             UnwrappedLinePaintPlan {
                 line,
                 text_origin: point(text_origin_x, line_y),
+                line_origin: point(-horizontal_offset_x, line.y_offset),
                 cursorline_bounds: Bounds::new(
                     point(geometry.bounds.origin.x, line_y),
                     size(geometry.bounds.size.width, line_height),
@@ -300,11 +308,12 @@ mod tests {
             px(8.0),
         );
 
-        let plans = unwrapped_line_paint_plans(&lines, geometry, px(20.0), 5);
+        let plans = unwrapped_line_paint_plans(&lines, geometry, px(20.0), 0, 5);
 
         assert_eq!(plans.len(), 2);
         assert_eq!(plans[0].line, &lines[0]);
         assert_eq!(plans[0].text_origin, point(px(132.0), px(41.0)));
+        assert_eq!(plans[0].line_origin, point(px(0.0), px(0.0)));
         assert_eq!(
             plans[0].cursorline_bounds,
             Bounds::new(point(px(100.0), px(41.0)), size(px(500.0), px(20.0)))
@@ -312,11 +321,32 @@ mod tests {
         assert!(!plans[0].is_cursor_line);
         assert_eq!(plans[1].line, &lines[1]);
         assert_eq!(plans[1].text_origin, point(px(132.0), px(61.0)));
+        assert_eq!(plans[1].line_origin, point(px(0.0), px(20.0)));
         assert_eq!(
             plans[1].cursorline_bounds,
             Bounds::new(point(px(100.0), px(61.0)), size(px(500.0), px(20.0)))
         );
         assert!(plans[1].is_cursor_line);
+    }
+
+    #[test]
+    fn plans_unwrapped_line_paint_geometry_with_horizontal_offset() {
+        let lines = vec![VisibleLinePlan {
+            line_idx: 4,
+            line_start: 20,
+            line_end: 25,
+            y_offset: px(0.0),
+        }];
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            4,
+            px(8.0),
+        );
+
+        let plans = unwrapped_line_paint_plans(&lines, geometry, px(20.0), 3, 4);
+
+        assert_eq!(plans[0].text_origin, point(px(108.0), px(41.0)));
+        assert_eq!(plans[0].line_origin, point(px(-24.0), px(0.0)));
     }
 
     #[test]
@@ -333,6 +363,7 @@ mod tests {
             cell_width: px(8.0),
             line_height: px(20.0),
             scroll_line_offset: px(5.0),
+            horizontal_offset: 0,
             cursor_line: 1,
         });
 
@@ -368,6 +399,7 @@ mod tests {
             cell_width: px(8.0),
             line_height: px(20.0),
             scroll_line_offset: px(7.0),
+            horizontal_offset: 0,
             cursor_line: 0,
         });
 

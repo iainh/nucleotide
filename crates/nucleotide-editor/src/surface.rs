@@ -12,7 +12,7 @@ use gpui::{
 
 use crate::{
     EditorScrollbar, EditorScrollbarState, EditorViewport, LineLayoutCache, ViewportScrollUpdate,
-    scrollbar::editor_scrollbar_width,
+    scrollbar::{editor_horizontal_scrollbar_height, editor_vertical_scrollbar_width},
 };
 
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
@@ -71,7 +71,8 @@ pub struct EditorSurface {
     view_entity_id: EntityId,
     viewport: EditorViewport,
     metrics: EditorSurfaceMetrics,
-    scrollbar_state: EditorScrollbarState,
+    vertical_scrollbar_state: EditorScrollbarState,
+    horizontal_scrollbar_state: EditorScrollbarState,
     child: AnyElement,
     focus: Option<FocusHandle>,
     on_key_down: Option<KeyDownCallback>,
@@ -90,14 +91,16 @@ impl EditorSurface {
         view_entity_id: EntityId,
         viewport: EditorViewport,
         metrics: EditorSurfaceMetrics,
-        scrollbar_state: EditorScrollbarState,
+        vertical_scrollbar_state: EditorScrollbarState,
+        horizontal_scrollbar_state: EditorScrollbarState,
         child: impl IntoElement,
     ) -> Self {
         Self {
             view_entity_id,
             viewport,
             metrics,
-            scrollbar_state,
+            vertical_scrollbar_state,
+            horizontal_scrollbar_state,
             child: child.into_any_element(),
             focus: None,
             on_key_down: None,
@@ -153,11 +156,27 @@ impl EditorSurface {
         self
     }
 
-    fn scrollbar(&self) -> EditorScrollbar {
-        let mut scrollbar = EditorScrollbar::new(
+    fn vertical_scrollbar(&self) -> EditorScrollbar {
+        let mut scrollbar = EditorScrollbar::vertical(
             self.view_entity_id,
             self.viewport.clone(),
-            self.scrollbar_state.clone(),
+            self.vertical_scrollbar_state.clone(),
+        );
+
+        if let Some(on_scroll) = self.on_scroll.clone() {
+            scrollbar = scrollbar.on_scroll(move |viewport, update, cx| {
+                on_scroll(viewport, update, cx);
+            });
+        }
+
+        scrollbar
+    }
+
+    fn horizontal_scrollbar(&self) -> EditorScrollbar {
+        let mut scrollbar = EditorScrollbar::horizontal(
+            self.view_entity_id,
+            self.viewport.clone(),
+            self.horizontal_scrollbar_state.clone(),
         );
 
         if let Some(on_scroll) = self.on_scroll.clone() {
@@ -198,8 +217,13 @@ impl EditorSurface {
 
 impl RenderOnce for EditorSurface {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let scrollbar = if editor_scrollbar_width(&self.viewport) > px(0.0) {
-            Some(self.scrollbar())
+        let vertical_scrollbar = if editor_vertical_scrollbar_width(&self.viewport) > px(0.0) {
+            Some(self.vertical_scrollbar())
+        } else {
+            None
+        };
+        let horizontal_scrollbar = if editor_horizontal_scrollbar_height(&self.viewport) > px(0.0) {
+            Some(self.horizontal_scrollbar())
         } else {
             None
         };
@@ -241,7 +265,7 @@ impl RenderOnce for EditorSurface {
 
             let line_height = metrics.get().line_height;
             let raw_delta = event.delta.pixel_delta(line_height);
-            let delta = point(px(0.0), raw_delta.y);
+            let delta = point(raw_delta.x, raw_delta.y);
             let scroll_update = viewport.scroll_by_delta(delta);
 
             if !scroll_update.changed {
@@ -353,9 +377,11 @@ impl RenderOnce for EditorSurface {
             });
         }
 
-        let mut surface = div()
+        let mut content_row = div()
             .flex()
-            .size_full()
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
             .on_children_prepainted({
                 let content_bounds = Rc::clone(&content_bounds);
                 move |bounds, _window, _cx| {
@@ -364,8 +390,18 @@ impl RenderOnce for EditorSurface {
             })
             .child(content);
 
-        if let Some(scrollbar) = scrollbar {
-            surface = surface.child(scrollbar);
+        if let Some(scrollbar) = vertical_scrollbar {
+            content_row = content_row.child(scrollbar);
+        }
+
+        let mut surface = div().flex().flex_col().size_full().child(content_row);
+
+        if let Some(scrollbar) = horizontal_scrollbar {
+            let mut scrollbar_row = div().flex().w_full().flex_shrink_0().child(scrollbar);
+            if editor_vertical_scrollbar_width(&self.viewport) > px(0.0) {
+                scrollbar_row = scrollbar_row.child(div().flex_shrink_0().w(px(12.0)).h(px(12.0)));
+            }
+            surface = surface.child(scrollbar_row);
         }
 
         surface
@@ -436,6 +472,7 @@ mod tests {
                     viewport.clone(),
                     metrics.clone(),
                     scrollbar_state.clone(),
+                    EditorScrollbarState::default(),
                     div().size_full(),
                 )
                 .on_scroll({
@@ -511,6 +548,7 @@ mod tests {
                         viewport.clone(),
                         metrics.clone(),
                         scrollbar_state.clone(),
+                        EditorScrollbarState::default(),
                         div().size_full(),
                     )
                     .on_mouse_up({
@@ -557,6 +595,7 @@ mod tests {
                     viewport.clone(),
                     metrics.clone(),
                     scrollbar_state.clone(),
+                    EditorScrollbarState::default(),
                     div().size_full(),
                 )
                 .into_element()
@@ -593,6 +632,7 @@ mod tests {
                 self.view_entity_id,
                 viewport,
                 EditorSurfaceMetrics::new(px(20.0), px(8.0)),
+                EditorScrollbarState::default(),
                 EditorScrollbarState::default(),
                 div().size_full(),
             )
@@ -663,6 +703,7 @@ mod tests {
                         self.viewport.clone(),
                         self.metrics.clone(),
                         self.scrollbar_state.clone(),
+                        EditorScrollbarState::default(),
                         div().size_full(),
                     )
                     .track_focus(self.focus.clone())

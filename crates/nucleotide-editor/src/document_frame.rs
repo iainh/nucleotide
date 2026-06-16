@@ -139,6 +139,7 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
             cell_width: params.cell_width,
             line_height: params.line_height,
             scroll_line_offset: params.scroll_line_offset,
+            horizontal_offset: params.view_position.horizontal_offset,
             cursor_line: render_snapshot.cursor_line,
         })
     });

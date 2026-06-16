@@ -36,6 +36,16 @@ impl LineLayout {
         Self::unwrapped(line.line_idx, shaped_line, line.y_offset)
     }
 
+    pub fn from_visible_line_with_origin_x(
+        line: &VisibleLinePlan,
+        shaped_line: ShapedLine,
+        origin_x: Pixels,
+    ) -> Self {
+        let mut layout = Self::from_visible_line(line, shaped_line);
+        layout.origin.x = origin_x;
+        layout
+    }
+
     pub fn wrapped(
         line_idx: usize,
         shaped_line: ShapedLine,
@@ -185,7 +195,7 @@ impl LineLayoutCache {
                 let mid = left + (right - left) / 2;
                 let layout = &layouts.ordered[mid];
                 let line_bounds = Bounds {
-                    origin: layout.origin,
+                    origin: point(px(0.0), layout.origin.y),
                     size: size(bounds_width, line_height),
                 };
 

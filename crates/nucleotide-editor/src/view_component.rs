@@ -180,7 +180,8 @@ where
 
         let viewport = editor_state.viewport().clone();
         let surface_metrics = editor_state.surface_metrics().clone();
-        let scrollbar_state = editor_state.scrollbar_state().clone();
+        let vertical_scrollbar_state = editor_state.vertical_scrollbar_state().clone();
+        let horizontal_scrollbar_state = editor_state.horizontal_scrollbar_state().clone();
         let mut paint_editor_state = editor_state;
         let document_element =
             EditorDocumentElement::new(text_style, move |bounds, after_layout, window, cx| {
@@ -194,7 +195,8 @@ where
             view_entity_id,
             viewport,
             surface_metrics,
-            scrollbar_state,
+            vertical_scrollbar_state,
+            horizontal_scrollbar_state,
             document_element,
         );
 
