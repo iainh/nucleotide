@@ -33,3 +33,7 @@ tokio.workspace = true
 [[bench]]
 name = "line_layout_cache"
 harness = false
+
+[[bench]]
+name = "scrolling_performance"
+harness = false

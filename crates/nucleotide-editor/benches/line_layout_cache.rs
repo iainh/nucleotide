@@ -1,7 +1,9 @@
+use std::hint::black_box;
+
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use gpui::{Pixels, point, px};
 use nucleotide_editor::{LineLayout, LineLayoutCache};
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 fn build_cache(line_count: usize, line_height: Pixels) -> LineLayoutCache {
     let cache = LineLayoutCache::new();
@@ -33,8 +35,8 @@ fn bench_find_line_by_index(c: &mut Criterion) {
                 |(cache, line_count)| {
                     let mut rng = StdRng::seed_from_u64(42);
                     for _ in 0..line_count {
-                        let line_idx = rng.gen_range(0..line_count);
-                        criterion::black_box(cache.find_line_by_index(line_idx));
+                        let line_idx = rng.random_range(0..line_count);
+                        black_box(cache.find_line_by_index(line_idx));
                     }
                 },
                 BatchSize::SmallInput,
@@ -60,13 +62,9 @@ fn bench_find_line_at_position(c: &mut Criterion) {
                     let mut rng = StdRng::seed_from_u64(1337);
                     let line_height_value: f32 = line_height.into();
                     for _ in 0..line_count {
-                        let y = rng.gen_range(0..line_count) as f32 * line_height_value;
+                        let y = rng.random_range(0..line_count) as f32 * line_height_value;
                         let position = point(px(10.0), px(y));
-                        criterion::black_box(cache.find_line_at_position(
-                            position,
-                            bounds_width,
-                            line_height,
-                        ));
+                        black_box(cache.find_line_at_position(position, bounds_width, line_height));
                     }
                 },
                 BatchSize::SmallInput,
