@@ -55,6 +55,7 @@ flamegraph.svg
 
 # Documentation
 /docs/_build/
+/docs/research/
 
 # Python (for any helper scripts)
 __pycache__/
