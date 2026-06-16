@@ -126,6 +126,10 @@ pub mod workspace {
             NewFile,
             NewWindow,
             ShowCommandPalette,
+            SplitPaneRight,
+            SplitPaneLeft,
+            SplitPaneUp,
+            SplitPaneDown,
             UnpinAllTabs,
             TogglePreviewTab,
         ]

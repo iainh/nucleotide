@@ -514,7 +514,10 @@ use nucleotide::actions::{
     picker::{ConfirmSelection, DismissPicker, SelectFirst, SelectLast, TogglePreview},
     test::{TestCompletion, TestPrompt},
     window::{Hide, HideOthers, Minimize, ShowAll, Zoom},
-    workspace::{ToggleFileTree, TogglePreviewTab, UnpinAllTabs},
+    workspace::{
+        SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleFileTree,
+        TogglePreviewTab, UnpinAllTabs,
+    },
 };
 
 fn app_menus() -> Vec<Menu> {
@@ -557,6 +560,11 @@ fn app_menus() -> Vec<Menu> {
             disabled: false,
             items: vec![
                 MenuItem::action("Toggle File Tree", ToggleFileTree),
+                MenuItem::separator(),
+                MenuItem::action("Split Right", SplitPaneRight),
+                MenuItem::action("Split Left", SplitPaneLeft),
+                MenuItem::action("Split Up", SplitPaneUp),
+                MenuItem::action("Split Down", SplitPaneDown),
                 MenuItem::separator(),
                 MenuItem::action("Toggle Preview Tab", TogglePreviewTab),
                 MenuItem::action("Unpin All Tabs", UnpinAllTabs),
