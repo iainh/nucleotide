@@ -1415,11 +1415,24 @@ impl Workspace {
         cx.notify();
     }
 
+    fn hide_terminal_panel(&mut self) {
+        self.terminal_panel_visible = false;
+        self.terminal_focus_pending = false;
+        self.terminal_active = false;
+        self.last_terminal_bounds = None;
+        self.view_manager.set_needs_focus_restore(true);
+    }
+
+    fn clear_terminal_panel_session(&mut self) {
+        self.embedded_terminal_panel = None;
+        self.terminal_id = None;
+        self.terminal_cwd = None;
+    }
+
     fn toggle_terminal_panel(&mut self, cx: &mut Context<Self>) {
         // Basic layout: toggle visibility of embedded bottom panel
         if self.terminal_panel_visible {
-            self.terminal_panel_visible = false;
-            self.last_terminal_bounds = None;
+            self.hide_terminal_panel();
             cx.notify();
             return;
         }
@@ -3055,9 +3068,10 @@ impl Workspace {
                 },
                 on_item_activate: |workspace: &mut Workspace,
                                    intent: ProjectTreeContextMenuIntent,
-                                   _event: &MouseUpEvent,
-                                   _window: &mut Window,
+                                   _event: &MouseDownEvent,
+                                   window: &mut Window,
                                    cx: &mut Context<Workspace>| {
+                    window.prevent_default();
                     workspace.context_menu_open = false;
                     let handler_fn = Workspace::context_menu_handler(intent);
                     handler_fn(workspace, cx);
@@ -3165,7 +3179,6 @@ impl Workspace {
                         .when(is_selected && !is_disabled && is_last, |item| {
                             item.rounded_bl(inner_radius).rounded_br(inner_radius)
                         })
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .when(!is_disabled, |item| {
                             item.on_mouse_move(cx.listener(
                                 move |workspace: &mut Workspace, _event, _window, cx| {
@@ -3175,10 +3188,11 @@ impl Workspace {
                                     }
                                 },
                             ))
-                            .on_mouse_up(
+                            .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(
-                                    move |workspace: &mut Workspace, _event, _window, cx| {
+                                    move |workspace: &mut Workspace, _event, window, cx| {
+                                        window.prevent_default();
                                         if let Some(doc_id) = workspace.tab_context_menu_doc_id {
                                             workspace.tab_context_menu_open = false;
                                             workspace.tab_context_menu_doc_id = None;
@@ -3419,7 +3433,6 @@ impl Workspace {
                         .when(is_selected && is_last, |item| {
                             item.rounded_bl(inner_radius).rounded_br(inner_radius)
                         })
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_mouse_move(cx.listener(
                             move |workspace: &mut Workspace, _event, _window, cx| {
                                 if workspace.tab_bar_new_menu_index != index {
@@ -3428,9 +3441,10 @@ impl Workspace {
                                 }
                             },
                         ))
-                        .on_mouse_up(
+                        .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |workspace: &mut Workspace, _event, _window, cx| {
+                            cx.listener(move |workspace: &mut Workspace, _event, window, cx| {
+                                window.prevent_default();
                                 workspace.tab_bar_new_menu_open = false;
                                 let handler = Workspace::tab_bar_new_menu_handler(intent);
                                 handler(workspace, cx);
@@ -7078,12 +7092,8 @@ impl Workspace {
                         if let TerminalEvent::Exited { id, .. } = term_event
                             && self.terminal_id == Some(*id)
                         {
-                            self.terminal_panel_visible = false;
-                            self.embedded_terminal_panel = None;
-                            self.terminal_id = None;
-                            self.terminal_cwd = None;
-                            self.terminal_active = false;
-                            self.last_terminal_bounds = None;
+                            self.hide_terminal_panel();
+                            self.clear_terminal_panel_session();
                             cx.notify();
                         }
                     }
@@ -7207,8 +7217,12 @@ impl Workspace {
             || self.tab_bar_split_menu_open
             || self.tab_bar_new_menu_open;
         let workspace_focused = self.focus_handle.contains_focused(window, cx);
+        let terminal_pane_focused = self.terminal_focus.is_focused(window)
+            || self.terminal_focus_pending
+            || self.terminal_active;
         let editor_pane_focused = workspace_focused || active_document_focused;
-        let show_focused_tab_bar_buttons = editor_pane_focused || tab_bar_menu_focused;
+        let show_focused_tab_bar_buttons =
+            editor_pane_focused || terminal_pane_focused || tab_bar_menu_focused;
 
         let core = self.core.read(cx);
         let editor = &core.editor;
@@ -9919,12 +9933,8 @@ impl Render for Workspace {
             && let Some(vm) = nucleotide_terminal_view::get_view_model(id)
             && vm.lock().unwrap().has_exited()
         {
-            self.terminal_panel_visible = false;
-            self.terminal_active = false;
-            self.terminal_id = None;
-            self.terminal_cwd = None;
-            self.embedded_terminal_panel = None;
-            self.last_terminal_bounds = None;
+            self.hide_terminal_panel();
+            self.clear_terminal_panel_session();
         }
 
         // Fallback: full refresh if any pending flag remains

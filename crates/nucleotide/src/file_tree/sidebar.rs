@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Anchor, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, StatefulInteractiveElement, Styled, Window,
-    anchored, div, point, px,
+    MouseMoveEvent, ParentElement, StatefulInteractiveElement, Styled, Window, anchored, div,
+    point, px,
 };
 use nucleotide_types::VcsStatus;
 use nucleotide_ui::VcsIcon;
@@ -108,7 +108,7 @@ pub fn render_project_tree_context_menu<T, Hover, Activate, Backdrop>(
 where
     T: 'static,
     Hover: Fn(&mut T, usize, &MouseMoveEvent, &mut Window, &mut Context<T>) + Copy + 'static,
-    Activate: Fn(&mut T, ProjectTreeContextMenuIntent, &MouseUpEvent, &mut Window, &mut Context<T>)
+    Activate: Fn(&mut T, ProjectTreeContextMenuIntent, &MouseDownEvent, &mut Window, &mut Context<T>)
         + Copy
         + 'static,
     Backdrop: Fn(&mut T, &MouseDownEvent, &mut Window, &mut Context<T>) + Copy + 'static,
@@ -153,7 +153,6 @@ where
 
                     div()
                         .w_full()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_mouse_move(cx.listener(move |state, event, window, cx| {
                             on_item_hover(state, index, event, window, cx);
                         }))
@@ -166,9 +165,10 @@ where
                         .when(is_selected && is_last, |div| {
                             div.rounded_bl(inner_radius).rounded_br(inner_radius)
                         })
-                        .on_mouse_up(
+                        .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |state, event, window, cx| {
+                                window.prevent_default();
                                 on_item_activate(state, intent, event, window, cx);
                             }),
                         )
