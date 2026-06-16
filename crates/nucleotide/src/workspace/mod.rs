@@ -689,6 +689,8 @@ pub struct Workspace {
     basic_term_start_height: f32,
     // Embedded terminal panel entity for basic layout
     embedded_terminal_panel: Option<gpui::Entity<nucleotide_terminal_panel::TerminalPanel>>,
+    // Cwd used to spawn the active terminal session.
+    terminal_cwd: Option<PathBuf>,
     // Focus handle for embedded terminal to capture keyboard input
     terminal_focus: gpui::FocusHandle,
     // Request to focus terminal on next render (when toggled on via button)
@@ -1330,10 +1332,36 @@ fn regex_selection_result(
 impl EventEmitter<crate::Update> for Workspace {}
 
 impl Workspace {
-    fn open_terminal_panel_at(&mut self, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
+    fn terminal_spawn_cwd(current_project_root: Option<&Path>) -> Option<PathBuf> {
+        current_project_root.map(Path::to_path_buf)
+    }
+
+    fn terminal_cwd_matches(terminal_cwd: Option<&Path>, desired_cwd: Option<&Path>) -> bool {
+        terminal_cwd == desired_cwd
+    }
+
+    fn shutdown_terminal_session(&mut self, id: TerminalId, cx: &mut Context<Self>) {
+        self.core.update(cx, |app, _cx| {
+            if let Some(bus) = &app.event_aggregator {
+                bus.dispatch_terminal(TerminalEvent::Exited {
+                    id,
+                    code: None,
+                    signal: None,
+                });
+                bus.process_events();
+            }
+        });
+    }
+
+    fn spawn_terminal_session(
+        &mut self,
+        cwd: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> TerminalId {
         let id = TerminalId(self.next_terminal_id);
         self.next_terminal_id += 1;
         self.terminal_id = Some(id);
+        self.terminal_cwd = cwd.clone();
         self.last_terminal_bounds = None;
 
         let shell = None;
@@ -1351,13 +1379,25 @@ impl Workspace {
             }
         });
 
+        id
+    }
+
+    fn set_embedded_terminal_panel(&mut self, terminal_id: TerminalId, cx: &mut Context<Self>) {
         let height = self.basic_terminal_height;
         let entity = cx.new(|cx| {
-            let mut p = nucleotide_terminal_panel::TerminalPanel::new(id, height);
+            let mut p = nucleotide_terminal_panel::TerminalPanel::new(terminal_id, height);
             p.initialize(cx);
             p
         });
         self.embedded_terminal_panel = Some(entity);
+    }
+
+    fn open_terminal_panel_at(&mut self, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
+        if let Some(existing_id) = self.terminal_id {
+            self.shutdown_terminal_session(existing_id, cx);
+        }
+        let id = self.spawn_terminal_session(cwd, cx);
+        self.set_embedded_terminal_panel(id, cx);
         self.terminal_panel_visible = true;
         self.terminal_focus_pending = true;
         self.terminal_active = true;
@@ -1374,36 +1414,24 @@ impl Workspace {
         }
 
         // Ensure terminal exists and embedded panel entity is available
-        let terminal_id = if let Some(id) = self.terminal_id {
+        let desired_cwd = Self::terminal_spawn_cwd(self.current_project_root.as_deref());
+        let terminal_id = if let Some(id) = self.terminal_id
+            && Self::terminal_cwd_matches(self.terminal_cwd.as_deref(), desired_cwd.as_deref())
+        {
             id
         } else {
-            let id = TerminalId(self.next_terminal_id);
-            self.next_terminal_id += 1;
-            self.terminal_id = Some(id);
-            let cwd = self.current_project_root.clone();
-            let shell = None;
-            let env = Vec::<(String, String)>::new();
-            self.core.update(cx, |app, _cx| {
-                if let Some(bus) = &app.event_aggregator {
-                    bus.dispatch_terminal(TerminalEvent::SpawnRequested {
-                        id,
-                        cwd,
-                        shell,
-                        env,
-                    });
-                }
-            });
-            id
+            if let Some(existing_id) = self.terminal_id {
+                self.shutdown_terminal_session(existing_id, cx);
+            }
+            self.spawn_terminal_session(desired_cwd, cx)
         };
 
-        if self.embedded_terminal_panel.is_none() {
-            let height = self.basic_terminal_height;
-            let entity = cx.new(|cx| {
-                let mut p = nucleotide_terminal_panel::TerminalPanel::new(terminal_id, height);
-                p.initialize(cx);
-                p
-            });
-            self.embedded_terminal_panel = Some(entity);
+        let needs_panel = self
+            .embedded_terminal_panel
+            .as_ref()
+            .is_none_or(|panel| panel.read(cx).active != terminal_id);
+        if needs_panel {
+            self.set_embedded_terminal_panel(terminal_id, cx);
         }
 
         self.terminal_panel_visible = true;
@@ -2762,6 +2790,7 @@ impl Workspace {
             basic_term_start_mouse_y: 0.0,
             basic_term_start_height: 0.0,
             embedded_terminal_panel: None,
+            terminal_cwd: None,
             terminal_focus: cx.focus_handle(),
             terminal_focus_pending: false,
             terminal_active: false,
@@ -2780,42 +2809,6 @@ impl Workspace {
 
         // Compute initial theme-derived colors once
         workspace.recompute_theme_colors(cx);
-
-        // Ensure an embedded terminal panel exists for the default layout
-        // Ensure terminal id exists and spawn if needed
-        let terminal_id = if let Some(id) = workspace.terminal_id {
-            id
-        } else {
-            let id = TerminalId(workspace.next_terminal_id);
-            workspace.next_terminal_id += 1;
-            workspace.terminal_id = Some(id);
-            let cwd = workspace.current_project_root.clone();
-            let shell = None;
-            let env = Vec::<(String, String)>::new();
-            workspace.core.update(cx, |app, _cx| {
-                if let Some(bus) = &app.event_aggregator {
-                    bus.dispatch_terminal(TerminalEvent::SpawnRequested {
-                        id,
-                        cwd,
-                        shell,
-                        env,
-                    });
-                } else {
-                    nucleotide_logging::warn!("No event aggregator; terminal spawn not dispatched");
-                }
-            });
-            id
-        };
-
-        if workspace.embedded_terminal_panel.is_none() {
-            let height = workspace.basic_terminal_height;
-            let entity = cx.new(|cx| {
-                let mut p = nucleotide_terminal_panel::TerminalPanel::new(terminal_id, height);
-                p.initialize(cx);
-                p
-            });
-            workspace.embedded_terminal_panel = Some(entity);
-        }
 
         // Set initial focus restore state
         workspace.view_manager.set_needs_focus_restore(true);
@@ -7055,6 +7048,7 @@ impl Workspace {
                             self.terminal_panel_visible = false;
                             self.embedded_terminal_panel = None;
                             self.terminal_id = None;
+                            self.terminal_cwd = None;
                             self.terminal_active = false;
                             self.last_terminal_bounds = None;
                             cx.notify();
@@ -9900,6 +9894,7 @@ impl Render for Workspace {
             self.terminal_panel_visible = false;
             self.terminal_active = false;
             self.terminal_id = None;
+            self.terminal_cwd = None;
             self.embedded_terminal_panel = None;
             self.last_terminal_bounds = None;
         }
@@ -12905,6 +12900,36 @@ mod tests {
                 (bottom_after_id, HelixRect::new(50, 10, 30, 10)),
             ])
         );
+    }
+
+    #[test]
+    fn terminal_spawn_cwd_uses_loaded_project_root() {
+        let project_root = PathBuf::from("/tmp/example-project");
+
+        assert_eq!(
+            Workspace::terminal_spawn_cwd(Some(project_root.as_path())),
+            Some(project_root)
+        );
+        assert_eq!(Workspace::terminal_spawn_cwd(None), None);
+    }
+
+    #[test]
+    fn terminal_cwd_matching_detects_project_root_changes() {
+        let old_root = PathBuf::from("/tmp/old-project");
+        let new_root = PathBuf::from("/tmp/new-project");
+
+        assert!(Workspace::terminal_cwd_matches(
+            Some(old_root.as_path()),
+            Some(old_root.as_path())
+        ));
+        assert!(!Workspace::terminal_cwd_matches(
+            Some(old_root.as_path()),
+            Some(new_root.as_path())
+        ));
+        assert!(!Workspace::terminal_cwd_matches(
+            None,
+            Some(new_root.as_path())
+        ));
     }
 
     #[test]
