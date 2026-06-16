@@ -162,6 +162,7 @@ struct TabStripOptions {
     on_empty_double_click: Option<EmptyTabBarClickHandler>,
     on_scroll_wheel: Option<TabBarScrollWheelHandler>,
     forced_pin_state: Option<bool>,
+    tokens: nucleotide_ui::tokens::DesignTokens,
     border_color: gpui::Hsla,
 }
 
@@ -609,6 +610,7 @@ impl TabBar {
             on_empty_double_click,
             on_scroll_wheel,
             forced_pin_state: None,
+            tokens: *tokens,
             border_color,
         });
 
@@ -776,6 +778,7 @@ impl TabBar {
             on_empty_double_click: on_empty_double_click.clone(),
             on_scroll_wheel: None,
             forced_pin_state: Some(true),
+            tokens: *tokens,
             border_color,
         });
         let unpinned_strip = Self::render_tab_strip(TabStripOptions {
@@ -785,6 +788,7 @@ impl TabBar {
             on_empty_double_click,
             on_scroll_wheel,
             forced_pin_state: Some(false),
+            tokens: *tokens,
             border_color,
         });
 
@@ -838,6 +842,7 @@ impl TabBar {
             .child(Self::render_end_drop_target(
                 options.on_empty_double_click,
                 options.forced_pin_state,
+                options.tokens,
                 options.border_color,
             ))
             .into_any_element()
@@ -846,6 +851,7 @@ impl TabBar {
     fn render_end_drop_target(
         on_empty_double_click: Option<EmptyTabBarClickHandler>,
         forced_pin_state: Option<bool>,
+        tokens: nucleotide_ui::tokens::DesignTokens,
         border_color: gpui::Hsla,
     ) -> gpui::AnyElement {
         let target = div()
@@ -853,6 +859,9 @@ impl TabBar {
             .min_w(px(24.0))
             .h_full()
             .flex_grow(1.0)
+            .overflow_hidden()
+            .bg(Self::empty_tab_bar_background(tokens))
+            .shadow(Self::empty_tab_bar_inset_shadows(tokens))
             .child("")
             .when(
                 end_drop_target_has_leading_border(forced_pin_state),
@@ -869,6 +878,34 @@ impl TabBar {
                 })
             })
             .into_any_element()
+    }
+
+    fn empty_tab_bar_background(tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Hsla {
+        nucleotide_ui::tokens::utils::darken(tokens.tab_bar_tokens().container_background, 0.018)
+    }
+
+    fn empty_tab_bar_inset_shadows(
+        tokens: nucleotide_ui::tokens::DesignTokens,
+    ) -> Vec<gpui::BoxShadow> {
+        vec![
+            gpui::BoxShadow {
+                color: nucleotide_ui::tokens::utils::with_alpha(tokens.chrome.border_shadow, 0.52),
+                offset: gpui::point(px(1.0), px(1.0)),
+                blur_radius: px(3.0),
+                spread_radius: px(0.0),
+                inset: true,
+            },
+            gpui::BoxShadow {
+                color: nucleotide_ui::tokens::utils::with_alpha(
+                    tokens.chrome.border_highlight,
+                    0.20,
+                ),
+                offset: gpui::point(px(0.0), px(-1.0)),
+                blur_radius: px(0.0),
+                spread_radius: px(0.0),
+                inset: true,
+            },
+        ]
     }
 }
 
@@ -1021,6 +1058,34 @@ mod tests {
         assert_eq!(tabs[0].label_detail(), Some("src/config"));
         assert_eq!(tabs[1].label, "mod.rs");
         assert_eq!(tabs[1].label_detail(), Some("tests/config"));
+    }
+
+    #[test]
+    fn empty_tab_bar_area_uses_inset_depth() {
+        for tokens in [
+            nucleotide_ui::DesignTokens::dark(),
+            nucleotide_ui::DesignTokens::light(),
+        ] {
+            let container_l = nucleotide_ui::styling::ColorTheory::hsla_to_oklch(
+                tokens.tab_bar_tokens().container_background,
+            )
+            .L;
+            let empty_l = nucleotide_ui::styling::ColorTheory::hsla_to_oklch(
+                TabBar::empty_tab_bar_background(tokens),
+            )
+            .L;
+            let shadows = TabBar::empty_tab_bar_inset_shadows(tokens);
+
+            assert!(
+                empty_l < container_l,
+                "empty tabbar area should sit visually below the surrounding tabbar"
+            );
+            assert_eq!(shadows.len(), 2);
+            assert!(
+                shadows.iter().all(|shadow| shadow.inset),
+                "empty tabbar depth should be inset, not cast outward"
+            );
+        }
     }
 
     #[test]
