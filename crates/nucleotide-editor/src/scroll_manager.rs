@@ -2,7 +2,7 @@
 // ABOUTME: Tracks visual-row positions and sub-row offsets for smooth scrolling
 
 use gpui::{Pixels, Point, Size, point, px, size};
-use nucleotide_logging::debug;
+use nucleotide_logging::trace;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -197,7 +197,7 @@ impl ScrollManager {
         self.scroll_position.set(clamped_position);
 
         if old_position != clamped_position {
-            debug!(
+            trace!(
                 scroll_manager_id = self.id,
                 old_position = ?old_position,
                 new_position = ?clamped_position,

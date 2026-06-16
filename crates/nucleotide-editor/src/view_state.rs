@@ -1,10 +1,11 @@
 // ABOUTME: Persistent native editor view state shared by GPUI render phases
 // ABOUTME: Bundles viewport, metrics, overlay, scrollbar, and selection state
 
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{Pixels, Point, Size, TextStyle, TextSystem, px};
 use helix_view::{DocumentId, Editor, Theme, ViewId};
+use nucleotide_logging::PerfTimer;
 
 use crate::{
     CursorOverlayPlan, EditorCursorReveal, EditorOverlayState, EditorPointerSelectionOutcome,
@@ -173,6 +174,8 @@ impl EditorViewState {
         &mut self,
         params: EditorViewContentPrepareParams<'_>,
     ) -> Option<EditorViewContentState> {
+        let _timer = PerfTimer::new("EditorViewState::prepare_content_for_render")
+            .with_warn_threshold(Duration::from_millis(8));
         let metrics = self.resolve_and_apply_text_metrics(params.text_system, params.text_style);
         self.sync_content_layout_for_current_viewport(
             params.editor,
@@ -189,6 +192,8 @@ impl EditorViewState {
         view_id: ViewId,
         mut layout: EditorViewportSurfaceLayout<'_>,
     ) -> Option<EditorViewFrameState> {
+        let _timer = PerfTimer::new("EditorViewState::sync_frame_layout")
+            .with_warn_threshold(Duration::from_millis(8));
         self.line_height.set(layout.line_height);
         self.surface_metrics
             .set(layout.line_height, layout.cell_width);
