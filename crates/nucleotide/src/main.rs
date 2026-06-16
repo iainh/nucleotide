@@ -16,7 +16,7 @@ use gpui::{
 use nucleotide::application::Application;
 use nucleotide::input_coordinator::InputCoordinator;
 use nucleotide::{self, ThemeManager, config, info_box, notification, overlay, types, workspace};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use url::Url;
 
@@ -403,6 +403,14 @@ fn parse_file_url(url_str: &str) -> Option<PathBuf> {
         return url.to_file_path().ok();
     }
     None
+}
+
+fn open_request_workspace_dir(path: &Path) -> Option<PathBuf> {
+    if path.is_dir() {
+        Some(path.to_path_buf())
+    } else {
+        path.parent().map(Path::to_path_buf)
+    }
 }
 
 fn window_options(
@@ -1074,7 +1082,7 @@ fn gui_main(
 
                     // Set the current project root explicitly using the workspace root that was successfully determined
                     if let Some(root) = workspace_root.as_ref() {
-                        workspace.set_current_project_root(Some(root.clone()));
+                        workspace.set_current_project_root(Some(root.clone()), cx);
                     }
 
                     // Subscribe to self to handle Update events
@@ -1222,18 +1230,18 @@ fn gui_main(
                     while let Some(paths) = file_open_rx.recv().await {
                         info!(paths = ?paths, "Processing file open request");
 
-                        // If we have files to open, change working directory to the parent of the first file
+                        // If we have files to open, change working directory from the first file or directory
                         let mut should_change_dir = false;
                         let mut new_working_dir = None;
 
                         for (index, path) in paths.iter().enumerate() {
                             if path.exists() {
-                                // For the first valid file, set its parent as the working directory
+                                // For the first valid path, use directories directly and file parents otherwise.
                                 if index == 0 && !should_change_dir
-                                    && let Some(parent) = path.parent() {
-                                        new_working_dir = Some(parent.to_path_buf());
+                                    && let Some(dir) = open_request_workspace_dir(path) {
+                                        new_working_dir = Some(dir.clone());
                                         should_change_dir = true;
-                                        info!(directory = ?parent, "Will change working directory");
+                                        info!(directory = ?dir, "Will change working directory");
                                     }
                             }
                         }
@@ -1368,5 +1376,32 @@ fn demonstrate_provider_composition() -> Result<(), String> {
         );
         nucleotide_logging::warn!(error_msg);
         Err(error_msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_request_workspace_dir_uses_directory_itself() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            open_request_workspace_dir(temp_dir.path()),
+            Some(temp_dir.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn open_request_workspace_dir_uses_file_parent() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("file.txt");
+        std::fs::write(&file_path, "").unwrap();
+
+        assert_eq!(
+            open_request_workspace_dir(&file_path),
+            Some(temp_dir.path().to_path_buf())
+        );
     }
 }

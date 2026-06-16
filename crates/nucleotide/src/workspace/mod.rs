@@ -67,6 +67,17 @@ type TabContextMenuHandler = fn(&mut Workspace, DocumentId, &mut Context<Workspa
 type TabBarSplitMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 type TabBarNewMenuHandler = fn(&mut Workspace, &mut Context<Workspace>);
 
+#[cfg(target_os = "macos")]
+fn add_recent_project(path: &Path, cx: &mut App) {
+    if path.is_dir() {
+        cx.add_recent_document(path);
+        debug!(project_root = %path.display(), "Added project to macOS recent documents");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn add_recent_project(_path: &Path, _cx: &mut App) {}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TabContextMenuIntent {
     Close,
@@ -4486,6 +4497,8 @@ impl Workspace {
 
     #[instrument(skip(self, cx))]
     pub fn set_project_directory(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
+        add_recent_project(&dir, cx);
+
         // Check if this is a project root change
         let is_project_change = self.current_project_root.as_ref() != Some(&dir);
 
@@ -4852,9 +4865,14 @@ impl Workspace {
 
     /// Set the current project root explicitly
     /// This is used during workspace initialization to ensure the project root is set correctly
-    pub fn set_current_project_root(&mut self, root: Option<std::path::PathBuf>) {
+    pub fn set_current_project_root(
+        &mut self,
+        root: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
         self.current_project_root = root;
         if let Some(ref root) = self.current_project_root {
+            add_recent_project(root, cx);
             info!(project_root = %root.display(), "Set current project root explicitly");
         } else {
             info!("Cleared current project root");
