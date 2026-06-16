@@ -80,8 +80,10 @@ impl ViewManager {
         // Update focus state in document views
         for (id, view) in &self.documents {
             let is_focused = *id == view_id;
-            view.update(cx, |view, _cx| {
-                view.set_focused(is_focused);
+            view.update(cx, |view, cx| {
+                if view.set_focused(is_focused) {
+                    cx.notify();
+                }
             });
         }
     }
@@ -159,8 +161,10 @@ impl ViewManager {
 
             // Update existing view or create new one
             if let Some(view_entity) = self.documents.get(&view_id) {
-                view_entity.update(cx, |view, _cx| {
-                    view.set_focused(is_focused);
+                view_entity.update(cx, |view, cx| {
+                    if view.set_focused(is_focused) {
+                        cx.notify();
+                    }
                     // TODO: Update text style when needed
                 });
             } else {

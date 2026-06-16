@@ -5710,9 +5710,8 @@ impl Workspace {
     }
 
     fn handle_view_focused(&mut self, view_id: helix_view::ViewId, cx: &mut Context<Self>) {
-        // View focus changed - just update focus state
         info!("View focused: {:?}", view_id);
-        self.view_manager.set_focused_view_id(Some(view_id));
+        self.view_manager.handle_view_focused(view_id, cx);
 
         // TODO: Update titlebar with current filename
         // AnyView doesn't have update method, need to refactor titlebar storage
@@ -9547,9 +9546,12 @@ impl Workspace {
 
             // Check if view exists and update its style if it does
             if let Some(view) = self.view_manager.get_document_view(&view_id) {
-                view.update(cx, |view, _cx| {
-                    view.set_focused(is_focused);
+                view.update(cx, |view, cx| {
+                    let focus_changed = view.set_focused(is_focused);
                     view.update_text_style(style.clone());
+                    if focus_changed {
+                        cx.notify();
+                    }
                 });
             } else {
                 // Create new view if it doesn't exist
