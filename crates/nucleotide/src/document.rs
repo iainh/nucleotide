@@ -44,6 +44,21 @@ fn handle_editor_pointer_selection(
     }
 }
 
+fn focus_editor_view(core: &Entity<Core>, view_id: ViewId, cx: &mut App) {
+    core.update(cx, |core, cx| {
+        if core.editor.tree.try_get(view_id).is_none() {
+            return;
+        }
+
+        if core.editor.tree.focus != view_id {
+            core.editor.focus(view_id);
+        }
+
+        cx.emit(crate::Update::ViewFocused { view_id });
+        cx.notify();
+    });
+}
+
 pub struct DocumentView {
     core: Entity<Core>,
     input: Option<Entity<Input>>,
@@ -197,6 +212,14 @@ impl Render for DocumentView {
                             event,
                             cx,
                         );
+                    }
+                })
+                .on_mouse_down({
+                    let core = self.core.clone();
+                    let view_id = self.view_id;
+
+                    move |_event, cx| {
+                        focus_editor_view(&core, view_id, cx);
                     }
                 })
         };
