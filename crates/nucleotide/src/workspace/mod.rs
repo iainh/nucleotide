@@ -752,6 +752,39 @@ fn tab_bar_layout_height(
     }
 }
 
+fn tab_bar_height_for_editor(
+    show_tab_bar: bool,
+    bufferline_config: &helix_view::editor::BufferLine,
+    document_count: usize,
+    row_height: Pixels,
+    show_pinned_tabs_in_separate_row: bool,
+    has_pinned_tabs: bool,
+    has_unpinned_tabs: bool,
+) -> Pixels {
+    if !show_tab_bar {
+        return px(0.0);
+    }
+
+    let visible_tab_bar_height = tab_bar_layout_height(
+        row_height,
+        show_pinned_tabs_in_separate_row,
+        has_pinned_tabs,
+        has_unpinned_tabs,
+    );
+
+    match bufferline_config {
+        helix_view::editor::BufferLine::Never => px(0.0),
+        helix_view::editor::BufferLine::Always => visible_tab_bar_height,
+        helix_view::editor::BufferLine::Multiple => {
+            if document_count > 1 {
+                visible_tab_bar_height
+            } else {
+                px(0.0)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 fn move_ordered_item_to_target_index<T: Copy + Eq>(
     items: &mut Vec<T>,
@@ -9610,18 +9643,16 @@ impl Workspace {
         focused_file_name
     }
 
-    /// Update global workspace layout information for UI positioning
-    fn update_workspace_layout_info(&mut self, cx: &mut Context<Self>) {
-        use crate::overlay::WorkspaceLayoutInfo;
+    fn rendered_titlebar_height(&self, window: &Window) -> Pixels {
+        self.titlebar
+            .as_ref()
+            .map(|_| nucleotide_ui::titlebar::TitleBar::height(window))
+            .unwrap_or_else(|| px(0.0))
+    }
 
-        // Calculate current tab bar height based on configuration
+    fn visible_tab_bar_height(&self, cx: &Context<Self>) -> Pixels {
         let core = self.core.read(cx);
         let editor = &core.editor;
-        let bufferline_config = &editor.config().bufferline;
-        let show_tab_bar = core.config.gui.tab_bar.show;
-        let show_pinned_tabs_in_separate_row =
-            core.config.gui.tab_bar.show_pinned_tabs_in_separate_row;
-        let tab_bar_row_height = crate::tab::tab_container_height(cx.theme().tokens);
         let has_pinned_tabs = editor
             .documents
             .keys()
@@ -9630,28 +9661,23 @@ impl Workspace {
             .documents
             .keys()
             .any(|doc_id| !self.pinned_documents.contains(doc_id));
-        let visible_tab_bar_height = tab_bar_layout_height(
-            tab_bar_row_height,
-            show_pinned_tabs_in_separate_row,
+        tab_bar_height_for_editor(
+            core.config.gui.tab_bar.show,
+            &editor.config().bufferline,
+            editor.documents.len(),
+            crate::tab::tab_container_height(cx.theme().tokens),
+            core.config.gui.tab_bar.show_pinned_tabs_in_separate_row,
             has_pinned_tabs,
             has_unpinned_tabs,
-        );
+        )
+    }
 
-        let tab_bar_height = if show_tab_bar {
-            match bufferline_config {
-                helix_view::editor::BufferLine::Never => px(0.0),
-                helix_view::editor::BufferLine::Always => visible_tab_bar_height,
-                helix_view::editor::BufferLine::Multiple => {
-                    if editor.documents.len() > 1 {
-                        visible_tab_bar_height
-                    } else {
-                        px(0.0) // No tab bar for single document
-                    }
-                }
-            }
-        } else {
-            px(0.0)
-        };
+    /// Update global workspace layout information for UI positioning
+    fn update_workspace_layout_info(&mut self, window: &Window, cx: &mut Context<Self>) {
+        use crate::overlay::WorkspaceLayoutInfo;
+
+        let tab_bar_height = self.visible_tab_bar_height(cx);
+        let title_bar_height = self.rendered_titlebar_height(window);
 
         // Get actual file tree width (user may have resized it)
         let file_tree_width = if self.show_file_tree {
@@ -9668,7 +9694,7 @@ impl Workspace {
             file_tree_width,
             gutter_width,
             tab_bar_height,
-            title_bar_height: px(30.0), // Much smaller - just window controls
+            title_bar_height,
             line_height,
             char_width,
             cursor_position,
@@ -9934,7 +9960,7 @@ impl Render for Workspace {
         }
 
         // Update global workspace layout information for completion positioning
-        self.update_workspace_layout_info(cx);
+        self.update_workspace_layout_info(window, cx);
 
         // Set up window appearance observer on first render
         if !self.appearance_observer_set {
@@ -10056,7 +10082,8 @@ impl Render for Workspace {
         // so split panes use the current tree layout in this render pass.
         let ui_theme = cx.global::<nucleotide_ui::Theme>();
         let status_bar_height = ui_theme.tokens.sizes.titlebar_height;
-        let titlebar_height = ui_theme.tokens.sizes.titlebar_height;
+        let titlebar_height = self.rendered_titlebar_height(window);
+        let tab_bar_height = self.visible_tab_bar_height(cx);
         let viewport_h = window.viewport_size().height;
         let available_h =
             (f32::from(viewport_h) - f32::from(status_bar_height) - f32::from(titlebar_height))
@@ -10064,7 +10091,7 @@ impl Render for Workspace {
         let content_max_h = px(available_h);
 
         let min_term = 80.0f32;
-        let max_term = (available_h - 80.0).max(min_term);
+        let max_term = (available_h - f32::from(tab_bar_height) - 80.0).max(min_term);
         if self.basic_terminal_height > max_term {
             self.basic_terminal_height = max_term;
         }
@@ -10087,7 +10114,7 @@ impl Render for Workspace {
         } else {
             available_h
         };
-        let editor_content_h_px = editor_h.max(1.0);
+        let editor_content_h_px = (editor_h - f32::from(tab_bar_height)).max(1.0);
 
         self.sync_embedded_terminal_size(
             editor_content_w_px,
@@ -10810,7 +10837,7 @@ impl Render for Workspace {
                     }
                 };
 
-                let panel_max = (available_h * 0.85).max(120.0);
+                let panel_max = (available_h * 0.85).max(120.0).min(max_term);
 
                 // Container with editor area + bottom panel
                 let mut root = div().relative().w_full().h(content_max_h).min_h(px(0.0));
@@ -10897,7 +10924,7 @@ impl Render for Workspace {
                                         let dy = f32::from(ev.position.y)
                                             - this.basic_term_start_mouse_y;
                                         let min_h = 80.0f32;
-                                        let max_h = (available_h - 80.0).max(min_h);
+                                        let max_h = max_term;
                                         let new_h =
                                             (this.basic_term_start_height - dy).clamp(min_h, max_h);
                                         if (this.basic_terminal_height - new_h).abs() > 0.5 {
@@ -10970,7 +10997,7 @@ impl Render for Workspace {
                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
                                         if ev.click_count >= 2 {
                                             let min_h = 80.0f32;
-                                            let max_h = (available_h - 80.0).max(min_h);
+                                            let max_h = max_term;
                                             this.basic_terminal_height = 220.0f32.clamp(min_h, max_h);
                                             cx.notify();
                                             window.refresh();
@@ -11227,7 +11254,8 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .w_full()
-                    .h_full()
+                    .flex_1()
+                    .min_h(px(0.0))
                     // Ensure content can shrink and never hide the status bar
                     .child(
                         div()
@@ -12301,6 +12329,34 @@ mod tests {
         assert_eq!(
             tab_bar_layout_height(row_height, true, false, true),
             row_height
+        );
+    }
+
+    #[test]
+    fn tab_bar_height_for_editor_matches_bufferline_visibility() {
+        use helix_view::editor::BufferLine;
+
+        let row_height = px(32.0);
+
+        assert_eq!(
+            tab_bar_height_for_editor(true, &BufferLine::Never, 3, row_height, true, true, true),
+            px(0.0)
+        );
+        assert_eq!(
+            tab_bar_height_for_editor(true, &BufferLine::Always, 1, row_height, true, true, true),
+            px(64.0)
+        );
+        assert_eq!(
+            tab_bar_height_for_editor(true, &BufferLine::Multiple, 1, row_height, true, true, true),
+            px(0.0)
+        );
+        assert_eq!(
+            tab_bar_height_for_editor(true, &BufferLine::Multiple, 2, row_height, true, true, true),
+            px(64.0)
+        );
+        assert_eq!(
+            tab_bar_height_for_editor(false, &BufferLine::Always, 2, row_height, true, true, true),
+            px(0.0)
         );
     }
 
