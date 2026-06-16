@@ -183,7 +183,7 @@ mod component_token_tests {
             text_primary: hsla(0.0, 0.0, 0.90, 1.0),
         };
 
-        let surface_color = hsla(0.0, 0.0, 0.05, 1.0); // Dark surface (chrome)
+        let surface_color = hsla(0.0, 0.0, 0.08, 1.0); // Dark surface (chrome)
         let editor_bg = helix_colors.gutter_background; // Use gutter background for editor content
         let tokens =
             DesignTokens::from_helix_and_surface(helix_colors, surface_color, editor_bg, true);
@@ -206,6 +206,16 @@ mod component_token_tests {
         // Verify that editor content colors are preserved from Helix where appropriate
         assert_eq!(file_tree.item_background_selected, helix_colors.selection);
         assert_eq!(tab_bar.tab_modified_indicator, helix_colors.warning);
+        assert_eq!(file_tree.background, tab_bar.container_background);
+        assert_ne!(file_tree.background, titlebar.background);
+
+        let editor_l = ColorTheory::hsla_to_oklab(tokens.editor.background).L;
+        let titlebar_l = ColorTheory::hsla_to_oklab(titlebar.background).L;
+        let file_tree_l = ColorTheory::hsla_to_oklab(file_tree.background).L;
+        assert!(
+            file_tree_l > editor_l.min(titlebar_l) && file_tree_l < editor_l.max(titlebar_l),
+            "file tree OKLab L {file_tree_l:.3} should sit between editor {editor_l:.3} and titlebar {titlebar_l:.3}"
+        );
 
         // Status bar text should derive from chrome tokens rather than editor cursors
         let expected_accent = ColorTheory::ensure_contrast(

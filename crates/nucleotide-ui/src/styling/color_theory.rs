@@ -17,6 +17,9 @@ impl ContrastRatios {
 
 /// Minimum contrast we require between surface chrome layers.
 const CHROME_MIN_CONTRAST: f32 = 1.2;
+const SIDEBAR_TITLEBAR_MIX: f32 = 0.45;
+const SIDEBAR_MAX_TITLEBAR_MIX: f32 = 0.70;
+const SIDEBAR_MIX_STEP: f32 = 0.05;
 
 /// Color theory utilities for intelligent styling
 pub struct ColorTheory;
@@ -620,9 +623,23 @@ impl ColorTheory {
         Self::oklab_high_contrast_text(background, min_ratio)
     }
 
-    /// Derive chrome colors from a surface color for UI components
-    /// Returns computed colors based on surface brightness with WCAG contrast validation
-    pub fn derive_chrome_colors(surface_color: Hsla) -> ChromeColors {
+    fn derive_sidebar_background(editor_background: Hsla, titlebar_background: Hsla) -> Hsla {
+        let mut mix_ratio = SIDEBAR_TITLEBAR_MIX;
+        let mut candidate = Self::mix_oklch(editor_background, titlebar_background, mix_ratio);
+
+        while Self::contrast_ratio(editor_background, candidate) < CHROME_MIN_CONTRAST
+            && mix_ratio < SIDEBAR_MAX_TITLEBAR_MIX
+        {
+            mix_ratio = (mix_ratio + SIDEBAR_MIX_STEP).min(SIDEBAR_MAX_TITLEBAR_MIX);
+            candidate = Self::mix_oklch(editor_background, titlebar_background, mix_ratio);
+        }
+
+        candidate
+    }
+
+    /// Derive chrome colors from surface and editor colors for UI components.
+    /// Returns computed colors based on surface brightness with WCAG contrast validation.
+    pub fn derive_chrome_colors(surface_color: Hsla, editor_background: Hsla) -> ChromeColors {
         let is_dark_theme = surface_color.l < 0.5;
 
         const CHROME_DELTA_STEP: f32 = 0.02;
@@ -649,13 +666,14 @@ impl ColorTheory {
 
         nucleotide_logging::debug!(
             surface_color = ?surface_color,
+            editor_background = ?editor_background,
             surface_lightness = surface_color.l,
             is_dark_theme = is_dark_theme,
-            "Computing chrome colors from surface color"
+            "Computing chrome colors from surface and editor colors"
         );
 
         // Compute titlebar and footer backgrounds (darker/lighter than surface)
-        let (titlebar_background, titlebar_delta) = if is_dark_theme {
+        let (titlebar_background, _) = if is_dark_theme {
             // Dark theme: keep the lift subtle so chrome stays close to editor background
             ensure_chrome_contrast(0.06)
         } else {
@@ -666,14 +684,9 @@ impl ColorTheory {
         // Footer uses same approach as titlebar for consistency
         let footer_background = titlebar_background;
 
-        // File tree and tab backgrounds: subtle variation from surface
-        let (file_tree_background, _) = if is_dark_theme {
-            // Dark theme: keep lift consistent with titlebar for cohesive chrome layers
-            (titlebar_background, titlebar_delta)
-        } else {
-            // Light theme: slightly darker than surface
-            ensure_chrome_contrast(0.05)
-        };
+        // File tree and tab backgrounds sit between editor content and titlebar chrome.
+        let file_tree_background =
+            Self::derive_sidebar_background(editor_background, titlebar_background);
 
         // Tab empty areas use same approach as file tree
         let tab_empty_background = file_tree_background;
@@ -706,7 +719,7 @@ impl ColorTheory {
         };
 
         // Validate contrast ratios for accessibility
-        Self::validate_chrome_colors(&chrome_colors, surface_color);
+        Self::validate_chrome_colors(&chrome_colors, surface_color, editor_background);
 
         nucleotide_logging::debug!(
             titlebar_bg = ?chrome_colors.titlebar_background,
@@ -720,24 +733,49 @@ impl ColorTheory {
     }
 
     /// Validate that chrome colors meet accessibility standards
-    fn validate_chrome_colors(chrome_colors: &ChromeColors, surface_color: Hsla) {
+    fn validate_chrome_colors(
+        chrome_colors: &ChromeColors,
+        surface_color: Hsla,
+        editor_background: Hsla,
+    ) {
         // Chrome backgrounds need lower contrast than text (1.2:1 minimum for visual distinction)
         let validations = [
-            ("titlebar_background", chrome_colors.titlebar_background),
-            ("footer_background", chrome_colors.footer_background),
-            ("file_tree_background", chrome_colors.file_tree_background),
-            ("tab_empty_background", chrome_colors.tab_empty_background),
+            (
+                "titlebar_background",
+                chrome_colors.titlebar_background,
+                "surface_color",
+                surface_color,
+            ),
+            (
+                "footer_background",
+                chrome_colors.footer_background,
+                "surface_color",
+                surface_color,
+            ),
+            (
+                "file_tree_background",
+                chrome_colors.file_tree_background,
+                "editor_background",
+                editor_background,
+            ),
+            (
+                "tab_empty_background",
+                chrome_colors.tab_empty_background,
+                "editor_background",
+                editor_background,
+            ),
         ];
 
-        for (name, color) in &validations {
-            let contrast = Self::contrast_ratio(surface_color, *color);
+        for (name, color, reference_name, reference_color) in &validations {
+            let contrast = Self::contrast_ratio(*reference_color, *color);
 
             if contrast < CHROME_MIN_CONTRAST {
                 nucleotide_logging::warn!(
                     color_name = name,
                     contrast_ratio = contrast,
                     min_required = CHROME_MIN_CONTRAST,
-                    surface_color = ?surface_color,
+                    reference_name = reference_name,
+                    reference_color = ?reference_color,
                     chrome_color = ?color,
                     "Chrome color contrast below minimum visual distinction threshold"
                 );
@@ -745,6 +783,7 @@ impl ColorTheory {
                 nucleotide_logging::debug!(
                     color_name = name,
                     contrast_ratio = contrast,
+                    reference_name = reference_name,
                     "Chrome color contrast validation passed"
                 );
             }
@@ -840,13 +879,14 @@ mod tests {
     #[test]
     fn test_chrome_colors_light_theme() {
         let light_surface = hsla(0.0, 0.0, 0.95, 1.0); // Light surface
-        let chrome_colors = ColorTheory::derive_chrome_colors(light_surface);
+        let light_editor = hsla(0.0, 0.0, 0.98, 1.0);
+        let chrome_colors = ColorTheory::derive_chrome_colors(light_surface, light_editor);
 
         // In light theme, chrome colors should be darker than surface
         assert!(chrome_colors.titlebar_background.l < light_surface.l);
         assert!(chrome_colors.footer_background.l < light_surface.l);
-        assert!(chrome_colors.file_tree_background.l < light_surface.l);
-        assert!(chrome_colors.tab_empty_background.l < light_surface.l);
+        assert!(chrome_colors.file_tree_background.l < light_editor.l);
+        assert!(chrome_colors.tab_empty_background.l < light_editor.l);
 
         // Titlebar and footer should be consistent
         assert_eq!(
@@ -858,6 +898,10 @@ mod tests {
         assert_eq!(
             chrome_colors.file_tree_background,
             chrome_colors.tab_empty_background
+        );
+        assert_ne!(
+            chrome_colors.file_tree_background,
+            chrome_colors.titlebar_background
         );
 
         // Validate some contrast ratios - chrome colors need less contrast than text
@@ -865,18 +909,23 @@ mod tests {
             ColorTheory::contrast_ratio(light_surface, chrome_colors.titlebar_background);
         // Chrome backgrounds need at least 1.2:1 contrast to be visually distinguishable
         assert!(titlebar_contrast >= 1.2);
+
+        let file_tree_contrast =
+            ColorTheory::contrast_ratio(light_editor, chrome_colors.file_tree_background);
+        assert!(file_tree_contrast >= 1.2);
     }
 
     #[test]
     fn test_chrome_colors_dark_theme() {
         let dark_surface = hsla(0.0, 0.0, 0.1, 1.0); // Dark surface
-        let chrome_colors = ColorTheory::derive_chrome_colors(dark_surface);
+        let dark_editor = hsla(0.0, 0.0, 0.05, 1.0);
+        let chrome_colors = ColorTheory::derive_chrome_colors(dark_surface, dark_editor);
 
         // In dark theme, chrome colors should be lighter than surface
         assert!(chrome_colors.titlebar_background.l > dark_surface.l);
         assert!(chrome_colors.footer_background.l > dark_surface.l);
-        assert!(chrome_colors.file_tree_background.l > dark_surface.l);
-        assert!(chrome_colors.tab_empty_background.l > dark_surface.l);
+        assert!(chrome_colors.file_tree_background.l > dark_editor.l);
+        assert!(chrome_colors.tab_empty_background.l > dark_editor.l);
 
         // Titlebar and footer should be consistent
         assert_eq!(
@@ -889,19 +938,66 @@ mod tests {
             chrome_colors.file_tree_background,
             chrome_colors.tab_empty_background
         );
+        assert_ne!(
+            chrome_colors.file_tree_background,
+            chrome_colors.titlebar_background
+        );
 
         // Validate some contrast ratios - chrome colors need less contrast than text
         let titlebar_contrast =
             ColorTheory::contrast_ratio(dark_surface, chrome_colors.titlebar_background);
         // Chrome backgrounds need at least 1.2:1 contrast to be visually distinguishable
         assert!(titlebar_contrast >= 1.2);
+
+        let file_tree_contrast =
+            ColorTheory::contrast_ratio(dark_editor, chrome_colors.file_tree_background);
+        assert!(file_tree_contrast >= 1.2);
+    }
+
+    #[test]
+    fn test_sidebar_background_sits_between_editor_and_titlebar() {
+        let cases = [
+            (
+                "light",
+                hsla(0.0, 0.0, 0.95, 1.0),
+                hsla(0.0, 0.0, 0.98, 1.0),
+            ),
+            ("dark", hsla(0.0, 0.0, 0.1, 1.0), hsla(0.0, 0.0, 0.05, 1.0)),
+            (
+                "tinted",
+                hsla(215.0 / 360.0, 0.35, 0.18, 1.0),
+                hsla(215.0 / 360.0, 0.30, 0.12, 1.0),
+            ),
+        ];
+
+        for (name, surface, editor) in cases {
+            let chrome_colors = ColorTheory::derive_chrome_colors(surface, editor);
+            let editor_l = ColorTheory::hsla_to_oklab(editor).L;
+            let titlebar_l = ColorTheory::hsla_to_oklab(chrome_colors.titlebar_background).L;
+            let sidebar_l = ColorTheory::hsla_to_oklab(chrome_colors.file_tree_background).L;
+            let min_l = editor_l.min(titlebar_l);
+            let max_l = editor_l.max(titlebar_l);
+
+            assert!(
+                sidebar_l > min_l && sidebar_l < max_l,
+                "{name} sidebar OKLab L {sidebar_l:.3} should sit between editor {editor_l:.3} and titlebar {titlebar_l:.3}"
+            );
+            assert_ne!(
+                chrome_colors.file_tree_background,
+                chrome_colors.titlebar_background
+            );
+            assert_eq!(
+                chrome_colors.file_tree_background,
+                chrome_colors.tab_empty_background
+            );
+        }
     }
 
     #[test]
     fn test_chrome_colors_preserve_hue() {
         // Test with a blue surface to ensure hue is preserved
         let blue_surface = hsla(240.0 / 360.0, 0.3, 0.5, 1.0); // Blue surface
-        let chrome_colors = ColorTheory::derive_chrome_colors(blue_surface);
+        let chrome_colors = ColorTheory::derive_chrome_colors(blue_surface, blue_surface);
 
         // All chrome colors should preserve the blue hue
         assert!((chrome_colors.titlebar_background.h - blue_surface.h).abs() < 0.01);
