@@ -127,8 +127,11 @@ struct DocumentViewLayout {
     is_focused: bool,
 }
 
-const SPLIT_PANE_HANDLE_HITBOX_PX: f32 = 8.0;
+const SPLIT_PANE_HANDLE_HITBOX_PX: f32 = 10.0;
 const SPLIT_PANE_HANDLE_VISUAL_PX: f32 = 1.0;
+const RESIZE_HANDLE_HOVER_ALPHA: f32 = 0.06;
+const RESIZE_HANDLE_SEPARATOR_ALPHA: f32 = 0.7;
+const RESIZE_HANDLE_SEPARATOR_HOVER_ALPHA: f32 = 0.9;
 const SPLIT_PANE_MIN_WIDTH_CELLS: u16 = 8;
 const SPLIT_PANE_MIN_HEIGHT_CELLS: u16 = 3;
 
@@ -9302,10 +9305,14 @@ impl Workspace {
         let handle_hit = SPLIT_PANE_HANDLE_HITBOX_PX;
         let handle_visual = SPLIT_PANE_HANDLE_VISUAL_PX;
         let visual_offset = ((handle_hit - handle_visual) * 0.5).max(0.0);
-        let separator_color =
-            nucleotide_ui::tokens::with_alpha(cx.theme().tokens.chrome.border_default, 0.65);
-        let hover_color =
-            nucleotide_ui::tokens::with_alpha(cx.theme().tokens.editor.focus_ring, 0.16);
+        let separator_color = nucleotide_ui::tokens::with_alpha(
+            cx.theme().tokens.chrome.border_default,
+            RESIZE_HANDLE_SEPARATOR_ALPHA,
+        );
+        let hover_color = nucleotide_ui::tokens::with_alpha(
+            cx.theme().tokens.editor.focus_ring,
+            RESIZE_HANDLE_HOVER_ALPHA,
+        );
 
         let drag_divider = divider.clone();
         let handle = match divider.axis {
@@ -10886,21 +10893,36 @@ impl Render for Workspace {
                                     c
                                 },
                             ))
-                            // Overlay our own visible handle positioned at top of the panel
+                            // Overlay our own centered handle at the top of the panel.
                             .child({
-                                let handle_h = 6.0f32;
+                                let handle_h = SPLIT_PANE_HANDLE_HITBOX_PX;
+                                let handle_visual_h = SPLIT_PANE_HANDLE_VISUAL_PX;
+                                let visual_offset = ((handle_h - handle_visual_h) * 0.5).max(0.0);
                                 let sep_color = nucleotide_ui::tokens::with_alpha(
                                     cx.theme().tokens.chrome.border_default,
-                                    0.6,
+                                    RESIZE_HANDLE_SEPARATOR_ALPHA,
+                                );
+                                let hover_color = nucleotide_ui::tokens::with_alpha(
+                                    cx.theme().tokens.editor.focus_ring,
+                                    RESIZE_HANDLE_HOVER_ALPHA,
                                 );
                                 div()
                                     .absolute()
                                     .left_0()
                                     .right_0()
-                                    .bottom(px(self.basic_terminal_height))
+                                    .bottom(px(self.basic_terminal_height - handle_h * 0.5))
                                     .h(px(handle_h))
-                                    .bg(sep_color)
                                     .cursor(gpui::CursorStyle::ResizeRow)
+                                    .hover(move |d| d.bg(hover_color))
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left_0()
+                                            .right_0()
+                                            .top(px(visual_offset))
+                                            .h(px(handle_visual_h))
+                                            .bg(sep_color),
+                                    )
                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this: &mut Workspace, ev: &MouseDownEvent, window, cx| {
                                         if ev.click_count >= 2 {
                                             let min_h = 80.0f32;
@@ -10933,8 +10955,9 @@ impl Render for Workspace {
             }
 
             if self.show_file_tree {
-                let handle_visual_w = 4.0f32;
-                let handle_hit_w = 12.0f32;
+                let handle_visual_w = SPLIT_PANE_HANDLE_VISUAL_PX;
+                let handle_hit_w = SPLIT_PANE_HANDLE_HITBOX_PX;
+                let handle_visual_offset = ((handle_hit_w - handle_visual_w) * 0.5).max(0.0);
                 let viewport_w = f32::from(window.viewport_size().width);
                 let max_left = Self::max_file_tree_width(viewport_w);
 
@@ -11009,21 +11032,34 @@ impl Render for Workspace {
                 container = container.child(file_tree_container);
 
                 // Vertical handle at the boundary
-                let sep_color =
-                    nucleotide_ui::tokens::with_alpha(cx.theme().tokens.chrome.border_default, 0.6);
-                let sep_color_hover =
-                    nucleotide_ui::tokens::with_alpha(cx.theme().tokens.chrome.border_default, 0.9);
+                let sep_color = nucleotide_ui::tokens::with_alpha(
+                    cx.theme().tokens.chrome.border_default,
+                    RESIZE_HANDLE_SEPARATOR_ALPHA,
+                );
+                let sep_color_hover = nucleotide_ui::tokens::with_alpha(
+                    cx.theme().tokens.chrome.border_default,
+                    RESIZE_HANDLE_SEPARATOR_HOVER_ALPHA,
+                );
+                let hover_color = nucleotide_ui::tokens::with_alpha(
+                    cx.theme().tokens.editor.focus_ring,
+                    RESIZE_HANDLE_HOVER_ALPHA,
+                );
                 container = container.child(
                     div()
                         .id("file-tree-resize-handle")
                         .absolute()
                         .top_0()
-                        .left(px(self.file_tree_width))
+                        .left(px(self.file_tree_width - handle_hit_w * 0.5))
                         .w(px(handle_hit_w))
                         .h(content_max_h)
                         .cursor(gpui::CursorStyle::ResizeLeftRight)
+                        .hover(move |d| d.bg(hover_color))
                         .child(
                             div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(px(handle_visual_offset))
                                 .w(px(handle_visual_w))
                                 .h_full()
                                 .bg(sep_color)

@@ -6,9 +6,13 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    App, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Styled, Window, div, px,
 };
+
+const RESIZE_HANDLE_MIN_HITBOX_PX: f32 = 8.0;
+const RESIZE_HANDLE_MAX_HITBOX_PX: f32 = 12.0;
+const RESIZE_HANDLE_VISUAL_PX: f32 = 1.0;
 
 #[inline]
 fn clamp_primary(start: f32, delta: f32, min_px: f32, max_px: f32) -> f32 {
@@ -19,6 +23,24 @@ fn clamp_primary(start: f32, delta: f32, min_px: f32, max_px: f32) -> f32 {
 fn clamp_primary_vertical(start: f32, delta_y: f32, min_px: f32, max_px: f32) -> f32 {
     // Top-handle dragging upward increases height => subtract dy
     (start - delta_y).clamp(min_px, max_px)
+}
+
+#[inline]
+fn resize_handle_hitbox_px(handle_px: f32) -> Option<f32> {
+    if handle_px <= 0.0 {
+        None
+    } else {
+        Some(
+            handle_px
+                .max(RESIZE_HANDLE_MIN_HITBOX_PX)
+                .min(RESIZE_HANDLE_MAX_HITBOX_PX),
+        )
+    }
+}
+
+#[inline]
+fn resize_handle_visual_offset(hitbox_px: f32) -> f32 {
+    ((hitbox_px - RESIZE_HANDLE_VISUAL_PX) * 0.5).max(0.0)
 }
 
 #[derive(Clone)]
@@ -41,7 +63,7 @@ impl DragRuntimeState {
 /// A sidebar split with a fixed-width left pane and flexible right pane.
 /// - `width_px`: current left pane width in pixels
 /// - `min_px`/`max_px`: constraints for the left pane
-/// - `handle_px`: drag handle thickness (visual/hit)
+/// - `handle_px`: drag handle hit target; the visible separator remains 1px
 /// - `on_change`: callback invoked with the new width during drag
 /// - `default_px`: width to snap to on double-click
 #[allow(clippy::too_many_arguments)]
@@ -105,9 +127,6 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             }
         });
 
-    // Visuals
-    let _handle_visual_bg: Option<Hsla> = None; // keep neutral; borders used in caller’s theme
-
     // Left pane: fixed width, vertically scrollable if content exceeds available height
     root = root.child(
         div()
@@ -126,16 +145,17 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             ),
     );
 
-    // Handle: wider hitbox for easy grabbing, with a thin visible separator centered inside
-    let handle_visual_w = handle_px.max(2.0);
-    let handle_hit_w = (handle_visual_w + 6.0).min(12.0); // 6px padding each side, cap at 12px
+    // Handle: transparent hitbox for easy grabbing, with a thin visible separator centered inside
+    let handle_hit_w = resize_handle_hitbox_px(handle_px).unwrap_or(RESIZE_HANDLE_MIN_HITBOX_PX);
+    let handle_visual_w = RESIZE_HANDLE_VISUAL_PX;
 
     root = root.child({
         // Separator color uses theme tokens (via Provider hooks)
         let theme = crate::providers::ProviderHooks::theme();
-        let sep_color = theme.tokens.chrome.separator_color;
-
-        let pad = ((handle_hit_w - handle_visual_w) * 0.5).max(0.0);
+        let sep_color = crate::tokens::with_alpha(theme.tokens.chrome.separator_color, 0.7);
+        let sep_hover_color = crate::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.55);
+        let hover_bg = crate::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.06);
+        let visual_offset = resize_handle_visual_offset(handle_hit_w);
 
         let mut handle = div()
             .id("sidebar-resize-handle")
@@ -143,21 +163,18 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
             .h_full()
             .flex_shrink_0()
             .cursor(gpui::CursorStyle::ResizeLeftRight)
-            .pl(px(pad))
-            .pr(px(pad))
-            // Visible thin separator centered in the hitbox
+            .relative()
+            .hover(move |d| d.bg(hover_bg))
             .child(
                 div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(visual_offset))
                     .w(px(handle_visual_w))
                     .h_full()
                     .bg(sep_color)
-                    .hover(|d| {
-                        let is_dark = crate::providers::ProviderHooks::is_dark_theme();
-                        d.bg(crate::styling::ColorTheory::adjust_oklab_lightness(
-                            sep_color,
-                            if is_dark { 0.1 } else { -0.1 },
-                        ))
-                    }),
+                    .hover(move |d| d.bg(sep_hover_color)),
             );
 
         handle = handle.on_mouse_down(MouseButton::Left, {
@@ -198,7 +215,8 @@ pub fn sidebar_split<L: IntoElement, R: IntoElement>(
 /// A bottom-docked panel with a draggable top edge.
 /// - `height_px`: current panel height
 /// - `min_px`/`max_px`: constraints for the panel height
-/// - `handle_px`: thickness of the drag handle at the top
+/// - `handle_px`: drag handle hit target at the top; the visible separator remains 1px.
+///   Use `0.0` to suppress the built-in handle.
 /// - `on_change`: callback invoked with new height during drag
 /// - `default_px`: height to snap to on double-click
 pub fn bottom_panel_split<C: IntoElement>(
@@ -253,44 +271,62 @@ pub fn bottom_panel_split<C: IntoElement>(
         });
 
     // Panel shell at bottom
-    root = root.child(
-        div()
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .h(px(height_px))
-            .border_t_1()
-            .child({
-                // Top drag handle
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top_0()
-                    .h(px(handle_px.max(2.0)))
-                    .cursor(gpui::CursorStyle::ResizeRow)
-                    .on_mouse_down(MouseButton::Left, {
-                        let drag = drag.clone();
-                        let on_change = on_change.clone();
-                        move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
-                            if ev.click_count >= 2 {
-                                on_change(default_px.clamp(min_px, max_px), cx);
-                                window.refresh();
-                                cx.stop_propagation();
-                                return;
-                            }
-                            drag.dragging.set(true);
-                            drag.start_mouse
-                                .set((f32::from(ev.position.x), f32::from(ev.position.y)));
-                            drag.start_primary.set(height_px);
+    let mut panel = div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom_0()
+        .h(px(height_px))
+        .child(content);
+
+    if let Some(handle_hit_h) = resize_handle_hitbox_px(handle_px) {
+        let theme = crate::providers::ProviderHooks::theme();
+        let sep_color = crate::tokens::with_alpha(theme.tokens.chrome.separator_color, 0.7);
+        let sep_hover_color = crate::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.55);
+        let hover_bg = crate::tokens::with_alpha(theme.tokens.editor.focus_ring, 0.06);
+        let visual_offset = resize_handle_visual_offset(handle_hit_h);
+
+        panel = panel.child({
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px(-handle_hit_h * 0.5))
+                .h(px(handle_hit_h))
+                .cursor(gpui::CursorStyle::ResizeRow)
+                .hover(move |d| d.bg(hover_bg))
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(visual_offset))
+                        .h(px(RESIZE_HANDLE_VISUAL_PX))
+                        .bg(sep_color)
+                        .hover(move |d| d.bg(sep_hover_color)),
+                )
+                .on_mouse_down(MouseButton::Left, {
+                    let drag = drag.clone();
+                    let on_change = on_change.clone();
+                    move |ev: &MouseDownEvent, window: &mut Window, cx: &mut App| {
+                        if ev.click_count >= 2 {
+                            on_change(default_px.clamp(min_px, max_px), cx);
                             window.refresh();
                             cx.stop_propagation();
+                            return;
                         }
-                    })
-            })
-            .child(content),
-    );
+                        drag.dragging.set(true);
+                        drag.start_mouse
+                            .set((f32::from(ev.position.x), f32::from(ev.position.y)));
+                        drag.start_primary.set(height_px);
+                        window.refresh();
+                        cx.stop_propagation();
+                    }
+                })
+        });
+    }
+
+    root = root.child(panel);
 
     root
 }
@@ -365,7 +401,10 @@ pub fn two_pane_split<A: IntoElement, B: IntoElement>(
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_primary, clamp_primary_vertical};
+    use super::{
+        RESIZE_HANDLE_MAX_HITBOX_PX, RESIZE_HANDLE_MIN_HITBOX_PX, clamp_primary,
+        clamp_primary_vertical, resize_handle_hitbox_px, resize_handle_visual_offset,
+    };
 
     #[test]
     fn test_clamp_primary_horizontal() {
@@ -383,5 +422,19 @@ mod tests {
         // Clamp to min/max
         assert_eq!(clamp_primary_vertical(90.0, 30.0, 80.0, 800.0), 80.0);
         assert_eq!(clamp_primary_vertical(790.0, -30.0, 80.0, 800.0), 800.0);
+    }
+
+    #[test]
+    fn resize_handle_metrics_keep_hitbox_larger_than_visual_separator() {
+        assert_eq!(resize_handle_hitbox_px(0.0), None);
+        assert_eq!(
+            resize_handle_hitbox_px(4.0),
+            Some(RESIZE_HANDLE_MIN_HITBOX_PX)
+        );
+        assert_eq!(
+            resize_handle_hitbox_px(20.0),
+            Some(RESIZE_HANDLE_MAX_HITBOX_PX)
+        );
+        assert_eq!(resize_handle_visual_offset(8.0), 3.5);
     }
 }
