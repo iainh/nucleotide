@@ -642,6 +642,7 @@ impl TabBar {
                     .relative()
                     .flex()
                     .flex_1()
+                    .min_w(px(0.0))
                     .h_full()
                     .overflow_x_hidden()
                     .child(
@@ -724,6 +725,7 @@ impl TabBar {
                 div()
                     .relative()
                     .flex_1()
+                    .min_w(px(0.0))
                     .h_full()
                     .overflow_x_hidden()
                     .child(
@@ -827,6 +829,7 @@ impl TabBar {
             .flex_row()
             .items_center()
             .flex_1()
+            .min_w(px(0.0))
             .h_full()
             .w_full()
             .overflow_x_scroll()
