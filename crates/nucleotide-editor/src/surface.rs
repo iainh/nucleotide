@@ -7,13 +7,14 @@ use gpui::InteractiveElement as _;
 use gpui::{
     AnyElement, App, Bounds, Component, EntityId, FocusHandle, Hsla, IntoElement, KeyDownEvent,
     Modifiers, MouseButton, ParentElement as _, Pixels, Point, RenderOnce, ScrollWheelEvent,
-    Styled as _, Window, div, fill, point, px,
+    Styled as _, Window, div, fill, hsla, point, px,
 };
 
 use crate::{
     EditorScrollbar, EditorScrollbarState, EditorViewport, LineLayoutCache, ViewportScrollUpdate,
     scrollbar::{editor_horizontal_scrollbar_height, editor_vertical_scrollbar_width},
 };
+use nucleotide_types::scrollbar::SCROLLBAR_THICKNESS;
 
 type ScrollCallback = Rc<dyn Fn(&EditorViewport, ViewportScrollUpdate, &mut App)>;
 type PointerCallback = Rc<dyn Fn(EditorSurfacePointerEvent, &mut App)>;
@@ -75,6 +76,7 @@ pub struct EditorSurface {
     horizontal_scrollbar_state: EditorScrollbarState,
     child: AnyElement,
     focus: Option<FocusHandle>,
+    scrollbar_thumb_color: Hsla,
     on_key_down: Option<KeyDownCallback>,
     on_scroll: Option<ScrollCallback>,
     on_mouse_down: Option<PointerCallback>,
@@ -103,12 +105,18 @@ impl EditorSurface {
             horizontal_scrollbar_state,
             child: child.into_any_element(),
             focus: None,
+            scrollbar_thumb_color: hsla(0.0, 0.0, 0.72, 1.0),
             on_key_down: None,
             on_scroll: None,
             on_mouse_down: None,
             on_mouse_drag: None,
             on_mouse_up: None,
         }
+    }
+
+    pub fn scrollbar_thumb_color(mut self, color: Hsla) -> Self {
+        self.scrollbar_thumb_color = color;
+        self
     }
 
     pub fn track_focus(mut self, focus: FocusHandle) -> Self {
@@ -161,7 +169,8 @@ impl EditorSurface {
             self.view_entity_id,
             self.viewport.clone(),
             self.vertical_scrollbar_state.clone(),
-        );
+        )
+        .with_thumb_color(self.scrollbar_thumb_color);
 
         if let Some(on_scroll) = self.on_scroll.clone() {
             scrollbar = scrollbar.on_scroll(move |viewport, update, cx| {
@@ -177,7 +186,8 @@ impl EditorSurface {
             self.view_entity_id,
             self.viewport.clone(),
             self.horizontal_scrollbar_state.clone(),
-        );
+        )
+        .with_thumb_color(self.scrollbar_thumb_color);
 
         if let Some(on_scroll) = self.on_scroll.clone() {
             scrollbar = scrollbar.on_scroll(move |viewport, update, cx| {
@@ -230,9 +240,9 @@ impl RenderOnce for EditorSurface {
         let content_bounds = Rc::new(Cell::new(None::<Bounds<Pixels>>));
         let mut content = div()
             .key_context("Editor")
-            .flex_1()
+            .size_full()
             .min_w(px(0.0))
-            .h_full()
+            .min_h(px(0.0))
             .overflow_hidden()
             .child(self.child);
 
@@ -377,11 +387,9 @@ impl RenderOnce for EditorSurface {
             });
         }
 
-        let mut content_row = div()
-            .flex()
-            .flex_1()
-            .min_h(px(0.0))
-            .w_full()
+        let mut surface = div()
+            .relative()
+            .size_full()
             .on_children_prepainted({
                 let content_bounds = Rc::clone(&content_bounds);
                 move |bounds, _window, _cx| {
@@ -391,17 +399,27 @@ impl RenderOnce for EditorSurface {
             .child(content);
 
         if let Some(scrollbar) = vertical_scrollbar {
-            content_row = content_row.child(scrollbar);
+            surface = surface.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .bottom_0()
+                    .w(SCROLLBAR_THICKNESS)
+                    .child(scrollbar),
+            );
         }
 
-        let mut surface = div().flex().flex_col().size_full().child(content_row);
-
         if let Some(scrollbar) = horizontal_scrollbar {
-            let mut scrollbar_row = div().flex().w_full().flex_shrink_0().child(scrollbar);
-            if editor_vertical_scrollbar_width(&self.viewport) > px(0.0) {
-                scrollbar_row = scrollbar_row.child(div().flex_shrink_0().w(px(12.0)).h(px(12.0)));
-            }
-            surface = surface.child(scrollbar_row);
+            surface = surface.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(SCROLLBAR_THICKNESS)
+                    .child(scrollbar),
+            );
         }
 
         surface

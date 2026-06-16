@@ -157,6 +157,7 @@ impl Render for DocumentView {
             let paint_focus = focus.clone();
             let is_focused = self.is_focused;
             let input = self.input.clone();
+            let scrollbar_thumb_color = cx.ui_theme().tokens.chrome.text_on_chrome;
 
             let mut editor_content = NativeEditorView::new(
                 cx.entity_id(),
@@ -177,6 +178,7 @@ impl Render for DocumentView {
                     })
                 },
             )
+            .scrollbar_thumb_color(scrollbar_thumb_color)
             .track_focus(focus.clone());
 
             if let Some(input) = input {

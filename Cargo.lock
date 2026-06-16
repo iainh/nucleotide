@@ -5318,6 +5318,7 @@ dependencies = [
  "helix-stdx",
  "helix-view",
  "nucleotide-logging",
+ "nucleotide-types",
  "rand 0.10.1",
  "tokio",
 ]

@@ -6,6 +6,8 @@ pub mod config;
 pub mod editor_types;
 pub mod font_config;
 pub mod project_config;
+#[cfg(feature = "gpui-bridge")]
+pub mod scrollbar;
 pub mod vcs;
 
 // Re-export commonly used types
