@@ -16,10 +16,10 @@ use nucleotide_logging::{PerfTimer, error, trace};
 use crate::{
     CursorOverlayPlan, DiagnosticGutterMarkersPaintParams, EditorCursorTextPaintParams,
     EditorDocumentFrame, EditorDocumentFrameParams, EditorLayout, EditorLineBackgroundStyle,
-    EditorSurfaceGeometry, EditorViewContentPrepareParams, EditorViewFrameState, EditorViewState,
-    EditorViewportSurfaceLayout, GutterLinePlan, LineLayoutCache, SoftWrapCursorPaintPlanParams,
-    SoftWrapEditorLinePaintParams, SoftWrapGutterPaintParams, UnwrappedCursorPaintPlanParams,
-    UnwrappedEditorLinePaintParams, UnwrappedGutterLinePlanParams, build_gutter_lines_from_plans,
+    EditorSurfaceGeometry, EditorViewFrameState, EditorViewState, EditorViewportSurfaceLayout,
+    GutterLinePlan, LineLayoutCache, SoftWrapCursorPaintPlanParams, SoftWrapEditorLinePaintParams,
+    SoftWrapGutterPaintParams, UnwrappedCursorPaintPlanParams, UnwrappedEditorLinePaintParams,
+    UnwrappedGutterLinePlanParams, build_gutter_lines_from_plans,
     build_unwrapped_gutter_line_plans, cursor_style_for_mode, document_render_snapshot,
     editor_document_frame, gutter::SoftWrapGutterLine, highlight::gpui_hsla_to_helix_color,
     paint_diagnostic_gutter_markers, paint_editor_background, paint_gutter_lines,
@@ -417,22 +417,6 @@ pub fn render_native_editor_frame(
         theme_styles,
         palette,
     } = params;
-
-    let text_system = cx.text_system();
-    let content_state =
-        editor_state.prepare_content_for_render(EditorViewContentPrepareParams {
-            editor: &*editor,
-            view_id,
-            theme: Some(theme),
-            text_system: text_system.as_ref(),
-            text_style,
-        })?;
-    trace!(
-        physical_lines = content_state.physical_lines,
-        visual_rows = content_state.update.visual_rows,
-        soft_wrap = content_state.update.soft_wrap,
-        "Primed native editor viewport content metrics"
-    );
 
     let prepared_frame = prepare_native_editor_frame(NativeEditorFramePrepareParams {
         editor,
