@@ -16,11 +16,11 @@ use crate::{
     DiagnosticOverlaySpans, DiagnosticSeverityByLine, DocumentRulerPaintParams,
     DocumentSoftWrapRenderPlanParams, EditorCursorPresentation, EditorCursorPresentationParams,
     EditorLineHighlightContext, EditorRenderSnapshot, EditorSurfaceGeometry, GutterLinePlan,
-    RulerPaintPlan, SoftWrapHighlightedLineRunsParams, SoftWrapRenderPlan,
-    UnwrappedHighlightedLine, UnwrappedHighlightedLineParams, UnwrappedRenderPlan,
+    RulerPaintPlan, SoftWrapHighlightedLineRunsBatchParams, SoftWrapRenderPlan,
+    UnwrappedHighlightedLine, UnwrappedHighlightedLinesParams, UnwrappedRenderPlan,
     UnwrappedRenderPlanParams, diagnostic_overlay_spans, diagnostic_severity_by_line,
     document_render_snapshot, document_ruler_paint_plans, document_soft_wrap_render_plan,
-    editor_cursor_presentation, soft_wrap_highlighted_line_runs, unwrapped_highlighted_line,
+    editor_cursor_presentation, soft_wrap_highlighted_line_runs_batch, unwrapped_highlighted_lines,
     unwrapped_render_plan,
 };
 use nucleotide_logging::PerfTimer;
@@ -166,16 +166,11 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         soft_wrap_render_plan
             .as_ref()
             .map(|plan| {
-                plan.visual_lines
-                    .iter()
-                    .map(|visual| {
-                        soft_wrap_highlighted_line_runs(SoftWrapHighlightedLineRunsParams {
-                            context: highlight_context(),
-                            visual,
-                            wrap_indicator_color: params.wrap_indicator_color,
-                        })
-                    })
-                    .collect()
+                soft_wrap_highlighted_line_runs_batch(SoftWrapHighlightedLineRunsBatchParams {
+                    context: highlight_context(),
+                    visual_lines: &plan.visual_lines,
+                    wrap_indicator_color: params.wrap_indicator_color,
+                })
             })
             .unwrap_or_default()
     };
@@ -186,16 +181,11 @@ pub fn editor_document_frame(params: EditorDocumentFrameParams<'_>) -> EditorDoc
         unwrapped_render_plan
             .as_ref()
             .map(|plan| {
-                plan.visible_lines
-                    .iter()
-                    .map(|line| {
-                        unwrapped_highlighted_line(UnwrappedHighlightedLineParams {
-                            context: highlight_context(),
-                            text: text.slice(..),
-                            line,
-                        })
-                    })
-                    .collect()
+                unwrapped_highlighted_lines(UnwrappedHighlightedLinesParams {
+                    context: highlight_context(),
+                    text: text.slice(..),
+                    lines: &plan.visible_lines,
+                })
             })
             .unwrap_or_default()
     };

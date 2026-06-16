@@ -67,10 +67,22 @@ pub struct SoftWrapHighlightedLineRunsParams<'a> {
     pub wrap_indicator_color: Option<Hsla>,
 }
 
+pub struct SoftWrapHighlightedLineRunsBatchParams<'a> {
+    pub context: EditorLineHighlightContext<'a>,
+    pub visual_lines: &'a [SoftWrapVisualLine],
+    pub wrap_indicator_color: Option<Hsla>,
+}
+
 pub struct UnwrappedHighlightedLineParams<'a> {
     pub context: EditorLineHighlightContext<'a>,
     pub text: RopeSlice<'a>,
     pub line: &'a VisibleLinePlan,
+}
+
+pub struct UnwrappedHighlightedLinesParams<'a> {
+    pub context: EditorLineHighlightContext<'a>,
+    pub text: RopeSlice<'a>,
+    pub lines: &'a [VisibleLinePlan],
 }
 
 #[derive(Debug, Clone)]
@@ -178,7 +190,7 @@ pub fn highlight_line(params: HighlightLineParams<'_>) -> Vec<TextRun> {
         params.line_start,
         params.line_end,
         params.fg_color,
-        params.font,
+        &params.font,
         params.default_bg,
     )
 }
@@ -222,6 +234,44 @@ pub fn soft_wrap_highlighted_line_runs(
     line_runs
 }
 
+pub fn soft_wrap_highlighted_line_runs_batch(
+    params: SoftWrapHighlightedLineRunsBatchParams<'_>,
+) -> Vec<Vec<TextRun>> {
+    let context = params.context;
+    let text = context.doc.text().slice(..);
+    let visible_range = visible_char_range(
+        params
+            .visual_lines
+            .iter()
+            .filter_map(|visual| Some(visual.line_start_char?..visual.line_end_char?)),
+    );
+    let mut state = FrameHighlightState::new(&context, text, visible_range);
+
+    params
+        .visual_lines
+        .iter()
+        .map(|visual| {
+            let mut line_runs = if let (Some(line_start), Some(line_end)) =
+                (visual.line_start_char, visual.line_end_char)
+            {
+                state.highlight_range(line_start, line_end, &context)
+            } else {
+                Vec::new()
+            };
+
+            line_runs = decorate_soft_wrap_line_runs(
+                line_runs,
+                visual,
+                &context.font,
+                context.fg_color,
+                params.wrap_indicator_color,
+            );
+
+            line_runs
+        })
+        .collect()
+}
+
 pub fn unwrapped_highlighted_line(
     params: UnwrappedHighlightedLineParams<'_>,
 ) -> UnwrappedHighlightedLine {
@@ -252,6 +302,34 @@ pub fn unwrapped_highlighted_line(
         line_text,
         line_runs,
     }
+}
+
+pub fn unwrapped_highlighted_lines(
+    params: UnwrappedHighlightedLinesParams<'_>,
+) -> Vec<UnwrappedHighlightedLine> {
+    let context = params.context;
+    let visible_range = visible_char_range(
+        params
+            .lines
+            .iter()
+            .map(|line| line.line_start..line.line_end),
+    );
+    let mut state = FrameHighlightState::new(&context, params.text, visible_range);
+
+    params
+        .lines
+        .iter()
+        .map(|line| {
+            let line_slice = params.text.slice(line.line_start..line.line_end);
+            let line_text = shared_line_text_without_trailing_newline(line_slice);
+            let line_runs = state.highlight_range(line.line_start, line.line_end, &context);
+
+            UnwrappedHighlightedLine {
+                line_text,
+                line_runs,
+            }
+        })
+        .collect()
 }
 
 pub fn gpui_hsla_to_helix_color(c: Hsla) -> Option<Color> {
@@ -286,6 +364,28 @@ fn syntax_highlight_window(text: RopeSlice<'_>, view_position: ViewPosition) -> 
     let height = u16::try_from(lines_from_anchor).unwrap_or(u16::MAX);
 
     (anchor, height)
+}
+
+fn syntax_highlight_window_for_char_range(
+    text: RopeSlice<'_>,
+    view_position: ViewPosition,
+    visible_range: Option<Range<usize>>,
+) -> (usize, u16) {
+    let Some(visible_range) = visible_range else {
+        return syntax_highlight_window(text, view_position);
+    };
+
+    let text_len = text.len_chars();
+    let anchor = view_position.anchor.min(visible_range.start).min(text_len);
+    let end = visible_range.end.min(text_len);
+    let start_row = text.char_to_line(anchor);
+    let end_row = text
+        .char_to_line(end)
+        .saturating_add(2)
+        .min(text.len_lines());
+    let height = end_row.saturating_sub(start_row).max(1);
+
+    (anchor, u16::try_from(height).unwrap_or(u16::MAX))
 }
 
 fn doc_syntax_highlights<'d>(
@@ -396,6 +496,80 @@ fn selection_overlay_highlights(
     }
 }
 
+fn visible_char_range(ranges: impl IntoIterator<Item = Range<usize>>) -> Option<Range<usize>> {
+    let mut start = usize::MAX;
+    let mut end = 0;
+    let mut has_range = false;
+
+    for range in ranges {
+        start = start.min(range.start);
+        end = end.max(range.end);
+        has_range = true;
+    }
+
+    has_range.then_some(start..end)
+}
+
+struct FrameHighlightState<'a> {
+    text: RopeSlice<'a>,
+    syntax_hl: SyntaxHighlighter<'a, 'a, 'a>,
+    overlay_hl: OverlayHighlighter<'a>,
+}
+
+impl<'a> FrameHighlightState<'a> {
+    fn new(
+        context: &EditorLineHighlightContext<'a>,
+        text: RopeSlice<'a>,
+        visible_range: Option<Range<usize>>,
+    ) -> Self {
+        let (anchor, height) =
+            syntax_highlight_window_for_char_range(text, context.view_position, visible_range);
+        let syntax_highlighter =
+            doc_syntax_highlights(context.doc, anchor, height, context.syntax_loader);
+        let mut overlays = vec![selection_overlay_highlights(
+            context.editor_mode,
+            context.doc,
+            context.view,
+            context.theme,
+            context.cursor_shape,
+        )];
+        if let Some(highlights) = context.diagnostic_overlay_spans {
+            overlays.push(OverlayHighlights::Heterogenous {
+                highlights: highlights.clone(),
+            });
+        }
+
+        Self {
+            text,
+            syntax_hl: SyntaxHighlighter::new(
+                syntax_highlighter,
+                text,
+                context.theme,
+                context.default_text_style,
+            ),
+            overlay_hl: OverlayHighlighter::new(overlays, context.theme),
+        }
+    }
+
+    fn highlight_range(
+        &mut self,
+        line_start: usize,
+        line_end: usize,
+        context: &EditorLineHighlightContext<'_>,
+    ) -> Vec<TextRun> {
+        highlight_line_with_state(
+            self.text,
+            &mut self.syntax_hl,
+            &mut self.overlay_hl,
+            line_start,
+            line_end,
+            context.fg_color,
+            &context.font,
+            context.default_bg,
+        )
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn highlight_line_with_state(
     text: RopeSlice<'_>,
@@ -404,7 +578,7 @@ fn highlight_line_with_state(
     line_start: usize,
     line_end: usize,
     fg_color: Hsla,
-    font: Font,
+    font: &Font,
     default_bg: Hsla,
 ) -> Vec<TextRun> {
     let mut runs = vec![];
@@ -436,7 +610,7 @@ fn highlight_line_with_state(
         let underline = style.underline_color.and_then(helix_color_to_hsla);
 
         runs.push(create_styled_text_run(
-            byte_len, &font, &style, fg, bg, default_bg, underline,
+            byte_len, font, &style, fg, bg, default_bg, underline,
         ));
         position = next_pos;
     }
@@ -618,5 +792,25 @@ mod tests {
 
         assert_eq!(anchor, text.chars().count());
         assert_eq!(height, 1);
+    }
+
+    #[test]
+    fn syntax_window_for_visible_range_limits_height() {
+        let text = "one\ntwo\nthree\nfour\nfive\n";
+        let visible_start = text.find("three").unwrap();
+        let visible_end = visible_start + "three".chars().count();
+
+        let (anchor, height) = syntax_highlight_window_for_char_range(
+            text.into(),
+            ViewPosition {
+                anchor: visible_start,
+                vertical_offset: 0,
+                horizontal_offset: 0,
+            },
+            Some(visible_start..visible_end),
+        );
+
+        assert_eq!(anchor, visible_start);
+        assert!(height < 5);
     }
 }
