@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use notify::event::{CreateKind, RemoveKind};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use nucleotide_logging::{debug, warn};
 use std::path::{Path, PathBuf};
@@ -121,7 +122,34 @@ impl FileTreeWatcher {
     }
 
     /// Check if a path should be ignored
-    fn should_ignore_path(&self, path: &Path) -> bool {
+    fn rebuild_gitignore_matcher(&mut self) {
+        self.gitignore = Self::build_gitignore_matcher(&self.root_path);
+    }
+
+    fn is_ignore_config_path(&self, path: &Path) -> bool {
+        if path.file_name().and_then(|name| name.to_str()) == Some(".gitignore")
+            || path.file_name().and_then(|name| name.to_str()) == Some(".ignore")
+        {
+            return true;
+        }
+
+        path.strip_prefix(&self.root_path)
+            .is_ok_and(|relative_path| {
+                relative_path == Path::new(".git/info/exclude")
+                    || relative_path == Path::new(".helix/ignore")
+            })
+    }
+
+    fn is_dir_event(path: &Path, event_kind: &EventKind) -> bool {
+        path.is_dir()
+            || matches!(
+                event_kind,
+                EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder)
+            )
+    }
+
+    /// Check if a path should be ignored
+    fn should_ignore_path(&self, path: &Path, is_dir: bool) -> bool {
         // Check if path is inside VCS directories
         for component in path.components() {
             if let std::path::Component::Normal(name) = component
@@ -149,7 +177,7 @@ impl FileTreeWatcher {
         if let Some(ref gitignore) = self.gitignore
             && let Ok(relative_path) = path.strip_prefix(&self.root_path)
         {
-            let matched = gitignore.matched(relative_path, path.is_dir());
+            let matched = gitignore.matched_path_or_any_parents(relative_path, is_dir);
             return matched.is_ignore();
         }
 
@@ -157,7 +185,9 @@ impl FileTreeWatcher {
     }
 
     /// Convert a notify Event to a FileTreeEvent
-    fn convert_event(&self, event: Event) -> Option<FileTreeEvent> {
+    fn convert_event(&mut self, event: Event) -> Option<FileTreeEvent> {
+        let event_kind = event.kind;
+
         // Filter out events for paths outside our root
         let paths: Vec<_> = event
             .paths
@@ -166,13 +196,19 @@ impl FileTreeWatcher {
             .cloned()
             .collect();
 
+        if paths.iter().any(|path| self.is_ignore_config_path(path)) {
+            self.rebuild_gitignore_matcher();
+        }
+
         // Log pre-filter existence and ignore decisions
         for p in &paths {
             let exists = p.exists();
-            let ignored = self.should_ignore_path(p);
+            let is_dir = Self::is_dir_event(p, &event_kind);
+            let ignored = self.should_ignore_path(p, is_dir);
             debug!(
                 path = %p.display(),
                 exists = exists,
+                is_dir = is_dir,
                 ignored = ignored,
                 "event path status"
             );
@@ -180,7 +216,10 @@ impl FileTreeWatcher {
 
         let paths: Vec<_> = paths
             .into_iter()
-            .filter(|path| !self.should_ignore_path(path))
+            .filter(|path| {
+                let is_dir = Self::is_dir_event(path, &event_kind);
+                !self.should_ignore_path(path, is_dir)
+            })
             .collect();
 
         if paths.is_empty() {
@@ -190,7 +229,7 @@ impl FileTreeWatcher {
         // Handle rename specially when we have at least two paths
         // Notify represents rename as a Modify(Name(...)) event kind.
         // We map that to a Renamed event when possible.
-        if matches!(event.kind, EventKind::Modify(_)) && paths.len() >= 2 {
+        if matches!(event_kind, EventKind::Modify(_)) && paths.len() >= 2 {
             debug!(from = %paths[0].display(), to = %paths[1].display(), "mapping rename event");
             return Some(FileTreeEvent::FileSystemChanged {
                 path: paths[1].clone(),
@@ -201,7 +240,7 @@ impl FileTreeWatcher {
             });
         }
 
-        let kind = match event.kind {
+        let kind = match event_kind {
             EventKind::Create(_) => FileSystemEventKind::Created,
             EventKind::Remove(_) => FileSystemEventKind::Deleted,
             _ => FileSystemEventKind::Modified,
@@ -433,5 +472,76 @@ mod tests {
         // Note: This test might be flaky due to file system event timing
         // The main goal is to verify the watcher compiles and runs without panicking
         assert!(test_file.exists());
+    }
+
+    #[test]
+    fn test_file_watcher_filters_gitignored_file_events() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join(".gitignore"), "ignored.log\n").unwrap();
+
+        let mut watcher =
+            FileTreeWatcher::new(temp_dir.path().to_path_buf()).expect("Failed to create watcher");
+        let ignored_file = temp_dir.path().join("ignored.log");
+        let event = Event::new(EventKind::Create(CreateKind::File)).add_path(ignored_file.clone());
+
+        assert!(watcher.convert_event(event).is_none());
+        assert!(watcher.should_ignore_path(&ignored_file, false));
+    }
+
+    #[test]
+    fn test_file_watcher_keeps_unignored_file_events() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join(".gitignore"), "ignored.log\n").unwrap();
+
+        let mut watcher =
+            FileTreeWatcher::new(temp_dir.path().to_path_buf()).expect("Failed to create watcher");
+        let visible_file = temp_dir.path().join("visible.log");
+        let event = Event::new(EventKind::Create(CreateKind::File)).add_path(visible_file.clone());
+
+        let converted = watcher.convert_event(event);
+
+        assert_eq!(
+            converted,
+            Some(FileTreeEvent::FileSystemChanged {
+                path: visible_file,
+                kind: FileSystemEventKind::Created,
+            })
+        );
+    }
+
+    #[test]
+    fn test_file_watcher_filters_gitignored_directory_delete_events() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join(".gitignore"), "target/\n").unwrap();
+
+        let mut watcher =
+            FileTreeWatcher::new(temp_dir.path().to_path_buf()).expect("Failed to create watcher");
+        let ignored_dir = temp_dir.path().join("target");
+        let event = Event::new(EventKind::Remove(RemoveKind::Folder)).add_path(ignored_dir.clone());
+
+        assert!(watcher.convert_event(event).is_none());
+        assert!(watcher.should_ignore_path(&ignored_dir, true));
+    }
+
+    #[test]
+    fn test_file_watcher_reloads_gitignore_after_ignore_file_event() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut watcher =
+            FileTreeWatcher::new(temp_dir.path().to_path_buf()).expect("Failed to create watcher");
+
+        fs::write(
+            temp_dir.path().join(".gitignore"),
+            "ignored_after_reload.txt\n",
+        )
+        .unwrap();
+
+        let gitignore_event = Event::new(EventKind::Create(CreateKind::File))
+            .add_path(temp_dir.path().join(".gitignore"));
+        let _ = watcher.convert_event(gitignore_event);
+
+        let ignored_file = temp_dir.path().join("ignored_after_reload.txt");
+        let ignored_event = Event::new(EventKind::Create(CreateKind::File)).add_path(ignored_file);
+
+        assert!(watcher.convert_event(ignored_event).is_none());
     }
 }
