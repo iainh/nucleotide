@@ -10990,6 +10990,7 @@ impl Render for Workspace {
                     let handle = self.handle.clone();
                     use nucleotide_ui::button::Button;
                     let open_btn = Button::new("open-dir-btn", "Open a directory to view files")
+                        .activate_on_mouse_down()
                         .on_click(cx.listener(
                             move |_: &mut Workspace, _ev: &gpui::ClickEvent, _window, cx| {
                                 open_directory(core.clone(), handle.clone(), cx);
