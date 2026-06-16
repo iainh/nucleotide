@@ -93,8 +93,10 @@ impl DocumentView {
         }
     }
 
-    pub fn set_focused(&mut self, is_focused: bool) {
+    pub fn set_focused(&mut self, is_focused: bool) -> bool {
+        let changed = self.is_focused != is_focused;
         self.is_focused = is_focused;
+        changed
     }
 
     pub fn update_text_style(&mut self, style: TextStyle) {

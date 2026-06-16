@@ -298,7 +298,6 @@ struct SoftWrapDocumentFramePaintParams<'a> {
     pub default_bg: Hsla,
     pub cursorline_color: Option<Hsla>,
     pub is_focused: bool,
-    pub element_focused: bool,
     pub selection_primary: Hsla,
     pub selection_secondary: Hsla,
     pub gutter_color: Hsla,
@@ -622,7 +621,6 @@ pub fn paint_document_frame(
                 default_bg: params.default_bg,
                 cursorline_color: params.cursorline_color,
                 is_focused: params.is_focused,
-                element_focused: params.element_focused,
                 selection_primary: params.selection_primary,
                 selection_secondary: params.selection_secondary,
                 gutter_color: params.gutter_color,
@@ -820,10 +818,6 @@ fn paint_soft_wrap_cursor(
     cx: &mut App,
     params: &SoftWrapDocumentFramePaintParams<'_>,
 ) -> Option<CursorOverlayPlan> {
-    if !(params.is_focused || params.element_focused) {
-        return None;
-    }
-
     let frame = params.frame;
     let soft_wrap_render_plan = frame.soft_wrap_render_plan.as_ref()?;
     let cursor_paint_plan = soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
@@ -858,6 +852,7 @@ fn paint_soft_wrap_cursor(
             font_size: params.font_size,
             fallback_fg: params.fg_color,
             default_bg: params.default_bg,
+            is_focused: params.is_focused,
             fallback_width: params.layout.cell_width,
             line_height: params.layout.line_height,
         },
@@ -886,14 +881,6 @@ fn paint_unwrapped_cursor(
         "Cursor char idx: {}, line: {}",
         frame.render_snapshot.cursor_char_idx, frame.render_snapshot.cursor_line
     );
-
-    if !(params.is_focused || params.element_focused) {
-        debug!(
-            "Cursor rendering skipped - is_focused: {}, element_focused: {}",
-            params.is_focused, params.element_focused
-        );
-        return None;
-    }
 
     let Some(cursor_viewport_pos) = cursor_viewport_pos else {
         debug!(
@@ -973,6 +960,7 @@ fn paint_unwrapped_cursor(
             font_size: params.font_size,
             fallback_fg: params.fg_color,
             default_bg: params.default_bg,
+            is_focused: params.is_focused,
             fallback_width: params.layout.cell_width,
             line_height: params.layout.line_height,
         },

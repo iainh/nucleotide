@@ -4,8 +4,8 @@
 use std::borrow::Cow;
 
 use gpui::{
-    App, Bounds, Font, Hsla, Pixels, Point, ShapedLine, SharedString, Size, TextAlign, TextRun,
-    Window, WindowTextSystem, fill, point, px, size, white,
+    App, BorderStyle, Bounds, Font, Hsla, Pixels, Point, ShapedLine, SharedString, Size, TextAlign,
+    TextRun, Window, WindowTextSystem, fill, point, px, quad, size, transparent_black, white,
 };
 use helix_core::{RopeSlice, doc_formatter::TextFormat, graphemes::next_grapheme_boundary};
 use helix_view::{
@@ -32,6 +32,7 @@ pub struct EditorCursor {
     pub block_width: Pixels,
     pub line_height: Pixels,
     pub text: Option<ShapedLine>,
+    pub hollow: bool,
 }
 
 impl EditorCursor {
@@ -50,6 +51,7 @@ impl EditorCursor {
             block_width,
             line_height,
             text,
+            hollow: false,
         }
     }
 
@@ -76,7 +78,18 @@ impl EditorCursor {
 
     pub fn paint(&mut self, origin: Point<Pixels>, window: &mut Window, cx: &mut App) {
         let bounds = self.bounds(origin);
-        window.paint_quad(fill(bounds, self.color));
+        if self.hollow && matches!(self.kind, CursorKind::Block) {
+            window.paint_quad(quad(
+                bounds,
+                px(0.0),
+                transparent_black(),
+                px(1.0),
+                self.color,
+                BorderStyle::default(),
+            ));
+        } else {
+            window.paint_quad(fill(bounds, self.color));
+        }
 
         if let Some(text) = &self.text
             && let Err(error) = text.paint(
@@ -161,6 +174,7 @@ pub struct ShapedEditorCursorPaintParams<'a> {
     pub cursor_style: &'a Style,
     pub text_style_at_cursor: &'a Style,
     pub cursor_text_shape: CursorTextShape,
+    pub is_focused: bool,
     pub fallback_fg: Hsla,
     pub fallback_width: Pixels,
     pub line_height: Pixels,
@@ -176,6 +190,7 @@ pub struct EditorCursorTextPaintParams<'a> {
     pub font_size: Pixels,
     pub fallback_fg: Hsla,
     pub default_bg: Hsla,
+    pub is_focused: bool,
     pub fallback_width: Pixels,
     pub line_height: Pixels,
 }
@@ -254,6 +269,18 @@ pub fn shaped_editor_cursor_plan(
     }
 }
 
+fn cursor_kind_for_focus(kind: CursorKind, is_focused: bool) -> CursorKind {
+    if is_focused || matches!(kind, CursorKind::Hidden) {
+        kind
+    } else {
+        CursorKind::Block
+    }
+}
+
+fn should_paint_hollow_cursor(kind: CursorKind, is_focused: bool) -> bool {
+    matches!(cursor_kind_for_focus(kind, is_focused), CursorKind::Block) && !is_focused
+}
+
 pub fn paint_shaped_editor_cursor(
     window: &mut Window,
     cx: &mut App,
@@ -269,14 +296,22 @@ pub fn paint_shaped_editor_cursor(
         line_height: params.line_height,
     });
 
+    let paint_kind = cursor_kind_for_focus(params.kind, params.is_focused);
+    let hollow = should_paint_hollow_cursor(params.kind, params.is_focused);
+    let cursor_text = if hollow {
+        None
+    } else {
+        params.cursor_text_shape.into_shaped_line()
+    };
     let mut cursor = EditorCursor::from_paint_position(
         params.paint_position,
-        params.kind,
+        paint_kind,
         plan.color,
         plan.width,
         params.line_height,
-        params.cursor_text_shape.into_shaped_line(),
+        cursor_text,
     );
+    cursor.hollow = hollow;
     cursor.paint(params.paint_position.paint_origin, window, cx);
 
     plan.overlay
@@ -310,6 +345,7 @@ pub fn shape_and_paint_editor_cursor(
             cursor_style: params.cursor_style,
             text_style_at_cursor: params.text_style_at_cursor,
             cursor_text_shape,
+            is_focused: params.is_focused,
             fallback_fg: params.fallback_fg,
             fallback_width: params.fallback_width,
             line_height: params.line_height,
@@ -703,6 +739,7 @@ mod tests {
             block_width: px(8.0),
             line_height: px(20.0),
             text: None,
+            hollow: false,
         }
     }
 
@@ -804,10 +841,54 @@ mod tests {
         );
 
         assert_eq!(cursor.origin, point(px(3.0), px(5.0)));
+        assert!(!cursor.hollow);
         assert_eq!(
             cursor.bounds(paint_position.paint_origin).origin,
             point(px(13.0), px(25.0))
         );
+    }
+
+    #[test]
+    fn inactive_visible_cursors_paint_as_hollow_blocks() {
+        assert_eq!(
+            cursor_kind_for_focus(CursorKind::Block, false),
+            CursorKind::Block
+        );
+        assert_eq!(
+            cursor_kind_for_focus(CursorKind::Bar, false),
+            CursorKind::Block
+        );
+        assert_eq!(
+            cursor_kind_for_focus(CursorKind::Underline, false),
+            CursorKind::Block
+        );
+        assert!(should_paint_hollow_cursor(CursorKind::Block, false));
+        assert!(should_paint_hollow_cursor(CursorKind::Bar, false));
+        assert!(should_paint_hollow_cursor(CursorKind::Underline, false));
+    }
+
+    #[test]
+    fn focused_and_hidden_cursors_do_not_paint_hollow() {
+        assert_eq!(
+            cursor_kind_for_focus(CursorKind::Block, true),
+            CursorKind::Block
+        );
+        assert_eq!(
+            cursor_kind_for_focus(CursorKind::Bar, true),
+            CursorKind::Bar
+        );
+        assert_eq!(
+            cursor_kind_for_focus(CursorKind::Underline, true),
+            CursorKind::Underline
+        );
+        assert_eq!(
+            cursor_kind_for_focus(CursorKind::Hidden, false),
+            CursorKind::Hidden
+        );
+        assert!(!should_paint_hollow_cursor(CursorKind::Block, true));
+        assert!(!should_paint_hollow_cursor(CursorKind::Bar, true));
+        assert!(!should_paint_hollow_cursor(CursorKind::Underline, true));
+        assert!(!should_paint_hollow_cursor(CursorKind::Hidden, false));
     }
 
     #[test]
