@@ -145,6 +145,7 @@ pub struct SizeTokens {
     // Font sizes
     pub text_xs: Pixels,
     pub text_sm: Pixels,
+    pub text_base: Pixels,
     pub text_md: Pixels,
     pub text_lg: Pixels,
     pub text_xl: Pixels,
@@ -184,6 +185,7 @@ impl SizeTokens {
             // Font sizes
             text_xs: px(11.0),
             text_sm: px(12.0),
+            text_base: px(14.0),
             text_md: px(14.0),
             text_lg: px(16.0),
             text_xl: px(18.0),
@@ -191,6 +193,24 @@ impl SizeTokens {
             // Component sizes
             titlebar_height: px(34.0),
         }
+    }
+
+    /// Create size tokens whose text scale is centred on the configured UI font size.
+    pub fn with_text_md(text_md: Pixels) -> Self {
+        let mut tokens = Self::default();
+        tokens.set_text_md(text_md);
+        tokens
+    }
+
+    /// Centre the text scale on `text_md`.
+    pub fn set_text_md(&mut self, text_md: Pixels) {
+        let base = f32::from(text_md);
+        self.text_xs = px(base - 2.0);
+        self.text_sm = px(base - 1.0);
+        self.text_base = text_md;
+        self.text_md = text_md;
+        self.text_lg = px(base + 1.0);
+        self.text_xl = px(base + 2.0);
     }
 }
 
@@ -770,6 +790,17 @@ impl DesignTokens {
             chrome,
             sizes: SizeTokens::default(),
         }
+    }
+
+    /// Apply the configured UI font size to the typography token scale.
+    pub fn set_ui_font_size(&mut self, ui_font_size: Pixels) {
+        self.sizes.set_text_md(ui_font_size);
+    }
+
+    /// Return tokens with typography centred on the configured UI font size.
+    pub fn with_ui_font_size(mut self, ui_font_size: Pixels) -> Self {
+        self.set_ui_font_size(ui_font_size);
+        self
     }
 }
 

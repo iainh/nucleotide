@@ -664,10 +664,15 @@ fn gui_main(
             // Initialize the provider system
             init_provider_system();
 
+            // Set up fonts from configuration
+            let editor_font_config = config.editor_font();
+            let ui_font_config = config.ui_font();
+
             // Set up theme manager with Helix theme
             let helix_theme = app.editor.theme.clone();
             #[allow(unused_mut)]
             let mut theme_manager = crate::ThemeManager::new(helix_theme);
+            theme_manager.set_ui_font_size(px(ui_font_config.size));
 
             // Detect initial system appearance
             #[cfg(target_os = "macos")]
@@ -716,10 +721,6 @@ fn gui_main(
             let vcs_config = nucleotide_vcs::VcsConfig::default();
             let vcs_service = nucleotide_vcs::VcsServiceHandle::new(vcs_config, cx);
             cx.set_global(vcs_service);
-
-            // Set up fonts from configuration
-            let editor_font_config = config.editor_font();
-            let ui_font_config = config.ui_font();
 
             let font_settings = FontSettings {
                 fixed_font: nucleotide_types::Font {

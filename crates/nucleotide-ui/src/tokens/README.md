@@ -145,7 +145,7 @@ dark_tokens.editor.text_primary;  // Light text for dark background
 ### Component Sizes
 - **Buttons**: `button_height_sm` (28px), `button_height_md` (36px), `button_height_lg` (44px)
 - **Border Radius**: `radius_sm` (4px), `radius_md` (6px), `radius_lg` (8px), `radius_full` (9999px)
-- **Typography**: `text_xs` (11px), `text_sm` (12px), `text_md` (14px), `text_lg` (16px), `text_xl` (18px)
+- **Typography**: centred on the configured UI font size: `text_xs` (-2px), `text_sm` (-1px), `text_base`/`text_md`, `text_lg` (+1px), `text_xl` (+2px)
 
 ## Best Practices
 
