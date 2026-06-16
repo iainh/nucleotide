@@ -10,11 +10,61 @@ use nucleotide_logging::PerfTimer;
 
 use crate::EditorSurfaceGeometry;
 
+#[derive(Clone, Debug)]
 pub struct EditorDocumentMetrics {
     pub viewport_columns: u16,
     pub soft_wrap: bool,
     pub visual_rows: usize,
     pub text_format: TextFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EditorTextFormatCacheKey {
+    soft_wrap: bool,
+    tab_width: u16,
+    max_wrap: u16,
+    max_indent_retain: u16,
+    wrap_indicator: Box<str>,
+    wrap_indicator_highlight: Option<u32>,
+    viewport_width: u16,
+    soft_wrap_at_text_width: bool,
+}
+
+impl From<&TextFormat> for EditorTextFormatCacheKey {
+    fn from(text_format: &TextFormat) -> Self {
+        Self {
+            soft_wrap: text_format.soft_wrap,
+            tab_width: text_format.tab_width,
+            max_wrap: text_format.max_wrap,
+            max_indent_retain: text_format.max_indent_retain,
+            wrap_indicator: text_format.wrap_indicator.clone(),
+            wrap_indicator_highlight: text_format
+                .wrap_indicator_highlight
+                .map(|highlight| highlight.get()),
+            viewport_width: text_format.viewport_width,
+            soft_wrap_at_text_width: text_format.soft_wrap_at_text_width,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EditorDocumentMetricsCacheKey {
+    document_version: i32,
+    gutter_columns: u16,
+    viewport_columns: u16,
+    minimum_columns: u16,
+    text_format: EditorTextFormatCacheKey,
+}
+
+#[derive(Clone, Debug)]
+struct CachedEditorDocumentMetrics {
+    key: EditorDocumentMetricsCacheKey,
+    metrics: EditorDocumentMetrics,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EditorDocumentMetricsCache {
+    last: Option<CachedEditorDocumentMetrics>,
 }
 
 impl EditorDocumentMetrics {
@@ -36,14 +86,63 @@ impl EditorDocumentMetrics {
             cell_width,
             minimum_columns,
         );
-        let visual_rows = visual_rows_for_text(document.text().slice(..), &text_format);
+        Self::from_text_format(document, viewport_columns, text_format)
+    }
 
+    fn from_text_format(
+        document: &Document,
+        viewport_columns: u16,
+        text_format: TextFormat,
+    ) -> Self {
+        let visual_rows = visual_rows_for_text(document.text().slice(..), &text_format);
         Self {
             viewport_columns,
             soft_wrap: text_format.soft_wrap,
             visual_rows,
             text_format,
         }
+    }
+}
+
+impl EditorDocumentMetricsCache {
+    pub fn resolve(
+        &mut self,
+        document: &Document,
+        theme: Option<&Theme>,
+        bounds: Bounds<Pixels>,
+        gutter_columns: u16,
+        cell_width: Pixels,
+        minimum_columns: u16,
+    ) -> EditorDocumentMetrics {
+        let (viewport_columns, text_format) = document_text_format_for_surface(
+            document,
+            theme,
+            bounds,
+            gutter_columns,
+            cell_width,
+            minimum_columns,
+        );
+        let key = EditorDocumentMetricsCacheKey {
+            document_version: document.version(),
+            gutter_columns,
+            viewport_columns,
+            minimum_columns,
+            text_format: EditorTextFormatCacheKey::from(&text_format),
+        };
+
+        if let Some(cached) = &self.last
+            && cached.key == key
+        {
+            return cached.metrics.clone();
+        }
+
+        let metrics =
+            EditorDocumentMetrics::from_text_format(document, viewport_columns, text_format);
+        self.last = Some(CachedEditorDocumentMetrics {
+            key,
+            metrics: metrics.clone(),
+        });
+        metrics
     }
 }
 
@@ -74,9 +173,24 @@ pub fn visual_rows_for_text(text: RopeSlice<'_>, text_format: &TextFormat) -> us
 
 #[cfg(test)]
 mod tests {
-    use helix_core::Rope;
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
+    use gpui::{point, px, size};
+    use helix_core::{Rope, Transaction, syntax};
+    use helix_view::{Document, DocumentId, View, editor::Config, editor::GutterConfig};
 
     use super::*;
+
+    fn test_document_with_config(config: Config, text: &str) -> (Document, View) {
+        let config = Arc::new(ArcSwap::new(Arc::new(config)));
+        let syntax_loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+        let mut document = Document::from(Rope::from(text), None, config, syntax_loader);
+        let view = View::new(DocumentId::default(), GutterConfig::default());
+        document.ensure_view_init(view.id);
+
+        (document, view)
+    }
 
     #[test]
     fn non_wrapped_visual_rows_match_rope_lines() {
@@ -104,5 +218,44 @@ mod tests {
         };
 
         assert!(visual_rows_for_text(text.slice(..), &text_format) > 1);
+    }
+
+    #[test]
+    fn metrics_cache_reuses_matching_soft_wrap_layout() {
+        let mut config = Config::default();
+        config.soft_wrap.enable = Some(true);
+        let (mut document, view) = test_document_with_config(config, "abcdefghijklmnopqrstuvwxyz");
+        let mut cache = EditorDocumentMetricsCache::default();
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(160.0), px(80.0)));
+        let gutter_columns = view.gutter_offset(&document);
+
+        let first = cache.resolve(&mut document, None, bounds, gutter_columns, px(8.0), 1);
+        let second = cache.resolve(&mut document, None, bounds, gutter_columns, px(8.0), 1);
+
+        assert!(first.soft_wrap);
+        assert_eq!(second.visual_rows, first.visual_rows);
+        assert_eq!(second.viewport_columns, first.viewport_columns);
+    }
+
+    #[test]
+    fn metrics_cache_invalidates_when_document_version_changes() {
+        let mut config = Config::default();
+        config.soft_wrap.enable = Some(true);
+        let (mut document, view) = test_document_with_config(config, "abcdefghijklmnopqrstuvwxyz");
+        let mut cache = EditorDocumentMetricsCache::default();
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(160.0), px(80.0)));
+        let gutter_columns = view.gutter_offset(&document);
+
+        let first = cache.resolve(&mut document, None, bounds, gutter_columns, px(8.0), 1);
+        let insert_at = document.text().len_chars();
+        let inserted_text = "abcdefghijklmnopqrstuvwxyz".repeat(20);
+        let transaction = Transaction::change(
+            document.text(),
+            [(insert_at, insert_at, Some(inserted_text.into()))].into_iter(),
+        );
+        document.apply(&transaction, view.id);
+        let second = cache.resolve(&mut document, None, bounds, gutter_columns, px(8.0), 1);
+
+        assert!(second.visual_rows > first.visual_rows);
     }
 }

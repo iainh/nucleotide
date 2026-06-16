@@ -1,7 +1,7 @@
 // ABOUTME: Native GPUI editor viewport state for pixel and visual-row scrolling
 // ABOUTME: Owns GUI scroll state before it is synced into Helix view offsets
 
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{cell::Cell, cell::RefCell, rc::Rc, time::Duration};
 
 use gpui::{Bounds, Pixels, Point, Size, point, px, size};
 use helix_core::{
@@ -12,8 +12,8 @@ use helix_view::{Document, DocumentId, Editor, Theme, ViewId, graphics::Rect, vi
 use nucleotide_logging::{PerfTimer, trace};
 
 use crate::{
-    EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorDocumentMetrics, ScrollManager,
-    soft_wrap_visual_position,
+    EDITOR_MINIMUM_VIEWPORT_COLUMNS, EditorDocumentMetrics, EditorDocumentMetricsCache,
+    ScrollManager, soft_wrap_visual_position,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -214,6 +214,7 @@ impl<'a> EditorViewportSurfaceLayout<'a> {
 pub struct EditorViewport {
     scroll: ScrollManager,
     cursor_reveal_request: Rc<Cell<Option<EditorCursorReveal>>>,
+    document_metrics_cache: Rc<RefCell<EditorDocumentMetricsCache>>,
 }
 
 impl EditorViewport {
@@ -221,6 +222,7 @@ impl EditorViewport {
         Self {
             scroll: ScrollManager::new(line_height),
             cursor_reveal_request: Rc::new(Cell::new(None)),
+            document_metrics_cache: Rc::new(RefCell::new(EditorDocumentMetricsCache::default())),
         }
     }
 
@@ -507,7 +509,10 @@ impl EditorViewport {
         view: &helix_view::View,
         layout: EditorViewportContentLayout<'_>,
     ) -> EditorViewportContentUpdate {
-        let (gutter_columns, metrics) = editor_viewport_content_metrics(document, view, layout);
+        let (gutter_columns, metrics) = {
+            let mut metrics_cache = self.document_metrics_cache.borrow_mut();
+            editor_viewport_content_metrics(&mut metrics_cache, document, view, layout)
+        };
         self.set_content_visual_rows(metrics.visual_rows);
 
         EditorViewportContentUpdate {
@@ -554,12 +559,16 @@ impl EditorViewport {
             cell_width: layout.cell_width,
             minimum_columns: layout.minimum_columns,
         };
-        let (gutter_columns, metrics) = editor_viewport_surface_metrics(
-            document,
-            view,
-            content_layout,
-            self.visible_visual_rows(),
-        );
+        let (gutter_columns, metrics) = {
+            let mut metrics_cache = self.document_metrics_cache.borrow_mut();
+            editor_viewport_surface_metrics(
+                &mut metrics_cache,
+                document,
+                view,
+                content_layout,
+                self.visible_visual_rows(),
+            )
+        };
         self.set_content_visual_rows(metrics.visual_rows);
         let view_area_plan = helix_view_area_plan_for_surface(
             view.area,
@@ -650,12 +659,13 @@ impl EditorViewport {
 }
 
 fn editor_viewport_content_metrics(
+    metrics_cache: &mut EditorDocumentMetricsCache,
     document: &Document,
     view: &helix_view::View,
     layout: EditorViewportContentLayout<'_>,
 ) -> (u16, EditorDocumentMetrics) {
     let gutter_columns = view.gutter_offset(document);
-    let metrics = EditorDocumentMetrics::resolve(
+    let metrics = metrics_cache.resolve(
         document,
         layout.theme,
         layout.bounds,
@@ -668,13 +678,14 @@ fn editor_viewport_content_metrics(
 }
 
 fn editor_viewport_surface_metrics(
+    metrics_cache: &mut EditorDocumentMetricsCache,
     document: &Document,
     view: &helix_view::View,
     layout: EditorViewportContentLayout<'_>,
     visible_rows: usize,
 ) -> (u16, EditorDocumentMetrics) {
     let (current_gutter_columns, current_metrics) =
-        editor_viewport_content_metrics(document, view, layout);
+        editor_viewport_content_metrics(metrics_cache, document, view, layout);
     let mut surface_view = view.clone();
     surface_view.area =
         helix_view_area_for_surface(0, current_metrics.viewport_columns, visible_rows);
@@ -684,7 +695,7 @@ fn editor_viewport_surface_metrics(
         return (current_gutter_columns, current_metrics);
     }
 
-    let metrics = EditorDocumentMetrics::resolve(
+    let metrics = metrics_cache.resolve(
         document,
         layout.theme,
         layout.bounds,

@@ -69,7 +69,8 @@ pub use document_frame_painter::{
     prepare_native_editor_frame, render_native_editor_frame,
 };
 pub use document_metrics::{
-    EditorDocumentMetrics, document_text_format_for_surface, visual_rows_for_text,
+    EditorDocumentMetrics, EditorDocumentMetricsCache, document_text_format_for_surface,
+    visual_rows_for_text,
 };
 pub use geometry::{EditorLayout, EditorSurfaceGeometry};
 pub use gutter::{
