@@ -517,7 +517,7 @@ mod tests {
         SoftWrapVisualLine {
             visual_line,
             doc_line,
-            text: String::new(),
+            text: "".into(),
             line_start_col: 0,
             wrap_indicator_len: 0,
             line_start_char: None,

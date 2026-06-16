@@ -1,7 +1,7 @@
 // ABOUTME: Soft-wrap viewport collection for native editor rendering
 // ABOUTME: Converts Helix formatter graphemes into owned visual-line records
 
-use gpui::{Bounds, Font, Hsla, Pixels, Point, TextRun, point, px, size};
+use gpui::{Bounds, Font, Hsla, Pixels, Point, SharedString, TextRun, point, px, size};
 use helix_core::{
     RopeSlice,
     doc_formatter::{DocumentFormatter, FormattedGrapheme, TextFormat},
@@ -16,7 +16,7 @@ use crate::{EditorSurfaceGeometry, document_text_format_for_surface};
 pub struct SoftWrapVisualLine {
     pub visual_line: usize,
     pub doc_line: usize,
-    pub text: String,
+    pub text: SharedString,
     pub line_start_col: usize,
     pub wrap_indicator_len: usize,
     pub line_start_char: Option<usize>,
@@ -405,7 +405,7 @@ fn build_visual_line(
     SoftWrapVisualLine {
         visual_line,
         doc_line,
-        text: line_text,
+        text: line_text.into(),
         line_start_col,
         wrap_indicator_len,
         line_start_char,
@@ -446,7 +446,7 @@ mod tests {
         SoftWrapVisualLine {
             visual_line: 1,
             doc_line: 0,
-            text: "    .wrapped".to_string(),
+            text: "    .wrapped".into(),
             line_start_col,
             wrap_indicator_len,
             line_start_char: Some(4),
@@ -644,7 +644,7 @@ mod tests {
             SoftWrapVisualLine {
                 visual_line: 2,
                 doc_line: 4,
-                text: "next".to_string(),
+                text: "next".into(),
                 line_start_col: 0,
                 wrap_indicator_len: 0,
                 line_start_char: Some(12),

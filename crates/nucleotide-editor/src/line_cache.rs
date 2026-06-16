@@ -69,7 +69,7 @@ impl LineLayout {
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone)]
 struct ShapedLineKey {
-    line_text: String,
+    line_text: SharedString,
     font_size: u32,
     viewport_width: u32,
     runs_hash: u64,
@@ -96,7 +96,7 @@ fn shaped_line_key(
     runs: &[TextRun],
 ) -> ShapedLineKey {
     ShapedLineKey {
-        line_text: line_text.to_string(),
+        line_text: line_text.clone(),
         font_size: f32::from(font_size) as u32,
         viewport_width: f32::from(viewport_width) as u32,
         runs_hash: text_runs_hash(runs),
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn shaped_line_key_distinguishes_text_run_styles() {
         let base_key = ShapedLineKey {
-            line_text: "same text".to_string(),
+            line_text: "same text".into(),
             font_size: 16,
             viewport_width: 800,
             runs_hash: 1,
@@ -376,7 +376,7 @@ mod tests {
         let visual = SoftWrapVisualLine {
             visual_line: 3,
             doc_line: 11,
-            text: ".wrapped".to_string(),
+            text: ".wrapped".into(),
             line_start_col: 0,
             wrap_indicator_len: 1,
             line_start_char: Some(30),
