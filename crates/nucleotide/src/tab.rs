@@ -701,8 +701,11 @@ impl RenderOnce for Tab {
             .child(
                 div()
                     .flex()
+                    .flex_1()
                     .items_center()
                     .relative()
+                    .w_full()
+                    .min_w(px(0.0))
                     .h(content_height)
                     .px(tokens.sizes.space_2)
                     .gap(tokens.sizes.space_2)
@@ -1120,12 +1123,14 @@ impl Tab {
             TabClosePosition::Left => (end_slot, start_slot),
             TabClosePosition::Right => (start_slot, end_slot),
         };
+        let trailing_slot = div().flex_none().ml_auto().child(trailing_slot);
         let label_text_color = Tab::vcs_label_text_color(text_color, git_status, tokens);
 
         div()
             .flex()
             .items_center()
             .flex_1()
+            .w_full()
             .min_w(px(0.0))
             .gap(tokens.sizes.space_2)
             .child(leading_slot)
