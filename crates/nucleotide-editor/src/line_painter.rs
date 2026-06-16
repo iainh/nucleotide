@@ -154,7 +154,7 @@ pub fn paint_soft_wrap_editor_line(
     let text_system = window.text_system().clone();
     let shaped_line = params.line_cache.shape_line_cached(
         text_system.as_ref(),
-        SharedString::from(params.plan.visual.text.clone()),
+        params.plan.visual.text.clone(),
         params.font_size,
         params.viewport_width,
         params.line_runs,
@@ -246,7 +246,7 @@ mod tests {
         SoftWrapVisualLine {
             visual_line: 3,
             doc_line: 11,
-            text: text.to_string(),
+            text: text.into(),
             line_start_col: 0,
             wrap_indicator_len: 0,
             line_start_char: Some(30),
