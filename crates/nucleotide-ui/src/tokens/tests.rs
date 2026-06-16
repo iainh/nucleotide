@@ -3,7 +3,24 @@
 
 use crate::DesignTokens;
 use crate::styling::{ColorTheory, ContrastRatios};
-use crate::tokens::{ColorContext, TitleBarTokens};
+use crate::tokens::{ColorContext, SizeTokens, TitleBarTokens};
+
+#[cfg(test)]
+mod typography_token_tests {
+    use super::*;
+
+    #[test]
+    fn text_scale_is_centered_on_configured_ui_font_size() {
+        let tokens = SizeTokens::with_text_md(gpui::px(13.0));
+
+        assert_eq!(tokens.text_xs, gpui::px(11.0));
+        assert_eq!(tokens.text_sm, gpui::px(12.0));
+        assert_eq!(tokens.text_base, gpui::px(13.0));
+        assert_eq!(tokens.text_md, gpui::px(13.0));
+        assert_eq!(tokens.text_lg, gpui::px(14.0));
+        assert_eq!(tokens.text_xl, gpui::px(15.0));
+    }
+}
 
 #[cfg(test)]
 mod titlebar_contrast_tests {

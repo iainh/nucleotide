@@ -3,7 +3,7 @@
 
 use crate::Theme as UITheme;
 use crate::theme_utils::color_to_hsla;
-use gpui::{App, Global, Hsla, WindowAppearance, hsla};
+use gpui::{App, Global, Hsla, Pixels, WindowAppearance, hsla};
 use helix_view::Theme as HelixTheme;
 
 /// Extracted colors from Helix theme for comprehensive design token creation
@@ -113,6 +113,8 @@ pub struct ThemeManager {
     ui_theme: UITheme,
     /// Current system appearance
     system_appearance: SystemAppearance,
+    /// Configured UI font size used as the medium typography token.
+    ui_font_size: Option<Pixels>,
 }
 
 impl ThemeManager {
@@ -124,12 +126,14 @@ impl ThemeManager {
             helix_theme,
             ui_theme,
             system_appearance,
+            ui_font_size: None,
         }
     }
 
     /// Update the theme
     pub fn set_theme(&mut self, helix_theme: HelixTheme) {
         self.ui_theme = Self::derive_ui_theme_with_appearance(&helix_theme, self.system_appearance);
+        self.apply_ui_font_size();
         self.helix_theme = helix_theme;
     }
 
@@ -425,6 +429,23 @@ impl ThemeManager {
         &self.ui_theme
     }
 
+    /// Set the configured UI font size used by design token typography.
+    pub fn set_ui_font_size(&mut self, ui_font_size: Pixels) {
+        self.ui_font_size = Some(ui_font_size);
+        self.apply_ui_font_size();
+    }
+
+    /// Get the configured UI font size override, if one has been applied.
+    pub fn ui_font_size(&self) -> Option<Pixels> {
+        self.ui_font_size
+    }
+
+    fn apply_ui_font_size(&mut self) {
+        if let Some(ui_font_size) = self.ui_font_size {
+            self.ui_theme.tokens.set_ui_font_size(ui_font_size);
+        }
+    }
+
     /// Get the current system appearance
     pub fn system_appearance(&self) -> SystemAppearance {
         self.system_appearance
@@ -436,6 +457,7 @@ impl ThemeManager {
         // Re-derive the UI theme with the new system appearance for proper fallback colors
         self.ui_theme =
             Self::derive_ui_theme_with_appearance(&self.helix_theme, self.system_appearance);
+        self.apply_ui_font_size();
     }
 
     /// Check if the current theme is dark based on background luminance

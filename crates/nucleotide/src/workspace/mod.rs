@@ -6615,18 +6615,27 @@ impl Workspace {
                 let old_max_tabs = self.core.read(cx).config.gui.max_tabs;
                 let new_max_tabs = new_config.gui.max_tabs;
                 let preview_tabs_enabled = new_config.gui.preview_tabs.enabled;
-                let ui_font = new_config.gui.ui.font.clone();
+                let ui_font = new_config.ui_font();
 
-                // Update font configuration if needed
-                if let Some(ui_font) = &ui_font {
-                    let ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
-                    ui_font_config.family = ui_font.family.clone();
-                    ui_font_config.size = ui_font.size;
-                    info!(
-                        "UI font configuration updated: {} {}pt",
-                        ui_font.family, ui_font.size
-                    );
-                }
+                let ui_font_config = cx.global_mut::<crate::types::UiFontConfig>();
+                ui_font_config.family = ui_font.family.clone();
+                ui_font_config.size = ui_font.size;
+                ui_font_config.weight = ui_font.weight;
+
+                cx.update_global(|theme_manager: &mut crate::ThemeManager, _cx| {
+                    theme_manager.set_ui_font_size(gpui::px(ui_font.size));
+                });
+                let ui_theme = cx.global::<crate::ThemeManager>().ui_theme().clone();
+                *cx.global_mut::<nucleotide_ui::Theme>() = ui_theme.clone();
+                nucleotide_ui::providers::update_provider_context(|context| {
+                    let theme_provider = nucleotide_ui::providers::ThemeProvider::new(ui_theme);
+                    context.register_global_provider(theme_provider);
+                });
+
+                info!(
+                    "UI font configuration updated: {} {}pt",
+                    ui_font.family, ui_font.size
+                );
 
                 self.core.update(cx, move |core, cx| {
                     core.config = new_config;
