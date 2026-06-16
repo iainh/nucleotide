@@ -1809,6 +1809,16 @@ impl Workspace {
         }
     }
 
+    fn activate_tab_bar_split_menu_intent(
+        &mut self,
+        intent: TabBarSplitMenuIntent,
+        cx: &mut Context<Self>,
+    ) {
+        self.tab_bar_split_menu_open = false;
+        let handler = Self::tab_bar_split_menu_handler(intent);
+        handler(self, cx);
+    }
+
     fn tab_bar_new_menu_intents() -> &'static [TabBarNewMenuIntent] {
         &[
             TabBarNewMenuIntent::NewFile,
@@ -3274,7 +3284,14 @@ impl Workspace {
                     .when(is_selected && is_last, |item| {
                         item.rounded_bl(inner_radius).rounded_br(inner_radius)
                     })
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |workspace: &mut Workspace, _event, window, cx| {
+                            window.prevent_default();
+                            workspace.activate_tab_bar_split_menu_intent(intent, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
                     .on_mouse_move(cx.listener(
                         move |workspace: &mut Workspace, _event, _window, cx| {
                             if workspace.tab_bar_split_menu_index != index {
@@ -3283,15 +3300,6 @@ impl Workspace {
                             }
                         },
                     ))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |workspace: &mut Workspace, _event, _window, cx| {
-                            workspace.tab_bar_split_menu_open = false;
-                            let handler = Workspace::tab_bar_split_menu_handler(intent);
-                            handler(workspace, cx);
-                            cx.stop_propagation();
-                        }),
-                    )
                     .child(
                         div()
                             .w_full()
@@ -4147,9 +4155,7 @@ impl Workspace {
                     if let Some(intent) =
                         Self::tab_bar_split_menu_intents().get(self.tab_bar_split_menu_index)
                     {
-                        let handler = Self::tab_bar_split_menu_handler(*intent);
-                        self.tab_bar_split_menu_open = false;
-                        handler(self, cx);
+                        self.activate_tab_bar_split_menu_intent(*intent, cx);
                     } else {
                         self.tab_bar_split_menu_open = false;
                         cx.notify();
