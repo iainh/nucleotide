@@ -554,6 +554,7 @@ mod tests {
                 layout: &layout,
                 bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(240.0), px(120.0))),
                 scroll_line_offset: px(0.0),
+                horizontal_offset: 0,
                 first_row: 0,
                 last_row: render_snapshot.last_row,
                 is_focused: true,

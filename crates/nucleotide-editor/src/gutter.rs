@@ -62,6 +62,7 @@ pub struct UnwrappedGutterLinePlanParams<'a> {
     pub layout: &'a EditorLayout,
     pub bounds: Bounds<Pixels>,
     pub scroll_line_offset: Pixels,
+    pub horizontal_offset: usize,
     pub first_row: usize,
     pub last_row: usize,
     pub editor: &'a Editor,
@@ -149,9 +150,12 @@ pub fn build_gutter_line_plans(params: GutterLinePlanParams<'_>) -> Vec<GutterLi
 pub fn build_unwrapped_gutter_line_plans(
     params: UnwrappedGutterLinePlanParams<'_>,
 ) -> Vec<GutterLinePlan> {
-    let mut origin = params.bounds.origin;
-    origin.x += px(2.);
-    origin.y += px(1.) - params.scroll_line_offset;
+    let origin = unwrapped_gutter_origin(
+        params.bounds,
+        params.scroll_line_offset,
+        params.layout.cell_width,
+        params.horizontal_offset,
+    );
 
     build_gutter_line_plans(GutterLinePlanParams {
         layout: params.layout,
@@ -164,6 +168,18 @@ pub fn build_unwrapped_gutter_line_plans(
         theme: params.theme,
         is_focused: params.is_focused,
     })
+}
+
+fn unwrapped_gutter_origin(
+    bounds: Bounds<Pixels>,
+    scroll_line_offset: Pixels,
+    cell_width: Pixels,
+    horizontal_offset: usize,
+) -> Point<Pixels> {
+    let mut origin = bounds.origin;
+    origin.x += px(2.) - cell_width * horizontal_offset as f32;
+    origin.y += px(1.) - scroll_line_offset;
+    origin
 }
 
 pub fn build_gutter_lines_from_plans(
@@ -470,11 +486,11 @@ fn gutter_line_positions(
 
 #[cfg(test)]
 mod tests {
-    use gpui::{point, px, rgb};
+    use gpui::{Bounds, point, px, rgb, size};
 
     use super::{
         GutterLinePosition, SoftWrapGutterLinePlan, gutter_line_positions,
-        soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans,
+        soft_wrap_gutter_line_paint_plans, soft_wrap_gutter_line_plans, unwrapped_gutter_origin,
     };
     use crate::SoftWrapVisualLine;
 
@@ -507,6 +523,18 @@ mod tests {
     #[test]
     fn empty_ranges_produce_no_positions() {
         assert_eq!(gutter_line_positions(4, 4).count(), 0);
+    }
+
+    #[test]
+    fn unwrapped_gutter_origin_accounts_for_horizontal_offset() {
+        let origin = unwrapped_gutter_origin(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            px(5.0),
+            px(8.0),
+            3,
+        );
+
+        assert_eq!(origin, point(px(78.0), px(36.0)));
     }
 
     fn visual_line(

@@ -353,6 +353,11 @@ pub fn prepare_native_editor_frame(
             layout: params.layout,
             bounds: params.bounds,
             scroll_line_offset: frame_state.scroll_line_offset,
+            horizontal_offset: frame_state
+                .viewport_update
+                .view_position_plan
+                .view_position
+                .horizontal_offset,
             first_row: frame_state.first_row,
             last_row: render_snapshot.last_row,
             editor,
@@ -1187,6 +1192,7 @@ mod tests {
                 layout: &layout,
                 bounds,
                 scroll_line_offset: frame_state.scroll_line_offset,
+                horizontal_offset: 0,
                 first_row: frame_state.first_row,
                 last_row: render_snapshot.last_row,
                 editor: &editor,
