@@ -600,6 +600,13 @@ fn app_menus() -> Vec<Menu> {
     ]
 }
 
+fn dock_menu_items() -> Vec<MenuItem> {
+    vec![
+        MenuItem::action("Open...", OpenFile),
+        MenuItem::action("Open Directory...", OpenDirectory),
+    ]
+}
+
 // Font types are now exported from nucleotide::types
 use nucleotide::{EditorFontConfig, FontSettings, UiFontConfig};
 
@@ -1046,6 +1053,12 @@ fn gui_main(
                     ),
                 ]);
 
+                #[cfg(target_os = "macos")]
+                {
+                    cx.set_dock_menu(dock_menu_items());
+                    info!("Configured macOS Dock menu");
+                }
+
                 let input_1 = input.clone();
                 // Create overlay view
                 let overlay = cx.new(|cx| {
@@ -1403,5 +1416,27 @@ mod tests {
             open_request_workspace_dir(&file_path),
             Some(temp_dir.path().to_path_buf())
         );
+    }
+
+    #[test]
+    fn dock_menu_items_dispatch_existing_open_actions() {
+        let items = dock_menu_items();
+        assert_eq!(items.len(), 2);
+
+        match &items[0] {
+            MenuItem::Action { name, action, .. } => {
+                assert_eq!(name.as_ref(), "Open...");
+                assert!(action.partial_eq(&nucleotide::actions::editor::OpenFile));
+            }
+            _ => panic!("expected open file action"),
+        }
+
+        match &items[1] {
+            MenuItem::Action { name, action, .. } => {
+                assert_eq!(name.as_ref(), "Open Directory...");
+                assert!(action.partial_eq(&nucleotide::actions::editor::OpenDirectory));
+            }
+            _ => panic!("expected open directory action"),
+        }
     }
 }
