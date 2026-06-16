@@ -1123,6 +1123,34 @@ mod tests {
     }
 
     #[test]
+    fn soft_wrap_cursor_paint_plan_rejects_cursor_before_anchor_row() {
+        let geometry = EditorSurfaceGeometry::new(
+            Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),
+            4,
+            px(8.0),
+        );
+        let text = "foo ".repeat(10);
+        let text_format = soft_wrap_text_format();
+
+        assert!(
+            soft_wrap_cursor_paint_plan(SoftWrapCursorPaintPlanParams {
+                text: text.as_str().into(),
+                text_format: &text_format,
+                anchor: 16,
+                cursor_char_idx: 0,
+                geometry,
+                line_height: px(20.0),
+                cell_width: px(8.0),
+                scroll_line_offset: px(0.0),
+                vertical_offset: 0,
+                viewport_height: 4,
+                horizontal_offset: 0,
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
     fn soft_wrap_cursor_paint_position_uses_text_bounds_and_offsets() {
         let geometry = EditorSurfaceGeometry::new(
             Bounds::new(point(px(100.0), px(40.0)), size(px(500.0), px(300.0))),

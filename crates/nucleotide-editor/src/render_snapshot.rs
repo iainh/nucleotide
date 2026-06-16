@@ -56,7 +56,7 @@ pub fn render_snapshot_for_cursor(
         line_viewport.cursor_at_end && line_viewport.file_ends_with_newline;
     let cursor_doc_line = cursor_document_line(text, cursor_char_idx, cursor_at_trailing_newline);
     let cursor_viewport_position =
-        cursor_viewport_position(cursor_doc_line, first_row, line_viewport.last_row);
+        cursor_viewport_position(cursor_doc_line, first_row, last_row_from_scroll);
     let cursor_line = text.char_to_line(cursor_char_idx.min(text.len_chars()));
 
     EditorRenderSnapshot {
@@ -108,5 +108,14 @@ mod tests {
         assert!(snapshot.line_viewport.file_ends_with_newline);
         assert_eq!(snapshot.cursor_doc_line, 1);
         assert_eq!(snapshot.last_row, 2);
+    }
+
+    #[test]
+    fn snapshot_does_not_make_trailing_newline_cursor_visible_outside_scroll_range() {
+        let snapshot = render_snapshot_for_cursor("one\n".into(), 4, vec![1], 0, 1);
+
+        assert_eq!(snapshot.last_row, 2);
+        assert_eq!(snapshot.cursor_doc_line, 1);
+        assert_eq!(snapshot.cursor_viewport_position, None);
     }
 }

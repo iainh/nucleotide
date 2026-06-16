@@ -7,6 +7,7 @@ use helix_core::{
     doc_formatter::{DocumentFormatter, FormattedGrapheme, TextFormat},
     graphemes::Grapheme,
     text_annotations::TextAnnotations,
+    visual_offset_from_block,
 };
 use helix_view::{Document, Theme, view::ViewPosition};
 
@@ -154,30 +155,35 @@ pub fn soft_wrap_visual_lines(
     viewport_height: usize,
 ) -> Vec<SoftWrapVisualLine> {
     let annotations = TextAnnotations::default();
+    let anchor_visual_row =
+        visual_offset_from_block(text, anchor, anchor, text_format, &annotations)
+            .0
+            .row;
     let mut formatter =
         DocumentFormatter::new_at_prev_checkpoint(text, text_format, &annotations, anchor);
     let mut visual_line = 0;
+    let start_visual_line = anchor_visual_row.saturating_add(vertical_offset);
     let mut current_doc_line = text.char_to_line(anchor);
     let mut pending_grapheme = None;
 
-    while visual_line < vertical_offset {
+    while visual_line < start_visual_line {
         for grapheme in formatter.by_ref() {
             if grapheme.visual_pos.row > visual_line {
                 visual_line = grapheme.visual_pos.row;
-                if visual_line >= vertical_offset {
+                if visual_line >= start_visual_line {
                     pending_grapheme = Some(grapheme);
                     break;
                 }
             }
         }
 
-        if visual_line < vertical_offset {
+        if visual_line < start_visual_line {
             visual_line += 1;
         }
     }
 
     let mut lines = Vec::new();
-    let end_visual_line = vertical_offset.saturating_add(viewport_height);
+    let end_visual_line = start_visual_line.saturating_add(viewport_height);
     while visual_line < end_visual_line {
         let mut line_graphemes = Vec::new();
 
@@ -204,7 +210,12 @@ pub fn soft_wrap_visual_lines(
             break;
         }
 
-        let visual = build_visual_line(text, visual_line, current_doc_line, &line_graphemes);
+        let visual = build_visual_line(
+            text,
+            visual_line.saturating_sub(anchor_visual_row),
+            current_doc_line,
+            &line_graphemes,
+        );
         current_doc_line = visual.doc_line;
         lines.push(visual);
 
@@ -221,34 +232,21 @@ pub fn soft_wrap_visual_position(
     char_idx: usize,
 ) -> Option<SoftWrapVisualPosition> {
     let annotations = TextAnnotations::default();
-    let formatter =
-        DocumentFormatter::new_at_prev_checkpoint(text, text_format, &annotations, anchor);
-    let mut last_visual_position = SoftWrapVisualPosition {
-        visual_line: 0,
-        visual_col: 0,
-    };
-
-    for grapheme in formatter {
-        let next_char_pos = grapheme.char_idx + grapheme.doc_chars();
-        if next_char_pos > char_idx {
-            return Some(SoftWrapVisualPosition {
-                visual_line: grapheme.visual_pos.row,
-                visual_col: grapheme.visual_pos.col,
-            });
-        }
-
-        let end_col = if grapheme.source.is_eof() {
-            grapheme.visual_pos.col
-        } else {
-            grapheme.visual_pos.col + grapheme.width()
-        };
-        last_visual_position = SoftWrapVisualPosition {
-            visual_line: grapheme.visual_pos.row,
-            visual_col: end_col,
-        };
+    let (anchor_position, block_start) =
+        visual_offset_from_block(text, anchor, anchor, text_format, &annotations);
+    if char_idx < block_start {
+        return None;
     }
 
-    (char_idx >= text.len_chars()).then_some(last_visual_position)
+    let (position, _) = visual_offset_from_block(text, anchor, char_idx, text_format, &annotations);
+    if position.row < anchor_position.row {
+        return None;
+    }
+
+    Some(SoftWrapVisualPosition {
+        visual_line: position.row.saturating_sub(anchor_position.row),
+        visual_col: position.col,
+    })
 }
 
 pub fn decorate_soft_wrap_line_runs(
@@ -523,6 +521,18 @@ mod tests {
     }
 
     #[test]
+    fn starts_at_anchor_visual_row() {
+        let text = "foo ".repeat(10);
+        let lines = soft_wrap_visual_lines(text.as_str().into(), &text_format(), 16, 0, 1);
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].visual_line, 0);
+        assert_eq!(lines[0].relative_row(0), 0);
+        assert_eq!(lines[0].text, ".foo foo foo foo ");
+        assert_eq!(lines[0].line_start_char, Some(16));
+    }
+
+    #[test]
     fn finds_visual_position_after_wrap_indicator() {
         let text = "foo ".repeat(10);
         let position = soft_wrap_visual_position(text.as_str().into(), &text_format(), 0, 16)
@@ -530,6 +540,23 @@ mod tests {
 
         assert_eq!(position.visual_line, 1);
         assert_eq!(position.visual_col, 1);
+    }
+
+    #[test]
+    fn visual_position_is_relative_to_anchor_row() {
+        let text = "foo ".repeat(10);
+        let position = soft_wrap_visual_position(text.as_str().into(), &text_format(), 16, 16)
+            .expect("cursor position");
+
+        assert_eq!(position.visual_line, 0);
+        assert_eq!(position.visual_col, 1);
+    }
+
+    #[test]
+    fn visual_position_rejects_position_before_anchor_row() {
+        let text = "foo ".repeat(10);
+
+        assert!(soft_wrap_visual_position(text.as_str().into(), &text_format(), 16, 0).is_none());
     }
 
     #[test]
