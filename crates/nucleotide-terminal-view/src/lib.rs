@@ -4,18 +4,19 @@ use nucleotide_events::v2::terminal::TerminalId;
 
 #[cfg(feature = "emulator")]
 use gpui::AppContext; // bring trait into scope for Context::new
-#[cfg(feature = "emulator")]
-use gpui::FontWeight;
-#[cfg(feature = "emulator")]
-use gpui::InteractiveElement;
-#[cfg(feature = "emulator")]
-use gpui::rgb;
 use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div};
 #[cfg(feature = "emulator")]
-use nucleotide_terminal::frame::{Cell, FramePayload, GridDiff, GridSnapshot};
+use gpui::{FontWeight, Hsla, InteractiveElement, hsla, rgb};
+#[cfg(feature = "emulator")]
+use nucleotide_terminal::frame::{
+    Cell, DEFAULT_BACKGROUND, DEFAULT_FOREGROUND, FramePayload, GridDiff, GridSnapshot,
+    ansi_color_index,
+};
 use nucleotide_ui::ThemedContext;
 #[cfg(feature = "emulator")]
 use nucleotide_ui::scrollbar::{Scrollbar, ScrollbarState};
+#[cfg(feature = "emulator")]
+use nucleotide_ui::{ColorTheory, ContrastRatios, DesignTokens};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -265,8 +266,8 @@ impl TerminalViewModel {
 fn blank_cell() -> Cell {
     Cell {
         ch: ' ',
-        fg: 0xffffff,
-        bg: 0x000000,
+        fg: DEFAULT_FOREGROUND,
+        bg: DEFAULT_BACKGROUND,
         bold: false,
         italic: false,
         underline: false,
@@ -514,6 +515,180 @@ impl Render for TerminalView {
 }
 
 #[cfg(feature = "emulator")]
+const RGB_COLOR_MAX: u32 = 0x00ff_ffff;
+
+#[cfg(feature = "emulator")]
+#[derive(Debug, Clone, Copy)]
+struct TerminalAnsiPalette {
+    default_foreground: Hsla,
+    default_background: Hsla,
+    colors: [Hsla; 16],
+}
+
+#[cfg(feature = "emulator")]
+impl TerminalAnsiPalette {
+    fn from_tokens(tokens: &DesignTokens) -> Self {
+        let default_background = Self::opaque(tokens.editor.background);
+        let default_foreground =
+            Self::ensure_readable(default_background, tokens.editor.text_primary);
+        let is_dark = ColorTheory::relative_luminance(default_background) < 0.5;
+        let neutral_saturation = default_background.s * 0.2;
+
+        let black_seed = hsla(
+            default_background.h,
+            neutral_saturation,
+            if is_dark { 0.32 } else { 0.08 },
+            1.0,
+        );
+        let bright_black_seed = hsla(
+            default_background.h,
+            neutral_saturation,
+            if is_dark { 0.48 } else { 0.28 },
+            1.0,
+        );
+        let white_seed = hsla(
+            default_background.h,
+            neutral_saturation,
+            if is_dark { 0.84 } else { 0.36 },
+            1.0,
+        );
+
+        let red = Self::ensure_readable(default_background, tokens.editor.error);
+        let green = Self::ensure_readable(default_background, tokens.editor.success);
+        let yellow = Self::ensure_readable(default_background, tokens.editor.warning);
+        let blue_seed =
+            ColorTheory::mix_oklch(tokens.chrome.primary, tokens.editor.focus_ring, 0.25);
+        let blue = Self::ensure_readable(default_background, blue_seed);
+        let magenta_seed = ColorTheory::mix_oklch(tokens.editor.error, blue, 0.55);
+        let magenta = Self::ensure_readable(default_background, magenta_seed);
+        let cyan_seed = ColorTheory::mix_oklch(tokens.editor.success, blue, 0.50);
+        let cyan = Self::ensure_readable(default_background, cyan_seed);
+
+        let colors = [
+            Self::ensure_readable(default_background, black_seed),
+            red,
+            green,
+            yellow,
+            blue,
+            magenta,
+            cyan,
+            Self::ensure_readable(default_background, white_seed),
+            Self::ensure_readable(default_background, bright_black_seed),
+            Self::bright_variant(default_background, red, is_dark),
+            Self::bright_variant(default_background, green, is_dark),
+            Self::bright_variant(default_background, yellow, is_dark),
+            Self::bright_variant(default_background, blue, is_dark),
+            Self::bright_variant(default_background, magenta, is_dark),
+            Self::bright_variant(default_background, cyan, is_dark),
+            Self::ensure_readable(default_background, default_foreground),
+        ];
+
+        Self {
+            default_foreground,
+            default_background,
+            colors,
+        }
+    }
+
+    fn foreground_for_code(self, color: u32) -> Hsla {
+        if color == DEFAULT_FOREGROUND {
+            self.default_foreground
+        } else if color == DEFAULT_BACKGROUND {
+            self.default_background
+        } else if let Some(index) = ansi_color_index(color) {
+            self.colors[index]
+        } else if color <= RGB_COLOR_MAX {
+            rgb(color).into()
+        } else {
+            self.default_foreground
+        }
+    }
+
+    fn background_for_code(self, color: u32) -> Option<Hsla> {
+        if color == DEFAULT_BACKGROUND {
+            None
+        } else if color == DEFAULT_FOREGROUND {
+            Some(self.default_foreground)
+        } else if let Some(index) = ansi_color_index(color) {
+            Some(self.colors[index])
+        } else if color <= RGB_COLOR_MAX {
+            Some(rgb(color).into())
+        } else {
+            None
+        }
+    }
+
+    fn ensure_readable(background: Hsla, color: Hsla) -> Hsla {
+        ColorTheory::ensure_contrast(background, Self::opaque(color), ContrastRatios::AA_NORMAL)
+    }
+
+    fn bright_variant(background: Hsla, color: Hsla, is_dark: bool) -> Hsla {
+        let delta = if is_dark { 0.10 } else { -0.10 };
+        Self::ensure_readable(
+            background,
+            ColorTheory::adjust_oklab_lightness(color, delta),
+        )
+    }
+
+    fn opaque(color: Hsla) -> Hsla {
+        hsla(color.h, color.s, color.l, 1.0)
+    }
+}
+
+#[cfg(all(test, feature = "emulator"))]
+mod tests {
+    use super::*;
+    use nucleotide_terminal::frame::ansi_color;
+
+    #[test]
+    fn derived_ansi_palette_meets_contrast_for_light_and_dark_themes() {
+        for tokens in [DesignTokens::light(), DesignTokens::dark()] {
+            let palette = TerminalAnsiPalette::from_tokens(&tokens);
+
+            for (index, color) in palette.colors.iter().copied().enumerate() {
+                let contrast = ColorTheory::contrast_ratio(palette.default_background, color);
+                assert!(
+                    contrast >= ContrastRatios::AA_NORMAL,
+                    "ANSI colour {index} contrast {contrast:.2} is below AA"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn derived_ansi_palette_tracks_theme_semantic_hues() {
+        let tokens = DesignTokens::dark();
+        let palette = TerminalAnsiPalette::from_tokens(&tokens);
+
+        assert!(hue_distance(palette.colors[1], tokens.editor.error) < 0.08);
+        assert!(hue_distance(palette.colors[2], tokens.editor.success) < 0.08);
+        assert!(hue_distance(palette.colors[3], tokens.editor.warning) < 0.08);
+    }
+
+    #[test]
+    fn ansi_markers_map_to_palette_without_remapping_truecolor() {
+        let palette = TerminalAnsiPalette::from_tokens(&DesignTokens::dark());
+        let ansi_red = palette.foreground_for_code(ansi_color(1));
+        let truecolor_red = palette.foreground_for_code(0xcc0000);
+        let expected_truecolor_red: Hsla = rgb(0xcc0000).into();
+
+        assert_eq!(ansi_red, palette.colors[1]);
+        assert_eq!(truecolor_red, expected_truecolor_red);
+        assert_ne!(ansi_red, truecolor_red);
+        assert_eq!(
+            palette.background_for_code(ansi_color(4)),
+            Some(palette.colors[4])
+        );
+        assert_eq!(palette.background_for_code(DEFAULT_BACKGROUND), None);
+    }
+
+    fn hue_distance(a: Hsla, b: Hsla) -> f32 {
+        let raw = (a.h - b.h).abs();
+        raw.min(1.0 - raw)
+    }
+}
+
+#[cfg(feature = "emulator")]
 pub struct TerminalRowView {
     model: Arc<Mutex<TerminalViewModel>>,
     row_index: usize,
@@ -543,12 +718,7 @@ impl Render for TerminalRowView {
         let theme = cx.theme();
         let tokens = &theme.tokens;
         let editor_font = cx.global::<nucleotide_types::EditorFontConfig>();
-
-        // Helper to convert emulator RGB u32 to gpui color
-        #[inline]
-        fn color_from_u32(c: u32) -> gpui::Hsla {
-            rgb(c).into()
-        }
+        let ansi_palette = TerminalAnsiPalette::from_tokens(tokens);
 
         let (grid_row, cursor_row, cursor_col, cell_height) = {
             let guard = self.model.lock().unwrap();
@@ -586,6 +756,7 @@ impl Render for TerminalRowView {
         let mut cur_bold = false;
         let mut cur_italic = false;
         let mut cur_underline = false;
+        let mut cur_inverse = false;
         let mut buf = String::new();
 
         let flush_run = |line_in: gpui::Div,
@@ -594,26 +765,22 @@ impl Render for TerminalRowView {
                          bg: u32,
                          bold: bool,
                          italic: bool,
-                         underline: bool| {
+                         underline: bool,
+                         inverse: bool| {
             if text.is_empty() {
                 return line_in;
             }
-            // Map emulator defaults (fg=0xffffff, bg=0x000000) to theme defaults
-            let mapped_fg = if fg == 0xffffff {
-                None
-            } else {
-                Some(color_from_u32(fg))
-            };
-            let mapped_bg = if bg == 0x000000 {
-                None
-            } else {
-                Some(color_from_u32(bg))
-            };
+            let (fg, bg) = if inverse { (bg, fg) } else { (fg, bg) };
+            let mapped_bg = ansi_palette.background_for_code(bg);
+            let contrast_bg = mapped_bg.unwrap_or(ansi_palette.default_background);
+            let mapped_fg = ColorTheory::ensure_contrast(
+                contrast_bg,
+                ansi_palette.foreground_for_code(fg),
+                ContrastRatios::AA_NORMAL,
+            );
 
             let mut run = div().child(std::mem::take(text));
-            if let Some(c) = mapped_fg {
-                run = run.text_color(c);
-            }
+            run = run.text_color(mapped_fg);
             if let Some(c) = mapped_bg {
                 run = run.bg(c);
             }
@@ -630,13 +797,20 @@ impl Render for TerminalRowView {
         };
 
         for (i, cell) in grid_row.iter().enumerate() {
-            let (fg, bg, bold, italic, underline) =
-                (cell.fg, cell.bg, cell.bold, cell.italic, cell.underline);
+            let (fg, bg, bold, italic, underline, inverse) = (
+                cell.fg,
+                cell.bg,
+                cell.bold,
+                cell.italic,
+                cell.underline,
+                cell.inverse,
+            );
             if fg != cur_fg
                 || bg != cur_bg
                 || bold != cur_bold
                 || italic != cur_italic
                 || underline != cur_underline
+                || inverse != cur_inverse
             {
                 // flush previous run
                 line = flush_run(
@@ -647,12 +821,14 @@ impl Render for TerminalRowView {
                     cur_bold,
                     cur_italic,
                     cur_underline,
+                    cur_inverse,
                 );
                 cur_fg = fg;
                 cur_bg = bg;
                 cur_bold = bold;
                 cur_italic = italic;
                 cur_underline = underline;
+                cur_inverse = inverse;
             }
             // Cursor rendering: render a block cursor at (cursor_row, cursor_col)
             if self.row_index == cursor_row && i == cursor_col {
@@ -665,6 +841,7 @@ impl Render for TerminalRowView {
                     cur_bold,
                     cur_italic,
                     cur_underline,
+                    cur_inverse,
                 );
                 // Render the cursor cell as a block using theme tokens
                 let mut run = div().child(cell.ch.to_string());
@@ -687,6 +864,7 @@ impl Render for TerminalRowView {
             cur_bold,
             cur_italic,
             cur_underline,
+            cur_inverse,
         );
 
         line

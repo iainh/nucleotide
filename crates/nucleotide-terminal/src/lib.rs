@@ -2,6 +2,28 @@
 // ABOUTME: Incremental: raw PTY IO now; emulator/grid later
 
 pub mod frame {
+    #[cfg(feature = "emulator")]
+    const ANSI_COLOR_BASE: u32 = 0x0100_0000;
+    #[cfg(feature = "emulator")]
+    const ANSI_COLOR_MAX: u32 = ANSI_COLOR_BASE + 15;
+
+    pub const DEFAULT_FOREGROUND: u32 = 0x01ff_fff0;
+    pub const DEFAULT_BACKGROUND: u32 = 0x01ff_fff1;
+
+    #[cfg(feature = "emulator")]
+    pub fn ansi_color(index: u8) -> u32 {
+        ANSI_COLOR_BASE | u32::from(index.min(15))
+    }
+
+    #[cfg(feature = "emulator")]
+    pub fn ansi_color_index(color: u32) -> Option<usize> {
+        if (ANSI_COLOR_BASE..=ANSI_COLOR_MAX).contains(&color) {
+            Some((color - ANSI_COLOR_BASE) as usize)
+        } else {
+            None
+        }
+    }
+
     #[derive(Debug, Clone)]
     pub enum FramePayload {
         Raw(Vec<u8>),
@@ -320,7 +342,9 @@ pub mod session {
 // Alacritty-based terminal engine scaffold (emulator feature)
 #[cfg(feature = "emulator")]
 pub mod engine {
-    use crate::frame::{Cell, FramePayload, GridSnapshot};
+    use crate::frame::{
+        Cell, DEFAULT_BACKGROUND, DEFAULT_FOREGROUND, FramePayload, GridSnapshot, ansi_color,
+    };
     use alacritty_terminal::event::{Event as TermEvent, EventListener};
     use alacritty_terminal::grid::{Dimensions, Scroll};
     use alacritty_terminal::term::{self, RenderableContent, Term};
@@ -348,8 +372,8 @@ pub mod engine {
                 grid.push(vec![
                     Cell {
                         ch: ' ',
-                        fg: 0xffffff,
-                        bg: 0x000000,
+                        fg: DEFAULT_FOREGROUND,
+                        bg: DEFAULT_BACKGROUND,
                         bold: false,
                         italic: false,
                         underline: false,
@@ -390,8 +414,8 @@ pub mod engine {
                 // Prepare grid buffer
                 let blank = Cell {
                     ch: ' ',
-                    fg: 0xffffff,
-                    bg: 0x000000,
+                    fg: DEFAULT_FOREGROUND,
+                    bg: DEFAULT_BACKGROUND,
                     bold: false,
                     italic: false,
                     underline: false,
@@ -423,8 +447,8 @@ pub mod engine {
                     let col = pos.column.0;
                     if row < self.grid.len() && col < self.grid[row].len() {
                         let ch = cell.c;
-                        let fg = Self::color_to_rgb_u32(cell.fg);
-                        let bg = Self::color_to_rgb_u32(cell.bg);
+                        let fg = Self::color_to_cell_color(cell.fg);
+                        let bg = Self::color_to_cell_color(cell.bg);
                         self.grid[row][col] = Cell {
                             ch,
                             fg,
@@ -463,8 +487,8 @@ pub mod engine {
                     self.grid.push(vec![
                         Cell {
                             ch: ' ',
-                            fg: 0xffffff,
-                            bg: 0x000000,
+                            fg: DEFAULT_FOREGROUND,
+                            bg: DEFAULT_BACKGROUND,
                             bold: false,
                             italic: false,
                             underline: false,
@@ -518,104 +542,37 @@ pub mod engine {
         }
 
         #[inline]
-        fn ansi_named_color_to_rgb(nc: VteNamedColor) -> VteRgb {
-            // Basic 16-color palette mapping using common defaults
+        fn ansi_named_color_to_cell_color(nc: VteNamedColor) -> u32 {
             match nc {
-                VteNamedColor::Background => VteRgb {
-                    r: 0x00,
-                    g: 0x00,
-                    b: 0x00,
-                },
-                VteNamedColor::Foreground => VteRgb {
-                    r: 0xff,
-                    g: 0xff,
-                    b: 0xff,
-                },
-                VteNamedColor::Black => VteRgb {
-                    r: 0x00,
-                    g: 0x00,
-                    b: 0x00,
-                },
-                VteNamedColor::Red => VteRgb {
-                    r: 0xcc,
-                    g: 0x00,
-                    b: 0x00,
-                },
-                VteNamedColor::Green => VteRgb {
-                    r: 0x00,
-                    g: 0xa6,
-                    b: 0x00,
-                },
-                VteNamedColor::Yellow => VteRgb {
-                    r: 0x99,
-                    g: 0x99,
-                    b: 0x00,
-                },
-                VteNamedColor::Blue => VteRgb {
-                    r: 0x00,
-                    g: 0x00,
-                    b: 0xcc,
-                },
-                VteNamedColor::Magenta => VteRgb {
-                    r: 0xcc,
-                    g: 0x00,
-                    b: 0xcc,
-                },
-                VteNamedColor::Cyan => VteRgb {
-                    r: 0x00,
-                    g: 0xa6,
-                    b: 0xb2,
-                },
-                VteNamedColor::White => VteRgb {
-                    r: 0xcc,
-                    g: 0xcc,
-                    b: 0xcc,
-                },
-                VteNamedColor::BrightBlack => VteRgb {
-                    r: 0x4d,
-                    g: 0x4d,
-                    b: 0x4d,
-                },
-                VteNamedColor::BrightRed => VteRgb {
-                    r: 0xff,
-                    g: 0x00,
-                    b: 0x00,
-                },
-                VteNamedColor::BrightGreen => VteRgb {
-                    r: 0x00,
-                    g: 0xff,
-                    b: 0x00,
-                },
-                VteNamedColor::BrightYellow => VteRgb {
-                    r: 0xff,
-                    g: 0xff,
-                    b: 0x00,
-                },
-                VteNamedColor::BrightBlue => VteRgb {
-                    r: 0x00,
-                    g: 0x00,
-                    b: 0xff,
-                },
-                VteNamedColor::BrightMagenta => VteRgb {
-                    r: 0xff,
-                    g: 0x00,
-                    b: 0xff,
-                },
-                VteNamedColor::BrightCyan => VteRgb {
-                    r: 0x00,
-                    g: 0xff,
-                    b: 0xff,
-                },
-                VteNamedColor::BrightWhite => VteRgb {
-                    r: 0xff,
-                    g: 0xff,
-                    b: 0xff,
-                },
-                _ => VteRgb {
-                    r: 0xff,
-                    g: 0xff,
-                    b: 0xff,
-                },
+                VteNamedColor::Background => DEFAULT_BACKGROUND,
+                VteNamedColor::Foreground => DEFAULT_FOREGROUND,
+                VteNamedColor::Black => ansi_color(0),
+                VteNamedColor::Red => ansi_color(1),
+                VteNamedColor::Green => ansi_color(2),
+                VteNamedColor::Yellow => ansi_color(3),
+                VteNamedColor::Blue => ansi_color(4),
+                VteNamedColor::Magenta => ansi_color(5),
+                VteNamedColor::Cyan => ansi_color(6),
+                VteNamedColor::White => ansi_color(7),
+                VteNamedColor::BrightBlack => ansi_color(8),
+                VteNamedColor::BrightRed => ansi_color(9),
+                VteNamedColor::BrightGreen => ansi_color(10),
+                VteNamedColor::BrightYellow => ansi_color(11),
+                VteNamedColor::BrightBlue => ansi_color(12),
+                VteNamedColor::BrightMagenta => ansi_color(13),
+                VteNamedColor::BrightCyan => ansi_color(14),
+                VteNamedColor::BrightWhite => ansi_color(15),
+                VteNamedColor::Cursor => DEFAULT_FOREGROUND,
+                VteNamedColor::DimBlack => ansi_color(8),
+                VteNamedColor::DimRed => ansi_color(1),
+                VteNamedColor::DimGreen => ansi_color(2),
+                VteNamedColor::DimYellow => ansi_color(3),
+                VteNamedColor::DimBlue => ansi_color(4),
+                VteNamedColor::DimMagenta => ansi_color(5),
+                VteNamedColor::DimCyan => ansi_color(6),
+                VteNamedColor::DimWhite => ansi_color(7),
+                VteNamedColor::BrightForeground => ansi_color(15),
+                VteNamedColor::DimForeground => ansi_color(8),
             }
         }
 
@@ -727,13 +684,51 @@ pub mod engine {
         }
 
         #[inline]
-        fn color_to_rgb_u32(color: VteColor) -> u32 {
+        fn color_to_cell_color(color: VteColor) -> u32 {
             let rgb = match color {
-                VteColor::Spec(rgb) => rgb,
-                VteColor::Named(nc) => Self::ansi_named_color_to_rgb(nc),
+                VteColor::Spec(rgb) => {
+                    return ((rgb.r as u32) << 16) | ((rgb.g as u32) << 8) | (rgb.b as u32);
+                }
+                VteColor::Named(nc) => return Self::ansi_named_color_to_cell_color(nc),
+                VteColor::Indexed(idx) if idx < 16 => return ansi_color(idx),
                 VteColor::Indexed(idx) => Self::xterm_256_to_rgb(idx),
             };
             ((rgb.r as u32) << 16) | ((rgb.g as u32) << 8) | (rgb.b as u32)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn ansi_named_and_indexed_colors_use_palette_markers() {
+            assert_eq!(
+                AlacrittyEngine::color_to_cell_color(VteColor::Named(VteNamedColor::Red)),
+                ansi_color(1)
+            );
+            assert_eq!(
+                AlacrittyEngine::color_to_cell_color(VteColor::Named(VteNamedColor::BrightBlue)),
+                ansi_color(12)
+            );
+            assert_eq!(
+                AlacrittyEngine::color_to_cell_color(VteColor::Indexed(2)),
+                ansi_color(2)
+            );
+        }
+
+        #[test]
+        fn truecolor_values_remain_literal_rgb() {
+            let rgb = VteRgb {
+                r: 0xcc,
+                g: 0x00,
+                b: 0x00,
+            };
+
+            assert_eq!(
+                AlacrittyEngine::color_to_cell_color(VteColor::Spec(rgb)),
+                0xcc0000
+            );
         }
     }
 
