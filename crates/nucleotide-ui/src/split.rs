@@ -30,11 +30,7 @@ fn resize_handle_hitbox_px(handle_px: f32) -> Option<f32> {
     if handle_px <= 0.0 {
         None
     } else {
-        Some(
-            handle_px
-                .max(RESIZE_HANDLE_MIN_HITBOX_PX)
-                .min(RESIZE_HANDLE_MAX_HITBOX_PX),
-        )
+        Some(handle_px.clamp(RESIZE_HANDLE_MIN_HITBOX_PX, RESIZE_HANDLE_MAX_HITBOX_PX))
     }
 }
 
