@@ -510,6 +510,15 @@ impl EditorTokens {
 impl ChromeTokens {
     /// Create chrome tokens from surface color using color theory
     pub fn from_surface_color(surface_color: Hsla, is_dark: bool) -> Self {
+        Self::from_surface_and_editor(surface_color, surface_color, is_dark)
+    }
+
+    /// Create chrome tokens from surface and editor colors using color theory
+    pub fn from_surface_and_editor(
+        surface_color: Hsla,
+        editor_background: Hsla,
+        is_dark: bool,
+    ) -> Self {
         use crate::styling::color_theory::ColorTheory;
 
         // Partially desaturate (not full grey) so chrome keeps a hint of theme hue
@@ -524,7 +533,7 @@ impl ChromeTokens {
         base_surface = hsla(base_surface.h, target_s, base_surface.l, 1.0);
 
         // Compute chrome colors using color theory from the tinted, partially neutralized surface
-        let chrome_colors = ColorTheory::derive_chrome_colors(base_surface);
+        let chrome_colors = ColorTheory::derive_chrome_colors(base_surface, editor_background);
         let base_colors = if is_dark {
             BaseColors::dark()
         } else {
@@ -541,6 +550,11 @@ impl ChromeTokens {
         };
         let text_on_chrome =
             ColorTheory::ensure_contrast(base_surface, base, ContrastRatios::AA_NORMAL);
+        let text_on_chrome = ColorTheory::ensure_contrast(
+            chrome_colors.file_tree_background,
+            text_on_chrome,
+            ContrastRatios::AA_NORMAL,
+        );
 
         let border_highlight_base = if is_dark {
             ColorTheory::adjust_oklab_lightness(base_surface, 0.12)
@@ -680,7 +694,9 @@ impl ChromeTokens {
             base_colors.neutral_50
         };
 
-        Self::from_surface_color(surface, is_dark)
+        let editor_background = EditorTokens::fallback(is_dark).background;
+
+        Self::from_surface_and_editor(surface, editor_background, is_dark)
     }
 }
 
@@ -744,9 +760,10 @@ impl DesignTokens {
         // Ensure editor background matches the extracted editor background
         editor.background = editor_background;
 
-        // Create chrome tokens strictly from the computed surface color
-        // All chrome backgrounds, borders, and separators derive from surface
-        let chrome = ChromeTokens::from_surface_color(surface_color, is_dark_theme);
+        // Create chrome tokens from the computed surface and editor background.
+        // The sidebar/file-tree layer uses both to sit between content and titlebar chrome.
+        let chrome =
+            ChromeTokens::from_surface_and_editor(surface_color, editor_background, is_dark_theme);
 
         Self {
             editor,
