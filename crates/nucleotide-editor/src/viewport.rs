@@ -1,7 +1,11 @@
 // ABOUTME: Native GPUI editor viewport state for pixel and visual-row scrolling
 // ABOUTME: Owns GUI scroll state before it is synced into Helix view offsets
 
-use std::{cell::Cell, cell::RefCell, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
 
 use gpui::{Bounds, Pixels, Point, Size, point, px, size};
 use helix_core::{
@@ -64,6 +68,105 @@ pub struct EditorViewportContentUpdate {
     pub gutter_columns: u16,
     pub visual_rows: usize,
     pub soft_wrap: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EditorViewportTextFormatKey {
+    soft_wrap: bool,
+    tab_width: u16,
+    max_wrap: u16,
+    max_indent_retain: u16,
+    wrap_indicator: Box<str>,
+    wrap_indicator_highlight: Option<u32>,
+    viewport_width: u16,
+    soft_wrap_at_text_width: bool,
+}
+
+impl From<&TextFormat> for EditorViewportTextFormatKey {
+    fn from(text_format: &TextFormat) -> Self {
+        Self {
+            soft_wrap: text_format.soft_wrap,
+            tab_width: text_format.tab_width,
+            max_wrap: text_format.max_wrap,
+            max_indent_retain: text_format.max_indent_retain,
+            wrap_indicator: text_format.wrap_indicator.clone(),
+            wrap_indicator_highlight: text_format
+                .wrap_indicator_highlight
+                .map(|highlight| highlight.get()),
+            viewport_width: text_format.viewport_width,
+            soft_wrap_at_text_width: text_format.soft_wrap_at_text_width,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EditorViewportConversionBaseKey {
+    document_version: i32,
+    text_len: usize,
+    view_id: ViewId,
+    text_format: EditorViewportTextFormatKey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HelixViewportSnapshotCacheKey {
+    base: EditorViewportConversionBaseKey,
+    view_position: ViewPosition,
+}
+
+#[derive(Clone, Debug)]
+struct CachedHelixViewportSnapshot {
+    key: HelixViewportSnapshotCacheKey,
+    snapshot: HelixViewportSnapshot,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EditorViewportViewPositionPlanCacheKey {
+    base: EditorViewportConversionBaseKey,
+    previous_view_position: ViewPosition,
+    top_visual_row: usize,
+}
+
+#[derive(Clone, Debug)]
+struct CachedEditorViewportViewPositionPlan {
+    key: EditorViewportViewPositionPlanCacheKey,
+    plan: EditorViewportViewPositionPlan,
+}
+
+#[derive(Clone, Debug, Default)]
+struct EditorViewportConversionCache {
+    helix_snapshot: Option<CachedHelixViewportSnapshot>,
+    view_position_plan: Option<CachedEditorViewportViewPositionPlan>,
+}
+
+impl EditorViewportConversionCache {
+    fn helix_snapshot(&self, key: &HelixViewportSnapshotCacheKey) -> Option<HelixViewportSnapshot> {
+        let cached = self.helix_snapshot.as_ref()?;
+        (cached.key == *key).then_some(cached.snapshot)
+    }
+
+    fn store_helix_snapshot(
+        &mut self,
+        key: HelixViewportSnapshotCacheKey,
+        snapshot: HelixViewportSnapshot,
+    ) {
+        self.helix_snapshot = Some(CachedHelixViewportSnapshot { key, snapshot });
+    }
+
+    fn view_position_plan(
+        &self,
+        key: &EditorViewportViewPositionPlanCacheKey,
+    ) -> Option<EditorViewportViewPositionPlan> {
+        let cached = self.view_position_plan.as_ref()?;
+        (cached.key == *key).then_some(cached.plan)
+    }
+
+    fn store_view_position_plan(
+        &mut self,
+        key: EditorViewportViewPositionPlanCacheKey,
+        plan: EditorViewportViewPositionPlan,
+    ) {
+        self.view_position_plan = Some(CachedEditorViewportViewPositionPlan { key, plan });
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +318,7 @@ pub struct EditorViewport {
     scroll: ScrollManager,
     cursor_reveal_request: Rc<Cell<Option<EditorCursorReveal>>>,
     document_metrics_cache: Rc<RefCell<EditorDocumentMetricsCache>>,
+    conversion_cache: Rc<RefCell<EditorViewportConversionCache>>,
 }
 
 impl EditorViewport {
@@ -223,6 +327,7 @@ impl EditorViewport {
             scroll: ScrollManager::new(line_height),
             cursor_reveal_request: Rc::new(Cell::new(None)),
             document_metrics_cache: Rc::new(RefCell::new(EditorDocumentMetricsCache::default())),
+            conversion_cache: Rc::new(RefCell::new(EditorViewportConversionCache::default())),
         }
     }
 
@@ -467,13 +572,27 @@ impl EditorViewport {
         view_id: ViewId,
         text_format: &TextFormat,
     ) -> HelixViewportSnapshot {
+        let view_position = document.view_offset(view_id);
+        let key = HelixViewportSnapshotCacheKey {
+            base: viewport_conversion_base_key(document, view_id, text_format),
+            view_position,
+        };
+
+        if let Some(snapshot) = self.conversion_cache.borrow().helix_snapshot(&key) {
+            self.sync_from_helix_top_visual_row(snapshot.top_visual_row);
+            return snapshot;
+        }
+
         let annotations = view.text_annotations(document, None);
         let snapshot = helix_viewport_snapshot(
             document.text().slice(..),
-            document.view_offset(view_id),
+            view_position,
             text_format,
             &annotations,
         );
+        self.conversion_cache
+            .borrow_mut()
+            .store_helix_snapshot(key, snapshot);
         self.sync_from_helix_top_visual_row(snapshot.top_visual_row);
         snapshot
     }
@@ -485,9 +604,20 @@ impl EditorViewport {
         view_id: ViewId,
         text_format: &TextFormat,
     ) -> bool {
+        self.sync_view_position_with_plan(document, view, view_id, text_format)
+            .0
+    }
+
+    fn sync_view_position_with_plan(
+        &self,
+        document: &mut Document,
+        view: &helix_view::View,
+        view_id: ViewId,
+        text_format: &TextFormat,
+    ) -> (bool, EditorViewportViewPositionPlan) {
         let plan = self.plan_view_position(document, view, view_id, text_format);
         if !plan.changed {
-            return false;
+            return (false, plan);
         }
 
         trace!(
@@ -500,7 +630,18 @@ impl EditorViewport {
             "Syncing GUI scroll position to Helix view"
         );
 
-        apply_view_position_plan(document, view_id, plan)
+        let synced = apply_view_position_plan(document, view_id, plan);
+        if synced {
+            let synced_plan = EditorViewportViewPositionPlan {
+                top_visual_row: plan.top_visual_row,
+                previous_view_position: plan.view_position,
+                view_position: plan.view_position,
+                changed: false,
+            };
+            self.cache_view_position_plan(document, view_id, text_format, synced_plan);
+        }
+
+        (synced, plan)
     }
 
     pub fn sync_content_layout(
@@ -578,9 +719,14 @@ impl EditorViewport {
         );
         apply_helix_view_area_plan(view, view_area_plan);
 
+        let mut synced_view_position_plan = None;
         let mut helix_view_synced = if self.has_pending_view_sync() {
-            let synced = self.sync_view_position(document, view, view_id, &metrics.text_format);
+            let (synced, plan) =
+                self.sync_view_position_with_plan(document, view, view_id, &metrics.text_format);
             self.clear_pending_view_sync();
+            if synced {
+                synced_view_position_plan = Some(plan);
+            }
             synced
         } else {
             false
@@ -592,18 +738,49 @@ impl EditorViewport {
             let scroll_update =
                 self.reveal_visual_row(cursor_visual_row, cursor_reveal, layout.scrolloff);
 
-            helix_view_synced |=
-                self.sync_view_position(document, view, view_id, &metrics.text_format);
+            let (synced, plan) =
+                self.sync_view_position_with_plan(document, view, view_id, &metrics.text_format);
+            helix_view_synced |= synced;
+            if synced {
+                synced_view_position_plan = Some(plan);
+            }
 
             scroll_update.changed
         } else {
             false
         };
 
-        let helix_snapshot =
-            self.sync_from_helix_view(document, view, view_id, &metrics.text_format);
-        let view_position_plan =
-            self.plan_view_position(document, view, view_id, &metrics.text_format);
+        let (helix_snapshot, view_position_plan) = if let Some(plan) = synced_view_position_plan
+            .filter(|plan| plan.view_position == document.view_offset(view_id))
+        {
+            let snapshot = helix_viewport_snapshot_for_synced_plan(document, plan);
+            let view_position_plan = EditorViewportViewPositionPlan {
+                top_visual_row: plan.top_visual_row,
+                previous_view_position: plan.view_position,
+                view_position: plan.view_position,
+                changed: false,
+            };
+            self.cache_helix_viewport_snapshot(
+                document,
+                view_id,
+                &metrics.text_format,
+                plan.view_position,
+                snapshot,
+            );
+            self.cache_view_position_plan(
+                document,
+                view_id,
+                &metrics.text_format,
+                view_position_plan,
+            );
+            (snapshot, view_position_plan)
+        } else {
+            let helix_snapshot =
+                self.sync_from_helix_view(document, view, view_id, &metrics.text_format);
+            let view_position_plan =
+                self.plan_view_position(document, view, view_id, &metrics.text_format);
+            (helix_snapshot, view_position_plan)
+        };
         let view_position = view_position_plan.view_position;
 
         EditorViewportSurfaceUpdate {
@@ -626,14 +803,64 @@ impl EditorViewport {
         view_id: ViewId,
         text_format: &TextFormat,
     ) -> EditorViewportViewPositionPlan {
+        let previous_view_position = document.view_offset(view_id);
+        let top_visual_row = self.top_visual_row();
+        let key = EditorViewportViewPositionPlanCacheKey {
+            base: viewport_conversion_base_key(document, view_id, text_format),
+            previous_view_position,
+            top_visual_row,
+        };
+
+        if let Some(plan) = self.conversion_cache.borrow().view_position_plan(&key) {
+            return plan;
+        }
+
         let annotations = view.text_annotations(document, None);
-        view_position_plan_for_top_visual_row(
+        let plan = view_position_plan_for_top_visual_row(
             document.text().slice(..),
-            document.view_offset(view_id),
-            self.top_visual_row(),
+            previous_view_position,
+            top_visual_row,
             text_format,
             &annotations,
-        )
+        );
+        self.conversion_cache
+            .borrow_mut()
+            .store_view_position_plan(key, plan);
+        plan
+    }
+
+    fn cache_view_position_plan(
+        &self,
+        document: &Document,
+        view_id: ViewId,
+        text_format: &TextFormat,
+        plan: EditorViewportViewPositionPlan,
+    ) {
+        let key = EditorViewportViewPositionPlanCacheKey {
+            base: viewport_conversion_base_key(document, view_id, text_format),
+            previous_view_position: plan.previous_view_position,
+            top_visual_row: plan.top_visual_row,
+        };
+        self.conversion_cache
+            .borrow_mut()
+            .store_view_position_plan(key, plan);
+    }
+
+    fn cache_helix_viewport_snapshot(
+        &self,
+        document: &Document,
+        view_id: ViewId,
+        text_format: &TextFormat,
+        view_position: ViewPosition,
+        snapshot: HelixViewportSnapshot,
+    ) {
+        let key = HelixViewportSnapshotCacheKey {
+            base: viewport_conversion_base_key(document, view_id, text_format),
+            view_position,
+        };
+        self.conversion_cache
+            .borrow_mut()
+            .store_helix_snapshot(key, snapshot);
     }
 
     pub fn top_visual_row(&self) -> usize {
@@ -757,6 +984,33 @@ pub fn editor_viewport_size_for_bounds(bounds: Bounds<Pixels>) -> Size<Pixels> {
         bounds.size.width,
         (bounds.size.height - px(1.0)).max(px(0.0)),
     )
+}
+
+fn viewport_conversion_base_key(
+    document: &Document,
+    view_id: ViewId,
+    text_format: &TextFormat,
+) -> EditorViewportConversionBaseKey {
+    EditorViewportConversionBaseKey {
+        document_version: document.version(),
+        text_len: document.text().len_chars(),
+        view_id,
+        text_format: EditorViewportTextFormatKey::from(text_format),
+    }
+}
+
+fn helix_viewport_snapshot_for_synced_plan(
+    document: &Document,
+    plan: EditorViewportViewPositionPlan,
+) -> HelixViewportSnapshot {
+    let text = document.text();
+    let anchor = plan.view_position.anchor.min(text.len_chars());
+
+    HelixViewportSnapshot {
+        anchor_line: text.char_to_line(anchor),
+        vertical_offset: plan.view_position.vertical_offset,
+        top_visual_row: plan.top_visual_row,
+    }
 }
 
 pub fn helix_viewport_snapshot(
@@ -1774,6 +2028,42 @@ mod tests {
 
         assert_eq!(snapshot.anchor_line, 1);
         assert!(snapshot.top_visual_row >= snapshot.anchor_line + 2);
+    }
+
+    #[test]
+    fn conversion_cache_reuses_matching_view_position_plan() {
+        let base = EditorViewportConversionBaseKey {
+            document_version: 1,
+            text_len: 12,
+            view_id: ViewId::default(),
+            text_format: EditorViewportTextFormatKey::from(&TextFormat::default()),
+        };
+        let key = EditorViewportViewPositionPlanCacheKey {
+            base: base.clone(),
+            previous_view_position: ViewPosition::default(),
+            top_visual_row: 3,
+        };
+        let plan = EditorViewportViewPositionPlan {
+            top_visual_row: 3,
+            previous_view_position: ViewPosition::default(),
+            view_position: ViewPosition {
+                anchor: 7,
+                vertical_offset: 0,
+                horizontal_offset: 0,
+            },
+            changed: true,
+        };
+        let mut cache = EditorViewportConversionCache::default();
+
+        assert_eq!(cache.view_position_plan(&key), None);
+        cache.store_view_position_plan(key.clone(), plan);
+        assert_eq!(cache.view_position_plan(&key), Some(plan));
+
+        let changed_key = EditorViewportViewPositionPlanCacheKey {
+            top_visual_row: 4,
+            ..key
+        };
+        assert_eq!(cache.view_position_plan(&changed_key), None);
     }
 
     #[test]
