@@ -1527,16 +1527,6 @@ pub fn encode_terminal_key_event(event: &KeyDownEvent) -> Vec<u8> {
         return Vec::new();
     }
 
-    // Printable text via IME
-    if let Some(s) = &ks.key_char {
-        if mods.alt && !mods.control {
-            let mut out = vec![0x1B];
-            out.extend_from_slice(s.as_bytes());
-            return out;
-        }
-        return s.as_bytes().to_vec();
-    }
-
     // Ctrl-modified keys
     if mods.control
         && let Some(b) = ctrl_byte_for(&ks.key)
@@ -1547,87 +1537,21 @@ pub fn encode_terminal_key_event(event: &KeyDownEvent) -> Vec<u8> {
         return vec![b];
     }
 
-    // Navigation and non-printables
-    match ks.key.as_str() {
-        // Basics
-        "enter" => {
-            if mods.alt && !mods.control {
-                return vec![0x1B, b'\r'];
-            }
-            return b"\r".to_vec();
-        }
-        "tab" => {
-            if mods.shift {
-                return b"\x1b[Z".to_vec();
-            }
-            if mods.alt && !mods.control {
-                return vec![0x1B, b'\t'];
-            }
-            return b"\t".to_vec();
-        }
-        "backspace" => {
-            if mods.alt && !mods.control {
-                return vec![0x1B, 0x7F];
-            }
-            return vec![0x7F];
-        }
-        "escape" => return vec![0x1B],
+    // Named terminal keys must win over key_char. Some platforms/tests can attach
+    // control-character text to keys like Enter or Backspace, but terminals expect
+    // xterm control bytes/sequences for those keys.
+    if let Some(bytes) = encode_named_terminal_key(&ks.key, mods) {
+        return bytes;
+    }
 
-        // Arrows with xterm modifiers
-        "up" | "down" | "right" | "left" => {
-            let final_byte = match ks.key.as_str() {
-                "up" => b'A',
-                "down" => b'B',
-                "right" => b'C',
-                _ => b'D',
-            };
-            if mods.shift || mods.alt || mods.control {
-                return csi_with_mod_final(b"1", xterm_mod_value(mods), final_byte);
-            } else {
-                return vec![0x1B, b'[', final_byte];
-            }
+    // Printable text via IME
+    if let Some(s) = &ks.key_char {
+        if mods.alt && !mods.control {
+            let mut out = vec![0x1B];
+            out.extend_from_slice(s.as_bytes());
+            return out;
         }
-
-        // Home/End with xterm modifiers
-        "home" | "end" => {
-            let final_byte = if ks.key.as_str() == "home" {
-                b'H'
-            } else {
-                b'F'
-            };
-            if mods.shift || mods.alt || mods.control {
-                return csi_with_mod_final(b"1", xterm_mod_value(mods), final_byte);
-            } else {
-                return vec![0x1B, b'[', final_byte];
-            }
-        }
-
-        // Insert/Delete/PageUp/PageDown with xterm modifiers
-        "insert" | "delete" | "pageup" | "pagedown" => {
-            let code = match ks.key.as_str() {
-                "insert" => 2,
-                "delete" => 3,
-                "pageup" => 5,
-                _ => 6,
-            };
-            return csi_with_mod_tilde(code, mods);
-        }
-
-        // Function keys (basic)
-        "f1" => return b"\x1bOP".to_vec(),
-        "f2" => return b"\x1bOQ".to_vec(),
-        "f3" => return b"\x1bOR".to_vec(),
-        "f4" => return b"\x1bOS".to_vec(),
-        "f5" => return b"\x1b[15~".to_vec(),
-        "f6" => return b"\x1b[17~".to_vec(),
-        "f7" => return b"\x1b[18~".to_vec(),
-        "f8" => return b"\x1b[19~".to_vec(),
-        "f9" => return b"\x1b[20~".to_vec(),
-        "f10" => return b"\x1b[21~".to_vec(),
-        "f11" => return b"\x1b[23~".to_vec(),
-        "f12" => return b"\x1b[24~".to_vec(),
-
-        _ => {}
+        return s.as_bytes().to_vec();
     }
 
     // Synthesize printable from key name if single char
@@ -1645,6 +1569,88 @@ pub fn encode_terminal_key_event(event: &KeyDownEvent) -> Vec<u8> {
     }
 
     Vec::new()
+}
+
+fn encode_named_terminal_key(key: &str, mods: &gpui::Modifiers) -> Option<Vec<u8>> {
+    match key {
+        // Basics
+        "enter" => {
+            if mods.alt && !mods.control {
+                Some(vec![0x1B, b'\r'])
+            } else {
+                Some(b"\r".to_vec())
+            }
+        }
+        "tab" => {
+            if mods.shift {
+                Some(b"\x1b[Z".to_vec())
+            } else if mods.alt && !mods.control {
+                Some(vec![0x1B, b'\t'])
+            } else {
+                Some(b"\t".to_vec())
+            }
+        }
+        "backspace" => {
+            if mods.alt && !mods.control {
+                Some(vec![0x1B, 0x7F])
+            } else {
+                Some(vec![0x7F])
+            }
+        }
+        "escape" => Some(vec![0x1B]),
+
+        // Arrows with xterm modifiers
+        "up" | "down" | "right" | "left" => {
+            let final_byte = match key {
+                "up" => b'A',
+                "down" => b'B',
+                "right" => b'C',
+                _ => b'D',
+            };
+            if mods.shift || mods.alt || mods.control {
+                Some(csi_with_mod_final(b"1", xterm_mod_value(mods), final_byte))
+            } else {
+                Some(vec![0x1B, b'[', final_byte])
+            }
+        }
+
+        // Home/End with xterm modifiers
+        "home" | "end" => {
+            let final_byte = if key == "home" { b'H' } else { b'F' };
+            if mods.shift || mods.alt || mods.control {
+                Some(csi_with_mod_final(b"1", xterm_mod_value(mods), final_byte))
+            } else {
+                Some(vec![0x1B, b'[', final_byte])
+            }
+        }
+
+        // Insert/Delete/PageUp/PageDown with xterm modifiers
+        "insert" | "delete" | "pageup" | "pagedown" => {
+            let code = match key {
+                "insert" => 2,
+                "delete" => 3,
+                "pageup" => 5,
+                _ => 6,
+            };
+            Some(csi_with_mod_tilde(code, mods))
+        }
+
+        // Function keys (basic)
+        "f1" => Some(b"\x1bOP".to_vec()),
+        "f2" => Some(b"\x1bOQ".to_vec()),
+        "f3" => Some(b"\x1bOR".to_vec()),
+        "f4" => Some(b"\x1bOS".to_vec()),
+        "f5" => Some(b"\x1b[15~".to_vec()),
+        "f6" => Some(b"\x1b[17~".to_vec()),
+        "f7" => Some(b"\x1b[18~".to_vec()),
+        "f8" => Some(b"\x1b[19~".to_vec()),
+        "f9" => Some(b"\x1b[20~".to_vec()),
+        "f10" => Some(b"\x1b[21~".to_vec()),
+        "f11" => Some(b"\x1b[23~".to_vec()),
+        "f12" => Some(b"\x1b[24~".to_vec()),
+
+        _ => None,
+    }
 }
 
 #[inline]
@@ -1776,6 +1782,22 @@ impl Default for GlobalInputDispatcher {
 mod tests {
     use super::*;
 
+    fn key_event(
+        key: &str,
+        key_char: Option<&str>,
+        modifiers: gpui::Modifiers,
+    ) -> gpui::KeyDownEvent {
+        gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke {
+                modifiers,
+                key: key.to_string(),
+                key_char: key_char.map(ToString::to_string),
+            },
+            is_held: false,
+            prefer_character_input: false,
+        }
+    }
+
     #[test]
     fn test_global_input_dispatcher_creation() {
         let dispatcher = GlobalInputDispatcher::new();
@@ -1863,5 +1885,35 @@ mod tests {
         // For now, we'll just test that the method exists and can be called
 
         // Note: Full testing would require GPUI test infrastructure
+    }
+
+    #[test]
+    fn terminal_backspace_ignores_key_char_payload() {
+        let event = key_event("backspace", Some("\u{8}"), gpui::Modifiers::none());
+
+        assert_eq!(encode_terminal_key_event(&event), vec![0x7f]);
+    }
+
+    #[test]
+    fn terminal_enter_uses_carriage_return_with_key_char_payload() {
+        let event = key_event("enter", Some("\n"), gpui::Modifiers::none());
+
+        assert_eq!(encode_terminal_key_event(&event), b"\r".to_vec());
+    }
+
+    #[test]
+    fn terminal_ctrl_key_uses_control_byte_before_key_char() {
+        let mut modifiers = gpui::Modifiers::none();
+        modifiers.control = true;
+        let event = key_event("c", Some("\u{3}"), modifiers);
+
+        assert_eq!(encode_terminal_key_event(&event), vec![0x03]);
+    }
+
+    #[test]
+    fn terminal_printable_key_char_still_passes_through() {
+        let event = key_event("x", Some("x"), gpui::Modifiers::none());
+
+        assert_eq!(encode_terminal_key_event(&event), b"x".to_vec());
     }
 }

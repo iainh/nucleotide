@@ -1612,8 +1612,7 @@ impl OverlayView {
 // For navigation keys, emit xterm-style modifier encodings (CSI 1;N <final> or CSI <num>;N ~)
 // where N = 1 + (Shift?1) + (Alt?2) + (Ctrl?4), avoiding an extra ESC prefix for Alt.
 pub(crate) fn translate_key_to_bytes(event: &gpui::KeyDownEvent) -> Vec<u8> {
-    // Delegate to centralized encoder in UI global input
-    nucleotide_ui::global_input::encode_terminal_key_event(event)
+    crate::terminal_input::encode_key_event(event)
 }
 
 /// Layout information for positioning UI elements relative to workspace
