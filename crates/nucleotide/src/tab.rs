@@ -99,6 +99,8 @@ const END_TAB_SLOT_SIZE: f32 = 14.0;
 const TAB_SLOT_ICON_SIZE: f32 = 12.0;
 const TAB_MIN_WIDTH: f32 = 112.0;
 const TAB_MAX_WIDTH: f32 = 280.0;
+const INACTIVE_TAB_DARKEN_AMOUNT: f32 = 0.045;
+const INACTIVE_TAB_HOVER_DARKEN_AMOUNT: f32 = 0.025;
 
 pub(crate) fn tab_container_height(tokens: nucleotide_ui::tokens::DesignTokens) -> gpui::Pixels {
     // Zed tabs use DynamicSpacing::Base32 for the tab container height.
@@ -534,6 +536,8 @@ impl RenderOnce for Tab {
 
         // Use TabBarTokens for consistent hybrid color theming
         let tab_tokens = tokens.tab_bar_tokens();
+        let inactive_bg = Tab::inactive_background_color(tab_tokens);
+        let inactive_hover_bg = Tab::inactive_hover_background_color(tab_tokens);
         let (bg_color, text_color, hover_bg, border_color) = match component_state {
             ComponentState::Active => (
                 tab_tokens.tab_active_background,
@@ -542,18 +546,15 @@ impl RenderOnce for Tab {
                 tab_tokens.tab_border,
             ),
             ComponentState::Disabled => (
-                nucleotide_ui::styling::ColorTheory::with_alpha(
-                    tab_tokens.tab_inactive_background,
-                    0.5,
-                ),
+                nucleotide_ui::styling::ColorTheory::with_alpha(inactive_bg, 0.5),
                 nucleotide_ui::styling::ColorTheory::with_alpha(tab_tokens.tab_text_inactive, 0.5),
-                tab_tokens.tab_inactive_background, // No hover for disabled tabs
+                inactive_bg, // No hover for disabled tabs
                 tab_tokens.tab_border,
             ),
             _ => (
-                tab_tokens.tab_inactive_background,
+                inactive_bg,
                 tab_tokens.tab_text_inactive,
-                tab_tokens.tab_hover_background,
+                inactive_hover_bg,
                 tab_tokens.tab_border,
             ),
         };
@@ -717,6 +718,22 @@ impl RenderOnce for Tab {
 
 // Internal layout helpers to centralize tab content composition
 impl Tab {
+    fn inactive_background_color(tab_tokens: nucleotide_ui::tokens::TabBarTokens) -> gpui::Hsla {
+        nucleotide_ui::tokens::utils::darken(
+            tab_tokens.tab_active_background,
+            INACTIVE_TAB_DARKEN_AMOUNT,
+        )
+    }
+
+    fn inactive_hover_background_color(
+        tab_tokens: nucleotide_ui::tokens::TabBarTokens,
+    ) -> gpui::Hsla {
+        nucleotide_ui::tokens::utils::darken(
+            tab_tokens.tab_active_background,
+            INACTIVE_TAB_HOVER_DARKEN_AMOUNT,
+        )
+    }
+
     fn deemphasized_text_color(
         text_color: gpui::Hsla,
         is_active: bool,
@@ -1188,6 +1205,37 @@ mod tests {
         assert_eq!(START_TAB_SLOT_SIZE, 12.0);
         assert_eq!(END_TAB_SLOT_SIZE, 14.0);
         assert_eq!(TAB_SLOT_ICON_SIZE, 12.0);
+    }
+
+    #[test]
+    fn inactive_tab_background_is_darker_than_active() {
+        for tokens in [
+            nucleotide_ui::DesignTokens::dark(),
+            nucleotide_ui::DesignTokens::light(),
+        ] {
+            let tab_tokens = tokens.tab_bar_tokens();
+            let active_l = nucleotide_ui::styling::ColorTheory::hsla_to_oklch(
+                tab_tokens.tab_active_background,
+            )
+            .L;
+            let inactive_l = nucleotide_ui::styling::ColorTheory::hsla_to_oklch(
+                Tab::inactive_background_color(tab_tokens),
+            )
+            .L;
+            let hover_l = nucleotide_ui::styling::ColorTheory::hsla_to_oklch(
+                Tab::inactive_hover_background_color(tab_tokens),
+            )
+            .L;
+
+            assert!(
+                inactive_l < active_l,
+                "inactive tab background should be darker than active"
+            );
+            assert!(
+                inactive_l < hover_l && hover_l < active_l,
+                "inactive hover background should stay between inactive and active"
+            );
+        }
     }
 
     #[test]
